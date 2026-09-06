@@ -3,7 +3,7 @@ package controllers
 import (
 	"context"
 
-	"github.com/boyadzhievb/ccatler/store"
+	"github.com/boyadzhievb/ccattler/store"
 )
 
 type Change struct {

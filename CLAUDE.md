@@ -1,6 +1,10 @@
-# CCatler — Fact-Based Container Orchestrator
+# CCattler — Fact-Based Container Orchestrator
 
-A Kubernetes-alternative container orchestrator built around **facts, rules, and reconciliation** instead of an object hierarchy. The core premise: given a description of desired behavior, continuously make a distributed machine satisfy that description.
+**CCattler** (Container Cattler) — a Kubernetes-alternative container orchestrator built around **facts, rules, and reconciliation** instead of an object hierarchy. The name captures the metaphor: something that herds and manages containers, without implying that the containers themselves are the primary abstraction.
+
+**Core premise**: given a description of desired behavior, continuously make a distributed machine satisfy that description.
+
+**Central design principle**: CCattler manages containers by maintaining state and constraints, rather than exposing an object hierarchy to the user.
 
 ## Language
 
@@ -37,14 +41,295 @@ Each layer writes its own facts. Effective state is derived.
 
 ### Security Model
 
-Fact-based permissions with a clean desired/observed boundary:
+Five layers: Identity → Authentication → Authorization → Isolation → Audit.
+
+**Zero-trust by default** — being inside the cluster grants nothing. Every component authenticates and is authorized independently.
+
+#### Transport: mTLS Everywhere
 
 ```
-alice:             can modify desired/service/*    cannot modify observed/*
-node-agent:        can modify observed/*           cannot modify desired/user/*
+CLI ──────── mTLS/OIDC ──────► API
+API ──────── mTLS ────────────► Store
+Controller ── mTLS ────────────► Store
+Node ──────── mTLS ────────────► Store/API
 ```
 
-A compromised node can report "database is stopped" but can never set `desired_instances(database) = 0`.
+No unauthenticated cluster communication.
+
+#### Certificate Authority Hierarchy
+
+```
+              Offline Root CA
+                    │
+        ┌───────────┼───────────┐
+        ▼           ▼           ▼
+  Control-plane   Node CA    Workload CA
+      CA            │           │
+      │        ┌────┴────┐    services
+  ┌───┴───┐   node-1  node-2
+API-1  API-2
+```
+
+- Root CA is offline (never on a running control-plane machine)
+- Short-lived certificates (1hr) with automatic rotation
+- SPIFFE-style workload identities: `spiffe://cluster/node/node-1`, `spiffe://cluster/controller/scheduler`
+
+#### Node Enrollment
+
+```
+ccattler join <cluster> <bootstrap-token>
+```
+
+Bootstrap token is short-lived, single-use, scoped to enrollment only. Node generates its own private key, sends CSR, receives signed certificate, bootstrap token is destroyed. Supports hardware identity (TPM, cloud instance identity) for stronger enrollment.
+
+#### Human Authentication
+
+Standard identity providers (OIDC, OAuth 2.0, LDAP, SAML):
+
+```
+Developer → Identity Provider → OIDC token → CCattler API
+```
+
+Token establishes: `subject=alice, groups=[developers, payments]`
+
+#### Authorization: RBAC + ABAC
+
+**RBAC** for broad authority — permissions over fact prefixes:
+
+```
+role developer {
+    allow service.read
+    allow service.update
+}
+
+role operator {
+    allow read *
+    allow modify service/*
+    allow modify node/*
+}
+
+grant developer to group developers
+```
+
+**ABAC** for context — attribute-based conditions:
+
+```
+policy team-isolation {
+    allow service.update
+    when subject.team == resource.team
+}
+
+policy production-gate {
+    allow service.deploy
+    when subject.environment != "production"
+    OR subject.role == "production-deployer"
+}
+```
+
+Every API operation evaluates: `authorize(principal, action, resource, context) → ALLOW | DENY`
+
+#### Per-Controller Least Privilege
+
+Every controller gets its own identity and minimum permissions:
+
+```
+scheduler:          READ nodes, instances, requirements    WRITE placements
+network:            READ instances, endpoints              WRITE routing
+autoscaler:         READ health, metrics                   WRITE intent/autoscaler
+node-agent:         READ desired/node-assignments          WRITE observed/node-X/*
+```
+
+A compromised autoscaler cannot modify user configuration. A compromised node cannot set `desired_instances(database) = 0` — it can only write to `observed/`.
+
+#### Authorized Store
+
+The fact store is the security boundary — every write is authenticated, authorized, and audited:
+
+```
+controllers → Authorized Store (identity + authN + authZ + txn + audit) → state
+```
+
+#### Secrets
+
+Secrets live in an encrypted store, never in plain DSL config:
+
+```
+secret database.password
+
+service database {
+    secret database.password
+}
+```
+
+Envelope encryption with KMS integration (AWS KMS, GCP KMS, Vault, HSM). Secrets scoped by service — the scheduler and network controller never see them.
+
+#### Workload-to-Workload Network Policy
+
+Identity-based, not IP-based:
+
+```
+allow frontend → api:443
+allow api → database:5432
+deny frontend → database:5432
+```
+
+Network controller translates identity policies → iptables/nftables/eBPF rules.
+
+#### Audit Logging
+
+Every security-sensitive operation produces an immutable record:
+
+```
+principal:   alice
+auth:        OIDC
+action:      service.update
+target:      service/web
+change:      image nginx:1.27 → nginx:1.28
+decision:    ALLOW
+policy:      production-deployer
+request_id:  8f31...
+```
+
+#### Bootstrap Problem
+
+Cluster creation generates a one-time bootstrap credential → creates admin identity → bootstrap credential destroyed. No permanent "magic password."
+
+#### Cryptographic Trust Summary
+
+```
+        Root CA
+           │
+  ┌────────┼────────┐
+  ▼        ▼        ▼
+Users    Nodes   Controllers
+ OIDC     mTLS      mTLS
+  │        │        │
+  └────────┼────────┘
+           ▼
+     Authorization
+      RBAC + ABAC
+           │
+           ▼
+      State changes
+           │
+           ▼
+        Audit
+```
+
+### Multi-Tenancy
+
+No namespaces. Tenancy is built from **ownership, identity, and policy** as separate concerns.
+
+#### Tenants & Ownership
+
+```
+tenant payments
+tenant frontend
+tenant platform
+```
+
+Every resource carries an owner: `owner(service:checkout, payments)`. Ownership drives authorization, quotas, and cleanup.
+
+#### Hierarchical Naming
+
+Filesystem-style paths instead of namespace prefixes:
+
+```
+/frontend/web
+/payments/checkout
+/payments/database
+/platform/dns
+```
+
+Tenant owns its subtree — `/payments/*` is naturally isolated.
+
+#### Resource Quotas
+
+Attached to tenants, not namespaces:
+
+```
+tenant payments {
+    quota {
+        cpu 100
+        memory 256Gi
+        instances 500
+        volumes 50
+        storage 10Ti
+    }
+}
+```
+
+Stored as facts (`quota_cpu(payments, 100)`), usage is observed (`usage_cpu(payments, 74)`). Admission is arithmetic: `74 + 30 > 100 → DENY`.
+
+#### Fair Scheduling
+
+Beyond quotas — weighted fairness prevents starvation:
+
+| Tenant | Weight | Guaranteed CPU |
+|--------|--------|----------------|
+| platform | 5 | 50 |
+| payments | 3 | 30 |
+| frontend | 2 | 20 |
+
+Unused guarantees become borrowable.
+
+#### Network Isolation (Identity-Based)
+
+No label selectors. Policies reference service identities:
+
+```
+network {
+    allow frontend/web -> payments/checkout port 443
+    allow payments/checkout -> payments/database port 5432
+    deny frontend/web -> payments/database
+}
+```
+
+When instances move, policies don't change — only derived firewall rules change.
+
+#### Service Identity
+
+Every instance gets a SPIFFE identity: `spiffe://ccattler/payments/database`. mTLS between services is automatic — no shared secrets.
+
+#### Secret Isolation
+
+Secrets belong to tenants. Only explicitly granted services receive them. Scheduler and network controller never see plaintext. Envelope encryption with master key rotation.
+
+#### Shared Services
+
+Cross-tenant infrastructure via exports:
+
+```
+export platform/dns {
+    allow frontend
+    allow payments
+}
+```
+
+Consumers declare `uses platform/dns`.
+
+#### Tenant Lifecycle
+
+Creating a tenant automatically creates: identity scope, quota, network boundary, secret space, audit stream. Deleting a tenant triggers ownership-driven garbage collection of all resources.
+
+#### Policy Gates (Admission)
+
+Every change passes through a pipeline (borrowed from K8s admission controllers):
+
+```
+APPLY → syntax validation → schema validation → RBAC/ABAC → quota check → security policy → mutation → commit
+```
+
+#### Multi-Tenant Visibility
+
+| Component | Tenant sees | Platform sees |
+|-----------|-------------|---------------|
+| Services | Own | All |
+| Secrets | Own | Metadata only |
+| Volumes | Own | All |
+| Network policies | Own | All |
+| Audit logs | Own | All |
+| Node health | Aggregated | Full |
 
 ### Control Plane Failure Tolerance
 
@@ -57,7 +342,7 @@ Nodes cache last known desired state. If the control plane dies for 10 minutes, 
                   │
                   ▼
           ┌──────────────┐
-          │ DOMAIN LANG. │    .ccatler files
+          │ DOMAIN LANG. │    .ccattler files
           └──────┬───────┘
                  │
                  ▼
@@ -119,10 +404,19 @@ service web {
         memory 512Mi
     }
 
-    autoscale {
-        cpu > 70%
-        min 3
-        max 30
+    scale {
+        horizontal {
+            min 3
+            max 30
+            target cpu = 60%
+            target requests_per_second = 500
+            event { source payments.pending, target 20 messages/instance }
+            schedule { weekdays 08:00-18:00, minimum 10 }
+        }
+        vertical {
+            cpu { min 250m, max 4 }
+            memory { min 512Mi, max 8Gi }
+        }
     }
 
     placement {
@@ -142,6 +436,38 @@ group frontend {
     share network
     share volume cache
 }
+
+role developer {
+    allow service.read
+    allow service.update
+}
+
+grant developer to group developers
+
+policy team-isolation {
+    allow service.update
+    when subject.team == resource.team
+}
+
+secret database.password
+
+tenant payments {
+    quota {
+        cpu 100
+        memory 256Gi
+        instances 500
+    }
+}
+
+network {
+    allow frontend/web -> payments/checkout port 443
+    deny frontend/web -> payments/database
+}
+
+export platform/dns {
+    allow frontend
+    allow payments
+}
 ```
 
 The parser compiles DSL into facts:
@@ -153,6 +479,65 @@ requires(service="web", cpu=500m, memory=512Mi)
 ```
 
 **Architectural boundary**: everything above the fact store is human-facing; everything below is machine-facing.
+
+## Runtime Adapters
+
+The runtime is pluggable — prove semantics first, add real infrastructure later:
+
+```
+Runtime
+   │
+   ├── SimulatorRuntime    ← pure simulation, no processes (Phase 0)
+   ├── ProcessRuntime      ← Linux processes (Phase 1)
+   └── ContainerRuntime    ← containerd/CRI-O (Phase 3+)
+```
+
+Similarly, the store is pluggable:
+
+```
+StateStore
+   │
+   ├── MemoryStore         ← laptop development, tests
+   ├── SQLiteStore         ← persistence, restart testing
+   └── EtcdStore           ← distributed production
+```
+
+Controllers never know which backend they're using. **Build the semantic control plane first; make Linux/container/distributed infrastructure replaceable adapters underneath.**
+
+### Logical Node Simulation
+
+Test scheduling and failure on one laptop with fake nodes:
+
+```
+node(laptop-1, cpu=4, memory=8Gi, zone=local-a)
+node(laptop-2, cpu=4, memory=8Gi, zone=local-b)
+node(laptop-3, cpu=4, memory=8Gi, zone=local-c)
+```
+
+The scheduler doesn't know they're simulated. Kill `laptop-2` → lease expires → reconciler reschedules → system converges.
+
+### Deterministic Testing
+
+The entire control plane must be deterministic: given state A + observation B + policy C → desired state D. Tests don't need a cluster:
+
+```
+INPUT:  nodes=[n1:4cpu, n2:4cpu], service=web, desired=5, cpu=1
+EXPECT: placement=[n1:3, n2:2]
+
+INPUT:  n2=dead
+EXPECT: placement=[n1:4, unsatisfied=1]
+
+INPUT:  n2=alive
+EXPECT: placement=[n1:3, n2:2]
+```
+
+### Chaos Mode
+
+```
+ccattler chaos
+```
+
+Randomly injects: node failures, network delays, process crashes, stale observations, controller restarts, duplicate events, lost messages, slow storage. Asserts: **eventually observed state converges to desired state.**
 
 ## Fact Store Interface
 
@@ -206,12 +591,82 @@ RULE replace_failed_instance(instance):
         create replacement
 ```
 
-### Autoscale Controller
+### Autoscaling (Unified Scaling Engine)
+
+**Architectural rule**: autoscalers recommend and modify desired capacity — they never directly manipulate runtime instances.
+
+One generic engine with three concepts: **Signal**, **Policy**, **Dimension**.
+
+#### Horizontal Scaling
 ```
-RULE autoscale(service):
-    if cpu(service) > threshold:
-        set desired_instances = min(current + scale_up, max)
+autoscale checkout {
+    dimension instances
+    min 2, max 30
+    target cpu = 60%
+    target memory = 70%
+    target requests_per_second = 500
+}
 ```
+Multiple metrics evaluated independently → `desired = max(cpu_rec, mem_rec, rps_rec)`.
+
+#### Vertical Scaling
+Changes resource requirements instead of instance count:
+```
+scale vertically {
+    cpu { min 250m, max 4 }
+    memory { min 512Mi, max 8Gi }
+}
+```
+Reconciler decides: resize in-place (live cgroup update) or replace instance.
+
+#### Event-Driven Scaling
+External signals become observations, not imperative triggers:
+```
+scale horizontally {
+    event { source payments.pending, target 20 messages/instance }
+}
+→ queue_depth(800) / 20 = 40 instances
+```
+
+#### Scheduled Scaling
+Time as an input signal:
+```
+schedule { weekdays 08:00-18:00, minimum 10 }
+```
+
+#### Stabilization
+Never scale from instantaneous metrics. Use time-windowed averages with asymmetric stabilization:
+```
+scale-up stabilization = 60s
+scale-down stabilization = 5m
+```
+
+#### Multi-Policy Resolution
+Single scaling decision function — no competing writers:
+```
+desired = max(cpu_rec, queue_rec, scheduled_min)
+    subject to: min, max, tenant quota, cluster capacity
+```
+
+#### Capacity Chain
+```
+autoscaler recommendation → tenant quota → scheduler capacity → running
+```
+Each constraint is visible: "scaling constrained by tenant quota" vs silent capping.
+
+#### Cluster Autoscaling
+Unsatisfied scheduling demand triggers node scaling:
+```
+application autoscaler → desired workload → scheduler → unsatisfied capacity
+    → cluster autoscaler → desired nodes → infrastructure provider
+```
+
+#### Complete Flow
+```
+Metrics/Events → Scaling Engine (policies, prediction, stabilization)
+    → Policy/Limits (quota, min/max, capacity) → Desired State → Reconciliation → Reality
+```
+
 The instance controller doesn't care *why* desired changed — it just sees `desired=5, actual=3` and creates two more.
 
 ### Controller Interface
@@ -378,12 +833,14 @@ ctl status                    # cluster overview
 - [x] Language: **Go**
 - [x] Backing store: **etcd**
 - [x] etcd key layout & consistency model → see [etcd-schema.md](etcd-schema.md)
-- [ ] Set up repo: `lang/`, `store/`, `scheduler/`, `controllers/`, `agent/`, `api/`, `cli/`
+- [x] Set up repo: `lang/`, `store/`, `scheduler/`, `controllers/`, `agent/`, `api/`, `cli/`, `types/`
+- [ ] Add: `runtime/` (simulator, process, container adapters), `policy/` (authZ, quota, network), `identity/` (local, mTLS, OIDC)
 
 ### Phase 1 — Fact Store
-- [ ] Define the store interface (Get/Put/Delete/Scan/Watch/Transaction)
-- [ ] Implement in-memory store (for tests and local dev)
-- [ ] Implement etcd (or Postgres) adapter
+- [x] Define the store interface (Get/Put/Delete/Scan/Watch/Transaction)
+- [x] Implement in-memory store (for tests and local dev)
+- [ ] Implement SQLite store (persistence + restart testing, before distributed)
+- [ ] Implement etcd adapter (distributed production)
 - [ ] Store integration tests — concurrency, watch ordering, transaction conflicts
 
 ### Phase 2 — Domain Language & Parser
@@ -398,7 +855,8 @@ ctl status                    # cluster overview
 - [ ] Instance controller (desired vs actual instance count)
 - [ ] Endpoint controller (running instances → endpoint facts)
 - [ ] Failure controller (dead instances/nodes → replacement facts)
-- [ ] Deterministic reconciliation tests
+- [ ] Simulator runtime (fake world — no real processes, for semantic testing)
+- [ ] Deterministic reconciliation tests (state A + observation B + policy C → state D)
 
 ### Phase 4 — Scheduler
 - [ ] Scoring function: `schedule(requirements, nodes) → placement`
@@ -407,17 +865,22 @@ ctl status                    # cluster overview
 - [ ] Resource accounting (allocated vs available per node)
 
 ### Phase 5 — Single Machine (M2 target)
-- [ ] Node agent with observer/reconciler/reporter
-- [ ] Container runtime interface (containerd) — pull, start, stop
+- [ ] Process runtime adapter (Linux processes, not containers yet)
+- [ ] End-to-end on laptop: `ccattler apply web.ccl` → facts → reconciler → real processes
+- [ ] `ccattler status` showing SERVICE / DESIRED / RUNNING / CPU
+- [ ] `ccattler metric set web cpu 90` for simulated autoscaling feedback
+- [ ] Container runtime adapter (containerd) — pull, start, stop
 - [ ] Health checking (HTTP, TCP, exec probes)
 - [ ] Graceful shutdown (SIGTERM → grace period → SIGKILL)
-- [ ] End-to-end: CLI → parser → store → reconciler → container on one machine
+- [ ] Node agent with observer/reconciler/reporter
 
 ### Phase 6 — Three Machines (M3 target)
+- [ ] Logical node simulation (3 fake nodes on one laptop)
 - [ ] Multi-node agent registration, leases, heartbeats
 - [ ] Distributed scheduling across nodes
 - [ ] Node failure detection (lease expiry → unreachable → reschedule)
-- [ ] `service web { instances 10 }` actually distributes across nodes
+- [ ] `service web { instances 10 }` distributes across nodes
+- [ ] Simulated node kill → verify convergence
 
 ### Phase 7 — Networking
 - [ ] Instance IP allocation from pool
@@ -438,8 +901,16 @@ ctl status                    # cluster overview
 - [ ] Restart etcd — does the cluster converge?
 - [ ] The only question: **does the system eventually converge to desired state?**
 
-### Phase 10 — Policies
-- [ ] Autoscaling (cpu/memory threshold → adjust desired_instances)
+### Phase 10 — Policies & Autoscaling
+- [ ] Unified scaling engine (signal → policy → recommendation → constraints → desired state)
+- [ ] Horizontal autoscaling (CPU, memory, RPS targets)
+- [ ] Vertical autoscaling (resource requirement changes, in-place resize vs replace)
+- [ ] Event-driven scaling (queue depth, custom metrics)
+- [ ] Scheduled scaling (time-based minimums)
+- [ ] Stabilization windows (scale-up 60s, scale-down 5m, no oscillation)
+- [ ] Multi-policy resolution (single decision function, no competing writers)
+- [ ] Quota-aware scaling (tenant limits visible, not silently capped)
+- [ ] Cluster autoscaling (unsatisfied demand → desired nodes → infra provider)
 - [ ] Intent layers (user, autoscaler, policy — derived effective state)
 - [ ] Placement constraints (architecture, zone, spread, affinity)
 - [ ] Rolling update controller with max_unavailable/max_extra
@@ -448,10 +919,33 @@ ctl status                    # cluster overview
 ### Phase 11 — API, CLI & Security
 - [ ] Query API (GET/QUERY/APPLY/WATCH)
 - [ ] CLI tool (apply, get, scale, logs, status)
-- [ ] Fact-based RBAC: `permission(user, action, prefix)`
-- [ ] Desired/observed security boundary enforcement
+- [ ] Internal CA hierarchy (offline root → control-plane CA + node CA)
+- [ ] mTLS between all components (API, controllers, store, node agents)
+- [ ] Node enrollment (`ccattler join` with bootstrap token → CSR → certificate)
+- [ ] Certificate auto-rotation (short-lived certs, ~1hr TTL)
+- [ ] Human auth via OIDC/OAuth2
+- [ ] RBAC: roles with fact-prefix permissions
+- [ ] ABAC: attribute-based policies (team isolation, production gates)
+- [ ] Per-controller least privilege (unique identity + scoped permissions)
+- [ ] Authorized Store wrapper (authN + authZ on every write)
+- [ ] Secrets subsystem (encrypted store, envelope encryption, KMS integration)
+- [ ] Workload-to-workload network policies (identity-based, not IP-based)
+- [ ] Immutable audit log (principal, action, target, decision, policy)
+- [ ] Cluster bootstrap (one-time admin credential, then destroyed)
 
-### Phase 12 — Extensibility & Hardening
+### Phase 12 — Multi-Tenancy
+- [ ] Tenant model (tenant facts, ownership relations)
+- [ ] Hierarchical naming (`/tenant/service`)
+- [ ] Resource quotas per tenant (admission checks)
+- [ ] Fair scheduling (weighted tenant priorities, borrowable guarantees)
+- [ ] Identity-based network isolation (SPIFFE identities, derived firewall rules)
+- [ ] Secret isolation (tenant-scoped, encrypted delivery)
+- [ ] Shared service exports/imports
+- [ ] Tenant lifecycle (create → provision boundaries, delete → garbage collect)
+- [ ] Policy gates pipeline (syntax → schema → authZ → quota → security → mutation → commit)
+- [ ] Per-tenant audit views
+
+### Phase 13 — Extensibility & Hardening
 - [ ] Typed fact schemas for plugins
 - [ ] Custom controller SDK
 - [ ] Append-only event log for audit trail
@@ -470,6 +964,8 @@ ctl status                    # cluster overview
 | M5 — Storage | 8 | Persistent volumes survive node moves |
 | M6 — Resilient | 9 | Kill anything, cluster converges |
 | M7 — Smart | 10 | Autoscaling, rolling deploys, placement policies |
-| M8 — Production | 11–12 | Auth, observability, HA control plane, extensibility |
+| M8 — Secure | 11 | mTLS, RBAC+ABAC, secrets, audit |
+| M9 — Multi-tenant | 12 | Tenant isolation, quotas, fair scheduling, policy gates |
+| M10 — Production | 13 | Observability, HA control plane, extensibility |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

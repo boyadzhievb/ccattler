@@ -1,11 +1,11 @@
 # etcd Key Layout & Consistency Model
 
-The store schema for CCatler. Every key lives under a top-level prefix that separates desired state from observed state — this boundary is the foundation of the security model and the reconciliation loop.
+The store schema for CCattler. Every key lives under a top-level prefix that separates desired state from observed state — this boundary is the foundation of the security model and the reconciliation loop.
 
 ## Key Hierarchy
 
 ```
-/ccatler/
+/ccattler/
 ├── desired/                        # what the world should look like (written by users + policy controllers)
 │   ├── service/{name}              # service definition
 │   ├── service/{name}/image
@@ -97,15 +97,15 @@ A compromised node agent can write to `observed/` but never to `desired/`.
 Instances get short random IDs (e.g., `a8f31`), not sequential numbers. They are internal bookkeeping, not user-facing objects.
 
 ```
-/ccatler/observed/instance/a8f31/service  → "web"
-/ccatler/observed/instance/a8f31/node     → "node-2"
-/ccatler/observed/instance/a8f31/state    → "running"
+/ccattler/observed/instance/a8f31/service  → "web"
+/ccattler/observed/instance/a8f31/node     → "node-2"
+/ccattler/observed/instance/a8f31/state    → "running"
 ```
 
 ### 3. Flat Facts, Not Nested Objects
 
 Each fact is its own key. This enables:
-- Fine-grained watches (`Watch("/ccatler/observed/instance/")` for all instance changes)
+- Fine-grained watches (`Watch("/ccattler/observed/instance/")` for all instance changes)
 - Atomic updates to individual fields without read-modify-write on a blob
 - Prefix scans to answer specific queries
 
@@ -115,8 +115,8 @@ etcd provides a global revision number. Every key mutation increments it. Transa
 
 ```
 Transaction:
-    IF   /ccatler/desired/service/web  mod_revision == 8172
-    THEN PUT /ccatler/desired/service/web/instances = 5
+    IF   /ccattler/desired/service/web  mod_revision == 8172
+    THEN PUT /ccattler/desired/service/web/instances = 5
     ELSE FAIL (re-read and retry)
 ```
 
@@ -124,8 +124,8 @@ This prevents two schedulers from double-placing an instance:
 
 ```
 Transaction:
-    IF   /ccatler/placement/instance/a8f31  create_revision == 0  (does not exist)
-    THEN PUT /ccatler/placement/instance/a8f31 = "node-2"
+    IF   /ccattler/placement/instance/a8f31  create_revision == 0  (does not exist)
+    THEN PUT /ccattler/placement/instance/a8f31 = "node-2"
     ELSE FAIL (already placed by another scheduler)
 ```
 
@@ -135,13 +135,13 @@ Each node agent creates an etcd lease with a TTL (e.g., 30s) and continuously re
 
 ```
 Lease: id=abc123, ttl=30s
-Key:   /ccatler/lease/node/node-1  →  lease_id=abc123
+Key:   /ccattler/lease/node/node-1  →  lease_id=abc123
 ```
 
-If the agent crashes or the network partitions, the lease expires. A watcher on `/ccatler/lease/node/` detects the expiry and sets:
+If the agent crashes or the network partitions, the lease expires. A watcher on `/ccattler/lease/node/` detects the expiry and sets:
 
 ```
-/ccatler/observed/node/node-1/state → "unreachable"
+/ccattler/observed/node/node-1/state → "unreachable"
 ```
 
 This triggers the failure controller.
@@ -165,12 +165,12 @@ Each controller watches only the prefixes it cares about:
 When multiple writers can set `desired_instances`, each writes to its own intent prefix:
 
 ```
-/ccatler/intent/user/service/web/instances        → 3
-/ccatler/intent/autoscaler/service/web/instances   → 5
-/ccatler/intent/policy/service/web/instances       → (not set)
+/ccattler/intent/user/service/web/instances        → 3
+/ccattler/intent/autoscaler/service/web/instances   → 5
+/ccattler/intent/policy/service/web/instances       → (not set)
 ```
 
-The intent resolver watches all `/ccatler/intent/` changes and computes:
+The intent resolver watches all `/ccattler/intent/` changes and computes:
 
 ```
 effective = clamp(autoscaler_value, user_min, user_max)
@@ -179,7 +179,7 @@ effective = clamp(autoscaler_value, user_min, user_max)
 Writes the result to:
 
 ```
-/ccatler/effective/service/web/instances → 5
+/ccattler/effective/service/web/instances → 5
 ```
 
 The instance controller watches `effective/`, not `desired/` or `intent/`.
@@ -189,17 +189,17 @@ The instance controller watches `effective/`, not `desired/` or `intent/`.
 ### 1. User applies config
 
 ```
-PUT /ccatler/desired/service/web              → {}
-PUT /ccatler/desired/service/web/image        → "nginx:1.28"
-PUT /ccatler/desired/service/web/instances    → 3
-PUT /ccatler/desired/service/web/expose/8080  → {}
-PUT /ccatler/intent/user/service/web/instances → 3
+PUT /ccattler/desired/service/web              → {}
+PUT /ccattler/desired/service/web/image        → "nginx:1.28"
+PUT /ccattler/desired/service/web/instances    → 3
+PUT /ccattler/desired/service/web/expose/8080  → {}
+PUT /ccattler/intent/user/service/web/instances → 3
 ```
 
 ### 2. Intent resolver computes effective state
 
 ```
-PUT /ccatler/effective/service/web/instances → 3
+PUT /ccattler/effective/service/web/instances → 3
 ```
 
 ### 3. Instance controller sees desired=3, actual=0
@@ -208,48 +208,48 @@ Creates 3 instance placeholders:
 
 ```
 TXN: IF effective/service/web mod_revision == current
-PUT /ccatler/observed/instance/a8f31/service → "web"
-PUT /ccatler/observed/instance/a8f31/state   → "pending"
-PUT /ccatler/observed/instance/b72c9/service → "web"
-PUT /ccatler/observed/instance/b72c9/state   → "pending"
-PUT /ccatler/observed/instance/c913d/service → "web"
-PUT /ccatler/observed/instance/c913d/state   → "pending"
+PUT /ccattler/observed/instance/a8f31/service → "web"
+PUT /ccattler/observed/instance/a8f31/state   → "pending"
+PUT /ccattler/observed/instance/b72c9/service → "web"
+PUT /ccattler/observed/instance/b72c9/state   → "pending"
+PUT /ccattler/observed/instance/c913d/service → "web"
+PUT /ccattler/observed/instance/c913d/state   → "pending"
 ```
 
 ### 4. Scheduler places instances
 
 ```
 TXN: IF placement/instance/a8f31 create_revision == 0
-PUT /ccatler/placement/instance/a8f31 → "node-1"
+PUT /ccattler/placement/instance/a8f31 → "node-1"
 
 TXN: IF placement/instance/b72c9 create_revision == 0
-PUT /ccatler/placement/instance/b72c9 → "node-2"
+PUT /ccattler/placement/instance/b72c9 → "node-2"
 
 TXN: IF placement/instance/c913d create_revision == 0
-PUT /ccatler/placement/instance/c913d → "node-3"
+PUT /ccattler/placement/instance/c913d → "node-3"
 ```
 
 ### 5. Node agents observe placements, start containers
 
-Node-1 sees `/ccatler/placement/instance/a8f31 → "node-1"`, pulls nginx:1.28, starts container.
+Node-1 sees `/ccattler/placement/instance/a8f31 → "node-1"`, pulls nginx:1.28, starts container.
 
 Reports back:
 
 ```
-PUT /ccatler/observed/instance/a8f31/node       → "node-1"
-PUT /ccatler/observed/instance/a8f31/state      → "running"
-PUT /ccatler/observed/instance/a8f31/image      → "nginx:1.28"
-PUT /ccatler/observed/instance/a8f31/ip         → "10.1.0.5"
-PUT /ccatler/observed/instance/a8f31/health     → "healthy"
-PUT /ccatler/observed/instance/a8f31/started_at → "2026-09-06T18:42:00Z"
+PUT /ccattler/observed/instance/a8f31/node       → "node-1"
+PUT /ccattler/observed/instance/a8f31/state      → "running"
+PUT /ccattler/observed/instance/a8f31/image      → "nginx:1.28"
+PUT /ccattler/observed/instance/a8f31/ip         → "10.1.0.5"
+PUT /ccattler/observed/instance/a8f31/health     → "healthy"
+PUT /ccattler/observed/instance/a8f31/started_at → "2026-09-06T18:42:00Z"
 ```
 
 ### 6. Network controller derives endpoints
 
 ```
-PUT /ccatler/endpoint/service/web/a8f31 → {"ip": "10.1.0.5", "port": 8080}
-PUT /ccatler/endpoint/service/web/b72c9 → {"ip": "10.1.0.9", "port": 8080}
-PUT /ccatler/endpoint/service/web/c913d → {"ip": "10.1.0.12", "port": 8080}
+PUT /ccattler/endpoint/service/web/a8f31 → {"ip": "10.1.0.5", "port": 8080}
+PUT /ccattler/endpoint/service/web/b72c9 → {"ip": "10.1.0.9", "port": 8080}
+PUT /ccattler/endpoint/service/web/c913d → {"ip": "10.1.0.12", "port": 8080}
 ```
 
 ### 7. Service is live
@@ -261,13 +261,13 @@ DNS resolves `web` → `{10.1.0.5, 10.1.0.9, 10.1.0.12}`.
 ### Node-2 crashes
 
 ```
-Lease /ccatler/lease/node/node-2 expires (TTL=30s, no refresh)
+Lease /ccattler/lease/node/node-2 expires (TTL=30s, no refresh)
 ```
 
 ### Failure controller detects
 
 ```
-PUT /ccatler/observed/node/node-2/state → "unreachable"
+PUT /ccattler/observed/node/node-2/state → "unreachable"
 ```
 
 ### Instance controller sees instance on dead node
@@ -281,14 +281,14 @@ desired=3, healthy=2
 ### Scheduler places replacement
 
 ```
-TXN: PUT /ccatler/placement/instance/d41ab → "node-3"
+TXN: PUT /ccattler/placement/instance/d41ab → "node-3"
 ```
 
 ### Network controller updates endpoints
 
 ```
-DELETE /ccatler/endpoint/service/web/b72c9
-PUT    /ccatler/endpoint/service/web/d41ab → {"ip": "10.1.0.17", "port": 8080}
+DELETE /ccattler/endpoint/service/web/b72c9
+PUT    /ccattler/endpoint/service/web/d41ab → {"ip": "10.1.0.17", "port": 8080}
 ```
 
 System converged. No component called another. All communication through state.
