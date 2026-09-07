@@ -1,0 +1,660 @@
+// Package main implements the ccattler CLI — the entry point for the CCattler
+// container orchestrator. It provides commands for applying configurations,
+// running workloads (as processes or containers), querying cluster status,
+// and injecting simulated metrics.
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/boyadzhievb/ccattler/agent"
+	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
+)
+
+// statusAPIListenAddress is the address the HTTP status API binds to when running
+// in live mode (run, run-container, demo). The status and metric commands query this.
+const statusAPIListenAddress = "127.0.0.1:9770"
+
+// main parses the CLI command and dispatches to the appropriate handler function.
+func main() {
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "apply":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: ccattler apply <file>")
+			os.Exit(1)
+		}
+		executeApplyCommand(os.Args[2])
+	case "run":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: ccattler run <file>")
+			os.Exit(1)
+		}
+		executeLiveProcessCommand(os.Args[2])
+	case "run-container":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: ccattler run-container <file>")
+			os.Exit(1)
+		}
+		executeLiveContainerCommand(os.Args[2])
+	case "demo":
+		executeDemoCommand()
+	case "demo-distributed":
+		executeDistributedDemoCommand()
+	case "status":
+		executeStatusCommand()
+	case "metric":
+		if len(os.Args) < 5 || os.Args[2] != "set" {
+			fmt.Fprintln(os.Stderr, "usage: ccattler metric set <service> <metric> <value>")
+			os.Exit(1)
+		}
+		executeMetricSetCommand(os.Args[3], os.Args[4], os.Args[5])
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+// printUsage prints the CLI help text listing all available commands to stderr.
+func printUsage() {
+	fmt.Fprintln(os.Stderr, "usage: ccattler <command>")
+	fmt.Fprintln(os.Stderr, "  apply <file>   parse .ccattler file, show reconciliation (simulated)")
+	fmt.Fprintln(os.Stderr, "  run <file>     parse .ccattler file, start real processes")
+	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
+	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
+	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
+	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
+}
+
+// executeApplyCommand parses a .ccattler file with simulated nodes and no real processes.
+// It registers 3 simulated nodes, runs all controllers, applies the config, and prints status.
+func executeApplyCommand(configFilePath string) {
+	fileData, err := os.ReadFile(configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		os.Exit(1)
+	}
+
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	// Register 3 simulated nodes with equal capacity.
+	for _, simulatedNodeID := range []string{"node-1", "node-2", "node-3"} {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: simulatedNodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+			Architecture: "amd64",
+		})
+	}
+	fmt.Println("Registered 3 simulated nodes")
+
+	// Create and start all reconciliation controllers.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	go controllerRunner.Run(ctx)
+
+	fmt.Printf("Applying %s...\n", configFilePath)
+	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for reconciliation to settle before printing status.
+	time.Sleep(500 * time.Millisecond)
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+}
+
+// executeLiveProcessCommand parses a .ccattler file and starts real OS processes
+// via the ProcessRuntime and node agent. Prints status periodically until Ctrl+C.
+func executeLiveProcessCommand(configFilePath string) {
+	fileData, err := os.ReadFile(configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		os.Exit(1)
+	}
+
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	// This machine is the single node in single-machine mode.
+	localNodeID := "local"
+	types.WriteNode(ctx, factStore, types.Node{
+		ID: localNodeID, State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	// Create and start all reconciliation controllers.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	go controllerRunner.Run(ctx)
+
+	// Start node agent with process runtime for real OS process execution.
+	processRuntime := runtime.NewProcessRuntime()
+	nodeAgent := agent.New(localNodeID, factStore, processRuntime)
+	go nodeAgent.Run(ctx)
+
+	launchStatusAPIServer(factStore)
+
+	fmt.Printf("Applying %s...\n", configFilePath)
+	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
+
+	// Print status periodically until interrupted.
+	statusPrintTicker := time.NewTicker(2 * time.Second)
+	defer statusPrintTicker.Stop()
+
+	// Initial status after reconciliation settles.
+	time.Sleep(1 * time.Second)
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down...")
+			processRuntime.StopAll(context.Background())
+			return
+		case <-statusPrintTicker.C:
+			fmt.Println()
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+		}
+	}
+}
+
+// executeLiveContainerCommand parses a .ccattler file and starts real OCI containers
+// via the ContainerRuntime (docker CLI) and node agent. Prints status periodically until Ctrl+C.
+func executeLiveContainerCommand(configFilePath string) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
+		fmt.Fprintln(os.Stderr, "install Docker Desktop (macOS/Windows) or docker-ce (Linux)")
+		fmt.Fprintln(os.Stderr, "alternatively, use 'ccattler run <file>' to run as OS processes instead")
+		os.Exit(1)
+	}
+
+	fileData, err := os.ReadFile(configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		os.Exit(1)
+	}
+
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	localNodeID := "local"
+	types.WriteNode(ctx, factStore, types.Node{
+		ID: localNodeID, State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	// Create and start all reconciliation controllers.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	go controllerRunner.Run(ctx)
+
+	// Start node agent with container runtime for real Docker container execution.
+	containerRuntime := runtime.NewContainerRuntime()
+	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)
+	go nodeAgent.Run(ctx)
+
+	launchStatusAPIServer(factStore)
+
+	fmt.Printf("Applying %s (container mode)...\n", configFilePath)
+	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
+
+	statusPrintTicker := time.NewTicker(2 * time.Second)
+	defer statusPrintTicker.Stop()
+
+	time.Sleep(1 * time.Second)
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down containers...")
+			containerRuntime.StopAll(context.Background())
+			return
+		case <-statusPrintTicker.C:
+			fmt.Println()
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+		}
+	}
+}
+
+// executeDemoCommand runs a built-in demo with a hardcoded service config
+// and the SimulatorRuntime. Useful for testing the reconciliation pipeline
+// without real processes or containers.
+func executeDemoCommand() {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	localNodeID := "local"
+	types.WriteNode(ctx, factStore, types.Node{
+		ID: localNodeID, State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	// Create and start all reconciliation controllers.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	go controllerRunner.Run(ctx)
+
+	// Node agent with simulator runtime — no real processes, just state tracking.
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	nodeAgent := agent.New(localNodeID, factStore, simulatorRuntime)
+	go nodeAgent.Run(ctx)
+
+	builtinDemoConfig := `service web {
+    image nginx:1.28
+    instances 3
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}`
+	fmt.Println("Applying config:")
+	fmt.Println(builtinDemoConfig)
+
+	launchStatusAPIServer(factStore)
+
+	if err := lang.Apply(ctx, factStore, builtinDemoConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for reconciliation to settle before printing status.
+	time.Sleep(1 * time.Second)
+	fmt.Println()
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+}
+
+// executeDistributedDemoCommand runs a multi-node demo with 3 simulated nodes.
+// It deploys 6 instances spread across the nodes, then after 5 seconds kills
+// node-1 to demonstrate failure detection, instance rescheduling, and recovery.
+func executeDistributedDemoCommand() {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	// Register 3 simulated nodes with equal capacity.
+	nodeIDs := []string{"node-1", "node-2", "node-3"}
+	for _, nodeID := range nodeIDs {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+	}
+	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
+
+	// Create and start all controllers including the node failure detector.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
+	go controllerRunner.Run(ctx)
+
+	// Start 3 agents, each with its own simulator runtime.
+	// node-1 gets a separate cancel context so we can kill it later.
+	node1Context, killNode1 := context.WithCancel(ctx)
+	for _, nodeID := range nodeIDs {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		if nodeID == "node-1" {
+			go nodeAgent.Run(node1Context)
+		} else {
+			go nodeAgent.Run(ctx)
+		}
+	}
+
+	distributedDemoConfig := `service web {
+    image nginx:1.28
+    instances 6
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}`
+	fmt.Println("\nApplying config:")
+	fmt.Println(distributedDemoConfig)
+
+	launchStatusAPIServer(factStore)
+
+	if err := lang.Apply(ctx, factStore, distributedDemoConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for initial reconciliation to settle.
+	time.Sleep(2 * time.Second)
+	fmt.Println()
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+
+	fmt.Println("\n--- Killing node-1 in 5 seconds to demonstrate failure recovery ---")
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+
+	// Kill node-1's agent — it stops writing heartbeats.
+	killNode1()
+	fmt.Println("node-1 agent killed. Waiting for failure detection and rescheduling...")
+	fmt.Println()
+
+	// Print status periodically to show the recovery in progress.
+	statusPrintTicker := time.NewTicker(2 * time.Second)
+	defer statusPrintTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down...")
+			return
+		case <-statusPrintTicker.C:
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+			fmt.Println()
+		}
+	}
+}
+
+// executeStatusCommand queries the status API of a running ccattler instance
+// and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
+func executeStatusCommand() {
+	httpResponse, err := http.Get("http://" + statusAPIListenAddress + "/status")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	fmt.Print(string(responseBody))
+}
+
+// executeMetricSetCommand sends a simulated metric value to a running ccattler instance
+// via the status API. The metric is stored in the fact store at observed/metric/service/{service}/{metric}.
+func executeMetricSetCommand(serviceName, metricName, metricValue string) {
+	requestURL := fmt.Sprintf("http://%s/metric?service=%s&metric=%s&value=%s",
+		statusAPIListenAddress, serviceName, metricName, metricValue)
+	httpResponse, err := http.Post(requestURL, "", nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	fmt.Print(string(responseBody))
+}
+
+// clusterStatusResponse is the structured representation of the full cluster status,
+// used for JSON serialization via the status API.
+type clusterStatusResponse struct {
+	Services  []serviceStatusEntry  `json:"services"`  // all registered services with desired/running counts
+	Instances []instanceStatusEntry `json:"instances"` // all active (non-stopped) instances
+	Nodes     []nodeStatusEntry     `json:"nodes"`     // all registered nodes with capacity info
+}
+
+// serviceStatusEntry represents one service in the cluster status output.
+type serviceStatusEntry struct {
+	Name            string `json:"name"`           // service name from the DSL config
+	Image           string `json:"image"`          // container image or process command
+	DesiredCount    int    `json:"desired"`         // how many instances should be running
+	RunningCount    int    `json:"running"`         // how many instances are currently running
+	ExposedPorts    []int  `json:"ports,omitempty"` // ports exposed by this service
+}
+
+// instanceStatusEntry represents one instance in the cluster status output.
+type instanceStatusEntry struct {
+	ID          string `json:"id"`      // unique instance identifier
+	ServiceName string `json:"service"` // which service this instance belongs to
+	State       string `json:"state"`   // current state: pending, running, failed
+	NodeID      string `json:"node"`    // which node this instance is placed on
+	HealthState string `json:"health"`  // health check result: healthy, unhealthy, or "-"
+}
+
+// nodeStatusEntry represents one node in the cluster status output.
+type nodeStatusEntry struct {
+	ID              string `json:"id"`               // unique node identifier
+	State           string `json:"state"`             // node state: alive, unreachable, draining
+	PlacedInstances int    `json:"instances"`         // number of active instances on this node
+	AvailableCPU    int64  `json:"available_cpu"`     // remaining CPU capacity in millicores
+	CapacityCPU     int64  `json:"capacity_cpu"`      // total CPU capacity in millicores
+	AvailableMemory int64  `json:"available_memory"`  // remaining memory capacity in MiB
+	CapacityMemory  int64  `json:"capacity_memory"`   // total memory capacity in MiB
+}
+
+// launchStatusAPIServer starts the HTTP status API server in the background.
+// It serves two endpoints:
+//   - GET /status — returns cluster status as text (or JSON with Accept: application/json)
+//   - POST /metric?service=X&metric=Y&value=Z — injects a simulated metric value
+func launchStatusAPIServer(factStore store.StateStore) {
+	httpMux := http.NewServeMux()
+
+	// Status endpoint: returns cluster status as text or JSON depending on Accept header.
+	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
+		requestContext := request.Context()
+
+		acceptHeader := request.Header.Get("Accept")
+		if strings.Contains(acceptHeader, "application/json") {
+			responseWriter.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(responseWriter).Encode(buildClusterStatusJSON(requestContext, factStore))
+			return
+		}
+
+		responseWriter.Header().Set("Content-Type", "text/plain")
+		responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
+	})
+
+	// Metric injection endpoint: writes a simulated metric value to the fact store.
+	httpMux.HandleFunc("/metric", func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost {
+			http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		serviceName := request.URL.Query().Get("service")
+		metricName := request.URL.Query().Get("metric")
+		metricValue := request.URL.Query().Get("value")
+		if serviceName == "" || metricName == "" || metricValue == "" {
+			http.Error(responseWriter, "service, metric, and value required", http.StatusBadRequest)
+			return
+		}
+		requestContext := request.Context()
+		metricKey := types.KeyObservedMetric(serviceName, metricName)
+		factStore.Put(requestContext, metricKey, []byte(metricValue))
+		fmt.Fprintf(responseWriter, "set %s.%s = %s\n", serviceName, metricName, metricValue)
+	})
+
+	listener, err := net.Listen("tcp", statusAPIListenAddress)
+	if err != nil {
+		return
+	}
+	go http.Serve(listener, httpMux)
+}
+
+// buildClusterStatusJSON collects the full cluster state from the fact store
+// and assembles it into a structured clusterStatusResponse for JSON serialization.
+func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clusterStatusResponse {
+	var statusResponse clusterStatusResponse
+
+	// Load all instances and sort by ID for deterministic output.
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
+
+	// Discover all unique service names from the desired state.
+	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredServices)
+	uniqueServiceNames := make(map[string]bool)
+	for _, fact := range desiredFacts {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		serviceName := strings.SplitN(relativePath, "/", 2)[0]
+		uniqueServiceNames[serviceName] = true
+	}
+	sortedServiceNames := make([]string, 0, len(uniqueServiceNames))
+	for serviceName := range uniqueServiceNames {
+		sortedServiceNames = append(sortedServiceNames, serviceName)
+	}
+	sort.Strings(sortedServiceNames)
+
+	// Build service status entries with running instance counts.
+	for _, serviceName := range sortedServiceNames {
+		service, err := types.ReadService(ctx, factStore, serviceName)
+		if err != nil {
+			continue
+		}
+		runningInstanceCount := 0
+		for _, instance := range allInstances {
+			if instance.Service == serviceName && instance.State == types.InstanceRunning {
+				runningInstanceCount++
+			}
+		}
+		statusResponse.Services = append(statusResponse.Services, serviceStatusEntry{
+			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
+			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
+		})
+	}
+
+	// Build instance status entries, excluding stopped instances.
+	for _, instance := range allInstances {
+		if instance.State == types.InstanceStopped {
+			continue
+		}
+		placedNodeID := ""
+		if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil {
+			placedNodeID = string(placementFact.Value)
+		}
+		healthDisplay := string(instance.Health)
+		if healthDisplay == "" {
+			healthDisplay = "-"
+		}
+		statusResponse.Instances = append(statusResponse.Instances, instanceStatusEntry{
+			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
+			NodeID: placedNodeID, HealthState: healthDisplay,
+		})
+	}
+
+	// Build node status entries with placement counts.
+	allNodes, _ := types.ListNodes(ctx, factStore)
+	sort.Slice(allNodes, func(i, j int) bool { return allNodes[i].ID < allNodes[j].ID })
+	for _, node := range allNodes {
+		placedInstanceCount := 0
+		for _, instance := range allInstances {
+			if instance.State == types.InstanceStopped {
+				continue
+			}
+			if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil && string(placementFact.Value) == node.ID {
+				placedInstanceCount++
+			}
+		}
+		statusResponse.Nodes = append(statusResponse.Nodes, nodeStatusEntry{
+			ID: node.ID, State: string(node.State), PlacedInstances: placedInstanceCount,
+			AvailableCPU: node.AvailableCPU, CapacityCPU: node.CapacityCPU,
+			AvailableMemory: node.AvailableMemory, CapacityMemory: node.CapacityMemory,
+		})
+	}
+
+	return statusResponse
+}
+
+// buildStatusTextOutput renders the cluster status as human-readable formatted text.
+// It delegates to buildClusterStatusJSON for data collection, then formats the result.
+func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) string {
+	var textBuilder strings.Builder
+	textBuilder.WriteString("=== CLUSTER STATUS ===\n\n")
+
+	statusData := buildClusterStatusJSON(ctx, factStore)
+
+	// Render services section.
+	for _, service := range statusData.Services {
+		fmt.Fprintf(&textBuilder, "SERVICE  %-12s  image=%-16s  desired=%d  running=%d",
+			service.Name, service.Image, service.DesiredCount, service.RunningCount)
+		if len(service.ExposedPorts) > 0 {
+			fmt.Fprintf(&textBuilder, "  ports=%v", service.ExposedPorts)
+		}
+		textBuilder.WriteByte('\n')
+	}
+
+	// Render instances section.
+	textBuilder.WriteByte('\n')
+	fmt.Fprintf(&textBuilder, "INSTANCES (%d active)\n", len(statusData.Instances))
+	for _, instance := range statusData.Instances {
+		fmt.Fprintf(&textBuilder, "  %-12s  service=%-8s  state=%-8s  node=%-8s  health=%-8s\n",
+			instance.ID, instance.ServiceName, instance.State, instance.NodeID, instance.HealthState)
+	}
+
+	// Render nodes section.
+	textBuilder.WriteByte('\n')
+	fmt.Fprintf(&textBuilder, "NODES (%d)\n", len(statusData.Nodes))
+	for _, node := range statusData.Nodes {
+		fmt.Fprintf(&textBuilder, "  %-12s  state=%-12s  instances=%d  cpu=%d/%d  memory=%d/%d\n",
+			node.ID, node.State, node.PlacedInstances, node.AvailableCPU, node.CapacityCPU,
+			node.AvailableMemory, node.CapacityMemory)
+	}
+
+	return textBuilder.String()
+}

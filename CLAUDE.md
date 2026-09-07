@@ -1,5 +1,21 @@
 # CCattler — Fact-Based Container Orchestrator
 
+## Current Status
+
+**Active milestone:** M3 — Distributed (Phase 6). M1 and M2 complete. Next: lease-based node failure detection, multi-node simulation, rescheduling on failure.
+
+---
+
+## Code Style Rules
+
+- **Comment every function.** Every exported and unexported function must have a doc comment explaining what it does.
+- **Use long descriptive variable names.** No single-letter or cryptic abbreviations. Examples: `factStore` not `s`, `instanceController` not `ic`, `nodeAgent` not `ag`, `simulatorRuntime` not `rt`, `serviceName` not `svc`, `factEntry` not `f`.
+- **Document variables.** Struct fields must have inline comments explaining their purpose. Named constants and map variables should have comments when their role isn't obvious from the name alone.
+- **Descriptive function names.** Prefer `executeReconciliationCycle` over `reconcileOnce`, `buildClusterStatusJSON` over `buildStatusJSON`, `findInstancesPlacedOnThisNode` over `desiredInstances`.
+- **Receiver names match the type.** Use `nodeFailureController` not `ctrl`, `memStore` not `m`, `containerRuntime` not `c`.
+
+---
+
 **CCattler** (Container Cattler) — a Kubernetes-alternative container orchestrator built around **facts, rules, and reconciliation** instead of an object hierarchy. The name captures the metaphor: something that herds and manages containers, without implying that the containers themselves are the primary abstraction.
 
 **Core premise**: given a description of desired behavior, continuously make a distributed machine satisfy that description.
@@ -844,43 +860,43 @@ ctl status                    # cluster overview
 - [ ] Store integration tests — concurrency, watch ordering, transaction conflicts
 
 ### Phase 2 — Domain Language & Parser
-- [ ] Design formal grammar for the DSL
-- [ ] Write lexer/parser → AST
-- [ ] AST → facts compiler (the human-to-machine boundary)
-- [ ] Validation layer — image refs, port ranges, resource units, duplicates
-- [ ] `apply` command — parse file → compile → transactionally write facts
+- [x] Design formal grammar for the DSL
+- [x] Write lexer/parser → AST
+- [x] AST → facts compiler (the human-to-machine boundary)
+- [x] Validation layer — image refs, port ranges, resource units, duplicates
+- [x] `apply` command — parse file → compile → transactionally write facts
 
 ### Phase 3 — Reconciliation Engine
-- [ ] Controller framework — generic watch → reconcile → write loop
-- [ ] Instance controller (desired vs actual instance count)
-- [ ] Endpoint controller (running instances → endpoint facts)
-- [ ] Failure controller (dead instances/nodes → replacement facts)
+- [x] Controller framework — generic watch → reconcile → write loop
+- [x] Instance controller (desired vs actual instance count)
+- [x] Endpoint controller (running instances → endpoint facts)
+- [x] Failure controller (dead instances/nodes → replacement facts)
 - [ ] Simulator runtime (fake world — no real processes, for semantic testing)
-- [ ] Deterministic reconciliation tests (state A + observation B + policy C → state D)
+- [x] Deterministic reconciliation tests (state A + observation B + policy C → state D)
 
 ### Phase 4 — Scheduler
-- [ ] Scoring function: `schedule(requirements, nodes) → placement`
-- [ ] Integration with instance controller
-- [ ] Anti-affinity / spread rules
-- [ ] Resource accounting (allocated vs available per node)
+- [x] Scoring function: `schedule(requirements, nodes) → placement`
+- [x] Integration with instance controller
+- [x] Anti-affinity / spread rules
+- [x] Resource accounting (allocated vs available per node)
 
 ### Phase 5 — Single Machine (M2 target)
-- [ ] Process runtime adapter (Linux processes, not containers yet)
-- [ ] End-to-end on laptop: `ccattler apply web.ccl` → facts → reconciler → real processes
-- [ ] `ccattler status` showing SERVICE / DESIRED / RUNNING / CPU
-- [ ] `ccattler metric set web cpu 90` for simulated autoscaling feedback
-- [ ] Container runtime adapter (containerd) — pull, start, stop
-- [ ] Health checking (HTTP, TCP, exec probes)
-- [ ] Graceful shutdown (SIGTERM → grace period → SIGKILL)
-- [ ] Node agent with observer/reconciler/reporter
+- [x] Process runtime adapter (Linux processes, not containers yet)
+- [x] End-to-end on laptop: `ccattler apply web.ccl` → facts → reconciler → real processes
+- [x] `ccattler status` showing SERVICE / DESIRED / RUNNING / CPU
+- [x] `ccattler metric set web cpu 90` for simulated autoscaling feedback
+- [x] Container runtime adapter (containerd) — pull, start, stop
+- [x] Health checking (HTTP, TCP, exec probes)
+- [x] Graceful shutdown (SIGTERM → grace period → SIGKILL)
+- [x] Node agent with observer/reconciler/reporter
 
 ### Phase 6 — Three Machines (M3 target)
-- [ ] Logical node simulation (3 fake nodes on one laptop)
-- [ ] Multi-node agent registration, leases, heartbeats
-- [ ] Distributed scheduling across nodes
-- [ ] Node failure detection (lease expiry → unreachable → reschedule)
-- [ ] `service web { instances 10 }` distributes across nodes
-- [ ] Simulated node kill → verify convergence
+- [x] Logical node simulation (3 fake nodes on one laptop)
+- [x] Multi-node agent registration, leases, heartbeats
+- [x] Distributed scheduling across nodes
+- [x] Node failure detection (lease expiry → unreachable → reschedule)
+- [x] `service web { instances 10 }` distributes across nodes
+- [x] Simulated node kill → verify convergence
 
 ### Phase 7 — Networking
 - [ ] Instance IP allocation from pool

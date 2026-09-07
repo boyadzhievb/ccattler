@@ -1,0 +1,13 @@
+# Simple demo: runs 3 sleep processes.
+# In production, image would be a container reference.
+# For process runtime, image is the shell command to execute.
+
+service web {
+    image "sleep 300"
+    instances 3
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}

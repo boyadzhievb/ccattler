@@ -1,0 +1,9 @@
+service web {
+    image nginx:1.28
+    instances 2
+    expose 80
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}
