@@ -27,7 +27,7 @@ function Nav() {
         </div>
         <div className="flex items-center gap-3">
           <a
-            href="#"
+            href="https://github.com/boyadzhievb/ccattler"
             className="font-mono text-xs text-white/40 hover:text-white/70 transition-colors flex items-center gap-1.5"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
@@ -36,7 +36,7 @@ function Nav() {
             GitHub
           </a>
           <a
-            href="#"
+            href="https://github.com/boyadzhievb/ccattler"
             className="font-mono text-xs bg-[#6378ff] hover:bg-[#7085ff] text-white px-3 py-1.5 rounded transition-colors duration-200"
           >
             Get Started
@@ -119,13 +119,13 @@ function Hero() {
 
             <div className="flex items-center gap-4">
               <a
-                href="#"
+                href="https://github.com/boyadzhievb/ccattler"
                 className="font-mono text-sm bg-[#6378ff] hover:bg-[#7085ff] text-white px-6 py-3 rounded transition-all duration-200 hover:shadow-[0_0_24px_-4px_rgba(99,120,255,0.6)]"
               >
                 Get Started →
               </a>
               <a
-                href="#"
+                href="https://github.com/boyadzhievb/ccattler"
                 className="font-mono text-sm border border-white/15 hover:border-white/30 text-white/60 hover:text-white/90 px-6 py-3 rounded transition-all duration-200 flex items-center gap-2"
               >
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="opacity-70">
@@ -331,7 +331,7 @@ function Architecture() {
           <div className="flex flex-col items-center gap-0">
             {/* Entry */}
             <div className="flex items-center gap-4">
-              <ArchNode label="CLI" sub="ccattler apply" />
+              <ArchNode label="CLI" sub="cca apply" />
               <div className="font-mono text-white/20 text-xl">·</div>
               <ArchNode label="API" sub="HTTP / gRPC" />
             </div>
@@ -866,13 +866,13 @@ function CTA() {
 
         <div className="flex items-center justify-center gap-4 flex-wrap mb-16">
           <a
-            href="#"
+            href="https://github.com/boyadzhievb/ccattler"
             className="font-mono text-sm bg-[#6378ff] hover:bg-[#7085ff] text-white px-8 py-3.5 rounded transition-all duration-200 hover:shadow-[0_0_32px_-4px_rgba(99,120,255,0.5)]"
           >
             Get Started →
           </a>
           <a
-            href="#"
+            href="https://github.com/boyadzhievb/ccattler"
             className="font-mono text-sm border border-white/15 hover:border-white/30 text-white/60 hover:text-white/90 px-8 py-3.5 rounded transition-all duration-200 flex items-center gap-2"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="opacity-70">
@@ -901,11 +901,11 @@ function CTA() {
               <span className="text-[#6378ff]/60">$</span>
               <span className="text-white/60"> curl -fsSL install.ccattler.dev | sh</span>
             </div>
-            <div className="text-white/25 text-xs">Installing ccattler v0.1.0-alpha...</div>
-            <div className="text-[#a3e8a0]/70 text-xs">✓ ccattler installed to /usr/local/bin</div>
+            <div className="text-white/25 text-xs">Installing cca v0.1.0-alpha...</div>
+            <div className="text-[#a3e8a0]/70 text-xs">✓ cca installed to /usr/local/bin</div>
             <div className="mt-3">
               <span className="text-[#6378ff]/60">$</span>
-              <span className="text-white/60"> ccattler init &amp;&amp; ccattler up</span>
+              <span className="text-white/60"> cca init &amp;&amp; cca up</span>
             </div>
             <div className="text-white/25 text-xs">Starting control plane...</div>
             <div className="text-[#a3e8a0]/70 text-xs">✓ Reconciliation loop active</div>
