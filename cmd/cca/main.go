@@ -18,7 +18,10 @@ import (
 	"strings"
 	"time"
 
+	"math/rand"
+
 	"github.com/boyadzhievb/ccattler/agent"
+	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/network"
@@ -67,6 +70,8 @@ func main() {
 		executeNetworkDemoCommand()
 	case "demo-storage":
 		executeStorageDemoCommand()
+	case "chaos":
+		executeChaosCommand()
 	case "status":
 		executeStatusCommand()
 	case "metric":
@@ -90,6 +95,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
 	fmt.Fprintln(os.Stderr, "  demo-network      3 nodes with IP allocation, VIPs, DNS, load balancing")
 	fmt.Fprintln(os.Stderr, "  demo-storage      3 nodes with persistent volumes, kills node to show migration")
+	fmt.Fprintln(os.Stderr, "  chaos             random failure injection, live convergence reporting")
 	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
 	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
 	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
@@ -669,6 +675,103 @@ service web {
 			fmt.Print(buildStatusTextOutput(ctx, factStore))
 			fmt.Println()
 		}
+	}
+}
+
+// executeChaosCommand runs a 30-second chaos test on a 3-node simulated cluster.
+// It deploys two services, then randomly injects node kills, network partitions,
+// controller restarts, and scale changes — printing live convergence results.
+func executeChaosCommand() {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	nodeIDs := []string{"node-1", "node-2", "node-3"}
+	chaosCluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
+	chaosCluster.Start(ctx)
+
+	fmt.Println("=== CCattler Chaos Mode ===")
+	fmt.Println()
+	fmt.Println("Cluster: 3 nodes (node-1, node-2, node-3)")
+	fmt.Println("Deploying: web (6 instances) + api (3 instances)")
+
+	chaosCluster.DeployService(ctx, "web", "nginx:1.28", 6)
+	chaosCluster.DeployService(ctx, "api", "myapp:latest", 3)
+
+	convergenceDeadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(convergenceDeadline) {
+		converged, statusDescription := chaosCluster.CheckConvergence(ctx)
+		if converged {
+			fmt.Printf("Initial deployment converged: %s\n", statusDescription)
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	fmt.Println()
+	fmt.Println("Starting chaos injection for 30 seconds...")
+	fmt.Println()
+
+	chaosConfig := chaos.ChaosConfig{
+		Duration:           30 * time.Second,
+		InjectionInterval:  3 * time.Second,
+		ConvergenceTimeout: 10 * time.Second,
+		EnabledScenarios: []chaos.FailureScenario{
+			chaos.ScenarioNodeKill,
+			chaos.ScenarioNodePartition,
+			chaos.ScenarioControllerRestart,
+			chaos.ScenarioScaleChange,
+		},
+		RandSource: rand.New(rand.NewSource(time.Now().UnixNano())),
+	}
+
+	chaosRunner := chaos.NewChaosRunner(chaosConfig, chaosCluster)
+	chaosRunner.SetEventCallback(func(event chaos.ChaosEvent) {
+		elapsedSeconds := int(event.Elapsed.Seconds())
+		convergenceStatus := "TIMEOUT"
+		if event.Converged {
+			convergenceStatus = fmt.Sprintf("CONVERGED in %.1fs", event.ConvergenceTime.Seconds())
+		}
+		_, statusDescription := chaosCluster.CheckConvergence(ctx)
+		fmt.Printf("[%02d:%02d] INJECT  %-20s target=%-12s  %s  (%s)\n",
+			elapsedSeconds/60, elapsedSeconds%60,
+			event.Scenario, event.Target, convergenceStatus, statusDescription)
+	})
+
+	chaosEvents := chaosRunner.Run(ctx)
+
+	fmt.Println()
+	fmt.Println("=== Chaos Summary ===")
+
+	convergedCount := 0
+	var maxRecoveryTime time.Duration
+	for _, event := range chaosEvents {
+		if event.Converged {
+			convergedCount++
+		}
+		if event.ConvergenceTime > maxRecoveryTime {
+			maxRecoveryTime = event.ConvergenceTime
+		}
+	}
+
+	convergenceRate := 0.0
+	if len(chaosEvents) > 0 {
+		convergenceRate = float64(convergedCount) / float64(len(chaosEvents)) * 100
+	}
+
+	fmt.Printf("Injections:      %d\n", len(chaosEvents))
+	fmt.Printf("Converged:       %d/%d (%.0f%%)\n", convergedCount, len(chaosEvents), convergenceRate)
+	fmt.Printf("Max recovery:    %.1fs\n", maxRecoveryTime.Seconds())
+
+	_, finalStatus := chaosCluster.CheckConvergence(ctx)
+	fmt.Printf("Final state:     %s\n", finalStatus)
+
+	if convergenceRate >= 80 {
+		fmt.Println("\nResult: PASS — cluster resilient under chaos")
+	} else {
+		fmt.Println("\nResult: FAIL — convergence rate below 80%")
 	}
 }
 

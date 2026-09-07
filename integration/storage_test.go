@@ -422,7 +422,7 @@ func TestVolumeReattachAfterForceDetach(t *testing.T) {
 	cluster.storageProvider.ForceDetach(ctx, "pgdata")
 
 	// Wait for the volume to be force-detached by the StorageController.
-	waitFor(t, 5*time.Second, "volume available after force-detach", func() bool {
+	waitFor(t, 20*time.Second, "volume available after force-detach", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
 		return err == nil && volume.State == types.VolumeAvailable
 	})

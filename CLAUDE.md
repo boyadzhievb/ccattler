@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M6 — Resilient (Phase 9). M1–M5 complete (241 tests). Next: chaos mode, partition testing, controller restart recovery.
+**Active milestone:** M7 — Smart (Phase 10). M1–M6 complete (272 tests). Next: autoscaling, rolling deploys, placement policies.
 
 ---
 
@@ -910,12 +910,12 @@ cca status                    # cluster overview
 - [x] Storage driver interface (local, NFS, cloud block)
 
 ### Phase 9 — Failure & Chaos Testing
-- [ ] Kill node — does the system reschedule?
-- [ ] Kill agent — does the lease expire and trigger recovery?
-- [ ] Kill scheduler/controller — does another instance take over?
-- [ ] Network partition — do both sides stay safe?
+- [x] Kill node — does the system reschedule?
+- [x] Kill agent — does the lease expire and trigger recovery?
+- [x] Kill scheduler/controller — does another instance take over?
+- [x] Network partition — do both sides stay safe?
 - [ ] Restart etcd — does the cluster converge?
-- [ ] The only question: **does the system eventually converge to desired state?**
+- [x] The only question: **does the system eventually converge to desired state?**
 
 ### Phase 10 — Policies & Autoscaling
 - [ ] Unified scaling engine (signal → policy → recommendation → constraints → desired state)

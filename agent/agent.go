@@ -93,6 +93,7 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			a.store.Put(ctx, types.KeyObservedNodeState(a.nodeID), []byte(string(types.NodeAlive)))
 			a.writeHeartbeat(ctx)
 			if err := a.executeReconciliationCycle(ctx); err != nil {
 				log.Printf("agent %s: reconcile error: %v", a.nodeID, err)
