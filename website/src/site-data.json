@@ -1,0 +1,200 @@
+{
+  "testCount": 242,
+  "packageCount": 10,
+  "milestones": [
+    {
+      "id": "M1",
+      "name": "State Machine",
+      "phase": "Phases 0-4",
+      "demo": "Apply config, see facts reconcile",
+      "complete": true
+    },
+    {
+      "id": "M2",
+      "name": "Single Machine",
+      "phase": "Phase 5",
+      "demo": "CLI -\u003e parser -\u003e store -\u003e reconciler -\u003e running",
+      "complete": true
+    },
+    {
+      "id": "M3",
+      "name": "Distributed",
+      "phase": "Phase 6",
+      "demo": "10 instances spread across 3 nodes",
+      "complete": true
+    },
+    {
+      "id": "M4",
+      "name": "Networking",
+      "phase": "Phase 7",
+      "demo": "Services reachable by name, traffic balances",
+      "complete": true
+    },
+    {
+      "id": "M5",
+      "name": "Storage",
+      "phase": "Phase 8",
+      "demo": "Persistent volumes survive node moves",
+      "complete": true
+    },
+    {
+      "id": "M6",
+      "name": "Resilient",
+      "phase": "Phase 9",
+      "demo": "Kill anything, cluster converges",
+      "complete": false
+    },
+    {
+      "id": "M7",
+      "name": "Smart",
+      "phase": "Phase 10",
+      "demo": "Autoscaling, rolling deploys, placement policies",
+      "complete": false
+    },
+    {
+      "id": "M8",
+      "name": "Secure",
+      "phase": "Phase 11",
+      "demo": "mTLS, RBAC+ABAC, secrets, audit",
+      "complete": false
+    },
+    {
+      "id": "M9",
+      "name": "Multi-tenant",
+      "phase": "Phase 12",
+      "demo": "Tenant isolation, quotas, fair scheduling",
+      "complete": false
+    },
+    {
+      "id": "M10",
+      "name": "Production",
+      "phase": "Phase 13",
+      "demo": "Observability, HA control plane, extensibility",
+      "complete": false
+    }
+  ],
+  "examples": [
+    {
+      "name": "basic",
+      "filename": "basic.ccattler",
+      "description": "Basic service deployment.",
+      "content": "# Basic service deployment.\n#\n# Demonstrates: single service, multiple instances, exposed port, resource constraints.\n# Run with:  cca apply examples/basic.ccattler\n#            cca run examples/basic.ccattler        (real OS processes)\n#            cca demo                                (built-in simulated version)\n#\n# Expected: 3 instances of web running, each consuming 500m CPU and 512Mi memory.\n\nservice web {\n    image nginx:1.28\n    instances 3\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    },
+    {
+      "name": "distributed",
+      "filename": "distributed.ccattler",
+      "description": "Distributed deployment across multiple nodes.",
+      "content": "# Distributed deployment across multiple nodes.\n#\n# Demonstrates: instance spread across nodes, resource-aware scheduling,\n#               failure recovery when a node dies.\n# Run with:  cca apply examples/distributed.ccattler   (3 simulated nodes)\n#            cca demo-distributed                        (built-in with node kill)\n#\n# Expected: 6 instances spread evenly (2 per node on a 3-node cluster).\n#           If a node dies, its instances reschedule to surviving nodes.\n\nservice web {\n    image nginx:1.28\n    instances 6\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    },
+    {
+      "name": "health-checks",
+      "filename": "health-checks.ccattler",
+      "description": "Health check probes.",
+      "content": "# Health check probes.\n#\n# Demonstrates: HTTP health check with path and interval, TCP health check.\n# Run with:  cca run examples/health-checks.ccattler\n#            (requires real processes that listen on the declared ports)\n#\n# Expected: web instances are probed at GET /health every 10s.\n#           database instances are probed via TCP connect every 5s.\n#           Status output shows health=healthy or health=unhealthy per instance.\n\nservice web {\n    image nginx:1.28\n    instances 3\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    health {\n        http /health\n        every 10s\n    }\n}\n\nservice database {\n    image postgres:16\n    instances 1\n    expose 5432\n    resources {\n        cpu 1000m\n        memory 2048Mi\n    }\n    health {\n        tcp\n        every 5s\n    }\n}\n"
+    },
+    {
+      "name": "multi-service",
+      "filename": "multi-service.ccattler",
+      "description": "Multiple services with different resource profiles.",
+      "content": "# Multiple services with different resource profiles.\n#\n# Demonstrates: two independent services, different instance counts,\n#               different ports, different resource allocations.\n# Run with:  cca apply examples/multi-service.ccattler\n#\n# Expected: web gets 4 instances spread across nodes, api gets 2.\n#           Each service has its own resource footprint.\n\nservice web {\n    image nginx:1.28\n    instances 4\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n\nservice api {\n    image myapp:latest\n    instances 2\n    expose 3000\n    resources {\n        cpu 250m\n        memory 256Mi\n    }\n}\n"
+    },
+    {
+      "name": "networking",
+      "filename": "networking.ccattler",
+      "description": "Networking: VIPs, DNS, and load balancing.",
+      "content": "# Networking: VIPs, DNS, and load balancing.\n#\n# Demonstrates: per-instance IP allocation from node subnets, service VIPs,\n#               DNS resolution (service-name.ccattler.local), round-robin LB.\n# Run with:  cca demo-network   (built-in with load balancing demo)\n#\n# Expected: Each instance gets a unique IP from its node's 10.100.x.0/24 subnet.\n#           Each service gets a VIP from the 10.200.0.0/24 pool.\n#           DNS resolves \"web\" and \"api\" to their VIPs.\n#           Traffic to a service balances across its instances.\n\nservice web {\n    image nginx:1.28\n    instances 4\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n\nservice api {\n    image myapp:latest\n    instances 2\n    expose 3000\n    resources {\n        cpu 250m\n        memory 256Mi\n    }\n}\n"
+    },
+    {
+      "name": "storage",
+      "filename": "storage.ccattler",
+      "description": "Persistent storage: volumes survive node moves.",
+      "content": "# Persistent storage: volumes survive node moves.\n#\n# Demonstrates: volume declaration, service-to-volume binding, exclusive attach\n#               (ReadWriteOnce), volume migration on node failure.\n# Run with:  cca demo-storage   (built-in with node kill + volume migration)\n#\n# Expected: postgres gets 1 instance with volume pgdata attached at /var/lib/postgresql/data.\n#           web runs 3 instances with no volume (unaffected by storage).\n#           If the node running postgres dies, the volume detaches and reattaches\n#           to the replacement instance on a surviving node.\n\nvolume pgdata {\n    size 50Gi\n    persistent true\n}\n\nservice postgres {\n    image postgres:16\n    instances 1\n    expose 5432\n    resources {\n        cpu 1000m\n        memory 2048Mi\n    }\n    volume pgdata /var/lib/postgresql/data\n}\n\nservice web {\n    image nginx:1.28\n    instances 3\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    },
+    {
+      "name": "web-container",
+      "filename": "web-container.ccattler",
+      "description": "",
+      "content": "service web {\n    image nginx:1.28\n    instances 2\n    expose 80\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    },
+    {
+      "name": "web",
+      "filename": "web.ccattler",
+      "description": "Simple demo: runs 3 sleep processes.",
+      "content": "# Simple demo: runs 3 sleep processes.\n# In production, image would be a container reference.\n# For process runtime, image is the shell command to execute.\n\nservice web {\n    image \"sleep 300\"\n    instances 3\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    }
+  ],
+  "dslFeatures": [
+    {
+      "keyword": "service",
+      "context": "top-level",
+      "description": "Declares a named service with container image, instances, ports, resources, health checks, and volume mounts"
+    },
+    {
+      "keyword": "image",
+      "context": "service",
+      "description": "Container image reference (e.g. nginx:1.28) or process command for process runtime"
+    },
+    {
+      "keyword": "instances",
+      "context": "service",
+      "description": "Desired number of running instances for the service"
+    },
+    {
+      "keyword": "expose",
+      "context": "service",
+      "description": "Port number to expose from each instance"
+    },
+    {
+      "keyword": "resources",
+      "context": "service",
+      "description": "Block declaring CPU and memory resource constraints (e.g. cpu 500m, memory 512Mi)"
+    },
+    {
+      "keyword": "health",
+      "context": "service",
+      "description": "Block declaring health check configuration: http with path, tcp, and interval"
+    },
+    {
+      "keyword": "volume",
+      "context": "top-level",
+      "description": "Declares a named persistent volume with size and persistence flag"
+    },
+    {
+      "keyword": "volume",
+      "context": "service",
+      "description": "Mounts a named volume at a filesystem path inside the service's instances"
+    },
+    {
+      "keyword": "size",
+      "context": "volume",
+      "description": "Storage capacity in Kubernetes-style units (e.g. 100Gi)"
+    },
+    {
+      "keyword": "persistent",
+      "context": "volume",
+      "description": "Boolean flag: true means volume data survives instance deletion"
+    }
+  ],
+  "demoCommands": [
+    {
+      "command": "cca demo",
+      "milestone": "M2",
+      "description": "Single node, 3 instances, simulated runtime"
+    },
+    {
+      "command": "cca demo-distributed",
+      "milestone": "M3",
+      "description": "3 nodes, kills one, shows rescheduling"
+    },
+    {
+      "command": "cca demo-network",
+      "milestone": "M4",
+      "description": "VIPs, DNS, round-robin load balancing"
+    },
+    {
+      "command": "cca demo-storage",
+      "milestone": "M5",
+      "description": "Persistent volume migrates when node dies"
+    }
+  ]
+}

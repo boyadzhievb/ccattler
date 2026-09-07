@@ -1,0 +1,36 @@
+# Persistent storage: volumes survive node moves.
+#
+# Demonstrates: volume declaration, service-to-volume binding, exclusive attach
+#               (ReadWriteOnce), volume migration on node failure.
+# Run with:  cca demo-storage   (built-in with node kill + volume migration)
+#
+# Expected: postgres gets 1 instance with volume pgdata attached at /var/lib/postgresql/data.
+#           web runs 3 instances with no volume (unaffected by storage).
+#           If the node running postgres dies, the volume detaches and reattaches
+#           to the replacement instance on a surviving node.
+
+volume pgdata {
+    size 50Gi
+    persistent true
+}
+
+service postgres {
+    image postgres:16
+    instances 1
+    expose 5432
+    resources {
+        cpu 1000m
+        memory 2048Mi
+    }
+    volume pgdata /var/lib/postgresql/data
+}
+
+service web {
+    image nginx:1.28
+    instances 3
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}

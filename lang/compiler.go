@@ -18,12 +18,38 @@ type Fact struct {
 // Compile converts a parsed AST into a list of facts.
 func Compile(file *File) ([]Fact, error) {
 	var facts []Fact
+	for _, volumeDecl := range file.Volumes {
+		volumeFacts, err := compileVolumeDeclaration(volumeDecl)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, volumeFacts...)
+	}
 	for _, serviceDecl := range file.Services {
 		serviceFacts, err := compileServiceDeclaration(serviceDecl)
 		if err != nil {
 			return nil, err
 		}
 		facts = append(facts, serviceFacts...)
+	}
+	return facts, nil
+}
+
+// compileVolumeDeclaration converts a single VolumeDecl into its corresponding facts.
+func compileVolumeDeclaration(volumeDecl VolumeDecl) ([]Fact, error) {
+	if volumeDecl.Name == "" {
+		return nil, fmt.Errorf("line %d: volume name is required", volumeDecl.Line)
+	}
+
+	persistentValue := "false"
+	if volumeDecl.Persistent {
+		persistentValue = "true"
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredVolume(volumeDecl.Name), Value: ""},
+		{Key: types.KeyDesiredVolumeSize(volumeDecl.Name), Value: volumeDecl.Size},
+		{Key: types.KeyDesiredVolumePersistent(volumeDecl.Name), Value: persistentValue},
 	}
 	return facts, nil
 }
@@ -68,6 +94,13 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 				Key: types.KeyDesiredServiceResourcesMemory(serviceDecl.Name), Value: serviceDecl.Resources.Memory,
 			})
 		}
+	}
+
+	for _, volumeMount := range serviceDecl.VolumeMounts {
+		facts = append(facts, Fact{
+			Key:   types.KeyDesiredServiceVolume(serviceDecl.Name, volumeMount.VolumeName),
+			Value: volumeMount.MountPath,
+		})
 	}
 
 	if serviceDecl.Health != nil {

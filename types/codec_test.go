@@ -397,3 +397,129 @@ func TestReadServiceVIPNotFound(t *testing.T) {
 		t.Error("expected error for missing VIP")
 	}
 }
+
+// TestVolumeKeyPaths verifies that volume key helper functions produce the
+// expected store paths.
+func TestVolumeKeyPaths(t *testing.T) {
+	tests := []struct {
+		got, want string
+	}{
+		{KeyDesiredVolume("pgdata"), "/ccattler/desired/volume/pgdata"},
+		{KeyDesiredVolumeSize("pgdata"), "/ccattler/desired/volume/pgdata/size"},
+		{KeyDesiredVolumePersistent("pgdata"), "/ccattler/desired/volume/pgdata/persistent"},
+		{KeyDesiredServiceVolume("postgres", "pgdata"), "/ccattler/desired/service/postgres/volume/pgdata"},
+		{KeyObservedVolume("pgdata"), "/ccattler/observed/volume/pgdata"},
+		{KeyObservedVolumeState("pgdata"), "/ccattler/observed/volume/pgdata/state"},
+		{KeyObservedVolumeNode("pgdata"), "/ccattler/observed/volume/pgdata/node"},
+		{KeyObservedVolumeInstance("pgdata"), "/ccattler/observed/volume/pgdata/instance"},
+		{KeyObservedVolumeSize("pgdata"), "/ccattler/observed/volume/pgdata/size"},
+		{KeyObservedVolumeMountPath("pgdata"), "/ccattler/observed/volume/pgdata/mount_path"},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("got %s, want %s", tt.got, tt.want)
+		}
+	}
+}
+
+// TestObservedVolumeRoundTrip verifies that a Volume can be written to and
+// read back from the fact store with all fields preserved.
+func TestObservedVolumeRoundTrip(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	volume := Volume{
+		Name:      "pgdata",
+		Size:      "100Gi",
+		State:     VolumeAttached,
+		Node:      "node-1",
+		Instance:  "aaa",
+		MountPath: "/mnt/volumes/pgdata",
+	}
+	if err := WriteObservedVolume(ctx, stateStore, volume); err != nil {
+		t.Fatal(err)
+	}
+
+	readBackVolume, err := ReadObservedVolume(ctx, stateStore, "pgdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readBackVolume.Name != "pgdata" {
+		t.Errorf("name: got %s, want pgdata", readBackVolume.Name)
+	}
+	if readBackVolume.Size != "100Gi" {
+		t.Errorf("size: got %s, want 100Gi", readBackVolume.Size)
+	}
+	if readBackVolume.State != VolumeAttached {
+		t.Errorf("state: got %s, want attached", readBackVolume.State)
+	}
+	if readBackVolume.Node != "node-1" {
+		t.Errorf("node: got %s, want node-1", readBackVolume.Node)
+	}
+	if readBackVolume.Instance != "aaa" {
+		t.Errorf("instance: got %s, want aaa", readBackVolume.Instance)
+	}
+	if readBackVolume.MountPath != "/mnt/volumes/pgdata" {
+		t.Errorf("mount_path: got %s, want /mnt/volumes/pgdata", readBackVolume.MountPath)
+	}
+}
+
+// TestListObservedVolumes verifies that ListObservedVolumes returns all
+// volumes with their fields correctly populated.
+func TestListObservedVolumes(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	WriteObservedVolume(ctx, stateStore, Volume{Name: "pgdata", Size: "100Gi", State: VolumeAttached, Node: "node-1"})
+	WriteObservedVolume(ctx, stateStore, Volume{Name: "cache", Size: "10Gi", State: VolumeAvailable})
+
+	volumes, err := ListObservedVolumes(ctx, stateStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(volumes) != 2 {
+		t.Fatalf("expected 2 volumes, got %d", len(volumes))
+	}
+
+	volumesByName := make(map[string]Volume)
+	for _, volume := range volumes {
+		volumesByName[volume.Name] = volume
+	}
+	if volumesByName["pgdata"].State != VolumeAttached {
+		t.Errorf("pgdata state: got %s, want attached", volumesByName["pgdata"].State)
+	}
+	if volumesByName["cache"].State != VolumeAvailable {
+		t.Errorf("cache state: got %s, want available", volumesByName["cache"].State)
+	}
+}
+
+// TestDeleteObservedVolumeRemovesAllFacts verifies that DeleteObservedVolume
+// removes all observed-state facts for a volume.
+func TestDeleteObservedVolumeRemovesAllFacts(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	WriteObservedVolume(ctx, stateStore, Volume{
+		Name: "pgdata", Size: "100Gi", State: VolumeAttached,
+		Node: "node-1", Instance: "aaa", MountPath: "/mnt/volumes/pgdata",
+	})
+
+	DeleteObservedVolume(ctx, stateStore, "pgdata")
+
+	_, err := ReadObservedVolume(ctx, stateStore, "pgdata")
+	if err == nil {
+		t.Error("expected error reading deleted volume")
+	}
+}
+
+// TestReadObservedVolumeNotFound verifies that reading a volume that does
+// not exist returns an error.
+func TestReadObservedVolumeNotFound(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	_, err := ReadObservedVolume(ctx, stateStore, "nonexistent")
+	if err == nil {
+		t.Error("expected error for missing volume")
+	}
+}

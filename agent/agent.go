@@ -10,6 +10,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -25,6 +26,7 @@ type Agent struct {
 	store           store.StateStore         // store is the fact store used to read desired state and write observed state.
 	runtime         runtime.Runtime          // runtime is the pluggable container/process runtime adapter.
 	networkProvider network.NetworkProvider   // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	storageProvider storage.StorageProvider   // storageProvider manages volume attach/detach; nil means no volume support.
 	interval        time.Duration            // interval is the period between periodic reconciliation cycles.
 }
 
@@ -46,6 +48,13 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 // node's subnet instead of the default 127.0.0.1.
 func (nodeAgent *Agent) SetNetworkProvider(networkProvider network.NetworkProvider) {
 	nodeAgent.networkProvider = networkProvider
+}
+
+// SetStorageProvider configures the agent to use the given storage provider
+// for volume attach/detach operations. When set, the agent attaches volumes
+// required by a service before starting its instances.
+func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvider) {
+	nodeAgent.storageProvider = storageProvider
 }
 
 // SetInterval overrides the default periodic reconciliation interval.
@@ -125,6 +134,18 @@ func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 
 		if !exists || !runtimeStatus.Running {
+			// Check volume readiness before starting.
+			if a.storageProvider != nil {
+				volumesReady, attachErr := a.ensureVolumesAttachedForInstance(ctx, instanceInfo)
+				if attachErr != nil {
+					log.Printf("agent %s: volume error for %s: %v", a.nodeID, instanceInfo.id, attachErr)
+				}
+				if !volumesReady {
+					delete(runningByID, instanceInfo.id)
+					continue
+				}
+			}
+
 			image := a.lookupServiceImageFromStore(ctx, instanceInfo.service)
 			if image == "" {
 				continue
@@ -149,6 +170,9 @@ func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
 	// Stop processes that shouldn't be running (no longer placed here).
 	for id, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
+			if a.storageProvider != nil {
+				a.detachVolumesForInstance(ctx, id)
+			}
 			a.runtime.Stop(ctx, id)
 			if a.networkProvider != nil {
 				a.networkProvider.ReleaseIP(ctx, a.nodeID, id)
@@ -291,6 +315,103 @@ func (a *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service s
 func (a *Agent) writeHeartbeat(ctx context.Context) {
 	timestampMillis := fmt.Sprintf("%d", time.Now().UnixMilli())
 	a.store.Put(ctx, types.KeyLeaseNode(a.nodeID), []byte(timestampMillis))
+}
+
+// lookupServiceVolumeMountsFromStore reads the desired volume mounts for a
+// service. Returns a map from volume name to mount path. Returns an empty map
+// if the service has no volume mounts.
+func (nodeAgent *Agent) lookupServiceVolumeMountsFromStore(ctx context.Context, serviceName string) map[string]string {
+	prefix := fmt.Sprintf("%s/service/%s/volume/", types.PrefixDesired, serviceName)
+	facts, err := nodeAgent.store.Scan(ctx, prefix)
+	if err != nil || len(facts) == 0 {
+		return nil
+	}
+
+	volumeMounts := make(map[string]string)
+	for _, fact := range facts {
+		volumeName := strings.TrimPrefix(fact.Key, prefix)
+		mountPath := string(fact.Value)
+		volumeMounts[volumeName] = mountPath
+	}
+	return volumeMounts
+}
+
+// ensureVolumesAttachedForInstance checks whether all volumes required by the
+// instance's service are available, and attaches them to this node if so.
+// Returns (true, nil) when all volumes are ready. Returns (false, nil) when a
+// volume exists but is attached to a different node (the instance should wait).
+// Returns (false, error) on unexpected failures.
+func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, instanceInfo placedInstanceInfo) (bool, error) {
+	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, instanceInfo.service)
+	if len(volumeMounts) == 0 {
+		return true, nil
+	}
+
+	for volumeName := range volumeMounts {
+		volumeStateFact, err := nodeAgent.store.Get(ctx, types.KeyObservedVolumeState(volumeName))
+		if err != nil {
+			return false, nil
+		}
+
+		volumeState := types.VolumeState(volumeStateFact.Value)
+
+		if volumeState == types.VolumeAttached {
+			nodeFact, err := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
+			if err == nil && string(nodeFact.Value) == nodeAgent.nodeID {
+				continue
+			}
+			return false, nil
+		}
+
+		mountPath, err := nodeAgent.storageProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
+		if err != nil {
+			return false, fmt.Errorf("attaching volume %s: %w", volumeName, err)
+		}
+
+		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
+		sizeValue := ""
+		if sizeFact.Value != nil {
+			sizeValue = string(sizeFact.Value)
+		}
+
+		types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
+			Name:      volumeName,
+			Size:      sizeValue,
+			State:     types.VolumeAttached,
+			Node:      nodeAgent.nodeID,
+			Instance:  instanceInfo.id,
+			MountPath: mountPath,
+		})
+	}
+
+	return true, nil
+}
+
+// detachVolumesForInstance finds volumes attached to the given instance and
+// detaches them, setting their state back to available.
+func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID string) {
+	serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
+	if err != nil {
+		return
+	}
+	serviceName := string(serviceFact.Value)
+
+	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, serviceName)
+	for volumeName := range volumeMounts {
+		nodeAgent.storageProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID)
+
+		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
+		sizeValue := ""
+		if sizeFact.Value != nil {
+			sizeValue = string(sizeFact.Value)
+		}
+
+		types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
+			Name:  volumeName,
+			Size:  sizeValue,
+			State: types.VolumeAvailable,
+		})
+	}
 }
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for

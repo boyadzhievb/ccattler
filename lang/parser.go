@@ -45,6 +45,12 @@ func (p *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Services = append(file.Services, *serviceDecl)
+		case "volume":
+			volumeDecl, err := p.parseVolumeDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Volumes = append(file.Volumes, *volumeDecl)
 		default:
 			return nil, p.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -94,6 +100,19 @@ func (p *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			serviceDecl.Resources, err = p.parseResourcesBlock()
 		case "health":
 			serviceDecl.Health, err = p.parseHealthBlock()
+		case "volume":
+			volumeName, mountErr := p.expectIdentifier()
+			if mountErr != nil {
+				return nil, mountErr
+			}
+			mountPath, mountErr := p.readMountPath()
+			if mountErr != nil {
+				return nil, mountErr
+			}
+			serviceDecl.VolumeMounts = append(serviceDecl.VolumeMounts, VolumeMountDecl{
+				VolumeName: volumeName,
+				MountPath:  mountPath,
+			})
 		default:
 			return nil, p.parserErrorf("unknown service field %q", key)
 		}
@@ -196,6 +215,87 @@ func (p *Parser) parseHealthBlock() (*HealthDecl, error) {
 		return nil, err
 	}
 	return healthDecl, nil
+}
+
+// parseVolumeDeclaration parses a volume block, including its name and all
+// nested fields (size, persistent).
+func (p *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
+	line := p.currentToken().Line
+	p.advanceToken() // skip "volume"
+
+	name, err := p.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := p.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	p.skipNewlineTokens()
+
+	volumeDecl := &VolumeDecl{Name: name, Line: line}
+
+	for !p.currentTokenIs(TokenRBrace) && !p.isAtEnd() {
+		key, err := p.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "size":
+			sizeToken := p.currentToken()
+			if sizeToken.Type != TokenNumber && sizeToken.Type != TokenIdent && sizeToken.Type != TokenString {
+				return nil, p.parserErrorf("expected size value, got %s %q", sizeToken.Type, sizeToken.Value)
+			}
+			volumeDecl.Size = sizeToken.Value
+			p.advanceToken()
+		case "persistent":
+			persistentValue, persistentErr := p.expectIdentifier()
+			if persistentErr != nil {
+				return nil, persistentErr
+			}
+			volumeDecl.Persistent = persistentValue == "true"
+		default:
+			return nil, p.parserErrorf("unknown volume field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		p.skipNewlineTokens()
+	}
+
+	if err := p.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	return volumeDecl, nil
+}
+
+// readMountPath reads a filesystem mount path, which can be either a quoted
+// string ("/var/lib/data") or a bare slash-separated path (/var/lib/data).
+func (p *Parser) readMountPath() (string, error) {
+	if p.currentTokenIs(TokenString) {
+		value := p.currentToken().Value
+		p.advanceToken()
+		return value, nil
+	}
+
+	if !p.currentTokenIs(TokenSlash) {
+		return "", p.parserErrorf("expected mount path (quoted string or /path), got %s %q",
+			p.currentToken().Type, p.currentToken().Value)
+	}
+
+	pathValue := ""
+	for p.currentTokenIs(TokenSlash) {
+		pathValue += "/"
+		p.advanceToken()
+		if p.currentTokenIs(TokenIdent) || p.currentTokenIs(TokenNumber) {
+			pathValue += p.currentToken().Value
+			p.advanceToken()
+		}
+	}
+	return pathValue, nil
 }
 
 // Helpers

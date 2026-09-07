@@ -239,6 +239,12 @@ const (
 
 	// ScanNetworkDNS scans all service-name-to-VIP DNS mappings.
 	ScanNetworkDNS = PrefixNetwork + "/dns/"
+
+	// ScanDesiredVolumes scans all desired volume declarations.
+	ScanDesiredVolumes = PrefixDesired + "/volume/"
+
+	// ScanObservedVolumes scans all observed volume state facts.
+	ScanObservedVolumes = PrefixObserved + "/volume/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -305,4 +311,65 @@ func KeyNetworkVIPServicePort(serviceName string) string {
 // Path: /ccattler/network/dns/{serviceName}
 func KeyNetworkDNS(serviceName string) string {
 	return fmt.Sprintf("%s/dns/%s", PrefixNetwork, serviceName)
+}
+
+// KeyDesiredVolume returns the store path for a volume's root marker key.
+// Path: /ccattler/desired/volume/{name}
+func KeyDesiredVolume(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s", PrefixDesired, volumeName)
+}
+
+// KeyDesiredVolumeSize returns the store path for a volume's declared size.
+// Path: /ccattler/desired/volume/{name}/size
+func KeyDesiredVolumeSize(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/size", PrefixDesired, volumeName)
+}
+
+// KeyDesiredVolumePersistent returns the store path for a volume's persistence flag.
+// Path: /ccattler/desired/volume/{name}/persistent
+func KeyDesiredVolumePersistent(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/persistent", PrefixDesired, volumeName)
+}
+
+// KeyDesiredServiceVolume returns the store path binding a service to a named
+// volume. The value stored at this key is the mount path inside the instance.
+// Path: /ccattler/desired/service/{serviceName}/volume/{volumeName}
+func KeyDesiredServiceVolume(serviceName string, volumeName string) string {
+	return fmt.Sprintf("%s/service/%s/volume/%s", PrefixDesired, serviceName, volumeName)
+}
+
+// KeyObservedVolume returns the store path for an observed volume's root marker.
+// Path: /ccattler/observed/volume/{name}
+func KeyObservedVolume(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeState returns the store path for an observed volume's lifecycle state.
+// Path: /ccattler/observed/volume/{name}/state
+func KeyObservedVolumeState(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/state", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeNode returns the store path for the node a volume is attached to.
+// Path: /ccattler/observed/volume/{name}/node
+func KeyObservedVolumeNode(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/node", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeInstance returns the store path for the instance a volume is mounted into.
+// Path: /ccattler/observed/volume/{name}/instance
+func KeyObservedVolumeInstance(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/instance", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeSize returns the store path for an observed volume's size.
+// Path: /ccattler/observed/volume/{name}/size
+func KeyObservedVolumeSize(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/size", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeMountPath returns the store path for an observed volume's mount path.
+// Path: /ccattler/observed/volume/{name}/mount_path
+func KeyObservedVolumeMountPath(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/mount_path", PrefixObserved, volumeName)
 }

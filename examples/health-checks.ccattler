@@ -1,0 +1,37 @@
+# Health check probes.
+#
+# Demonstrates: HTTP health check with path and interval, TCP health check.
+# Run with:  cca run examples/health-checks.ccattler
+#            (requires real processes that listen on the declared ports)
+#
+# Expected: web instances are probed at GET /health every 10s.
+#           database instances are probed via TCP connect every 5s.
+#           Status output shows health=healthy or health=unhealthy per instance.
+
+service web {
+    image nginx:1.28
+    instances 3
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+    health {
+        http /health
+        every 10s
+    }
+}
+
+service database {
+    image postgres:16
+    instances 1
+    expose 5432
+    resources {
+        cpu 1000m
+        memory 2048Mi
+    }
+    health {
+        tcp
+        every 5s
+    }
+}

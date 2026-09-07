@@ -24,6 +24,7 @@ import (
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -64,6 +65,8 @@ func main() {
 		executeDistributedDemoCommand()
 	case "demo-network":
 		executeNetworkDemoCommand()
+	case "demo-storage":
+		executeStorageDemoCommand()
 	case "status":
 		executeStatusCommand()
 	case "metric":
@@ -86,6 +89,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
 	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
 	fmt.Fprintln(os.Stderr, "  demo-network      3 nodes with IP allocation, VIPs, DNS, load balancing")
+	fmt.Fprintln(os.Stderr, "  demo-storage      3 nodes with persistent volumes, kills node to show migration")
 	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
 	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
 	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
@@ -547,6 +551,145 @@ service api {
 	}
 }
 
+// executeStorageDemoCommand runs a multi-node demo with persistent volumes.
+// It deploys a postgres service with a volume and a web service without one,
+// then kills the node running postgres to demonstrate that the persistent
+// volume migrates to the replacement node.
+func executeStorageDemoCommand() {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024)
+
+	nodeIDs := []string{"node-1", "node-2", "node-3"}
+	for _, nodeID := range nodeIDs {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+	}
+	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+	storageController := controllers.NewStorageController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController, storageController)
+	go controllerRunner.Run(ctx)
+
+	// Track which context each node's agent uses so we can kill one later.
+	nodeAgentContexts := make(map[string]context.CancelFunc)
+	for _, nodeID := range nodeIDs {
+		nodeContext, nodeCancel := context.WithCancel(ctx)
+		nodeAgentContexts[nodeID] = nodeCancel
+
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetStorageProvider(simulatorStorageProvider)
+		go nodeAgent.Run(nodeContext)
+	}
+
+	storageDemoConfig := `volume pgdata {
+    size 50Gi
+    persistent true
+}
+
+service postgres {
+    image postgres:16
+    instances 1
+    expose 5432
+    resources {
+        cpu 1000m
+        memory 2048Mi
+    }
+    volume pgdata /var/lib/postgresql/data
+}
+
+service web {
+    image nginx:1.28
+    instances 3
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}`
+	fmt.Println("\nApplying config:")
+	fmt.Println(storageDemoConfig)
+
+	launchStatusAPIServer(factStore)
+
+	if err := lang.Apply(ctx, factStore, storageDemoConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	time.Sleep(2 * time.Second)
+	fmt.Println()
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+
+	// Find which node is running postgres so we can kill it.
+	postgresNodeID := findNodeRunningService(ctx, factStore, "postgres")
+	if postgresNodeID == "" {
+		fmt.Println("\nCould not determine which node runs postgres. Exiting.")
+		return
+	}
+
+	fmt.Printf("\n--- Killing %s (running postgres) in 5 seconds to demonstrate volume migration ---\n", postgresNodeID)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(5 * time.Second):
+	}
+
+	if killFunc, exists := nodeAgentContexts[postgresNodeID]; exists {
+		killFunc()
+	}
+	simulatorStorageProvider.ForceDetach(ctx, "pgdata")
+	fmt.Printf("%s agent killed. Waiting for failure detection, volume force-detach, and rescheduling...\n\n", postgresNodeID)
+
+	statusPrintTicker := time.NewTicker(2 * time.Second)
+	defer statusPrintTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down...")
+			return
+		case <-statusPrintTicker.C:
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+			fmt.Println()
+		}
+	}
+}
+
+// findNodeRunningService looks up the node that is currently running an
+// instance of the named service by scanning placements and instance facts.
+func findNodeRunningService(ctx context.Context, factStore store.StateStore, serviceName string) string {
+	allInstances, err := types.ListInstances(ctx, factStore)
+	if err != nil {
+		return ""
+	}
+	for _, instance := range allInstances {
+		if instance.Service == serviceName && instance.State == types.InstanceRunning {
+			placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID))
+			if err == nil {
+				return string(placementFact.Value)
+			}
+		}
+	}
+	return ""
+}
+
 // executeStatusCommand queries the status API of a running ccattler instance
 // and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
 func executeStatusCommand() {
@@ -582,6 +725,7 @@ type clusterStatusResponse struct {
 	Instances  []instanceStatusEntry `json:"instances"`            // all active (non-stopped) instances
 	Nodes      []nodeStatusEntry     `json:"nodes"`                // all registered nodes with capacity info
 	Networking []networkStatusEntry  `json:"networking,omitempty"` // service VIP and DNS assignments
+	Volumes    []volumeStatusEntry   `json:"volumes,omitempty"`    // persistent volumes with attachment state
 }
 
 // serviceStatusEntry represents one service in the cluster status output.
@@ -620,6 +764,16 @@ type nodeStatusEntry struct {
 	CapacityCPU     int64  `json:"capacity_cpu"`      // total CPU capacity in millicores
 	AvailableMemory int64  `json:"available_memory"`  // remaining memory capacity in MiB
 	CapacityMemory  int64  `json:"capacity_memory"`   // total memory capacity in MiB
+}
+
+// volumeStatusEntry represents one persistent volume in the cluster status output.
+type volumeStatusEntry struct {
+	Name      string `json:"name"`                // volume name from the DSL config
+	Size      string `json:"size"`                // declared size (e.g. "50Gi")
+	State     string `json:"state"`               // current state: available, attached
+	Node      string `json:"node,omitempty"`      // node the volume is attached to
+	Instance  string `json:"instance,omitempty"`  // instance the volume is mounted into
+	MountPath string `json:"mount_path,omitempty"` // filesystem mount path
 }
 
 // launchStatusAPIServer starts the HTTP status API server in the background.
@@ -768,6 +922,21 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 		return statusResponse.Networking[i].ServiceName < statusResponse.Networking[j].ServiceName
 	})
 
+	// Build volume status entries from observed volume facts.
+	allVolumes, _ := types.ListObservedVolumes(ctx, factStore)
+	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
+	for _, volume := range allVolumes {
+		volumeEntry := volumeStatusEntry{
+			Name:      volume.Name,
+			Size:      volume.Size,
+			State:     string(volume.State),
+			Node:      volume.Node,
+			Instance:  volume.Instance,
+			MountPath: volume.MountPath,
+		}
+		statusResponse.Volumes = append(statusResponse.Volumes, volumeEntry)
+	}
+
 	// Build node status entries with placement counts.
 	allNodes, _ := types.ListNodes(ctx, factStore)
 	sort.Slice(allNodes, func(i, j int) bool { return allNodes[i].ID < allNodes[j].ID })
@@ -833,6 +1002,28 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 		for _, networkEntry := range statusData.Networking {
 			fmt.Fprintf(&textBuilder, "  %-12s  vip=%s:%d  dns=%s\n",
 				networkEntry.ServiceName, networkEntry.VIP, networkEntry.Port, networkEntry.DNS)
+		}
+	}
+
+	// Render volumes section if volumes exist.
+	if len(statusData.Volumes) > 0 {
+		textBuilder.WriteByte('\n')
+		fmt.Fprintf(&textBuilder, "VOLUMES (%d)\n", len(statusData.Volumes))
+		for _, volumeEntry := range statusData.Volumes {
+			nodeDisplay := volumeEntry.Node
+			if nodeDisplay == "" {
+				nodeDisplay = "-"
+			}
+			instanceDisplay := volumeEntry.Instance
+			if instanceDisplay == "" {
+				instanceDisplay = "-"
+			}
+			mountPathDisplay := volumeEntry.MountPath
+			if mountPathDisplay == "" {
+				mountPathDisplay = "-"
+			}
+			fmt.Fprintf(&textBuilder, "  %-12s  size=%-8s  state=%-10s  node=%-8s  instance=%-8s  mount=%s\n",
+				volumeEntry.Name, volumeEntry.Size, volumeEntry.State, nodeDisplay, instanceDisplay, mountPathDisplay)
 		}
 	}
 

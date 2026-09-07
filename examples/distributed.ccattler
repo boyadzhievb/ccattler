@@ -1,0 +1,19 @@
+# Distributed deployment across multiple nodes.
+#
+# Demonstrates: instance spread across nodes, resource-aware scheduling,
+#               failure recovery when a node dies.
+# Run with:  cca apply examples/distributed.ccattler   (3 simulated nodes)
+#            cca demo-distributed                        (built-in with node kill)
+#
+# Expected: 6 instances spread evenly (2 per node on a 3-node cluster).
+#           If a node dies, its instances reschedule to surviving nodes.
+
+service web {
+    image nginx:1.28
+    instances 6
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}

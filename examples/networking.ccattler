@@ -1,0 +1,30 @@
+# Networking: VIPs, DNS, and load balancing.
+#
+# Demonstrates: per-instance IP allocation from node subnets, service VIPs,
+#               DNS resolution (service-name.ccattler.local), round-robin LB.
+# Run with:  cca demo-network   (built-in with load balancing demo)
+#
+# Expected: Each instance gets a unique IP from its node's 10.100.x.0/24 subnet.
+#           Each service gets a VIP from the 10.200.0.0/24 pool.
+#           DNS resolves "web" and "api" to their VIPs.
+#           Traffic to a service balances across its instances.
+
+service web {
+    image nginx:1.28
+    instances 4
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}
+
+service api {
+    image myapp:latest
+    instances 2
+    expose 3000
+    resources {
+        cpu 250m
+        memory 256Mi
+    }
+}

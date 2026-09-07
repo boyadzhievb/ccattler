@@ -10,6 +10,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -462,5 +463,184 @@ func TestTwoAgentsGetDifferentSubnetIPs(t *testing.T) {
 		t.Errorf("instances on different nodes should have different subnets: node-1=%s, node-2=%s",
 			ipNode1.Value, ipNode2.Value)
 	}
+}
+
+// TestAgentAttachesVolumeBeforeStart verifies that the agent attaches a volume
+// and writes observed volume facts before starting an instance that needs it.
+func TestAgentAttachesVolumeBeforeStart(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100)
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAvailable,
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-aaa", Service: "postgres", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("vol-aaa"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	volumeStateFact, err := factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(volumeStateFact.Value) != string(types.VolumeAttached) {
+		t.Errorf("volume state = %s, want attached", volumeStateFact.Value)
+	}
+
+	volumeNodeFact, _ := factStore.Get(ctx, types.KeyObservedVolumeNode("pgdata"))
+	if string(volumeNodeFact.Value) != "node-1" {
+		t.Errorf("volume node = %s, want node-1", volumeNodeFact.Value)
+	}
+}
+
+// TestAgentDoesNotStartWhenVolumeUnavailable verifies that the agent does not
+// start an instance if its required volume is attached to a different node.
+func TestAgentDoesNotStartWhenVolumeUnavailable(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100)
+	simulatorStorageProvider.AttachVolume(ctx, "pgdata", "node-2")
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAttached, Node: "node-2",
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-bbb", Service: "postgres", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-bbb", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+
+	_, err := simulatorRuntime.Status(ctx, "vol-bbb")
+	if err != runtime.ErrNotFound {
+		t.Error("agent should not start instance when volume is attached to another node")
+	}
+}
+
+// TestAgentDetachesVolumeOnStop verifies that the agent detaches a volume and
+// sets its state to available when the owning instance is stopped.
+func TestAgentDetachesVolumeOnStop(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100)
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAvailable,
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-ccc", Service: "postgres", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-ccc", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running with attached volume", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
+		return err == nil && string(stateFact.Value) == string(types.VolumeAttached)
+	})
+
+	factStore.Delete(ctx, types.KeyPlacementInstance("vol-ccc"))
+
+	waitFor(t, 2*time.Second, "volume detached after instance stop", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
+		return err == nil && string(stateFact.Value) == string(types.VolumeAvailable)
+	})
+
+	attached, _, _ := simulatorStorageProvider.IsAttached(ctx, "pgdata")
+	if attached {
+		t.Error("volume should be detached from storage provider")
+	}
+}
+
+// TestAgentWithoutStorageProviderIgnoresVolumes verifies backward compat:
+// agents without a StorageProvider start instances normally even if volume
+// mounts are declared in the service config.
+func TestAgentWithoutStorageProviderIgnoresVolumes(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-ddd", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-ddd", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running without storage provider", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("vol-ddd"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+}
+
+// TestAgentServiceWithoutVolumesUnaffected verifies that services without
+// volume mounts work normally when a storage provider is configured.
+func TestAgentServiceWithoutVolumesUnaffected(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-eee", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-eee", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("vol-eee"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
 }
 

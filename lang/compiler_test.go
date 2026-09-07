@@ -189,6 +189,45 @@ func TestApplyParseError(t *testing.T) {
 	}
 }
 
+func TestCompileVolumeDeclaration(t *testing.T) {
+	file, _ := Parse(`volume pgdata {
+    size 100Gi
+    persistent true
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := factMap(facts)
+	if _, ok := m[types.KeyDesiredVolume("pgdata")]; !ok {
+		t.Error("missing volume marker fact")
+	}
+	if m[types.KeyDesiredVolumeSize("pgdata")] != "100Gi" {
+		t.Errorf("size: %s", m[types.KeyDesiredVolumeSize("pgdata")])
+	}
+	if m[types.KeyDesiredVolumePersistent("pgdata")] != "true" {
+		t.Errorf("persistent: %s", m[types.KeyDesiredVolumePersistent("pgdata")])
+	}
+}
+
+func TestCompileServiceWithVolumeMount(t *testing.T) {
+	file, _ := Parse(`service postgres {
+    image postgres:16
+    instances 1
+    volume pgdata /var/lib/postgresql/data
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := factMap(facts)
+	if m[types.KeyDesiredServiceVolume("postgres", "pgdata")] != "/var/lib/postgresql/data" {
+		t.Errorf("volume mount: %s", m[types.KeyDesiredServiceVolume("postgres", "pgdata")])
+	}
+}
+
 func factMap(facts []Fact) map[string]string {
 	m := make(map[string]string)
 	for _, f := range facts {

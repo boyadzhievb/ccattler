@@ -222,3 +222,88 @@ func TestParseErrorUnknownDeclaration(t *testing.T) {
 		t.Fatal("expected error for unknown declaration")
 	}
 }
+
+func TestParseVolumeDeclaration(t *testing.T) {
+	input := `volume database {
+    size 100Gi
+    persistent true
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(file.Volumes))
+	}
+	volumeDecl := file.Volumes[0]
+	if volumeDecl.Name != "database" {
+		t.Errorf("name: got %s, want database", volumeDecl.Name)
+	}
+	if volumeDecl.Size != "100Gi" {
+		t.Errorf("size: got %s, want 100Gi", volumeDecl.Size)
+	}
+	if !volumeDecl.Persistent {
+		t.Error("persistent: got false, want true")
+	}
+}
+
+func TestParseServiceWithVolumeMount(t *testing.T) {
+	input := `service postgres {
+    image postgres:16
+    instances 1
+    volume pgdata /var/lib/postgresql/data
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.VolumeMounts) != 1 {
+		t.Fatalf("expected 1 volume mount, got %d", len(serviceDecl.VolumeMounts))
+	}
+	if serviceDecl.VolumeMounts[0].VolumeName != "pgdata" {
+		t.Errorf("volume name: got %s, want pgdata", serviceDecl.VolumeMounts[0].VolumeName)
+	}
+	if serviceDecl.VolumeMounts[0].MountPath != "/var/lib/postgresql/data" {
+		t.Errorf("mount path: got %s, want /var/lib/postgresql/data", serviceDecl.VolumeMounts[0].MountPath)
+	}
+}
+
+func TestParseVolumeAndServiceTogether(t *testing.T) {
+	input := `volume pgdata {
+    size 50Gi
+    persistent true
+}
+
+service postgres {
+    image postgres:16
+    instances 1
+    volume pgdata /var/lib/postgresql/data
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Volumes) != 1 {
+		t.Fatalf("expected 1 volume, got %d", len(file.Volumes))
+	}
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+	if file.Volumes[0].Name != "pgdata" {
+		t.Errorf("volume name: got %s, want pgdata", file.Volumes[0].Name)
+	}
+	if file.Services[0].VolumeMounts[0].VolumeName != "pgdata" {
+		t.Errorf("service volume mount: got %s, want pgdata", file.Services[0].VolumeMounts[0].VolumeName)
+	}
+}
+
+func TestParseVolumeErrorUnknownField(t *testing.T) {
+	input := `volume pgdata {
+    bogus 42
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown volume field")
+	}
+}

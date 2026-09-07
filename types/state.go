@@ -50,6 +50,23 @@ const (
 // an instance. Health checks can be HTTP, TCP, or exec-based.
 type HealthStatus string
 
+// VolumeState represents the lifecycle state of a persistent volume.
+// Volumes transition between available (unattached) and attached (bound
+// to a node and mounted into an instance).
+type VolumeState string
+
+// Volume lifecycle states.
+const (
+	// VolumeAvailable means the volume exists and is not attached to any node.
+	// It is ready to be attached by an agent when an instance needs it.
+	VolumeAvailable VolumeState = "available"
+
+	// VolumeAttached means the volume is currently bound to a node and
+	// mounted into an instance. Only one node can hold a ReadWriteOnce
+	// volume at a time.
+	VolumeAttached VolumeState = "attached"
+)
+
 // Health check result values.
 const (
 	// HealthHealthy means the instance passed its most recent health check.

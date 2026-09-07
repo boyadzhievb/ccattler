@@ -65,3 +65,16 @@ type ServiceVIP struct {
 	VIP     string // VIP is the virtual IP address (e.g. "10.200.0.1").
 	Port    int    // Port is the port on which the VIP accepts traffic.
 }
+
+// Volume represents a persistent storage volume that can be attached to a
+// node and mounted into a service instance. Volumes survive instance
+// restarts and node moves — the data follows the workload.
+type Volume struct {
+	Name       string      // Name is the unique identifier for this volume (e.g. "pgdata").
+	Size       string      // Size is the raw DSL size string (e.g. "100Gi"), not parsed to bytes.
+	Persistent bool        // Persistent is true if the volume's data survives instance deletion.
+	State      VolumeState // State is the current lifecycle state (available, attached).
+	Node       string      // Node is the ID of the node this volume is attached to, empty if available.
+	Instance   string      // Instance is the ID of the instance this volume is mounted into, empty if unmounted.
+	MountPath  string      // MountPath is the filesystem path where the volume is mounted.
+}

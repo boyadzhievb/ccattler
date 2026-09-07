@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M5 — Storage (Phase 8). M1, M2, M3, and M4 complete (196 tests). Next: volume facts, attach/mount lifecycle, storage driver interface.
+**Active milestone:** M6 — Resilient (Phase 9). M1–M5 complete (241 tests). Next: chaos mode, partition testing, controller restart recovery.
 
 ---
 
@@ -905,9 +905,9 @@ cca status                    # cluster overview
 - [x] Load balancing (per-node proxy or centralized)
 
 ### Phase 8 — Storage
-- [ ] Volume facts and attach/mount lifecycle
-- [ ] Constraint enforcement (exclusive attach, node compatibility)
-- [ ] Storage driver interface (local, NFS, cloud block)
+- [x] Volume facts and attach/mount lifecycle
+- [x] Constraint enforcement (exclusive attach, node compatibility)
+- [x] Storage driver interface (local, NFS, cloud block)
 
 ### Phase 9 — Failure & Chaos Testing
 - [ ] Kill node — does the system reschedule?

@@ -343,3 +343,126 @@ func WriteNetworkAllocation(ctx context.Context, stateStore store.StateStore, in
 func DeleteNetworkAllocation(ctx context.Context, stateStore store.StateStore, instanceID string) error {
 	return stateStore.Delete(ctx, KeyNetworkAllocation(instanceID))
 }
+
+// WriteDesiredVolume writes a volume's desired-state declaration as flat
+// key-value pairs under the desired/volume/ prefix.
+func WriteDesiredVolume(ctx context.Context, stateStore store.StateStore, volumeName string, size string, persistent bool) error {
+	persistentValue := "false"
+	if persistent {
+		persistentValue = "true"
+	}
+	puts := []struct{ key, val string }{
+		{KeyDesiredVolume(volumeName), ""},
+		{KeyDesiredVolumeSize(volumeName), size},
+		{KeyDesiredVolumePersistent(volumeName), persistentValue},
+	}
+	for _, putEntry := range puts {
+		if _, err := stateStore.Put(ctx, putEntry.key, []byte(putEntry.val)); err != nil {
+			return fmt.Errorf("writing %s: %w", putEntry.key, err)
+		}
+	}
+	return nil
+}
+
+// WriteObservedVolume writes a volume's observed state as flat key-value pairs
+// under the observed/volume/ prefix.
+func WriteObservedVolume(ctx context.Context, stateStore store.StateStore, volume Volume) error {
+	puts := []struct{ key, val string }{
+		{KeyObservedVolume(volume.Name), ""},
+		{KeyObservedVolumeState(volume.Name), string(volume.State)},
+		{KeyObservedVolumeSize(volume.Name), volume.Size},
+	}
+	if volume.Node != "" {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeNode(volume.Name), volume.Node})
+	}
+	if volume.Instance != "" {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeInstance(volume.Name), volume.Instance})
+	}
+	if volume.MountPath != "" {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeMountPath(volume.Name), volume.MountPath})
+	}
+	for _, putEntry := range puts {
+		if _, err := stateStore.Put(ctx, putEntry.key, []byte(putEntry.val)); err != nil {
+			return fmt.Errorf("writing %s: %w", putEntry.key, err)
+		}
+	}
+	return nil
+}
+
+// ReadObservedVolume assembles a Volume struct by reading flat keys under
+// observed/volume/{name}/ from the fact store. Returns an error if the
+// volume's root marker key does not exist.
+func ReadObservedVolume(ctx context.Context, stateStore store.StateStore, volumeName string) (*Volume, error) {
+	if _, err := stateStore.Get(ctx, KeyObservedVolume(volumeName)); err != nil {
+		return nil, err
+	}
+	prefix := KeyObservedVolume(volumeName) + "/"
+	facts, err := stateStore.Scan(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+
+	volume := &Volume{Name: volumeName}
+	for _, factEntry := range facts {
+		suffix := strings.TrimPrefix(factEntry.Key, KeyObservedVolume(volumeName)+"/")
+		val := string(factEntry.Value)
+		switch suffix {
+		case "state":
+			volume.State = VolumeState(val)
+		case "size":
+			volume.Size = val
+		case "node":
+			volume.Node = val
+		case "instance":
+			volume.Instance = val
+		case "mount_path":
+			volume.MountPath = val
+		}
+	}
+	return volume, nil
+}
+
+// ListObservedVolumes returns all observed volumes by scanning the
+// observed/volume/ prefix and reconstructing each Volume struct.
+func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Volume, error) {
+	facts, err := stateStore.Scan(ctx, ScanObservedVolumes)
+	if err != nil {
+		return nil, err
+	}
+
+	grouped := make(map[string]map[string]string)
+	for _, factEntry := range facts {
+		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedVolumes)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		volumeName := pathParts[0]
+		if _, exists := grouped[volumeName]; !exists {
+			grouped[volumeName] = make(map[string]string)
+		}
+		if len(pathParts) == 2 {
+			grouped[volumeName][pathParts[1]] = string(factEntry.Value)
+		}
+	}
+
+	volumes := make([]Volume, 0, len(grouped))
+	for volumeName, fields := range grouped {
+		volume := Volume{Name: volumeName}
+		volume.State = VolumeState(fields["state"])
+		volume.Size = fields["size"]
+		volume.Node = fields["node"]
+		volume.Instance = fields["instance"]
+		volume.MountPath = fields["mount_path"]
+		volumes = append(volumes, volume)
+	}
+	return volumes, nil
+}
+
+// DeleteObservedVolume removes all observed-state facts for a volume.
+func DeleteObservedVolume(ctx context.Context, stateStore store.StateStore, volumeName string) error {
+	stateStore.Delete(ctx, KeyObservedVolume(volumeName))
+	stateStore.Delete(ctx, KeyObservedVolumeState(volumeName))
+	stateStore.Delete(ctx, KeyObservedVolumeSize(volumeName))
+	stateStore.Delete(ctx, KeyObservedVolumeNode(volumeName))
+	stateStore.Delete(ctx, KeyObservedVolumeInstance(volumeName))
+	stateStore.Delete(ctx, KeyObservedVolumeMountPath(volumeName))
+	return nil
+}
