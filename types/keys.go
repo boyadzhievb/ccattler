@@ -40,6 +40,10 @@ const (
 
 	// PrefixEvent holds append-only event history for audit and debugging.
 	PrefixEvent = Root + "/event"
+
+	// PrefixNetwork holds networking facts: per-node subnets, per-instance
+	// IP allocations, service VIPs, and DNS name mappings.
+	PrefixNetwork = Root + "/network"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -223,6 +227,18 @@ const (
 
 	// ScanLeaseNodes scans all node heartbeat lease timestamps.
 	ScanLeaseNodes = PrefixLease + "/node/"
+
+	// ScanNetworkNodeSubnets scans all per-node subnet assignments.
+	ScanNetworkNodeSubnets = PrefixNetwork + "/node/"
+
+	// ScanNetworkAllocations scans all per-instance IP allocations.
+	ScanNetworkAllocations = PrefixNetwork + "/allocation/"
+
+	// ScanNetworkVIPs scans all service virtual IP assignments.
+	ScanNetworkVIPs = PrefixNetwork + "/vip/service/"
+
+	// ScanNetworkDNS scans all service-name-to-VIP DNS mappings.
+	ScanNetworkDNS = PrefixNetwork + "/dns/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -259,4 +275,34 @@ func KeyIntentAutoscalerServiceInstances(name string) string {
 // Path: /ccattler/lease/node/{nodeID}
 func KeyLeaseNode(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s", PrefixLease, nodeID)
+}
+
+// KeyNetworkNodeSubnet returns the store path for a node's assigned subnet CIDR.
+// Path: /ccattler/network/node/{nodeID}/subnet
+func KeyNetworkNodeSubnet(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/subnet", PrefixNetwork, nodeID)
+}
+
+// KeyNetworkAllocation returns the store path for an instance's allocated IP address.
+// Path: /ccattler/network/allocation/{instanceID}
+func KeyNetworkAllocation(instanceID string) string {
+	return fmt.Sprintf("%s/allocation/%s", PrefixNetwork, instanceID)
+}
+
+// KeyNetworkVIPService returns the store path for a service's virtual IP address.
+// Path: /ccattler/network/vip/service/{serviceName}
+func KeyNetworkVIPService(serviceName string) string {
+	return fmt.Sprintf("%s/vip/service/%s", PrefixNetwork, serviceName)
+}
+
+// KeyNetworkVIPServicePort returns the store path for a service VIP's port number.
+// Path: /ccattler/network/vip/service/{serviceName}/port
+func KeyNetworkVIPServicePort(serviceName string) string {
+	return fmt.Sprintf("%s/vip/service/%s/port", PrefixNetwork, serviceName)
+}
+
+// KeyNetworkDNS returns the store path for a service's DNS name-to-VIP mapping.
+// Path: /ccattler/network/dns/{serviceName}
+func KeyNetworkDNS(serviceName string) string {
+	return fmt.Sprintf("%s/dns/%s", PrefixNetwork, serviceName)
 }

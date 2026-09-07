@@ -56,3 +56,12 @@ type Endpoint struct {
 	IP         string // IP is the network address of the instance.
 	Port       int    // Port is the exposed port number for this endpoint.
 }
+
+// ServiceVIP represents a stable virtual IP address assigned to a service
+// for DNS resolution and load balancing. Traffic sent to this VIP is
+// distributed across the service's healthy endpoints by the per-node proxy.
+type ServiceVIP struct {
+	Service string // Service is the name of the service this VIP belongs to.
+	VIP     string // VIP is the virtual IP address (e.g. "10.200.0.1").
+	Port    int    // Port is the port on which the VIP accepts traffic.
+}

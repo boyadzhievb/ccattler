@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -20,21 +21,31 @@ import (
 //   - Reconciler: compares desired state (placements) with observed, calls runtime.Start/Stop
 //   - Reporter: publishes actual state back to the store
 type Agent struct {
-	nodeID   string         // nodeID is the unique identifier for the node this agent manages.
-	store    store.StateStore // store is the fact store used to read desired state and write observed state.
-	runtime  runtime.Runtime  // runtime is the pluggable container/process runtime adapter.
-	interval time.Duration    // interval is the period between periodic reconciliation cycles.
+	nodeID          string                   // nodeID is the unique identifier for the node this agent manages.
+	store           store.StateStore         // store is the fact store used to read desired state and write observed state.
+	runtime         runtime.Runtime          // runtime is the pluggable container/process runtime adapter.
+	networkProvider network.NetworkProvider   // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	interval        time.Duration            // interval is the period between periodic reconciliation cycles.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
-// and runtime adapter. The default reconciliation interval is 1 second.
-func New(nodeID string, s store.StateStore, rt runtime.Runtime) *Agent {
+// and runtime adapter. The default reconciliation interval is 1 second. The
+// network provider is nil by default, meaning instances get 127.0.0.1 as their
+// IP. Use SetNetworkProvider to enable real IP allocation.
+func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runtime) *Agent {
 	return &Agent{
 		nodeID:   nodeID,
-		store:    s,
-		runtime:  rt,
+		store:    stateStore,
+		runtime:  runtimeAdapter,
 		interval: 1 * time.Second,
 	}
+}
+
+// SetNetworkProvider configures the agent to use the given network provider for
+// instance IP allocation. When set, instances receive unique IPs from the
+// node's subnet instead of the default 127.0.0.1.
+func (nodeAgent *Agent) SetNetworkProvider(networkProvider network.NetworkProvider) {
+	nodeAgent.networkProvider = networkProvider
 }
 
 // SetInterval overrides the default periodic reconciliation interval.
@@ -139,6 +150,10 @@ func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
 	for id, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
 			a.runtime.Stop(ctx, id)
+			if a.networkProvider != nil {
+				a.networkProvider.ReleaseIP(ctx, a.nodeID, id)
+				types.DeleteNetworkAllocation(ctx, a.store, id)
+			}
 		}
 	}
 
@@ -280,12 +295,24 @@ func (a *Agent) writeHeartbeat(ctx context.Context) {
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for
 // the given instance: its existence marker, owning service, current state, the
-// node it is running on, and its IP address. This is called after every start
-// attempt and on every reconciliation pass for already-running instances.
-func (a *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
-	a.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte(""))
-	a.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service))
-	a.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state)))
-	a.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(a.nodeID))
-	a.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(fmt.Sprintf("127.0.0.1")))
+// node it is running on, and its IP address. When a NetworkProvider is
+// configured, the IP is allocated from the node's subnet; otherwise 127.0.0.1
+// is used as a fallback.
+func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
+	nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte(""))
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service))
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state)))
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(nodeAgent.nodeID))
+
+	instanceIP := "127.0.0.1"
+	if nodeAgent.networkProvider != nil {
+		allocatedIP, err := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
+		if err != nil {
+			log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceID, err)
+		} else {
+			instanceIP = allocatedIP
+			types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP)
+		}
+	}
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(instanceIP))
 }

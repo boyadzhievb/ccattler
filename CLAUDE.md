@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M3 — Distributed (Phase 6). M1 and M2 complete. Next: lease-based node failure detection, multi-node simulation, rescheduling on failure.
+**Active milestone:** M5 — Storage (Phase 8). M1, M2, M3, and M4 complete (196 tests). Next: volume facts, attach/mount lifecycle, storage driver interface.
 
 ---
 
@@ -899,10 +899,10 @@ cca status                    # cluster overview
 - [x] Simulated node kill → verify convergence
 
 ### Phase 7 — Networking
-- [ ] Instance IP allocation from pool
-- [ ] Endpoint aggregation
-- [ ] DNS / service discovery (CoreDNS integration or custom)
-- [ ] Load balancing (per-node proxy or centralized)
+- [x] Instance IP allocation from pool
+- [x] Endpoint aggregation
+- [x] DNS / service discovery (CoreDNS integration or custom)
+- [x] Load balancing (per-node proxy or centralized)
 
 ### Phase 8 — Storage
 - [ ] Volume facts and attach/mount lifecycle

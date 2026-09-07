@@ -4,9 +4,11 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -284,5 +286,181 @@ func TestAgentWritesHeartbeat(t *testing.T) {
 		f, err := s.Get(ctx, types.KeyLeaseNode("node-1"))
 		return err == nil && len(f.Value) > 0
 	})
+}
+
+// TestAgentWithNetworkProviderAllocatesSubnetIP verifies that when a
+// NetworkProvider is configured, instances receive IPs from the node's subnet
+// instead of the default 127.0.0.1.
+func TestAgentWithNetworkProviderAllocatesSubnetIP(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-aaa", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance gets subnet IP", func() bool {
+		ipFact, err := factStore.Get(ctx, types.KeyObservedInstanceIP("net-aaa"))
+		return err == nil && strings.HasPrefix(string(ipFact.Value), "10.100.1.")
+	})
+}
+
+// TestAgentWithNetworkProviderWritesAllocationFact verifies that the agent
+// writes a network allocation fact alongside the instance IP.
+func TestAgentWithNetworkProviderWritesAllocationFact(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-bbb", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-bbb", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "network allocation fact written", func() bool {
+		allocationFact, err := factStore.Get(ctx, types.KeyNetworkAllocation("net-bbb"))
+		return err == nil && strings.HasPrefix(string(allocationFact.Value), "10.100.1.")
+	})
+}
+
+// TestAgentWithoutNetworkProviderUsesLoopback verifies backward compatibility:
+// agents without a NetworkProvider still assign 127.0.0.1.
+func TestAgentWithoutNetworkProviderUsesLoopback(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-ccc", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-ccc", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance gets 127.0.0.1", func() bool {
+		ipFact, err := factStore.Get(ctx, types.KeyObservedInstanceIP("net-ccc"))
+		return err == nil && string(ipFact.Value) == "127.0.0.1"
+	})
+
+	// No network allocation fact should exist.
+	_, err := factStore.Get(ctx, types.KeyNetworkAllocation("net-ccc"))
+	if err == nil {
+		t.Error("network allocation fact should not exist without NetworkProvider")
+	}
+}
+
+// TestAgentReleasesIPOnInstanceStop verifies that when an instance's placement
+// is removed, the agent releases the IP and deletes the allocation fact.
+func TestAgentReleasesIPOnInstanceStop(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-ddd", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-ddd", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// Wait for the instance to be running with an allocated IP.
+	waitFor(t, 2*time.Second, "instance running with subnet IP", func() bool {
+		ipFact, err := factStore.Get(ctx, types.KeyObservedInstanceIP("net-ddd"))
+		return err == nil && strings.HasPrefix(string(ipFact.Value), "10.100.1.")
+	})
+
+	// Remove the placement to trigger stop.
+	factStore.Delete(ctx, types.KeyPlacementInstance("net-ddd"))
+
+	// Wait for the allocation fact to be cleaned up.
+	waitFor(t, 2*time.Second, "network allocation fact deleted", func() bool {
+		_, err := factStore.Get(ctx, types.KeyNetworkAllocation("net-ddd"))
+		return err != nil
+	})
+}
+
+// TestTwoAgentsGetDifferentSubnetIPs verifies that agents on different nodes
+// allocate IPs from different subnets when sharing the same NetworkProvider.
+func TestTwoAgentsGetDifferentSubnetIPs(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create two agents on different nodes sharing the same network provider.
+	for _, nodeID := range []string{"node-1", "node-2"} {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+		nodeAgent.SetInterval(50 * time.Millisecond)
+		go nodeAgent.Run(ctx)
+	}
+
+	// Place one instance on each node.
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-eee", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-eee", NodeID: "node-1"})
+
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "net-fff", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "net-fff", NodeID: "node-2"})
+
+	// Wait for both instances to get IPs.
+	waitFor(t, 2*time.Second, "both instances have IPs", func() bool {
+		ipFact1, err1 := factStore.Get(ctx, types.KeyObservedInstanceIP("net-eee"))
+		ipFact2, err2 := factStore.Get(ctx, types.KeyObservedInstanceIP("net-fff"))
+		return err1 == nil && err2 == nil &&
+			string(ipFact1.Value) != "127.0.0.1" &&
+			string(ipFact2.Value) != "127.0.0.1"
+	})
+
+	ipNode1, _ := factStore.Get(ctx, types.KeyObservedInstanceIP("net-eee"))
+	ipNode2, _ := factStore.Get(ctx, types.KeyObservedInstanceIP("net-fff"))
+
+	// Extract the third octet (subnet identifier) from each IP. The two nodes
+	// should have received different subnets regardless of allocation order.
+	ipNode1Parts := strings.Split(string(ipNode1.Value), ".")
+	ipNode2Parts := strings.Split(string(ipNode2.Value), ".")
+	if len(ipNode1Parts) != 4 || len(ipNode2Parts) != 4 {
+		t.Fatalf("invalid IPs: node-1=%s, node-2=%s", ipNode1.Value, ipNode2.Value)
+	}
+	if ipNode1Parts[2] == ipNode2Parts[2] {
+		t.Errorf("instances on different nodes should have different subnets: node-1=%s, node-2=%s",
+			ipNode1.Value, ipNode2.Value)
+	}
 }
 

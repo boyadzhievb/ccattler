@@ -21,6 +21,7 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
@@ -61,6 +62,8 @@ func main() {
 		executeDemoCommand()
 	case "demo-distributed":
 		executeDistributedDemoCommand()
+	case "demo-network":
+		executeNetworkDemoCommand()
 	case "status":
 		executeStatusCommand()
 	case "metric":
@@ -82,6 +85,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  run <file>     parse .ccattler file, start real processes")
 	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
 	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
+	fmt.Fprintln(os.Stderr, "  demo-network      3 nodes with IP allocation, VIPs, DNS, load balancing")
 	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
 	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
 	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
@@ -425,6 +429,124 @@ func executeDistributedDemoCommand() {
 	}
 }
 
+// executeNetworkDemoCommand runs a multi-node demo with networking enabled:
+// IP allocation from per-node subnets, VIP assignment, DNS resolution, and
+// load-balanced traffic routing. Deploys two services and shows the complete
+// networking state including per-instance IPs, service VIPs, and DNS records.
+func executeNetworkDemoCommand() {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	// Register 3 simulated nodes with equal capacity.
+	nodeIDs := []string{"node-1", "node-2", "node-3"}
+	for _, nodeID := range nodeIDs {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+		factStore.Put(ctx, types.KeyNetworkNodeSubnet(nodeID),
+			[]byte(simulatorNetworkProvider.NodeSubnet(nodeID)))
+	}
+	fmt.Println("Registered 3 simulated nodes with networking:")
+	for _, nodeID := range nodeIDs {
+		fmt.Printf("  %s  subnet=%s\n", nodeID, simulatorNetworkProvider.NodeSubnet(nodeID))
+	}
+
+	// Create all controllers including the network controller.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+	networkController := controllers.NewNetworkController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController, networkController)
+	go controllerRunner.Run(ctx)
+
+	// Start 3 agents, each with its own simulator runtime and the shared network provider.
+	for _, nodeID := range nodeIDs {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+		go nodeAgent.Run(ctx)
+	}
+
+	networkDemoConfig := `service web {
+    image nginx:1.28
+    instances 4
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+}
+
+service api {
+    image myapp:latest
+    instances 2
+    expose 3000
+    resources {
+        cpu 250m
+        memory 256Mi
+    }
+}`
+	fmt.Println("\nApplying config:")
+	fmt.Println(networkDemoConfig)
+
+	launchStatusAPIServer(factStore)
+
+	if err := lang.Apply(ctx, factStore, networkDemoConfig); err != nil {
+		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Wait for reconciliation to settle.
+	time.Sleep(2 * time.Second)
+	fmt.Println()
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+
+	// Demonstrate load balancing via the simulator proxy.
+	storeBackedResolver := network.NewStoreBackedResolver(factStore)
+	simulatorProxy := network.NewSimulatorProxy(storeBackedResolver)
+
+	fmt.Println("\n--- Load Balancing Demo ---")
+	for _, serviceName := range []string{"web", "api"} {
+		fmt.Printf("\nRouting 6 requests to %s:\n", serviceName)
+		for requestIndex := 0; requestIndex < 6; requestIndex++ {
+			selectedEndpoint, err := simulatorProxy.RouteRequest(ctx, serviceName)
+			if err != nil {
+				fmt.Printf("  request %d: ERROR %v\n", requestIndex+1, err)
+				continue
+			}
+			fmt.Printf("  request %d → %s:%d (instance %s)\n",
+				requestIndex+1, selectedEndpoint.IP, selectedEndpoint.Port, selectedEndpoint.InstanceID)
+		}
+	}
+
+	fmt.Printf("\nRunning. Status API on %s. Press Ctrl+C to stop.\n", statusAPIListenAddress)
+
+	statusPrintTicker := time.NewTicker(5 * time.Second)
+	defer statusPrintTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down...")
+			return
+		case <-statusPrintTicker.C:
+			fmt.Println()
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+		}
+	}
+}
+
 // executeStatusCommand queries the status API of a running ccattler instance
 // and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
 func executeStatusCommand() {
@@ -456,9 +578,10 @@ func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 // clusterStatusResponse is the structured representation of the full cluster status,
 // used for JSON serialization via the status API.
 type clusterStatusResponse struct {
-	Services  []serviceStatusEntry  `json:"services"`  // all registered services with desired/running counts
-	Instances []instanceStatusEntry `json:"instances"` // all active (non-stopped) instances
-	Nodes     []nodeStatusEntry     `json:"nodes"`     // all registered nodes with capacity info
+	Services   []serviceStatusEntry  `json:"services"`             // all registered services with desired/running counts
+	Instances  []instanceStatusEntry `json:"instances"`            // all active (non-stopped) instances
+	Nodes      []nodeStatusEntry     `json:"nodes"`                // all registered nodes with capacity info
+	Networking []networkStatusEntry  `json:"networking,omitempty"` // service VIP and DNS assignments
 }
 
 // serviceStatusEntry represents one service in the cluster status output.
@@ -476,7 +599,16 @@ type instanceStatusEntry struct {
 	ServiceName string `json:"service"` // which service this instance belongs to
 	State       string `json:"state"`   // current state: pending, running, failed
 	NodeID      string `json:"node"`    // which node this instance is placed on
+	IPAddress   string `json:"ip"`      // allocated IP address
 	HealthState string `json:"health"`  // health check result: healthy, unhealthy, or "-"
+}
+
+// networkStatusEntry represents a service's networking configuration.
+type networkStatusEntry struct {
+	ServiceName string `json:"service"` // service name
+	VIP         string `json:"vip"`     // virtual IP address
+	Port        int    `json:"port"`    // VIP port
+	DNS         string `json:"dns"`     // DNS name mapping
 }
 
 // nodeStatusEntry represents one node in the cluster status output.
@@ -592,11 +724,49 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 		if healthDisplay == "" {
 			healthDisplay = "-"
 		}
+		instanceIPAddress := instance.IP
+		if instanceIPAddress == "" {
+			instanceIPAddress = "-"
+		}
 		statusResponse.Instances = append(statusResponse.Instances, instanceStatusEntry{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
-			NodeID: placedNodeID, HealthState: healthDisplay,
+			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
 		})
 	}
+
+	// Build networking status entries from VIP and DNS facts.
+	vipFacts, _ := factStore.Scan(ctx, types.ScanNetworkVIPs)
+	dnsFacts, _ := factStore.Scan(ctx, types.ScanNetworkDNS)
+	dnsMapping := make(map[string]string)
+	for _, dnsFact := range dnsFacts {
+		serviceName := strings.TrimPrefix(dnsFact.Key, types.ScanNetworkDNS)
+		dnsMapping[serviceName] = string(dnsFact.Value)
+	}
+	vipByService := make(map[string]string)
+	vipPortByService := make(map[string]int)
+	for _, vipFact := range vipFacts {
+		relativePath := strings.TrimPrefix(vipFact.Key, types.ScanNetworkVIPs)
+		pathParts := strings.Split(relativePath, "/")
+		if len(pathParts) == 1 {
+			vipByService[pathParts[0]] = string(vipFact.Value)
+		} else if len(pathParts) == 2 && pathParts[1] == "port" {
+			portValue := 0
+			fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			vipPortByService[pathParts[0]] = portValue
+		}
+	}
+	for serviceName, vipAddress := range vipByService {
+		dnsName := serviceName + "." + network.DefaultDNSDomain
+		statusResponse.Networking = append(statusResponse.Networking, networkStatusEntry{
+			ServiceName: serviceName,
+			VIP:         vipAddress,
+			Port:        vipPortByService[serviceName],
+			DNS:         dnsName,
+		})
+	}
+	sort.Slice(statusResponse.Networking, func(i, j int) bool {
+		return statusResponse.Networking[i].ServiceName < statusResponse.Networking[j].ServiceName
+	})
 
 	// Build node status entries with placement counts.
 	allNodes, _ := types.ListNodes(ctx, factStore)
@@ -639,12 +809,12 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 		textBuilder.WriteByte('\n')
 	}
 
-	// Render instances section.
+	// Render instances section with IP addresses.
 	textBuilder.WriteByte('\n')
 	fmt.Fprintf(&textBuilder, "INSTANCES (%d active)\n", len(statusData.Instances))
 	for _, instance := range statusData.Instances {
-		fmt.Fprintf(&textBuilder, "  %-12s  service=%-8s  state=%-8s  node=%-8s  health=%-8s\n",
-			instance.ID, instance.ServiceName, instance.State, instance.NodeID, instance.HealthState)
+		fmt.Fprintf(&textBuilder, "  %-12s  service=%-8s  state=%-8s  node=%-8s  ip=%-16s  health=%-8s\n",
+			instance.ID, instance.ServiceName, instance.State, instance.NodeID, instance.IPAddress, instance.HealthState)
 	}
 
 	// Render nodes section.
@@ -654,6 +824,16 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 		fmt.Fprintf(&textBuilder, "  %-12s  state=%-12s  instances=%d  cpu=%d/%d  memory=%d/%d\n",
 			node.ID, node.State, node.PlacedInstances, node.AvailableCPU, node.CapacityCPU,
 			node.AvailableMemory, node.CapacityMemory)
+	}
+
+	// Render networking section if VIPs exist.
+	if len(statusData.Networking) > 0 {
+		textBuilder.WriteByte('\n')
+		fmt.Fprintf(&textBuilder, "NETWORKING (%d services)\n", len(statusData.Networking))
+		for _, networkEntry := range statusData.Networking {
+			fmt.Fprintf(&textBuilder, "  %-12s  vip=%s:%d  dns=%s\n",
+				networkEntry.ServiceName, networkEntry.VIP, networkEntry.Port, networkEntry.DNS)
+		}
 	}
 
 	return textBuilder.String()

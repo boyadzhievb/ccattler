@@ -289,10 +289,111 @@ func TestKeyPaths(t *testing.T) {
 		{KeyPlacementInstance("a8f31"), "/ccattler/placement/instance/a8f31"},
 		{KeyEndpoint("web", "a8f31"), "/ccattler/endpoint/service/web/a8f31"},
 		{KeyLeaseNode("node-1"), "/ccattler/lease/node/node-1"},
+		{KeyNetworkNodeSubnet("node-1"), "/ccattler/network/node/node-1/subnet"},
+		{KeyNetworkAllocation("a8f31"), "/ccattler/network/allocation/a8f31"},
+		{KeyNetworkVIPService("web"), "/ccattler/network/vip/service/web"},
+		{KeyNetworkVIPServicePort("web"), "/ccattler/network/vip/service/web/port"},
+		{KeyNetworkDNS("web"), "/ccattler/network/dns/web"},
 	}
 	for _, tt := range tests {
 		if tt.got != tt.want {
 			t.Errorf("got %s, want %s", tt.got, tt.want)
 		}
+	}
+}
+
+// TestServiceVIPRoundTrip verifies that a ServiceVIP can be written to and
+// read back from the fact store with all fields preserved.
+func TestServiceVIPRoundTrip(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	serviceVIP := ServiceVIP{
+		Service: "web",
+		VIP:     "10.200.0.1",
+		Port:    8080,
+	}
+	_, err := WriteServiceVIP(ctx, stateStore, serviceVIP)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readBackVIP, err := ReadServiceVIP(ctx, stateStore, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readBackVIP.Service != "web" {
+		t.Errorf("service: got %s, want web", readBackVIP.Service)
+	}
+	if readBackVIP.VIP != "10.200.0.1" {
+		t.Errorf("vip: got %s, want 10.200.0.1", readBackVIP.VIP)
+	}
+	if readBackVIP.Port != 8080 {
+		t.Errorf("port: got %d, want 8080", readBackVIP.Port)
+	}
+}
+
+// TestServiceVIPDeleteRemovesAllFacts verifies that DeleteServiceVIP removes
+// the VIP address, port, and DNS mapping facts.
+func TestServiceVIPDeleteRemovesAllFacts(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	WriteServiceVIP(ctx, stateStore, ServiceVIP{Service: "web", VIP: "10.200.0.1", Port: 8080})
+	stateStore.Put(ctx, KeyNetworkDNS("web"), []byte("10.200.0.1"))
+
+	DeleteServiceVIP(ctx, stateStore, "web")
+
+	_, err := stateStore.Get(ctx, KeyNetworkVIPService("web"))
+	if err != store.ErrKeyNotFound {
+		t.Errorf("VIP should be deleted, got err: %v", err)
+	}
+	_, err = stateStore.Get(ctx, KeyNetworkVIPServicePort("web"))
+	if err != store.ErrKeyNotFound {
+		t.Errorf("VIP port should be deleted, got err: %v", err)
+	}
+	_, err = stateStore.Get(ctx, KeyNetworkDNS("web"))
+	if err != store.ErrKeyNotFound {
+		t.Errorf("DNS should be deleted, got err: %v", err)
+	}
+}
+
+// TestNetworkAllocationWriteAndDelete verifies that an instance IP allocation
+// can be written and then removed from the fact store.
+func TestNetworkAllocationWriteAndDelete(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	_, err := WriteNetworkAllocation(ctx, stateStore, "instance-aaa", "10.100.1.2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	factEntry, err := stateStore.Get(ctx, KeyNetworkAllocation("instance-aaa"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(factEntry.Value) != "10.100.1.2" {
+		t.Errorf("allocation: got %s, want 10.100.1.2", factEntry.Value)
+	}
+
+	if err := DeleteNetworkAllocation(ctx, stateStore, "instance-aaa"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = stateStore.Get(ctx, KeyNetworkAllocation("instance-aaa"))
+	if err != store.ErrKeyNotFound {
+		t.Errorf("expected ErrKeyNotFound after delete, got %v", err)
+	}
+}
+
+// TestReadServiceVIPNotFound verifies that reading a VIP for a service that
+// has none returns an error.
+func TestReadServiceVIPNotFound(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	_, err := ReadServiceVIP(ctx, stateStore, "nonexistent")
+	if err == nil {
+		t.Error("expected error for missing VIP")
 	}
 }

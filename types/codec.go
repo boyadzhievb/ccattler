@@ -290,3 +290,56 @@ func WriteEndpoint(ctx context.Context, stateStore store.StateStore, endpoint En
 func DeleteEndpoint(ctx context.Context, stateStore store.StateStore, serviceName, instanceID string) error {
 	return stateStore.Delete(ctx, KeyEndpoint(serviceName, instanceID))
 }
+
+// WriteServiceVIP writes a service virtual IP assignment as flat key-value pairs
+// to the fact store. The VIP address and port are stored separately so
+// controllers can watch each independently.
+func WriteServiceVIP(ctx context.Context, stateStore store.StateStore, serviceVIP ServiceVIP) (int64, error) {
+	revision, err := stateStore.Put(ctx, KeyNetworkVIPService(serviceVIP.Service), []byte(serviceVIP.VIP))
+	if err != nil {
+		return 0, fmt.Errorf("writing VIP for %s: %w", serviceVIP.Service, err)
+	}
+	if _, err := stateStore.Put(ctx, KeyNetworkVIPServicePort(serviceVIP.Service), []byte(strconv.Itoa(serviceVIP.Port))); err != nil {
+		return 0, fmt.Errorf("writing VIP port for %s: %w", serviceVIP.Service, err)
+	}
+	return revision, nil
+}
+
+// ReadServiceVIP reads a service's VIP assignment from the fact store.
+// Returns an error if the service has no VIP assigned.
+func ReadServiceVIP(ctx context.Context, stateStore store.StateStore, serviceName string) (*ServiceVIP, error) {
+	vipFact, err := stateStore.Get(ctx, KeyNetworkVIPService(serviceName))
+	if err != nil {
+		return nil, err
+	}
+	serviceVIP := &ServiceVIP{
+		Service: serviceName,
+		VIP:     string(vipFact.Value),
+	}
+	portFact, err := stateStore.Get(ctx, KeyNetworkVIPServicePort(serviceName))
+	if err == nil {
+		serviceVIP.Port, _ = strconv.Atoi(string(portFact.Value))
+	}
+	return serviceVIP, nil
+}
+
+// DeleteServiceVIP removes all VIP-related facts for a service (the VIP
+// address, port, and DNS mapping).
+func DeleteServiceVIP(ctx context.Context, stateStore store.StateStore, serviceName string) error {
+	stateStore.Delete(ctx, KeyNetworkVIPService(serviceName))
+	stateStore.Delete(ctx, KeyNetworkVIPServicePort(serviceName))
+	stateStore.Delete(ctx, KeyNetworkDNS(serviceName))
+	return nil
+}
+
+// WriteNetworkAllocation records an instance's allocated IP address in the
+// networking section of the fact store.
+func WriteNetworkAllocation(ctx context.Context, stateStore store.StateStore, instanceID string, allocatedIP string) (int64, error) {
+	return stateStore.Put(ctx, KeyNetworkAllocation(instanceID), []byte(allocatedIP))
+}
+
+// DeleteNetworkAllocation removes an instance's IP allocation record from
+// the fact store. Called when an instance is stopped and its IP is released.
+func DeleteNetworkAllocation(ctx context.Context, stateStore store.StateStore, instanceID string) error {
+	return stateStore.Delete(ctx, KeyNetworkAllocation(instanceID))
+}
