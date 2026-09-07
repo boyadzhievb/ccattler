@@ -147,8 +147,8 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 }
 
 // buildDockerContainerName generates a deterministic docker container name from
-// a workload ID by prefixing it with "ccattler-". This ensures container names
+// a workload ID by prefixing it with "cca-". This ensures container names
 // are predictable and scoped to this orchestrator.
 func buildDockerContainerName(id string) string {
-	return "ccattler-" + id
+	return "cca-" + id
 }

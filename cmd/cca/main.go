@@ -41,19 +41,19 @@ func main() {
 	switch os.Args[1] {
 	case "apply":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: ccattler apply <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca apply <file>")
 			os.Exit(1)
 		}
 		executeApplyCommand(os.Args[2])
 	case "run":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: ccattler run <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca run <file>")
 			os.Exit(1)
 		}
 		executeLiveProcessCommand(os.Args[2])
 	case "run-container":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: ccattler run-container <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca run-container <file>")
 			os.Exit(1)
 		}
 		executeLiveContainerCommand(os.Args[2])
@@ -65,7 +65,7 @@ func main() {
 		executeStatusCommand()
 	case "metric":
 		if len(os.Args) < 5 || os.Args[2] != "set" {
-			fmt.Fprintln(os.Stderr, "usage: ccattler metric set <service> <metric> <value>")
+			fmt.Fprintln(os.Stderr, "usage: cca metric set <service> <metric> <value>")
 			os.Exit(1)
 		}
 		executeMetricSetCommand(os.Args[3], os.Args[4], os.Args[5])
@@ -77,7 +77,7 @@ func main() {
 
 // printUsage prints the CLI help text listing all available commands to stderr.
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "usage: ccattler <command>")
+	fmt.Fprintln(os.Stderr, "usage: cca <command>")
 	fmt.Fprintln(os.Stderr, "  apply <file>   parse .ccattler file, show reconciliation (simulated)")
 	fmt.Fprintln(os.Stderr, "  run <file>     parse .ccattler file, start real processes")
 	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
@@ -207,7 +207,7 @@ func executeLiveContainerCommand(configFilePath string) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
 		fmt.Fprintln(os.Stderr, "install Docker Desktop (macOS/Windows) or docker-ce (Linux)")
-		fmt.Fprintln(os.Stderr, "alternatively, use 'ccattler run <file>' to run as OS processes instead")
+		fmt.Fprintln(os.Stderr, "alternatively, use 'cca run <file>' to run as OS processes instead")
 		os.Exit(1)
 	}
 

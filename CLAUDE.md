@@ -93,7 +93,7 @@ API-1  API-2
 #### Node Enrollment
 
 ```
-ccattler join <cluster> <bootstrap-token>
+cca join <cluster> <bootstrap-token>
 ```
 
 Bootstrap token is short-lived, single-use, scoped to enrollment only. Node generates its own private key, sends CSR, receives signed certificate, bootstrap token is destroyed. Supports hardware identity (TPM, cloud instance identity) for stronger enrollment.
@@ -550,7 +550,7 @@ EXPECT: placement=[n1:3, n2:2]
 ### Chaos Mode
 
 ```
-ccattler chaos
+cca chaos
 ```
 
 Randomly injects: node failures, network delays, process crashes, stale observations, controller restarts, duplicate events, lost messages, slow storage. Asserts: **eventually observed state converges to desired state.**
@@ -832,13 +832,13 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 ## CLI
 
 ```
-ctl apply <file>              # deploy config
-ctl get services              # list services
-ctl get instances             # list instances
-ctl get nodes                 # list nodes
-ctl scale web 20              # change desired count
-ctl logs web                  # view logs
-ctl status                    # cluster overview
+cca apply <file>              # deploy config
+cca get services              # list services
+cca get instances             # list instances
+cca get nodes                 # list nodes
+cca scale web 20              # change desired count
+cca logs web                  # view logs
+cca status                    # cluster overview
 ```
 
 ---
@@ -882,9 +882,9 @@ ctl status                    # cluster overview
 
 ### Phase 5 — Single Machine (M2 target)
 - [x] Process runtime adapter (Linux processes, not containers yet)
-- [x] End-to-end on laptop: `ccattler apply web.ccl` → facts → reconciler → real processes
-- [x] `ccattler status` showing SERVICE / DESIRED / RUNNING / CPU
-- [x] `ccattler metric set web cpu 90` for simulated autoscaling feedback
+- [x] End-to-end on laptop: `cca apply web.ccl` → facts → reconciler → real processes
+- [x] `cca status` showing SERVICE / DESIRED / RUNNING / CPU
+- [x] `cca metric set web cpu 90` for simulated autoscaling feedback
 - [x] Container runtime adapter (containerd) — pull, start, stop
 - [x] Health checking (HTTP, TCP, exec probes)
 - [x] Graceful shutdown (SIGTERM → grace period → SIGKILL)
@@ -937,7 +937,7 @@ ctl status                    # cluster overview
 - [ ] CLI tool (apply, get, scale, logs, status)
 - [ ] Internal CA hierarchy (offline root → control-plane CA + node CA)
 - [ ] mTLS between all components (API, controllers, store, node agents)
-- [ ] Node enrollment (`ccattler join` with bootstrap token → CSR → certificate)
+- [ ] Node enrollment (`cca join` with bootstrap token → CSR → certificate)
 - [ ] Certificate auto-rotation (short-lived certs, ~1hr TTL)
 - [ ] Human auth via OIDC/OAuth2
 - [ ] RBAC: roles with fact-prefix permissions

@@ -148,8 +148,8 @@ The human-to-machine boundary: `.ccattler` files → facts in the store.
 
 Runnable binary that demonstrates M1.
 
-- `ccattler apply <file>` — parses a `.ccattler` file, boots memory store with 3 simulated nodes, starts all 4 controllers (instance, scheduler, endpoint, failure), applies the config, waits for reconciliation, prints cluster status
-- `ccattler demo` — same but with a built-in config, no file needed
+- `cca apply <file>` — parses a `.ccattler` file, boots memory store with 3 simulated nodes, starts all 4 controllers (instance, scheduler, endpoint, failure), applies the config, waits for reconciliation, prints cluster status
+- `cca demo` — same but with a built-in config, no file needed
 - `printStatus` shows services, instances with placements, nodes, and per-node load distribution
 
 **Demo output confirms M1**: DSL → parser → facts → instance controller creates 3 pending instances → scheduler places them spread 1 per node across 3 simulated nodes.
@@ -161,7 +161,7 @@ Runnable binary that demonstrates M1.
 Pluggable runtime layer — controllers and agent don't know how workloads actually run.
 
 - **Runtime interface**: `Start(Spec)`, `Stop(id)`, `Status(id)`, `List()`. `Spec` carries ID, Image, Env, CPUm, MemoryB.
-- **SimulatorRuntime**: In-memory fake, tracks running/stopped state. Thread-safe. For tests and `ccattler demo`.
+- **SimulatorRuntime**: In-memory fake, tracks running/stopped state. Thread-safe. For tests and `cca demo`.
 - **ProcessRuntime**: Runs workloads as OS processes. `Spec.Image` is the shell command. Uses `exec.Command` with process group (`Setpgid`). Graceful shutdown: SIGTERM → configurable grace period → SIGKILL. `StopAll()` for cleanup on exit. `StartError` type distinguishes start failures from runtime crashes.
 
 **Design decision:** Image field dual-purpose — for ProcessRuntime it's the shell command, for ContainerRuntime (future) it's the OCI image reference. This lets us test the full pipeline with real processes before adding container support.
@@ -197,9 +197,9 @@ Health probes integrated into the agent reconcile loop.
 
 Updated CLI with live process execution and full agent integration.
 
-- `ccattler run <file>` — starts real processes via ProcessRuntime + node agent on "local" node, prints status every 2s, graceful shutdown on Ctrl+C
-- `ccattler demo` — built-in config with SimulatorRuntime + agent, instances report as "running"
-- `ccattler apply <file>` — simulated mode with 3 nodes (no agent, no runtime)
+- `cca run <file>` — starts real processes via ProcessRuntime + node agent on "local" node, prints status every 2s, graceful shutdown on Ctrl+C
+- `cca demo` — built-in config with SimulatorRuntime + agent, instances report as "running"
+- `cca apply <file>` — simulated mode with 3 nodes (no agent, no runtime)
 - `printStatus` shows services with running count, active instances with health status, nodes with CPU/memory load
 
 ## 2026-09-07: Status API & Metric Command
@@ -209,8 +209,8 @@ Updated CLI with live process execution and full agent integration.
 Added HTTP status API and standalone `status`/`metric` CLI commands.
 
 - **Status API** (`127.0.0.1:9770`): started by `run` and `demo` commands. Serves `/status` (text or JSON depending on Accept header) and `/metric` (POST to set observed metrics).
-- **`ccattler status`**: queries the status API, prints cluster status (services, instances, nodes). Works from a separate terminal while `run` or `demo` is active.
-- **`ccattler metric set <service> <metric> <value>`**: writes simulated metrics to the store via the API. Stored at `observed/metric/service/{name}/{metric}`. Ready for autoscaler controller consumption.
+- **`cca status`**: queries the status API, prints cluster status (services, instances, nodes). Works from a separate terminal while `run` or `demo` is active.
+- **`cca metric set <service> <metric> <value>`**: writes simulated metrics to the store via the API. Stored at `observed/metric/service/{name}/{metric}`. Ready for autoscaler controller consumption.
 - **JSON output**: `Accept: application/json` on `/status` returns structured data (`serviceStatus`, `instanceStatus`, `nodeStatus`).
 - Refactored `printStatus` into `buildStatusText`/`buildStatusJSON` — single source of truth for status rendering.
 
@@ -249,7 +249,7 @@ Lease-based node liveness and automatic failure recovery.
 
 **Files:** `cmd/ccattler/main.go` (added `demo-distributed` command)
 
-`ccattler demo-distributed` — 3 simulated nodes, deploys 6 instances spread 2 per node, then kills node-1 after 5 seconds to demonstrate the full failure recovery pipeline. Status prints every 2 seconds showing the transition: node-1 goes unreachable, its instances are rescheduled to node-2 and node-3, system converges back to 6 running instances.
+`cca demo-distributed` — 3 simulated nodes, deploys 6 instances spread 2 per node, then kills node-1 after 5 seconds to demonstrate the full failure recovery pipeline. Status prints every 2 seconds showing the transition: node-1 goes unreachable, its instances are rescheduled to node-2 and node-3, system converges back to 6 running instances.
 
 ## M3 Milestone Status: IN PROGRESS
 
@@ -259,17 +259,17 @@ Phase 6 partially complete:
 - [x] Multi-node simulation (3 agents in one process, each with own SimulatorRuntime)
 - [x] Distributed scheduling across nodes (spread strategy)
 - [x] Node failure detection → rescheduling → convergence
-- [x] `ccattler demo-distributed` CLI command
+- [x] `cca demo-distributed` CLI command
 - [x] 4 distributed integration tests
 
-**Total: 140 tests across 9 packages, all passing.** `ccattler demo-distributed` proves end-to-end: deploy → spread → kill → detect → reschedule → converge.
+**Total: 140 tests across 9 packages, all passing.** `cca demo-distributed` proves end-to-end: deploy → spread → kill → detect → reschedule → converge.
 
 ## M2 Milestone Status: COMPLETE
 
 All M2 deliverables are implemented and tested:
 - Phase 5: Runtime interface + simulator/process/container adapters, node agent, health checking (HTTP/TCP integrated into agent loop), graceful shutdown, CLI with 6 commands (apply, run, run-container, demo, status, metric), HTTP status API (text + JSON), simulated metric injection ✓
 
-**Total: 128 tests across 9 packages, all passing.** `ccattler run examples/web.ccattler` proves end-to-end with real processes. `ccattler status` queries the running instance.
+**Total: 128 tests across 9 packages, all passing.** `cca run examples/web.ccattler` proves end-to-end with real processes. `cca status` queries the running instance.
 
 ## M1 Milestone Status: COMPLETE
 
@@ -280,4 +280,4 @@ All M1 deliverables are implemented and tested:
 - Phase 3: Controller framework + instance/endpoint/failure controllers ✓
 - Phase 4: Scheduler with spread + resource accounting ✓
 
-**Total: 78 tests across 7 packages, all passing.** The `ccattler demo` command proves end-to-end reconciliation.
+**Total: 78 tests across 7 packages, all passing.** The `cca demo` command proves end-to-end reconciliation.
