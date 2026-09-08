@@ -1,6 +1,6 @@
 {
-  "testCount": 432,
-  "packageCount": 13,
+  "testCount": 434,
+  "packageCount": 14,
   "milestones": [
     {
       "id": "M1",
@@ -120,7 +120,7 @@
       "name": "web-container",
       "filename": "web-container.ccattler",
       "description": "Container deployment with config file and networking.",
-      "content": "# Container deployment with config file and networking.\n#\n# Demonstrates: real Docker containers, config file mounting, cluster-network\n#               IP allocation, exposed port.\n# Run with:  cca run-container examples/web-container.ccattler\n#\n# Expected: 2 nginx instances, each with a custom index.html mounted via config,\n#           allocated IPs from 10.100.x.y subnet, port 80 exposed.\n\nservice web {\n    image nginx:1.28\n    instances 2\n    expose 80\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    config {\n        file \"/usr/share/nginx/html/index.html\" = \"\u003ch1\u003eHello from CCattler\u003c/h1\u003e\"\n    }\n}\n"
+      "content": "# Container deployment with config file and networking.\n#\n# Demonstrates: real Docker containers, config file mounting, cluster-network\n#               IP allocation, exposed port.\n# Run with:  cca run-container examples/web-container.ccattler\n#\n# Expected: 2 nginx instances, each with a custom index.html mounted via config,\n#           allocated IPs from 10.100.x.y subnet, port 80 exposed.\n\nservice web {\n    image nginx:1.28\n    instances 2\n    expose 80\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    config {\n        file \"/usr/share/nginx/html/index.html\" \"\u003ch1\u003eHello from CCattler\u003c/h1\u003e\"\n    }\n}\n"
     },
     {
       "name": "web",

@@ -16,6 +16,6 @@ service web {
         memory 512Mi
     }
     config {
-        file "/usr/share/nginx/html/index.html" = "<h1>Hello from CCattler</h1>"
+        file "/usr/share/nginx/html/index.html" "<h1>Hello from CCattler</h1>"
     }
 }
