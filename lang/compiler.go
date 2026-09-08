@@ -103,6 +103,29 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		})
 	}
 
+	if serviceDecl.Scale != nil && serviceDecl.Scale.Horizontal != nil {
+		horizontal := serviceDecl.Scale.Horizontal
+		if horizontal.Min < 0 {
+			return nil, fmt.Errorf("line %d: service %q scale min must be >= 0", serviceDecl.Line, serviceDecl.Name)
+		}
+		if horizontal.Max < horizontal.Min {
+			return nil, fmt.Errorf("line %d: service %q scale max must be >= min", serviceDecl.Line, serviceDecl.Name)
+		}
+		facts = append(facts,
+			Fact{Key: types.KeyDesiredServiceScaleHorizontalMin(serviceDecl.Name), Value: strconv.Itoa(horizontal.Min)},
+			Fact{Key: types.KeyDesiredServiceScaleHorizontalMax(serviceDecl.Name), Value: strconv.Itoa(horizontal.Max)},
+		)
+		for _, target := range horizontal.Targets {
+			if target.Value <= 0 {
+				return nil, fmt.Errorf("line %d: service %q scale target %q must be > 0", serviceDecl.Line, serviceDecl.Name, target.Metric)
+			}
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceScaleHorizontalTarget(serviceDecl.Name, target.Metric),
+				Value: strconv.Itoa(target.Value),
+			})
+		}
+	}
+
 	if serviceDecl.Health != nil {
 		if serviceDecl.Health.Method != "" {
 			facts = append(facts, Fact{
@@ -125,7 +148,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 }
 
 // Apply parses a DSL string and writes all resulting facts to the store.
-func Apply(ctx context.Context, s store.StateStore, input string) error {
+func Apply(ctx context.Context, stateStore store.StateStore, input string) error {
 	file, err := Parse(input)
 	if err != nil {
 		return err
@@ -135,7 +158,7 @@ func Apply(ctx context.Context, s store.StateStore, input string) error {
 		return err
 	}
 	for _, fact := range facts {
-		if _, err := s.Put(ctx, fact.Key, []byte(fact.Value)); err != nil {
+		if _, err := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); err != nil {
 			return fmt.Errorf("writing %s: %w", fact.Key, err)
 		}
 	}

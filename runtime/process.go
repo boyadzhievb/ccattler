@@ -15,7 +15,7 @@ import (
 // (e.g. "python3 -m http.server 8080"), which is split on whitespace
 // and executed directly (no shell involved).
 type ProcessRuntime struct {
-	mu          sync.Mutex                       // mu guards concurrent access to the processes map.
+	mutex       sync.Mutex                       // mutex guards concurrent access to the processes map.
 	processes   map[string]*managedProcess       // processes maps workload IDs to their managed process state.
 	gracePeriod time.Duration                    // gracePeriod is the time to wait between SIGTERM and SIGKILL during shutdown.
 }
@@ -49,8 +49,8 @@ func (processRuntime *ProcessRuntime) SetGracePeriod(d time.Duration) {
 // field is split on whitespace to form the command and arguments. Returns a
 // StartError if the command is empty or fails to launch.
 func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error {
-	processRuntime.mu.Lock()
-	defer processRuntime.mu.Unlock()
+	processRuntime.mutex.Lock()
+	defer processRuntime.mutex.Unlock()
 
 	if process, ok := processRuntime.processes[spec.ID]; ok {
 		if process.isRunning() {
@@ -68,8 +68,8 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 
-	for k, v := range spec.Env {
-		command.Env = append(command.Env, k+"="+v)
+	for envKey, envValue := range spec.Env {
+		command.Env = append(command.Env, envKey+"="+envValue)
 	}
 	if len(spec.Env) > 0 {
 		command.Env = append(os.Environ(), command.Env...)
@@ -98,9 +98,9 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 // process has not exited. Idempotent — returns nil if the process is already
 // stopped or was never started.
 func (processRuntime *ProcessRuntime) Stop(_ context.Context, id string) error {
-	processRuntime.mu.Lock()
+	processRuntime.mutex.Lock()
 	process, ok := processRuntime.processes[id]
-	processRuntime.mu.Unlock()
+	processRuntime.mutex.Unlock()
 
 	if !ok || !process.isRunning() {
 		return nil
@@ -123,8 +123,8 @@ func (processRuntime *ProcessRuntime) Stop(_ context.Context, id string) error {
 // including its PID and exit code. Returns ErrNotFound if the workload has
 // never been started.
 func (processRuntime *ProcessRuntime) Status(_ context.Context, id string) (Status, error) {
-	processRuntime.mu.Lock()
-	defer processRuntime.mu.Unlock()
+	processRuntime.mutex.Lock()
+	defer processRuntime.mutex.Unlock()
 
 	process, ok := processRuntime.processes[id]
 	if !ok {
@@ -153,8 +153,8 @@ func (processRuntime *ProcessRuntime) Status(_ context.Context, id string) (Stat
 // List returns the current state of every process the runtime has launched,
 // including those that have already exited.
 func (processRuntime *ProcessRuntime) List(_ context.Context) ([]Status, error) {
-	processRuntime.mu.Lock()
-	defer processRuntime.mu.Unlock()
+	processRuntime.mutex.Lock()
+	defer processRuntime.mutex.Unlock()
 
 	var result []Status
 	for id, process := range processRuntime.processes {
@@ -174,12 +174,12 @@ func (processRuntime *ProcessRuntime) List(_ context.Context) ([]Status, error) 
 // StopAll gracefully stops every process the runtime is tracking. It is
 // typically called during application shutdown to clean up child processes.
 func (processRuntime *ProcessRuntime) StopAll(ctx context.Context) {
-	processRuntime.mu.Lock()
+	processRuntime.mutex.Lock()
 	ids := make([]string, 0, len(processRuntime.processes))
 	for id := range processRuntime.processes {
 		ids = append(ids, id)
 	}
-	processRuntime.mu.Unlock()
+	processRuntime.mutex.Unlock()
 
 	for _, id := range ids {
 		processRuntime.Stop(ctx, id)
@@ -206,6 +206,6 @@ type StartError struct {
 }
 
 // Error returns a formatted error string including the workload ID and failure reason.
-func (e *StartError) Error() string {
-	return "failed to start " + e.ID + ": " + e.Reason
+func (startError *StartError) Error() string {
+	return "failed to start " + startError.ID + ": " + startError.Reason
 }

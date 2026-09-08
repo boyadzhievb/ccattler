@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M7 — Smart (Phase 10). M1–M6 complete (272 tests). Next: autoscaling, rolling deploys, placement policies.
+**Active milestone:** M7 — Smart (Phase 10). M1–M6 complete. Autoscaling engine, horizontal scaling, multi-policy resolution, and intent layers done. Next: stabilization windows, rolling deploys, placement policies.
 
 ---
 
@@ -918,16 +918,16 @@ cca status                    # cluster overview
 - [x] The only question: **does the system eventually converge to desired state?**
 
 ### Phase 10 — Policies & Autoscaling
-- [ ] Unified scaling engine (signal → policy → recommendation → constraints → desired state)
-- [ ] Horizontal autoscaling (CPU, memory, RPS targets)
+- [x] Unified scaling engine (signal → policy → recommendation → constraints → desired state)
+- [x] Horizontal autoscaling (CPU, memory, RPS targets)
 - [ ] Vertical autoscaling (resource requirement changes, in-place resize vs replace)
 - [ ] Event-driven scaling (queue depth, custom metrics)
 - [ ] Scheduled scaling (time-based minimums)
 - [ ] Stabilization windows (scale-up 60s, scale-down 5m, no oscillation)
-- [ ] Multi-policy resolution (single decision function, no competing writers)
+- [x] Multi-policy resolution (single decision function, no competing writers)
 - [ ] Quota-aware scaling (tenant limits visible, not silently capped)
 - [ ] Cluster autoscaling (unsatisfied demand → desired nodes → infra provider)
-- [ ] Intent layers (user, autoscaler, policy — derived effective state)
+- [x] Intent layers (user, autoscaler, policy — derived effective state)
 - [ ] Placement constraints (architecture, zone, spread, affinity)
 - [ ] Rolling update controller with max_unavailable/max_extra
 - [ ] Rollback on health check failure

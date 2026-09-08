@@ -18,18 +18,18 @@ func TestCompileMinimalService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if m[types.KeyDesiredServiceImage("web")] != "nginx:1.28" {
-		t.Errorf("image: %s", m[types.KeyDesiredServiceImage("web")])
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceImage("web")] != "nginx:1.28" {
+		t.Errorf("image: %s", compiledFactMap[types.KeyDesiredServiceImage("web")])
 	}
-	if m[types.KeyDesiredServiceInstances("web")] != "3" {
-		t.Errorf("instances: %s", m[types.KeyDesiredServiceInstances("web")])
+	if compiledFactMap[types.KeyDesiredServiceInstances("web")] != "3" {
+		t.Errorf("instances: %s", compiledFactMap[types.KeyDesiredServiceInstances("web")])
 	}
-	if m[types.KeyEffectiveServiceInstances("web")] != "3" {
-		t.Errorf("effective instances: %s", m[types.KeyEffectiveServiceInstances("web")])
+	if compiledFactMap[types.KeyEffectiveServiceInstances("web")] != "3" {
+		t.Errorf("effective instances: %s", compiledFactMap[types.KeyEffectiveServiceInstances("web")])
 	}
-	if m[types.KeyIntentUserServiceInstances("web")] != "3" {
-		t.Errorf("intent: %s", m[types.KeyIntentUserServiceInstances("web")])
+	if compiledFactMap[types.KeyIntentUserServiceInstances("web")] != "3" {
+		t.Errorf("intent: %s", compiledFactMap[types.KeyIntentUserServiceInstances("web")])
 	}
 }
 
@@ -44,8 +44,8 @@ func TestCompileServiceWithPort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if _, ok := m[types.KeyDesiredServiceExpose("web", 8080)]; !ok {
+	compiledFactMap := factMap(facts)
+	if _, ok := compiledFactMap[types.KeyDesiredServiceExpose("web", 8080)]; !ok {
 		t.Error("missing expose fact")
 	}
 }
@@ -64,12 +64,12 @@ func TestCompileServiceWithResources(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if m[types.KeyDesiredServiceResourcesCPU("web")] != "500m" {
-		t.Errorf("cpu: %s", m[types.KeyDesiredServiceResourcesCPU("web")])
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceResourcesCPU("web")] != "500m" {
+		t.Errorf("cpu: %s", compiledFactMap[types.KeyDesiredServiceResourcesCPU("web")])
 	}
-	if m[types.KeyDesiredServiceResourcesMemory("web")] != "512Mi" {
-		t.Errorf("memory: %s", m[types.KeyDesiredServiceResourcesMemory("web")])
+	if compiledFactMap[types.KeyDesiredServiceResourcesMemory("web")] != "512Mi" {
+		t.Errorf("memory: %s", compiledFactMap[types.KeyDesiredServiceResourcesMemory("web")])
 	}
 }
 
@@ -87,11 +87,11 @@ service api {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if m[types.KeyDesiredServiceImage("web")] != "nginx:1.28" {
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceImage("web")] != "nginx:1.28" {
 		t.Error("missing web image")
 	}
-	if m[types.KeyDesiredServiceImage("api")] != "myapp:latest" {
+	if compiledFactMap[types.KeyDesiredServiceImage("api")] != "myapp:latest" {
 		t.Error("missing api image")
 	}
 }
@@ -107,8 +107,8 @@ func TestCompileErrorNoImage(t *testing.T) {
 }
 
 func TestApplyEndToEnd(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
 	input := `service web {
     image nginx:1.28
@@ -119,13 +119,13 @@ func TestApplyEndToEnd(t *testing.T) {
         memory 512Mi
     }
 }`
-	err := Apply(context.Background(), s, input)
+	err := Apply(context.Background(), factStore, input)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Verify facts in the store.
-	svc, err := types.ReadService(context.Background(), s, "web")
+	svc, err := types.ReadService(context.Background(), factStore, "web")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestApplyEndToEnd(t *testing.T) {
 	}
 
 	// Verify effective instances were set (drives instance controller).
-	f, err := s.Get(context.Background(), types.KeyEffectiveServiceInstances("web"))
+	f, err := factStore.Get(context.Background(), types.KeyEffectiveServiceInstances("web"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,23 +167,23 @@ func TestCompileServiceWithHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if m[types.KeyDesiredServiceHealthMethod("web")] != "http" {
-		t.Errorf("health method: %s", m[types.KeyDesiredServiceHealthMethod("web")])
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceHealthMethod("web")] != "http" {
+		t.Errorf("health method: %s", compiledFactMap[types.KeyDesiredServiceHealthMethod("web")])
 	}
-	if m[types.KeyDesiredServiceHealthPath("web")] != "/health" {
-		t.Errorf("health path: %s", m[types.KeyDesiredServiceHealthPath("web")])
+	if compiledFactMap[types.KeyDesiredServiceHealthPath("web")] != "/health" {
+		t.Errorf("health path: %s", compiledFactMap[types.KeyDesiredServiceHealthPath("web")])
 	}
-	if m[types.KeyDesiredServiceHealthInterval("web")] != "10s" {
-		t.Errorf("health interval: %s", m[types.KeyDesiredServiceHealthInterval("web")])
+	if compiledFactMap[types.KeyDesiredServiceHealthInterval("web")] != "10s" {
+		t.Errorf("health interval: %s", compiledFactMap[types.KeyDesiredServiceHealthInterval("web")])
 	}
 }
 
 func TestApplyParseError(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	err := Apply(context.Background(), s, `service web { bogus 42 }`)
+	err := Apply(context.Background(), factStore, `service web { bogus 42 }`)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -199,15 +199,15 @@ func TestCompileVolumeDeclaration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if _, ok := m[types.KeyDesiredVolume("pgdata")]; !ok {
+	compiledFactMap := factMap(facts)
+	if _, ok := compiledFactMap[types.KeyDesiredVolume("pgdata")]; !ok {
 		t.Error("missing volume marker fact")
 	}
-	if m[types.KeyDesiredVolumeSize("pgdata")] != "100Gi" {
-		t.Errorf("size: %s", m[types.KeyDesiredVolumeSize("pgdata")])
+	if compiledFactMap[types.KeyDesiredVolumeSize("pgdata")] != "100Gi" {
+		t.Errorf("size: %s", compiledFactMap[types.KeyDesiredVolumeSize("pgdata")])
 	}
-	if m[types.KeyDesiredVolumePersistent("pgdata")] != "true" {
-		t.Errorf("persistent: %s", m[types.KeyDesiredVolumePersistent("pgdata")])
+	if compiledFactMap[types.KeyDesiredVolumePersistent("pgdata")] != "true" {
+		t.Errorf("persistent: %s", compiledFactMap[types.KeyDesiredVolumePersistent("pgdata")])
 	}
 }
 
@@ -222,16 +222,16 @@ func TestCompileServiceWithVolumeMount(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := factMap(facts)
-	if m[types.KeyDesiredServiceVolume("postgres", "pgdata")] != "/var/lib/postgresql/data" {
-		t.Errorf("volume mount: %s", m[types.KeyDesiredServiceVolume("postgres", "pgdata")])
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceVolume("postgres", "pgdata")] != "/var/lib/postgresql/data" {
+		t.Errorf("volume mount: %s", compiledFactMap[types.KeyDesiredServiceVolume("postgres", "pgdata")])
 	}
 }
 
 func factMap(facts []Fact) map[string]string {
-	m := make(map[string]string)
-	for _, f := range facts {
-		m[f.Key] = f.Value
+	factLookup := make(map[string]string)
+	for _, compiledFact := range facts {
+		factLookup[compiledFact.Key] = compiledFact.Value
 	}
-	return m
+	return factLookup
 }

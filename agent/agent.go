@@ -59,8 +59,8 @@ func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvid
 
 // SetInterval overrides the default periodic reconciliation interval.
 // This is typically used in tests to speed up convergence.
-func (a *Agent) SetInterval(d time.Duration) {
-	a.interval = d
+func (nodeAgent *Agent) SetInterval(reconciliationInterval time.Duration) {
+	nodeAgent.interval = reconciliationInterval
 }
 
 // Run starts the agent loop. It blocks until ctx is cancelled.
@@ -68,22 +68,22 @@ func (a *Agent) SetInterval(d time.Duration) {
 // On startup it registers the node as alive in the store, performs an initial
 // reconciliation, then enters a loop that reconciles on every tick of the
 // interval timer and on every placement-key change observed via the store watch.
-func (a *Agent) Run(ctx context.Context) error {
+func (nodeAgent *Agent) Run(ctx context.Context) error {
 	// Register this node and write initial heartbeat.
-	a.store.Put(ctx, types.KeyObservedNode(a.nodeID), []byte(""))
-	a.store.Put(ctx, types.KeyObservedNodeState(a.nodeID), []byte(string(types.NodeAlive)))
-	a.writeHeartbeat(ctx)
+	nodeAgent.store.Put(ctx, types.KeyObservedNode(nodeAgent.nodeID), []byte(""))
+	nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
+	nodeAgent.writeHeartbeat(ctx)
 
 	// Initial reconcile.
-	if err := a.executeReconciliationCycle(ctx); err != nil {
-		log.Printf("agent %s: initial reconcile error: %v", a.nodeID, err)
+	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
+		log.Printf("agent %s: initial reconcile error: %v", nodeAgent.nodeID, err)
 	}
 
 	// Watch for placement changes and reconcile periodically.
-	ticker := time.NewTicker(a.interval)
+	ticker := time.NewTicker(nodeAgent.interval)
 	defer ticker.Stop()
 
-	placementCh, err := a.store.Watch(ctx, types.ScanPlacements, store.WatchOption{Prefix: true})
+	placementCh, err := nodeAgent.store.Watch(ctx, types.ScanPlacements, store.WatchOption{Prefix: true})
 	if err != nil {
 		return err
 	}
@@ -93,17 +93,17 @@ func (a *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			a.store.Put(ctx, types.KeyObservedNodeState(a.nodeID), []byte(string(types.NodeAlive)))
-			a.writeHeartbeat(ctx)
-			if err := a.executeReconciliationCycle(ctx); err != nil {
-				log.Printf("agent %s: reconcile error: %v", a.nodeID, err)
+			nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
+			nodeAgent.writeHeartbeat(ctx)
+			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
+				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
 			}
 		case _, ok := <-placementCh:
 			if !ok {
 				return nil
 			}
-			if err := a.executeReconciliationCycle(ctx); err != nil {
-				log.Printf("agent %s: reconcile error: %v", a.nodeID, err)
+			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
+				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
 			}
 		}
 	}
@@ -113,15 +113,15 @@ func (a *Agent) Run(ctx context.Context) error {
 // the set of instances placed on this node (desired) with what the runtime
 // reports as actually running, starts missing instances, stops stale ones,
 // and reports health for every desired instance that has a health probe.
-func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
+func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	// Find instances placed on this node.
-	desired, err := a.findInstancesPlacedOnThisNode(ctx)
+	desired, err := nodeAgent.findInstancesPlacedOnThisNode(ctx)
 	if err != nil {
 		return err
 	}
 
 	// Get current runtime state.
-	running, err := a.runtime.List(ctx)
+	running, err := nodeAgent.runtime.List(ctx)
 	if err != nil {
 		return err
 	}
@@ -136,10 +136,10 @@ func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
 
 		if !exists || !runtimeStatus.Running {
 			// Check volume readiness before starting.
-			if a.storageProvider != nil {
-				volumesReady, attachErr := a.ensureVolumesAttachedForInstance(ctx, instanceInfo)
+			if nodeAgent.storageProvider != nil {
+				volumesReady, attachErr := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)
 				if attachErr != nil {
-					log.Printf("agent %s: volume error for %s: %v", a.nodeID, instanceInfo.id, attachErr)
+					log.Printf("agent %s: volume error for %s: %v", nodeAgent.nodeID, instanceInfo.id, attachErr)
 				}
 				if !volumesReady {
 					delete(runningByID, instanceInfo.id)
@@ -147,37 +147,37 @@ func (a *Agent) executeReconciliationCycle(ctx context.Context) error {
 				}
 			}
 
-			image := a.lookupServiceImageFromStore(ctx, instanceInfo.service)
+			image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
 			if image == "" {
 				continue
 			}
-			if err := a.runtime.Start(ctx, runtime.Spec{
+			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
 				ID:    instanceInfo.id,
 				Image: image,
 			}); err != nil {
-				log.Printf("agent %s: failed to start %s: %v", a.nodeID, instanceInfo.id, err)
-				a.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
+				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
+				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
 				continue
 			}
-			a.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
 		} else {
-			a.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
 		}
 
-		a.performHealthCheckAndReportResult(ctx, instanceInfo)
+		nodeAgent.performHealthCheckAndReportResult(ctx, instanceInfo)
 		delete(runningByID, instanceInfo.id)
 	}
 
 	// Stop processes that shouldn't be running (no longer placed here).
-	for id, runtimeStatus := range runningByID {
+	for instanceID, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
-			if a.storageProvider != nil {
-				a.detachVolumesForInstance(ctx, id)
+			if nodeAgent.storageProvider != nil {
+				nodeAgent.detachVolumesForInstance(ctx, instanceID)
 			}
-			a.runtime.Stop(ctx, id)
-			if a.networkProvider != nil {
-				a.networkProvider.ReleaseIP(ctx, a.nodeID, id)
-				types.DeleteNetworkAllocation(ctx, a.store, id)
+			nodeAgent.runtime.Stop(ctx, instanceID)
+			if nodeAgent.networkProvider != nil {
+				nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
+				types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)
 			}
 		}
 	}
@@ -196,35 +196,35 @@ type placedInstanceInfo struct {
 // findInstancesPlacedOnThisNode scans all placement facts in the store and
 // returns the subset whose target node matches this agent's nodeID. Instances
 // that are in the "stopped" state are excluded.
-func (a *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]placedInstanceInfo, error) {
-	placements, err := a.store.Scan(ctx, types.ScanPlacements)
+func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]placedInstanceInfo, error) {
+	placements, err := nodeAgent.store.Scan(ctx, types.ScanPlacements)
 	if err != nil {
 		return nil, err
 	}
 
 	var result []placedInstanceInfo
-	for _, f := range placements {
-		nodeID := string(f.Value)
-		if nodeID != a.nodeID {
+	for _, placementFact := range placements {
+		nodeID := string(placementFact.Value)
+		if nodeID != nodeAgent.nodeID {
 			continue
 		}
-		instanceID := strings.TrimPrefix(f.Key, types.ScanPlacements)
+		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
 
 		// Check instance isn't stopped.
-		stateF, err := a.store.Get(ctx, types.KeyObservedInstanceState(instanceID))
-		if err == nil && types.InstanceState(stateF.Value) == types.InstanceStopped {
+		stateFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		if err == nil && types.InstanceState(stateFact.Value) == types.InstanceStopped {
 			continue
 		}
 
 		// Get the service name.
-		svcF, err := a.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
+		serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
 		if err != nil {
 			continue
 		}
 
 		result = append(result, placedInstanceInfo{
 			id:      instanceID,
-			service: string(svcF.Value),
+			service: string(serviceFact.Value),
 		})
 	}
 	return result, nil
@@ -233,12 +233,12 @@ func (a *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]placedInst
 // lookupServiceImageFromStore retrieves the container image reference for the
 // given service from the desired-state section of the store. Returns an empty
 // string if the image fact is missing.
-func (a *Agent) lookupServiceImageFromStore(ctx context.Context, service string) string {
-	f, err := a.store.Get(ctx, types.KeyDesiredServiceImage(service))
+func (nodeAgent *Agent) lookupServiceImageFromStore(ctx context.Context, service string) string {
+	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceImage(service))
 	if err != nil {
 		return ""
 	}
-	return string(f.Value)
+	return string(factEntry.Value)
 }
 
 // performHealthCheckAndReportResult looks up the health probe configuration for
@@ -246,15 +246,15 @@ func (a *Agent) lookupServiceImageFromStore(ctx context.Context, service string)
 // instance's IP address, and writes the resulting health status (healthy or
 // unhealthy) back to the store. If no health probe is configured for the
 // service, this method is a no-op.
-func (a *Agent) performHealthCheckAndReportResult(ctx context.Context, instanceInfo placedInstanceInfo) {
-	probe, ok := a.buildHealthProbeFromServiceConfig(ctx, instanceInfo.service)
+func (nodeAgent *Agent) performHealthCheckAndReportResult(ctx context.Context, instanceInfo placedInstanceInfo) {
+	probe, ok := nodeAgent.buildHealthProbeFromServiceConfig(ctx, instanceInfo.service)
 	if !ok {
 		return
 	}
 
 	ip := "127.0.0.1"
-	if f, err := a.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id)); err == nil {
-		ip = string(f.Value)
+	if factEntry, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id)); err == nil {
+		ip = string(factEntry.Value)
 	}
 
 	healthy := CheckHealth(ctx, probe, ip)
@@ -264,26 +264,26 @@ func (a *Agent) performHealthCheckAndReportResult(ctx context.Context, instanceI
 	} else {
 		status = types.HealthUnhealthy
 	}
-	a.store.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
 }
 
 // buildHealthProbeFromServiceConfig reads the health check configuration for
 // the named service from the store and assembles a HealthProbe. It returns
 // false if the service has no health method configured, if the method is
 // unrecognized, or if no exposed port can be derived.
-func (a *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service string) (HealthProbe, bool) {
-	methodF, err := a.store.Get(ctx, types.KeyDesiredServiceHealthMethod(service))
+func (nodeAgent *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service string) (HealthProbe, bool) {
+	methodFact, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthMethod(service))
 	if err != nil {
 		return HealthProbe{}, false
 	}
-	method := string(methodF.Value)
+	method := string(methodFact.Value)
 
 	probe := HealthProbe{Timeout: 2 * time.Second}
 	switch method {
 	case "http":
 		probe.Type = ProbeHTTP
-		if f, err := a.store.Get(ctx, types.KeyDesiredServiceHealthPath(service)); err == nil {
-			probe.Path = string(f.Value)
+		if factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthPath(service)); err == nil {
+			probe.Path = string(factEntry.Value)
 		} else {
 			probe.Path = "/"
 		}
@@ -294,11 +294,11 @@ func (a *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service s
 	}
 
 	// Derive port from the first expose port on the service.
-	facts, err := a.store.Scan(ctx, fmt.Sprintf("%s/service/%s/expose/", types.PrefixDesired, service))
+	facts, err := nodeAgent.store.Scan(ctx, fmt.Sprintf("%s/service/%s/expose/", types.PrefixDesired, service))
 	if err == nil && len(facts) > 0 {
 		portStr := facts[0].Key[strings.LastIndex(facts[0].Key, "/")+1:]
-		if p, err := strconv.Atoi(portStr); err == nil {
-			probe.Port = p
+		if parsedPort, err := strconv.Atoi(portStr); err == nil {
+			probe.Port = parsedPort
 		}
 	}
 
@@ -313,9 +313,9 @@ func (a *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service s
 // lease key. Millisecond granularity avoids false lease expiry from second-level
 // truncation. The failure detector controller reads these timestamps to
 // determine whether a node is still alive.
-func (a *Agent) writeHeartbeat(ctx context.Context) {
+func (nodeAgent *Agent) writeHeartbeat(ctx context.Context) {
 	timestampMillis := fmt.Sprintf("%d", time.Now().UnixMilli())
-	a.store.Put(ctx, types.KeyLeaseNode(a.nodeID), []byte(timestampMillis))
+	nodeAgent.store.Put(ctx, types.KeyLeaseNode(nodeAgent.nodeID), []byte(timestampMillis))
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a

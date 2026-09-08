@@ -37,10 +37,10 @@ func TestLexBasicService(t *testing.T) {
 	if len(tokens) != len(expected) {
 		t.Fatalf("expected %d tokens, got %d", len(expected), len(tokens))
 	}
-	for i, exp := range expected {
-		if tokens[i].Type != exp.typ || tokens[i].Value != exp.val {
+	for index, expectedToken := range expected {
+		if tokens[index].Type != expectedToken.typ || tokens[index].Value != expectedToken.val {
 			t.Errorf("token %d: got (%s, %q), want (%s, %q)",
-				i, tokens[i].Type, tokens[i].Value, exp.typ, exp.val)
+				index, tokens[index].Type, tokens[index].Value, expectedToken.typ, expectedToken.val)
 		}
 	}
 }

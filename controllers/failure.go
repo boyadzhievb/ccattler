@@ -28,11 +28,11 @@ func NewFailureController() *FailureController {
 
 // Name returns "failure", identifying this controller in logs and runner
 // bookkeeping.
-func (ctrl *FailureController) Name() string { return "failure" }
+func (failureController *FailureController) Name() string { return "failure" }
 
 // Watch returns the fact prefix for observed instances, which is the only
 // prefix the failure controller needs to detect failed instances.
-func (ctrl *FailureController) Watch() []string {
+func (failureController *FailureController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
 	}
@@ -42,7 +42,7 @@ func (ctrl *FailureController) Watch() []string {
 // state. For each failed instance it emits two groups of changes: one to
 // mark the failed instance as stopped, and another to create a replacement
 // instance in the "pending" state for the same service.
-func (ctrl *FailureController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
+func (failureController *FailureController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	// Parse instance fields: instanceID -> {field -> value}.
 	instanceFields := make(map[string]map[string]string)
 	for _, fact := range facts {
@@ -80,7 +80,7 @@ func (ctrl *FailureController) Reconcile(_ context.Context, facts []store.Fact) 
 		})
 
 		// Create a replacement instance in pending state.
-		replacementID := ctrl.NewID()
+		replacementID := failureController.NewID()
 		changes = append(changes,
 			Change{Type: store.OpPut, Key: types.KeyObservedInstance(replacementID), Value: []byte("")},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},

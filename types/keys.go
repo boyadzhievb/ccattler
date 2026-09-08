@@ -245,6 +245,15 @@ const (
 
 	// ScanObservedVolumes scans all observed volume state facts.
 	ScanObservedVolumes = PrefixObserved + "/volume/"
+
+	// ScanObservedMetrics scans all observed metric values for autoscaling.
+	ScanObservedMetrics = PrefixObserved + "/metric/"
+
+	// ScanIntentUserServices scans all user intent layer facts for services.
+	ScanIntentUserServices = PrefixIntent + "/user/service/"
+
+	// ScanIntentAutoscalerServices scans all autoscaler intent layer facts.
+	ScanIntentAutoscalerServices = PrefixIntent + "/autoscaler/service/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -311,6 +320,33 @@ func KeyNetworkVIPServicePort(serviceName string) string {
 // Path: /ccattler/network/dns/{serviceName}
 func KeyNetworkDNS(serviceName string) string {
 	return fmt.Sprintf("%s/dns/%s", PrefixNetwork, serviceName)
+}
+
+// KeyDesiredServiceScaleHorizontalMin returns the store path for a service's
+// horizontal autoscaling minimum instance count.
+// Path: /ccattler/desired/service/{name}/scale/horizontal/min
+func KeyDesiredServiceScaleHorizontalMin(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/min", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleHorizontalMax returns the store path for a service's
+// horizontal autoscaling maximum instance count.
+// Path: /ccattler/desired/service/{name}/scale/horizontal/max
+func KeyDesiredServiceScaleHorizontalMax(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/max", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleHorizontalTarget returns the store path for a single
+// autoscaling target metric and its threshold value.
+// Path: /ccattler/desired/service/{name}/scale/horizontal/target/{metric}
+func KeyDesiredServiceScaleHorizontalTarget(name string, metric string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/target/%s", PrefixDesired, name, metric)
+}
+
+// ScanDesiredServiceScaleTargets returns the scan prefix for all horizontal
+// autoscaling target metrics of a specific service.
+func ScanDesiredServiceScaleTargets(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/target/", PrefixDesired, name)
 }
 
 // KeyDesiredVolume returns the store path for a volume's root marker key.

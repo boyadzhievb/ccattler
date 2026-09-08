@@ -14,7 +14,7 @@ var ErrNotFound = errors.New("workload not found")
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
 type SimulatorRuntime struct {
-	mu        sync.Mutex                         // mu guards concurrent access to the workloads map.
+	mutex     sync.Mutex                         // mutex guards concurrent access to the workloads map.
 	workloads map[string]*simulatedWorkload      // workloads maps workload IDs to their simulated state.
 }
 
@@ -37,8 +37,8 @@ func NewSimulatorRuntime() *SimulatorRuntime {
 // exists, its spec is updated and it is marked running (idempotent). If it does
 // not exist, a new entry is created.
 func (simulator *SimulatorRuntime) Start(_ context.Context, spec Spec) error {
-	simulator.mu.Lock()
-	defer simulator.mu.Unlock()
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
 
 	if workload, ok := simulator.workloads[spec.ID]; ok {
 		workload.isRunning = true
@@ -52,8 +52,8 @@ func (simulator *SimulatorRuntime) Start(_ context.Context, spec Spec) error {
 // Stop marks the workload identified by id as not running. If the workload does
 // not exist, this is a no-op (idempotent).
 func (simulator *SimulatorRuntime) Stop(_ context.Context, id string) error {
-	simulator.mu.Lock()
-	defer simulator.mu.Unlock()
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
 
 	if workload, ok := simulator.workloads[id]; ok {
 		workload.isRunning = false
@@ -65,8 +65,8 @@ func (simulator *SimulatorRuntime) Stop(_ context.Context, id string) error {
 // Status returns the current simulated state of the workload identified by id.
 // Returns ErrNotFound if the workload has never been started.
 func (simulator *SimulatorRuntime) Status(_ context.Context, id string) (Status, error) {
-	simulator.mu.Lock()
-	defer simulator.mu.Unlock()
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
 
 	workload, ok := simulator.workloads[id]
 	if !ok {
@@ -81,8 +81,8 @@ func (simulator *SimulatorRuntime) Status(_ context.Context, id string) (Status,
 // List returns the status of every workload the simulator has ever seen,
 // including those that have been stopped.
 func (simulator *SimulatorRuntime) List(_ context.Context) ([]Status, error) {
-	simulator.mu.Lock()
-	defer simulator.mu.Unlock()
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
 
 	var result []Status
 	for id, workload := range simulator.workloads {

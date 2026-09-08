@@ -24,13 +24,13 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool
 }
 
 func TestDesiredToPlaced(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := controllers.NewInstanceController()
-	sc := scheduler.NewScheduler()
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(s, ic, sc)
+	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -38,7 +38,7 @@ func TestDesiredToPlaced(t *testing.T) {
 
 	// Register 3 alive nodes.
 	for _, id := range []string{"node-1", "node-2", "node-3"} {
-		types.WriteNode(ctx, s, types.Node{
+		types.WriteNode(ctx, factStore, types.Node{
 			ID: id, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
@@ -48,28 +48,28 @@ func TestDesiredToPlaced(t *testing.T) {
 	go runner.Run(ctx)
 
 	// User intent: web service wants 3 instances.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
 
 	// Wait for instances to be created and placed.
 	waitFor(t, 3*time.Second, "3 placements", func() bool {
-		facts, _ := s.Scan(ctx, types.ScanPlacements)
+		facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 		return len(facts) >= 3
 	})
 
 	// Verify placements are spread across nodes.
-	facts, _ := s.Scan(ctx, types.ScanPlacements)
+	facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 	nodeCount := make(map[string]int)
-	for _, f := range facts {
-		nodeCount[string(f.Value)]++
+	for _, placementFact := range facts {
+		nodeCount[string(placementFact.Value)]++
 	}
-	for _, n := range []string{"node-1", "node-2", "node-3"} {
-		if nodeCount[n] != 1 {
-			t.Errorf("node %s got %d placements, want 1 (spread)", n, nodeCount[n])
+	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
+		if nodeCount[nodeID] != 1 {
+			t.Errorf("node %s got %d placements, want 1 (spread)", nodeID, nodeCount[nodeID])
 		}
 	}
 
 	// Verify all instances are pending (no node agent to start them).
-	instances, _ := types.ListInstances(ctx, s)
+	instances, _ := types.ListInstances(ctx, factStore)
 	webCount := 0
 	for _, inst := range instances {
 		if inst.Service == "web" {
@@ -85,44 +85,44 @@ func TestDesiredToPlaced(t *testing.T) {
 }
 
 func TestScaleUpPlacesNewInstances(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := controllers.NewInstanceController()
-	sc := scheduler.NewScheduler()
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(s, ic, sc)
+	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	types.WriteNode(ctx, s, types.Node{ID: "node-1", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
-	types.WriteNode(ctx, s, types.Node{ID: "node-2", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
+	types.WriteNode(ctx, factStore, types.Node{ID: "node-1", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
+	types.WriteNode(ctx, factStore, types.Node{ID: "node-2", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
 
 	go runner.Run(ctx)
 
 	// Start with 2 instances.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
 
 	waitFor(t, 3*time.Second, "2 placements", func() bool {
-		facts, _ := s.Scan(ctx, types.ScanPlacements)
+		facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 		return len(facts) >= 2
 	})
 
 	// Scale to 4.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("4"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("4"))
 
 	waitFor(t, 3*time.Second, "4 placements", func() bool {
-		facts, _ := s.Scan(ctx, types.ScanPlacements)
+		facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 		return len(facts) >= 4
 	})
 
 	// Verify spread: 2 per node.
-	facts, _ := s.Scan(ctx, types.ScanPlacements)
+	facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 	nodeCount := make(map[string]int)
-	for _, f := range facts {
-		nodeCount[string(f.Value)]++
+	for _, placementFact := range facts {
+		nodeCount[string(placementFact.Value)]++
 	}
 	if nodeCount["node-1"] != 2 || nodeCount["node-2"] != 2 {
 		t.Errorf("expected 2 per node, got node-1=%d node-2=%d", nodeCount["node-1"], nodeCount["node-2"])
@@ -130,13 +130,13 @@ func TestScaleUpPlacesNewInstances(t *testing.T) {
 }
 
 func TestNoPlacementWithoutNodes(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := controllers.NewInstanceController()
-	sc := scheduler.NewScheduler()
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(s, ic, sc)
+	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -145,11 +145,11 @@ func TestNoPlacementWithoutNodes(t *testing.T) {
 	go runner.Run(ctx)
 
 	// Desired 3 but no nodes registered.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
 
 	// Instances should be created but not placed.
 	waitFor(t, 2*time.Second, "3 instances created", func() bool {
-		instances, _ := types.ListInstances(ctx, s)
+		instances, _ := types.ListInstances(ctx, factStore)
 		count := 0
 		for _, inst := range instances {
 			if inst.Service == "web" {
@@ -160,16 +160,16 @@ func TestNoPlacementWithoutNodes(t *testing.T) {
 	})
 
 	// No placements.
-	facts, _ := s.Scan(ctx, types.ScanPlacements)
+	facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 	if len(facts) != 0 {
 		t.Fatalf("expected 0 placements without nodes, got %d", len(facts))
 	}
 
 	// Now add a node — instances should get placed.
-	types.WriteNode(ctx, s, types.Node{ID: "node-1", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
+	types.WriteNode(ctx, factStore, types.Node{ID: "node-1", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
 
 	waitFor(t, 3*time.Second, "3 placements after node added", func() bool {
-		facts, _ := s.Scan(ctx, types.ScanPlacements)
+		facts, _ := factStore.Scan(ctx, types.ScanPlacements)
 		return len(facts) >= 3
 	})
 }

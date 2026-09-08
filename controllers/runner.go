@@ -25,9 +25,9 @@ type Runner struct {
 
 // NewRunner creates a Runner that will manage the given controllers, all
 // sharing the same state store. The default debounce interval is 50ms.
-func NewRunner(s store.StateStore, controllers ...Controller) *Runner {
+func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 	return &Runner{
-		store:       s,
+		store:       stateStore,
 		controllers: controllers,
 		debounce:    50 * time.Millisecond,
 	}
@@ -36,19 +36,19 @@ func NewRunner(s store.StateStore, controllers ...Controller) *Runner {
 // SetDebounce overrides the default debounce interval. A shorter interval
 // makes the system more responsive but increases reconciliation frequency;
 // a longer one batches more events together.
-func (r *Runner) SetDebounce(d time.Duration) {
-	r.debounce = d
+func (controllerRunner *Runner) SetDebounce(debounceInterval time.Duration) {
+	controllerRunner.debounce = debounceInterval
 }
 
 // Run starts all controllers and blocks until ctx is cancelled or any
 // controller returns a fatal error. Each controller runs in its own
 // goroutine; the first error from any controller causes Run to return.
-func (r *Runner) Run(ctx context.Context) error {
-	controllerErrors := make(chan error, len(r.controllers))
-	for _, ctrl := range r.controllers {
-		go func(ctrl Controller) {
-			controllerErrors <- r.runSingleController(ctx, ctrl)
-		}(ctrl)
+func (controllerRunner *Runner) Run(ctx context.Context) error {
+	controllerErrors := make(chan error, len(controllerRunner.controllers))
+	for _, controller := range controllerRunner.controllers {
+		go func(controller Controller) {
+			controllerErrors <- controllerRunner.runSingleController(ctx, controller)
+		}(controller)
 	}
 
 	select {
@@ -63,12 +63,12 @@ func (r *Runner) Run(ctx context.Context) error {
 // up watches on all prefixes returned by the controller's Watch method,
 // performs an initial reconciliation, and then re-reconciles each time a
 // watched fact changes (with debouncing).
-func (r *Runner) runSingleController(ctx context.Context, ctrl Controller) error {
+func (controllerRunner *Runner) runSingleController(ctx context.Context, controller Controller) error {
 	reconcileTrigger := make(chan struct{}, 1)
 
 	// Set up watches on all prefixes.
-	for _, prefix := range ctrl.Watch() {
-		watchEventChannel, err := r.store.Watch(ctx, prefix, store.WatchOption{Prefix: true})
+	for _, prefix := range controller.Watch() {
+		watchEventChannel, err := controllerRunner.store.Watch(ctx, prefix, store.WatchOption{Prefix: true})
 		if err != nil {
 			return err
 		}
@@ -91,7 +91,7 @@ func (r *Runner) runSingleController(ctx context.Context, ctrl Controller) error
 	}
 
 	// Initial reconciliation.
-	if err := r.executeReconciliationCycle(ctx, ctrl); err != nil {
+	if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
 		return err
 	}
 
@@ -101,8 +101,8 @@ func (r *Runner) runSingleController(ctx context.Context, ctrl Controller) error
 			return ctx.Err()
 		case <-reconcileTrigger:
 			// Debounce: drain events that arrive in quick succession.
-			if r.debounce > 0 {
-				timer := time.NewTimer(r.debounce)
+			if controllerRunner.debounce > 0 {
+				timer := time.NewTimer(controllerRunner.debounce)
 				select {
 				case <-ctx.Done():
 					timer.Stop()
@@ -115,8 +115,8 @@ func (r *Runner) runSingleController(ctx context.Context, ctrl Controller) error
 				default:
 				}
 			}
-			if err := r.executeReconciliationCycle(ctx, ctrl); err != nil {
-				log.Printf("controller %s reconcile error: %v", ctrl.Name(), err)
+			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
+				log.Printf("controller %s reconcile error: %v", controller.Name(), err)
 			}
 		}
 	}
@@ -126,17 +126,17 @@ func (r *Runner) runSingleController(ctx context.Context, ctrl Controller) error
 // given controller. It scans all watched prefixes to collect current facts,
 // calls the controller's Reconcile method to compute desired changes, and
 // applies each change to the store.
-func (r *Runner) executeReconciliationCycle(ctx context.Context, ctrl Controller) error {
+func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, controller Controller) error {
 	var facts []store.Fact
-	for _, prefix := range ctrl.Watch() {
-		scanned, err := r.store.Scan(ctx, prefix)
+	for _, prefix := range controller.Watch() {
+		scanned, err := controllerRunner.store.Scan(ctx, prefix)
 		if err != nil {
 			return err
 		}
 		facts = append(facts, scanned...)
 	}
 
-	changes, err := ctrl.Reconcile(ctx, facts)
+	changes, err := controller.Reconcile(ctx, facts)
 	if err != nil {
 		return err
 	}
@@ -144,11 +144,11 @@ func (r *Runner) executeReconciliationCycle(ctx context.Context, ctrl Controller
 	for _, change := range changes {
 		switch change.Type {
 		case store.OpPut:
-			if _, err := r.store.Put(ctx, change.Key, change.Value); err != nil {
+			if _, err := controllerRunner.store.Put(ctx, change.Key, change.Value); err != nil {
 				return err
 			}
 		case store.OpDelete:
-			if err := r.store.Delete(ctx, change.Key); err != nil {
+			if err := controllerRunner.store.Delete(ctx, change.Key); err != nil {
 				return err
 			}
 		}

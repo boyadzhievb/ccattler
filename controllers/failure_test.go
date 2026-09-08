@@ -9,15 +9,15 @@ import (
 )
 
 func TestFailureReplacesFailedInstance(t *testing.T) {
-	c := NewFailureController()
-	c.NewID = seqIDGen()
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "failed"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := failureController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,14 +45,14 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 }
 
 func TestFailureIgnoresRunning(t *testing.T) {
-	c := NewFailureController()
+	failureController := NewFailureController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := failureController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,14 +62,14 @@ func TestFailureIgnoresRunning(t *testing.T) {
 }
 
 func TestFailureIgnoresPending(t *testing.T) {
-	c := NewFailureController()
+	failureController := NewFailureController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := failureController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,14 +79,14 @@ func TestFailureIgnoresPending(t *testing.T) {
 }
 
 func TestFailureIgnoresStopped(t *testing.T) {
-	c := NewFailureController()
+	failureController := NewFailureController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "stopped"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := failureController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,8 +96,8 @@ func TestFailureIgnoresStopped(t *testing.T) {
 }
 
 func TestFailureMultipleFailed(t *testing.T) {
-	c := NewFailureController()
-	c.NewID = seqIDGen()
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -108,7 +108,7 @@ func TestFailureMultipleFailed(t *testing.T) {
 		kv(types.KeyObservedInstanceState("ccc"), "running"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := failureController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +137,9 @@ func TestFailureMultipleFailed(t *testing.T) {
 }
 
 func TestFailureControllerInterface(t *testing.T) {
-	c := NewFailureController()
-	var _ Controller = c
-	if c.Name() != "failure" {
-		t.Fatalf("name: got %s, want failure", c.Name())
+	failureController := NewFailureController()
+	var _ Controller = failureController
+	if failureController.Name() != "failure" {
+		t.Fatalf("name: got %s, want failure", failureController.Name())
 	}
 }

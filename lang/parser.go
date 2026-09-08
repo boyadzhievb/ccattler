@@ -8,8 +8,8 @@ import (
 // Parser is a recursive-descent parser that transforms a flat token stream
 // into an AST representing a CCattler configuration file.
 type Parser struct {
-	tokens []Token // tokens is the complete list of tokens produced by the lexer.
-	pos    int     // pos is the current read position within the token slice.
+	tokens   []Token // tokens is the complete list of tokens produced by the lexer.
+	position int     // position is the current read position within the token slice.
 }
 
 // NewParser creates a Parser from a pre-lexed token slice.
@@ -28,34 +28,34 @@ func Parse(input string) (*File, error) {
 
 // ParseFile parses the top-level declarations of a CCattler file and returns
 // the complete File AST.
-func (p *Parser) ParseFile() (*File, error) {
+func (parser *Parser) ParseFile() (*File, error) {
 	file := &File{}
-	p.skipNewlineTokens()
+	parser.skipNewlineTokens()
 
-	for !p.isAtEnd() {
-		token := p.currentToken()
+	for !parser.isAtEnd() {
+		token := parser.currentToken()
 		if token.Type != TokenIdent {
-			return nil, p.parserErrorf("expected declaration keyword, got %s %q", token.Type, token.Value)
+			return nil, parser.parserErrorf("expected declaration keyword, got %s %q", token.Type, token.Value)
 		}
 
 		switch token.Value {
 		case "service":
-			serviceDecl, err := p.parseServiceDeclaration()
+			serviceDecl, err := parser.parseServiceDeclaration()
 			if err != nil {
 				return nil, err
 			}
 			file.Services = append(file.Services, *serviceDecl)
 		case "volume":
-			volumeDecl, err := p.parseVolumeDeclaration()
+			volumeDecl, err := parser.parseVolumeDeclaration()
 			if err != nil {
 				return nil, err
 			}
 			file.Volumes = append(file.Volumes, *volumeDecl)
 		default:
-			return nil, p.parserErrorf("unknown declaration %q", token.Value)
+			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
 
-		p.skipNewlineTokens()
+		parser.skipNewlineTokens()
 	}
 
 	return file, nil
@@ -63,49 +63,51 @@ func (p *Parser) ParseFile() (*File, error) {
 
 // parseServiceDeclaration parses a service block, including its name and all
 // nested fields (image, instances, expose, resources, health).
-func (p *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
-	line := p.currentToken().Line
-	p.advanceToken() // skip "service"
+func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "service"
 
-	name, err := p.expectIdentifier()
+	name, err := parser.expectIdentifier()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := p.expectToken(TokenLBrace); err != nil {
+	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
 	}
-	p.skipNewlineTokens()
+	parser.skipNewlineTokens()
 
 	serviceDecl := &ServiceDecl{Name: name, Line: line}
 
-	for !p.currentTokenIs(TokenRBrace) && !p.isAtEnd() {
-		key, err := p.expectIdentifier()
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
 		if err != nil {
 			return nil, err
 		}
 
 		switch key {
 		case "image":
-			serviceDecl.Image, err = p.expectStringOrIdentifier()
+			serviceDecl.Image, err = parser.expectStringOrIdentifier()
 		case "instances":
-			serviceDecl.Instances, err = p.expectInteger()
+			serviceDecl.Instances, err = parser.expectInteger()
 		case "expose":
 			var port int
-			port, err = p.expectInteger()
+			port, err = parser.expectInteger()
 			if err == nil {
 				serviceDecl.Ports = append(serviceDecl.Ports, port)
 			}
 		case "resources":
-			serviceDecl.Resources, err = p.parseResourcesBlock()
+			serviceDecl.Resources, err = parser.parseResourcesBlock()
 		case "health":
-			serviceDecl.Health, err = p.parseHealthBlock()
+			serviceDecl.Health, err = parser.parseHealthBlock()
+		case "scale":
+			serviceDecl.Scale, err = parser.parseScaleBlock()
 		case "volume":
-			volumeName, mountErr := p.expectIdentifier()
+			volumeName, mountErr := parser.expectIdentifier()
 			if mountErr != nil {
 				return nil, mountErr
 			}
-			mountPath, mountErr := p.readMountPath()
+			mountPath, mountErr := parser.readMountPath()
 			if mountErr != nil {
 				return nil, mountErr
 			}
@@ -114,16 +116,16 @@ func (p *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 				MountPath:  mountPath,
 			})
 		default:
-			return nil, p.parserErrorf("unknown service field %q", key)
+			return nil, parser.parserErrorf("unknown service field %q", key)
 		}
 		if err != nil {
 			return nil, err
 		}
 
-		p.skipNewlineTokens()
+		parser.skipNewlineTokens()
 	}
 
-	if err := p.expectToken(TokenRBrace); err != nil {
+	if err := parser.expectToken(TokenRBrace); err != nil {
 		return nil, err
 	}
 
@@ -132,24 +134,24 @@ func (p *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 
 // parseResourcesBlock parses a resources { ... } block containing cpu and
 // memory declarations.
-func (p *Parser) parseResourcesBlock() (*ResourcesDecl, error) {
-	if err := p.expectToken(TokenLBrace); err != nil {
+func (parser *Parser) parseResourcesBlock() (*ResourcesDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
 	}
-	p.skipNewlineTokens()
+	parser.skipNewlineTokens()
 
 	resourcesDecl := &ResourcesDecl{}
-	for !p.currentTokenIs(TokenRBrace) && !p.isAtEnd() {
-		key, err := p.expectIdentifier()
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
 		if err != nil {
 			return nil, err
 		}
 
-		valueToken := p.currentToken()
+		valueToken := parser.currentToken()
 		if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
-			return nil, p.parserErrorf("expected value for %s, got %s", key, valueToken.Type)
+			return nil, parser.parserErrorf("expected value for %s, got %s", key, valueToken.Type)
 		}
-		p.advanceToken()
+		parser.advanceToken()
 
 		switch key {
 		case "cpu":
@@ -157,13 +159,13 @@ func (p *Parser) parseResourcesBlock() (*ResourcesDecl, error) {
 		case "memory":
 			resourcesDecl.Memory = valueToken.Value
 		default:
-			return nil, p.parserErrorf("unknown resource field %q", key)
+			return nil, parser.parserErrorf("unknown resource field %q", key)
 		}
 
-		p.skipNewlineTokens()
+		parser.skipNewlineTokens()
 	}
 
-	if err := p.expectToken(TokenRBrace); err != nil {
+	if err := parser.expectToken(TokenRBrace); err != nil {
 		return nil, err
 	}
 	return resourcesDecl, nil
@@ -171,15 +173,15 @@ func (p *Parser) parseResourcesBlock() (*ResourcesDecl, error) {
 
 // parseHealthBlock parses a health { ... } block containing the health check
 // method (http or tcp), optional path, and interval.
-func (p *Parser) parseHealthBlock() (*HealthDecl, error) {
-	if err := p.expectToken(TokenLBrace); err != nil {
+func (parser *Parser) parseHealthBlock() (*HealthDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
 	}
-	p.skipNewlineTokens()
+	parser.skipNewlineTokens()
 
 	healthDecl := &HealthDecl{}
-	for !p.currentTokenIs(TokenRBrace) && !p.isAtEnd() {
-		key, err := p.expectIdentifier()
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
 		if err != nil {
 			return nil, err
 		}
@@ -187,9 +189,9 @@ func (p *Parser) parseHealthBlock() (*HealthDecl, error) {
 		switch key {
 		case "http":
 			healthDecl.Method = "http"
-			if p.currentTokenIs(TokenSlash) {
-				p.advanceToken()
-				path, err := p.expectIdentifier()
+			if parser.currentTokenIs(TokenSlash) {
+				parser.advanceToken()
+				path, err := parser.expectIdentifier()
 				if err != nil {
 					return nil, err
 				}
@@ -198,74 +200,173 @@ func (p *Parser) parseHealthBlock() (*HealthDecl, error) {
 		case "tcp":
 			healthDecl.Method = "tcp"
 		case "every":
-			token := p.currentToken()
+			token := parser.currentToken()
 			if token.Type != TokenNumber && token.Type != TokenIdent {
-				return nil, p.parserErrorf("expected interval value, got %s", token.Type)
+				return nil, parser.parserErrorf("expected interval value, got %s", token.Type)
 			}
 			healthDecl.Interval = token.Value
-			p.advanceToken()
+			parser.advanceToken()
 		default:
-			return nil, p.parserErrorf("unknown health field %q", key)
+			return nil, parser.parserErrorf("unknown health field %q", key)
 		}
 
-		p.skipNewlineTokens()
+		parser.skipNewlineTokens()
 	}
 
-	if err := p.expectToken(TokenRBrace); err != nil {
+	if err := parser.expectToken(TokenRBrace); err != nil {
 		return nil, err
 	}
 	return healthDecl, nil
 }
 
+// parseScaleBlock parses a scale { ... } block containing a horizontal sub-block.
+func (parser *Parser) parseScaleBlock() (*ScaleDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	scaleDecl := &ScaleDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "horizontal":
+			scaleDecl.Horizontal, err = parser.parseHorizontalScaleBlock()
+		default:
+			return nil, parser.parserErrorf("unknown scale field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return scaleDecl, nil
+}
+
+// parseHorizontalScaleBlock parses a horizontal { min N, max M, target X = Y } block.
+func (parser *Parser) parseHorizontalScaleBlock() (*HorizontalScaleDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	horizontalDecl := &HorizontalScaleDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "min":
+			horizontalDecl.Min, err = parser.expectInteger()
+		case "max":
+			horizontalDecl.Max, err = parser.expectInteger()
+		case "target":
+			metricName, targetErr := parser.expectIdentifier()
+			if targetErr != nil {
+				return nil, targetErr
+			}
+			if targetErr = parser.expectToken(TokenEquals); targetErr != nil {
+				return nil, targetErr
+			}
+			targetToken := parser.currentToken()
+			if targetToken.Type != TokenNumber {
+				return nil, parser.parserErrorf("expected number for target value, got %s %q", targetToken.Type, targetToken.Value)
+			}
+			parser.advanceToken()
+			targetValue, targetErr := parseTargetValue(targetToken.Value)
+			if targetErr != nil {
+				return nil, parser.parserErrorf("invalid target value %q: %v", targetToken.Value, targetErr)
+			}
+			horizontalDecl.Targets = append(horizontalDecl.Targets, ScaleTargetDecl{
+				Metric: metricName,
+				Value:  targetValue,
+			})
+		default:
+			return nil, parser.parserErrorf("unknown horizontal scale field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return horizontalDecl, nil
+}
+
+// parseTargetValue extracts an integer from a token value that may include a
+// trailing percent sign (e.g. "60%" -> 60, "500" -> 500).
+func parseTargetValue(raw string) (int, error) {
+	cleaned := raw
+	if len(cleaned) > 0 && cleaned[len(cleaned)-1] == '%' {
+		cleaned = cleaned[:len(cleaned)-1]
+	}
+	return strconv.Atoi(cleaned)
+}
+
 // parseVolumeDeclaration parses a volume block, including its name and all
 // nested fields (size, persistent).
-func (p *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
-	line := p.currentToken().Line
-	p.advanceToken() // skip "volume"
+func (parser *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "volume"
 
-	name, err := p.expectIdentifier()
+	name, err := parser.expectIdentifier()
 	if err != nil {
 		return nil, err
 	}
 
-	if err := p.expectToken(TokenLBrace); err != nil {
+	if err := parser.expectToken(TokenLBrace); err != nil {
 		return nil, err
 	}
-	p.skipNewlineTokens()
+	parser.skipNewlineTokens()
 
 	volumeDecl := &VolumeDecl{Name: name, Line: line}
 
-	for !p.currentTokenIs(TokenRBrace) && !p.isAtEnd() {
-		key, err := p.expectIdentifier()
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
 		if err != nil {
 			return nil, err
 		}
 
 		switch key {
 		case "size":
-			sizeToken := p.currentToken()
+			sizeToken := parser.currentToken()
 			if sizeToken.Type != TokenNumber && sizeToken.Type != TokenIdent && sizeToken.Type != TokenString {
-				return nil, p.parserErrorf("expected size value, got %s %q", sizeToken.Type, sizeToken.Value)
+				return nil, parser.parserErrorf("expected size value, got %s %q", sizeToken.Type, sizeToken.Value)
 			}
 			volumeDecl.Size = sizeToken.Value
-			p.advanceToken()
+			parser.advanceToken()
 		case "persistent":
-			persistentValue, persistentErr := p.expectIdentifier()
+			persistentValue, persistentErr := parser.expectIdentifier()
 			if persistentErr != nil {
 				return nil, persistentErr
 			}
 			volumeDecl.Persistent = persistentValue == "true"
 		default:
-			return nil, p.parserErrorf("unknown volume field %q", key)
+			return nil, parser.parserErrorf("unknown volume field %q", key)
 		}
 		if err != nil {
 			return nil, err
 		}
 
-		p.skipNewlineTokens()
+		parser.skipNewlineTokens()
 	}
 
-	if err := p.expectToken(TokenRBrace); err != nil {
+	if err := parser.expectToken(TokenRBrace); err != nil {
 		return nil, err
 	}
 
@@ -274,25 +375,25 @@ func (p *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
 
 // readMountPath reads a filesystem mount path, which can be either a quoted
 // string ("/var/lib/data") or a bare slash-separated path (/var/lib/data).
-func (p *Parser) readMountPath() (string, error) {
-	if p.currentTokenIs(TokenString) {
-		value := p.currentToken().Value
-		p.advanceToken()
+func (parser *Parser) readMountPath() (string, error) {
+	if parser.currentTokenIs(TokenString) {
+		value := parser.currentToken().Value
+		parser.advanceToken()
 		return value, nil
 	}
 
-	if !p.currentTokenIs(TokenSlash) {
-		return "", p.parserErrorf("expected mount path (quoted string or /path), got %s %q",
-			p.currentToken().Type, p.currentToken().Value)
+	if !parser.currentTokenIs(TokenSlash) {
+		return "", parser.parserErrorf("expected mount path (quoted string or /path), got %s %q",
+			parser.currentToken().Type, parser.currentToken().Value)
 	}
 
 	pathValue := ""
-	for p.currentTokenIs(TokenSlash) {
+	for parser.currentTokenIs(TokenSlash) {
 		pathValue += "/"
-		p.advanceToken()
-		if p.currentTokenIs(TokenIdent) || p.currentTokenIs(TokenNumber) {
-			pathValue += p.currentToken().Value
-			p.advanceToken()
+		parser.advanceToken()
+		if parser.currentTokenIs(TokenIdent) || parser.currentTokenIs(TokenNumber) {
+			pathValue += parser.currentToken().Value
+			parser.advanceToken()
 		}
 	}
 	return pathValue, nil
@@ -302,85 +403,85 @@ func (p *Parser) readMountPath() (string, error) {
 
 // currentToken returns the token at the current position, or a synthetic EOF
 // token if the parser has consumed all input.
-func (p *Parser) currentToken() Token {
-	if p.pos >= len(p.tokens) {
+func (parser *Parser) currentToken() Token {
+	if parser.position >= len(parser.tokens) {
 		return Token{Type: TokenEOF}
 	}
-	return p.tokens[p.pos]
+	return parser.tokens[parser.position]
 }
 
 // advanceToken moves the parser position forward by one token.
-func (p *Parser) advanceToken() {
-	p.pos++
+func (parser *Parser) advanceToken() {
+	parser.position++
 }
 
 // isAtEnd reports whether the parser has reached the end of the token stream.
-func (p *Parser) isAtEnd() bool {
-	return p.pos >= len(p.tokens) || p.tokens[p.pos].Type == TokenEOF
+func (parser *Parser) isAtEnd() bool {
+	return parser.position >= len(parser.tokens) || parser.tokens[parser.position].Type == TokenEOF
 }
 
 // currentTokenIs reports whether the current token has the given type.
-func (p *Parser) currentTokenIs(tokenType TokenType) bool {
-	return p.currentToken().Type == tokenType
+func (parser *Parser) currentTokenIs(tokenType TokenType) bool {
+	return parser.currentToken().Type == tokenType
 }
 
 // expectToken consumes the current token if it matches the given type, or
 // returns a descriptive parse error.
-func (p *Parser) expectToken(tokenType TokenType) error {
-	if p.currentToken().Type != tokenType {
-		return p.parserErrorf("expected %s, got %s %q", tokenType, p.currentToken().Type, p.currentToken().Value)
+func (parser *Parser) expectToken(tokenType TokenType) error {
+	if parser.currentToken().Type != tokenType {
+		return parser.parserErrorf("expected %s, got %s %q", tokenType, parser.currentToken().Type, parser.currentToken().Value)
 	}
-	p.advanceToken()
+	parser.advanceToken()
 	return nil
 }
 
 // expectIdentifier consumes and returns the current token's value if it is an
 // identifier, or returns a parse error.
-func (p *Parser) expectIdentifier() (string, error) {
-	token := p.currentToken()
+func (parser *Parser) expectIdentifier() (string, error) {
+	token := parser.currentToken()
 	if token.Type != TokenIdent {
-		return "", p.parserErrorf("expected identifier, got %s %q", token.Type, token.Value)
+		return "", parser.parserErrorf("expected identifier, got %s %q", token.Type, token.Value)
 	}
-	p.advanceToken()
+	parser.advanceToken()
 	return token.Value, nil
 }
 
 // expectInteger consumes and returns the current token's value as an int if it
 // is a number literal, or returns a parse error.
-func (p *Parser) expectInteger() (int, error) {
-	token := p.currentToken()
+func (parser *Parser) expectInteger() (int, error) {
+	token := parser.currentToken()
 	if token.Type != TokenNumber {
-		return 0, p.parserErrorf("expected number, got %s %q", token.Type, token.Value)
+		return 0, parser.parserErrorf("expected number, got %s %q", token.Type, token.Value)
 	}
-	p.advanceToken()
-	n, err := strconv.Atoi(token.Value)
+	parser.advanceToken()
+	parsedValue, err := strconv.Atoi(token.Value)
 	if err != nil {
-		return 0, p.parserErrorf("invalid integer %q", token.Value)
+		return 0, parser.parserErrorf("invalid integer %q", token.Value)
 	}
-	return n, nil
+	return parsedValue, nil
 }
 
 // skipNewlineTokens advances past any consecutive newline tokens.
-func (p *Parser) skipNewlineTokens() {
-	for p.currentToken().Type == TokenNewline {
-		p.advanceToken()
+func (parser *Parser) skipNewlineTokens() {
+	for parser.currentToken().Type == TokenNewline {
+		parser.advanceToken()
 	}
 }
 
 // expectStringOrIdentifier consumes and returns the current token's value if
 // it is either a quoted string or an identifier.
-func (p *Parser) expectStringOrIdentifier() (string, error) {
-	token := p.currentToken()
+func (parser *Parser) expectStringOrIdentifier() (string, error) {
+	token := parser.currentToken()
 	if token.Type == TokenString {
-		p.advanceToken()
+		parser.advanceToken()
 		return token.Value, nil
 	}
-	return p.expectIdentifier()
+	return parser.expectIdentifier()
 }
 
 // parserErrorf returns a formatted error that includes the current token's
 // line and column for diagnostic context.
-func (p *Parser) parserErrorf(format string, args ...any) error {
-	token := p.currentToken()
+func (parser *Parser) parserErrorf(format string, args ...any) error {
+	token := parser.currentToken()
 	return fmt.Errorf("line %d col %d: %s", token.Line, token.Col, fmt.Sprintf(format, args...))
 }

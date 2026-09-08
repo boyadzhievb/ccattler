@@ -47,8 +47,8 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB*1024*1024))
 	}
 
-	for k, v := range spec.Env {
-		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
+	for envKey, envValue := range spec.Env {
+		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
 
 	args = append(args, spec.Image)

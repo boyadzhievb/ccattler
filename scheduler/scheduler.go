@@ -26,11 +26,11 @@ type Scheduler struct{}
 func NewScheduler() *Scheduler { return &Scheduler{} }
 
 // Name returns the controller identifier used for logging and registration.
-func (s *Scheduler) Name() string { return "scheduler" }
+func (placementScheduler *Scheduler) Name() string { return "scheduler" }
 
 // Watch returns the fact-store key prefixes that the scheduler observes.
 // Any change under these prefixes triggers a new reconciliation cycle.
-func (s *Scheduler) Watch() []string {
+func (placementScheduler *Scheduler) Watch() []string {
 	return []string{
 		types.ScanPlacements,
 		types.ScanObservedNodes,
@@ -43,17 +43,17 @@ func (s *Scheduler) Watch() []string {
 // placement, then assigns each one to the alive node with the lowest load and
 // sufficient available resources. It returns a list of proposed placement
 // changes (one per newly placed instance) or nil if no work is needed.
-func (s *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
+func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
 	placements := extractPlacementsFromFacts(facts)
-	svcResources := extractServiceResourcesFromFacts(facts)
+	serviceResources := extractServiceResourcesFromFacts(facts)
 
 	// Find pending instances that have no placement.
 	var unplaced []string
-	for id, inst := range instances {
-		if inst.state == types.InstancePending && placements[id] == "" {
-			unplaced = append(unplaced, id)
+	for instanceID, instanceInfo := range instances {
+		if instanceInfo.state == types.InstancePending && placements[instanceID] == "" {
+			unplaced = append(unplaced, instanceID)
 		}
 	}
 	if len(unplaced) == 0 {
@@ -65,10 +65,10 @@ func (s *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controll
 	loadPerNode := make(map[string]int)
 	usedCPU := make(map[string]int64)
 	usedMemory := make(map[string]int64)
-	for instID, nodeID := range placements {
+	for instanceID, nodeID := range placements {
 		loadPerNode[nodeID]++
-		if inst := instances[instID]; inst != nil {
-			if resource, ok := svcResources[inst.service]; ok {
+		if instanceInfo := instances[instanceID]; instanceInfo != nil {
+			if resource, ok := serviceResources[instanceInfo.service]; ok {
 				usedCPU[nodeID] += resource.cpu
 				usedMemory[nodeID] += resource.memory
 			}
@@ -95,11 +95,11 @@ func (s *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controll
 	})
 
 	var changes []controllers.Change
-	for _, instID := range unplaced {
-		inst := instances[instID]
+	for _, instanceID := range unplaced {
+		instanceInfo := instances[instanceID]
 		var reqCPU, reqMemory int64
-		if inst != nil {
-			if resource, ok := svcResources[inst.service]; ok {
+		if instanceInfo != nil {
+			if resource, ok := serviceResources[instanceInfo.service]; ok {
 				reqCPU = resource.cpu
 				reqMemory = resource.memory
 			}
@@ -111,7 +111,7 @@ func (s *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controll
 		}
 		changes = append(changes, controllers.Change{
 			Type:  store.OpPut,
-			Key:   types.KeyPlacementInstance(instID),
+			Key:   types.KeyPlacementInstance(instanceID),
 			Value: []byte(best),
 		})
 		loadPerNode[best]++
@@ -207,20 +207,20 @@ func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInsta
 		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
 			continue
 		}
-		rel := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(rel, "/", 2)
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		id := parts[0]
-		if instances[id] == nil {
-			instances[id] = &schedulerInstanceInfo{}
+		instanceID := parts[0]
+		if instances[instanceID] == nil {
+			instances[instanceID] = &schedulerInstanceInfo{}
 		}
 		switch parts[1] {
 		case "service":
-			instances[id].service = string(fact.Value)
+			instances[instanceID].service = string(fact.Value)
 		case "state":
-			instances[id].state = types.InstanceState(fact.Value)
+			instances[instanceID].state = types.InstanceState(fact.Value)
 		}
 	}
 	return instances
@@ -235,26 +235,26 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
 			continue
 		}
-		rel := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
-		parts := strings.SplitN(rel, "/", 2)
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
+		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 0 {
 			continue
 		}
-		id := parts[0]
-		node := nodes[id]
-		node.id = id
+		nodeID := parts[0]
+		node := nodes[nodeID]
+		node.id = nodeID
 		if len(parts) == 2 {
-			val := string(fact.Value)
+			fieldValue := string(fact.Value)
 			switch parts[1] {
 			case "state":
-				node.state = types.NodeState(val)
+				node.state = types.NodeState(fieldValue)
 			case "available/cpu":
-				node.availCPU, _ = strconv.ParseInt(val, 10, 64)
+				node.availCPU, _ = strconv.ParseInt(fieldValue, 10, 64)
 			case "available/memory":
-				node.availMemory, _ = strconv.ParseInt(val, 10, 64)
+				node.availMemory, _ = strconv.ParseInt(fieldValue, 10, 64)
 			}
 		}
-		nodes[id] = node
+		nodes[nodeID] = node
 	}
 	return nodes
 }
@@ -268,9 +268,9 @@ func extractPlacementsFromFacts(facts []store.Fact) map[string]string {
 		if !strings.HasPrefix(fact.Key, types.ScanPlacements) {
 			continue
 		}
-		rel := strings.TrimPrefix(fact.Key, types.ScanPlacements)
-		if rel != "" && !strings.Contains(rel, "/") {
-			placements[rel] = string(fact.Value)
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanPlacements)
+		if relativePath != "" && !strings.Contains(relativePath, "/") {
+			placements[relativePath] = string(fact.Value)
 		}
 	}
 	return placements
@@ -285,20 +285,20 @@ func extractServiceResourcesFromFacts(facts []store.Fact) map[string]serviceReso
 		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
 			continue
 		}
-		rel := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		// rel = "{name}/resources/cpu" or "{name}/resources/memory"
-		parts := strings.SplitN(rel, "/", 3)
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		// relativePath = "{name}/resources/cpu" or "{name}/resources/memory"
+		parts := strings.SplitN(relativePath, "/", 3)
 		if len(parts) != 3 || parts[1] != "resources" {
 			continue
 		}
 		name := parts[0]
 		resource := resources[name]
-		val, _ := strconv.ParseInt(string(fact.Value), 10, 64)
+		parsedValue, _ := strconv.ParseInt(string(fact.Value), 10, 64)
 		switch parts[2] {
 		case "cpu":
-			resource.cpu = val
+			resource.cpu = parsedValue
 		case "memory":
-			resource.memory = val
+			resource.memory = parsedValue
 		}
 		resources[name] = resource
 	}

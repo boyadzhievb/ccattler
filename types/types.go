@@ -66,6 +66,24 @@ type ServiceVIP struct {
 	Port    int    // Port is the port on which the VIP accepts traffic.
 }
 
+// ScalePolicy represents a horizontal autoscaling policy for a service.
+// It defines the instance count bounds and the target metric thresholds
+// that the autoscaler uses to compute scaling recommendations.
+type ScalePolicy struct {
+	Service string        // Service is the name of the service this policy applies to.
+	Min     int           // Min is the minimum number of instances (floor for scale-down).
+	Max     int           // Max is the maximum number of instances (ceiling for scale-up).
+	Targets []ScaleTarget // Targets is the set of metric thresholds to evaluate.
+}
+
+// ScaleTarget represents a single metric threshold within a scaling policy.
+// The autoscaler compares the observed metric value against the target to
+// compute a per-metric instance recommendation.
+type ScaleTarget struct {
+	Metric string // Metric is the metric name (e.g. "cpu", "memory", "requests_per_second").
+	Value  int    // Value is the target threshold (e.g. 60 for 60% CPU utilization).
+}
+
 // Volume represents a persistent storage volume that can be attached to a
 // node and mounted into a service instance. Volumes survive instance
 // restarts and node moves — the data follows the workload.

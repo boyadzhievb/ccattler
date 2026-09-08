@@ -23,12 +23,12 @@ func NewEndpointController() *EndpointController { return &EndpointController{} 
 
 // Name returns "endpoint", identifying this controller in logs and runner
 // bookkeeping.
-func (ctrl *EndpointController) Name() string { return "endpoint" }
+func (endpointController *EndpointController) Name() string { return "endpoint" }
 
 // Watch returns the fact prefixes the endpoint controller monitors:
 // observed instances (for state and IP), existing endpoints (for staleness
 // detection), and desired services (for exposed port information).
-func (ctrl *EndpointController) Watch() []string {
+func (endpointController *EndpointController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
 		types.ScanEndpoints,
@@ -40,7 +40,7 @@ func (ctrl *EndpointController) Watch() []string {
 // configurations, and existing endpoints, then emits changes to create
 // missing endpoints and delete stale ones. An endpoint is desired when
 // an instance is running, has an IP, and its service exposes a port.
-func (ctrl *EndpointController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
+func (endpointController *EndpointController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	// Parse instance info: instanceID -> {field -> value}.
 	instanceFields := make(map[string]map[string]string)
 	for _, fact := range facts {

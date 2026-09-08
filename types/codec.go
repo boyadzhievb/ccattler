@@ -49,16 +49,16 @@ func ReadService(ctx context.Context, stateStore store.StateStore, name string) 
 	service := &Service{Name: name}
 	for _, factEntry := range facts {
 		suffix := strings.TrimPrefix(factEntry.Key, KeyDesiredService(name)+"/")
-		val := string(factEntry.Value)
+		fieldValue := string(factEntry.Value)
 		switch suffix {
 		case "image":
-			service.Image = val
+			service.Image = fieldValue
 		case "instances":
-			service.Instances, _ = strconv.Atoi(val)
+			service.Instances, _ = strconv.Atoi(fieldValue)
 		case "resources/cpu":
-			service.CPU = val
+			service.CPU = fieldValue
 		case "resources/memory":
-			service.Memory = val
+			service.Memory = fieldValue
 		default:
 			if strings.HasPrefix(suffix, "expose/") {
 				portStr := strings.TrimPrefix(suffix, "expose/")
@@ -117,20 +117,20 @@ func ReadInstance(ctx context.Context, stateStore store.StateStore, id string) (
 	instance := &Instance{ID: id}
 	for _, factEntry := range facts {
 		suffix := strings.TrimPrefix(factEntry.Key, KeyObservedInstance(id)+"/")
-		val := string(factEntry.Value)
+		fieldValue := string(factEntry.Value)
 		switch suffix {
 		case "service":
-			instance.Service = val
+			instance.Service = fieldValue
 		case "node":
-			instance.Node = val
+			instance.Node = fieldValue
 		case "state":
-			instance.State = InstanceState(val)
+			instance.State = InstanceState(fieldValue)
 		case "image":
-			instance.Image = val
+			instance.Image = fieldValue
 		case "ip":
-			instance.IP = val
+			instance.IP = fieldValue
 		case "health":
-			instance.Health = HealthStatus(val)
+			instance.Health = HealthStatus(fieldValue)
 		}
 	}
 	return instance, nil
@@ -147,8 +147,8 @@ func ListInstances(ctx context.Context, stateStore store.StateStore) ([]Instance
 
 	grouped := make(map[string]map[string]string)
 	for _, factEntry := range facts {
-		rel := strings.TrimPrefix(factEntry.Key, ScanObservedInstances)
-		parts := strings.SplitN(rel, "/", 2)
+		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedInstances)
+		parts := strings.SplitN(relativePath, "/", 2)
 		id := parts[0]
 		if _, ok := grouped[id]; !ok {
 			grouped[id] = make(map[string]string)
@@ -246,8 +246,8 @@ func ListNodes(ctx context.Context, stateStore store.StateStore) ([]Node, error)
 
 	grouped := make(map[string]map[string]string)
 	for _, factEntry := range facts {
-		rel := strings.TrimPrefix(factEntry.Key, ScanObservedNodes)
-		parts := strings.SplitN(rel, "/", 2)
+		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedNodes)
+		parts := strings.SplitN(relativePath, "/", 2)
 		id := parts[0]
 		if _, ok := grouped[id]; !ok {
 			grouped[id] = make(map[string]string)
@@ -454,6 +454,59 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 		volumes = append(volumes, volume)
 	}
 	return volumes, nil
+}
+
+// WriteScalePolicy writes a horizontal autoscaling policy as flat key-value
+// pairs under desired/service/{name}/scale/horizontal/.
+func WriteScalePolicy(ctx context.Context, stateStore store.StateStore, policy ScalePolicy) error {
+	puts := []struct{ key, val string }{
+		{KeyDesiredServiceScaleHorizontalMin(policy.Service), strconv.Itoa(policy.Min)},
+		{KeyDesiredServiceScaleHorizontalMax(policy.Service), strconv.Itoa(policy.Max)},
+	}
+	for _, target := range policy.Targets {
+		puts = append(puts, struct{ key, val string }{
+			KeyDesiredServiceScaleHorizontalTarget(policy.Service, target.Metric),
+			strconv.Itoa(target.Value),
+		})
+	}
+	for _, putEntry := range puts {
+		if _, err := stateStore.Put(ctx, putEntry.key, []byte(putEntry.val)); err != nil {
+			return fmt.Errorf("writing %s: %w", putEntry.key, err)
+		}
+	}
+	return nil
+}
+
+// ReadScalePolicy assembles a ScalePolicy struct by reading flat keys under
+// desired/service/{name}/scale/horizontal/ from the fact store. Returns nil
+// if no scale policy exists for the service.
+func ReadScalePolicy(ctx context.Context, stateStore store.StateStore, serviceName string) (*ScalePolicy, error) {
+	minFact, err := stateStore.Get(ctx, KeyDesiredServiceScaleHorizontalMin(serviceName))
+	if err != nil {
+		return nil, nil
+	}
+	maxFact, err := stateStore.Get(ctx, KeyDesiredServiceScaleHorizontalMax(serviceName))
+	if err != nil {
+		return nil, nil
+	}
+
+	policy := &ScalePolicy{Service: serviceName}
+	policy.Min, _ = strconv.Atoi(string(minFact.Value))
+	policy.Max, _ = strconv.Atoi(string(maxFact.Value))
+
+	targetFacts, err := stateStore.Scan(ctx, ScanDesiredServiceScaleTargets(serviceName))
+	if err != nil {
+		return policy, nil
+	}
+	for _, factEntry := range targetFacts {
+		metricName := strings.TrimPrefix(factEntry.Key, ScanDesiredServiceScaleTargets(serviceName))
+		targetValue, _ := strconv.Atoi(string(factEntry.Value))
+		policy.Targets = append(policy.Targets, ScaleTarget{
+			Metric: metricName,
+			Value:  targetValue,
+		})
+	}
+	return policy, nil
 }
 
 // DeleteObservedVolume removes all observed-state facts for a volume.

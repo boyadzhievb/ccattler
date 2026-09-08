@@ -8,27 +8,27 @@ import (
 
 // Lexer tokenizes CCattler DSL source text into a stream of tokens.
 type Lexer struct {
-	input []rune // source text as a slice of Unicode code points
-	pos   int    // current read position in the input slice
-	line  int    // current line number (1-based) for error reporting
-	col   int    // current column number (1-based) for error reporting
+	input    []rune // source text as a slice of Unicode code points
+	position int    // current read position in the input slice
+	line     int    // current line number (1-based) for error reporting
+	column   int    // current column number (1-based) for error reporting
 }
 
 // NewLexer creates a new Lexer initialized to the beginning of the given input string.
 func NewLexer(input string) *Lexer {
 	return &Lexer{
-		input: []rune(input),
-		pos:   0,
-		line:  1,
-		col:   1,
+		input:    []rune(input),
+		position: 0,
+		line:     1,
+		column:   1,
 	}
 }
 
 // Tokenize scans the entire input and returns a slice of all tokens, ending with TokenEOF.
-func (l *Lexer) Tokenize() ([]Token, error) {
+func (lexer *Lexer) Tokenize() ([]Token, error) {
 	var tokens []Token
 	for {
-		token, err := l.scanNextToken()
+		token, err := lexer.scanNextToken()
 		if err != nil {
 			return nil, err
 		}
@@ -41,138 +41,138 @@ func (l *Lexer) Tokenize() ([]Token, error) {
 }
 
 // scanNextToken reads the next token from the input, skipping whitespace and comments.
-func (l *Lexer) scanNextToken() (Token, error) {
-	l.skipWhitespaceExceptNewlines()
-	l.skipLineComment()
-	l.skipWhitespaceExceptNewlines()
+func (lexer *Lexer) scanNextToken() (Token, error) {
+	lexer.skipWhitespaceExceptNewlines()
+	lexer.skipLineComment()
+	lexer.skipWhitespaceExceptNewlines()
 
-	if l.pos >= len(l.input) {
-		return Token{Type: TokenEOF, Line: l.line, Col: l.col}, nil
+	if lexer.position >= len(lexer.input) {
+		return Token{Type: TokenEOF, Line: lexer.line, Col: lexer.column}, nil
 	}
 
-	currentChar := l.input[l.pos]
+	currentChar := lexer.input[lexer.position]
 
 	if currentChar == '\n' {
-		token := Token{Type: TokenNewline, Value: "\n", Line: l.line, Col: l.col}
-		l.advanceCursor()
+		token := Token{Type: TokenNewline, Value: "\n", Line: lexer.line, Col: lexer.column}
+		lexer.advanceCursor()
 		return token, nil
 	}
 
 	if currentChar == '{' {
-		token := Token{Type: TokenLBrace, Value: "{", Line: l.line, Col: l.col}
-		l.advanceCursor()
+		token := Token{Type: TokenLBrace, Value: "{", Line: lexer.line, Col: lexer.column}
+		lexer.advanceCursor()
 		return token, nil
 	}
 	if currentChar == '}' {
-		token := Token{Type: TokenRBrace, Value: "}", Line: l.line, Col: l.col}
-		l.advanceCursor()
+		token := Token{Type: TokenRBrace, Value: "}", Line: lexer.line, Col: lexer.column}
+		lexer.advanceCursor()
 		return token, nil
 	}
 	if currentChar == '/' {
-		token := Token{Type: TokenSlash, Value: "/", Line: l.line, Col: l.col}
-		l.advanceCursor()
+		token := Token{Type: TokenSlash, Value: "/", Line: lexer.line, Col: lexer.column}
+		lexer.advanceCursor()
 		return token, nil
 	}
 	if currentChar == '=' {
-		token := Token{Type: TokenEquals, Value: "=", Line: l.line, Col: l.col}
-		l.advanceCursor()
+		token := Token{Type: TokenEquals, Value: "=", Line: lexer.line, Col: lexer.column}
+		lexer.advanceCursor()
 		return token, nil
 	}
 
 	if currentChar == '"' {
-		return l.scanQuotedString()
+		return lexer.scanQuotedString()
 	}
 
 	if unicode.IsDigit(currentChar) {
-		return l.scanNumericLiteral(), nil
+		return lexer.scanNumericLiteral(), nil
 	}
 
 	if isIdentifierStartChar(currentChar) {
-		return l.scanIdentifier(), nil
+		return lexer.scanIdentifier(), nil
 	}
 
-	return Token{}, fmt.Errorf("line %d col %d: unexpected character %q", l.line, l.col, currentChar)
+	return Token{}, fmt.Errorf("line %d col %d: unexpected character %q", lexer.line, lexer.column, currentChar)
 }
 
 // advanceCursor moves the lexer forward by one rune, updating line and column tracking.
-func (l *Lexer) advanceCursor() {
-	if l.pos < len(l.input) && l.input[l.pos] == '\n' {
-		l.line++
-		l.col = 1
+func (lexer *Lexer) advanceCursor() {
+	if lexer.position < len(lexer.input) && lexer.input[lexer.position] == '\n' {
+		lexer.line++
+		lexer.column = 1
 	} else {
-		l.col++
+		lexer.column++
 	}
-	l.pos++
+	lexer.position++
 }
 
 // peekCurrentChar returns the current rune without advancing, or 0 if at end of input.
-func (l *Lexer) peekCurrentChar() rune {
-	if l.pos >= len(l.input) {
+func (lexer *Lexer) peekCurrentChar() rune {
+	if lexer.position >= len(lexer.input) {
 		return 0
 	}
-	return l.input[l.pos]
+	return lexer.input[lexer.position]
 }
 
 // skipWhitespaceExceptNewlines advances past spaces, tabs, and carriage returns, but stops at newlines.
-func (l *Lexer) skipWhitespaceExceptNewlines() {
-	for l.pos < len(l.input) && (l.input[l.pos] == ' ' || l.input[l.pos] == '\t' || l.input[l.pos] == '\r') {
-		l.advanceCursor()
+func (lexer *Lexer) skipWhitespaceExceptNewlines() {
+	for lexer.position < len(lexer.input) && (lexer.input[lexer.position] == ' ' || lexer.input[lexer.position] == '\t' || lexer.input[lexer.position] == '\r') {
+		lexer.advanceCursor()
 	}
 }
 
 // skipLineComment advances past a '#'-initiated comment up to (but not including) the newline.
-func (l *Lexer) skipLineComment() {
-	if l.pos < len(l.input) && l.input[l.pos] == '#' {
-		for l.pos < len(l.input) && l.input[l.pos] != '\n' {
-			l.advanceCursor()
+func (lexer *Lexer) skipLineComment() {
+	if lexer.position < len(lexer.input) && lexer.input[lexer.position] == '#' {
+		for lexer.position < len(lexer.input) && lexer.input[lexer.position] != '\n' {
+			lexer.advanceCursor()
 		}
 	}
 }
 
 // scanQuotedString reads a double-quoted string literal and returns a TokenString token.
-func (l *Lexer) scanQuotedString() (Token, error) {
-	startLine, startCol := l.line, l.col
-	l.advanceCursor() // skip opening quote
+func (lexer *Lexer) scanQuotedString() (Token, error) {
+	startLine, startCol := lexer.line, lexer.column
+	lexer.advanceCursor() // skip opening quote
 	var builder strings.Builder
-	for l.pos < len(l.input) && l.input[l.pos] != '"' {
-		if l.input[l.pos] == '\n' {
+	for lexer.position < len(lexer.input) && lexer.input[lexer.position] != '"' {
+		if lexer.input[lexer.position] == '\n' {
 			return Token{}, fmt.Errorf("line %d col %d: unterminated string", startLine, startCol)
 		}
-		builder.WriteRune(l.input[l.pos])
-		l.advanceCursor()
+		builder.WriteRune(lexer.input[lexer.position])
+		lexer.advanceCursor()
 	}
-	if l.pos >= len(l.input) {
+	if lexer.position >= len(lexer.input) {
 		return Token{}, fmt.Errorf("line %d col %d: unterminated string", startLine, startCol)
 	}
-	l.advanceCursor() // skip closing quote
+	lexer.advanceCursor() // skip closing quote
 	return Token{Type: TokenString, Value: builder.String(), Line: startLine, Col: startCol}, nil
 }
 
 // scanNumericLiteral reads a number (with optional decimal point, percent, and unit suffix) and returns a TokenNumber token.
-func (l *Lexer) scanNumericLiteral() Token {
-	startCol := l.col
+func (lexer *Lexer) scanNumericLiteral() Token {
+	startCol := lexer.column
 	var builder strings.Builder
-	for l.pos < len(l.input) && isNumericChar(l.input[l.pos]) {
-		builder.WriteRune(l.input[l.pos])
-		l.advanceCursor()
+	for lexer.position < len(lexer.input) && isNumericChar(lexer.input[lexer.position]) {
+		builder.WriteRune(lexer.input[lexer.position])
+		lexer.advanceCursor()
 	}
 	// Allow unit suffixes: 500m, 512Mi, 100Gi, 10s, etc.
-	for l.pos < len(l.input) && unicode.IsLetter(l.input[l.pos]) {
-		builder.WriteRune(l.input[l.pos])
-		l.advanceCursor()
+	for lexer.position < len(lexer.input) && unicode.IsLetter(lexer.input[lexer.position]) {
+		builder.WriteRune(lexer.input[lexer.position])
+		lexer.advanceCursor()
 	}
-	return Token{Type: TokenNumber, Value: builder.String(), Line: l.line, Col: startCol}
+	return Token{Type: TokenNumber, Value: builder.String(), Line: lexer.line, Col: startCol}
 }
 
 // scanIdentifier reads an identifier (keyword or name) and returns a TokenIdent token.
-func (l *Lexer) scanIdentifier() Token {
-	startCol := l.col
+func (lexer *Lexer) scanIdentifier() Token {
+	startCol := lexer.column
 	var builder strings.Builder
-	for l.pos < len(l.input) && isIdentifierContinuationChar(l.input[l.pos]) {
-		builder.WriteRune(l.input[l.pos])
-		l.advanceCursor()
+	for lexer.position < len(lexer.input) && isIdentifierContinuationChar(lexer.input[lexer.position]) {
+		builder.WriteRune(lexer.input[lexer.position])
+		lexer.advanceCursor()
 	}
-	return Token{Type: TokenIdent, Value: builder.String(), Line: l.line, Col: startCol}
+	return Token{Type: TokenIdent, Value: builder.String(), Line: lexer.line, Col: startCol}
 }
 
 // isIdentifierStartChar reports whether the rune can begin an identifier (letter or underscore).

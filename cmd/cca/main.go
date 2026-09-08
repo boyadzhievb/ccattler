@@ -132,8 +132,11 @@ func executeApplyCommand(configFilePath string) {
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	fmt.Printf("Applying %s...\n", configFilePath)
@@ -175,8 +178,11 @@ func executeLiveProcessCommand(configFilePath string) {
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with process runtime for real OS process execution.
@@ -249,8 +255,11 @@ func executeLiveContainerCommand(configFilePath string) {
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with container runtime for real Docker container execution.
@@ -309,8 +318,11 @@ func executeDemoCommand() {
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
@@ -370,8 +382,12 @@ func executeDistributedDemoCommand() {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController,
+		autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime.
@@ -475,9 +491,12 @@ func executeNetworkDemoCommand() {
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
 	networkController := controllers.NewNetworkController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController, networkController)
+		endpointController, failureController, nodeFailureController, networkController,
+		autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
@@ -587,9 +606,12 @@ func executeStorageDemoCommand() {
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
 	storageController := controllers.NewStorageController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController, storageController)
+		endpointController, failureController, nodeFailureController, storageController,
+		autoscaleController, intentResolverController)
 	go controllerRunner.Run(ctx)
 
 	// Track which context each node's agent uses so we can kill one later.

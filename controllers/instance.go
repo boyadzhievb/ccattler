@@ -29,12 +29,12 @@ func NewInstanceController() *InstanceController {
 
 // Name returns "instance", identifying this controller in logs and runner
 // bookkeeping.
-func (ctrl *InstanceController) Name() string { return "instance" }
+func (instanceController *InstanceController) Name() string { return "instance" }
 
 // Watch returns the fact prefixes that drive instance reconciliation:
 // effective service definitions (which carry the desired instance count) and
 // observed instances (which represent what actually exists).
-func (ctrl *InstanceController) Watch() []string {
+func (instanceController *InstanceController) Watch() []string {
 	return []string{
 		types.ScanEffectiveServices,
 		types.ScanObservedInstances,
@@ -44,7 +44,7 @@ func (ctrl *InstanceController) Watch() []string {
 // Reconcile compares desired instance counts (from effective service facts)
 // against active (non-stopped) observed instances and emits changes to
 // create or stop instances until the counts match.
-func (ctrl *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
+func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	desiredCounts := make(map[string]int)              // service name -> desired instance count
 	observedEntries := make(map[string][]instanceEntry) // service name -> active instances
 
@@ -120,9 +120,9 @@ func (ctrl *InstanceController) Reconcile(_ context.Context, facts []store.Fact)
 	for serviceName, wantCount := range desiredCounts {
 		haveCount := activeCount[serviceName]
 		if haveCount < wantCount {
-			changes = append(changes, ctrl.createPendingInstances(serviceName, wantCount-haveCount)...)
+			changes = append(changes, instanceController.createPendingInstances(serviceName, wantCount-haveCount)...)
 		} else if haveCount > wantCount {
-			changes = append(changes, ctrl.markExcessInstancesAsStopped(serviceName, activeInstanceIDs[serviceName], stateByInstanceID, haveCount-wantCount)...)
+			changes = append(changes, instanceController.markExcessInstancesAsStopped(serviceName, activeInstanceIDs[serviceName], stateByInstanceID, haveCount-wantCount)...)
 		}
 	}
 
@@ -132,10 +132,10 @@ func (ctrl *InstanceController) Reconcile(_ context.Context, facts []store.Fact)
 // createPendingInstances generates Change entries that create the given number
 // of new instances for a service, each in the "pending" state. Every new
 // instance gets three facts: a marker key, a service association, and a state.
-func (ctrl *InstanceController) createPendingInstances(service string, count int) []Change {
+func (instanceController *InstanceController) createPendingInstances(service string, count int) []Change {
 	var changes []Change
 	for range count {
-		instanceID := ctrl.NewID()
+		instanceID := instanceController.NewID()
 		changes = append(changes,
 			Change{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
@@ -148,7 +148,7 @@ func (ctrl *InstanceController) createPendingInstances(service string, count int
 // markExcessInstancesAsStopped produces Change entries that set the state of
 // excess instances to "stopped". It prefers stopping pending instances over
 // running ones to minimize disruption.
-func (ctrl *InstanceController) markExcessInstancesAsStopped(service string, ids []string, states map[string]types.InstanceState, count int) []Change {
+func (instanceController *InstanceController) markExcessInstancesAsStopped(service string, ids []string, states map[string]types.InstanceState, count int) []Change {
 	// Prefer removing pending instances over running ones.
 	var pendingIDs, runningIDs []string
 	for _, instanceID := range ids {

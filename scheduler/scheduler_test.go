@@ -10,8 +10,8 @@ import (
 
 func buildFacts(entries ...struct{ k, v string }) []store.Fact {
 	facts := make([]store.Fact, len(entries))
-	for i, e := range entries {
-		facts[i] = store.Fact{Key: e.k, Value: []byte(e.v)}
+	for index, entry := range entries {
+		facts[index] = store.Fact{Key: entry.k, Value: []byte(entry.v)}
 	}
 	return facts
 }
@@ -21,7 +21,7 @@ func kv(k, v string) struct{ k, v string } {
 }
 
 func TestPlacePendingInstance(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -29,7 +29,7 @@ func TestPlacePendingInstance(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestPlacePendingInstance(t *testing.T) {
 }
 
 func TestSkipAlreadyPlaced(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -54,7 +54,7 @@ func TestSkipAlreadyPlaced(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestSkipAlreadyPlaced(t *testing.T) {
 }
 
 func TestSkipRunningInstances(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -72,7 +72,7 @@ func TestSkipRunningInstances(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestSkipRunningInstances(t *testing.T) {
 }
 
 func TestSpreadAcrossNodes(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		// 3 pending instances, no placements yet.
@@ -98,7 +98,7 @@ func TestSpreadAcrossNodes(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-3"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,15 +111,15 @@ func TestSpreadAcrossNodes(t *testing.T) {
 	for _, ch := range changes {
 		nodeCount[string(ch.Value)]++
 	}
-	for _, n := range []string{"node-1", "node-2", "node-3"} {
-		if nodeCount[n] != 1 {
-			t.Errorf("node %s got %d instances, want 1", n, nodeCount[n])
+	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
+		if nodeCount[nodeID] != 1 {
+			t.Errorf("node %s got %d instances, want 1", nodeID, nodeCount[nodeID])
 		}
 	}
 }
 
 func TestSpreadWithExistingLoad(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		// Existing placement: node-1 already has one.
@@ -134,7 +134,7 @@ func TestSpreadWithExistingLoad(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestSpreadWithExistingLoad(t *testing.T) {
 }
 
 func TestSkipUnreachableNodes(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -156,7 +156,7 @@ func TestSkipUnreachableNodes(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestSkipUnreachableNodes(t *testing.T) {
 }
 
 func TestNoAliveNodes(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -177,7 +177,7 @@ func TestNoAliveNodes(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "unreachable"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,13 +187,13 @@ func TestNoAliveNodes(t *testing.T) {
 }
 
 func TestNoInstancesToPlace(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestNoInstancesToPlace(t *testing.T) {
 }
 
 func TestResourceFit(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -221,7 +221,7 @@ func TestResourceFit(t *testing.T) {
 		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestResourceFit(t *testing.T) {
 }
 
 func TestResourceExhaustion(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		// 3 pending instances each needing 2000 CPU.
@@ -251,7 +251,7 @@ func TestResourceExhaustion(t *testing.T) {
 		kv(types.KeyObservedNodeAvailableMemory("node-1"), "16384"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestResourceExhaustion(t *testing.T) {
 }
 
 func TestResourceSpreadWithAccounting(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	facts := buildFacts(
 		// 2 pending instances each needing 1000 CPU.
@@ -279,7 +279,7 @@ func TestResourceSpreadWithAccounting(t *testing.T) {
 		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestResourceSpreadWithAccounting(t *testing.T) {
 }
 
 func TestNoResourceRequirements(t *testing.T) {
-	s := NewScheduler()
+	placementScheduler := NewScheduler()
 
 	// No resource requirements → place anywhere (backwards compatible).
 	facts := buildFacts(
@@ -308,7 +308,7 @@ func TestNoResourceRequirements(t *testing.T) {
 		kv(types.KeyObservedNodeAvailableCPU("node-1"), "0"),
 	)
 
-	changes, err := s.Reconcile(context.Background(), facts)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,11 +318,11 @@ func TestNoResourceRequirements(t *testing.T) {
 }
 
 func TestControllerInterface(t *testing.T) {
-	s := NewScheduler()
-	if s.Name() != "scheduler" {
-		t.Fatalf("name: got %s, want scheduler", s.Name())
+	placementScheduler := NewScheduler()
+	if placementScheduler.Name() != "scheduler" {
+		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(s.Watch()) != 4 {
-		t.Fatalf("expected 4 watch prefixes, got %d", len(s.Watch()))
+	if len(placementScheduler.Watch()) != 4 {
+		t.Fatalf("expected 4 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }

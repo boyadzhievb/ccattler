@@ -10,17 +10,17 @@ import (
 )
 
 func seqIDGen() types.IDFunc {
-	n := 0
+	idCounter := 0
 	return func() string {
-		n++
-		return fmt.Sprintf("inst-%03d", n)
+		idCounter++
+		return fmt.Sprintf("inst-%03d", idCounter)
 	}
 }
 
 func buildFacts(entries ...struct{ k, v string }) []store.Fact {
 	facts := make([]store.Fact, len(entries))
-	for i, e := range entries {
-		facts[i] = store.Fact{Key: e.k, Value: []byte(e.v)}
+	for index, entry := range entries {
+		facts[index] = store.Fact{Key: entry.k, Value: []byte(entry.v)}
 	}
 	return facts
 }
@@ -30,14 +30,14 @@ func kv(k, v string) struct{ k, v string } {
 }
 
 func TestScaleUpFromZero(t *testing.T) {
-	c := NewInstanceController()
-	c.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "3"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestScaleUpFromZero(t *testing.T) {
 }
 
 func TestAlreadySatisfied(t *testing.T) {
-	c := NewInstanceController()
+	instanceController := NewInstanceController()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "2"),
@@ -78,7 +78,7 @@ func TestAlreadySatisfied(t *testing.T) {
 		kv(types.KeyObservedInstanceState("bbb"), "running"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,8 +88,8 @@ func TestAlreadySatisfied(t *testing.T) {
 }
 
 func TestScaleUpPartial(t *testing.T) {
-	c := NewInstanceController()
-	c.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "5"),
@@ -101,7 +101,7 @@ func TestScaleUpPartial(t *testing.T) {
 		kv(types.KeyObservedInstanceState("ccc"), "pending"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestScaleUpPartial(t *testing.T) {
 }
 
 func TestScaleDown(t *testing.T) {
-	c := NewInstanceController()
+	instanceController := NewInstanceController()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "1"),
@@ -125,7 +125,7 @@ func TestScaleDown(t *testing.T) {
 		kv(types.KeyObservedInstanceState("ccc"), "pending"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestScaleDown(t *testing.T) {
 }
 
 func TestScaleDownPrefersPending(t *testing.T) {
-	c := NewInstanceController()
+	instanceController := NewInstanceController()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "1"),
@@ -158,7 +158,7 @@ func TestScaleDownPrefersPending(t *testing.T) {
 		kv(types.KeyObservedInstanceState("ccc"), "pending"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +184,8 @@ func TestScaleDownPrefersPending(t *testing.T) {
 }
 
 func TestStoppedInstancesNotCounted(t *testing.T) {
-	c := NewInstanceController()
-	c.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "2"),
@@ -195,7 +195,7 @@ func TestStoppedInstancesNotCounted(t *testing.T) {
 		kv(types.KeyObservedInstanceState("bbb"), "stopped"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,8 +207,8 @@ func TestStoppedInstancesNotCounted(t *testing.T) {
 }
 
 func TestMultipleServices(t *testing.T) {
-	c := NewInstanceController()
-	c.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "2"),
@@ -217,7 +217,7 @@ func TestMultipleServices(t *testing.T) {
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +242,7 @@ func TestMultipleServices(t *testing.T) {
 }
 
 func TestDesiredZeroScalesDownAll(t *testing.T) {
-	c := NewInstanceController()
+	instanceController := NewInstanceController()
 
 	facts := buildFacts(
 		kv(types.KeyEffectiveServiceInstances("web"), "0"),
@@ -252,7 +252,7 @@ func TestDesiredZeroScalesDownAll(t *testing.T) {
 		kv(types.KeyObservedInstanceState("bbb"), "running"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := instanceController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,14 +268,14 @@ func TestDesiredZeroScalesDownAll(t *testing.T) {
 }
 
 func TestControllerInterface(t *testing.T) {
-	c := NewInstanceController()
+	instanceController := NewInstanceController()
 
-	var _ Controller = c
+	var _ Controller = instanceController
 
-	if c.Name() != "instance" {
-		t.Fatalf("name: got %s, want instance", c.Name())
+	if instanceController.Name() != "instance" {
+		t.Fatalf("name: got %s, want instance", instanceController.Name())
 	}
-	if len(c.Watch()) != 2 {
-		t.Fatalf("expected 2 watch prefixes, got %d", len(c.Watch()))
+	if len(instanceController.Watch()) != 2 {
+		t.Fatalf("expected 2 watch prefixes, got %d", len(instanceController.Watch()))
 	}
 }

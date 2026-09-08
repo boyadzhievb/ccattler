@@ -10,7 +10,7 @@ import (
 )
 
 func TestEndpointCreatedForRunningInstance(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -19,7 +19,7 @@ func TestEndpointCreatedForRunningInstance(t *testing.T) {
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestEndpointCreatedForRunningInstance(t *testing.T) {
 }
 
 func TestEndpointNotCreatedForPending(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -46,7 +46,7 @@ func TestEndpointNotCreatedForPending(t *testing.T) {
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestEndpointNotCreatedForPending(t *testing.T) {
 }
 
 func TestEndpointNotCreatedWithoutIP(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -64,7 +64,7 @@ func TestEndpointNotCreatedWithoutIP(t *testing.T) {
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestEndpointNotCreatedWithoutIP(t *testing.T) {
 }
 
 func TestEndpointNotCreatedWithoutExpose(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -82,7 +82,7 @@ func TestEndpointNotCreatedWithoutExpose(t *testing.T) {
 		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestEndpointNotCreatedWithoutExpose(t *testing.T) {
 }
 
 func TestStaleEndpointRemoved(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		// Instance is now stopped, but endpoint still exists.
@@ -103,7 +103,7 @@ func TestStaleEndpointRemoved(t *testing.T) {
 		kv(types.KeyEndpoint("web", "aaa"), "10.0.1.4:8080"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestStaleEndpointRemoved(t *testing.T) {
 }
 
 func TestEndpointMultipleInstances(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -133,7 +133,7 @@ func TestEndpointMultipleInstances(t *testing.T) {
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestEndpointMultipleInstances(t *testing.T) {
 }
 
 func TestEndpointAlreadyExists(t *testing.T) {
-	c := NewEndpointController()
+	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -161,7 +161,7 @@ func TestEndpointAlreadyExists(t *testing.T) {
 		kv(types.KeyEndpoint("web", "aaa"), "10.0.1.4:8080"),
 	)
 
-	changes, err := c.Reconcile(context.Background(), facts)
+	changes, err := endpointController.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,9 +171,9 @@ func TestEndpointAlreadyExists(t *testing.T) {
 }
 
 func TestEndpointControllerInterface(t *testing.T) {
-	c := NewEndpointController()
-	var _ Controller = c
-	if c.Name() != "endpoint" {
-		t.Fatalf("name: got %s, want endpoint", c.Name())
+	endpointController := NewEndpointController()
+	var _ Controller = endpointController
+	if endpointController.Name() != "endpoint" {
+		t.Fatalf("name: got %s, want endpoint", endpointController.Name())
 	}
 }

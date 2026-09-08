@@ -8,14 +8,15 @@ type File struct {
 
 // ServiceDecl represents a parsed "service" block in the DSL.
 type ServiceDecl struct {
-	Name         string           // unique service identifier from the block header
-	Image        string           // container image reference (e.g. "nginx:1.27")
-	Instances    int              // desired number of running instances
-	Ports        []int            // exposed port numbers declared via "expose"
-	Resources    *ResourcesDecl   // optional CPU/memory resource constraints
-	Health       *HealthDecl      // optional health check configuration
+	Name         string            // unique service identifier from the block header
+	Image        string            // container image reference (e.g. "nginx:1.27")
+	Instances    int               // desired number of running instances
+	Ports        []int             // exposed port numbers declared via "expose"
+	Resources    *ResourcesDecl    // optional CPU/memory resource constraints
+	Health       *HealthDecl       // optional health check configuration
+	Scale        *ScaleDecl        // optional autoscaling policy
 	VolumeMounts []VolumeMountDecl // optional volume mount bindings
-	Line         int              // source line number for error reporting
+	Line         int               // source line number for error reporting
 }
 
 // VolumeDecl represents a parsed top-level "volume" block in the DSL.
@@ -44,4 +45,23 @@ type HealthDecl struct {
 	Method   string // "http" or "tcp"
 	Path     string // URL path for HTTP checks (e.g. "/health")
 	Interval string // time between checks (e.g. "10s")
+}
+
+// ScaleDecl holds autoscaling configuration for a service.
+type ScaleDecl struct {
+	Horizontal *HorizontalScaleDecl // optional horizontal scaling policy
+}
+
+// HorizontalScaleDecl holds horizontal autoscaling bounds and target metrics.
+type HorizontalScaleDecl struct {
+	Min     int               // minimum instance count floor
+	Max     int               // maximum instance count ceiling
+	Targets []ScaleTargetDecl // metric thresholds that drive scaling decisions
+}
+
+// ScaleTargetDecl represents a single "target metric = value" entry in a
+// horizontal scaling block.
+type ScaleTargetDecl struct {
+	Metric string // metric name (e.g. "cpu", "memory", "requests_per_second")
+	Value  int    // target threshold value (e.g. 60 for 60%)
 }

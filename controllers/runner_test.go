@@ -32,13 +32,13 @@ func waitForInstances(t *testing.T, s store.StateStore, service string, count in
 }
 
 func TestRunnerCreatesInstances(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := NewInstanceController()
-	ic.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
-	runner := NewRunner(s, ic)
+	runner := NewRunner(factStore, instanceController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -47,9 +47,9 @@ func TestRunnerCreatesInstances(t *testing.T) {
 	go runner.Run(ctx)
 
 	// Write desired state: web service wants 3 instances.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
 
-	instances := waitForInstances(t, s, "web", 3, 2*time.Second)
+	instances := waitForInstances(t, factStore, "web", 3, 2*time.Second)
 	for _, inst := range instances {
 		if inst.State != types.InstancePending {
 			t.Errorf("instance %s: expected pending, got %s", inst.ID, inst.State)
@@ -58,22 +58,22 @@ func TestRunnerCreatesInstances(t *testing.T) {
 }
 
 func TestRunnerScalesUp(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := NewInstanceController()
-	ic.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
-	runner := NewRunner(s, ic)
+	runner := NewRunner(factStore, instanceController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Seed with 2 running instances.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("2"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("2"))
 	for _, id := range []string{"existing-1", "existing-2"} {
-		types.WriteInstance(ctx, s, types.Instance{
+		types.WriteInstance(ctx, factStore, types.Instance{
 			ID: id, Service: "web", State: types.InstanceRunning,
 		})
 	}
@@ -82,33 +82,33 @@ func TestRunnerScalesUp(t *testing.T) {
 
 	// Already satisfied — should stay at 2.
 	time.Sleep(100 * time.Millisecond)
-	instances := waitForInstances(t, s, "web", 2, 500*time.Millisecond)
+	instances := waitForInstances(t, factStore, "web", 2, 500*time.Millisecond)
 	if len(instances) != 2 {
 		t.Fatalf("expected 2 instances, got %d", len(instances))
 	}
 
 	// Scale up to 5.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("5"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("5"))
 
-	waitForInstances(t, s, "web", 5, 2*time.Second)
+	waitForInstances(t, factStore, "web", 5, 2*time.Second)
 }
 
 func TestRunnerScalesDown(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := NewInstanceController()
+	instanceController := NewInstanceController()
 
-	runner := NewRunner(s, ic)
+	runner := NewRunner(factStore, instanceController)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Seed with 4 running instances, desired is 4.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("4"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("4"))
 	for i := 1; i <= 4; i++ {
-		types.WriteInstance(ctx, s, types.Instance{
+		types.WriteInstance(ctx, factStore, types.Instance{
 			ID: fmt.Sprintf("api-%d", i), Service: "api", State: types.InstanceRunning,
 		})
 	}
@@ -116,22 +116,22 @@ func TestRunnerScalesDown(t *testing.T) {
 	go runner.Run(ctx)
 
 	// Scale down to 2.
-	s.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
 
-	waitForInstances(t, s, "api", 2, 2*time.Second)
+	waitForInstances(t, factStore, "api", 2, 2*time.Second)
 }
 
 func TestRunnerMultipleControllers(t *testing.T) {
-	s := store.NewMemoryStore()
-	defer s.Close()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
 
-	ic := NewInstanceController()
-	ic.NewID = seqIDGen()
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
 
 	// A trivial second controller that just counts reconcile calls.
 	noop := &noopController{}
 
-	runner := NewRunner(s, ic, noop)
+	runner := NewRunner(factStore, instanceController, noop)
 	runner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -139,9 +139,9 @@ func TestRunnerMultipleControllers(t *testing.T) {
 
 	go runner.Run(ctx)
 
-	s.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("1"))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("1"))
 
-	waitForInstances(t, s, "web", 1, 2*time.Second)
+	waitForInstances(t, factStore, "web", 1, 2*time.Second)
 }
 
 type noopController struct{}
