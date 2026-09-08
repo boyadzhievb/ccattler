@@ -102,6 +102,10 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			serviceDecl.Health, err = parser.parseHealthBlock()
 		case "scale":
 			serviceDecl.Scale, err = parser.parseScaleBlock()
+		case "placement":
+			serviceDecl.Placement, err = parser.parsePlacementBlock()
+		case "update":
+			serviceDecl.Update, err = parser.parseUpdateBlock()
 		case "volume":
 			volumeName, mountErr := parser.expectIdentifier()
 			if mountErr != nil {
@@ -236,6 +240,8 @@ func (parser *Parser) parseScaleBlock() (*ScaleDecl, error) {
 		switch key {
 		case "horizontal":
 			scaleDecl.Horizontal, err = parser.parseHorizontalScaleBlock()
+		case "vertical":
+			scaleDecl.Vertical, err = parser.parseVerticalScaleBlock()
 		default:
 			return nil, parser.parserErrorf("unknown scale field %q", key)
 		}
@@ -292,6 +298,16 @@ func (parser *Parser) parseHorizontalScaleBlock() (*HorizontalScaleDecl, error) 
 				Metric: metricName,
 				Value:  targetValue,
 			})
+		case "event":
+			eventDecl, eventErr := parser.parseEventScaleEntry()
+			if eventErr != nil {
+				return nil, eventErr
+			}
+			horizontalDecl.Events = append(horizontalDecl.Events, *eventDecl)
+		case "schedule":
+			horizontalDecl.Schedule, err = parser.parseScheduleBlock()
+		case "stabilization":
+			horizontalDecl.Stabilization, err = parser.parseStabilizationBlock()
 		default:
 			return nil, parser.parserErrorf("unknown horizontal scale field %q", key)
 		}
@@ -306,6 +322,255 @@ func (parser *Parser) parseHorizontalScaleBlock() (*HorizontalScaleDecl, error) 
 		return nil, err
 	}
 	return horizontalDecl, nil
+}
+
+// parseEventScaleEntry parses "event source_name = target_value" inside a horizontal block.
+func (parser *Parser) parseEventScaleEntry() (*EventScaleDecl, error) {
+	sourceName, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+	if err := parser.expectToken(TokenEquals); err != nil {
+		return nil, err
+	}
+	targetValue, err := parser.expectInteger()
+	if err != nil {
+		return nil, err
+	}
+	return &EventScaleDecl{Source: sourceName, Target: targetValue}, nil
+}
+
+// parseScheduleBlock parses a schedule { days ..., start ..., end ..., minimum N } block.
+func (parser *Parser) parseScheduleBlock() (*ScheduleDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	scheduleDecl := &ScheduleDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "days":
+			scheduleDecl.Days, err = parser.expectIdentifier()
+		case "start":
+			scheduleDecl.Start, err = parser.expectStringOrIdentifier()
+		case "end":
+			scheduleDecl.End, err = parser.expectStringOrIdentifier()
+		case "minimum":
+			scheduleDecl.Minimum, err = parser.expectInteger()
+		default:
+			return nil, parser.parserErrorf("unknown schedule field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return scheduleDecl, nil
+}
+
+// parseStabilizationBlock parses a stabilization { scale_up 60s, scale_down 300s } block.
+func (parser *Parser) parseStabilizationBlock() (*StabilizationDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	stabilizationDecl := &StabilizationDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "scale_up":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected duration for scale_up, got %s", token.Type)
+			}
+			stabilizationDecl.ScaleUp = token.Value
+			parser.advanceToken()
+		case "scale_down":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected duration for scale_down, got %s", token.Type)
+			}
+			stabilizationDecl.ScaleDown = token.Value
+			parser.advanceToken()
+		default:
+			return nil, parser.parserErrorf("unknown stabilization field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return stabilizationDecl, nil
+}
+
+// parseVerticalScaleBlock parses a vertical { cpu { min X, max Y }, memory { min X, max Y } } block.
+func (parser *Parser) parseVerticalScaleBlock() (*VerticalScaleDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	verticalDecl := &VerticalScaleDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "cpu":
+			if err := parser.expectToken(TokenLBrace); err != nil {
+				return nil, err
+			}
+			parser.skipNewlineTokens()
+			for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+				subKey, subErr := parser.expectIdentifier()
+				if subErr != nil {
+					return nil, subErr
+				}
+				valueToken := parser.currentToken()
+				if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
+					return nil, parser.parserErrorf("expected value for cpu %s, got %s", subKey, valueToken.Type)
+				}
+				parser.advanceToken()
+				switch subKey {
+				case "min":
+					verticalDecl.CPUMin = valueToken.Value
+				case "max":
+					verticalDecl.CPUMax = valueToken.Value
+				default:
+					return nil, parser.parserErrorf("unknown vertical cpu field %q", subKey)
+				}
+				parser.skipNewlineTokens()
+			}
+			if err := parser.expectToken(TokenRBrace); err != nil {
+				return nil, err
+			}
+		case "memory":
+			if err := parser.expectToken(TokenLBrace); err != nil {
+				return nil, err
+			}
+			parser.skipNewlineTokens()
+			for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+				subKey, subErr := parser.expectIdentifier()
+				if subErr != nil {
+					return nil, subErr
+				}
+				valueToken := parser.currentToken()
+				if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
+					return nil, parser.parserErrorf("expected value for memory %s, got %s", subKey, valueToken.Type)
+				}
+				parser.advanceToken()
+				switch subKey {
+				case "min":
+					verticalDecl.MemoryMin = valueToken.Value
+				case "max":
+					verticalDecl.MemoryMax = valueToken.Value
+				default:
+					return nil, parser.parserErrorf("unknown vertical memory field %q", subKey)
+				}
+				parser.skipNewlineTokens()
+			}
+			if err := parser.expectToken(TokenRBrace); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, parser.parserErrorf("unknown vertical scale field %q", key)
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return verticalDecl, nil
+}
+
+// parsePlacementBlock parses a placement { architecture ..., zone ... } block.
+func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	placementDecl := &PlacementDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "architecture":
+			placementDecl.Architecture, err = parser.expectIdentifier()
+		case "zone":
+			placementDecl.ZonePolicy, err = parser.expectIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown placement field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return placementDecl, nil
+}
+
+// parseUpdateBlock parses an update { max_unavailable N, max_extra M } block.
+func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	updateDecl := &UpdateDecl{MaxUnavailable: 1, MaxExtra: 1}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "max_unavailable":
+			updateDecl.MaxUnavailable, err = parser.expectInteger()
+		case "max_extra":
+			updateDecl.MaxExtra, err = parser.expectInteger()
+		default:
+			return nil, parser.parserErrorf("unknown update field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return updateDecl, nil
 }
 
 // parseTargetValue extracts an integer from a token value that may include a

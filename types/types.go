@@ -84,6 +84,39 @@ type ScaleTarget struct {
 	Value  int    // Value is the target threshold (e.g. 60 for 60% CPU utilization).
 }
 
+// VerticalScalePolicy represents a vertical autoscaling policy for a service,
+// defining the resource bounds within which the autoscaler can adjust CPU and memory.
+type VerticalScalePolicy struct {
+	Service   string // Service is the name of the service this policy applies to.
+	CPUMin    string // CPUMin is the minimum CPU allocation (e.g. "250m").
+	CPUMax    string // CPUMax is the maximum CPU allocation (e.g. "4000m").
+	MemoryMin string // MemoryMin is the minimum memory allocation (e.g. "512Mi").
+	MemoryMax string // MemoryMax is the maximum memory allocation (e.g. "8Gi").
+}
+
+// UpdatePolicy represents a rolling update strategy for a service.
+type UpdatePolicy struct {
+	Service        string // Service is the name of the service.
+	MaxUnavailable int    // MaxUnavailable is the maximum number of instances that can be down during update.
+	MaxExtra       int    // MaxExtra is the maximum number of extra instances allowed during surge.
+}
+
+// PlacementPolicy represents placement constraints for a service.
+type PlacementPolicy struct {
+	Service      string // Service is the name of the service.
+	Architecture string // Architecture is the required CPU architecture (e.g. "amd64", "arm64").
+	ZonePolicy   string // ZonePolicy is "spread" for zone-aware spreading, or a specific zone name.
+}
+
+// ScheduleRule represents a time-based scaling rule that sets a minimum
+// instance count during specific time windows.
+type ScheduleRule struct {
+	Days    string // Days is when the rule applies (e.g. "weekdays", "everyday").
+	Start   string // Start is the start time in HH:MM format (e.g. "08:00").
+	End     string // End is the end time in HH:MM format (e.g. "18:00").
+	Minimum int    // Minimum is the minimum instance count during the active window.
+}
+
 // Volume represents a persistent storage volume that can be attached to a
 // node and mounted into a service instance. Volumes survive instance
 // restarts and node moves — the data follows the workload.

@@ -1,6 +1,6 @@
 {
-  "testCount": 242,
-  "packageCount": 10,
+  "testCount": 282,
+  "packageCount": 11,
   "milestones": [
     {
       "id": "M1",
@@ -42,14 +42,14 @@
       "name": "Resilient",
       "phase": "Phase 9",
       "demo": "Kill anything, cluster converges",
-      "complete": false
+      "complete": true
     },
     {
       "id": "M7",
       "name": "Smart",
       "phase": "Phase 10",
       "demo": "Autoscaling, rolling deploys, placement policies",
-      "complete": false
+      "complete": true
     },
     {
       "id": "M8",
@@ -74,6 +74,12 @@
     }
   ],
   "examples": [
+    {
+      "name": "autoscaling",
+      "filename": "autoscaling.ccattler",
+      "description": "Autoscaling with placement constraints and rolling updates.",
+      "content": "# Autoscaling with placement constraints and rolling updates.\n#\n# Demonstrates: horizontal + event-driven scaling, scheduled minimums,\n#               stabilization windows, placement constraints, rolling updates.\n# Run with:  cca apply examples/autoscaling.ccattler\n#\n# Expected: web scales 3–30 based on CPU, requests, and queue depth.\n#           Minimum 10 instances during weekday business hours.\n#           Architecture constraint ensures amd64 nodes only.\n#           Zone spread distributes instances across availability zones.\n#           Image updates roll out gradually with max 1 unavailable.\n\nservice web {\n    image nginx:1.28\n    instances 3\n    expose 8080\n\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n\n    scale {\n        horizontal {\n            min 3\n            max 30\n            target cpu = 60\n            target requests_per_second = 500\n            event payments.pending = 20\n            schedule {\n                days weekdays\n                start \"08:00\"\n                end \"18:00\"\n                minimum 10\n            }\n            stabilization {\n                scale_up 60s\n                scale_down 300s\n            }\n        }\n    }\n\n    placement {\n        architecture amd64\n        zone spread\n    }\n\n    update {\n        max_unavailable 1\n        max_extra 1\n    }\n}\n"
+    },
     {
       "name": "basic",
       "filename": "basic.ccattler",
@@ -155,6 +161,21 @@
       "description": "Block declaring health check configuration: http with path, tcp, and interval"
     },
     {
+      "keyword": "scale",
+      "context": "service",
+      "description": "Block declaring horizontal and vertical autoscaling policies with targets and bounds"
+    },
+    {
+      "keyword": "placement",
+      "context": "service",
+      "description": "Block declaring placement constraints: architecture filtering and zone spread"
+    },
+    {
+      "keyword": "update",
+      "context": "service",
+      "description": "Block declaring rolling update strategy: max_unavailable and max_extra"
+    },
+    {
       "keyword": "volume",
       "context": "top-level",
       "description": "Declares a named persistent volume with size and persistence flag"
@@ -195,6 +216,11 @@
       "command": "cca demo-storage",
       "milestone": "M5",
       "description": "Persistent volume migrates when node dies"
+    },
+    {
+      "command": "cca chaos",
+      "milestone": "M6",
+      "description": "Random failures, verifies convergence"
     }
   ]
 }

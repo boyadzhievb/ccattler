@@ -15,7 +15,7 @@ function Nav() {
           <span className="font-mono text-xs text-white/25 ml-1">v0.1.0-alpha</span>
         </div>
         <div className="hidden md:flex items-center gap-8">
-          {["Philosophy", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
+          {["Install", "Philosophy", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
             <a
               key={item}
               href={`#${item.toLowerCase()}`}
@@ -36,7 +36,7 @@ function Nav() {
             GitHub
           </a>
           <a
-            href="https://github.com/boyadzhievb/ccattler"
+            href="#install"
             className="font-mono text-xs bg-[#6378ff] hover:bg-[#7085ff] text-white px-3 py-1.5 rounded transition-colors duration-200"
           >
             Get Started
@@ -119,7 +119,7 @@ function Hero() {
 
             <div className="flex items-center gap-4">
               <a
-                href="https://github.com/boyadzhievb/ccattler"
+                href="#install"
                 className="font-mono text-sm bg-[#6378ff] hover:bg-[#7085ff] text-white px-6 py-3 rounded transition-all duration-200 hover:shadow-[0_0_24px_-4px_rgba(99,120,255,0.6)]"
               >
                 Get Started →
@@ -152,6 +152,116 @@ function Hero() {
                   { label: "Observations", sub: "→ State" },
                 ]}
               />
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Installation() {
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  return (
+    <section id="install" className="relative py-32 border-t border-white/5">
+      <div className="absolute inset-0 grid-bg opacity-30" />
+      <div className="relative max-w-6xl mx-auto px-6">
+        <div className="mb-16">
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 00 · Install</div>
+          <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
+            One command.
+            <span className="text-white/35"> Ready in seconds.</span>
+          </h2>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Quick install */}
+          <div className="border border-[#6378ff]/25 rounded-lg p-8 bg-[#6378ff]/[0.03] glow-blue">
+            <div className="flex items-center gap-2.5 mb-6">
+              <div className="w-2 h-2 rounded-full bg-[#6378ff]" />
+              <span className="font-mono text-xs text-[#6378ff]/80 tracking-widest uppercase">Quick install</span>
+            </div>
+
+            <div className="border border-white/8 rounded-lg overflow-hidden mb-6">
+              <div className="border-b border-white/6 bg-white/[0.025] px-4 py-2.5 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-white/10" />
+                  <div className="w-2 h-2 rounded-full bg-white/10" />
+                  <div className="w-2 h-2 rounded-full bg-white/10" />
+                </div>
+                <button
+                  onClick={() => copyToClipboard("curl -fsSL https://raw.githubusercontent.com/boyadzhievb/ccattler/master/scripts/install.sh | sh", "curl")}
+                  className="font-mono text-[10px] text-white/30 hover:text-white/60 transition-colors"
+                >
+                  {copied === "curl" ? "copied!" : "copy"}
+                </button>
+              </div>
+              <div className="p-5 bg-[#04040c] font-mono text-sm">
+                <div>
+                  <span className="text-[#6378ff]/60">$</span>
+                  <span className="text-white/60"> curl -fsSL https://raw.githubusercontent.com/</span>
+                </div>
+                <div>
+                  <span className="text-white/60">  boyadzhievb/ccattler/master/scripts/install.sh | sh</span>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-sm text-white/35 leading-relaxed">
+              Detects your OS and architecture automatically. Installs the <code className="text-white/50">cca</code> binary to <code className="text-white/50">/usr/local/bin</code>.
+              Supports macOS and Linux (amd64 / arm64).
+            </p>
+          </div>
+
+          {/* Alternative methods */}
+          <div className="space-y-4">
+            <div className="border border-white/8 rounded-lg p-6 bg-white/[0.015]">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="w-2 h-2 rounded-full bg-white/20" />
+                <span className="font-mono text-xs text-white/35 tracking-widest uppercase">From source</span>
+              </div>
+              <div className="border border-white/6 rounded bg-[#04040c] p-4 font-mono text-sm space-y-1">
+                <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> git clone https://github.com/boyadzhievb/ccattler</span></div>
+                <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cd ccattler</span></div>
+                <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> go build -o cca ./cmd/cca/</span></div>
+              </div>
+              <p className="text-xs text-white/25 mt-3">Requires Go 1.22+</p>
+            </div>
+
+            <div className="border border-white/8 rounded-lg p-6 bg-white/[0.015]">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="w-2 h-2 rounded-full bg-white/20" />
+                <span className="font-mono text-xs text-white/35 tracking-widest uppercase">GitHub Releases</span>
+              </div>
+              <p className="text-sm text-white/40 leading-relaxed mb-3">
+                Pre-built binaries for every tagged release.
+              </p>
+              <a
+                href="https://github.com/boyadzhievb/ccattler/releases"
+                className="font-mono text-xs text-[#6378ff]/70 hover:text-[#6378ff] transition-colors flex items-center gap-1.5"
+              >
+                github.com/boyadzhievb/ccattler/releases →
+              </a>
+            </div>
+
+            <div className="border border-white/8 rounded-lg p-6 bg-white/[0.015]">
+              <div className="flex items-center gap-2.5 mb-4">
+                <div className="w-2 h-2 rounded-full bg-white/20" />
+                <span className="font-mono text-xs text-white/35 tracking-widest uppercase">Verify</span>
+              </div>
+              <div className="border border-white/6 rounded bg-[#04040c] p-4 font-mono text-sm space-y-1">
+                <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca version</span></div>
+                <div><span className="text-[#a3e8a0]/60">cca v0.1.0</span></div>
+                <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca demo</span></div>
+                <div><span className="text-[#a3e8a0]/60">Applying config...</span></div>
+              </div>
             </div>
           </div>
         </div>
@@ -866,7 +976,7 @@ function CTA() {
 
         <div className="flex items-center justify-center gap-4 flex-wrap mb-16">
           <a
-            href="https://github.com/boyadzhievb/ccattler"
+            href="#install"
             className="font-mono text-sm bg-[#6378ff] hover:bg-[#7085ff] text-white px-8 py-3.5 rounded transition-all duration-200 hover:shadow-[0_0_32px_-4px_rgba(99,120,255,0.5)]"
           >
             Get Started →
@@ -941,6 +1051,7 @@ export default function App() {
     <div className="min-h-screen bg-[#080810] text-white">
       <Nav />
       <Hero />
+      <Installation />
       <Philosophy />
       <Architecture />
       <Capabilities />

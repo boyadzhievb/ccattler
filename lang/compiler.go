@@ -124,6 +124,71 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 				Value: strconv.Itoa(target.Value),
 			})
 		}
+		for _, event := range horizontal.Events {
+			if event.Target <= 0 {
+				return nil, fmt.Errorf("line %d: service %q event target for %q must be > 0", serviceDecl.Line, serviceDecl.Name, event.Source)
+			}
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceScaleHorizontalEvent(serviceDecl.Name, event.Source),
+				Value: strconv.Itoa(event.Target),
+			})
+		}
+		if horizontal.Schedule != nil {
+			facts = append(facts,
+				Fact{Key: types.KeyDesiredServiceScaleScheduleDays(serviceDecl.Name), Value: horizontal.Schedule.Days},
+				Fact{Key: types.KeyDesiredServiceScaleScheduleStart(serviceDecl.Name), Value: horizontal.Schedule.Start},
+				Fact{Key: types.KeyDesiredServiceScaleScheduleEnd(serviceDecl.Name), Value: horizontal.Schedule.End},
+				Fact{Key: types.KeyDesiredServiceScaleScheduleMinimum(serviceDecl.Name), Value: strconv.Itoa(horizontal.Schedule.Minimum)},
+			)
+		}
+		if horizontal.Stabilization != nil {
+			if horizontal.Stabilization.ScaleUp != "" {
+				facts = append(facts, Fact{
+					Key: types.KeyDesiredServiceScaleStabilizationUp(serviceDecl.Name), Value: horizontal.Stabilization.ScaleUp,
+				})
+			}
+			if horizontal.Stabilization.ScaleDown != "" {
+				facts = append(facts, Fact{
+					Key: types.KeyDesiredServiceScaleStabilizationDown(serviceDecl.Name), Value: horizontal.Stabilization.ScaleDown,
+				})
+			}
+		}
+	}
+
+	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
+		vertical := serviceDecl.Scale.Vertical
+		if vertical.CPUMin != "" {
+			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMin(serviceDecl.Name), Value: vertical.CPUMin})
+		}
+		if vertical.CPUMax != "" {
+			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMax(serviceDecl.Name), Value: vertical.CPUMax})
+		}
+		if vertical.MemoryMin != "" {
+			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMin(serviceDecl.Name), Value: vertical.MemoryMin})
+		}
+		if vertical.MemoryMax != "" {
+			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMax(serviceDecl.Name), Value: vertical.MemoryMax})
+		}
+	}
+
+	if serviceDecl.Placement != nil {
+		if serviceDecl.Placement.Architecture != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServicePlacementArchitecture(serviceDecl.Name), Value: serviceDecl.Placement.Architecture,
+			})
+		}
+		if serviceDecl.Placement.ZonePolicy != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServicePlacementZonePolicy(serviceDecl.Name), Value: serviceDecl.Placement.ZonePolicy,
+			})
+		}
+	}
+
+	if serviceDecl.Update != nil {
+		facts = append(facts,
+			Fact{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Update.MaxUnavailable)},
+			Fact{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Update.MaxExtra)},
+		)
 	}
 
 	if serviceDecl.Health != nil {

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M7 — Smart (Phase 10). M1–M6 complete. Autoscaling engine, horizontal scaling, multi-policy resolution, and intent layers done. Next: stabilization windows, rolling deploys, placement policies.
+**Active milestone:** M8 — Secure (Phase 11). M1–M7 complete. Next: API, CLI, mTLS, RBAC, secrets.
 
 ---
 
@@ -1065,17 +1065,17 @@ cca status                    # cluster overview
 ### Phase 10 — Policies & Autoscaling
 - [x] Unified scaling engine (signal → policy → recommendation → constraints → desired state)
 - [x] Horizontal autoscaling (CPU, memory, RPS targets)
-- [ ] Vertical autoscaling (resource requirement changes, in-place resize vs replace)
-- [ ] Event-driven scaling (queue depth, custom metrics)
-- [ ] Scheduled scaling (time-based minimums)
-- [ ] Stabilization windows (scale-up 60s, scale-down 5m, no oscillation)
+- [x] Vertical autoscaling (resource requirement changes, in-place resize vs replace)
+- [x] Event-driven scaling (queue depth, custom metrics)
+- [x] Scheduled scaling (time-based minimums)
+- [x] Stabilization windows (scale-up 60s, scale-down 5m, no oscillation)
 - [x] Multi-policy resolution (single decision function, no competing writers)
-- [ ] Quota-aware scaling (tenant limits visible, not silently capped)
-- [ ] Cluster autoscaling (unsatisfied demand → desired nodes → infra provider)
+- [x] Quota-aware scaling (tenant limits visible, not silently capped)
+- [x] Cluster autoscaling (unsatisfied demand → desired nodes → infra provider)
 - [x] Intent layers (user, autoscaler, policy — derived effective state)
-- [ ] Placement constraints (architecture, zone, spread, affinity)
-- [ ] Rolling update controller with max_unavailable/max_extra
-- [ ] Rollback on health check failure
+- [x] Placement constraints (architecture, zone, spread, affinity)
+- [x] Rolling update controller with max_unavailable/max_extra
+- [x] Rollback on health check failure
 
 ### Phase 11 — API, CLI & Security
 - [ ] Query API (GET/QUERY/APPLY/WATCH)

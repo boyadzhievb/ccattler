@@ -185,6 +185,9 @@ func extractDSLFeatures() []dslFeature {
 		{Keyword: "expose", Context: "service", Description: "Port number to expose from each instance"},
 		{Keyword: "resources", Context: "service", Description: "Block declaring CPU and memory resource constraints (e.g. cpu 500m, memory 512Mi)"},
 		{Keyword: "health", Context: "service", Description: "Block declaring health check configuration: http with path, tcp, and interval"},
+		{Keyword: "scale", Context: "service", Description: "Block declaring horizontal and vertical autoscaling policies with targets and bounds"},
+		{Keyword: "placement", Context: "service", Description: "Block declaring placement constraints: architecture filtering and zone spread"},
+		{Keyword: "update", Context: "service", Description: "Block declaring rolling update strategy: max_unavailable and max_extra"},
 		{Keyword: "volume", Context: "top-level", Description: "Declares a named persistent volume with size and persistence flag"},
 		{Keyword: "volume", Context: "service", Description: "Mounts a named volume at a filesystem path inside the service's instances"},
 		{Keyword: "size", Context: "volume", Description: "Storage capacity in Kubernetes-style units (e.g. 100Gi)"},
@@ -198,5 +201,6 @@ func listDemoCommands() []demoCommand {
 		{Command: "cca demo-distributed", Milestone: "M3", Description: "3 nodes, kills one, shows rescheduling"},
 		{Command: "cca demo-network", Milestone: "M4", Description: "VIPs, DNS, round-robin load balancing"},
 		{Command: "cca demo-storage", Milestone: "M5", Description: "Persistent volume migrates when node dies"},
+		{Command: "cca chaos", Milestone: "M6", Description: "Random failures, verifies convergence"},
 	}
 }

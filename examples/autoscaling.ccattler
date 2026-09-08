@@ -1,0 +1,52 @@
+# Autoscaling with placement constraints and rolling updates.
+#
+# Demonstrates: horizontal + event-driven scaling, scheduled minimums,
+#               stabilization windows, placement constraints, rolling updates.
+# Run with:  cca apply examples/autoscaling.ccattler
+#
+# Expected: web scales 3–30 based on CPU, requests, and queue depth.
+#           Minimum 10 instances during weekday business hours.
+#           Architecture constraint ensures amd64 nodes only.
+#           Zone spread distributes instances across availability zones.
+#           Image updates roll out gradually with max 1 unavailable.
+
+service web {
+    image nginx:1.28
+    instances 3
+    expose 8080
+
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+
+    scale {
+        horizontal {
+            min 3
+            max 30
+            target cpu = 60
+            target requests_per_second = 500
+            event payments.pending = 20
+            schedule {
+                days weekdays
+                start "08:00"
+                end "18:00"
+                minimum 10
+            }
+            stabilization {
+                scale_up 60s
+                scale_down 300s
+            }
+        }
+    }
+
+    placement {
+        architecture amd64
+        zone spread
+    }
+
+    update {
+        max_unavailable 1
+        max_extra 1
+    }
+}

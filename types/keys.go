@@ -219,6 +219,9 @@ const (
 	// ScanObservedInstances scans all observed instance facts.
 	ScanObservedInstances = PrefixObserved + "/instance/"
 
+	// ScanObservedServices scans all observed service-level facts (rollout state, etc).
+	ScanObservedServices = PrefixObserved + "/service/"
+
 	// ScanPlacements scans all scheduler placement decisions.
 	ScanPlacements = PrefixPlacement + "/instance/"
 
@@ -347,6 +350,148 @@ func KeyDesiredServiceScaleHorizontalTarget(name string, metric string) string {
 // autoscaling target metrics of a specific service.
 func ScanDesiredServiceScaleTargets(name string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/target/", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleStabilizationUp returns the store path for the scale-up
+// stabilization window duration in seconds.
+func KeyDesiredServiceScaleStabilizationUp(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/stabilization/up", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleStabilizationDown returns the store path for the scale-down
+// stabilization window duration in seconds.
+func KeyDesiredServiceScaleStabilizationDown(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/stabilization/down", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleVerticalCPUMin returns the store path for the minimum CPU
+// for vertical autoscaling.
+func KeyDesiredServiceScaleVerticalCPUMin(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/vertical/cpu/min", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleVerticalCPUMax returns the store path for the maximum CPU
+// for vertical autoscaling.
+func KeyDesiredServiceScaleVerticalCPUMax(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/vertical/cpu/max", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleVerticalMemoryMin returns the store path for the minimum memory
+// for vertical autoscaling.
+func KeyDesiredServiceScaleVerticalMemoryMin(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/vertical/memory/min", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleVerticalMemoryMax returns the store path for the maximum memory
+// for vertical autoscaling.
+func KeyDesiredServiceScaleVerticalMemoryMax(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/vertical/memory/max", PrefixDesired, name)
+}
+
+// KeyIntentAutoscalerServiceResourcesCPU returns the store path for the autoscaler's
+// recommended CPU resource for a service.
+func KeyIntentAutoscalerServiceResourcesCPU(name string) string {
+	return fmt.Sprintf("%s/autoscaler/service/%s/resources/cpu", PrefixIntent, name)
+}
+
+// KeyIntentAutoscalerServiceResourcesMemory returns the store path for the autoscaler's
+// recommended memory resource for a service.
+func KeyIntentAutoscalerServiceResourcesMemory(name string) string {
+	return fmt.Sprintf("%s/autoscaler/service/%s/resources/memory", PrefixIntent, name)
+}
+
+// KeyEffectiveServiceResourcesCPU returns the store path for a service's effective CPU.
+func KeyEffectiveServiceResourcesCPU(name string) string {
+	return fmt.Sprintf("%s/service/%s/resources/cpu", PrefixEffective, name)
+}
+
+// KeyEffectiveServiceResourcesMemory returns the store path for a service's effective memory.
+func KeyEffectiveServiceResourcesMemory(name string) string {
+	return fmt.Sprintf("%s/service/%s/resources/memory", PrefixEffective, name)
+}
+
+// KeyDesiredServiceScaleHorizontalEvent returns the store path for an event-driven
+// scaling source and its target messages-per-instance value.
+func KeyDesiredServiceScaleHorizontalEvent(name, source string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/event/%s", PrefixDesired, name, source)
+}
+
+// KeyDesiredServiceScaleScheduleDays returns the store path for schedule scaling days.
+func KeyDesiredServiceScaleScheduleDays(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/schedule/days", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleScheduleStart returns the store path for schedule scaling start time.
+func KeyDesiredServiceScaleScheduleStart(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/schedule/start", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleScheduleEnd returns the store path for schedule scaling end time.
+func KeyDesiredServiceScaleScheduleEnd(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/schedule/end", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleScheduleMinimum returns the store path for schedule scaling minimum instances.
+func KeyDesiredServiceScaleScheduleMinimum(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/schedule/minimum", PrefixDesired, name)
+}
+
+// KeyDesiredServiceQuotaInstances returns the store path for a service's instance quota ceiling.
+func KeyDesiredServiceQuotaInstances(name string) string {
+	return fmt.Sprintf("%s/service/%s/quota/instances", PrefixDesired, name)
+}
+
+// KeyDesiredServicePlacementArchitecture returns the store path for a service's
+// required CPU architecture constraint.
+func KeyDesiredServicePlacementArchitecture(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement/architecture", PrefixDesired, name)
+}
+
+// KeyDesiredServicePlacementZonePolicy returns the store path for a service's
+// zone placement policy ("spread" or a specific zone name).
+func KeyDesiredServicePlacementZonePolicy(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement/zone", PrefixDesired, name)
+}
+
+// KeyDesiredServiceUpdateMaxUnavailable returns the store path for the maximum number
+// of instances that can be unavailable during a rolling update.
+func KeyDesiredServiceUpdateMaxUnavailable(name string) string {
+	return fmt.Sprintf("%s/service/%s/update/max_unavailable", PrefixDesired, name)
+}
+
+// KeyDesiredServiceUpdateMaxExtra returns the store path for the maximum number
+// of extra instances allowed during a rolling update surge.
+func KeyDesiredServiceUpdateMaxExtra(name string) string {
+	return fmt.Sprintf("%s/service/%s/update/max_extra", PrefixDesired, name)
+}
+
+// KeyDesiredClusterAutoscaleMinNodes returns the store path for the minimum number
+// of nodes the cluster autoscaler should maintain.
+func KeyDesiredClusterAutoscaleMinNodes() string {
+	return fmt.Sprintf("%s/cluster/autoscale/min_nodes", PrefixDesired)
+}
+
+// KeyDesiredClusterAutoscaleMaxNodes returns the store path for the maximum number
+// of nodes the cluster autoscaler can provision.
+func KeyDesiredClusterAutoscaleMaxNodes() string {
+	return fmt.Sprintf("%s/cluster/autoscale/max_nodes", PrefixDesired)
+}
+
+// KeyObservedServiceRolloutImage returns the store path tracking the previous image
+// during a rolling update for rollback purposes.
+func KeyObservedServiceRolloutImage(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/previous_image", PrefixObserved, name)
+}
+
+// KeyObservedServiceRolloutState returns the store path for a service's rollout state.
+func KeyObservedServiceRolloutState(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/state", PrefixObserved, name)
+}
+
+// KeyObservedServiceRolloutFailures returns the count of failed new-image instances
+// during a rollout, used for rollback decisions.
+func KeyObservedServiceRolloutFailures(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/failures", PrefixObserved, name)
 }
 
 // KeyDesiredVolume returns the store path for a volume's root marker key.

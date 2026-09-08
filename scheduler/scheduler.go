@@ -41,13 +41,14 @@ func (placementScheduler *Scheduler) Watch() []string {
 
 // Reconcile examines the current facts to find pending instances that lack a
 // placement, then assigns each one to the alive node with the lowest load and
-// sufficient available resources. It returns a list of proposed placement
-// changes (one per newly placed instance) or nil if no work is needed.
+// sufficient available resources. Placement constraints (architecture, zone
+// spread) are applied as filters before selecting the least-loaded node.
 func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
 	placements := extractPlacementsFromFacts(facts)
 	serviceResources := extractServiceResourcesFromFacts(facts)
+	placementConstraints := extractPlacementConstraints(facts)
 
 	// Find pending instances that have no placement.
 	var unplaced []string
@@ -82,9 +83,11 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 			continue
 		}
 		alive = append(alive, candidateNode{
-			id:          node.id,
-			availCPU:    node.availCPU - usedCPU[node.id],
-			availMemory: node.availMemory - usedMemory[node.id],
+			id:           node.id,
+			availCPU:     node.availCPU - usedCPU[node.id],
+			availMemory:  node.availMemory - usedMemory[node.id],
+			architecture: node.architecture,
+			zone:         node.zone,
 		})
 	}
 	if len(alive) == 0 {
@@ -94,18 +97,46 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 		return alive[i].id < alive[j].id
 	})
 
+	// Track zone placements per service for zone-spread.
+	serviceZoneCounts := make(map[string]map[string]int)
+	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil || instanceInfo.state == types.InstanceStopped {
+			continue
+		}
+		for _, node := range alive {
+			if node.id == nodeID && node.zone != "" {
+				if serviceZoneCounts[instanceInfo.service] == nil {
+					serviceZoneCounts[instanceInfo.service] = make(map[string]int)
+				}
+				serviceZoneCounts[instanceInfo.service][node.zone]++
+			}
+		}
+	}
+
 	var changes []controllers.Change
 	for _, instanceID := range unplaced {
 		instanceInfo := instances[instanceID]
 		var reqCPU, reqMemory int64
+		serviceName := ""
 		if instanceInfo != nil {
+			serviceName = instanceInfo.service
 			if resource, ok := serviceResources[instanceInfo.service]; ok {
 				reqCPU = resource.cpu
 				reqMemory = resource.memory
 			}
 		}
 
-		best := selectLeastLoadedNode(alive, loadPerNode, reqCPU, reqMemory)
+		// Filter candidates by placement constraints.
+		candidates := filterByConstraints(alive, serviceName, placementConstraints)
+
+		// If zone spread is configured, prefer least-populated zone.
+		constraint := placementConstraints[serviceName]
+		if constraint != nil && constraint.zonePolicy == "spread" {
+			candidates = selectZoneSpreadCandidates(candidates, serviceName, serviceZoneCounts)
+		}
+
+		best := selectLeastLoadedNode(candidates, loadPerNode, reqCPU, reqMemory)
 		if best == "" {
 			continue
 		}
@@ -120,6 +151,13 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 			if alive[i].id == best {
 				alive[i].availCPU -= reqCPU
 				alive[i].availMemory -= reqMemory
+				// Track zone placement for subsequent spread decisions.
+				if alive[i].zone != "" && serviceName != "" {
+					if serviceZoneCounts[serviceName] == nil {
+						serviceZoneCounts[serviceName] = make(map[string]int)
+					}
+					serviceZoneCounts[serviceName][alive[i].zone]++
+				}
 				break
 			}
 		}
@@ -140,6 +178,10 @@ type candidateNode struct {
 	// availMemory is the remaining memory capacity in MiB after subtracting
 	// resources consumed by already-placed instances.
 	availMemory int64
+	// architecture is the CPU architecture of the node (e.g. "amd64", "arm64").
+	architecture string
+	// zone is the availability zone the node resides in.
+	zone string
 }
 
 // selectLeastLoadedNode picks the alive node with sufficient resources and the
@@ -196,6 +238,10 @@ type schedulerNodeInfo struct {
 	availCPU int64
 	// availMemory is the total available memory in MiB as reported by the node.
 	availMemory int64
+	// architecture is the CPU architecture of this node (e.g. "amd64", "arm64").
+	architecture string
+	// zone is the availability zone this node resides in.
+	zone string
 }
 
 // extractInstanceInfoFromFacts parses the flat list of store facts and returns
@@ -252,6 +298,10 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 				node.availCPU, _ = strconv.ParseInt(fieldValue, 10, 64)
 			case "available/memory":
 				node.availMemory, _ = strconv.ParseInt(fieldValue, 10, 64)
+			case "architecture":
+				node.architecture = fieldValue
+			case "zone":
+				node.zone = fieldValue
 			}
 		}
 		nodes[nodeID] = node
@@ -274,6 +324,108 @@ func extractPlacementsFromFacts(facts []store.Fact) map[string]string {
 		}
 	}
 	return placements
+}
+
+// servicePlacementConstraint holds parsed placement constraints for a service.
+type servicePlacementConstraint struct {
+	// architecture is the required CPU architecture (empty means any).
+	architecture string
+	// zonePolicy is "spread" for zone-aware distribution, or a specific zone name.
+	zonePolicy string
+}
+
+// extractPlacementConstraints parses placement constraint facts per service.
+func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacementConstraint {
+	constraints := make(map[string]*servicePlacementConstraint)
+	for _, fact := range facts {
+		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
+			continue
+		}
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		serviceName := parts[0]
+		suffix := parts[1]
+
+		if constraints[serviceName] == nil {
+			constraints[serviceName] = &servicePlacementConstraint{}
+		}
+		switch suffix {
+		case "placement/architecture":
+			constraints[serviceName].architecture = string(fact.Value)
+		case "placement/zone":
+			constraints[serviceName].zonePolicy = string(fact.Value)
+		}
+	}
+	return constraints
+}
+
+// filterByConstraints returns only the candidate nodes that satisfy the
+// placement constraints for the given service.
+func filterByConstraints(candidates []candidateNode, serviceName string, constraints map[string]*servicePlacementConstraint) []candidateNode {
+	constraint := constraints[serviceName]
+	if constraint == nil {
+		return candidates
+	}
+
+	var filtered []candidateNode
+	for _, candidate := range candidates {
+		if constraint.architecture != "" && candidate.architecture != "" && candidate.architecture != constraint.architecture {
+			continue
+		}
+		if constraint.zonePolicy != "" && constraint.zonePolicy != "spread" && candidate.zone != "" && candidate.zone != constraint.zonePolicy {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+
+	if len(filtered) == 0 {
+		return candidates
+	}
+	return filtered
+}
+
+// selectZoneSpreadCandidates filters candidates to prefer nodes in the zone
+// with the fewest existing instances for this service.
+func selectZoneSpreadCandidates(candidates []candidateNode, serviceName string, serviceZoneCounts map[string]map[string]int) []candidateNode {
+	if len(candidates) == 0 {
+		return candidates
+	}
+
+	zoneCounts := serviceZoneCounts[serviceName]
+	if zoneCounts == nil {
+		zoneCounts = make(map[string]int)
+	}
+
+	minZoneCount := math.MaxInt
+	for _, candidate := range candidates {
+		zone := candidate.zone
+		if zone == "" {
+			zone = "_default"
+		}
+		count := zoneCounts[zone]
+		if count < minZoneCount {
+			minZoneCount = count
+		}
+	}
+
+	var preferred []candidateNode
+	for _, candidate := range candidates {
+		zone := candidate.zone
+		if zone == "" {
+			zone = "_default"
+		}
+		if zoneCounts[zone] == minZoneCount {
+			preferred = append(preferred, candidate)
+		}
+	}
+
+	if len(preferred) == 0 {
+		return candidates
+	}
+	return preferred
 }
 
 // extractServiceResourcesFromFacts parses the flat list of store facts and

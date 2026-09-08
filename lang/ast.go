@@ -15,6 +15,8 @@ type ServiceDecl struct {
 	Resources    *ResourcesDecl    // optional CPU/memory resource constraints
 	Health       *HealthDecl       // optional health check configuration
 	Scale        *ScaleDecl        // optional autoscaling policy
+	Placement    *PlacementDecl    // optional placement constraints
+	Update       *UpdateDecl       // optional rolling update strategy
 	VolumeMounts []VolumeMountDecl // optional volume mount bindings
 	Line         int               // source line number for error reporting
 }
@@ -50,13 +52,17 @@ type HealthDecl struct {
 // ScaleDecl holds autoscaling configuration for a service.
 type ScaleDecl struct {
 	Horizontal *HorizontalScaleDecl // optional horizontal scaling policy
+	Vertical   *VerticalScaleDecl   // optional vertical scaling policy
 }
 
 // HorizontalScaleDecl holds horizontal autoscaling bounds and target metrics.
 type HorizontalScaleDecl struct {
-	Min     int               // minimum instance count floor
-	Max     int               // maximum instance count ceiling
-	Targets []ScaleTargetDecl // metric thresholds that drive scaling decisions
+	Min           int                // minimum instance count floor
+	Max           int                // maximum instance count ceiling
+	Targets       []ScaleTargetDecl  // metric thresholds that drive scaling decisions
+	Events        []EventScaleDecl   // event-driven scaling sources
+	Schedule      *ScheduleDecl      // optional time-based scaling minimum
+	Stabilization *StabilizationDecl // optional stabilization windows
 }
 
 // ScaleTargetDecl represents a single "target metric = value" entry in a
@@ -64,4 +70,46 @@ type HorizontalScaleDecl struct {
 type ScaleTargetDecl struct {
 	Metric string // metric name (e.g. "cpu", "memory", "requests_per_second")
 	Value  int    // target threshold value (e.g. 60 for 60%)
+}
+
+// EventScaleDecl represents an event-driven scaling source with a target
+// messages-per-instance threshold.
+type EventScaleDecl struct {
+	Source string // event source name (e.g. "payments.pending")
+	Target int    // target messages per instance (e.g. 20)
+}
+
+// ScheduleDecl represents a time-based scaling rule.
+type ScheduleDecl struct {
+	Days    string // when the rule applies (e.g. "weekdays", "everyday")
+	Start   string // start time in HH:MM format
+	End     string // end time in HH:MM format
+	Minimum int    // minimum instance count during the active window
+}
+
+// StabilizationDecl holds the asymmetric stabilization window durations that
+// prevent autoscaling oscillation.
+type StabilizationDecl struct {
+	ScaleUp   string // scale-up stabilization window (e.g. "60s")
+	ScaleDown string // scale-down stabilization window (e.g. "300s")
+}
+
+// VerticalScaleDecl holds vertical autoscaling resource bounds.
+type VerticalScaleDecl struct {
+	CPUMin    string // minimum CPU allocation (e.g. "250m")
+	CPUMax    string // maximum CPU allocation (e.g. "4000m")
+	MemoryMin string // minimum memory allocation (e.g. "512Mi")
+	MemoryMax string // maximum memory allocation (e.g. "8Gi")
+}
+
+// PlacementDecl holds placement constraints for a service.
+type PlacementDecl struct {
+	Architecture string // required CPU architecture (e.g. "amd64")
+	ZonePolicy   string // "spread" for zone-aware spreading or a specific zone name
+}
+
+// UpdateDecl holds the rolling update strategy for a service.
+type UpdateDecl struct {
+	MaxUnavailable int // maximum instances that can be unavailable during update
+	MaxExtra       int // maximum extra instances allowed during surge
 }

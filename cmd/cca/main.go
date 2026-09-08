@@ -23,6 +23,7 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/infra"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
@@ -31,6 +32,9 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// version is set at build time via -ldflags.
+var version = "dev"
 
 // statusAPIListenAddress is the address the HTTP status API binds to when running
 // in live mode (run, run-container, demo). The status and metric commands query this.
@@ -44,6 +48,9 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version", "--version", "-v":
+		fmt.Printf("cca %s\n", version)
+		return
 	case "apply":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca apply <file>")
@@ -134,9 +141,11 @@ func executeApplyCommand(configFilePath string) {
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	fmt.Printf("Applying %s...\n", configFilePath)
@@ -180,9 +189,11 @@ func executeLiveProcessCommand(configFilePath string) {
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with process runtime for real OS process execution.
@@ -257,9 +268,11 @@ func executeLiveContainerCommand(configFilePath string) {
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with container runtime for real Docker container execution.
@@ -320,9 +333,11 @@ func executeDemoCommand() {
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
@@ -384,10 +399,12 @@ func executeDistributedDemoCommand() {
 	nodeFailureController := controllers.NewNodeFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController,
-		autoscaleController, intentResolverController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime.
@@ -493,10 +510,12 @@ func executeNetworkDemoCommand() {
 	networkController := controllers.NewNetworkController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
-		autoscaleController, intentResolverController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
@@ -608,10 +627,12 @@ func executeStorageDemoCommand() {
 	storageController := controllers.NewStorageController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, storageController,
-		autoscaleController, intentResolverController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Track which context each node's agent uses so we can kill one later.
