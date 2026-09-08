@@ -1112,9 +1112,9 @@ cca status                    # cluster overview
 - [x] Per-tenant audit views
 
 ### Phase 13 — Extensibility & Hardening
-- [ ] Typed fact schemas for plugins
-- [ ] Custom controller SDK
-- [ ] Append-only event log for audit trail
+- [x] Typed fact schemas for plugins
+- [x] Custom controller SDK
+- [x] Append-only event log for audit trail
 - [ ] Metrics (reconciliation latency, scheduling decisions, instance transitions)
 - [ ] Multi-node control plane with leader election (3 or 5 control-plane nodes)
 - [ ] Stateless controllers — multiple copies, shared state, automatic failover

@@ -167,10 +167,12 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
 			}
 			envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
+			exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
 			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
 				ID:    instanceInfo.id,
 				Image: image,
 				Env:   envVars,
+				Ports: exposedPorts,
 			}); err != nil {
 				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
 				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
@@ -266,6 +268,24 @@ func (nodeAgent *Agent) lookupServiceImageFromStore(ctx context.Context, service
 		return ""
 	}
 	return string(factEntry.Value)
+}
+
+// lookupServiceExposedPortsFromStore reads all exposed port declarations for
+// the given service and returns them as a slice of port numbers.
+func (nodeAgent *Agent) lookupServiceExposedPortsFromStore(ctx context.Context, service string) []int {
+	exposeFacts, err := nodeAgent.store.Scan(ctx, fmt.Sprintf("%s/service/%s/expose/", types.PrefixDesired, service))
+	if err != nil || len(exposeFacts) == 0 {
+		return nil
+	}
+
+	ports := make([]int, 0, len(exposeFacts))
+	for _, fact := range exposeFacts {
+		portStr := fact.Key[strings.LastIndex(fact.Key, "/")+1:]
+		if parsedPort, err := strconv.Atoi(portStr); err == nil {
+			ports = append(ports, parsedPort)
+		}
+	}
+	return ports
 }
 
 // performHealthCheckAndReportResult looks up the health probe configuration for

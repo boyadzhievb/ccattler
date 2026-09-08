@@ -9,6 +9,7 @@ type Spec struct {
 	ID      string            // ID is the unique identifier for this workload.
 	Image   string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
 	Env     map[string]string // Env holds environment variables to inject into the workload.
+	Ports   []int             // Ports to map from container to host (each port is mapped to a random host port).
 	CPUm    int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
 	MemoryB int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
 }
