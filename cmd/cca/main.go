@@ -204,7 +204,8 @@ func executeLiveProcessCommand(configFilePath string) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	// Create and start all reconciliation controllers.
+	// Create and start reconciliation controllers. No cluster autoscaler in
+	// single-machine mode — there is no infrastructure provider to add real nodes.
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
@@ -212,10 +213,9 @@ func executeLiveProcessCommand(configFilePath string) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with process runtime for real OS process execution.
@@ -283,7 +283,9 @@ func executeLiveContainerCommand(configFilePath string) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	// Create and start all reconciliation controllers including network controller.
+	// Create and start reconciliation controllers including network controller.
+	// No cluster autoscaler in single-machine mode — there is no infrastructure
+	// provider to add real nodes.
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
@@ -292,11 +294,10 @@ func executeLiveContainerCommand(configFilePath string) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, networkController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		autoscaleController, intentResolverController, rolloutController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with container runtime for real Docker container execution.
