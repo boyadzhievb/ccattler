@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M8 — Secure (Phase 11). M1–M7 complete. Done: API, CLI, mTLS CA, RBAC, secrets, audit. Next: secret delivery, network policies.
+**Active milestone:** M8 — Secure (Phase 11) COMPLETE. M1–M8 complete. All 18 Phase 11 items done: API, CLI, mTLS CA, cert rotation, node enrollment, OIDC/OAuth2, RBAC+ABAC, authorized store, config, secrets (encrypted store + delivery + rotation), network policies, audit, bootstrap. Next: M9 — Multi-tenant (Phase 12).
 
 ---
 
@@ -1083,8 +1083,8 @@ cca status                    # cluster overview
 - [x] Internal CA with ECDSA P-256, short-lived leaf certificates
 - [x] mTLS server and client TLS config generation
 - [x] Certificate auto-rotation (CertificateRotator with configurable threshold)
-- [ ] Node enrollment (`cca join` with bootstrap token → CSR → certificate)
-- [ ] Human auth via OIDC/OAuth2
+- [x] Node enrollment (`cca join` with bootstrap token → CSR → certificate)
+- [x] Human auth via OIDC/OAuth2
 - [x] RBAC: roles with fact-prefix permissions (6 builtin roles)
 - [x] ABAC: attribute-based policies (team isolation, production gates), combined RBAC+ABAC
 - [x] Per-controller least privilege (builtin roles: node-agent, scheduler, controller)

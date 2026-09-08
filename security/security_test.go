@@ -809,6 +809,270 @@ func TestBootstrapTokenExpiry(t *testing.T) {
 	}
 }
 
+func TestEnrollmentFullLifecycle(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	rbacAuthorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		rbacAuthorizer.AddRole(role)
+	}
+
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, rbacAuthorizer, 1*time.Hour)
+	ctx := context.Background()
+
+	// Generate a join token.
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	if len(joinToken.Token) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d", len(joinToken.Token))
+	}
+
+	// Enroll a node.
+	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:       joinToken.Token,
+		NodeID:      "node-1",
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.1")},
+	})
+	if err != nil {
+		t.Fatalf("enroll: %v", err)
+	}
+
+	if response.Principal != "node:node-1" {
+		t.Fatalf("expected node:node-1, got %s", response.Principal)
+	}
+	if len(response.CertificatePEM) == 0 {
+		t.Fatal("no certificate issued")
+	}
+	if len(response.CACertPEM) == 0 {
+		t.Fatal("no CA cert returned")
+	}
+
+	// Node should be enrolled.
+	if !enrollmentService.IsNodeEnrolled(ctx, "node-1") {
+		t.Fatal("node-1 should be enrolled")
+	}
+
+	// RBAC binding should exist.
+	if err := rbacAuthorizer.Authorize("node:node-1", PermissionWrite, "/ccattler/observed/instance/i1/state"); err != nil {
+		t.Fatalf("node-1 should have node-agent role: %v", err)
+	}
+
+	// Token should be consumed — can't reuse.
+	_, err = enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:  joinToken.Token,
+		NodeID: "node-2",
+	})
+	if err == nil {
+		t.Fatal("reused token should fail")
+	}
+}
+
+func TestEnrollmentTokenForSpecificNode(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, _ := enrollmentService.GenerateJoinToken(ctx, "node-5", 5*time.Minute)
+
+	// Wrong node should be rejected.
+	_, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:  joinToken.Token,
+		NodeID: "node-99",
+	})
+	if err == nil {
+		t.Fatal("wrong node should be rejected")
+	}
+
+	// Correct node should succeed.
+	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:  joinToken.Token,
+		NodeID: "node-5",
+	})
+	if err != nil {
+		t.Fatalf("correct node failed: %v", err)
+	}
+	if response.Principal != "node:node-5" {
+		t.Fatalf("expected node:node-5, got %s", response.Principal)
+	}
+}
+
+func TestEnrollmentTokenExpiry(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, _ := enrollmentService.GenerateJoinToken(ctx, "", 1*time.Millisecond)
+	time.Sleep(10 * time.Millisecond)
+
+	_, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:  joinToken.Token,
+		NodeID: "node-1",
+	})
+	if err == nil {
+		t.Fatal("expired token should fail")
+	}
+}
+
+func TestEnrollmentListAndRemove(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	rbacAuthorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		rbacAuthorizer.AddRole(role)
+	}
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, rbacAuthorizer, 1*time.Hour)
+	ctx := context.Background()
+
+	token1, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	token2, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+
+	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token1.Token, NodeID: "node-a"})
+	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token2.Token, NodeID: "node-b"})
+
+	nodes, _ := enrollmentService.ListEnrolledNodes(ctx)
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 enrolled nodes, got %d", len(nodes))
+	}
+
+	enrollmentService.RemoveNode(ctx, "node-a")
+	nodes, _ = enrollmentService.ListEnrolledNodes(ctx)
+	if len(nodes) != 1 {
+		t.Fatalf("expected 1 node after removal, got %d", len(nodes))
+	}
+
+	// RBAC binding should be removed.
+	if err := rbacAuthorizer.Authorize("node:node-a", PermissionRead, "/ccattler/observed/"); err == nil {
+		t.Fatal("removed node should not have RBAC binding")
+	}
+}
+
+func TestOIDCAuthentication(t *testing.T) {
+	privateKey, _ := GenerateOIDCKeyPair()
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer:   "https://auth.example.com",
+		Audience: "ccattler",
+		ClaimMapping: ClaimMapping{
+			PrincipalClaim: "email",
+			TeamClaim:      "team",
+			RoleClaim:      "role",
+		},
+	}, &privateKey.PublicKey)
+
+	claims := map[string]interface{}{
+		"iss":   "https://auth.example.com",
+		"aud":   "ccattler",
+		"email": "alice@example.com",
+		"team":  "platform",
+		"role":  "deployer",
+		"exp":   float64(time.Now().Add(1 * time.Hour).Unix()),
+	}
+
+	token, err := CreateTestJWT(privateKey, claims)
+	if err != nil {
+		t.Fatalf("create JWT: %v", err)
+	}
+
+	result, err := authenticator.Authenticate(token)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+
+	if result.Principal != "user:alice@example.com" {
+		t.Fatalf("expected user:alice@example.com, got %s", result.Principal)
+	}
+
+	foundTeam := false
+	foundRole := false
+	for _, attr := range result.Attributes {
+		if attr.Key == "team" && attr.Value == "platform" {
+			foundTeam = true
+		}
+		if attr.Key == "role" && attr.Value == "deployer" {
+			foundRole = true
+		}
+	}
+	if !foundTeam {
+		t.Fatal("missing team attribute")
+	}
+	if !foundRole {
+		t.Fatal("missing role attribute")
+	}
+}
+
+func TestOIDCRejectsWrongIssuer(t *testing.T) {
+	privateKey, _ := GenerateOIDCKeyPair()
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer: "https://auth.example.com",
+	}, &privateKey.PublicKey)
+
+	claims := map[string]interface{}{
+		"iss": "https://evil.com",
+		"sub": "alice",
+		"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+	}
+
+	token, _ := CreateTestJWT(privateKey, claims)
+	_, err := authenticator.Authenticate(token)
+	if err == nil {
+		t.Fatal("wrong issuer should fail")
+	}
+}
+
+func TestOIDCRejectsExpiredToken(t *testing.T) {
+	privateKey, _ := GenerateOIDCKeyPair()
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer: "https://auth.example.com",
+	}, &privateKey.PublicKey)
+
+	claims := map[string]interface{}{
+		"iss": "https://auth.example.com",
+		"sub": "alice",
+		"exp": float64(time.Now().Add(-1 * time.Hour).Unix()),
+	}
+
+	token, _ := CreateTestJWT(privateKey, claims)
+	_, err := authenticator.Authenticate(token)
+	if err == nil {
+		t.Fatal("expired token should fail")
+	}
+}
+
+func TestOIDCRejectsInvalidSignature(t *testing.T) {
+	signingKey, _ := GenerateOIDCKeyPair()
+	wrongKey, _ := GenerateOIDCKeyPair()
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer: "https://auth.example.com",
+	}, &wrongKey.PublicKey)
+
+	claims := map[string]interface{}{
+		"iss": "https://auth.example.com",
+		"sub": "alice",
+		"exp": float64(time.Now().Add(1 * time.Hour).Unix()),
+	}
+
+	token, _ := CreateTestJWT(signingKey, claims)
+	_, err := authenticator.Authenticate(token)
+	if err == nil {
+		t.Fatal("wrong key should fail")
+	}
+}
+
 func TestPrincipalContext(t *testing.T) {
 	ctx := context.Background()
 	if principal := PrincipalFromContext(ctx); principal != "" {
