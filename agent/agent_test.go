@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,25 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// mockSecretProvider is a test double that serves secrets from an in-memory map.
+type mockSecretProvider struct {
+	secrets map[string][]byte    // secretName → plaintext
+	grants  map[string]string    // "service/secret" → mountPath
+}
+
+func (mockProvider *mockSecretProvider) GetSecretForService(_ context.Context, serviceName, secretName string) ([]byte, string, error) {
+	grantKey := serviceName + "/" + secretName
+	mountPath, hasGrant := mockProvider.grants[grantKey]
+	if !hasGrant {
+		return nil, "", fmt.Errorf("no grant for %s/%s", serviceName, secretName)
+	}
+	plaintext, exists := mockProvider.secrets[secretName]
+	if !exists {
+		return nil, "", fmt.Errorf("secret %s not found", secretName)
+	}
+	return plaintext, mountPath, nil
+}
 
 func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool) {
 	t.Helper()
@@ -642,5 +663,147 @@ func TestAgentServiceWithoutVolumesUnaffected(t *testing.T) {
 		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("vol-eee"))
 		return err == nil && string(stateFact.Value) == "running"
 	})
+}
+
+func TestAgentMaterializesSecretsBeforeStart(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	secretMountDir := t.TempDir()
+	secretMountPath := secretMountDir + "/db-password"
+
+	secretProvider := &mockSecretProvider{
+		secrets: map[string][]byte{"db-password": []byte("hunter2")},
+		grants:  map[string]string{"web/db-password": secretMountPath},
+	}
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetSecretProvider(secretProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "db-password"), []byte(secretMountPath))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "sec-aaa", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "sec-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running with secret materialized", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("sec-aaa"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	// Verify the secret file was written.
+	fileContent, err := os.ReadFile(secretMountPath)
+	if err != nil {
+		t.Fatalf("secret file not written: %v", err)
+	}
+	if string(fileContent) != "hunter2" {
+		t.Fatalf("expected hunter2, got %s", string(fileContent))
+	}
+}
+
+func TestAgentCleansUpSecretsOnStop(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	secretMountDir := t.TempDir()
+	secretMountPath := secretMountDir + "/api-key"
+
+	secretProvider := &mockSecretProvider{
+		secrets: map[string][]byte{"api-key": []byte("sk-12345")},
+		grants:  map[string]string{"web/api-key": secretMountPath},
+	}
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetSecretProvider(secretProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "api-key"), []byte(secretMountPath))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "sec-bbb", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "sec-bbb", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("sec-bbb"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	// Verify the secret was materialized.
+	if _, err := os.Stat(secretMountPath); err != nil {
+		t.Fatalf("secret file not found before stop: %v", err)
+	}
+
+	// Remove the placement to trigger a stop.
+	factStore.Delete(ctx, types.KeyPlacementInstance("sec-bbb"))
+
+	waitFor(t, 2*time.Second, "secret cleaned up after stop", func() bool {
+		_, err := os.Stat(secretMountPath)
+		return os.IsNotExist(err)
+	})
+}
+
+func TestAgentRotatesSecretWithoutRestart(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	secretMountDir := t.TempDir()
+	secretMountPath := secretMountDir + "/db-password"
+
+	secretProvider := &mockSecretProvider{
+		secrets: map[string][]byte{"db-password": []byte("original-password")},
+		grants:  map[string]string{"web/db-password": secretMountPath},
+	}
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetSecretProvider(secretProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret("web", "db-password"), []byte(secretMountPath))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "rot-aaa", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "rot-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("rot-aaa"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	// Verify original secret.
+	content, _ := os.ReadFile(secretMountPath)
+	if string(content) != "original-password" {
+		t.Fatalf("expected original-password, got %s", string(content))
+	}
+
+	// Rotate the secret in the provider.
+	secretProvider.secrets["db-password"] = []byte("rotated-password")
+
+	// Wait for agent to detect and update the file.
+	waitFor(t, 2*time.Second, "secret rotated on disk", func() bool {
+		newContent, err := os.ReadFile(secretMountPath)
+		return err == nil && string(newContent) == "rotated-password"
+	})
+
+	// Instance should still be running (no restart).
+	stateFact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("rot-aaa"))
+	if string(stateFact.Value) != "running" {
+		t.Fatalf("instance should still be running, got %s", string(stateFact.Value))
+	}
 }
 

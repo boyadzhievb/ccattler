@@ -647,6 +647,168 @@ func TestNetworkPolicyRemoveRule(t *testing.T) {
 	}
 }
 
+func TestABACTeamIsolation(t *testing.T) {
+	authorizer := NewABACAuthorizer()
+
+	authorizer.AddPolicy(ABACPolicy{
+		Name:               "platform-team-desired",
+		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
+		TargetKeyPrefix:    "/ccattler/desired/",
+		AllowedOperations:  []Permission{PermissionRead, PermissionWrite},
+	})
+
+	authorizer.SetPrincipalAttributes("user:alice", []Attribute{
+		{Key: "team", Value: "platform"},
+		{Key: "environment", Value: "production"},
+	})
+	authorizer.SetPrincipalAttributes("user:bob", []Attribute{
+		{Key: "team", Value: "frontend"},
+	})
+
+	if err := authorizer.Authorize("user:alice", PermissionWrite, "/ccattler/desired/service/web/image"); err != nil {
+		t.Fatalf("platform team should be allowed: %v", err)
+	}
+
+	if err := authorizer.Authorize("user:bob", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+		t.Fatal("frontend team should be denied write to desired/")
+	}
+}
+
+func TestABACProductionGate(t *testing.T) {
+	authorizer := NewABACAuthorizer()
+
+	authorizer.AddPolicy(ABACPolicy{
+		Name: "production-write",
+		RequiredAttributes: []Attribute{
+			{Key: "environment", Value: "production"},
+			{Key: "role", Value: "deployer"},
+		},
+		TargetKeyPrefix:   "/ccattler/desired/",
+		AllowedOperations: []Permission{PermissionWrite},
+	})
+
+	authorizer.SetPrincipalAttributes("user:deployer", []Attribute{
+		{Key: "environment", Value: "production"},
+		{Key: "role", Value: "deployer"},
+	})
+	authorizer.SetPrincipalAttributes("user:dev", []Attribute{
+		{Key: "environment", Value: "staging"},
+		{Key: "role", Value: "deployer"},
+	})
+
+	if err := authorizer.Authorize("user:deployer", PermissionWrite, "/ccattler/desired/service/web/image"); err != nil {
+		t.Fatalf("prod deployer should be allowed: %v", err)
+	}
+
+	if err := authorizer.Authorize("user:dev", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+		t.Fatal("staging deployer should be denied production writes")
+	}
+}
+
+func TestCombinedRBACAndABAC(t *testing.T) {
+	rbacAuthorizer := NewRBACAuthorizer()
+	rbacAuthorizer.AddRole(Role{
+		Name: "reader",
+		Rules: []Rule{
+			{KeyPrefix: "/ccattler/", Operations: []Permission{PermissionRead}},
+		},
+	})
+	rbacAuthorizer.BindRole(RoleBinding{Principal: "user:alice", RoleName: "reader"})
+
+	abacAuthorizer := NewABACAuthorizer()
+	abacAuthorizer.AddPolicy(ABACPolicy{
+		Name:               "team-write",
+		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
+		TargetKeyPrefix:    "/ccattler/desired/",
+		AllowedOperations:  []Permission{PermissionWrite},
+	})
+	abacAuthorizer.SetPrincipalAttributes("user:alice", []Attribute{{Key: "team", Value: "platform"}})
+
+	combined := NewCombinedAuthorizer(rbacAuthorizer, abacAuthorizer)
+
+	// Read allowed via RBAC.
+	if err := combined.Authorize("user:alice", PermissionRead, "/ccattler/desired/service/web"); err != nil {
+		t.Fatalf("read should be allowed via RBAC: %v", err)
+	}
+
+	// Write allowed via ABAC (RBAC denies it, but ABAC allows).
+	if err := combined.Authorize("user:alice", PermissionWrite, "/ccattler/desired/service/web"); err != nil {
+		t.Fatalf("write should be allowed via ABAC: %v", err)
+	}
+
+	// Delete denied by both.
+	if err := combined.Authorize("user:alice", PermissionDelete, "/ccattler/desired/service/web"); err == nil {
+		t.Fatal("delete should be denied by both RBAC and ABAC")
+	}
+}
+
+func TestBootstrapTokenLifecycle(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	if IsBootstrapComplete(ctx, memoryStore) {
+		t.Fatal("bootstrap should not be complete yet")
+	}
+
+	result, err := GenerateBootstrapToken(ctx, memoryStore, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(result.Token) != 64 {
+		t.Fatalf("expected 64 hex chars, got %d", len(result.Token))
+	}
+
+	// Wrong token should fail.
+	_, err = ValidateBootstrapToken(ctx, memoryStore, "wrong-token")
+	if err == nil {
+		t.Fatal("wrong token should fail")
+	}
+
+	// Correct token should succeed and return admin principal.
+	principal, err := ValidateBootstrapToken(ctx, memoryStore, result.Token)
+	if err != nil {
+		t.Fatalf("valid token failed: %v", err)
+	}
+	if principal != "admin" {
+		t.Fatalf("expected admin, got %s", principal)
+	}
+
+	if !IsBootstrapComplete(ctx, memoryStore) {
+		t.Fatal("bootstrap should be complete after validation")
+	}
+
+	// Token should be destroyed — can't be reused.
+	_, err = ValidateBootstrapToken(ctx, memoryStore, result.Token)
+	if err == nil {
+		t.Fatal("token should not be reusable")
+	}
+
+	// Can't generate a new token after bootstrap.
+	_, err = GenerateBootstrapToken(ctx, memoryStore, 5*time.Minute)
+	if err == nil {
+		t.Fatal("should not be able to generate after bootstrap")
+	}
+}
+
+func TestBootstrapTokenExpiry(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	result, err := GenerateBootstrapToken(ctx, memoryStore, 1*time.Millisecond)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	_, err = ValidateBootstrapToken(ctx, memoryStore, result.Token)
+	if err == nil {
+		t.Fatal("expired token should fail")
+	}
+}
+
 func TestPrincipalContext(t *testing.T) {
 	ctx := context.Background()
 	if principal := PrincipalFromContext(ctx); principal != "" {

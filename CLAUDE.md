@@ -1086,18 +1086,18 @@ cca status                    # cluster overview
 - [ ] Node enrollment (`cca join` with bootstrap token → CSR → certificate)
 - [ ] Human auth via OIDC/OAuth2
 - [x] RBAC: roles with fact-prefix permissions (6 builtin roles)
-- [ ] ABAC: attribute-based policies (team isolation, production gates)
+- [x] ABAC: attribute-based policies (team isolation, production gates), combined RBAC+ABAC
 - [x] Per-controller least privilege (builtin roles: node-agent, scheduler, controller)
 - [x] Authorized Store wrapper (authN + authZ on every operation)
 - [x] Config subsystem — DSL `config` block (env vars + config files), config facts in store
 - [x] Secrets subsystem — AES-256-GCM encrypted store, grant-based access
 - [x] Secret grants — `secret(name, path)` in DSL, grant checked before delivery
-- [ ] Secret delivery — file-mounted preferred (`/run/secrets/`), lifecycle-aware (materialize on start, remove on stop)
-- [ ] Secret rotation — overwrite file, signal process, no restart required
-- [ ] Node agent config/secret materialization — resolve config facts + obtain authorized secrets at reconciliation time
+- [x] Secret delivery — file-mounted, lifecycle-aware (materialize on start, remove on stop)
+- [x] Secret rotation — overwrite file on each reconciliation cycle, no restart required
+- [x] Node agent config/secret materialization — env vars + secrets resolved and delivered at start time
 - [x] Workload-to-workload network policies (identity-based, deny-by-default)
 - [x] Immutable audit log (principal, action, target, decision, policy)
-- [ ] Cluster bootstrap (one-time admin credential, then destroyed)
+- [x] Cluster bootstrap (one-time token, validated once, then destroyed)
 
 ### Phase 12 — Multi-Tenancy
 - [ ] Tenant model (tenant facts, ownership relations)

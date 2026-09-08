@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -22,12 +24,14 @@ import (
 //   - Reconciler: compares desired state (placements) with observed, calls runtime.Start/Stop
 //   - Reporter: publishes actual state back to the store
 type Agent struct {
-	nodeID          string                   // nodeID is the unique identifier for the node this agent manages.
-	store           store.StateStore         // store is the fact store used to read desired state and write observed state.
-	runtime         runtime.Runtime          // runtime is the pluggable container/process runtime adapter.
-	networkProvider network.NetworkProvider   // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
-	storageProvider storage.StorageProvider   // storageProvider manages volume attach/detach; nil means no volume support.
-	interval        time.Duration            // interval is the period between periodic reconciliation cycles.
+	nodeID               string                   // nodeID is the unique identifier for the node this agent manages.
+	store                store.StateStore         // store is the fact store used to read desired state and write observed state.
+	runtime              runtime.Runtime          // runtime is the pluggable container/process runtime adapter.
+	networkProvider      network.NetworkProvider   // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	storageProvider      storage.StorageProvider   // storageProvider manages volume attach/detach; nil means no volume support.
+	secretProvider       SecretProvider            // secretProvider retrieves decrypted secrets; nil means no secret support.
+	materializedSecrets  []MaterializedSecret      // materializedSecrets tracks secrets written for running instances.
+	interval             time.Duration             // interval is the period between periodic reconciliation cycles.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -55,6 +59,13 @@ func (nodeAgent *Agent) SetNetworkProvider(networkProvider network.NetworkProvid
 // required by a service before starting its instances.
 func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvider) {
 	nodeAgent.storageProvider = storageProvider
+}
+
+// SetSecretProvider configures the agent to materialize secrets for instances.
+// When set, the agent writes secret files before starting instances and removes
+// them when instances stop.
+func (nodeAgent *Agent) SetSecretProvider(secretProvider SecretProvider) {
+	nodeAgent.secretProvider = secretProvider
 }
 
 // SetInterval overrides the default periodic reconciliation interval.
@@ -151,6 +162,10 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			if image == "" {
 				continue
 			}
+			if nodeAgent.secretProvider != nil {
+				materialized := nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
+				nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
+			}
 			envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
 			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
 				ID:    instanceInfo.id,
@@ -172,9 +187,17 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		delete(runningByID, instanceInfo.id)
 	}
 
+	// Refresh any materialized secrets (handles rotation without restart).
+	if nodeAgent.secretProvider != nil && len(nodeAgent.materializedSecrets) > 0 {
+		nodeAgent.refreshMaterializedSecrets(ctx)
+	}
+
 	// Stop processes that shouldn't be running (no longer placed here).
 	for instanceID, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
+			if nodeAgent.secretProvider != nil {
+				nodeAgent.cleanupSecretsForInstance(instanceID)
+			}
 			if nodeAgent.storageProvider != nil {
 				nodeAgent.detachVolumesForInstance(ctx, instanceID)
 			}
@@ -340,6 +363,86 @@ func (nodeAgent *Agent) resolveServiceConfigEnvVars(ctx context.Context, service
 		}
 	}
 	return envVars
+}
+
+// materializeSecretsForInstance reads the secret grants for a service, retrieves
+// each secret from the provider, and writes the plaintext to the mount path on
+// the local filesystem. Returns the list of materialized secrets for later cleanup.
+func (nodeAgent *Agent) materializeSecretsForInstance(ctx context.Context, instanceInfo placedInstanceInfo) []MaterializedSecret {
+	secretPrefix := types.ScanDesiredServiceSecrets(instanceInfo.service)
+	grantFacts, err := nodeAgent.store.Scan(ctx, secretPrefix)
+	if err != nil || len(grantFacts) == 0 {
+		return nil
+	}
+
+	var materialized []MaterializedSecret
+	for _, grantFact := range grantFacts {
+		secretName := strings.TrimPrefix(grantFact.Key, secretPrefix)
+		plaintext, mountPath, err := nodeAgent.secretProvider.GetSecretForService(ctx, instanceInfo.service, secretName)
+		if err != nil {
+			log.Printf("agent %s: secret %s for %s/%s: %v", nodeAgent.nodeID, secretName, instanceInfo.service, instanceInfo.id, err)
+			continue
+		}
+
+		parentDirectory := filepath.Dir(mountPath)
+		if err := os.MkdirAll(parentDirectory, 0700); err != nil {
+			log.Printf("agent %s: mkdir %s: %v", nodeAgent.nodeID, parentDirectory, err)
+			continue
+		}
+
+		if err := os.WriteFile(mountPath, plaintext, 0600); err != nil {
+			log.Printf("agent %s: write secret %s to %s: %v", nodeAgent.nodeID, secretName, mountPath, err)
+			continue
+		}
+
+		materialized = append(materialized, MaterializedSecret{
+			InstanceID: instanceInfo.id,
+			SecretName: secretName,
+			MountPath:  mountPath,
+		})
+	}
+
+	return materialized
+}
+
+// cleanupSecretsForInstance removes secret files that were materialized for the
+// given instance and removes them from the tracking list.
+func (nodeAgent *Agent) cleanupSecretsForInstance(instanceID string) {
+	remaining := nodeAgent.materializedSecrets[:0]
+	for _, materializedSecret := range nodeAgent.materializedSecrets {
+		if materializedSecret.InstanceID == instanceID {
+			if err := os.Remove(materializedSecret.MountPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("agent %s: remove secret %s: %v", nodeAgent.nodeID, materializedSecret.MountPath, err)
+			}
+			continue
+		}
+		remaining = append(remaining, materializedSecret)
+	}
+	nodeAgent.materializedSecrets = remaining
+}
+
+// refreshMaterializedSecrets re-reads all materialized secrets and overwrites
+// any whose content has changed. This enables secret rotation without restarting
+// instances — the file is atomically replaced.
+func (nodeAgent *Agent) refreshMaterializedSecrets(ctx context.Context) {
+	for _, materializedSecret := range nodeAgent.materializedSecrets {
+		serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(materializedSecret.InstanceID))
+		if err != nil {
+			continue
+		}
+		serviceName := string(serviceFact.Value)
+
+		plaintext, _, err := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, materializedSecret.SecretName)
+		if err != nil {
+			continue
+		}
+
+		existingContent, readErr := os.ReadFile(materializedSecret.MountPath)
+		if readErr != nil || string(existingContent) != string(plaintext) {
+			os.WriteFile(materializedSecret.MountPath, plaintext, 0600)
+			log.Printf("agent %s: rotated secret %s for instance %s", nodeAgent.nodeID, materializedSecret.SecretName, materializedSecret.InstanceID)
+		}
+	}
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a
