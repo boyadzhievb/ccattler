@@ -607,6 +607,54 @@ func KeyDesiredServiceOwner(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/owner", PrefixDesired, serviceName)
 }
 
+// Shared service export/import keys.
+const (
+	// PrefixExport holds shared service export declarations.
+	PrefixExport = Root + "/export/"
+
+	// PrefixImport holds service import ("uses") declarations.
+	PrefixImport = Root + "/import/"
+)
+
+// KeyExportService returns the store path for a shared service export marker.
+// Path: /ccattler/export/{serviceName}
+func KeyExportService(serviceName string) string {
+	return fmt.Sprintf("%s%s", PrefixExport, serviceName)
+}
+
+// KeyExportServiceAllowTenant returns the store path for a tenant allowed to
+// consume an exported service.
+// Path: /ccattler/export/{serviceName}/allow/{tenantName}
+func KeyExportServiceAllowTenant(serviceName, tenantName string) string {
+	return fmt.Sprintf("%s%s/allow/%s", PrefixExport, serviceName, tenantName)
+}
+
+// ScanExportServiceAllowTenants returns the scan prefix for all tenants
+// allowed to consume an exported service.
+func ScanExportServiceAllowTenants(serviceName string) string {
+	return fmt.Sprintf("%s%s/allow/", PrefixExport, serviceName)
+}
+
+// KeyImportService returns the store path for a service's import declaration.
+// Path: /ccattler/import/{consumerService}/uses/{exportedService}
+func KeyImportService(consumerService, exportedService string) string {
+	return fmt.Sprintf("%s%s/uses/%s", PrefixImport, consumerService, exportedService)
+}
+
+// ScanImportsForService returns the scan prefix for all imports declared by a service.
+func ScanImportsForService(consumerService string) string {
+	return fmt.Sprintf("%s%s/uses/", PrefixImport, consumerService)
+}
+
+// Tenant lifecycle keys.
+
+// KeyDesiredTenantState returns the store path for a tenant's lifecycle state
+// (active, deleting).
+// Path: /ccattler/desired/tenant/{name}/state
+func KeyDesiredTenantState(tenantName string) string {
+	return fmt.Sprintf("%s%s/state", PrefixDesiredTenant, tenantName)
+}
+
 // KeyDesiredVolume returns the store path for a volume's root marker key.
 // Path: /ccattler/desired/volume/{name}
 func KeyDesiredVolume(volumeName string) string {

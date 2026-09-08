@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M8 — Secure (Phase 11) COMPLETE. M1–M8 complete. All 18 Phase 11 items done: API, CLI, mTLS CA, cert rotation, node enrollment, OIDC/OAuth2, RBAC+ABAC, authorized store, config, secrets (encrypted store + delivery + rotation), network policies, audit, bootstrap. Next: M9 — Multi-tenant (Phase 12).
+**Active milestone:** M9 — Multi-tenant (Phase 12) COMPLETE. M1–M9 complete. All 10 Phase 12 items done: tenant model, hierarchical naming, resource quotas, fair scheduling, network isolation, secret isolation, shared service exports/imports, tenant lifecycle, policy gates pipeline, per-tenant audit views. Next: M10 — Production (Phase 13).
 
 ---
 
@@ -1106,10 +1106,10 @@ cca status                    # cluster overview
 - [x] Fair scheduling (weighted tenant priorities, borrowable guarantees)
 - [x] Identity-based network isolation (SPIFFE identities, derived firewall rules)
 - [x] Secret isolation (tenant-scoped, encrypted delivery)
-- [ ] Shared service exports/imports
-- [ ] Tenant lifecycle (create → provision boundaries, delete → garbage collect)
-- [ ] Policy gates pipeline (syntax → schema → authZ → quota → security → mutation → commit)
-- [ ] Per-tenant audit views
+- [x] Shared service exports/imports
+- [x] Tenant lifecycle (create → provision boundaries, delete → garbage collect)
+- [x] Policy gates pipeline (syntax → schema → authZ → quota → security → mutation → commit)
+- [x] Per-tenant audit views
 
 ### Phase 13 — Extensibility & Hardening
 - [ ] Typed fact schemas for plugins

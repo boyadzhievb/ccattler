@@ -887,6 +887,264 @@ func TestSecretIsolationListForTenant(t *testing.T) {
 	}
 }
 
+// --- Shared Service Tests ---
+
+func TestSharedServiceExportAndImport(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/dns"), []byte("platform"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("frontend/web"), []byte("frontend"))
+
+	registry := NewTenantRegistry(memoryStore)
+	manager := NewSharedServiceManager(memoryStore, registry)
+
+	// Export platform/dns, allowing frontend and payments.
+	err := manager.ExportService(ctx, "platform/dns", []string{"frontend", "payments"})
+	if err != nil {
+		t.Fatalf("export: %v", err)
+	}
+
+	// frontend/web can import platform/dns.
+	err = manager.ImportService(ctx, "frontend/web", "platform/dns")
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	// Verify import recorded.
+	imports, _ := manager.ListImportsForService(ctx, "frontend/web")
+	if len(imports) != 1 || imports[0] != "platform/dns" {
+		t.Fatalf("expected [platform/dns], got %v", imports)
+	}
+}
+
+func TestSharedServiceImportDeniedWithoutAllow(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("unauthorized"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/dns"), []byte("platform"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("unauthorized/app"), []byte("unauthorized"))
+
+	registry := NewTenantRegistry(memoryStore)
+	manager := NewSharedServiceManager(memoryStore, registry)
+
+	// Export platform/dns, only allowing frontend.
+	manager.ExportService(ctx, "platform/dns", []string{"frontend"})
+
+	// unauthorized/app should be rejected.
+	err := manager.ImportService(ctx, "unauthorized/app", "platform/dns")
+	if err == nil {
+		t.Fatal("import should be denied for unauthorized tenant")
+	}
+}
+
+func TestSharedServiceSameTenantAlwaysAllowed(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/dns"), []byte("platform"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/monitoring"), []byte("platform"))
+
+	registry := NewTenantRegistry(memoryStore)
+	manager := NewSharedServiceManager(memoryStore, registry)
+
+	manager.ExportService(ctx, "platform/dns", []string{})
+
+	// Same tenant should always be allowed even with empty allow list.
+	allowed, err := manager.IsImportAllowed(ctx, "platform/monitoring", "platform/dns")
+	if err != nil {
+		t.Fatalf("check import: %v", err)
+	}
+	if !allowed {
+		t.Fatal("same-tenant import should be allowed")
+	}
+}
+
+func TestSharedServiceGetExported(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/dns"), []byte("platform"))
+
+	registry := NewTenantRegistry(memoryStore)
+	manager := NewSharedServiceManager(memoryStore, registry)
+
+	manager.ExportService(ctx, "platform/dns", []string{"frontend", "payments"})
+
+	exported, err := manager.GetExportedService(ctx, "platform/dns")
+	if err != nil {
+		t.Fatalf("get exported: %v", err)
+	}
+	if exported.OwnerTenant != "platform" {
+		t.Errorf("owner = %q, want platform", exported.OwnerTenant)
+	}
+	if len(exported.AllowedTenants) != 2 {
+		t.Errorf("expected 2 allowed tenants, got %d", len(exported.AllowedTenants))
+	}
+}
+
+func TestSharedServiceUnexport(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("platform/dns"), []byte("platform"))
+
+	registry := NewTenantRegistry(memoryStore)
+	manager := NewSharedServiceManager(memoryStore, registry)
+
+	manager.ExportService(ctx, "platform/dns", []string{"frontend"})
+	manager.UnexportService(ctx, "platform/dns")
+
+	_, err := manager.GetExportedService(ctx, "platform/dns")
+	if err == nil {
+		t.Fatal("unexported service should not be found")
+	}
+}
+
+// --- Tenant Lifecycle Tests ---
+
+func TestTenantLifecycleCreate(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	result, err := lifecycle.CreateTenant(ctx, "payments", &Quota{
+		CPU:       100,
+		Instances: 500,
+	}, 3)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if result.Name != "payments" {
+		t.Errorf("name = %q, want payments", result.Name)
+	}
+	if !result.QuotaProvisioned {
+		t.Error("quota should be provisioned")
+	}
+	if !result.NetworkBoundary {
+		t.Error("network boundary should be provisioned")
+	}
+	if !result.SecretSpace {
+		t.Error("secret space should be provisioned")
+	}
+	if !result.AuditStream {
+		t.Error("audit stream should be provisioned")
+	}
+
+	// Verify state.
+	state, err := lifecycle.GetTenantState(ctx, "payments")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if state != TenantActive {
+		t.Errorf("state = %q, want active", state)
+	}
+
+	// Verify tenant is retrievable.
+	tenant, err := registry.GetTenant(ctx, "payments")
+	if err != nil {
+		t.Fatalf("get tenant: %v", err)
+	}
+	if tenant.Quota.CPU != 100 {
+		t.Errorf("cpu = %d, want 100", tenant.Quota.CPU)
+	}
+	if tenant.Weight != 3 {
+		t.Errorf("weight = %d, want 3", tenant.Weight)
+	}
+}
+
+func TestTenantLifecycleCreateDuplicate(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	lifecycle.CreateTenant(ctx, "payments", nil, 0)
+	_, err := lifecycle.CreateTenant(ctx, "payments", nil, 0)
+	if err == nil {
+		t.Fatal("duplicate tenant creation should fail")
+	}
+}
+
+func TestTenantLifecycleDelete(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	lifecycle.CreateTenant(ctx, "payments", &Quota{Instances: 100}, 3)
+
+	// Add a service owned by the tenant.
+	memoryStore.Put(ctx, types.KeyDesiredService("payments/checkout"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v1"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceInstances("payments/checkout"), []byte("3"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+	memoryStore.Put(ctx, types.KeyEffectiveServiceInstances("payments/checkout"), []byte("3"))
+
+	// Delete the tenant.
+	result, err := lifecycle.DeleteTenant(ctx, "payments")
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	if result.ServicesDeleted < 1 {
+		t.Errorf("expected at least 1 service deleted, got %d", result.ServicesDeleted)
+	}
+
+	// Tenant should be gone.
+	_, err = registry.GetTenant(ctx, "payments")
+	if err == nil {
+		t.Fatal("deleted tenant should not be found")
+	}
+
+	// Service should be gone.
+	_, err = memoryStore.Get(ctx, types.KeyDesiredServiceImage("payments/checkout"))
+	if err == nil {
+		t.Fatal("service facts should be deleted")
+	}
+
+	// Effective state should be gone.
+	_, err = memoryStore.Get(ctx, types.KeyEffectiveServiceInstances("payments/checkout"))
+	if err == nil {
+		t.Fatal("effective facts should be deleted")
+	}
+}
+
+func TestTenantLifecycleDeleteNonexistent(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	_, err := lifecycle.DeleteTenant(ctx, "nonexistent")
+	if err == nil {
+		t.Fatal("deleting nonexistent tenant should fail")
+	}
+}
+
 func TestSecretIsolationDeleteTenantScoped(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
@@ -907,5 +1165,375 @@ func TestSecretIsolationDeleteTenantScoped(t *testing.T) {
 	secrets, _ := tenantSecrets.ListSecretsForTenant(ctx, "payments")
 	if len(secrets) != 0 {
 		t.Fatalf("expected 0 secrets after delete, got %d", len(secrets))
+	}
+}
+
+// --- Policy Gate Tests ---
+
+func TestPolicyGateAllowsValidDSL(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantQuotaInstances("payments"), []byte("100"))
+	memoryStore.Put(ctx, types.KeyDesiredTenantState("payments"), []byte(string(TenantActive)))
+
+	registry := NewTenantRegistry(memoryStore)
+	quotaAdmission := NewQuotaAdmission(memoryStore, registry)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	gate := NewPolicyGate(memoryStore, registry, quotaAdmission, nil, auditLog)
+
+	dsl := `service payments/checkout {
+  image checkout:v1
+  instances 3
+}`
+
+	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected ALLOW, got DENY at stage %q: %s", result.Stage, result.Reason)
+	}
+	if result.Stage != "commit" {
+		t.Errorf("stage = %q, want commit", result.Stage)
+	}
+	if len(result.Facts) == 0 {
+		t.Error("expected compiled facts")
+	}
+}
+
+func TestPolicyGateDenySyntaxError(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	gate := NewPolicyGate(memoryStore, registry, nil, nil, auditLog)
+
+	result, err := gate.Evaluate(ctx, "user:alice", "service {{{invalid")
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if result.Allowed {
+		t.Fatal("expected DENY for syntax error")
+	}
+	if result.Stage != "syntax" {
+		t.Errorf("stage = %q, want syntax", result.Stage)
+	}
+
+	entries := auditLog.Entries()
+	if len(entries) == 0 {
+		t.Fatal("expected audit entry for syntax denial")
+	}
+	if entries[0].Decision != "DENY" {
+		t.Errorf("audit decision = %q, want DENY", entries[0].Decision)
+	}
+}
+
+func TestPolicyGateDenyRBAC(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	rbac := security.NewRBACAuthorizer()
+	rbac.AddRole(security.Role{
+		Name: "reader",
+		Rules: []security.Rule{
+			{KeyPrefix: "/ccattler/", Operations: []security.Permission{security.PermissionRead}},
+		},
+	})
+	rbac.BindRole(security.RoleBinding{Principal: "user:bob", RoleName: "reader"})
+
+	gate := NewPolicyGate(memoryStore, registry, nil, rbac, auditLog)
+
+	dsl := `service web {
+  image web:v1
+  instances 1
+}`
+
+	result, err := gate.Evaluate(ctx, "user:bob", dsl)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if result.Allowed {
+		t.Fatal("expected DENY for RBAC violation")
+	}
+	if result.Stage != "authorization" {
+		t.Errorf("stage = %q, want authorization", result.Stage)
+	}
+}
+
+func TestPolicyGateDenyQuotaExceeded(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantQuotaInstances("payments"), []byte("5"))
+	memoryStore.Put(ctx, types.KeyDesiredTenantState("payments"), []byte(string(TenantActive)))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+
+	// Simulate existing 4 instances.
+	memoryStore.Put(ctx, types.KeyDesiredService("payments/existing"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceInstances("payments/existing"), []byte("4"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/existing"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	quotaAdmission := NewQuotaAdmission(memoryStore, registry)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	gate := NewPolicyGate(memoryStore, registry, quotaAdmission, nil, auditLog)
+
+	dsl := `service payments/checkout {
+  image checkout:v1
+  instances 10
+}`
+
+	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if result.Allowed {
+		t.Fatal("expected DENY for quota exceeded")
+	}
+	if result.Stage != "quota" {
+		t.Errorf("stage = %q, want quota", result.Stage)
+	}
+}
+
+func TestPolicyGateDenyDeletingTenant(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantState("payments"), []byte(string(TenantDeleting)))
+
+	registry := NewTenantRegistry(memoryStore)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	gate := NewPolicyGate(memoryStore, registry, nil, nil, auditLog)
+
+	dsl := `service payments/checkout {
+  image checkout:v1
+  instances 1
+}`
+
+	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if result.Allowed {
+		t.Fatal("expected DENY for deleting tenant")
+	}
+	if result.Stage != "security" {
+		t.Errorf("stage = %q, want security", result.Stage)
+	}
+}
+
+func TestPolicyGateEvaluateAndCommit(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantQuotaInstances("payments"), []byte("100"))
+	memoryStore.Put(ctx, types.KeyDesiredTenantState("payments"), []byte(string(TenantActive)))
+
+	registry := NewTenantRegistry(memoryStore)
+	quotaAdmission := NewQuotaAdmission(memoryStore, registry)
+	auditLog := security.NewInMemoryAuditLog(100)
+
+	gate := NewPolicyGate(memoryStore, registry, quotaAdmission, nil, auditLog)
+
+	dsl := `service payments/checkout {
+  image checkout:v1
+  instances 2
+}`
+
+	result, err := gate.EvaluateAndCommit(ctx, "user:alice", dsl)
+	if err != nil {
+		t.Fatalf("evaluate and commit: %v", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected ALLOW, got DENY: %s", result.Reason)
+	}
+
+	// Verify facts were committed to the store.
+	imageFact, err := memoryStore.Get(ctx, types.KeyDesiredServiceImage("payments/checkout"))
+	if err != nil {
+		t.Fatalf("committed image fact not found: %v", err)
+	}
+	if string(imageFact.Value) != "checkout:v1" {
+		t.Errorf("image = %q, want checkout:v1", string(imageFact.Value))
+	}
+}
+
+func TestPolicyGateNoRBACSkipsAuthorization(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	registry := NewTenantRegistry(memoryStore)
+	gate := NewPolicyGate(memoryStore, registry, nil, nil, nil)
+
+	dsl := `service web {
+  image web:v1
+  instances 1
+}`
+
+	result, err := gate.Evaluate(ctx, "user:anyone", dsl)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if !result.Allowed {
+		t.Fatalf("expected ALLOW when no RBAC configured, got DENY at %q: %s", result.Stage, result.Reason)
+	}
+}
+
+// --- Tenant Audit View Tests ---
+
+func TestAuditViewEntriesForTenant(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "/ccattler/desired/service/payments/checkout/image", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "/ccattler/desired/service/frontend/web/image", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:carol", Action: "apply", Target: "payments/checkout", Decision: "DENY"})
+
+	paymentsEntries := view.EntriesForTenant("payments")
+	if len(paymentsEntries) != 2 {
+		t.Fatalf("expected 2 payments entries, got %d", len(paymentsEntries))
+	}
+
+	frontendEntries := view.EntriesForTenant("frontend")
+	if len(frontendEntries) != 1 {
+		t.Fatalf("expected 1 frontend entry, got %d", len(frontendEntries))
+	}
+}
+
+func TestAuditViewEntriesForPrincipal(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "payments/checkout", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "delete", Target: "payments/checkout", Decision: "DENY"})
+	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "frontend/web", Decision: "ALLOW"})
+
+	aliceEntries := view.EntriesForPrincipal("user:alice")
+	if len(aliceEntries) != 2 {
+		t.Fatalf("expected 2 alice entries, got %d", len(aliceEntries))
+	}
+
+	bobEntries := view.EntriesForPrincipal("user:bob")
+	if len(bobEntries) != 1 {
+		t.Fatalf("expected 1 bob entry, got %d", len(bobEntries))
+	}
+}
+
+func TestAuditViewDeniedEntries(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "/ccattler/desired/service/payments/checkout", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "/ccattler/desired/service/payments/api", Decision: "DENY"})
+	auditLog.Log(security.AuditEntry{Principal: "user:carol", Action: "apply", Target: "frontend/web", Decision: "DENY"})
+
+	// Denied entries for payments.
+	paymentsDenied := view.DeniedEntries("payments")
+	if len(paymentsDenied) != 1 {
+		t.Fatalf("expected 1 payments denied entry, got %d", len(paymentsDenied))
+	}
+
+	// All denied entries.
+	allDenied := view.DeniedEntries("")
+	if len(allDenied) != 2 {
+		t.Fatalf("expected 2 total denied entries, got %d", len(allDenied))
+	}
+}
+
+func TestAuditViewAllEntries(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "admin", Action: "apply", Target: "payments", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "admin", Action: "apply", Target: "frontend", Decision: "ALLOW"})
+
+	all := view.AllEntries()
+	if len(all) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(all))
+	}
+}
+
+func TestAuditViewTenantVisibilityByExactName(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "create", Target: "payments", Decision: "ALLOW"})
+
+	entries := view.EntriesForTenant("payments")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry for exact tenant name match, got %d", len(entries))
+	}
+}
+
+func TestAuditViewTenantVisibilityByPrincipal(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "node:payments-node-1", Action: "heartbeat", Target: "/ccattler/lease/node/n1", Decision: "ALLOW"})
+
+	entries := view.EntriesForTenant("payments")
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry for principal containing tenant name, got %d", len(entries))
+	}
+}
+
+func TestAuditViewIsolation(t *testing.T) {
+	auditLog := security.NewInMemoryAuditLog(100)
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+
+	view := NewTenantAuditView(auditLog, registry)
+
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "frontend/web", Decision: "ALLOW"})
+
+	// payments should NOT see frontend entries.
+	entries := view.EntriesForTenant("payments")
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries for unrelated tenant, got %d", len(entries))
 	}
 }
