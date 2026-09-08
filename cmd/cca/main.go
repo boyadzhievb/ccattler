@@ -283,23 +283,29 @@ func executeLiveContainerCommand(configFilePath string) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	// Create and start all reconciliation controllers.
+	// Create and start all reconciliation controllers including network controller.
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	networkController := controllers.NewNetworkController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		endpointController, failureController, networkController,
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with container runtime for real Docker container execution.
 	containerRuntime := runtime.NewContainerRuntime()
+	containerRuntime.SetDockerNetwork("cca-net", network.DefaultClusterCIDR)
+
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)
+	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	go nodeAgent.Run(ctx)
 
 	launchStatusAPIServer(factStore)

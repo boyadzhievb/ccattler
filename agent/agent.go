@@ -167,12 +167,24 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
 			}
 			envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
+			configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
 			exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
+			allocatedIP := ""
+			if nodeAgent.networkProvider != nil {
+				ip, allocErr := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceInfo.id)
+				if allocErr != nil {
+					log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceInfo.id, allocErr)
+				} else {
+					allocatedIP = ip
+				}
+			}
 			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
-				ID:    instanceInfo.id,
-				Image: image,
-				Env:   envVars,
-				Ports: exposedPorts,
+				ID:          instanceInfo.id,
+				Image:       image,
+				Env:         envVars,
+				ConfigFiles: configFiles,
+				Ports:       exposedPorts,
+				IP:          allocatedIP,
 			}); err != nil {
 				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
 				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
@@ -383,6 +395,27 @@ func (nodeAgent *Agent) resolveServiceConfigEnvVars(ctx context.Context, service
 		}
 	}
 	return envVars
+}
+
+// resolveServiceConfigFiles reads the desired config file mount definitions for
+// a service from the store and returns them as a map from container-absolute
+// file path to file content string.
+func (nodeAgent *Agent) resolveServiceConfigFiles(ctx context.Context, serviceName string) map[string]string {
+	prefix := types.ScanDesiredServiceConfig(serviceName)
+	facts, err := nodeAgent.store.Scan(ctx, prefix)
+	if err != nil || len(facts) == 0 {
+		return nil
+	}
+
+	configFileMounts := make(map[string]string)
+	filePrefix := fmt.Sprintf("%s/service/%s/config/file/", types.PrefixDesired, serviceName)
+	for _, fact := range facts {
+		if strings.HasPrefix(fact.Key, filePrefix) {
+			containerFilePath := strings.TrimPrefix(fact.Key, filePrefix)
+			configFileMounts[containerFilePath] = string(fact.Value)
+		}
+	}
+	return configFileMounts
 }
 
 // materializeSecretsForInstance reads the secret grants for a service, retrieves

@@ -1,3 +1,12 @@
+# Container deployment with config file and networking.
+#
+# Demonstrates: real Docker containers, config file mounting, cluster-network
+#               IP allocation, exposed port.
+# Run with:  cca run-container examples/web-container.ccattler
+#
+# Expected: 2 nginx instances, each with a custom index.html mounted via config,
+#           allocated IPs from 10.100.x.y subnet, port 80 exposed.
+
 service web {
     image nginx:1.28
     instances 2
@@ -5,5 +14,8 @@ service web {
     resources {
         cpu 500m
         memory 512Mi
+    }
+    config {
+        file "/usr/share/nginx/html/index.html" = "<h1>Hello from CCattler</h1>"
     }
 }

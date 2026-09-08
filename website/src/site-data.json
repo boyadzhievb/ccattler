@@ -1,6 +1,6 @@
 {
-  "testCount": 282,
-  "packageCount": 11,
+  "testCount": 432,
+  "packageCount": 13,
   "milestones": [
     {
       "id": "M1",
@@ -56,21 +56,21 @@
       "name": "Secure",
       "phase": "Phase 11",
       "demo": "mTLS, RBAC+ABAC, secrets, audit",
-      "complete": false
+      "complete": true
     },
     {
       "id": "M9",
       "name": "Multi-tenant",
       "phase": "Phase 12",
       "demo": "Tenant isolation, quotas, fair scheduling",
-      "complete": false
+      "complete": true
     },
     {
       "id": "M10",
       "name": "Production",
       "phase": "Phase 13",
       "demo": "Observability, HA control plane, extensibility",
-      "complete": false
+      "complete": true
     }
   ],
   "examples": [
@@ -119,8 +119,8 @@
     {
       "name": "web-container",
       "filename": "web-container.ccattler",
-      "description": "",
-      "content": "service web {\n    image nginx:1.28\n    instances 2\n    expose 80\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+      "description": "Container deployment with config file and networking.",
+      "content": "# Container deployment with config file and networking.\n#\n# Demonstrates: real Docker containers, config file mounting, cluster-network\n#               IP allocation, exposed port.\n# Run with:  cca run-container examples/web-container.ccattler\n#\n# Expected: 2 nginx instances, each with a custom index.html mounted via config,\n#           allocated IPs from 10.100.x.y subnet, port 80 exposed.\n\nservice web {\n    image nginx:1.28\n    instances 2\n    expose 80\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    config {\n        file \"/usr/share/nginx/html/index.html\" = \"\u003ch1\u003eHello from CCattler\u003c/h1\u003e\"\n    }\n}\n"
     },
     {
       "name": "web",
@@ -174,6 +174,16 @@
       "keyword": "update",
       "context": "service",
       "description": "Block declaring rolling update strategy: max_unavailable and max_extra"
+    },
+    {
+      "keyword": "config",
+      "context": "service",
+      "description": "Block declaring configuration: env vars and file mounts materialized into the container"
+    },
+    {
+      "keyword": "secret",
+      "context": "service",
+      "description": "Mounts a named secret at a filesystem path, delivered via encrypted grant-based access"
     },
     {
       "keyword": "volume",

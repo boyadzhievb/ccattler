@@ -188,6 +188,8 @@ func extractDSLFeatures() []dslFeature {
 		{Keyword: "scale", Context: "service", Description: "Block declaring horizontal and vertical autoscaling policies with targets and bounds"},
 		{Keyword: "placement", Context: "service", Description: "Block declaring placement constraints: architecture filtering and zone spread"},
 		{Keyword: "update", Context: "service", Description: "Block declaring rolling update strategy: max_unavailable and max_extra"},
+		{Keyword: "config", Context: "service", Description: "Block declaring configuration: env vars and file mounts materialized into the container"},
+		{Keyword: "secret", Context: "service", Description: "Mounts a named secret at a filesystem path, delivered via encrypted grant-based access"},
 		{Keyword: "volume", Context: "top-level", Description: "Declares a named persistent volume with size and persistence flag"},
 		{Keyword: "volume", Context: "service", Description: "Mounts a named volume at a filesystem path inside the service's instances"},
 		{Keyword: "size", Context: "volume", Description: "Storage capacity in Kubernetes-style units (e.g. 100Gi)"},
