@@ -209,6 +209,28 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		}
 	}
 
+	if serviceDecl.Config != nil {
+		for _, envVar := range serviceDecl.Config.EnvVars {
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceConfigEnv(serviceDecl.Name, envVar.Name),
+				Value: envVar.Value,
+			})
+		}
+		for _, configFile := range serviceDecl.Config.ConfigFiles {
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceConfigFile(serviceDecl.Name, configFile.Path),
+				Value: configFile.Content,
+			})
+		}
+	}
+
+	for _, secretDecl := range serviceDecl.Secrets {
+		facts = append(facts, Fact{
+			Key:   types.KeyDesiredServiceSecret(serviceDecl.Name, secretDecl.Name),
+			Value: secretDecl.MountPath,
+		})
+	}
+
 	return facts, nil
 }
 

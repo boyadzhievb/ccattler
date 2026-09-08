@@ -106,6 +106,14 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			serviceDecl.Placement, err = parser.parsePlacementBlock()
 		case "update":
 			serviceDecl.Update, err = parser.parseUpdateBlock()
+		case "config":
+			serviceDecl.Config, err = parser.parseConfigBlock()
+		case "secret":
+			var secretDecl SecretDecl
+			secretDecl, err = parser.parseSecretDeclaration()
+			if err == nil {
+				serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
+			}
 		case "volume":
 			volumeName, mountErr := parser.expectIdentifier()
 			if mountErr != nil {
@@ -742,6 +750,77 @@ func (parser *Parser) expectStringOrIdentifier() (string, error) {
 		return token.Value, nil
 	}
 	return parser.expectIdentifier()
+}
+
+// parseConfigBlock parses a config { ... } block containing env and file entries.
+func (parser *Parser) parseConfigBlock() (*ConfigDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	configDecl := &ConfigDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "env":
+			envName, err := parser.expectIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			envValue, err := parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			configDecl.EnvVars = append(configDecl.EnvVars, EnvVarDecl{
+				Name: envName, Value: envValue,
+			})
+		case "file":
+			filePath, err := parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			fileContent, err := parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			configDecl.ConfigFiles = append(configDecl.ConfigFiles, ConfigFileDecl{
+				Path: filePath, Content: fileContent,
+			})
+		default:
+			return nil, parser.parserErrorf("unknown config field %q", key)
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return configDecl, nil
+}
+
+// parseSecretDeclaration parses a single "secret NAME [PATH]" entry in a
+// service block.
+func (parser *Parser) parseSecretDeclaration() (SecretDecl, error) {
+	secretName, err := parser.expectIdentifier()
+	if err != nil {
+		return SecretDecl{}, err
+	}
+
+	mountPath := "/run/secrets/" + secretName
+	if parser.currentToken().Type == TokenString || parser.currentToken().Type == TokenIdent {
+		if parser.currentToken().Type == TokenString {
+			mountPath = parser.currentToken().Value
+			parser.advanceToken()
+		}
+	}
+
+	return SecretDecl{Name: secretName, MountPath: mountPath}, nil
 }
 
 // parserErrorf returns a formatted error that includes the current token's

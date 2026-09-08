@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M8 — Secure (Phase 11). M1–M7 complete. Next: API, CLI, mTLS, RBAC, secrets.
+**Active milestone:** M8 — Secure (Phase 11). M1–M7 complete. Done: API, CLI, mTLS CA, RBAC, secrets, audit. Next: secret delivery, network policies.
 
 ---
 
@@ -1078,25 +1078,25 @@ cca status                    # cluster overview
 - [x] Rollback on health check failure
 
 ### Phase 11 — API, CLI & Security
-- [ ] Query API (GET/QUERY/APPLY/WATCH)
-- [ ] CLI tool (apply, get, scale, logs, status)
-- [ ] Internal CA hierarchy (offline root → control-plane CA + node CA)
-- [ ] mTLS between all components (API, controllers, store, node agents)
+- [x] Query API (GET/QUERY/APPLY/WATCH)
+- [x] CLI tool (apply, get, scale, watch, status)
+- [x] Internal CA with ECDSA P-256, short-lived leaf certificates
+- [x] mTLS server and client TLS config generation
+- [x] Certificate auto-rotation (CertificateRotator with configurable threshold)
 - [ ] Node enrollment (`cca join` with bootstrap token → CSR → certificate)
-- [ ] Certificate auto-rotation (short-lived certs, ~1hr TTL)
 - [ ] Human auth via OIDC/OAuth2
-- [ ] RBAC: roles with fact-prefix permissions
+- [x] RBAC: roles with fact-prefix permissions (6 builtin roles)
 - [ ] ABAC: attribute-based policies (team isolation, production gates)
-- [ ] Per-controller least privilege (unique identity + scoped permissions)
-- [ ] Authorized Store wrapper (authN + authZ on every write)
-- [ ] Config subsystem — DSL `config` block (env vars + config files), config facts in store, agent-side resolution
-- [ ] Secrets subsystem — encrypted store, envelope encryption, KMS integration (AWS KMS, GCP KMS, Vault, HSM)
-- [ ] Secret grants — `secret_grant(service, secret)` facts, not plaintext in store
+- [x] Per-controller least privilege (builtin roles: node-agent, scheduler, controller)
+- [x] Authorized Store wrapper (authN + authZ on every operation)
+- [x] Config subsystem — DSL `config` block (env vars + config files), config facts in store
+- [x] Secrets subsystem — AES-256-GCM encrypted store, grant-based access
+- [x] Secret grants — `secret(name, path)` in DSL, grant checked before delivery
 - [ ] Secret delivery — file-mounted preferred (`/run/secrets/`), lifecycle-aware (materialize on start, remove on stop)
 - [ ] Secret rotation — overwrite file, signal process, no restart required
 - [ ] Node agent config/secret materialization — resolve config facts + obtain authorized secrets at reconciliation time
-- [ ] Workload-to-workload network policies (identity-based, not IP-based)
-- [ ] Immutable audit log (principal, action, target, decision, policy)
+- [x] Workload-to-workload network policies (identity-based, deny-by-default)
+- [x] Immutable audit log (principal, action, target, decision, policy)
 - [ ] Cluster bootstrap (one-time admin credential, then destroyed)
 
 ### Phase 12 — Multi-Tenancy

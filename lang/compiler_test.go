@@ -228,6 +228,97 @@ func TestCompileServiceWithVolumeMount(t *testing.T) {
 	}
 }
 
+func TestCompileServiceWithConfig(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.28
+    instances 1
+    config {
+        env DATABASE_URL "postgres://localhost/db"
+        env LOG_LEVEL debug
+        file "/etc/app/config.yaml" "server:\n  port: 8080"
+    }
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceConfigEnv("web", "DATABASE_URL")] != "postgres://localhost/db" {
+		t.Errorf("env DATABASE_URL: %s", compiledFactMap[types.KeyDesiredServiceConfigEnv("web", "DATABASE_URL")])
+	}
+	if compiledFactMap[types.KeyDesiredServiceConfigEnv("web", "LOG_LEVEL")] != "debug" {
+		t.Errorf("env LOG_LEVEL: %s", compiledFactMap[types.KeyDesiredServiceConfigEnv("web", "LOG_LEVEL")])
+	}
+	configFileValue := compiledFactMap[types.KeyDesiredServiceConfigFile("web", "/etc/app/config.yaml")]
+	if configFileValue == "" {
+		t.Error("config file not found")
+	}
+}
+
+func TestCompileServiceWithSecrets(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.28
+    instances 1
+    secret db_password
+    secret api_key "/etc/secrets/api.key"
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceSecret("web", "db_password")] != "/run/secrets/db_password" {
+		t.Errorf("secret db_password mount: %s", compiledFactMap[types.KeyDesiredServiceSecret("web", "db_password")])
+	}
+	if compiledFactMap[types.KeyDesiredServiceSecret("web", "api_key")] == "" {
+		t.Error("secret api_key not found")
+	}
+}
+
+func TestApplyWithConfig(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	ctx := context.Background()
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    config {
+        env PORT "8080"
+    }
+    secret tls_cert
+}`
+	if err := Apply(ctx, memoryStore, input); err != nil {
+		t.Fatal(err)
+	}
+
+	envFact, err := memoryStore.Get(ctx, types.KeyDesiredServiceConfigEnv("web", "PORT"))
+	if err != nil {
+		t.Fatal("env PORT not written")
+	}
+	if string(envFact.Value) != "8080" {
+		t.Fatalf("expected 8080, got %s", string(envFact.Value))
+	}
+
+	secretFact, err := memoryStore.Get(ctx, types.KeyDesiredServiceSecret("web", "tls_cert"))
+	if err != nil {
+		t.Fatal("secret tls_cert not written")
+	}
+	if string(secretFact.Value) != "/run/secrets/tls_cert" {
+		t.Fatalf("expected /run/secrets/tls_cert, got %s", string(secretFact.Value))
+	}
+}
+
 func factMap(facts []Fact) map[string]string {
 	factLookup := make(map[string]string)
 	for _, compiledFact := range facts {

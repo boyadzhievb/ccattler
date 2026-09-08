@@ -494,6 +494,35 @@ func KeyObservedServiceRolloutFailures(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/failures", PrefixObserved, name)
 }
 
+// KeyDesiredServiceConfigEnv returns the store path for a service's environment variable.
+// Path: /ccattler/desired/service/{name}/config/env/{varName}
+func KeyDesiredServiceConfigEnv(serviceName, varName string) string {
+	return fmt.Sprintf("%s/service/%s/config/env/%s", PrefixDesired, serviceName, varName)
+}
+
+// KeyDesiredServiceConfigFile returns the store path for a service's config file.
+// Path: /ccattler/desired/service/{name}/config/file/{path}
+func KeyDesiredServiceConfigFile(serviceName, filePath string) string {
+	return fmt.Sprintf("%s/service/%s/config/file/%s", PrefixDesired, serviceName, filePath)
+}
+
+// KeyDesiredServiceSecret returns the store path for a service's secret grant.
+// The value is the mount path.
+// Path: /ccattler/desired/service/{name}/secret/{secretName}
+func KeyDesiredServiceSecret(serviceName, secretName string) string {
+	return fmt.Sprintf("%s/service/%s/secret/%s", PrefixDesired, serviceName, secretName)
+}
+
+// ScanDesiredServiceConfig returns the scan prefix for all config facts of a service.
+func ScanDesiredServiceConfig(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/config/", PrefixDesired, serviceName)
+}
+
+// ScanDesiredServiceSecrets returns the scan prefix for all secret grants of a service.
+func ScanDesiredServiceSecrets(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/secret/", PrefixDesired, serviceName)
+}
+
 // KeyDesiredVolume returns the store path for a volume's root marker key.
 // Path: /ccattler/desired/volume/{name}
 func KeyDesiredVolume(volumeName string) string {

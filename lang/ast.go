@@ -17,6 +17,8 @@ type ServiceDecl struct {
 	Scale        *ScaleDecl        // optional autoscaling policy
 	Placement    *PlacementDecl    // optional placement constraints
 	Update       *UpdateDecl       // optional rolling update strategy
+	Config       *ConfigDecl       // optional config block (env vars, config files)
+	Secrets      []SecretDecl      // optional secret mount declarations
 	VolumeMounts []VolumeMountDecl // optional volume mount bindings
 	Line         int               // source line number for error reporting
 }
@@ -112,4 +114,30 @@ type PlacementDecl struct {
 type UpdateDecl struct {
 	MaxUnavailable int // maximum instances that can be unavailable during update
 	MaxExtra       int // maximum extra instances allowed during surge
+}
+
+// ConfigDecl holds configuration declarations for a service — environment
+// variables and mounted config files.
+type ConfigDecl struct {
+	EnvVars     []EnvVarDecl     // environment variables to set in the instance
+	ConfigFiles []ConfigFileDecl // config files to mount into the instance
+}
+
+// EnvVarDecl represents a single "env KEY VALUE" entry in a config block.
+type EnvVarDecl struct {
+	Name  string // environment variable name (e.g. "DATABASE_URL")
+	Value string // environment variable value (may reference a secret)
+}
+
+// ConfigFileDecl represents a "file PATH CONTENT" entry in a config block.
+type ConfigFileDecl struct {
+	Path    string // filesystem path to mount the config file at
+	Content string // file contents (inline or template reference)
+}
+
+// SecretDecl holds a secret reference for a service. Secrets are delivered as
+// mounted files and lifecycle-managed by the node agent.
+type SecretDecl struct {
+	Name      string // secret name in the encrypted store
+	MountPath string // filesystem path to mount the secret at (default: /run/secrets/{name})
 }

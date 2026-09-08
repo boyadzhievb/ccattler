@@ -1,0 +1,197 @@
+package api
+
+import (
+	"context"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/boyadzhievb/ccattler/network"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
+)
+
+// ClusterStatus is the structured representation of the full cluster state.
+type ClusterStatus struct {
+	Services   []ServiceStatus  `json:"services"`
+	Instances  []InstanceStatus `json:"instances"`
+	Nodes      []NodeStatus     `json:"nodes"`
+	Networking []NetworkStatus  `json:"networking,omitempty"`
+	Volumes    []VolumeStatus   `json:"volumes,omitempty"`
+}
+
+// ServiceStatus represents one service in the cluster status.
+type ServiceStatus struct {
+	Name         string `json:"name"`
+	Image        string `json:"image"`
+	DesiredCount int    `json:"desired"`
+	RunningCount int    `json:"running"`
+	ExposedPorts []int  `json:"ports,omitempty"`
+}
+
+// InstanceStatus represents one instance in the cluster status.
+type InstanceStatus struct {
+	ID          string `json:"id"`
+	ServiceName string `json:"service"`
+	State       string `json:"state"`
+	NodeID      string `json:"node"`
+	IPAddress   string `json:"ip"`
+	HealthState string `json:"health"`
+}
+
+// NodeStatus represents one node in the cluster status.
+type NodeStatus struct {
+	ID              string `json:"id"`
+	State           string `json:"state"`
+	PlacedInstances int    `json:"instances"`
+	AvailableCPU    int64  `json:"available_cpu"`
+	CapacityCPU     int64  `json:"capacity_cpu"`
+	AvailableMemory int64  `json:"available_memory"`
+	CapacityMemory  int64  `json:"capacity_memory"`
+}
+
+// NetworkStatus represents a service's networking configuration.
+type NetworkStatus struct {
+	ServiceName string `json:"service"`
+	VIP         string `json:"vip"`
+	Port        int    `json:"port"`
+	DNS         string `json:"dns"`
+}
+
+// VolumeStatus represents one persistent volume in the cluster status.
+type VolumeStatus struct {
+	Name      string `json:"name"`
+	Size      string `json:"size"`
+	State     string `json:"state"`
+	Node      string `json:"node,omitempty"`
+	Instance  string `json:"instance,omitempty"`
+	MountPath string `json:"mount_path,omitempty"`
+}
+
+// buildStatusFromStore collects the full cluster state from the fact store
+// and assembles it into a structured ClusterStatus.
+func buildStatusFromStore(ctx context.Context, factStore store.StateStore) ClusterStatus {
+	var clusterStatus ClusterStatus
+
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
+
+	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredServices)
+	uniqueServiceNames := make(map[string]bool)
+	for _, fact := range desiredFacts {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		serviceName := strings.SplitN(relativePath, "/", 2)[0]
+		uniqueServiceNames[serviceName] = true
+	}
+	sortedServiceNames := make([]string, 0, len(uniqueServiceNames))
+	for serviceName := range uniqueServiceNames {
+		sortedServiceNames = append(sortedServiceNames, serviceName)
+	}
+	sort.Strings(sortedServiceNames)
+
+	for _, serviceName := range sortedServiceNames {
+		service, err := types.ReadService(ctx, factStore, serviceName)
+		if err != nil {
+			continue
+		}
+		runningInstanceCount := 0
+		for _, instance := range allInstances {
+			if instance.Service == serviceName && instance.State == types.InstanceRunning {
+				runningInstanceCount++
+			}
+		}
+		clusterStatus.Services = append(clusterStatus.Services, ServiceStatus{
+			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
+			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
+		})
+	}
+
+	for _, instance := range allInstances {
+		if instance.State == types.InstanceStopped {
+			continue
+		}
+		placedNodeID := ""
+		if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil {
+			placedNodeID = string(placementFact.Value)
+		}
+		healthDisplay := string(instance.Health)
+		if healthDisplay == "" {
+			healthDisplay = "-"
+		}
+		instanceIPAddress := instance.IP
+		if instanceIPAddress == "" {
+			instanceIPAddress = "-"
+		}
+		clusterStatus.Instances = append(clusterStatus.Instances, InstanceStatus{
+			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
+			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
+		})
+	}
+
+	vipFacts, _ := factStore.Scan(ctx, types.ScanNetworkVIPs)
+	dnsFacts, _ := factStore.Scan(ctx, types.ScanNetworkDNS)
+	dnsMapping := make(map[string]string)
+	for _, dnsFact := range dnsFacts {
+		serviceName := strings.TrimPrefix(dnsFact.Key, types.ScanNetworkDNS)
+		dnsMapping[serviceName] = string(dnsFact.Value)
+	}
+	vipByService := make(map[string]string)
+	vipPortByService := make(map[string]int)
+	for _, vipFact := range vipFacts {
+		relativePath := strings.TrimPrefix(vipFact.Key, types.ScanNetworkVIPs)
+		pathParts := strings.Split(relativePath, "/")
+		if len(pathParts) == 1 {
+			vipByService[pathParts[0]] = string(vipFact.Value)
+		} else if len(pathParts) == 2 && pathParts[1] == "port" {
+			portValue := 0
+			fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			vipPortByService[pathParts[0]] = portValue
+		}
+	}
+	for serviceName, vipAddress := range vipByService {
+		dnsName := serviceName + "." + network.DefaultDNSDomain
+		clusterStatus.Networking = append(clusterStatus.Networking, NetworkStatus{
+			ServiceName: serviceName,
+			VIP:         vipAddress,
+			Port:        vipPortByService[serviceName],
+			DNS:         dnsName,
+		})
+	}
+	sort.Slice(clusterStatus.Networking, func(i, j int) bool {
+		return clusterStatus.Networking[i].ServiceName < clusterStatus.Networking[j].ServiceName
+	})
+
+	allVolumes, _ := types.ListObservedVolumes(ctx, factStore)
+	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
+	for _, volume := range allVolumes {
+		clusterStatus.Volumes = append(clusterStatus.Volumes, VolumeStatus{
+			Name:      volume.Name,
+			Size:      volume.Size,
+			State:     string(volume.State),
+			Node:      volume.Node,
+			Instance:  volume.Instance,
+			MountPath: volume.MountPath,
+		})
+	}
+
+	allNodes, _ := types.ListNodes(ctx, factStore)
+	sort.Slice(allNodes, func(i, j int) bool { return allNodes[i].ID < allNodes[j].ID })
+	for _, node := range allNodes {
+		placedInstanceCount := 0
+		for _, instance := range allInstances {
+			if instance.State == types.InstanceStopped {
+				continue
+			}
+			if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil && string(placementFact.Value) == node.ID {
+				placedInstanceCount++
+			}
+		}
+		clusterStatus.Nodes = append(clusterStatus.Nodes, NodeStatus{
+			ID: node.ID, State: string(node.State), PlacedInstances: placedInstanceCount,
+			AvailableCPU: node.AvailableCPU, CapacityCPU: node.CapacityCPU,
+			AvailableMemory: node.AvailableMemory, CapacityMemory: node.CapacityMemory,
+		})
+	}
+
+	return clusterStatus
+}

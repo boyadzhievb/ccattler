@@ -21,6 +21,7 @@ import (
 	"math/rand"
 
 	"github.com/boyadzhievb/ccattler/agent"
+	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/infra"
@@ -81,6 +82,24 @@ func main() {
 		executeChaosCommand()
 	case "status":
 		executeStatusCommand()
+	case "get":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking>")
+			os.Exit(1)
+		}
+		executeGetCommand(os.Args[2])
+	case "scale":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: cca scale <service> <count>")
+			os.Exit(1)
+		}
+		executeScaleCommand(os.Args[2], os.Args[3])
+	case "watch":
+		prefix := types.Root + "/"
+		if len(os.Args) >= 3 {
+			prefix = os.Args[2]
+		}
+		executeWatchCommand(prefix)
 	case "metric":
 		if len(os.Args) < 5 || os.Args[2] != "set" {
 			fmt.Fprintln(os.Stderr, "usage: cca metric set <service> <metric> <value>")
@@ -104,6 +123,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  demo-storage      3 nodes with persistent volumes, kills node to show migration")
 	fmt.Fprintln(os.Stderr, "  chaos             random failure injection, live convergence reporting")
 	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  get <resource> show services, instances, nodes, volumes, or networking")
+	fmt.Fprintln(os.Stderr, "  scale <svc> <n> scale a service to n instances")
+	fmt.Fprintln(os.Stderr, "  watch [prefix] stream fact store changes as they happen")
 	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
 	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
 }
@@ -864,6 +886,88 @@ func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 	fmt.Print(string(responseBody))
 }
 
+// executeGetCommand queries the API for a specific resource type and prints
+// the result as formatted JSON.
+func executeGetCommand(resourceType string) {
+	apiBaseURL := "http://" + statusAPIListenAddress + "/api/status"
+	httpResponse, err := http.Get(apiBaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	var status api.ClusterStatus
+	if err := json.NewDecoder(httpResponse.Body).Decode(&status); err != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", err)
+		os.Exit(1)
+	}
+
+	var output interface{}
+	switch resourceType {
+	case "services", "svc":
+		output = status.Services
+	case "instances", "inst":
+		output = status.Instances
+	case "nodes":
+		output = status.Nodes
+	case "volumes", "vol":
+		output = status.Volumes
+	case "networking", "net":
+		output = status.Networking
+	default:
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking)\n", resourceType)
+		os.Exit(1)
+	}
+
+	formattedJSON, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(formattedJSON))
+}
+
+// executeScaleCommand sends a scale request to the API to change a service's
+// desired instance count.
+func executeScaleCommand(serviceName, countStr string) {
+	requestBody := fmt.Sprintf(`{"service":%q,"instances":%s}`, serviceName, countStr)
+	apiURL := "http://" + statusAPIListenAddress + "/api/scale"
+	httpResponse, err := http.Post(apiURL, "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "scale failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+	fmt.Printf("scaled %s to %s instances\n", serviceName, countStr)
+}
+
+// executeWatchCommand connects to the API's SSE watch endpoint and prints
+// fact store changes as they occur.
+func executeWatchCommand(prefix string) {
+	apiURL := fmt.Sprintf("http://%s/api/watch?prefix=%s", statusAPIListenAddress, prefix)
+	httpResponse, err := http.Get(apiURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	fmt.Printf("watching %s ...\n", prefix)
+	buffer := make([]byte, 4096)
+	for {
+		bytesRead, readErr := httpResponse.Body.Read(buffer)
+		if bytesRead > 0 {
+			fmt.Print(string(buffer[:bytesRead]))
+		}
+		if readErr != nil {
+			return
+		}
+	}
+}
+
 // clusterStatusResponse is the structured representation of the full cluster status,
 // used for JSON serialization via the status API.
 type clusterStatusResponse struct {
@@ -922,29 +1026,28 @@ type volumeStatusEntry struct {
 	MountPath string `json:"mount_path,omitempty"` // filesystem mount path
 }
 
-// launchStatusAPIServer starts the HTTP status API server in the background.
-// It serves two endpoints:
-//   - GET /status — returns cluster status as text (or JSON with Accept: application/json)
-//   - POST /metric?service=X&metric=Y&value=Z — injects a simulated metric value
+// launchStatusAPIServer starts the HTTP API server in the background. It hosts
+// both the legacy /status and /metric endpoints and the new /api/* endpoints.
 func launchStatusAPIServer(factStore store.StateStore) {
-	httpMux := http.NewServeMux()
+	apiServer := api.NewServer(factStore)
 
-	// Status endpoint: returns cluster status as text or JSON depending on Accept header.
+	httpMux := http.NewServeMux()
+	httpMux.Handle("/api/", apiServer.Handler())
+
+	// Legacy status endpoint for backward compatibility with 'cca status'.
 	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
 		requestContext := request.Context()
-
 		acceptHeader := request.Header.Get("Accept")
 		if strings.Contains(acceptHeader, "application/json") {
 			responseWriter.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(responseWriter).Encode(buildClusterStatusJSON(requestContext, factStore))
 			return
 		}
-
 		responseWriter.Header().Set("Content-Type", "text/plain")
 		responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
 	})
 
-	// Metric injection endpoint: writes a simulated metric value to the fact store.
+	// Legacy metric endpoint for backward compatibility with 'cca metric set'.
 	httpMux.HandleFunc("/metric", func(responseWriter http.ResponseWriter, request *http.Request) {
 		if request.Method != http.MethodPost {
 			http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)

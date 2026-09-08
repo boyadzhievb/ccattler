@@ -151,9 +151,11 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			if image == "" {
 				continue
 			}
+			envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
 			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
 				ID:    instanceInfo.id,
 				Image: image,
+				Env:   envVars,
 			}); err != nil {
 				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
 				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
@@ -318,6 +320,26 @@ func (nodeAgent *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, s
 func (nodeAgent *Agent) writeHeartbeat(ctx context.Context) {
 	timestampMillis := fmt.Sprintf("%d", time.Now().UnixMilli())
 	nodeAgent.store.Put(ctx, types.KeyLeaseNode(nodeAgent.nodeID), []byte(timestampMillis))
+}
+
+// resolveServiceConfigEnvVars reads the desired config env vars for a service
+// from the store and returns them as a map for the runtime spec.
+func (nodeAgent *Agent) resolveServiceConfigEnvVars(ctx context.Context, serviceName string) map[string]string {
+	prefix := types.ScanDesiredServiceConfig(serviceName)
+	facts, err := nodeAgent.store.Scan(ctx, prefix)
+	if err != nil || len(facts) == 0 {
+		return nil
+	}
+
+	envVars := make(map[string]string)
+	envPrefix := fmt.Sprintf("%s/service/%s/config/env/", types.PrefixDesired, serviceName)
+	for _, fact := range facts {
+		if strings.HasPrefix(fact.Key, envPrefix) {
+			envVarName := strings.TrimPrefix(fact.Key, envPrefix)
+			envVars[envVarName] = string(fact.Value)
+		}
+	}
+	return envVars
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a
