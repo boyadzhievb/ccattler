@@ -16,13 +16,15 @@ import (
 type ContainerRuntime struct {
 	mutex             sync.Mutex      // mutex guards concurrent access to the trackedContainers map.
 	trackedContainers map[string]bool // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
+	allocatedHostPorts map[int]int    // allocatedHostPorts tracks the next host port offset per container port.
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
 // registry, ready to manage docker containers.
 func NewContainerRuntime() *ContainerRuntime {
 	return &ContainerRuntime{
-		trackedContainers: make(map[string]bool),
+		trackedContainers:  make(map[string]bool),
+		allocatedHostPorts: make(map[int]int),
 	}
 }
 
@@ -48,7 +50,9 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	for _, containerPort := range spec.Ports {
-		args = append(args, "-p", fmt.Sprintf("%d", containerPort))
+		hostPort := containerPort + containerRuntime.allocatedHostPorts[containerPort]
+		containerRuntime.allocatedHostPorts[containerPort]++
+		args = append(args, "-p", fmt.Sprintf("%d:%d", hostPort, containerPort))
 	}
 
 	for envKey, envValue := range spec.Env {
