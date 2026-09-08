@@ -558,6 +558,7 @@ const configExample = `service checkout {
 
 function Capabilities() {
   const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [configCopied, setConfigCopied] = useState(false);
   const tags = Array.from(new Set(capabilities.map((c) => c.tag)));
 
   const filtered = activeTag ? capabilities.filter((c) => c.tag === activeTag) : capabilities;
@@ -631,9 +632,16 @@ function Capabilities() {
                   <div className="w-2.5 h-2.5 rounded-full bg-white/10" />
                 </div>
                 <span className="font-mono text-xs text-white/25">checkout.ccattler</span>
-                <span className="font-mono text-[10px] text-[#6378ff]/50 border border-[#6378ff]/20 rounded px-2 py-0.5">
-                  ccl
-                </span>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(configExample);
+                    setConfigCopied(true);
+                    setTimeout(() => setConfigCopied(false), 2000);
+                  }}
+                  className="font-mono text-[10px] text-white/40 hover:text-white/70 border border-white/10 hover:border-white/20 rounded px-2 py-0.5 transition-all cursor-pointer"
+                >
+                  {configCopied ? "copied!" : "copy"}
+                </button>
               </div>
               <pre className="font-mono text-sm leading-7 p-6 bg-[#06060e] overflow-x-auto">
                 {configExample.split("\n").map((line, i) => {
@@ -805,6 +813,7 @@ function ProjectStatus() {
 function Examples() {
   const [selectedExample, setSelectedExample] = useState(0);
   const [showDsl, setShowDsl] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const filteredExamples = siteData.examples.filter((e) => e.description);
 
@@ -880,9 +889,16 @@ function Examples() {
                     <div className="w-2.5 h-2.5 rounded-full bg-white/10" />
                   </div>
                   <span className="font-mono text-xs text-white/25">{activeExample.filename}</span>
-                  <span className="font-mono text-[10px] text-[#6378ff]/50 border border-[#6378ff]/20 rounded px-2 py-0.5">
-                    ccl
-                  </span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(activeExample.content);
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
+                    }}
+                    className="font-mono text-[10px] text-white/40 hover:text-white/70 border border-white/10 hover:border-white/20 rounded px-2 py-0.5 transition-all cursor-pointer"
+                  >
+                    {copied ? "copied!" : "copy"}
+                  </button>
                 </div>
                 <pre className="font-mono text-sm leading-7 p-6 bg-[#06060e] overflow-x-auto max-h-[500px] overflow-y-auto">
                   {activeExample.content.split("\n").map((line, i) => {
