@@ -4,11 +4,30 @@ package lang
 type File struct {
 	Services []ServiceDecl // top-level service blocks in the source file
 	Volumes  []VolumeDecl  // top-level volume blocks in the source file
+	Tenants  []TenantDecl  // top-level tenant blocks in the source file
+}
+
+// TenantDecl represents a parsed "tenant" block in the DSL.
+type TenantDecl struct {
+	Name   string     // unique tenant identifier
+	Quota  *QuotaDecl // optional resource quota limits
+	Weight int        // scheduling weight for fair scheduling (0 = unset)
+	Line   int        // source line number for error reporting
+}
+
+// QuotaDecl holds resource quota limits for a tenant.
+type QuotaDecl struct {
+	CPU       int    // maximum CPU in millicores (0 = unlimited)
+	Memory    string // maximum memory (e.g. "256Gi", empty = unlimited)
+	Instances int    // maximum instance count (0 = unlimited)
+	Volumes   int    // maximum volume count (0 = unlimited)
+	Storage   string // maximum storage (e.g. "10Ti", empty = unlimited)
 }
 
 // ServiceDecl represents a parsed "service" block in the DSL.
 type ServiceDecl struct {
 	Name         string            // unique service identifier from the block header
+	Owner        string            // owning tenant (empty = derived from hierarchical name)
 	Image        string            // container image reference (e.g. "nginx:1.27")
 	Instances    int               // desired number of running instances
 	Ports        []int             // exposed port numbers declared via "expose"

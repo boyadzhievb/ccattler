@@ -4,10 +4,21 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// extractTenantFromHierarchicalName derives the owning tenant from a
+// hierarchical service name like "payments/checkout" → "payments".
+// Returns empty string for flat names without a slash.
+func extractTenantFromHierarchicalName(serviceName string) string {
+	if slashIndex := strings.IndexByte(serviceName, '/'); slashIndex > 0 {
+		return serviceName[:slashIndex]
+	}
+	return ""
+}
 
 // Fact is a key-value pair ready to be written to the store.
 type Fact struct {
@@ -18,6 +29,13 @@ type Fact struct {
 // Compile converts a parsed AST into a list of facts.
 func Compile(file *File) ([]Fact, error) {
 	var facts []Fact
+	for _, tenantDecl := range file.Tenants {
+		tenantFacts, err := compileTenantDeclaration(tenantDecl)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, tenantFacts...)
+	}
 	for _, volumeDecl := range file.Volumes {
 		volumeFacts, err := compileVolumeDeclaration(volumeDecl)
 		if err != nil {
@@ -32,6 +50,53 @@ func Compile(file *File) ([]Fact, error) {
 		}
 		facts = append(facts, serviceFacts...)
 	}
+	return facts, nil
+}
+
+// compileTenantDeclaration converts a TenantDecl into its corresponding facts.
+func compileTenantDeclaration(tenantDecl TenantDecl) ([]Fact, error) {
+	if tenantDecl.Name == "" {
+		return nil, fmt.Errorf("line %d: tenant name is required", tenantDecl.Line)
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredTenant(tenantDecl.Name), Value: ""},
+	}
+
+	if tenantDecl.Weight > 0 {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredTenantWeight(tenantDecl.Name), Value: strconv.Itoa(tenantDecl.Weight),
+		})
+	}
+
+	if tenantDecl.Quota != nil {
+		if tenantDecl.Quota.CPU > 0 {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredTenantQuotaCPU(tenantDecl.Name), Value: strconv.Itoa(tenantDecl.Quota.CPU),
+			})
+		}
+		if tenantDecl.Quota.Memory != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredTenantQuotaMemory(tenantDecl.Name), Value: tenantDecl.Quota.Memory,
+			})
+		}
+		if tenantDecl.Quota.Instances > 0 {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredTenantQuotaInstances(tenantDecl.Name), Value: strconv.Itoa(tenantDecl.Quota.Instances),
+			})
+		}
+		if tenantDecl.Quota.Volumes > 0 {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredTenantQuotaVolumes(tenantDecl.Name), Value: strconv.Itoa(tenantDecl.Quota.Volumes),
+			})
+		}
+		if tenantDecl.Quota.Storage != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredTenantQuotaStorage(tenantDecl.Name), Value: tenantDecl.Quota.Storage,
+			})
+		}
+	}
+
 	return facts, nil
 }
 
@@ -72,6 +137,16 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		{Key: types.KeyDesiredServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
 		{Key: types.KeyIntentUserServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
 		{Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
+	}
+
+	ownerTenant := serviceDecl.Owner
+	if ownerTenant == "" {
+		ownerTenant = extractTenantFromHierarchicalName(serviceDecl.Name)
+	}
+	if ownerTenant != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceOwner(serviceDecl.Name), Value: ownerTenant,
+		})
 	}
 
 	for _, port := range serviceDecl.Ports {

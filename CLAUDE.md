@@ -1100,9 +1100,9 @@ cca status                    # cluster overview
 - [x] Cluster bootstrap (one-time token, validated once, then destroyed)
 
 ### Phase 12 — Multi-Tenancy
-- [ ] Tenant model (tenant facts, ownership relations)
-- [ ] Hierarchical naming (`/tenant/service`)
-- [ ] Resource quotas per tenant (admission checks)
+- [x] Tenant model (tenant facts, ownership relations)
+- [x] Hierarchical naming (`/tenant/service`)
+- [x] Resource quotas per tenant (admission checks)
 - [ ] Fair scheduling (weighted tenant priorities, borrowable guarantees)
 - [ ] Identity-based network isolation (SPIFFE identities, derived firewall rules)
 - [ ] Secret isolation (tenant-scoped, encrypted delivery)

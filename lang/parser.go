@@ -51,6 +51,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Volumes = append(file.Volumes, *volumeDecl)
+		case "tenant":
+			tenantDecl, err := parser.parseTenantDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Tenants = append(file.Tenants, *tenantDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -67,7 +73,7 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 	line := parser.currentToken().Line
 	parser.advanceToken() // skip "service"
 
-	name, err := parser.expectIdentifier()
+	name, err := parser.expectHierarchicalName()
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +112,8 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			serviceDecl.Placement, err = parser.parsePlacementBlock()
 		case "update":
 			serviceDecl.Update, err = parser.parseUpdateBlock()
+		case "owner":
+			serviceDecl.Owner, err = parser.expectIdentifier()
 		case "config":
 			serviceDecl.Config, err = parser.parseConfigBlock()
 		case "secret":
@@ -741,6 +749,25 @@ func (parser *Parser) skipNewlineTokens() {
 	}
 }
 
+// expectHierarchicalName parses an identifier optionally followed by slash-separated
+// segments, producing names like "payments/checkout" for hierarchical naming.
+func (parser *Parser) expectHierarchicalName() (string, error) {
+	firstSegment, err := parser.expectIdentifier()
+	if err != nil {
+		return "", err
+	}
+	name := firstSegment
+	for parser.currentTokenIs(TokenSlash) {
+		parser.advanceToken() // consume slash
+		nextSegment, segmentErr := parser.expectIdentifier()
+		if segmentErr != nil {
+			return "", segmentErr
+		}
+		name += "/" + nextSegment
+	}
+	return name, nil
+}
+
 // expectStringOrIdentifier consumes and returns the current token's value if
 // it is either a quoted string or an identifier.
 func (parser *Parser) expectStringOrIdentifier() (string, error) {
@@ -821,6 +848,100 @@ func (parser *Parser) parseSecretDeclaration() (SecretDecl, error) {
 	}
 
 	return SecretDecl{Name: secretName, MountPath: mountPath}, nil
+}
+
+// expectResourceValue consumes a token that can be a number with unit suffix
+// (e.g. "256Gi", "10Ti"), a quoted string, or an identifier.
+func (parser *Parser) expectResourceValue() (string, error) {
+	token := parser.currentToken()
+	if token.Type == TokenNumber || token.Type == TokenString || token.Type == TokenIdent {
+		parser.advanceToken()
+		return token.Value, nil
+	}
+	return "", parser.parserErrorf("expected resource value, got %s %q", token.Type, token.Value)
+}
+
+// parseTenantDeclaration parses a tenant block with optional quota and weight.
+func (parser *Parser) parseTenantDeclaration() (*TenantDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "tenant"
+
+	name, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	tenantDecl := &TenantDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "quota":
+			tenantDecl.Quota, err = parser.parseQuotaBlock()
+		case "weight":
+			tenantDecl.Weight, err = parser.expectInteger()
+		default:
+			return nil, parser.parserErrorf("unknown tenant field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return tenantDecl, nil
+}
+
+// parseQuotaBlock parses a quota { cpu N, memory X, instances N, volumes N, storage X } block.
+func (parser *Parser) parseQuotaBlock() (*QuotaDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	quotaDecl := &QuotaDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "cpu":
+			quotaDecl.CPU, err = parser.expectInteger()
+		case "memory":
+			quotaDecl.Memory, err = parser.expectResourceValue()
+		case "instances":
+			quotaDecl.Instances, err = parser.expectInteger()
+		case "volumes":
+			quotaDecl.Volumes, err = parser.expectInteger()
+		case "storage":
+			quotaDecl.Storage, err = parser.expectResourceValue()
+		default:
+			return nil, parser.parserErrorf("unknown quota field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return quotaDecl, nil
 }
 
 // parserErrorf returns a formatted error that includes the current token's
