@@ -180,6 +180,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			}
 			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
 				ID:          instanceInfo.id,
+				ServiceName: instanceInfo.service,
 				Image:       image,
 				Env:         envVars,
 				ConfigFiles: configFiles,

@@ -1,6 +1,6 @@
 {
-  "testCount": 434,
-  "packageCount": 14,
+  "testCount": 433,
+  "packageCount": 13,
   "milestones": [
     {
       "id": "M1",
@@ -127,6 +127,12 @@
       "filename": "web.ccattler",
       "description": "Simple demo: runs 3 sleep processes.",
       "content": "# Simple demo: runs 3 sleep processes.\n# In production, image would be a container reference.\n# For process runtime, image is the shell command to execute.\n\nservice web {\n    image \"sleep 300\"\n    instances 3\n    expose 8080\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n}\n"
+    },
+    {
+      "name": "zabbix",
+      "filename": "zabbix.ccattler",
+      "description": "Zabbix monitoring stack: server + web frontend + PostgreSQL.",
+      "content": "# Zabbix monitoring stack: server + web frontend + PostgreSQL.\n#\n# Deploys the three core Zabbix components as real Docker containers\n# with DNS-based service discovery via Docker network aliases.\n#\n# Run with:  cca run-container examples/zabbix.ccattler\n#\n# After startup, access Zabbix web UI at http://localhost:8080\n# Default credentials: Admin / zabbix\n#\n# Based on: https://www.zabbix.com/documentation/7.4/en/manual/installation/containers\n\nservice postgres {\n    image postgres:16\n    instances 1\n    expose 5432\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    config {\n        env POSTGRES_DB \"zabbix\"\n        env POSTGRES_USER \"zabbix\"\n        env POSTGRES_PASSWORD \"zabbix_pwd\"\n    }\n}\n\nservice zabbix-server {\n    image \"zabbix/zabbix-server-pgsql:alpine-7.4-latest\"\n    instances 1\n    expose 10051\n    resources {\n        cpu 500m\n        memory 512Mi\n    }\n    config {\n        env DB_SERVER_HOST \"postgres\"\n        env POSTGRES_DB \"zabbix\"\n        env POSTGRES_USER \"zabbix\"\n        env POSTGRES_PASSWORD \"zabbix_pwd\"\n    }\n}\n\nservice zabbix-web {\n    image \"zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest\"\n    instances 1\n    expose 8080\n    resources {\n        cpu 250m\n        memory 256Mi\n    }\n    config {\n        env ZBX_SERVER_HOST \"zabbix-server\"\n        env DB_SERVER_HOST \"postgres\"\n        env POSTGRES_DB \"zabbix\"\n        env POSTGRES_USER \"zabbix\"\n        env POSTGRES_PASSWORD \"zabbix_pwd\"\n        env PHP_TZ \"Europe/London\"\n    }\n}\n"
     }
   ],
   "dslFeatures": [

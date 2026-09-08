@@ -1,0 +1,60 @@
+# Zabbix monitoring stack: server + web frontend + PostgreSQL.
+#
+# Deploys the three core Zabbix components as real Docker containers
+# with DNS-based service discovery via Docker network aliases.
+#
+# Run with:  cca run-container examples/zabbix.ccattler
+#
+# After startup, access Zabbix web UI at http://localhost:8080
+# Default credentials: Admin / zabbix
+#
+# Based on: https://www.zabbix.com/documentation/7.4/en/manual/installation/containers
+
+service postgres {
+    image postgres:16
+    instances 1
+    expose 5432
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+    config {
+        env POSTGRES_DB "zabbix"
+        env POSTGRES_USER "zabbix"
+        env POSTGRES_PASSWORD "zabbix_pwd"
+    }
+}
+
+service zabbix-server {
+    image "zabbix/zabbix-server-pgsql:alpine-7.4-latest"
+    instances 1
+    expose 10051
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+    config {
+        env DB_SERVER_HOST "postgres"
+        env POSTGRES_DB "zabbix"
+        env POSTGRES_USER "zabbix"
+        env POSTGRES_PASSWORD "zabbix_pwd"
+    }
+}
+
+service zabbix-web {
+    image "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest"
+    instances 1
+    expose 8080
+    resources {
+        cpu 250m
+        memory 256Mi
+    }
+    config {
+        env ZBX_SERVER_HOST "zabbix-server"
+        env DB_SERVER_HOST "postgres"
+        env POSTGRES_DB "zabbix"
+        env POSTGRES_USER "zabbix"
+        env POSTGRES_PASSWORD "zabbix_pwd"
+        env PHP_TZ "Europe/London"
+    }
+}

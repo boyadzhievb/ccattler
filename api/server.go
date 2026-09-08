@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -22,8 +23,14 @@ import (
 // querying, and modifying the fact store.
 type Server struct {
 	factStore store.StateStore
+	eventLog  *controllers.EventLog // eventLog is the optional event log for the /api/logs endpoint.
 	mux       *http.ServeMux
 	listener  net.Listener
+}
+
+// SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
+func (apiServer *Server) SetEventLog(eventLog *controllers.EventLog) {
+	apiServer.eventLog = eventLog
 }
 
 // NewServer creates a new API server backed by the given fact store.
@@ -68,6 +75,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/watch", apiServer.handleWatch)
 	apiServer.mux.HandleFunc("/api/scale", apiServer.handleScale)
 	apiServer.mux.HandleFunc("/api/status", apiServer.handleStatus)
+	apiServer.mux.HandleFunc("/api/logs", apiServer.handleLogs)
 	apiServer.mux.HandleFunc("/api/metric", apiServer.handleMetric)
 }
 
@@ -313,6 +321,56 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 
 	status := buildStatusFromStore(requestContext, apiServer.factStore)
 	json.NewEncoder(responseWriter).Encode(status)
+}
+
+// handleLogs serves GET /api/logs to query the cluster event log. Supports
+// optional query parameters: target (filter by affected resource), kind (filter
+// by event kind), and limit (maximum number of events, default 50).
+func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	if apiServer.eventLog == nil {
+		json.NewEncoder(responseWriter).Encode([]controllers.SystemEvent{})
+		return
+	}
+
+	requestContext := request.Context()
+	targetFilter := request.URL.Query().Get("target")
+	kindFilter := request.URL.Query().Get("kind")
+	limitParam := request.URL.Query().Get("limit")
+
+	eventLimit := 50
+	if limitParam != "" {
+		if parsedLimit, err := strconv.Atoi(limitParam); err == nil && parsedLimit > 0 {
+			eventLimit = parsedLimit
+		}
+	}
+
+	var events []controllers.SystemEvent
+	var queryError error
+
+	if targetFilter != "" {
+		events, queryError = apiServer.eventLog.ForTarget(requestContext, targetFilter, eventLimit)
+	} else if kindFilter != "" {
+		events, queryError = apiServer.eventLog.Query(requestContext, kindFilter, eventLimit)
+	} else {
+		events, queryError = apiServer.eventLog.Query(requestContext, "", eventLimit)
+	}
+
+	if queryError != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":"%s"}`, queryError), http.StatusInternalServerError)
+		return
+	}
+
+	if events == nil {
+		events = []controllers.SystemEvent{}
+	}
+	json.NewEncoder(responseWriter).Encode(events)
 }
 
 // handleMetric serves POST /api/metric to inject a simulated metric value.

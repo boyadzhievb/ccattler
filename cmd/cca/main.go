@@ -59,17 +59,19 @@ func main() {
 		}
 		executeApplyCommand(os.Args[2])
 	case "run":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca run <file>")
+		configFilePath, watchModeEnabled := parseRunCommandArgs(os.Args[2:])
+		if configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca run [--watch] <file>")
 			os.Exit(1)
 		}
-		executeLiveProcessCommand(os.Args[2])
+		executeLiveProcessCommand(configFilePath, watchModeEnabled)
 	case "run-container":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca run-container <file>")
+		configFilePath, watchModeEnabled := parseRunCommandArgs(os.Args[2:])
+		if configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca run-container [--watch] <file>")
 			os.Exit(1)
 		}
-		executeLiveContainerCommand(os.Args[2])
+		executeLiveContainerCommand(configFilePath, watchModeEnabled)
 	case "demo":
 		executeDemoCommand()
 	case "demo-distributed":
@@ -82,9 +84,15 @@ func main() {
 		executeChaosCommand()
 	case "status":
 		executeStatusCommand()
+	case "logs":
+		logsTarget := ""
+		if len(os.Args) >= 3 {
+			logsTarget = os.Args[2]
+		}
+		executeLogsCommand(logsTarget)
 	case "get":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking>")
+			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking|secrets|config>")
 			os.Exit(1)
 		}
 		executeGetCommand(os.Args[2])
@@ -112,21 +120,37 @@ func main() {
 	}
 }
 
+// parseRunCommandArgs extracts the config file path and --watch flag from the
+// arguments following "run" or "run-container". Returns empty path if no file is found.
+func parseRunCommandArgs(args []string) (string, bool) {
+	watchModeEnabled := false
+	configFilePath := ""
+	for _, arg := range args {
+		if arg == "--watch" || arg == "-w" {
+			watchModeEnabled = true
+		} else if configFilePath == "" {
+			configFilePath = arg
+		}
+	}
+	return configFilePath, watchModeEnabled
+}
+
 // printUsage prints the CLI help text listing all available commands to stderr.
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: cca <command>")
 	fmt.Fprintln(os.Stderr, "  apply <file>   parse .ccattler file, show reconciliation (simulated)")
-	fmt.Fprintln(os.Stderr, "  run <file>     parse .ccattler file, start real processes")
+	fmt.Fprintln(os.Stderr, "  run [--watch] <file>     start real processes (--watch for live status)")
 	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
 	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
 	fmt.Fprintln(os.Stderr, "  demo-network      3 nodes with IP allocation, VIPs, DNS, load balancing")
 	fmt.Fprintln(os.Stderr, "  demo-storage      3 nodes with persistent volumes, kills node to show migration")
 	fmt.Fprintln(os.Stderr, "  chaos             random failure injection, live convergence reporting")
 	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
-	fmt.Fprintln(os.Stderr, "  get <resource> show services, instances, nodes, volumes, or networking")
+	fmt.Fprintln(os.Stderr, "  get <resource> show services, instances, nodes, volumes, networking, secrets, or config")
+	fmt.Fprintln(os.Stderr, "  logs [service] show cluster event log (optionally filtered by service)")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n> scale a service to n instances")
 	fmt.Fprintln(os.Stderr, "  watch [prefix] stream fact store changes as they happen")
-	fmt.Fprintln(os.Stderr, "  run-container <file>  parse .ccattler file, start real containers")
+	fmt.Fprintln(os.Stderr, "  run-container [--watch] <file>  start real containers (--watch for live status)")
 	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
 }
 
@@ -182,8 +206,10 @@ func executeApplyCommand(configFilePath string) {
 }
 
 // executeLiveProcessCommand parses a .ccattler file and starts real OS processes
-// via the ProcessRuntime and node agent. Prints status periodically until Ctrl+C.
-func executeLiveProcessCommand(configFilePath string) {
+// via the ProcessRuntime and node agent. When watchModeEnabled is true, prints
+// status every 2 seconds with timestamps; otherwise prints status once and blocks
+// until Ctrl+C.
+func executeLiveProcessCommand(configFilePath string, watchModeEnabled bool) {
 	fileData, err := os.ReadFile(configFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
@@ -214,8 +240,11 @@ func executeLiveProcessCommand(configFilePath string) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with process runtime for real OS process execution.
@@ -223,7 +252,8 @@ func executeLiveProcessCommand(configFilePath string) {
 	nodeAgent := agent.New(localNodeID, factStore, processRuntime)
 	go nodeAgent.Run(ctx)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s...\n", configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
@@ -233,30 +263,38 @@ func executeLiveProcessCommand(configFilePath string) {
 
 	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
 
-	// Print status periodically until interrupted.
-	statusPrintTicker := time.NewTicker(2 * time.Second)
-	defer statusPrintTicker.Stop()
-
 	// Initial status after reconciliation settles.
 	time.Sleep(1 * time.Second)
+	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nShutting down...")
-			processRuntime.StopAll(context.Background())
-			return
-		case <-statusPrintTicker.C:
-			fmt.Println()
-			fmt.Print(buildStatusTextOutput(ctx, factStore))
+	if watchModeEnabled {
+		statusPrintTicker := time.NewTicker(2 * time.Second)
+		defer statusPrintTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("\nShutting down...")
+				processRuntime.StopAll(context.Background())
+				return
+			case <-statusPrintTicker.C:
+				fmt.Printf("\n[%s]\n", time.Now().Format("15:04:05"))
+				fmt.Print(buildStatusTextOutput(ctx, factStore))
+			}
 		}
 	}
+
+	// Default: block until Ctrl+C without repeating status.
+	<-ctx.Done()
+	fmt.Println("\nShutting down...")
+	processRuntime.StopAll(context.Background())
 }
 
 // executeLiveContainerCommand parses a .ccattler file and starts real OCI containers
-// via the ContainerRuntime (docker CLI) and node agent. Prints status periodically until Ctrl+C.
-func executeLiveContainerCommand(configFilePath string) {
+// via the ContainerRuntime (docker CLI) and node agent. When watchModeEnabled is
+// true, prints status every 2 seconds with timestamps; otherwise prints status once
+// and blocks until Ctrl+C.
+func executeLiveContainerCommand(configFilePath string, watchModeEnabled bool) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
 		fmt.Fprintln(os.Stderr, "install Docker Desktop (macOS/Windows) or docker-ce (Linux)")
@@ -295,9 +333,12 @@ func executeLiveContainerCommand(configFilePath string) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, networkController,
 		autoscaleController, intentResolverController, rolloutController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Start node agent with container runtime for real Docker container execution.
@@ -309,7 +350,8 @@ func executeLiveContainerCommand(configFilePath string) {
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	go nodeAgent.Run(ctx)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s (container mode)...\n", configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
@@ -319,23 +361,31 @@ func executeLiveContainerCommand(configFilePath string) {
 
 	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
 
-	statusPrintTicker := time.NewTicker(2 * time.Second)
-	defer statusPrintTicker.Stop()
-
+	// Initial status after reconciliation settles.
 	time.Sleep(1 * time.Second)
+	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nShutting down containers...")
-			containerRuntime.StopAll(context.Background())
-			return
-		case <-statusPrintTicker.C:
-			fmt.Println()
-			fmt.Print(buildStatusTextOutput(ctx, factStore))
+	if watchModeEnabled {
+		statusPrintTicker := time.NewTicker(2 * time.Second)
+		defer statusPrintTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				fmt.Println("\nShutting down containers...")
+				containerRuntime.StopAll(context.Background())
+				return
+			case <-statusPrintTicker.C:
+				fmt.Printf("\n[%s]\n", time.Now().Format("15:04:05"))
+				fmt.Print(buildStatusTextOutput(ctx, factStore))
+			}
 		}
 	}
+
+	// Default: block until Ctrl+C without repeating status.
+	<-ctx.Done()
+	fmt.Println("\nShutting down containers...")
+	containerRuntime.StopAll(context.Background())
 }
 
 // executeDemoCommand runs a built-in demo with a hardcoded service config
@@ -365,8 +415,11 @@ func executeDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
@@ -386,7 +439,8 @@ func executeDemoCommand() {
 	fmt.Println("Applying config:")
 	fmt.Println(builtinDemoConfig)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, builtinDemoConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
@@ -431,9 +485,12 @@ func executeDistributedDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime.
@@ -461,7 +518,8 @@ func executeDistributedDemoCommand() {
 	fmt.Println("\nApplying config:")
 	fmt.Println(distributedDemoConfig)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, distributedDemoConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
@@ -542,9 +600,12 @@ func executeNetworkDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
@@ -577,7 +638,8 @@ service api {
 	fmt.Println("\nApplying config:")
 	fmt.Println(networkDemoConfig)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, networkDemoConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
@@ -659,9 +721,12 @@ func executeStorageDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, storageController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
 	// Track which context each node's agent uses so we can kill one later.
@@ -704,7 +769,8 @@ service web {
 	fmt.Println("\nApplying config:")
 	fmt.Println(storageDemoConfig)
 
-	launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, storageDemoConfig); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
@@ -865,6 +931,45 @@ func findNodeRunningService(ctx context.Context, factStore store.StateStore, ser
 	return ""
 }
 
+// executeLogsCommand queries the cluster event log from a running ccattler
+// instance. When a target is provided, only events affecting that resource are
+// shown. Prints events as a formatted table with timestamp, kind, target, and detail.
+func executeLogsCommand(target string) {
+	apiURL := "http://" + statusAPIListenAddress + "/api/logs"
+	if target != "" {
+		apiURL += "?target=" + target
+	}
+	httpResponse, err := http.Get(apiURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	var events []struct {
+		Timestamp time.Time `json:"timestamp"`
+		Kind      string    `json:"kind"`
+		Target    string    `json:"target"`
+		Detail    string    `json:"detail"`
+		Source    string    `json:"source"`
+	}
+	if err := json.NewDecoder(httpResponse.Body).Decode(&events); err != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(events) == 0 {
+		fmt.Println("no events")
+		return
+	}
+
+	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
+	for _, event := range events {
+		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
+		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+	}
+}
+
 // executeStatusCommand queries the status API of a running ccattler instance
 // and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
 func executeStatusCommand() {
@@ -922,8 +1027,12 @@ func executeGetCommand(resourceType string) {
 		output = status.Volumes
 	case "networking", "net":
 		output = status.Networking
+	case "secrets", "secret":
+		output = status.Secrets
+	case "config", "cfg":
+		output = status.Config
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking)\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config)\n", resourceType)
 		os.Exit(1)
 	}
 
@@ -1035,7 +1144,8 @@ type volumeStatusEntry struct {
 
 // launchStatusAPIServer starts the HTTP API server in the background. It hosts
 // both the legacy /status and /metric endpoints and the new /api/* endpoints.
-func launchStatusAPIServer(factStore store.StateStore) {
+// Returns the api.Server so callers can attach optional components like EventLog.
+func launchStatusAPIServer(factStore store.StateStore) *api.Server {
 	apiServer := api.NewServer(factStore)
 
 	httpMux := http.NewServeMux()
@@ -1075,9 +1185,10 @@ func launchStatusAPIServer(factStore store.StateStore) {
 
 	listener, err := net.Listen("tcp", statusAPIListenAddress)
 	if err != nil {
-		return
+		return apiServer
 	}
 	go http.Serve(listener, httpMux)
+	return apiServer
 }
 
 // buildClusterStatusJSON collects the full cluster state from the fact store

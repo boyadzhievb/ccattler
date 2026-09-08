@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/network"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -18,6 +19,8 @@ type ClusterStatus struct {
 	Nodes      []NodeStatus     `json:"nodes"`
 	Networking []NetworkStatus  `json:"networking,omitempty"`
 	Volumes    []VolumeStatus   `json:"volumes,omitempty"`
+	Secrets    []SecretStatus   `json:"secrets,omitempty"`
+	Config     []ConfigStatus   `json:"config,omitempty"`
 }
 
 // ServiceStatus represents one service in the cluster status.
@@ -66,6 +69,21 @@ type VolumeStatus struct {
 	Node      string `json:"node,omitempty"`
 	Instance  string `json:"instance,omitempty"`
 	MountPath string `json:"mount_path,omitempty"`
+}
+
+// SecretStatus represents one secret in the cluster status. Only the name and
+// list of services with grants are exposed — never the secret value.
+type SecretStatus struct {
+	Name      string   `json:"name"`       // secret name
+	GrantedTo []string `json:"granted_to"` // services authorized to access this secret
+}
+
+// ConfigStatus represents one config entry (env var or file) for a service.
+type ConfigStatus struct {
+	Service string `json:"service"` // owning service name
+	Type    string `json:"type"`    // "env" or "file"
+	Key     string `json:"key"`     // env var name or file path
+	Value   string `json:"value"`   // config value
 }
 
 // buildStatusFromStore collects the full cluster state from the fact store
@@ -172,6 +190,50 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 			Instance:  volume.Instance,
 			MountPath: volume.MountPath,
 		})
+	}
+
+	// Collect secrets: scan secret store for names, then find grants per secret.
+	secretFacts, _ := factStore.Scan(ctx, security.SecretStorePrefix)
+	if len(secretFacts) > 0 {
+		for _, secretFact := range secretFacts {
+			secretName := strings.TrimPrefix(secretFact.Key, security.SecretStorePrefix)
+			var grantedServiceNames []string
+			for _, serviceName := range sortedServiceNames {
+				grantKey := types.KeyDesiredServiceSecret(serviceName, secretName)
+				if _, err := factStore.Get(ctx, grantKey); err == nil {
+					grantedServiceNames = append(grantedServiceNames, serviceName)
+				}
+			}
+			clusterStatus.Secrets = append(clusterStatus.Secrets, SecretStatus{
+				Name:      secretName,
+				GrantedTo: grantedServiceNames,
+			})
+		}
+		sort.Slice(clusterStatus.Secrets, func(i, j int) bool {
+			return clusterStatus.Secrets[i].Name < clusterStatus.Secrets[j].Name
+		})
+	}
+
+	// Collect config entries (env vars and files) for each service.
+	for _, serviceName := range sortedServiceNames {
+		configFacts, _ := factStore.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
+		for _, configFact := range configFacts {
+			relativePath := strings.TrimPrefix(configFact.Key, types.ScanDesiredServiceConfig(serviceName))
+			configType := "env"
+			configKey := relativePath
+			if strings.HasPrefix(relativePath, "env/") {
+				configKey = strings.TrimPrefix(relativePath, "env/")
+			} else if strings.HasPrefix(relativePath, "file/") {
+				configType = "file"
+				configKey = strings.TrimPrefix(relativePath, "file/")
+			}
+			clusterStatus.Config = append(clusterStatus.Config, ConfigStatus{
+				Service: serviceName,
+				Type:    configType,
+				Key:     configKey,
+				Value:   string(configFact.Value),
+			})
+		}
 	}
 
 	allNodes, _ := types.ListNodes(ctx, factStore)

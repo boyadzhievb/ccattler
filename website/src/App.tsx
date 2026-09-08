@@ -12,7 +12,6 @@ function Nav() {
           <span className="font-mono text-sm font-semibold text-white tracking-tight">
             ccattler
           </span>
-          <span className="font-mono text-xs text-white/25 ml-1">v0.5.2</span>
         </div>
         <div className="hidden md:flex items-center gap-8">
           {["Install", "Philosophy", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
@@ -258,7 +257,7 @@ function Installation() {
               </div>
               <div className="border border-white/6 rounded bg-[#04040c] p-4 font-mono text-sm space-y-1">
                 <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca version</span></div>
-                <div><span className="text-[#a3e8a0]/60">cca v0.5.2</span></div>
+                <div><span className="text-[#a3e8a0]/60">cca v0.5.5</span></div>
                 <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca demo</span></div>
                 <div><span className="text-[#a3e8a0]/60">Applying config...</span></div>
               </div>
@@ -1011,7 +1010,7 @@ function CTA() {
               <span className="text-[#6378ff]/60">$</span>
               <span className="text-white/60"> curl -fsSL install.ccattler.dev | sh</span>
             </div>
-            <div className="text-white/25 text-xs">Installing cca v0.5.2...</div>
+            <div className="text-white/25 text-xs">Installing cca v0.5.5...</div>
             <div className="text-[#a3e8a0]/70 text-xs">✓ cca installed to /usr/local/bin</div>
             <div className="mt-3">
               <span className="text-[#6378ff]/60">$</span>

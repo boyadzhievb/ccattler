@@ -977,13 +977,19 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 ## CLI
 
 ```
-cca apply <file>              # deploy config
+cca apply <file>              # deploy config (simulated, prints status and exits)
+cca run [--watch] <file>      # start real OS processes (--watch for live status)
+cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
 cca get services              # list services
 cca get instances             # list instances
 cca get nodes                 # list nodes
+cca get secrets               # list secrets and their grants
+cca get config                # list config entries (env vars and files)
 cca scale web 20              # change desired count
-cca logs web                  # view logs
+cca logs [service]            # view cluster event log (optionally filtered by service)
 cca status                    # cluster overview
+cca watch [prefix]            # stream fact store changes
+cca metric set <svc> <m> <v>  # inject simulated metric
 ```
 
 ---

@@ -148,6 +148,9 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 
 	if spec.IP != "" && containerRuntime.dockerNetworkName != "" {
 		args = append(args, "--network", containerRuntime.dockerNetworkName, "--ip", spec.IP)
+		if spec.ServiceName != "" {
+			args = append(args, "--network-alias", spec.ServiceName)
+		}
 	}
 
 	if spec.CPUm > 0 {
