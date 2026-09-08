@@ -397,6 +397,9 @@ node       (id, cpu, memory, state)
 endpoint   (service_id, instance_id, address, port)
 volume     (id, name, size, persistent, access_mode)
 placement  (instance_id, node_id)
+config     (service, key, value, type)        — env var or file, declarative desired state
+secret     (name)                              — secret exists (value in encrypted store, never here)
+secret_grant (service, secret_name)            — service is authorized to access secret
 ```
 
 ## Domain Language (DSL)
@@ -465,7 +468,23 @@ policy team-isolation {
     when subject.team == resource.team
 }
 
+config api {
+    env "LOG_LEVEL" = "info"
+    env "PORT" = "8080"
+
+    file "/etc/api/config.yaml" = "..."
+}
+
 secret database.password
+
+service database {
+    image "postgres:16"
+    instances 1
+
+    secret database.password {
+        mount "/run/secrets/database-password"
+    }
+}
 
 tenant payments {
     quota {
@@ -752,6 +771,110 @@ mounted(database, instance-db-1)
 
 Constraints (e.g., persistent volume cannot simultaneously attach to incompatible nodes) are enforced by storage controllers as rules, not object methods.
 
+## Config & Secrets
+
+Config and secrets are two separate mechanisms. Controllers reason about references and desired state. The node agent is the only component that materializes config and secrets into workloads.
+
+### Config
+
+Config is declarative desired state, not imperative "set this environment variable":
+
+```
+config api {
+    env "LOG_LEVEL" = "info"
+    env "PORT" = "8080"
+
+    file "/etc/api/config.yaml" = "..."
+}
+
+service api {
+    image "my-api:v3"
+    config api
+}
+```
+
+The fact store holds config facts (`desired/service/api/config/...`), not rendered environment variables. The scheduler and controllers don't care how config becomes runtime input — that's the node agent's job.
+
+Config supports two delivery modes:
+- **Environment variables** — `env "KEY" = "value"`
+- **Config files** — `file "/path" = "content"`
+
+### Secrets
+
+Secrets are references, never values. The fact store holds grants, not plaintext:
+
+```
+secret database.password
+
+service api {
+    secret database.password {
+        mount "/run/secrets/database-password"
+    }
+}
+```
+
+Stored as:
+```
+secret(database.password)              — secret exists
+secret_grant(api, database.password)   — api may access it
+```
+
+Never:
+```
+secret(database.password, "super-secret-password")   — WRONG
+```
+
+Actual secret values live in the encrypted secret subsystem (envelope encryption with KMS). The scheduler and network controller never see plaintext secrets.
+
+**File-mounted secrets are preferred over environment variables:**
+- Avoids exposing secrets through environment inspection
+- Avoids accidental logging of environment variables
+- Makes rotation easier (overwrite file, signal process)
+- Works with applications that already consume secret files
+- Gives the agent control over permissions (`0400`, memory-backed, ephemeral)
+
+### Materialization Boundary
+
+```
+             CONTROL PLANE
+                   │
+      ┌────────────┴────────────┐
+      │                         │
+ desired config           secret reference
+      │                         │
+      └────────────┬────────────┘
+                   │
+             Fact Store
+                   │
+                   ▼
+              Node Agent
+                   │
+         ┌─────────┴─────────┐
+         │                   │
+    config resolver     secret resolver
+         │                   │
+         └─────────┬─────────┘
+                   ▼
+              Container
+```
+
+Don't put rendered config into the fact store. Store `desired(instance, running)` + `config(api, ...)` + `secret_grant(api, database.password)`. The agent resolves effective configuration at reconciliation time.
+
+### Secret Lifecycle
+
+Secret access is tied to container lifecycle:
+
+```
+instance api-7 assigned to node-3
+  → node-3 obtains authorized secret copy
+  → secret materialized locally
+  → container starts
+  → container stops
+  → secret material removed
+```
+
+If the container moves from node-3 to node-5, node-5 gets a fresh authorized copy. The old node removes its copy. This fits the zero-trust + short-lived credentials model.
+
 ## API
 
 Tiny surface — not hundreds of REST endpoints:
@@ -800,8 +923,30 @@ observer   reconciler  reporter
 ```
 
 - **Observer** — reads Linux state (`/proc`, `/sys`, cgroups, container runtime) to determine what is actually running
-- **Reconciler** — compares desired state (from store) with observed state, executes `ensure_*()` operations via containerd/runc
+- **Reconciler** — compares desired state (from store) with observed state, executes `ensure_*()` operations via containerd/runc. Resolves config and secrets at reconciliation time: reads config facts, obtains authorized secret copies, materializes both into the container as environment variables, config files, or secret files
 - **Reporter** — publishes actual state, health, capacity, and events back to the store
+
+The node agent is the materialization boundary for config and secrets:
+
+```
+CCattler configuration
+        │
+        ├── environment variables
+        ├── config files
+        └── secret files
+                │
+                ▼
+           Node Agent
+                │
+                ▼
+       Runtime Adapter
+                │
+        ┌───────┼────────┐
+        ▼       ▼        ▼
+   Process   Container  Simulator
+```
+
+This keeps all three runtimes interchangeable — the agent translates declarative config/secret facts into whatever the runtime needs.
 
 Node registration: publishes `node(id)`, `capacity_cpu`, `capacity_memory`, `available_cpu`, `available_memory`, `architecture`, `zone`.
 
@@ -944,7 +1089,12 @@ cca status                    # cluster overview
 - [ ] ABAC: attribute-based policies (team isolation, production gates)
 - [ ] Per-controller least privilege (unique identity + scoped permissions)
 - [ ] Authorized Store wrapper (authN + authZ on every write)
-- [ ] Secrets subsystem (encrypted store, envelope encryption, KMS integration)
+- [ ] Config subsystem — DSL `config` block (env vars + config files), config facts in store, agent-side resolution
+- [ ] Secrets subsystem — encrypted store, envelope encryption, KMS integration (AWS KMS, GCP KMS, Vault, HSM)
+- [ ] Secret grants — `secret_grant(service, secret)` facts, not plaintext in store
+- [ ] Secret delivery — file-mounted preferred (`/run/secrets/`), lifecycle-aware (materialize on start, remove on stop)
+- [ ] Secret rotation — overwrite file, signal process, no restart required
+- [ ] Node agent config/secret materialization — resolve config facts + obtain authorized secrets at reconciliation time
 - [ ] Workload-to-workload network policies (identity-based, not IP-based)
 - [ ] Immutable audit log (principal, action, target, decision, policy)
 - [ ] Cluster bootstrap (one-time admin credential, then destroyed)
