@@ -1103,9 +1103,9 @@ cca status                    # cluster overview
 - [x] Tenant model (tenant facts, ownership relations)
 - [x] Hierarchical naming (`/tenant/service`)
 - [x] Resource quotas per tenant (admission checks)
-- [ ] Fair scheduling (weighted tenant priorities, borrowable guarantees)
-- [ ] Identity-based network isolation (SPIFFE identities, derived firewall rules)
-- [ ] Secret isolation (tenant-scoped, encrypted delivery)
+- [x] Fair scheduling (weighted tenant priorities, borrowable guarantees)
+- [x] Identity-based network isolation (SPIFFE identities, derived firewall rules)
+- [x] Secret isolation (tenant-scoped, encrypted delivery)
 - [ ] Shared service exports/imports
 - [ ] Tenant lifecycle (create → provision boundaries, delete → garbage collect)
 - [ ] Policy gates pipeline (syntax → schema → authZ → quota → security → mutation → commit)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -527,5 +528,384 @@ service payments/database {
 	owner2, _ := registry.ResolveTenantForService(ctx, "payments/database")
 	if owner2 != "payments" {
 		t.Fatalf("database owner = %q, want payments", owner2)
+	}
+}
+
+// --- Fair Scheduling Tests ---
+
+func TestFairSchedulerComputeShares(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	// platform weight=5, payments weight=3, frontend weight=2
+	memoryStore.Put(ctx, types.KeyDesiredTenant("platform"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("platform"), []byte("5"))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("payments"), []byte("3"))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("frontend"), []byte("2"))
+
+	registry := NewTenantRegistry(memoryStore)
+	fairScheduler := NewFairScheduler(memoryStore, registry)
+
+	shares, err := fairScheduler.ComputeFairShares(ctx, 1000)
+	if err != nil {
+		t.Fatalf("compute shares: %v", err)
+	}
+
+	if len(shares) != 3 {
+		t.Fatalf("expected 3 shares, got %d", len(shares))
+	}
+
+	shareMap := make(map[string]TenantShare)
+	for _, share := range shares {
+		shareMap[share.TenantName] = share
+	}
+
+	// platform: 5/10 * 1000 = 500
+	if shareMap["platform"].GuaranteedCPU != 500 {
+		t.Errorf("platform guaranteed CPU = %d, want 500", shareMap["platform"].GuaranteedCPU)
+	}
+	// payments: 3/10 * 1000 = 300
+	if shareMap["payments"].GuaranteedCPU != 300 {
+		t.Errorf("payments guaranteed CPU = %d, want 300", shareMap["payments"].GuaranteedCPU)
+	}
+	// frontend: 2/10 * 1000 = 200
+	if shareMap["frontend"].GuaranteedCPU != 200 {
+		t.Errorf("frontend guaranteed CPU = %d, want 200", shareMap["frontend"].GuaranteedCPU)
+	}
+}
+
+func TestFairSchedulerPrioritizesBelowGuarantee(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("payments"), []byte("5"))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("frontend"), []byte("5"))
+
+	registry := NewTenantRegistry(memoryStore)
+	fairScheduler := NewFairScheduler(memoryStore, registry)
+
+	// Neither tenant has any instances, so both are below guarantee.
+	priorityPayments := fairScheduler.PrioritizeTenant(ctx, "payments", 1000)
+	priorityFrontend := fairScheduler.PrioritizeTenant(ctx, "frontend", 1000)
+
+	// Both should have high priority (above 1000 base).
+	if priorityPayments < 1000 {
+		t.Errorf("payments priority %d should be >= 1000 (below guarantee)", priorityPayments)
+	}
+	if priorityFrontend < 1000 {
+		t.Errorf("frontend priority %d should be >= 1000 (below guarantee)", priorityFrontend)
+	}
+}
+
+func TestFairSchedulerBorrowableGuarantees(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("payments"), []byte("5"))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenantWeight("frontend"), []byte("5"))
+
+	// Give payments a service using 600 CPU out of 1000 total (guarantee is 500).
+	memoryStore.Put(ctx, types.KeyDesiredService("payments/api"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/api"), []byte("api:v1"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("payments/api"), []byte("100"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceInstances("payments/api"), []byte("6"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/api"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	fairScheduler := NewFairScheduler(memoryStore, registry)
+
+	borrowing, amount := fairScheduler.IsBorrowing(ctx, "payments", 1000)
+	if !borrowing {
+		t.Fatal("payments should be borrowing (600 > 500 guarantee)")
+	}
+	if amount != 100 {
+		t.Errorf("borrowing amount = %d, want 100", amount)
+	}
+
+	// frontend is not borrowing (0 usage, 500 guarantee).
+	borrowing, _ = fairScheduler.IsBorrowing(ctx, "frontend", 1000)
+	if borrowing {
+		t.Fatal("frontend should not be borrowing (0 usage)")
+	}
+}
+
+func TestFairSchedulerDefaultWeight(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	// Tenant with no explicit weight defaults to 1.
+	memoryStore.Put(ctx, types.KeyDesiredTenant("unweighted"), []byte(""))
+
+	registry := NewTenantRegistry(memoryStore)
+	fairScheduler := NewFairScheduler(memoryStore, registry)
+
+	shares, _ := fairScheduler.ComputeFairShares(ctx, 1000)
+	if len(shares) != 1 {
+		t.Fatalf("expected 1 share, got %d", len(shares))
+	}
+	if shares[0].GuaranteedCPU != 1000 {
+		t.Errorf("single tenant should get all CPU, got %d", shares[0].GuaranteedCPU)
+	}
+}
+
+// --- Network Isolation Tests ---
+
+func TestSPIFFEIdentity(t *testing.T) {
+	tests := []struct {
+		tenant   string
+		service  string
+		expected string
+	}{
+		{"payments", "payments/checkout", "spiffe://ccattler/payments/checkout"},
+		{"frontend", "frontend/web", "spiffe://ccattler/frontend/web"},
+		{"platform", "dns", "spiffe://ccattler/platform/dns"},
+	}
+	for _, testCase := range tests {
+		result := SPIFFEIdentity(testCase.tenant, testCase.service)
+		if result != testCase.expected {
+			t.Errorf("SPIFFEIdentity(%q, %q) = %q, want %q",
+				testCase.tenant, testCase.service, result, testCase.expected)
+		}
+	}
+}
+
+func TestNetworkIsolationSameTenantAllowed(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/database"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	policyEngine := security.NewNetworkPolicyEngine(memoryStore)
+	isolation := NewTenantNetworkIsolation(memoryStore, registry, policyEngine)
+
+	action, reason, err := isolation.EvaluateTraffic(ctx, "payments/checkout", "payments/database", 5432)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if action != security.PolicyAllow {
+		t.Fatalf("same-tenant traffic should be allowed, got %s (%s)", action, reason)
+	}
+	if reason != "same-tenant" {
+		t.Errorf("reason = %q, want same-tenant", reason)
+	}
+}
+
+func TestNetworkIsolationCrossTenantDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("frontend/web"), []byte("frontend"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/database"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	policyEngine := security.NewNetworkPolicyEngine(memoryStore)
+	isolation := NewTenantNetworkIsolation(memoryStore, registry, policyEngine)
+
+	action, reason, err := isolation.EvaluateTraffic(ctx, "frontend/web", "payments/database", 5432)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if action != security.PolicyDeny {
+		t.Fatalf("cross-tenant traffic should be denied, got %s (%s)", action, reason)
+	}
+}
+
+func TestNetworkIsolationExplicitCrossTenantAllow(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("frontend/web"), []byte("frontend"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	policyEngine := security.NewNetworkPolicyEngine(memoryStore)
+	isolation := NewTenantNetworkIsolation(memoryStore, registry, policyEngine)
+
+	// Add explicit cross-tenant allow rule.
+	policyEngine.AddRule(ctx, security.NetworkPolicyRule{
+		Name:          "frontend-to-checkout",
+		SourceService: "frontend/web",
+		TargetService: "payments/checkout",
+		Port:          443,
+		Action:        security.PolicyAllow,
+	})
+
+	action, reason, err := isolation.EvaluateTraffic(ctx, "frontend/web", "payments/checkout", 443)
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if action != security.PolicyAllow {
+		t.Fatalf("explicitly allowed cross-tenant should be allowed, got %s (%s)", action, reason)
+	}
+	if reason != "explicit-allow-cross-tenant" {
+		t.Errorf("reason = %q, want explicit-allow-cross-tenant", reason)
+	}
+}
+
+func TestNetworkIsolationDeriveFirewallRules(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredService("payments/checkout"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v1"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+	memoryStore.Put(ctx, types.KeyDesiredService("payments/database"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/database"), []byte("postgres:16"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/database"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	policyEngine := security.NewNetworkPolicyEngine(memoryStore)
+	isolation := NewTenantNetworkIsolation(memoryStore, registry, policyEngine)
+
+	rules, err := isolation.DeriveFirewallRules(ctx)
+	if err != nil {
+		t.Fatalf("derive rules: %v", err)
+	}
+
+	// 2 services × 1 peer each = 2 same-tenant allow rules.
+	sameTenantCount := 0
+	for _, rule := range rules {
+		if rule.Reason == "same-tenant" && rule.Action == security.PolicyAllow {
+			sameTenantCount++
+		}
+	}
+	if sameTenantCount != 2 {
+		t.Errorf("expected 2 same-tenant allow rules, got %d", sameTenantCount)
+	}
+}
+
+// --- Secret Isolation Tests ---
+
+func TestSecretIsolationSameTenantAllowed(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	masterKey := make([]byte, 32)
+	for i := range masterKey {
+		masterKey[i] = byte(i)
+	}
+	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
+
+	registry := NewTenantRegistry(memoryStore)
+	tenantSecrets := NewTenantSecretStore(secretStore, registry)
+
+	// Store a payments secret.
+	tenantSecrets.PutSecret(ctx, "payments", "db-password", []byte("s3cret"))
+
+	// Same-tenant service can access it.
+	plaintext, err := tenantSecrets.GetSecret(ctx, "payments/checkout", "payments", "db-password")
+	if err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if string(plaintext) != "s3cret" {
+		t.Fatalf("expected s3cret, got %s", string(plaintext))
+	}
+}
+
+func TestSecretIsolationCrossTenantDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	masterKey := make([]byte, 32)
+	for i := range masterKey {
+		masterKey[i] = byte(i)
+	}
+	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+
+	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("frontend/web"), []byte("frontend"))
+
+	registry := NewTenantRegistry(memoryStore)
+	tenantSecrets := NewTenantSecretStore(secretStore, registry)
+
+	tenantSecrets.PutSecret(ctx, "payments", "db-password", []byte("s3cret"))
+
+	// Cross-tenant access should be denied.
+	_, err := tenantSecrets.GetSecret(ctx, "frontend/web", "payments", "db-password")
+	if err == nil {
+		t.Fatal("cross-tenant secret access should be denied")
+	}
+}
+
+func TestSecretIsolationListForTenant(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	masterKey := make([]byte, 32)
+	for i := range masterKey {
+		masterKey[i] = byte(i)
+	}
+	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+
+	registry := NewTenantRegistry(memoryStore)
+	tenantSecrets := NewTenantSecretStore(secretStore, registry)
+
+	tenantSecrets.PutSecret(ctx, "payments", "db-password", []byte("pw1"))
+	tenantSecrets.PutSecret(ctx, "payments", "api-key", []byte("key1"))
+	tenantSecrets.PutSecret(ctx, "frontend", "cdn-token", []byte("tok1"))
+
+	paymentSecrets, err := tenantSecrets.ListSecretsForTenant(ctx, "payments")
+	if err != nil {
+		t.Fatalf("list secrets: %v", err)
+	}
+	if len(paymentSecrets) != 2 {
+		t.Fatalf("expected 2 payments secrets, got %d", len(paymentSecrets))
+	}
+
+	frontendSecrets, _ := tenantSecrets.ListSecretsForTenant(ctx, "frontend")
+	if len(frontendSecrets) != 1 {
+		t.Fatalf("expected 1 frontend secret, got %d", len(frontendSecrets))
+	}
+}
+
+func TestSecretIsolationDeleteTenantScoped(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	masterKey := make([]byte, 32)
+	for i := range masterKey {
+		masterKey[i] = byte(i)
+	}
+	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+
+	registry := NewTenantRegistry(memoryStore)
+	tenantSecrets := NewTenantSecretStore(secretStore, registry)
+
+	tenantSecrets.PutSecret(ctx, "payments", "db-password", []byte("pw1"))
+	tenantSecrets.DeleteSecret(ctx, "payments", "db-password")
+
+	secrets, _ := tenantSecrets.ListSecretsForTenant(ctx, "payments")
+	if len(secrets) != 0 {
+		t.Fatalf("expected 0 secrets after delete, got %d", len(secrets))
 	}
 }
