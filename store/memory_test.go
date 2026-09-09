@@ -414,3 +414,169 @@ func TestValueIsolation(t *testing.T) {
 		t.Fatalf("stored value should be isolated from caller, got %s", f.Value)
 	}
 }
+
+func TestWatchContextCancellationUnregisters(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	watchCtx, watchCancel := context.WithCancel(context.Background())
+	ch, err := memoryStore.Watch(watchCtx, "/", WatchOption{Prefix: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify watcher count is 1.
+	memoryStore.mutex.RLock()
+	watcherCount := len(memoryStore.activeWatchers)
+	memoryStore.mutex.RUnlock()
+	if watcherCount != 1 {
+		t.Fatalf("expected 1 watcher, got %d", watcherCount)
+	}
+
+	// Cancel context and wait briefly for cleanup goroutine.
+	watchCancel()
+	time.Sleep(50 * time.Millisecond)
+
+	// Channel should be closed.
+	_, open := <-ch
+	if open {
+		t.Fatal("channel should be closed after context cancellation")
+	}
+
+	// Watcher should be unregistered.
+	memoryStore.mutex.RLock()
+	watcherCount = len(memoryStore.activeWatchers)
+	memoryStore.mutex.RUnlock()
+	if watcherCount != 0 {
+		t.Fatalf("expected 0 watchers after cancel, got %d", watcherCount)
+	}
+}
+
+func TestGetValueDeepCopy(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	memoryStore.Put(ctx, "/key", []byte("original"))
+
+	// Get and mutate the returned value — should not corrupt store.
+	firstRead, _ := memoryStore.Get(ctx, "/key")
+	firstRead.Value[0] = 'X'
+
+	secondRead, _ := memoryStore.Get(ctx, "/key")
+	if string(secondRead.Value) != "original" {
+		t.Fatalf("Get must deep-copy values; mutating returned slice corrupted store: got %s", secondRead.Value)
+	}
+}
+
+func TestTransactionSingleRevision(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	revBefore, _ := memoryStore.Revision(ctx)
+
+	ok, err := memoryStore.Transaction(ctx,
+		nil,
+		[]Op{
+			{Type: OpPut, Key: "/a", Value: []byte("1")},
+			{Type: OpPut, Key: "/b", Value: []byte("2")},
+			{Type: OpPut, Key: "/c", Value: []byte("3")},
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("transaction should succeed")
+	}
+
+	revAfter, _ := memoryStore.Revision(ctx)
+	if revAfter != revBefore+1 {
+		t.Fatalf("transaction with 3 puts should produce exactly one revision bump: before=%d, after=%d", revBefore, revAfter)
+	}
+
+	// All three facts should share the same revision.
+	factA, _ := memoryStore.Get(ctx, "/a")
+	factB, _ := memoryStore.Get(ctx, "/b")
+	factC, _ := memoryStore.Get(ctx, "/c")
+	if factA.Revision != factB.Revision || factB.Revision != factC.Revision {
+		t.Fatalf("all facts in a transaction should share one revision: a=%d, b=%d, c=%d", factA.Revision, factB.Revision, factC.Revision)
+	}
+}
+
+func TestIdempotentPut(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	rev1, _ := memoryStore.Put(ctx, "/key", []byte("value"))
+	rev2, _ := memoryStore.Put(ctx, "/key", []byte("value"))
+
+	if rev1 != rev2 {
+		t.Fatalf("idempotent Put should return same revision: got %d then %d", rev1, rev2)
+	}
+
+	globalRev, _ := memoryStore.Revision(ctx)
+	if globalRev != 1 {
+		t.Fatalf("idempotent Put should not increment global revision: expected 1, got %d", globalRev)
+	}
+
+	// Verify no watch event for the duplicate put.
+	ch, _ := memoryStore.Watch(ctx, "/key", WatchOption{})
+	memoryStore.Put(ctx, "/key", []byte("value"))
+
+	select {
+	case event := <-ch:
+		t.Fatalf("idempotent Put should not emit watch event, got %+v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	// A different value should still produce a new revision.
+	rev3, _ := memoryStore.Put(ctx, "/key", []byte("changed"))
+	if rev3 == rev1 {
+		t.Fatal("Put with different value should produce new revision")
+	}
+}
+
+func TestOperationsAfterCloseReturnError(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	memoryStore.Put(ctx, "/key", []byte("value"))
+	memoryStore.Close()
+
+	if _, err := memoryStore.Get(ctx, "/key"); err != ErrStoreClosed {
+		t.Fatalf("Get after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if _, err := memoryStore.Put(ctx, "/key", []byte("v2")); err != ErrStoreClosed {
+		t.Fatalf("Put after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if err := memoryStore.Delete(ctx, "/key"); err != ErrStoreClosed {
+		t.Fatalf("Delete after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if _, err := memoryStore.Scan(ctx, "/"); err != ErrStoreClosed {
+		t.Fatalf("Scan after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if _, err := memoryStore.Watch(ctx, "/", WatchOption{Prefix: true}); err != ErrStoreClosed {
+		t.Fatalf("Watch after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if _, err := memoryStore.Transaction(ctx, nil, nil, nil); err != ErrStoreClosed {
+		t.Fatalf("Transaction after Close: expected ErrStoreClosed, got %v", err)
+	}
+	if _, err := memoryStore.Revision(ctx); err != ErrStoreClosed {
+		t.Fatalf("Revision after Close: expected ErrStoreClosed, got %v", err)
+	}
+}
+
+func TestScanValueDeepCopy(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	memoryStore.Put(ctx, "/prefix/a", []byte("hello"))
+
+	// Scan and mutate the returned value — should not corrupt store.
+	facts, _ := memoryStore.Scan(ctx, "/prefix/")
+	facts[0].Value[0] = 'X'
+
+	factsAgain, _ := memoryStore.Scan(ctx, "/prefix/")
+	if string(factsAgain[0].Value) != "hello" {
+		t.Fatalf("Scan must deep-copy values; mutating returned slice corrupted store: got %s", factsAgain[0].Value)
+	}
+}

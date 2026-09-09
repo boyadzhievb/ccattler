@@ -1,5 +1,5 @@
 {
-  "testCount": 433,
+  "testCount": 439,
   "packageCount": 13,
   "milestones": [
     {
@@ -70,6 +70,27 @@
       "name": "Production",
       "phase": "Phase 13",
       "demo": "Observability, HA control plane, extensibility",
+      "complete": true
+    },
+    {
+      "id": "M11",
+      "name": "Correctness",
+      "phase": "Phase 14",
+      "demo": "Store idempotency, atomic txns, watch safety, controller resilience",
+      "complete": true
+    },
+    {
+      "id": "M12",
+      "name": "Distributed State",
+      "phase": "Phase 15",
+      "demo": "EtcdStore, CLI --store etcd, key prefix isolation, integration tests",
+      "complete": true
+    },
+    {
+      "id": "M13",
+      "name": "Multi-Process",
+      "phase": "Phase 16",
+      "demo": "Separate server + agent processes, shared etcd, multi-node scheduling",
       "complete": true
     }
   ],

@@ -55,6 +55,7 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, storageController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetResyncInterval(500 * time.Millisecond)
 	go controllerRunner.Run(ctx)
 
 	killFunctions := make(map[string]context.CancelFunc)

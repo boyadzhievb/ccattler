@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -24,6 +25,10 @@ type Runner struct {
 	// reconciliation cycles for a single controller. This prevents
 	// rapid-fire reconciliations when a burst of store events arrives.
 	debounce time.Duration
+	// resyncInterval is the period between forced full reconciliation cycles,
+	// independent of watch events. This catches missed events, watch gaps,
+	// and stale controller state. Zero disables periodic resync.
+	resyncInterval time.Duration
 	// eventLog is an optional event log for recording reconciliation events.
 	// When set, the runner emits events for key state changes (instance
 	// creation, failure, placement, etc.) after each reconciliation cycle.
@@ -40,9 +45,10 @@ func (controllerRunner *Runner) SetEventLog(eventLog *EventLog) {
 // sharing the same state store. The default debounce interval is 50ms.
 func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 	return &Runner{
-		store:       stateStore,
-		controllers: controllers,
-		debounce:    50 * time.Millisecond,
+		store:          stateStore,
+		controllers:    controllers,
+		debounce:       50 * time.Millisecond,
+		resyncInterval: 30 * time.Second,
 	}
 }
 
@@ -53,33 +59,92 @@ func (controllerRunner *Runner) SetDebounce(debounceInterval time.Duration) {
 	controllerRunner.debounce = debounceInterval
 }
 
+// SetResyncInterval overrides the default periodic resync interval (30s).
+// The resync timer forces a full reconciliation even when no watch events
+// arrive, catching dropped events and stale controller state.
+// Zero disables periodic resync.
+func (controllerRunner *Runner) SetResyncInterval(resyncInterval time.Duration) {
+	controllerRunner.resyncInterval = resyncInterval
+}
+
 // Run starts all controllers and blocks until ctx is cancelled or any
 // controller returns a fatal error. Each controller runs in its own
-// goroutine; the first error from any controller causes Run to return.
+// goroutine; the first error from any controller cancels all others.
+// Run waits for all controller goroutines to finish before returning.
 func (controllerRunner *Runner) Run(ctx context.Context) error {
+	childCtx, cancelChildren := context.WithCancel(ctx)
+	defer cancelChildren()
+
+	var waitGroup sync.WaitGroup
 	controllerErrors := make(chan error, len(controllerRunner.controllers))
+
 	for _, controller := range controllerRunner.controllers {
+		waitGroup.Add(1)
 		go func(controller Controller) {
-			controllerErrors <- controllerRunner.runSingleController(ctx, controller)
+			defer waitGroup.Done()
+			controllerErrors <- controllerRunner.runSingleController(childCtx, controller)
 		}(controller)
 	}
 
+	var firstError error
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		firstError = ctx.Err()
 	case err := <-controllerErrors:
-		return err
+		firstError = err
+	}
+
+	cancelChildren()
+	waitGroup.Wait()
+	return firstError
+}
+
+// runSingleController manages one controller's watch-reconcile loop with
+// automatic restart and exponential backoff. If setup fails (watch or initial
+// reconciliation), the controller is retried with increasing delays. Once
+// running, individual reconciliation errors are logged but do not restart
+// the controller.
+func (controllerRunner *Runner) runSingleController(ctx context.Context, controller Controller) error {
+	backoffDelays := []time.Duration{
+		100 * time.Millisecond,
+		500 * time.Millisecond,
+		1 * time.Second,
+		2 * time.Second,
+		5 * time.Second,
+		30 * time.Second,
+	}
+	attemptIndex := 0
+
+	for {
+		err := controllerRunner.runControllerLoop(ctx, controller)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if err == nil {
+			return nil
+		}
+
+		delay := backoffDelays[attemptIndex]
+		if attemptIndex < len(backoffDelays)-1 {
+			attemptIndex++
+		}
+		log.Printf("controller %s failed (attempt %d), retrying in %v: %v", controller.Name(), attemptIndex, delay, err)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 	}
 }
 
-// runSingleController manages one controller's watch-reconcile loop. It sets
-// up watches on all prefixes returned by the controller's Watch method,
-// performs an initial reconciliation, and then re-reconciles each time a
-// watched fact changes (with debouncing).
-func (controllerRunner *Runner) runSingleController(ctx context.Context, controller Controller) error {
+// runControllerLoop sets up watches on all prefixes returned by the
+// controller's Watch method, performs an initial reconciliation, and then
+// re-reconciles each time a watched fact changes (with debouncing) or the
+// periodic resync timer fires.
+func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controller Controller) error {
 	reconcileTrigger := make(chan struct{}, 1)
 
-	// Set up watches on all prefixes.
 	for _, prefix := range controller.Watch() {
 		watchEventChannel, err := controllerRunner.store.Watch(ctx, prefix, store.WatchOption{Prefix: true})
 		if err != nil {
@@ -103,17 +168,27 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 		}(watchEventChannel)
 	}
 
-	// Initial reconciliation.
 	if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
 		return err
+	}
+
+	var resyncTicker *time.Ticker
+	var resyncChannel <-chan time.Time
+	if controllerRunner.resyncInterval > 0 {
+		resyncTicker = time.NewTicker(controllerRunner.resyncInterval)
+		resyncChannel = resyncTicker.C
+		defer resyncTicker.Stop()
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-resyncChannel:
+			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
+				log.Printf("controller %s resync error: %v", controller.Name(), err)
+			}
 		case <-reconcileTrigger:
-			// Debounce: drain events that arrive in quick succession.
 			if controllerRunner.debounce > 0 {
 				timer := time.NewTimer(controllerRunner.debounce)
 				select {
@@ -122,7 +197,6 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 					return ctx.Err()
 				case <-timer.C:
 				}
-				// Drain any pending triggers accumulated during debounce.
 				select {
 				case <-reconcileTrigger:
 				default:

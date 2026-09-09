@@ -34,6 +34,7 @@ func TestStabilizationWindowPreventsOscillation(t *testing.T) {
 		autoscaleController, intentResolverController,
 	)
 	runner.SetDebounce(10 * time.Millisecond)
+	runner.SetResyncInterval(500 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
 	go runner.Run(ctx)
@@ -66,7 +67,7 @@ service web {
 	factStore.Put(ctx, types.KeyObservedMetric("web", "cpu"), []byte("90"))
 
 	// The stabilization window should prevent immediate scale-up for the first second.
-	// After the window passes, scaling should happen.
+	// After the window passes, the periodic resync triggers the autoscaler to apply the change.
 	waitFor(t, 5*time.Second, "scale up after stabilization window", func() bool {
 		return countRunningInstancesForService(ctx, factStore, "web") >= 4
 	})

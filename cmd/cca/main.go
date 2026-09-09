@@ -53,25 +53,37 @@ func main() {
 		fmt.Printf("cca %s\n", version)
 		return
 	case "apply":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca apply <file>")
+		parsedApplyConfig := parseApplyCommandArgs(os.Args[2:])
+		if parsedApplyConfig.configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca apply [--store memory|etcd] [--endpoints host:port,...] <file>")
 			os.Exit(1)
 		}
-		executeApplyCommand(os.Args[2])
+		executeApplyCommand(parsedApplyConfig)
 	case "run":
-		configFilePath, watchModeEnabled := parseRunCommandArgs(os.Args[2:])
-		if configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca run [--watch] <file>")
+		parsedRunConfig := parseRunCommandArgs(os.Args[2:])
+		if parsedRunConfig.configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca run [--watch] [--store memory|etcd] [--endpoints host:port,...] <file>")
 			os.Exit(1)
 		}
-		executeLiveProcessCommand(configFilePath, watchModeEnabled)
+		executeLiveProcessCommand(parsedRunConfig)
 	case "run-container":
-		configFilePath, watchModeEnabled := parseRunCommandArgs(os.Args[2:])
-		if configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca run-container [--watch] <file>")
+		parsedRunConfig := parseRunCommandArgs(os.Args[2:])
+		if parsedRunConfig.configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca run-container [--watch] [--store memory|etcd] [--endpoints host:port,...] <file>")
 			os.Exit(1)
 		}
-		executeLiveContainerCommand(configFilePath, watchModeEnabled)
+		executeLiveContainerCommand(parsedRunConfig)
+	case "server":
+		parsedServerConfig := parseServerCommandArgs(os.Args[2:])
+		executeServerCommand(parsedServerConfig)
+	case "agent":
+		parsedAgentConfig := parseAgentCommandArgs(os.Args[2:])
+		if parsedAgentConfig.nodeID == "" {
+			fmt.Fprintln(os.Stderr, "error: --node-id is required for agent mode")
+			fmt.Fprintln(os.Stderr, "usage: cca agent --node-id <id> --store etcd [--endpoints host:port,...] [--store-prefix /path/]")
+			os.Exit(1)
+		}
+		executeAgentCommand(parsedAgentConfig)
 	case "demo":
 		executeDemoCommand()
 	case "demo-distributed":
@@ -120,54 +132,453 @@ func main() {
 	}
 }
 
-// parseRunCommandArgs extracts the config file path and --watch flag from the
-// arguments following "run" or "run-container". Returns empty path if no file is found.
-func parseRunCommandArgs(args []string) (string, bool) {
-	watchModeEnabled := false
-	configFilePath := ""
-	for _, arg := range args {
-		if arg == "--watch" || arg == "-w" {
-			watchModeEnabled = true
-		} else if configFilePath == "" {
-			configFilePath = arg
+// runCommandConfig holds all parsed flags and arguments for the "run" and
+// "run-container" commands, including the store backend selection, etcd
+// endpoint list, and key prefix for multi-cluster isolation.
+type runCommandConfig struct {
+	// configFilePath is the path to the .ccattler DSL file to apply.
+	configFilePath string
+	// watchModeEnabled enables periodic status output when true.
+	watchModeEnabled bool
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+}
+
+// applyCommandConfig holds parsed flags for the "apply" command, which can
+// optionally connect to a remote store instead of running a local simulation.
+type applyCommandConfig struct {
+	// configFilePath is the path to the .ccattler DSL file to apply.
+	configFilePath string
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+}
+
+// parseApplyCommandArgs extracts the config file path and optional store flags
+// from the arguments following "apply".
+func parseApplyCommandArgs(args []string) applyCommandConfig {
+	parsedConfig := applyCommandConfig{
+		storeBackend:   "memory",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+	}
+
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		default:
+			if parsedConfig.configFilePath == "" {
+				parsedConfig.configFilePath = currentArg
+			}
 		}
 	}
-	return configFilePath, watchModeEnabled
+
+	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
+		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	return parsedConfig
+}
+
+// parseRunCommandArgs extracts the config file path, --watch flag, and store
+// backend flags from the arguments following "run" or "run-container". Uses an
+// index-based loop so paired flags (--store <value>) can consume the next argument.
+func parseRunCommandArgs(args []string) runCommandConfig {
+	parsedConfig := runCommandConfig{
+		storeBackend:   "memory",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+	}
+
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--watch", "-w":
+			parsedConfig.watchModeEnabled = true
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		default:
+			if parsedConfig.configFilePath == "" {
+				parsedConfig.configFilePath = currentArg
+			}
+		}
+	}
+
+	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
+		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	return parsedConfig
+}
+
+// createStateStoreFromConfig builds the appropriate StateStore implementation based
+// on the parsed run-command configuration. For "memory" it returns an in-memory store.
+// For "etcd" it connects to the specified endpoints with the given key prefix.
+func createStateStoreFromConfig(parsedConfig runCommandConfig) (store.StateStore, error) {
+	if parsedConfig.storeBackend == "etcd" {
+		endpointList := strings.Split(parsedConfig.etcdEndpoints, ",")
+		return store.NewEtcdStore(store.EtcdStoreConfig{
+			Endpoints:   endpointList,
+			KeyPrefix:   parsedConfig.storeKeyPrefix,
+			DialTimeout: 5 * time.Second,
+		})
+	}
+	return store.NewMemoryStore(), nil
+}
+
+// serverCommandConfig holds parsed flags for the "server" command, which runs
+// the control plane (controllers + API) against a shared state store.
+type serverCommandConfig struct {
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+}
+
+// parseServerCommandArgs extracts store-related flags from the arguments
+// following "server".
+func parseServerCommandArgs(args []string) serverCommandConfig {
+	parsedConfig := serverCommandConfig{
+		storeBackend:   "etcd",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+	}
+
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		}
+	}
+
+	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
+		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	return parsedConfig
+}
+
+// agentCommandConfig holds parsed flags for the "agent" command, which runs
+// the node agent against a shared state store.
+type agentCommandConfig struct {
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+	// nodeID is the unique identifier for this agent's node.
+	nodeID string
+	// runtimeBackend selects the runtime: "process" or "container".
+	runtimeBackend string
+}
+
+// parseAgentCommandArgs extracts store and agent flags from the arguments
+// following "agent".
+func parseAgentCommandArgs(args []string) agentCommandConfig {
+	parsedConfig := agentCommandConfig{
+		storeBackend:   "etcd",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+		runtimeBackend: "process",
+	}
+
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		case "--node-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.nodeID = args[argIndex]
+			}
+		case "--runtime":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.runtimeBackend = args[argIndex]
+			}
+		}
+	}
+
+	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
+		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	if parsedConfig.runtimeBackend != "process" && parsedConfig.runtimeBackend != "container" {
+		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\" or \"container\")\n", parsedConfig.runtimeBackend)
+		os.Exit(1)
+	}
+
+	return parsedConfig
+}
+
+// createStateStoreFromServerConfig builds the appropriate StateStore for
+// the server or agent command configuration.
+func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefix string) (store.StateStore, error) {
+	if storeBackend == "etcd" {
+		endpointList := strings.Split(etcdEndpoints, ",")
+		return store.NewEtcdStore(store.EtcdStoreConfig{
+			Endpoints:   endpointList,
+			KeyPrefix:   storeKeyPrefix,
+			DialTimeout: 5 * time.Second,
+		})
+	}
+	return store.NewMemoryStore(), nil
+}
+
+// executeServerCommand starts the control plane: all reconciliation controllers
+// and the HTTP API server. It connects to the shared state store and blocks
+// until Ctrl+C. No node agent or runtime — that runs separately via "cca agent".
+func executeServerCommand(parsedConfig serverCommandConfig) {
+	factStore, storeCreationError := createStateStoreFromServerConfig(
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	if storeCreationError != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
+		os.Exit(1)
+	}
+	defer factStore.Close()
+
+	if parsedConfig.storeBackend == "etcd" {
+		fmt.Printf("CCattler server connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+	networkController := controllers.NewNetworkController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+
+	eventLog := controllers.NewEventLog(factStore, 1000)
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController, networkController,
+		autoscaleController, intentResolverController, rolloutController)
+	controllerRunner.SetEventLog(eventLog)
+	go controllerRunner.Run(ctx)
+
+	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer.SetEventLog(eventLog)
+
+	fmt.Printf("Server running. API on %s. Controllers active. Press Ctrl+C to stop.\n", statusAPIListenAddress)
+
+	<-ctx.Done()
+	fmt.Println("\nServer shutting down...")
+}
+
+// executeAgentCommand starts the node agent, which watches the shared state store
+// for placements assigned to this node and reconciles the local runtime. It
+// registers the node, starts the appropriate runtime, and blocks until Ctrl+C.
+func executeAgentCommand(parsedConfig agentCommandConfig) {
+	factStore, storeCreationError := createStateStoreFromServerConfig(
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	if storeCreationError != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
+		os.Exit(1)
+	}
+	defer factStore.Close()
+
+	if parsedConfig.storeBackend == "etcd" {
+		fmt.Printf("CCattler agent %s connected to etcd at %s (prefix: %s)\n",
+			parsedConfig.nodeID, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	types.WriteNode(ctx, factStore, types.Node{
+		ID: parsedConfig.nodeID, State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	var runtimeAdapter runtime.Runtime
+	if parsedConfig.runtimeBackend == "container" {
+		if _, err := exec.LookPath("docker"); err != nil {
+			fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
+			os.Exit(1)
+		}
+		containerRuntime := runtime.NewContainerRuntime()
+		containerRuntime.SetDockerNetwork("cca-net", network.DefaultClusterCIDR)
+		runtimeAdapter = containerRuntime
+	} else {
+		runtimeAdapter = runtime.NewProcessRuntime()
+	}
+
+	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
+	go nodeAgent.Run(ctx)
+
+	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
+		parsedConfig.nodeID, parsedConfig.runtimeBackend)
+
+	<-ctx.Done()
+	fmt.Printf("\nAgent %s shutting down...\n", parsedConfig.nodeID)
+	if processRuntime, ok := runtimeAdapter.(*runtime.ProcessRuntime); ok {
+		processRuntime.StopAll(context.Background())
+	}
+	if containerRuntime, ok := runtimeAdapter.(*runtime.ContainerRuntime); ok {
+		containerRuntime.StopAll(context.Background())
+	}
 }
 
 // printUsage prints the CLI help text listing all available commands to stderr.
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: cca <command>")
-	fmt.Fprintln(os.Stderr, "  apply <file>   parse .ccattler file, show reconciliation (simulated)")
-	fmt.Fprintln(os.Stderr, "  run [--watch] <file>     start real processes (--watch for live status)")
-	fmt.Fprintln(os.Stderr, "  demo           built-in demo with simulated runtime (1 node)")
-	fmt.Fprintln(os.Stderr, "  demo-distributed  3 simulated nodes, kills one to show recovery")
-	fmt.Fprintln(os.Stderr, "  demo-network      3 nodes with IP allocation, VIPs, DNS, load balancing")
-	fmt.Fprintln(os.Stderr, "  demo-storage      3 nodes with persistent volumes, kills node to show migration")
-	fmt.Fprintln(os.Stderr, "  chaos             random failure injection, live convergence reporting")
-	fmt.Fprintln(os.Stderr, "  status         show cluster status (queries running instance)")
-	fmt.Fprintln(os.Stderr, "  get <resource> show services, instances, nodes, volumes, networking, secrets, or config")
-	fmt.Fprintln(os.Stderr, "  logs [service] show cluster event log (optionally filtered by service)")
-	fmt.Fprintln(os.Stderr, "  scale <svc> <n> scale a service to n instances")
-	fmt.Fprintln(os.Stderr, "  watch [prefix] stream fact store changes as they happen")
-	fmt.Fprintln(os.Stderr, "  run-container [--watch] <file>  start real containers (--watch for live status)")
-	fmt.Fprintln(os.Stderr, "  metric set <service> <metric> <value>")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "single-process mode (all-in-one):")
+	fmt.Fprintln(os.Stderr, "  apply [flags] <file>         parse .ccattler file, show reconciliation (simulated)")
+	fmt.Fprintln(os.Stderr, "  run [flags] <file>           start real processes")
+	fmt.Fprintln(os.Stderr, "  run-container [flags] <file> start real containers")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "multi-process mode (distributed):")
+	fmt.Fprintln(os.Stderr, "  server [flags]               run control plane (controllers + API)")
+	fmt.Fprintln(os.Stderr, "  agent [flags]                run node agent (watches store, runs workloads)")
+	fmt.Fprintln(os.Stderr, "  apply --store etcd <file>    write facts to shared store")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "demos:")
+	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")
+	fmt.Fprintln(os.Stderr, "  demo-distributed             3 simulated nodes, kills one to show recovery")
+	fmt.Fprintln(os.Stderr, "  demo-network                 3 nodes with IP allocation, VIPs, DNS, LB")
+	fmt.Fprintln(os.Stderr, "  demo-storage                 3 nodes with persistent volumes, node kill")
+	fmt.Fprintln(os.Stderr, "  chaos                        random failure injection, convergence reporting")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "cluster management:")
+	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
+	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
+	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
+	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
+	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flags for run / run-container / apply:")
+	fmt.Fprintln(os.Stderr, "  --watch, -w                  print status every 2s (run only)")
+	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: memory)")
+	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flags for server:")
+	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
+	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flags for agent:")
+	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
+	fmt.Fprintln(os.Stderr, "  --runtime process|container  workload runtime (default: process)")
+	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
+	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 }
 
-// executeApplyCommand parses a .ccattler file with simulated nodes and no real processes.
-// It registers 3 simulated nodes, runs all controllers, applies the config, and prints status.
-func executeApplyCommand(configFilePath string) {
-	fileData, err := os.ReadFile(configFilePath)
+// executeApplyCommand parses a .ccattler file and writes facts to the state store.
+// In remote mode (--store etcd), it connects to the shared store, writes facts,
+// and exits — controllers running in "cca server" handle reconciliation.
+// In local mode (default), it runs a local simulation with 3 simulated nodes.
+func executeApplyCommand(parsedConfig applyCommandConfig) {
+	fileData, err := os.ReadFile(parsedConfig.configFilePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, err)
 		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if parsedConfig.storeBackend == "etcd" {
+		factStore, storeCreationError := createStateStoreFromServerConfig(
+			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		if storeCreationError != nil {
+			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
+			os.Exit(1)
+		}
+		defer factStore.Close()
+
+		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
+		if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+			fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Facts written to store. Controllers will reconcile.")
+		return
 	}
 
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 
 	// Register 3 simulated nodes with equal capacity.
 	for _, simulatedNodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -194,7 +605,7 @@ func executeApplyCommand(configFilePath string) {
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
 	go controllerRunner.Run(ctx)
 
-	fmt.Printf("Applying %s...\n", configFilePath)
+	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
 		os.Exit(1)
@@ -209,15 +620,23 @@ func executeApplyCommand(configFilePath string) {
 // via the ProcessRuntime and node agent. When watchModeEnabled is true, prints
 // status every 2 seconds with timestamps; otherwise prints status once and blocks
 // until Ctrl+C.
-func executeLiveProcessCommand(configFilePath string, watchModeEnabled bool) {
-	fileData, err := os.ReadFile(configFilePath)
+func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
+	fileData, err := os.ReadFile(parsedRunConfig.configFilePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedRunConfig.configFilePath, err)
 		os.Exit(1)
 	}
 
-	factStore := store.NewMemoryStore()
+	factStore, storeCreationError := createStateStoreFromConfig(parsedRunConfig)
+	if storeCreationError != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
+		os.Exit(1)
+	}
 	defer factStore.Close()
+
+	if parsedRunConfig.storeBackend == "etcd" {
+		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -255,7 +674,7 @@ func executeLiveProcessCommand(configFilePath string, watchModeEnabled bool) {
 	statusAPIServer := launchStatusAPIServer(factStore)
 	statusAPIServer.SetEventLog(eventLog)
 
-	fmt.Printf("Applying %s...\n", configFilePath)
+	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
 		os.Exit(1)
@@ -268,7 +687,7 @@ func executeLiveProcessCommand(configFilePath string, watchModeEnabled bool) {
 	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	if watchModeEnabled {
+	if parsedRunConfig.watchModeEnabled {
 		statusPrintTicker := time.NewTicker(2 * time.Second)
 		defer statusPrintTicker.Stop()
 		for {
@@ -294,7 +713,7 @@ func executeLiveProcessCommand(configFilePath string, watchModeEnabled bool) {
 // via the ContainerRuntime (docker CLI) and node agent. When watchModeEnabled is
 // true, prints status every 2 seconds with timestamps; otherwise prints status once
 // and blocks until Ctrl+C.
-func executeLiveContainerCommand(configFilePath string, watchModeEnabled bool) {
+func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
 		fmt.Fprintln(os.Stderr, "install Docker Desktop (macOS/Windows) or docker-ce (Linux)")
@@ -302,14 +721,22 @@ func executeLiveContainerCommand(configFilePath string, watchModeEnabled bool) {
 		os.Exit(1)
 	}
 
-	fileData, err := os.ReadFile(configFilePath)
+	fileData, err := os.ReadFile(parsedRunConfig.configFilePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", configFilePath, err)
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedRunConfig.configFilePath, err)
 		os.Exit(1)
 	}
 
-	factStore := store.NewMemoryStore()
+	factStore, storeCreationError := createStateStoreFromConfig(parsedRunConfig)
+	if storeCreationError != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
+		os.Exit(1)
+	}
 	defer factStore.Close()
+
+	if parsedRunConfig.storeBackend == "etcd" {
+		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -353,7 +780,7 @@ func executeLiveContainerCommand(configFilePath string, watchModeEnabled bool) {
 	statusAPIServer := launchStatusAPIServer(factStore)
 	statusAPIServer.SetEventLog(eventLog)
 
-	fmt.Printf("Applying %s (container mode)...\n", configFilePath)
+	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
 		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
 		os.Exit(1)
@@ -366,7 +793,7 @@ func executeLiveContainerCommand(configFilePath string, watchModeEnabled bool) {
 	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	if watchModeEnabled {
+	if parsedRunConfig.watchModeEnabled {
 		statusPrintTicker := time.NewTicker(2 * time.Second)
 		defer statusPrintTicker.Stop()
 		for {
@@ -496,6 +923,7 @@ func executeDistributedDemoCommand() {
 	// Start 3 agents, each with its own simulator runtime.
 	// node-1 gets a separate cancel context so we can kill it later.
 	node1Context, killNode1 := context.WithCancel(ctx)
+	defer killNode1()
 	for _, nodeID := range nodeIDs {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)

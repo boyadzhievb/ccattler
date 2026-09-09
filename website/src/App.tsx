@@ -14,7 +14,7 @@ function Nav() {
           </span>
         </div>
         <div className="hidden md:flex items-center gap-8">
-          {["Install", "Philosophy", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
+          {["Install", "Philosophy", "Concepts", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
             <a
               key={item}
               href={`#${item.toLowerCase()}`}
@@ -367,6 +367,125 @@ function Philosophy() {
   );
 }
 
+function Concepts() {
+  const concepts = [
+    {
+      k8s: "Cluster",
+      k8sDesc: "A set of worker machines (nodes) managed by a control plane",
+      ccattler: "Fact Store + Agents",
+      ccattlerDesc:
+        "Nodes register by writing facts to the store. Each node runs an Agent that heartbeats via lease facts. The cluster is the set of facts — no explicit cluster object.",
+      how: "Agents publish node(id, cpu, memory, zone) and renew leases every 1s. The control plane watches these facts. Nodes join with cca join <cluster> <bootstrap-token>.",
+    },
+    {
+      k8s: "Pod",
+      k8sDesc: "Smallest deployable unit holding one or more tightly coupled containers",
+      ccattler: "Instance + Group",
+      ccattlerDesc:
+        "An instance is one container of one service — the smallest unit. For co-located containers, groups share network and volumes explicitly.",
+      how: 'group frontend {\n  process proxy\n  process web\n  share network\n  share volume cache\n}',
+    },
+    {
+      k8s: "Control Plane",
+      k8sDesc: "API server, scheduler, etcd — makes global decisions",
+      ccattler: "Runner + Controllers + Store",
+      ccattlerDesc:
+        "The Runner manages controller lifecycles. Controllers are stateless rule engines watching fact prefixes. The Fact Store replaces both the API server and etcd — it is the single source of truth.",
+      how: "Controllers never call each other. They react to state changes through watches. A crashed controller restarts with exponential backoff; another replica takes over via leader election.",
+    },
+    {
+      k8s: "Reconciliation Loop",
+      k8sDesc: "Compares actual state against desired state and makes adjustments",
+      ccattler: "facts → controllers → changes → agents → observations → repeat",
+      ccattlerDesc:
+        "Each controller watches fact prefixes, compares desired vs observed, and proposes changes. The gap between desired/ and observed/ is the work. A 30s periodic resync ensures convergence even if watch events are missed.",
+      how: "Reconcile(ctx, facts) → []Change — controllers return proposed changes, never arbitrary mutations. The runner commits them transactionally.",
+    },
+  ];
+
+  return (
+    <section id="concepts" className="relative py-32 border-t border-white/5">
+      <div className="absolute inset-0 grid-bg opacity-30" />
+      <div className="relative max-w-6xl mx-auto px-6">
+        <div className="mb-16">
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">
+            § 01b · Concepts
+          </div>
+          <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
+            Familiar problems.
+            <span className="text-white/35"> Different abstractions.</span>
+          </h2>
+          <p className="text-white/40 text-lg mt-4 max-w-xl font-light">
+            If you know Kubernetes, here's how CCattler solves the same problems — without objects, YAML, or an API server hierarchy.
+          </p>
+        </div>
+
+        <div className="space-y-4">
+          {concepts.map((c) => (
+            <div
+              key={c.k8s}
+              className="border border-white/8 rounded-lg overflow-hidden bg-white/[0.015] hover:border-white/15 transition-all duration-200"
+            >
+              <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr] divide-y lg:divide-y-0 lg:divide-x divide-white/6">
+                {/* K8s side */}
+                <div className="p-6">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-2 h-2 rounded-full bg-white/20" />
+                    <span className="font-mono text-xs text-white/35 tracking-widest uppercase">
+                      Kubernetes
+                    </span>
+                  </div>
+                  <div className="font-mono text-lg font-semibold text-white/60 mb-1">
+                    {c.k8s}
+                  </div>
+                  <p className="text-sm text-white/30 leading-relaxed">{c.k8sDesc}</p>
+                </div>
+
+                {/* CCattler side */}
+                <div className="p-6">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-2 h-2 rounded-full bg-[#6378ff]" />
+                    <span className="font-mono text-xs text-[#6378ff]/80 tracking-widest uppercase">
+                      CCattler
+                    </span>
+                  </div>
+                  <div className="font-mono text-lg font-semibold text-white/85 mb-1">
+                    {c.ccattler}
+                  </div>
+                  <p className="text-sm text-white/45 leading-relaxed mb-3">{c.ccattlerDesc}</p>
+                  <div className="border border-white/6 rounded bg-[#04040c] p-3 font-mono text-xs text-white/40 whitespace-pre-wrap leading-relaxed">
+                    {c.how}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Key difference callout */}
+        <div className="mt-10 border border-[#6378ff]/25 rounded-lg p-6 bg-[#6378ff]/[0.03] glow-blue">
+          <div className="flex items-start gap-3">
+            <div className="w-5 h-5 rounded-full border-2 border-[#6378ff] flex items-center justify-center shrink-0 mt-0.5">
+              <div className="w-1.5 h-1.5 bg-[#6378ff] rounded-full" />
+            </div>
+            <div>
+              <div className="font-mono text-sm font-medium text-white/85 mb-1">
+                The key difference
+              </div>
+              <p className="text-sm text-white/45 leading-relaxed">
+                In Kubernetes, you have objects (Pod, Deployment, ReplicaSet) with controllers managing each type.
+                In CCattler, you have <span className="text-white/70 font-mono">facts</span> and <span className="text-white/70 font-mono">rules</span>.
+                There is no object hierarchy — just <code className="text-[#6378ff]/70">desired(web, 5 instances)</code> vs <code className="text-[#6378ff]/70">observed(web, 3 running)</code> → create 2 more.
+                The instance controller doesn't know <em>why</em> desired is 5 — it just closes the gap.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ArchNode({
   label,
   sub,
@@ -421,7 +540,7 @@ function Architecture() {
 
       <div className="relative max-w-6xl mx-auto px-6">
         <div className="mb-16">
-          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 02 · Architecture</div>
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 03 · Architecture</div>
           <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
             One control loop.
             <span className="text-white/35"> Many capabilities.</span>
@@ -568,7 +687,7 @@ function Capabilities() {
       <div className="absolute inset-0 grid-bg opacity-25" />
       <div className="relative max-w-6xl mx-auto px-6">
         <div className="mb-12">
-          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 03 · Capabilities</div>
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 04 · Capabilities</div>
           <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
             Everything you need.
             <span className="text-white/35"> Nothing you don't.</span>
@@ -707,7 +826,7 @@ function ProjectStatus() {
       <div className="absolute inset-0 grid-bg opacity-25" />
       <div className="relative max-w-6xl mx-auto px-6">
         <div className="mb-12">
-          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 04 · Project status</div>
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 05 · Project status</div>
           <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
             Built in the open.
             <span className="text-white/35"> Tested relentlessly.</span>
@@ -824,7 +943,7 @@ function Examples() {
       <div className="absolute inset-0 grid-bg opacity-20" />
       <div className="relative max-w-6xl mx-auto px-6">
         <div className="mb-12">
-          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 05 · Examples</div>
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 06 · Examples</div>
           <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
             Real configs.
             <span className="text-white/35"> Not contrived demos.</span>
@@ -977,7 +1096,7 @@ function CTA() {
       </div>
 
       <div className="relative max-w-4xl mx-auto px-6 text-center">
-        <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-8">§ 06 · Get started</div>
+        <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-8">§ 07 · Get started</div>
 
         <h2 className="text-5xl md:text-6xl font-bold text-white leading-tight tracking-tight mb-6">
           Build the container platform
@@ -1068,6 +1187,7 @@ export default function App() {
       <Hero />
       <Installation />
       <Philosophy />
+      <Concepts />
       <Architecture />
       <Capabilities />
       <ProjectStatus />

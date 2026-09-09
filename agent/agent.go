@@ -32,6 +32,7 @@ type Agent struct {
 	secretProvider       SecretProvider            // secretProvider retrieves decrypted secrets; nil means no secret support.
 	materializedSecrets  []MaterializedSecret      // materializedSecrets tracks secrets written for running instances.
 	interval             time.Duration             // interval is the period between periodic reconciliation cycles.
+	lastHealthCheck      map[string]time.Time      // lastHealthCheck tracks when each instance was last health-checked.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -40,10 +41,11 @@ type Agent struct {
 // IP. Use SetNetworkProvider to enable real IP allocation.
 func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runtime) *Agent {
 	return &Agent{
-		nodeID:   nodeID,
-		store:    stateStore,
-		runtime:  runtimeAdapter,
-		interval: 1 * time.Second,
+		nodeID:          nodeID,
+		store:           stateStore,
+		runtime:         runtimeAdapter,
+		interval:        1 * time.Second,
+		lastHealthCheck: make(map[string]time.Time),
 	}
 }
 
@@ -312,6 +314,13 @@ func (nodeAgent *Agent) performHealthCheckAndReportResult(ctx context.Context, i
 		return
 	}
 
+	healthInterval := nodeAgent.lookupHealthIntervalFromStore(ctx, instanceInfo.service)
+	if lastCheck, exists := nodeAgent.lastHealthCheck[instanceInfo.id]; exists {
+		if time.Since(lastCheck) < healthInterval {
+			return
+		}
+	}
+
 	ip := "127.0.0.1"
 	if factEntry, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id)); err == nil {
 		ip = string(factEntry.Value)
@@ -325,6 +334,21 @@ func (nodeAgent *Agent) performHealthCheckAndReportResult(ctx context.Context, i
 		status = types.HealthUnhealthy
 	}
 	nodeAgent.store.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
+	nodeAgent.lastHealthCheck[instanceInfo.id] = time.Now()
+}
+
+// lookupHealthIntervalFromStore reads the configured health check interval
+// for the given service from the store. Returns 10s as default if not configured.
+func (nodeAgent *Agent) lookupHealthIntervalFromStore(ctx context.Context, serviceName string) time.Duration {
+	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthInterval(serviceName))
+	if err != nil {
+		return 10 * time.Second
+	}
+	parsed, err := time.ParseDuration(string(factEntry.Value))
+	if err != nil {
+		return 10 * time.Second
+	}
+	return parsed
 }
 
 // buildHealthProbeFromServiceConfig reads the health check configuration for

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sort"
@@ -10,6 +11,9 @@ import (
 
 // ErrKeyNotFound is returned when a Get or Delete targets a key that does not exist in the store.
 var ErrKeyNotFound = errors.New("key not found")
+
+// ErrStoreClosed is returned when an operation is attempted on a store that has been closed.
+var ErrStoreClosed = errors.New("store closed")
 
 // factWatcher represents an active watch subscription on the store. Each watcher
 // monitors either a single exact key or all keys sharing a common prefix and
@@ -56,11 +60,16 @@ func (memStore *MemoryStore) Get(_ context.Context, key string) (*Fact, error) {
 	memStore.mutex.RLock()
 	defer memStore.mutex.RUnlock()
 
+	if memStore.isClosed {
+		return nil, ErrStoreClosed
+	}
+
 	existingFact, found := memStore.facts[key]
 	if !found {
 		return nil, ErrKeyNotFound
 	}
 	factCopy := *existingFact
+	factCopy.Value = cloneBytes(existingFact.Value)
 	return &factCopy, nil
 }
 
@@ -70,6 +79,14 @@ func (memStore *MemoryStore) Get(_ context.Context, key string) (*Fact, error) {
 func (memStore *MemoryStore) Put(_ context.Context, key string, value []byte) (int64, error) {
 	memStore.mutex.Lock()
 	defer memStore.mutex.Unlock()
+
+	if memStore.isClosed {
+		return 0, ErrStoreClosed
+	}
+
+	if existingFact, found := memStore.facts[key]; found && bytes.Equal(existingFact.Value, value) {
+		return existingFact.Revision, nil
+	}
 
 	memStore.currentRevision++
 	newRevision := memStore.currentRevision
@@ -96,8 +113,15 @@ func (memStore *MemoryStore) Put(_ context.Context, key string, value []byte) (i
 	}
 	memStore.facts[key] = newFact
 
-	factCopy := *newFact
-	memStore.broadcastEventToWatchers(Event{Type: EventPut, Fact: factCopy, Prev: previousFact})
+	eventFact := *newFact
+	eventFact.Value = cloneBytes(newFact.Value)
+	var eventPrev *Fact
+	if previousFact != nil {
+		prevCopy := *previousFact
+		prevCopy.Value = cloneBytes(previousFact.Value)
+		eventPrev = &prevCopy
+	}
+	memStore.broadcastEventToWatchers(Event{Type: EventPut, Fact: eventFact, Prev: eventPrev})
 
 	return newRevision, nil
 }
@@ -109,6 +133,10 @@ func (memStore *MemoryStore) Delete(_ context.Context, key string) error {
 	memStore.mutex.Lock()
 	defer memStore.mutex.Unlock()
 
+	if memStore.isClosed {
+		return ErrStoreClosed
+	}
+
 	existingFact, found := memStore.facts[key]
 	if !found {
 		return ErrKeyNotFound
@@ -116,6 +144,7 @@ func (memStore *MemoryStore) Delete(_ context.Context, key string) error {
 
 	memStore.currentRevision++
 	previousFact := *existingFact
+	previousFact.Value = cloneBytes(existingFact.Value)
 	delete(memStore.facts, key)
 
 	deletedFact := Fact{
@@ -134,10 +163,16 @@ func (memStore *MemoryStore) Scan(_ context.Context, prefix string) ([]Fact, err
 	memStore.mutex.RLock()
 	defer memStore.mutex.RUnlock()
 
+	if memStore.isClosed {
+		return nil, ErrStoreClosed
+	}
+
 	var matchingFacts []Fact
 	for factKey, factEntry := range memStore.facts {
 		if strings.HasPrefix(factKey, prefix) {
-			matchingFacts = append(matchingFacts, *factEntry)
+			factCopy := *factEntry
+			factCopy.Value = cloneBytes(factEntry.Value)
+			matchingFacts = append(matchingFacts, factCopy)
 		}
 	}
 	sort.Slice(matchingFacts, func(i, j int) bool {
@@ -149,9 +184,13 @@ func (memStore *MemoryStore) Scan(_ context.Context, prefix string) ([]Fact, err
 // Watch creates a new watch subscription for changes to the specified key (or key
 // prefix if opts.Prefix is true). Returns a buffered channel that will receive events
 // for matching changes. The channel is closed when the store is closed via Close.
-func (memStore *MemoryStore) Watch(_ context.Context, key string, opts WatchOption) (<-chan Event, error) {
+func (memStore *MemoryStore) Watch(ctx context.Context, key string, opts WatchOption) (<-chan Event, error) {
 	memStore.mutex.Lock()
 	defer memStore.mutex.Unlock()
+
+	if memStore.isClosed {
+		return nil, ErrStoreClosed
+	}
 
 	eventChannel := make(chan Event, 64)
 	memStore.activeWatchers = append(memStore.activeWatchers, factWatcher{
@@ -159,7 +198,29 @@ func (memStore *MemoryStore) Watch(_ context.Context, key string, opts WatchOpti
 		matchByPrefix: opts.Prefix,
 		eventChannel:  eventChannel,
 	})
+
+	if ctx != nil && ctx.Done() != nil {
+		go func() {
+			<-ctx.Done()
+			memStore.removeWatcher(eventChannel)
+		}()
+	}
+
 	return eventChannel, nil
+}
+
+// removeWatcher unregisters the watcher with the given channel and closes it.
+func (memStore *MemoryStore) removeWatcher(eventChannel chan Event) {
+	memStore.mutex.Lock()
+	defer memStore.mutex.Unlock()
+
+	for index, activeWatcher := range memStore.activeWatchers {
+		if activeWatcher.eventChannel == eventChannel {
+			memStore.activeWatchers = append(memStore.activeWatchers[:index], memStore.activeWatchers[index+1:]...)
+			close(eventChannel)
+			return
+		}
+	}
 }
 
 // Transaction atomically evaluates all compare preconditions against the current
@@ -170,6 +231,10 @@ func (memStore *MemoryStore) Watch(_ context.Context, key string, opts WatchOpti
 func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, onSuccess []Op, onFailure []Op) (bool, error) {
 	memStore.mutex.Lock()
 	defer memStore.mutex.Unlock()
+
+	if memStore.isClosed {
+		return false, ErrStoreClosed
+	}
 
 	allPreconditionsMet := true
 	for _, comparison := range compares {
@@ -192,11 +257,37 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 		operationsToExecute = onFailure
 	}
 
+	// Determine if any operation will actually mutate state.
+	hasMutation := false
 	for _, operation := range operationsToExecute {
 		switch operation.Type {
 		case OpPut:
-			memStore.currentRevision++
-			newRevision := memStore.currentRevision
+			if existingFact, factExists := memStore.facts[operation.Key]; !factExists || !bytes.Equal(existingFact.Value, operation.Value) {
+				hasMutation = true
+			}
+		case OpDelete:
+			if _, factExists := memStore.facts[operation.Key]; factExists {
+				hasMutation = true
+			}
+		}
+		if hasMutation {
+			break
+		}
+	}
+
+	// All operations in a transaction share a single revision.
+	var transactionRevision int64
+	if hasMutation {
+		memStore.currentRevision++
+		transactionRevision = memStore.currentRevision
+	}
+
+	for _, operation := range operationsToExecute {
+		switch operation.Type {
+		case OpPut:
+			if existingFact, factExists := memStore.facts[operation.Key]; factExists && bytes.Equal(existingFact.Value, operation.Value) {
+				continue
+			}
 
 			var previousFact *Fact
 			if existingFact, factExists := memStore.facts[operation.Key]; factExists {
@@ -204,7 +295,7 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 				previousFact = &previousFactCopy
 			}
 
-			createRevision := newRevision
+			createRevision := transactionRevision
 			if previousFact != nil {
 				createRevision = previousFact.CreateRevision
 			}
@@ -215,20 +306,27 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 			newFact := &Fact{
 				Key:            operation.Key,
 				Value:          valueCopy,
-				Revision:       newRevision,
+				Revision:       transactionRevision,
 				CreateRevision: createRevision,
 			}
 			memStore.facts[operation.Key] = newFact
 
-			factCopy := *newFact
-			memStore.broadcastEventToWatchers(Event{Type: EventPut, Fact: factCopy, Prev: previousFact})
+			eventFact := *newFact
+			eventFact.Value = cloneBytes(newFact.Value)
+			var eventPrev *Fact
+			if previousFact != nil {
+				prevCopy := *previousFact
+				prevCopy.Value = cloneBytes(previousFact.Value)
+				eventPrev = &prevCopy
+			}
+			memStore.broadcastEventToWatchers(Event{Type: EventPut, Fact: eventFact, Prev: eventPrev})
 
 		case OpDelete:
 			if existingFact, factExists := memStore.facts[operation.Key]; factExists {
-				memStore.currentRevision++
 				previousFact := *existingFact
+				previousFact.Value = cloneBytes(existingFact.Value)
 				delete(memStore.facts, operation.Key)
-				deletedFact := Fact{Key: operation.Key, Revision: memStore.currentRevision}
+				deletedFact := Fact{Key: operation.Key, Revision: transactionRevision}
 				memStore.broadcastEventToWatchers(Event{Type: EventDelete, Fact: deletedFact, Prev: &previousFact})
 			}
 		}
@@ -242,6 +340,11 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 func (memStore *MemoryStore) Revision(_ context.Context) (int64, error) {
 	memStore.mutex.RLock()
 	defer memStore.mutex.RUnlock()
+
+	if memStore.isClosed {
+		return 0, ErrStoreClosed
+	}
+
 	return memStore.currentRevision, nil
 }
 
@@ -260,6 +363,16 @@ func (memStore *MemoryStore) Close() error {
 	}
 	memStore.activeWatchers = nil
 	return nil
+}
+
+// cloneBytes returns a deep copy of the given byte slice. Returns nil for nil input.
+func cloneBytes(value []byte) []byte {
+	if value == nil {
+		return nil
+	}
+	copied := make([]byte, len(value))
+	copy(copied, value)
+	return copied
 }
 
 // broadcastEventToWatchers sends the given event to all watchers whose key pattern

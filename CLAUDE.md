@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M10 — Production (Phase 13) COMPLETE. M1–M10 complete. All 6 Phase 13 items done: typed fact schemas, custom controller SDK, append-only event log, metrics (reconciliation/scheduling/transitions), multi-node control plane with leader election, stateless controllers with HA failover.
+**Active milestone:** M13 — Multi-Process (Phase 16) IN PROGRESS. M1–M12 complete. Phase 16 splits CCattler into separate server and agent processes communicating through a shared etcd store.
 
 ---
 
@@ -533,7 +533,6 @@ Similarly, the store is pluggable:
 StateStore
    │
    ├── MemoryStore         ← laptop development, tests
-   ├── SQLiteStore         ← persistence, restart testing
    └── EtcdStore           ← distributed production
 ```
 
@@ -1006,8 +1005,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 ### Phase 1 — Fact Store
 - [x] Define the store interface (Get/Put/Delete/Scan/Watch/Transaction)
 - [x] Implement in-memory store (for tests and local dev)
-- [ ] Implement SQLite store (persistence + restart testing, before distributed)
-- [ ] Implement etcd adapter (distributed production)
+- [x] Implement etcd adapter (distributed production) — see Phase 15
 - [ ] Store integration tests — concurrency, watch ordering, transaction conflicts
 
 ### Phase 2 — Domain Language & Parser
@@ -1125,6 +1123,33 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Multi-node control plane with leader election (3 or 5 control-plane nodes)
 - [x] Stateless controllers — multiple copies, shared state, automatic failover
 
+### Phase 14 — Store & Controller Correctness
+- [x] Deep-copy fact values on read paths (Get returns shared []byte with internal map)
+- [x] ErrStoreClosed guards on all store methods (Get/Put/Delete/Scan/Watch/Transaction reject after Close)
+- [x] Idempotent Put (skip revision bump and event when value is unchanged)
+- [x] Atomic transactions (one transaction = one revision, not one per operation)
+- [x] Watch context cancellation (unregister watcher when ctx.Done fires)
+- [x] Runner errgroup lifecycle (cancel all controllers on failure, wait for all to finish)
+- [x] Periodic resync timer (30s full reconciliation as correctness backstop)
+- [x] Controller restart with exponential backoff (100ms → 500ms → 1s → 2s → 5s → 30s max)
+- [x] Health check interval scheduling (respect DSL `every 10s` instead of checking every tick)
+
+### Phase 15 — Distributed State (etcd)
+- [x] Add go.etcd.io/etcd/client/v3 dependency
+- [x] Implement EtcdStore (store/etcd.go) — full StateStore interface over etcd v3 API
+- [x] Key prefix namespacing — multiple CCattler clusters can share one etcd instance
+- [x] Idempotent Put — Get-compare-skip to avoid unnecessary revision bumps
+- [x] Watch bridging — etcd watch channel → CCattler Event channel with goroutine forwarding
+- [x] Transaction mapping — Compare/Op → etcd Txn (Revision==0 → CreateRevision==0 check)
+- [x] Integration tests (store/etcd_test.go) — build tag `etcd_integration`, 15 test functions
+- [x] Wire EtcdStore into CLI (`cca run --store etcd --endpoints localhost:2379`)
+
+### Phase 16 — Multi-Process Architecture
+- [x] `cca server` command — runs controllers + API against shared etcd store
+- [x] `cca agent --node-id <id>` command — runs node agent against shared etcd store
+- [x] Update `cca apply` to accept `--store etcd` for writing facts to shared store
+- [x] End-to-end test: etcd + server + agent + apply workflow
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1139,5 +1164,8 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M8 — Secure | 11 | mTLS, RBAC+ABAC, secrets, audit |
 | M9 — Multi-tenant | 12 | Tenant isolation, quotas, fair scheduling, policy gates |
 | M10 — Production | 13 | Observability, HA control plane, extensibility |
+| M11 — Correctness | 14 | Store idempotency, atomic txns, watch safety, controller resilience |
+| M12 — Distributed State | 15 | EtcdStore implementation, CLI `--store etcd`, key prefix isolation, integration tests |
+| M13 — Multi-Process | 16 | Separate server + agent processes, shared etcd, multi-host ready |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
