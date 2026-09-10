@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -104,7 +105,7 @@ func (nodeAgent *Agent) executeStartupProbe(ctx context.Context, instanceInfo pl
 		return false
 	}
 
-	passed := nodeAgent.runProbeCheck(ctx, config, instanceIP)
+	passed := nodeAgent.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
@@ -144,7 +145,7 @@ func (nodeAgent *Agent) executeLivenessProbe(ctx context.Context, instanceInfo p
 		return
 	}
 
-	passed := nodeAgent.runProbeCheck(ctx, config, instanceIP)
+	passed := nodeAgent.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
@@ -176,7 +177,7 @@ func (nodeAgent *Agent) executeReadinessProbe(ctx context.Context, instanceInfo 
 		return
 	}
 
-	passed := nodeAgent.runProbeCheck(ctx, config, instanceIP)
+	passed := nodeAgent.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
@@ -196,23 +197,32 @@ func (nodeAgent *Agent) executeReadinessProbe(ctx context.Context, instanceInfo 
 
 // runProbeCheck executes a single probe against the target and returns true
 // if the check passed. Reuses the existing CheckHealth infrastructure for
-// HTTP and TCP probes.
-func (nodeAgent *Agent) runProbeCheck(ctx context.Context, config *probeConfig, instanceIP string) bool {
-	probe := HealthProbe{
-		Timeout: config.timeout,
-	}
+// HTTP and TCP probes, and runtime.Exec for exec probes.
+func (nodeAgent *Agent) runProbeCheck(ctx context.Context, config *probeConfig, instanceID string, instanceIP string) bool {
 	switch config.method {
 	case "http":
-		probe.Type = ProbeHTTP
-		probe.Path = config.path
-		probe.Port = config.port
+		return CheckHealth(ctx, HealthProbe{
+			Type:    ProbeHTTP,
+			Path:    config.path,
+			Port:    config.port,
+			Timeout: config.timeout,
+		}, instanceIP)
 	case "tcp":
-		probe.Type = ProbeTCP
-		probe.Port = config.port
+		return CheckHealth(ctx, HealthProbe{
+			Type:    ProbeTCP,
+			Port:    config.port,
+			Timeout: config.timeout,
+		}, instanceIP)
+	case "exec":
+		execCtx, cancelExec := context.WithTimeout(ctx, config.timeout)
+		defer cancelExec()
+		execErr := nodeAgent.runtime.Exec(execCtx, instanceID, runtime.ExecSpec{
+			Command: config.path,
+		})
+		return execErr == nil
 	default:
 		return false
 	}
-	return CheckHealth(ctx, probe, instanceIP)
 }
 
 // loadProbeConfig reads the probe configuration for a service and probe type

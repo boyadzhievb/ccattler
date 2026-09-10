@@ -610,3 +610,42 @@ func TestParseProbeDefaultThresholds(t *testing.T) {
 		t.Errorf("success_threshold default: got %d, want 1", livenessProbe.SuccessThreshold)
 	}
 }
+
+// TestParseServiceWithExecProbe verifies that a probe block with the exec
+// method parses the command string correctly.
+func TestParseServiceWithExecProbe(t *testing.T) {
+	file, err := Parse(`service worker {
+    image worker:2.1
+    instances 1
+    liveness {
+        exec "healthcheck --deep"
+        every 30s
+        timeout 5s
+        failure_threshold 5
+    }
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	serviceDecl := file.Services[0]
+	if serviceDecl.Liveness == nil {
+		t.Fatal("expected liveness probe to be parsed")
+	}
+	livenessProbe := serviceDecl.Liveness
+	if livenessProbe.Method != "exec" {
+		t.Errorf("method: got %q, want exec", livenessProbe.Method)
+	}
+	if livenessProbe.Path != "healthcheck --deep" {
+		t.Errorf("path (exec command): got %q, want %q", livenessProbe.Path, "healthcheck --deep")
+	}
+	if livenessProbe.Interval != "30s" {
+		t.Errorf("interval: got %q, want 30s", livenessProbe.Interval)
+	}
+	if livenessProbe.Timeout != "5s" {
+		t.Errorf("timeout: got %q, want 5s", livenessProbe.Timeout)
+	}
+	if livenessProbe.FailureThreshold != 5 {
+		t.Errorf("failure_threshold: got %d, want 5", livenessProbe.FailureThreshold)
+	}
+}

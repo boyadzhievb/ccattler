@@ -14,8 +14,9 @@ var ErrNotFound = errors.New("workload not found")
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
 type SimulatorRuntime struct {
-	mutex     sync.Mutex                         // mutex guards concurrent access to the workloads map.
-	workloads map[string]*simulatedWorkload      // workloads maps workload IDs to their simulated state.
+	mutex        sync.Mutex                    // mutex guards concurrent access to the workloads map.
+	workloads    map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
+	ExecFailures map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by
@@ -91,6 +92,9 @@ func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec E
 	}
 	if !workload.isRunning {
 		return &StartError{ID: id, Reason: "workload not running"}
+	}
+	if simulator.ExecFailures[id] {
+		return &StartError{ID: id, Reason: "exec probe failed (injected)"}
 	}
 	return nil
 }

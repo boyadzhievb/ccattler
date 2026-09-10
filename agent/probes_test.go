@@ -77,6 +77,22 @@ func getUnusedPort(t *testing.T) int {
 	return port
 }
 
+// writeExecProbeConfig writes the probe configuration facts for an exec probe
+// into the store for the given service and probe type.
+func writeExecProbeConfig(ctx context.Context, factStore *store.MemoryStore, serviceName string, probeType string, command string, failureThreshold int, successThreshold int) {
+	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, probeType), []byte("exec"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, probeType), []byte(command))
+	if failureThreshold > 0 {
+		factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", failureThreshold)))
+	}
+	if successThreshold > 0 {
+		factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", successThreshold)))
+	}
+	factStore.Put(ctx, types.KeyDesiredServiceProbeInitialDelay(serviceName, probeType), []byte("0s"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeInterval(serviceName, probeType), []byte("1ms"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, probeType), []byte("5s"))
+}
+
 // setupInstanceInStore writes the minimal set of facts needed for the agent to
 // recognize an instance as placed on its node: the service image, the instance
 // record, the placement, and the instance IP.
@@ -437,4 +453,63 @@ func TestCleanupProbeState(t *testing.T) {
 
 	// Verify that cleaning up a non-existent ID does not panic.
 	nodeAgent.cleanupProbeState("non-existent-instance")
+}
+
+// TestExecProbeSuccess verifies that an exec probe passes when the runtime
+// Exec call succeeds for the workload.
+func TestExecProbeSuccess(t *testing.T) {
+	factStore, simulatorRuntime, nodeAgent := setupProbeTestAgent("test-node")
+	defer factStore.Close()
+	ctx := context.Background()
+
+	serviceName := "worker"
+	instanceID := "exec-pass-001"
+
+	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
+	writeExecProbeConfig(ctx, factStore, serviceName, "liveness", "healthcheck --liveness", 3, 1)
+
+	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "test:latest"})
+
+	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+
+	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
+	if stateErr != nil {
+		t.Fatalf("expected liveness probe state to be written, got error: %v", stateErr)
+	}
+	if string(stateFact.Value) != string(types.LivenessProbeHealthy) {
+		t.Errorf("expected liveness healthy, got %q", string(stateFact.Value))
+	}
+}
+
+// TestExecProbeFailure verifies that an exec probe fails when the runtime
+// Exec call returns an error, and that the failure threshold triggers
+// the unhealthy state.
+func TestExecProbeFailure(t *testing.T) {
+	factStore, simulatorRuntime, nodeAgent := setupProbeTestAgent("test-node")
+	defer factStore.Close()
+	ctx := context.Background()
+
+	serviceName := "worker"
+	instanceID := "exec-fail-001"
+
+	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
+	writeExecProbeConfig(ctx, factStore, serviceName, "liveness", "healthcheck --liveness", 2, 1)
+
+	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "test:latest"})
+	simulatorRuntime.ExecFailures = map[string]bool{instanceID: true}
+
+	// First failure — not yet at threshold.
+	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+	nodeAgent.probeStates[instanceID].liveness.lastCheckTime = time.Time{}
+
+	// Second failure — reaches threshold of 2.
+	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+
+	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
+	if stateErr != nil {
+		t.Fatalf("expected liveness probe state to be written, got error: %v", stateErr)
+	}
+	if string(stateFact.Value) != string(types.LivenessProbeUnhealthy) {
+		t.Errorf("expected liveness unhealthy after 2 failures, got %q", string(stateFact.Value))
+	}
 }

@@ -581,6 +581,15 @@ func KeyObservedInstanceRestarts(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/restarts", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceDrainSince returns the store path for the Unix-millisecond
+// timestamp when an instance started draining. The failure controller writes this
+// when a liveness or startup probe triggers a graceful drain instead of an
+// immediate stop.
+// Path: /ccattler/observed/instance/{instanceID}/drain_since
+func KeyObservedInstanceDrainSince(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixObserved, instanceID)
+}
+
 // Init step key functions. Init steps are ordered by index (0, 1, 2, ...) and
 // stored as desired facts per service. Observed init results are per-instance.
 

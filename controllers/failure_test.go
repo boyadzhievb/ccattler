@@ -2,12 +2,16 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// TestFailureReplacesFailedInstance verifies that an instance in the "failed"
+// state is immediately stopped and a replacement is created.
 func TestFailureReplacesFailedInstance(t *testing.T) {
 	failureController := NewFailureController()
 	failureController.NewID = seqIDGen()
@@ -22,20 +26,15 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1 stop + 3 create (marker, service, state) = 4
 	if len(changes) != 4 {
 		t.Fatalf("expected 4 changes, got %d", len(changes))
 	}
-
-	// First change: mark failed as stopped.
 	if changes[0].Key != types.KeyObservedInstanceState("aaa") {
 		t.Errorf("expected state key for aaa, got %s", changes[0].Key)
 	}
 	if string(changes[0].Value) != "stopped" {
 		t.Errorf("expected stopped, got %s", changes[0].Value)
 	}
-
-	// Remaining: new pending instance.
 	if string(changes[2].Value) != "web" {
 		t.Errorf("replacement service: got %s, want web", changes[2].Value)
 	}
@@ -44,6 +43,7 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 	}
 }
 
+// TestFailureIgnoresRunning verifies that a healthy running instance is left alone.
 func TestFailureIgnoresRunning(t *testing.T) {
 	failureController := NewFailureController()
 
@@ -61,6 +61,7 @@ func TestFailureIgnoresRunning(t *testing.T) {
 	}
 }
 
+// TestFailureIgnoresPending verifies that a pending instance is left alone.
 func TestFailureIgnoresPending(t *testing.T) {
 	failureController := NewFailureController()
 
@@ -78,6 +79,7 @@ func TestFailureIgnoresPending(t *testing.T) {
 	}
 }
 
+// TestFailureIgnoresStopped verifies that a stopped instance is left alone.
 func TestFailureIgnoresStopped(t *testing.T) {
 	failureController := NewFailureController()
 
@@ -95,6 +97,8 @@ func TestFailureIgnoresStopped(t *testing.T) {
 	}
 }
 
+// TestFailureMultipleFailed verifies that multiple failed instances are all
+// replaced in a single reconciliation.
 func TestFailureMultipleFailed(t *testing.T) {
 	failureController := NewFailureController()
 	failureController.NewID = seqIDGen()
@@ -113,7 +117,6 @@ func TestFailureMultipleFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 2 failed × 4 changes each = 8
 	if len(changes) != 8 {
 		t.Fatalf("expected 8 changes (2 replacements), got %d", len(changes))
 	}
@@ -136,39 +139,8 @@ func TestFailureMultipleFailed(t *testing.T) {
 	}
 }
 
-// TestFailureReplacesLivenessUnhealthy verifies that a running instance with
-// liveness probe state "unhealthy" is stopped and replaced.
-func TestFailureReplacesLivenessUnhealthy(t *testing.T) {
-	failureController := NewFailureController()
-	failureController.NewID = seqIDGen()
-
-	facts := buildFacts(
-		kv(types.KeyObservedInstanceService("aaa"), "web"),
-		kv(types.KeyObservedInstanceState("aaa"), "running"),
-		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
-	)
-
-	changes, err := failureController.Reconcile(context.Background(), facts)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if len(changes) != 4 {
-		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
-	}
-	if string(changes[0].Value) != "stopped" {
-		t.Errorf("expected stopped, got %s", changes[0].Value)
-	}
-	if string(changes[2].Value) != "web" {
-		t.Errorf("replacement service: got %s, want web", changes[2].Value)
-	}
-	if string(changes[3].Value) != "pending" {
-		t.Errorf("replacement state: got %s, want pending", changes[3].Value)
-	}
-}
-
 // TestFailureReplacesStartupFailed verifies that a running instance with
-// startup probe state "failed" is stopped and replaced.
+// startup probe state "failed" is immediately stopped and replaced (no drain).
 func TestFailureReplacesStartupFailed(t *testing.T) {
 	failureController := NewFailureController()
 	failureController.NewID = seqIDGen()
@@ -185,7 +157,7 @@ func TestFailureReplacesStartupFailed(t *testing.T) {
 	}
 
 	if len(changes) != 4 {
-		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
+		t.Fatalf("expected 4 changes (immediate stop + replacement), got %d", len(changes))
 	}
 	if string(changes[0].Value) != "stopped" {
 		t.Errorf("expected stopped, got %s", changes[0].Value)
@@ -195,8 +167,108 @@ func TestFailureReplacesStartupFailed(t *testing.T) {
 	}
 }
 
+// TestFailureLivenessUnhealthyBeginsDrain verifies that a running instance
+// with liveness=unhealthy begins graceful drain: readiness set to not-ready
+// and drain_since timestamp written, but the instance is NOT stopped yet.
+func TestFailureLivenessUnhealthyBeginsDrain(t *testing.T) {
+	fixedTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NowFunc = func() time.Time { return fixedTime }
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 changes (readiness + drain_since), got %d", len(changes))
+	}
+
+	if changes[0].Key != types.KeyObservedInstanceProbeState("aaa", "readiness") {
+		t.Errorf("first change should set readiness, got key %s", changes[0].Key)
+	}
+	if string(changes[0].Value) != string(types.ReadinessProbeNotReady) {
+		t.Errorf("readiness should be not-ready, got %s", changes[0].Value)
+	}
+
+	if changes[1].Key != types.KeyObservedInstanceDrainSince("aaa") {
+		t.Errorf("second change should set drain_since, got key %s", changes[1].Key)
+	}
+	expectedTimestamp := fmt.Sprintf("%d", fixedTime.UnixMilli())
+	if string(changes[1].Value) != expectedTimestamp {
+		t.Errorf("drain_since: got %s, want %s", changes[1].Value, expectedTimestamp)
+	}
+}
+
+// TestFailureLivenessDrainCompletesAfterGracePeriod verifies that once the
+// grace period has elapsed, a draining instance is stopped and replaced.
+func TestFailureLivenessDrainCompletesAfterGracePeriod(t *testing.T) {
+	drainStart := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	afterGrace := drainStart.Add(6 * time.Second)
+
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.NowFunc = func() time.Time { return afterGrace }
+	failureController.DrainGracePeriod = 5 * time.Second
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
+		kv(types.KeyObservedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 4 {
+		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
+	}
+	if string(changes[0].Value) != "stopped" {
+		t.Errorf("expected stopped, got %s", changes[0].Value)
+	}
+	if string(changes[3].Value) != "pending" {
+		t.Errorf("replacement state: got %s, want pending", changes[3].Value)
+	}
+}
+
+// TestFailureLivenessDrainWaitsBeforeGracePeriod verifies that a draining
+// instance is NOT stopped while the grace period is still active.
+func TestFailureLivenessDrainWaitsBeforeGracePeriod(t *testing.T) {
+	drainStart := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	beforeGrace := drainStart.Add(3 * time.Second)
+
+	failureController := NewFailureController()
+	failureController.NowFunc = func() time.Time { return beforeGrace }
+	failureController.DrainGracePeriod = 5 * time.Second
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
+		kv(types.KeyObservedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes while grace period is active, got %d", len(changes))
+	}
+}
+
 // TestFailureIgnoresHealthyLiveness verifies that a running instance with
-// liveness probe state "healthy" is not replaced.
+// liveness probe state "healthy" is not replaced or drained.
 func TestFailureIgnoresHealthyLiveness(t *testing.T) {
 	failureController := NewFailureController()
 
@@ -255,6 +327,8 @@ func TestFailureIgnoresNotReadyReadiness(t *testing.T) {
 	}
 }
 
+// TestFailureControllerInterface verifies that FailureController satisfies
+// the Controller interface and has the correct name.
 func TestFailureControllerInterface(t *testing.T) {
 	failureController := NewFailureController()
 	var _ Controller = failureController
