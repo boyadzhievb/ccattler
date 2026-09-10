@@ -136,6 +136,125 @@ func TestFailureMultipleFailed(t *testing.T) {
 	}
 }
 
+// TestFailureReplacesLivenessUnhealthy verifies that a running instance with
+// liveness probe state "unhealthy" is stopped and replaced.
+func TestFailureReplacesLivenessUnhealthy(t *testing.T) {
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 4 {
+		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
+	}
+	if string(changes[0].Value) != "stopped" {
+		t.Errorf("expected stopped, got %s", changes[0].Value)
+	}
+	if string(changes[2].Value) != "web" {
+		t.Errorf("replacement service: got %s, want web", changes[2].Value)
+	}
+	if string(changes[3].Value) != "pending" {
+		t.Errorf("replacement state: got %s, want pending", changes[3].Value)
+	}
+}
+
+// TestFailureReplacesStartupFailed verifies that a running instance with
+// startup probe state "failed" is stopped and replaced.
+func TestFailureReplacesStartupFailed(t *testing.T) {
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "api"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "startup"), string(types.StartupProbeFailed)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 4 {
+		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
+	}
+	if string(changes[0].Value) != "stopped" {
+		t.Errorf("expected stopped, got %s", changes[0].Value)
+	}
+	if string(changes[2].Value) != "api" {
+		t.Errorf("replacement service: got %s, want api", changes[2].Value)
+	}
+}
+
+// TestFailureIgnoresHealthyLiveness verifies that a running instance with
+// liveness probe state "healthy" is not replaced.
+func TestFailureIgnoresHealthyLiveness(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeHealthy)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for healthy liveness, got %d", len(changes))
+	}
+}
+
+// TestFailureIgnoresStartupPending verifies that a running instance with
+// startup probe still pending is not replaced.
+func TestFailureIgnoresStartupPending(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "startup"), string(types.StartupProbePending)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for pending startup, got %d", len(changes))
+	}
+}
+
+// TestFailureIgnoresNotReadyReadiness verifies that readiness probe failure
+// does NOT trigger instance replacement — readiness only gates endpoints.
+func TestFailureIgnoresNotReadyReadiness(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceProbeState("aaa", "readiness"), string(types.ReadinessProbeNotReady)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for not-ready readiness (readiness never restarts), got %d", len(changes))
+	}
+}
+
 func TestFailureControllerInterface(t *testing.T) {
 	failureController := NewFailureController()
 	var _ Controller = failureController

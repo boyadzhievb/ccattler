@@ -8,11 +8,14 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// FailureController watches for instances in the "failed" state and
-// replaces each one: the failed instance is marked as stopped, and a
-// new pending instance is created for the same service. This ensures
-// that transient failures are automatically recovered without waiting
-// for the instance controller to notice the count discrepancy.
+// FailureController watches for instances that need replacement and
+// handles three failure scenarios:
+//   - Instance state is "failed" (runtime crash or start failure)
+//   - Liveness probe state is "unhealthy" (stuck process detected)
+//   - Startup probe state is "failed" (exceeded failure threshold)
+//
+// For each, the failed instance is marked as stopped and a new pending
+// instance is created for the same service.
 type FailureController struct {
 	// NewID is a function that generates unique instance identifiers.
 	// It defaults to types.NewInstanceID but can be replaced in tests
@@ -64,11 +67,28 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	var changes []Change
 
 	for instanceID, fields := range instanceFields {
-		if types.InstanceState(fields["state"]) != types.InstanceFailed {
-			continue
-		}
+		instanceState := types.InstanceState(fields["state"])
 		serviceName := fields["service"]
 		if serviceName == "" {
+			continue
+		}
+
+		needsReplacement := false
+
+		if instanceState == types.InstanceFailed {
+			needsReplacement = true
+		}
+
+		if instanceState == types.InstanceRunning {
+			if fields["probe/liveness"] == string(types.LivenessProbeUnhealthy) {
+				needsReplacement = true
+			}
+			if fields["probe/startup"] == string(types.StartupProbeFailed) {
+				needsReplacement = true
+			}
+		}
+
+		if !needsReplacement {
 			continue
 		}
 
