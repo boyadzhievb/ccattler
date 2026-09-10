@@ -1,4 +1,15 @@
 {
+  "mcpServers": {
+    "ccattler-remote": {
+      "command": "ssh",
+      "args": [
+        "-i", "~/.ssh/id_rsa_lenovo_bojan",
+        "-o", "StrictHostKeyChecking=no",
+        "bojan@192.168.100.43",
+        "/home/bojan/ccattler/ccattler-mcp --repo /home/bojan/ccattler --token-file /tmp/ccattler-mcp-token --audit-log /tmp/ccattler-mcp-audit.jsonl"
+      ]
+    }
+  },
   "hooks": {
     "postToolUse": [
       {
