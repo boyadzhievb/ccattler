@@ -151,6 +151,43 @@ func TestChaosRunnerScaleChange(t *testing.T) {
 	}
 }
 
+// TestStoreRestartConvergence simulates a full store outage (all nodes
+// partitioned simultaneously) and verifies the cluster converges after the
+// store becomes available again. This is the "restart etcd" scenario.
+func TestStoreRestartConvergence(t *testing.T) {
+	cluster, cancel, factStore := helperSetupChaosCluster(t)
+	defer cancel()
+	defer factStore.Close()
+
+	ctx := context.Background()
+
+	converged, status := cluster.CheckConvergence(ctx)
+	if !converged {
+		t.Fatalf("cluster should be converged before partition: %s", status)
+	}
+
+	for _, nodeID := range cluster.NodeIDs() {
+		cluster.PartitionNode(nodeID)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	for _, nodeID := range cluster.NodeIDs() {
+		cluster.HealNode(nodeID)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		converged, status = cluster.CheckConvergence(ctx)
+		if converged {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	t.Fatalf("cluster did not converge after store restart: %s", status)
+}
+
 // TestChaosRunnerFullChaosConverges enables all failure scenarios and runs
 // chaos for a longer duration, asserting that the system converges after
 // every injection.

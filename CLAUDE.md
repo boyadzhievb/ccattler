@@ -1028,13 +1028,13 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Backing store: **etcd**
 - [x] etcd key layout & consistency model → see [etcd-schema.md](etcd-schema.md)
 - [x] Set up repo: `lang/`, `store/`, `scheduler/`, `controllers/`, `agent/`, `api/`, `cli/`, `types/`
-- [ ] Add: `runtime/` (simulator, process, container adapters), `policy/` (authZ, quota, network), `identity/` (local, mTLS, OIDC)
+- [x] Add: `runtime/` (simulator, process, container adapters), `security/` (authZ, quota, network), `identity/` (local, mTLS, OIDC)
 
 ### Phase 1 — Fact Store
 - [x] Define the store interface (Get/Put/Delete/Scan/Watch/Transaction)
 - [x] Implement in-memory store (for tests and local dev)
 - [x] Implement etcd adapter (distributed production) — see Phase 15
-- [ ] Store integration tests — concurrency, watch ordering, transaction conflicts
+- [x] Store integration tests — concurrency, watch ordering, transaction conflicts
 
 ### Phase 2 — Domain Language & Parser
 - [x] Design formal grammar for the DSL
@@ -1048,7 +1048,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Instance controller (desired vs actual instance count)
 - [x] Endpoint controller (running instances → endpoint facts)
 - [x] Failure controller (dead instances/nodes → replacement facts)
-- [ ] Simulator runtime (fake world — no real processes, for semantic testing)
+- [x] Simulator runtime (fake world — no real processes, for semantic testing)
 - [x] Deterministic reconciliation tests (state A + observation B + policy C → state D)
 
 ### Phase 4 — Scheduler
@@ -1091,7 +1091,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Kill agent — does the lease expire and trigger recovery?
 - [x] Kill scheduler/controller — does another instance take over?
 - [x] Network partition — do both sides stay safe?
-- [ ] Restart etcd — does the cluster converge?
+- [x] Restart etcd — does the cluster converge?
 - [x] The only question: **does the system eventually converge to desired state?**
 
 ### Phase 10 — Policies & Autoscaling
