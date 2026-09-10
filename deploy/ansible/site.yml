@@ -1,0 +1,30 @@
+---
+- name: Common setup on all nodes
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Install and start etcd
+  hosts: etcd
+  become: true
+  roles:
+    - etcd
+
+- name: Generate CA and distribute certificates
+  hosts: all
+  become: true
+  roles:
+    - certificates
+
+- name: Provision control-plane nodes
+  hosts: controlplane
+  become: true
+  roles:
+    - controlplane
+
+- name: Provision worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - worker

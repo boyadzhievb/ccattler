@@ -1,0 +1,21 @@
+[Unit]
+Description=CCattler Agent — node {{ node_id }}
+After=network.target containerd.service
+Requires=containerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca agent \
+  --node-id {{ node_id }} \
+  --store etcd \
+  --endpoints {{ etcd_endpoints }} \
+  --cert {{ cca_cert_dir }}/node.pem \
+  --key {{ cca_cert_dir }}/node-key.pem \
+  --ca {{ cca_cert_dir }}/ca.pem
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/agent.log
+StandardError=append:/var/log/ccattler/agent.log
+
+[Install]
+WantedBy=multi-user.target

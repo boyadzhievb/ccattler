@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M17 — Multi-Host Server (Phase 20) IN PROGRESS. M1–M16 complete. Phase 20 adds configurable API listen address and mTLS to the server for real multi-host deployment.
+**Active milestone:** M17 — Multi-Host Server (Phase 20) IN PROGRESS. M1–M16 complete. Phase 20 adds configurable API listen address, mTLS, external cert loading (--cert/--key/--ca), and Vagrant+Ansible multi-node deployment automation.
 
 ---
 
@@ -1008,8 +1008,8 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
-cca server [--listen h:p] [--tls]   # run control plane (--tls enables mTLS with auto CA)
-cca agent --node-id <id>      # run node agent (watches store, runs workloads)
+cca server [--listen h:p] [--tls] [--cert/--key/--ca]  # control plane (--tls auto CA, or --cert/--key/--ca external)
+cca agent --node-id <id> [--cert/--key/--ca]           # node agent (optional mTLS creds)
 cca get services              # list services
 cca get instances             # list instances
 cca get nodes                 # list nodes
@@ -1223,6 +1223,11 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] CA certificate output — writes `ca.pem` to `.ccattler/` data directory for agent/client trust
 - [x] Certificate auto-rotation — `CertificateRotator` renews server cert at 70% of TTL
 - [x] Rotator-based mTLS test — validates rotator + mTLS handshake + unauthenticated rejection
+- [x] `--cert`/`--key`/`--ca` flags — load external PEM certificates for server and agent (replaces auto-CA)
+- [x] `loadServerTLSConfig()` — reads cert/key/CA from disk, returns mTLS tls.Config
+- [x] Agent TLS flags — `cca agent --cert/--key/--ca` for agent-side mTLS credential loading
+- [x] Vagrant + Ansible deployment — `deploy/` directory with dual-provider Vagrantfile (libvirt + VirtualBox) and 5 Ansible roles
+- [x] Deployment plan updated — dual-provider testing on Linux, libvirt primary, VirtualBox secondary
 
 ### Milestones
 

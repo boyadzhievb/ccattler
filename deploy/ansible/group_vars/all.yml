@@ -1,0 +1,12 @@
+go_version: "1.22.5"
+etcd_version: "3.5.14"
+
+ccattler_src: "{{ playbook_dir }}/../../"
+
+etcd_endpoints: "http://192.168.56.10:2379"
+
+cca_cert_dir: /etc/ccattler/pki
+cca_ca_validity: "8760h"
+cca_cert_validity: "1h"
+
+cca_runtime: "container"

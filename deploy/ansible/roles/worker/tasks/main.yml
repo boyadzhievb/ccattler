@@ -1,0 +1,41 @@
+---
+- name: Configure containerd
+  block:
+    - name: Ensure containerd config directory exists
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: Generate default containerd config
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Enable and start containerd
+      systemd:
+        name: containerd
+        enabled: true
+        state: started
+
+- name: Install cca-agent systemd unit
+  template:
+    src: cca-agent.service.j2
+    dest: /etc/systemd/system/cca-agent.service
+  notify: restart cca-agent
+
+- name: Enable and start cca-agent
+  systemd:
+    name: cca-agent
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for agent to register in etcd
+  command: >
+    etcdctl --endpoints={{ etcd_endpoints }}
+    get /ccattler/node/{{ node_id }} --print-value-only
+  register: node_registered
+  retries: 10
+  delay: 3
+  until: node_registered.stdout | length > 0
+  changed_when: false

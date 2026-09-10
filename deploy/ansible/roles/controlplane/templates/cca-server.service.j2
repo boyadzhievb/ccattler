@@ -1,0 +1,21 @@
+[Unit]
+Description=CCattler Server — controllers + API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca server \
+  --store etcd \
+  --endpoints {{ etcd_endpoints }} \
+  --listen {{ ansible_host }}:9770 \
+  --cert {{ cca_cert_dir }}/node.pem \
+  --key {{ cca_cert_dir }}/node-key.pem \
+  --ca {{ cca_cert_dir }}/ca.pem
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/server.log
+StandardError=append:/var/log/ccattler/server.log
+
+[Install]
+WantedBy=multi-user.target

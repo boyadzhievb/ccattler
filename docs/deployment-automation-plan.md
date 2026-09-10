@@ -25,16 +25,18 @@ The entire cluster is disposable (`vagrant destroy -f`) and reproducible
 
 ## 2. Prerequisites
 
-| Tool | Purpose | Install |
-|------|---------|---------|
-| Vagrant >= 2.4 | VM lifecycle | `brew install vagrant` |
-| VirtualBox >= 7 or libvirt | Hypervisor | `brew install --cask virtualbox` or system package |
-| Ansible >= 2.15 | Provisioning | `brew install ansible` or `pip install ansible` |
-| Go >= 1.22 | Build CCattler binary | `brew install go` (or pre-build the binary) |
+| Tool | Purpose | Install (Linux) |
+|------|---------|-----------------|
+| Vagrant >= 2.4 | VM lifecycle | `apt install vagrant` or Hashicorp repo |
+| libvirt + vagrant-libvirt | Hypervisor (primary) | `apt install libvirt-daemon qemu-kvm`, `vagrant plugin install vagrant-libvirt` |
+| VirtualBox >= 7 | Hypervisor (secondary) | `apt install virtualbox` or Oracle repo |
+| Ansible >= 2.15 | Provisioning | `apt install ansible` or `pip install ansible` |
+| Go >= 1.22 | Build CCattler binary | pre-installed or `apt install golang-go` |
 | etcd >= 3.5 | Fact store (installed by Ansible) | Ansible handles this |
 
-For Apple Silicon Macs using VMware Fusion instead of VirtualBox, install the
-`vagrant-vmware-desktop` plugin and substitute the provider blocks below.
+Both providers are tested on the same Linux host. libvirt is the default
+(lighter, no kernel module signing). VirtualBox is tested as a secondary
+provider for compatibility.
 
 ---
 
@@ -84,25 +86,41 @@ communicate without exposing services to the LAN. VirtualBox creates the
 
 ```ruby
 # -*- mode: ruby -*-
-# Vagrantfile for a local CCattler cluster
+# Vagrantfile for a local CCattler cluster.
+#
+# Supports two providers — both tested on Linux:
+#   vagrant up --provider=libvirt
+#   vagrant up --provider=virtualbox
+#
+# The default provider is libvirt (lighter on Linux, no kernel modules needed).
+# Set VAGRANT_DEFAULT_PROVIDER=virtualbox to switch.
 
-ETCD_IP       = "192.168.56.10"
-CTRL_IPS      = ["192.168.56.11", "192.168.56.12"]
-WORKER_IPS    = ["192.168.56.20", "192.168.56.21", "192.168.56.22"]
-BOX           = "ubuntu/jammy64"
+ETCD_IP    = "192.168.56.10"
+CTRL_IPS   = ["192.168.56.11", "192.168.56.12"]
+WORKER_IPS = ["192.168.56.20", "192.168.56.21", "192.168.56.22"]
 
-# How many control-plane and worker nodes to actually start.
-# Reduce these for a lighter cluster.
-NUM_CTRL      = 1   # 1 or 2
-NUM_WORKERS   = 2   # 2 or 3
+NUM_CTRL    = 1   # 1 or 2
+NUM_WORKERS = 2   # 2 or 3
+
+LIBVIRT_BOX    = "generic/ubuntu2204"
+VIRTUALBOX_BOX = "ubuntu/jammy64"
 
 Vagrant.configure("2") do |config|
 
+  provider = ENV.fetch("VAGRANT_DEFAULT_PROVIDER", "libvirt")
+  box = provider == "virtualbox" ? VIRTUALBOX_BOX : LIBVIRT_BOX
+
   # ---------- etcd node ----------
   config.vm.define "cca-etcd" do |node|
-    node.vm.box      = BOX
+    node.vm.box      = box
     node.vm.hostname  = "cca-etcd"
     node.vm.network "private_network", ip: ETCD_IP
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 1024
+      lv.cpus   = 1
+    end
+
     node.vm.provider "virtualbox" do |vb|
       vb.memory = 1024
       vb.cpus   = 1
@@ -113,9 +131,15 @@ Vagrant.configure("2") do |config|
   # ---------- control-plane nodes ----------
   (1..NUM_CTRL).each do |i|
     config.vm.define "cca-ctrl-#{i}" do |node|
-      node.vm.box      = BOX
+      node.vm.box      = box
       node.vm.hostname  = "cca-ctrl-#{i}"
       node.vm.network "private_network", ip: CTRL_IPS[i - 1]
+
+      node.vm.provider "libvirt" do |lv|
+        lv.memory = 1024
+        lv.cpus   = 1
+      end
+
       node.vm.provider "virtualbox" do |vb|
         vb.memory = 1024
         vb.cpus   = 1
@@ -127,17 +151,22 @@ Vagrant.configure("2") do |config|
   # ---------- worker nodes ----------
   (1..NUM_WORKERS).each do |i|
     config.vm.define "cca-worker-#{i}" do |node|
-      node.vm.box      = BOX
+      node.vm.box      = box
       node.vm.hostname  = "cca-worker-#{i}"
       node.vm.network "private_network", ip: WORKER_IPS[i - 1]
+
+      node.vm.provider "libvirt" do |lv|
+        lv.memory = 2048
+        lv.cpus   = 2
+      end
+
       node.vm.provider "virtualbox" do |vb|
         vb.memory = 2048
         vb.cpus   = 2
         vb.name   = "cca-worker-#{i}"
       end
 
-      # Trigger Ansible after the last worker is up, so all hosts
-      # are reachable when provisioning runs.
+      # Trigger Ansible after the last worker is up.
       if i == NUM_WORKERS
         node.vm.provision "ansible" do |ansible|
           ansible.playbook       = "ansible/site.yml"
@@ -152,6 +181,12 @@ end
 
 Workers get more resources (2 vCPU, 2 GB) because they run actual container
 workloads via containerd. The etcd and control-plane nodes are lightweight.
+
+### Provider Notes
+
+Both `libvirt` and `virtualbox` provider blocks are defined per node, so
+Vagrant uses whichever one is active. The `generic/ubuntu2204` box supports
+libvirt; `ubuntu/jammy64` supports VirtualBox.
 
 ---
 
@@ -204,7 +239,10 @@ workers
 
 [all:vars]
 ansible_user=vagrant
-ansible_ssh_private_key_file=.vagrant/machines/{{ inventory_hostname }}/virtualbox/private_key
+# SSH key path varies by provider:
+#   libvirt:    .vagrant/machines/{{ inventory_hostname }}/libvirt/private_key
+#   virtualbox: .vagrant/machines/{{ inventory_hostname }}/virtualbox/private_key
+# Vagrant's auto-generated inventory handles this; the path below is for manual use.
 ```
 
 ### 5.2 Shared Variables
@@ -710,13 +748,32 @@ in the fact store as `node(worker-1)`, `node(worker-2)`, etc.
 
 ### 7.1 Start VMs and provision
 
+All testing is done on the Linux host (192.168.100.43).
+
 ```bash
-cd /path/to/ccattler
+cd /home/bojan/ccattler/deploy
 
-# Start all VMs; Ansible runs automatically after the last worker boots
-vagrant up
+# --- Test 1: libvirt provider (default) ---
+vagrant up --provider=libvirt
+# Ansible runs automatically after the last worker boots.
 
-# Or provision separately if VMs are already running
+# Verify, run test workloads (see sections 7.2 - 8.5)
+
+# Tear down libvirt VMs before switching providers
+vagrant destroy -f
+
+# --- Test 2: VirtualBox provider ---
+VAGRANT_DEFAULT_PROVIDER=virtualbox vagrant up --provider=virtualbox
+
+# Verify, run test workloads again
+
+# Tear down
+vagrant destroy -f
+```
+
+Alternatively, provision separately if VMs are already running:
+
+```bash
 vagrant up --no-provision
 ansible-playbook -i ansible/inventory.ini ansible/site.yml
 ```
@@ -913,7 +970,50 @@ vagrant ssh cca-etcd -c "journalctl -u etcd -f"
 
 ---
 
-## 10. Differences from the Kubernetes Approach
+## 10. Dual-Provider Testing (Linux)
+
+Both providers are tested on the same Linux host. libvirt is tested first
+(it's lighter and the default), then VirtualBox.
+
+### 10.1 libvirt setup
+
+```bash
+sudo apt install -y qemu-kvm libvirt-daemon-system libvirt-dev
+sudo usermod -aG libvirt $USER
+vagrant plugin install vagrant-libvirt
+
+cd /home/bojan/ccattler/deploy
+vagrant up --provider=libvirt
+```
+
+### 10.2 VirtualBox setup
+
+```bash
+sudo apt install -y virtualbox
+
+cd /home/bojan/ccattler/deploy
+vagrant destroy -f   # tear down libvirt VMs first
+VAGRANT_DEFAULT_PROVIDER=virtualbox vagrant up --provider=virtualbox
+```
+
+### 10.3 What to verify per provider
+
+Run the same test matrix for each provider:
+
+1. `ansible all -m ping` — SSH connectivity
+2. `etcdctl endpoint health` — fact store reachable
+3. `cca get nodes` — agents registered
+4. `cca apply cluster-test.ccattler` — instances scheduled across workers
+5. `vagrant halt cca-worker-2` + wait + verify failover
+6. `vagrant up cca-worker-2` + verify rebalance
+7. `cca scale web 10` — scale test
+
+Both providers should produce identical cluster behavior; the only difference
+is the hypervisor layer underneath.
+
+---
+
+## 11. Differences from the Kubernetes Approach
 
 The blog post provisions Kubernetes with kubeadm, kubelet, and Flannel. CCattler
 replaces all of these with its own components:

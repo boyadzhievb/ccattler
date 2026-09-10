@@ -1,0 +1,5 @@
+---
+- name: restart cca-agent
+  systemd:
+    name: cca-agent
+    state: restarted

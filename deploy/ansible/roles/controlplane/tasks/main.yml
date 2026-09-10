@@ -1,0 +1,23 @@
+---
+- name: Install cca-server systemd unit
+  template:
+    src: cca-server.service.j2
+    dest: /etc/systemd/system/cca-server.service
+  notify: restart cca-server
+
+- name: Enable and start cca-server
+  systemd:
+    name: cca-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for cca server API to respond
+  uri:
+    url: "http://{{ ansible_host }}:9770/status"
+    method: GET
+    status_code: [200, 401]
+  register: api_check
+  retries: 15
+  delay: 3
+  until: api_check.status is defined

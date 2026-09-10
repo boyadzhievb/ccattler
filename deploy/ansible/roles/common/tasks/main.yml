@@ -1,0 +1,61 @@
+---
+- name: Install base packages
+  apt:
+    name:
+      - curl
+      - git
+      - build-essential
+      - containerd
+    state: present
+    update_cache: true
+
+- name: Download Go {{ go_version }}
+  get_url:
+    url: "https://go.dev/dl/go{{ go_version }}.linux-amd64.tar.gz"
+    dest: /tmp/go.tar.gz
+
+- name: Extract Go to /usr/local
+  unarchive:
+    src: /tmp/go.tar.gz
+    dest: /usr/local
+    remote_src: true
+    creates: /usr/local/go/bin/go
+
+- name: Add Go to system PATH
+  copy:
+    dest: /etc/profile.d/go.sh
+    content: |
+      export PATH=$PATH:/usr/local/go/bin
+      export GOPATH=/home/vagrant/go
+
+- name: Sync CCattler source to VM
+  synchronize:
+    src: "{{ ccattler_src }}"
+    dest: /opt/ccattler/
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=.vagrant"
+      - "--exclude=deploy/.vagrant"
+
+- name: Build CCattler binary
+  shell: |
+    export PATH=$PATH:/usr/local/go/bin
+    cd /opt/ccattler
+    go build -o /usr/local/bin/cca ./cmd/cca
+  args:
+    creates: /usr/local/bin/cca
+
+- name: Verify cca binary
+  command: /usr/local/bin/cca --help
+  changed_when: false
+
+- name: Create CCattler directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - /etc/ccattler
+    - /etc/ccattler/pki
+    - /var/lib/ccattler
+    - /var/log/ccattler

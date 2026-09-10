@@ -17,3 +17,8 @@
 | 2026-09-10 17:29 | `printf '...' \| /tmp/ccattler-mcp ...` | Test tools/list — verify all 14 tools returned |
 | 2026-09-10 17:30 | `printf '...' \| /tmp/ccattler-mcp ...` | Test git_status and git_log tool calls |
 | 2026-09-10 17:30 | `printf '...' \| /tmp/ccattler-mcp ...` | Test guardrails — injection, path traversal, invalid component |
+| 2026-09-10 19:18 | `go build ./cmd/cca/` | Verify loadServerTLSConfig compiles |
+| 2026-09-10 19:19 | `go test ./...` | Run all tests after TLS flag changes |
+| 2026-09-10 19:19 | `go test ./security/ -v` | Verify security tests pass |
+| 2026-09-10 19:20 | `go build ./cmd/cca/` | Verify agent TLS flags compile |
+| 2026-09-10 19:25 | `go build ./cmd/cca/` | Final build verification after all changes |

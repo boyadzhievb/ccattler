@@ -285,6 +285,12 @@ type serverCommandConfig struct {
 	listenAddress string
 	// tlsEnabled turns on mTLS for the API server with an auto-generated CA.
 	tlsEnabled bool
+	// tlsCertPath is the path to a PEM-encoded server certificate file.
+	tlsCertPath string
+	// tlsKeyPath is the path to a PEM-encoded server private key file.
+	tlsKeyPath string
+	// tlsCACertPath is the path to a PEM-encoded CA certificate for verifying client certs.
+	tlsCACertPath string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -322,6 +328,21 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			}
 		case "--tls":
 			parsedConfig.tlsEnabled = true
+		case "--cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsCertPath = args[argIndex]
+			}
+		case "--key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsKeyPath = args[argIndex]
+			}
+		case "--ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsCACertPath = args[argIndex]
+			}
 		}
 	}
 
@@ -330,22 +351,28 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 		os.Exit(1)
 	}
 
+	if parsedConfig.tlsCertPath != "" || parsedConfig.tlsKeyPath != "" || parsedConfig.tlsCACertPath != "" {
+		if parsedConfig.tlsCertPath == "" || parsedConfig.tlsKeyPath == "" || parsedConfig.tlsCACertPath == "" {
+			fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca must all be specified together")
+			os.Exit(1)
+		}
+		parsedConfig.tlsEnabled = true
+	}
+
 	return parsedConfig
 }
 
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
 // the node agent against a shared state store.
 type agentCommandConfig struct {
-	// storeBackend selects the state store implementation: "memory" or "etcd".
-	storeBackend string
-	// etcdEndpoints is the comma-separated list of etcd server addresses.
-	etcdEndpoints string
-	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeBackend   string
+	etcdEndpoints  string
 	storeKeyPrefix string
-	// nodeID is the unique identifier for this agent's node.
-	nodeID string
-	// runtimeBackend selects the runtime: "process" or "container".
+	nodeID         string
 	runtimeBackend string
+	tlsCertPath    string
+	tlsKeyPath     string
+	tlsCACertPath  string
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -386,6 +413,21 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.runtimeBackend = args[argIndex]
 			}
+		case "--cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsCertPath = args[argIndex]
+			}
+		case "--key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsKeyPath = args[argIndex]
+			}
+		case "--ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsCACertPath = args[argIndex]
+			}
 		}
 	}
 
@@ -396,6 +438,21 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 
 	if parsedConfig.runtimeBackend != "process" && parsedConfig.runtimeBackend != "container" {
 		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\" or \"container\")\n", parsedConfig.runtimeBackend)
+		os.Exit(1)
+	}
+
+	tlsFlagCount := 0
+	if parsedConfig.tlsCertPath != "" {
+		tlsFlagCount++
+	}
+	if parsedConfig.tlsKeyPath != "" {
+		tlsFlagCount++
+	}
+	if parsedConfig.tlsCACertPath != "" {
+		tlsFlagCount++
+	}
+	if tlsFlagCount > 0 && tlsFlagCount < 3 {
+		fmt.Fprintln(os.Stderr, "error: --cert, --key, and --ca must all be provided together")
 		os.Exit(1)
 	}
 
@@ -455,7 +512,9 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	go controllerRunner.Run(ctx)
 
 	var serverTLSConfig *tls.Config
-	if parsedConfig.tlsEnabled {
+	if parsedConfig.tlsCertPath != "" {
+		serverTLSConfig = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
+	} else if parsedConfig.tlsEnabled {
 		serverTLSConfig = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
 	}
 
@@ -538,6 +597,38 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) *tls.Config
 	}
 }
 
+// loadServerTLSConfig reads PEM-encoded certificate, key, and CA files from
+// disk and returns a tls.Config that serves mTLS using those credentials.
+// Used when --cert/--key/--ca flags are provided instead of --tls auto-generation.
+func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
+	serverCertificate, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading server certificate: %v\n", err)
+		os.Exit(1)
+	}
+
+	caCertPEM, err := os.ReadFile(caCertPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", err)
+		os.Exit(1)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+		fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
+		os.Exit(1)
+	}
+
+	fmt.Printf("TLS: cert=%s key=%s ca=%s\n", certPath, keyPath, caCertPath)
+
+	return &tls.Config{
+		Certificates: []tls.Certificate{serverCertificate},
+		ClientCAs:    caCertPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS13,
+	}
+}
+
 // executeAgentCommand starts the node agent, which watches the shared state store
 // for placements assigned to this node and reconciles the local runtime. It
 // registers the node, starts the appropriate runtime, and blocks until Ctrl+C.
@@ -553,6 +644,11 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	if parsedConfig.storeBackend == "etcd" {
 		fmt.Printf("CCattler agent %s connected to etcd at %s (prefix: %s)\n",
 			parsedConfig.nodeID, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	}
+
+	if parsedConfig.tlsCertPath != "" {
+		_ = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
+		fmt.Printf("Agent %s TLS credentials loaded\n", parsedConfig.nodeID)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -632,13 +728,19 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "flags for server:")
 	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 0.0.0.0:9770)")
 	fmt.Fprintln(os.Stderr, "  --tls                        enable mTLS (auto-generates CA, writes ca.pem)")
+	fmt.Fprintln(os.Stderr, "  --cert <path>                PEM server certificate (requires --key and --ca)")
+	fmt.Fprintln(os.Stderr, "  --key <path>                 PEM server private key")
+	fmt.Fprintln(os.Stderr, "  --ca <path>                  PEM CA certificate for client verification")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for agent:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
-	fmt.Fprintln(os.Stderr, "  --runtime process|container  workload runtime (default: process)")
+	fmt.Fprintln(os.Stderr, "  --runtime process|container  workload runtime (default: container)")
+	fmt.Fprintln(os.Stderr, "  --cert <path>                PEM agent certificate (requires --key and --ca)")
+	fmt.Fprintln(os.Stderr, "  --key <path>                 PEM agent private key")
+	fmt.Fprintln(os.Stderr, "  --ca <path>                  PEM CA certificate for server verification")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")

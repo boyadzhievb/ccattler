@@ -1,0 +1,108 @@
+---
+- name: Generate root CA (on first control-plane node only)
+  when: inventory_hostname == groups['controlplane'][0]
+  block:
+    - name: Generate CA private key
+      command: >
+        openssl ecparam -genkey -name prime256v1
+        -out {{ cca_cert_dir }}/ca-key.pem
+      args:
+        creates: "{{ cca_cert_dir }}/ca-key.pem"
+
+    - name: Generate CA certificate
+      command: >
+        openssl req -new -x509
+        -key {{ cca_cert_dir }}/ca-key.pem
+        -out {{ cca_cert_dir }}/ca.pem
+        -days 365
+        -subj "/CN=CCattler Root CA/O=CCattler"
+      args:
+        creates: "{{ cca_cert_dir }}/ca.pem"
+
+    - name: Read CA certificate
+      slurp:
+        src: "{{ cca_cert_dir }}/ca.pem"
+      register: ca_cert_content
+
+    - name: Read CA private key
+      slurp:
+        src: "{{ cca_cert_dir }}/ca-key.pem"
+      register: ca_key_content
+
+    - name: Store CA cert as fact
+      set_fact:
+        cca_ca_cert: "{{ ca_cert_content.content }}"
+        cca_ca_key: "{{ ca_key_content.content }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Distribute CA certificate to all nodes
+  copy:
+    content: "{{ hostvars['localhost']['cca_ca_cert'] | b64decode }}"
+    dest: "{{ cca_cert_dir }}/ca.pem"
+    mode: "0644"
+  when: inventory_hostname != groups['controlplane'][0]
+
+- name: Generate node private key
+  command: >
+    openssl ecparam -genkey -name prime256v1
+    -out {{ cca_cert_dir }}/node-key.pem
+  args:
+    creates: "{{ cca_cert_dir }}/node-key.pem"
+
+- name: Set SPIFFE identity based on role
+  set_fact:
+    spiffe_id: >-
+      {%- if 'controlplane' in group_names -%}
+        spiffe://ccattler/controller/{{ inventory_hostname }}
+      {%- elif 'workers' in group_names -%}
+        spiffe://ccattler/node/{{ node_id | default(inventory_hostname) }}
+      {%- elif 'etcd' in group_names -%}
+        spiffe://ccattler/store/{{ inventory_hostname }}
+      {%- endif -%}
+
+- name: Generate CSR with SPIFFE SAN
+  command: >
+    openssl req -new
+    -key {{ cca_cert_dir }}/node-key.pem
+    -out {{ cca_cert_dir }}/node.csr
+    -subj "/CN={{ inventory_hostname }}/O=CCattler"
+    -addext "subjectAltName=URI:{{ spiffe_id }},IP:{{ ansible_host }}"
+  args:
+    creates: "{{ cca_cert_dir }}/node.csr"
+
+- name: Sign node certificate
+  block:
+    - name: Temporarily place CA key for signing
+      copy:
+        content: "{{ hostvars['localhost']['cca_ca_key'] | b64decode }}"
+        dest: "{{ cca_cert_dir }}/ca-key.pem"
+        mode: "0600"
+      when: inventory_hostname != groups['controlplane'][0]
+
+    - name: Sign the CSR
+      command: >
+        openssl x509 -req
+        -in {{ cca_cert_dir }}/node.csr
+        -CA {{ cca_cert_dir }}/ca.pem
+        -CAkey {{ cca_cert_dir }}/ca-key.pem
+        -CAcreateserial
+        -out {{ cca_cert_dir }}/node.pem
+        -days 1
+        -copy_extensions copyall
+      args:
+        creates: "{{ cca_cert_dir }}/node.pem"
+
+    - name: Remove CA key from non-CA nodes
+      file:
+        path: "{{ cca_cert_dir }}/ca-key.pem"
+        state: absent
+      when: inventory_hostname != groups['controlplane'][0]
+
+- name: Set certificate file permissions
+  file:
+    path: "{{ item }}"
+    mode: "0600"
+  loop:
+    - "{{ cca_cert_dir }}/node-key.pem"
+    - "{{ cca_cert_dir }}/node.pem"

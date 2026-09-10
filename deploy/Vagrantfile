@@ -1,0 +1,95 @@
+# -*- mode: ruby -*-
+# Vagrantfile for a local CCattler cluster.
+#
+# Supports two providers — both tested on Linux:
+#   vagrant up --provider=libvirt
+#   vagrant up --provider=virtualbox
+#
+# The default provider is libvirt (lighter on Linux, no kernel modules needed).
+# Set VAGRANT_DEFAULT_PROVIDER=virtualbox to switch.
+
+ETCD_IP    = "192.168.56.10"
+CTRL_IPS   = ["192.168.56.11", "192.168.56.12"]
+WORKER_IPS = ["192.168.56.20", "192.168.56.21", "192.168.56.22"]
+
+NUM_CTRL    = 1
+NUM_WORKERS = 2
+
+LIBVIRT_BOX    = "generic/ubuntu2204"
+VIRTUALBOX_BOX = "ubuntu/jammy64"
+
+Vagrant.configure("2") do |config|
+
+  # Pick the box based on the active provider.
+  # Vagrant evaluates provider blocks lazily, so we detect via env or CLI.
+  provider = ENV.fetch("VAGRANT_DEFAULT_PROVIDER", "libvirt")
+
+  box = provider == "virtualbox" ? VIRTUALBOX_BOX : LIBVIRT_BOX
+
+  # ---------- etcd node ----------
+  config.vm.define "cca-etcd" do |node|
+    node.vm.box      = box
+    node.vm.hostname  = "cca-etcd"
+    node.vm.network "private_network", ip: ETCD_IP
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 1024
+      lv.cpus   = 1
+    end
+
+    node.vm.provider "virtualbox" do |vb|
+      vb.memory = 1024
+      vb.cpus   = 1
+      vb.name   = "cca-etcd"
+    end
+  end
+
+  # ---------- control-plane nodes ----------
+  (1..NUM_CTRL).each do |i|
+    config.vm.define "cca-ctrl-#{i}" do |node|
+      node.vm.box      = box
+      node.vm.hostname  = "cca-ctrl-#{i}"
+      node.vm.network "private_network", ip: CTRL_IPS[i - 1]
+
+      node.vm.provider "libvirt" do |lv|
+        lv.memory = 1024
+        lv.cpus   = 1
+      end
+
+      node.vm.provider "virtualbox" do |vb|
+        vb.memory = 1024
+        vb.cpus   = 1
+        vb.name   = "cca-ctrl-#{i}"
+      end
+    end
+  end
+
+  # ---------- worker nodes ----------
+  (1..NUM_WORKERS).each do |i|
+    config.vm.define "cca-worker-#{i}" do |node|
+      node.vm.box      = box
+      node.vm.hostname  = "cca-worker-#{i}"
+      node.vm.network "private_network", ip: WORKER_IPS[i - 1]
+
+      node.vm.provider "libvirt" do |lv|
+        lv.memory = 2048
+        lv.cpus   = 2
+      end
+
+      node.vm.provider "virtualbox" do |vb|
+        vb.memory = 2048
+        vb.cpus   = 2
+        vb.name   = "cca-worker-#{i}"
+      end
+
+      # Trigger Ansible after the last worker is up.
+      if i == NUM_WORKERS
+        node.vm.provision "ansible" do |ansible|
+          ansible.playbook       = "ansible/site.yml"
+          ansible.inventory_path = "ansible/inventory.ini"
+          ansible.limit          = "all"
+        end
+      end
+    end
+  end
+end
