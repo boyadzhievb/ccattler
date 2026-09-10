@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M15 — Probes & Readiness Gates (Phase 18) COMPLETE. M1–M14 complete. Phase 18 adds startup, liveness, and readiness probes as first-class lifecycle concepts with readiness-gated endpoints.
+**Active milestone:** M16 — Container Default & Remote Management (Phase 19) COMPLETE. M1–M15 complete. Phase 19 makes container runtime the default, adds MCP server for guardrailed remote management, and auto-logging command history hook.
 
 ---
 
@@ -1202,6 +1202,15 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] API enrichment — InstanceStatus includes startup, liveness, readiness probe state fields
 - [x] Reuses existing CheckHealth infrastructure for HTTP and TCP probes
 
+### Phase 19 — Container Default & Remote Management
+- [x] Container runtime as default — `cca agent` defaults to `--runtime container`, process runtime is opt-in via `--runtime process`
+- [x] MCP server (`cmd/mcp/`) — JSON-RPC 2.0 over stdio, 14 guardrailed tools for remote management
+- [x] MCP guardrails — no arbitrary command execution, validated parameters, component allowlist, output truncation
+- [x] MCP tools: git (status/log/pull), build, test, cluster status, process list, container list, component logs, stop/start/deploy, apply config, disk usage
+- [x] Injection prevention — command injection blocked (exec.Command, no shell), path traversal blocked, package path regex validation
+- [x] Auto-logging hook — PostToolUse hook on Bash tool auto-logs commands to COMMAND_HISTORY.md with sensitive data filtering
+- [x] Sensitive data redaction — SSH key paths, passwords, tokens, Bearer headers, long base64 strings filtered from command log
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1221,5 +1230,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M13 — Multi-Process | 16 | Separate server + agent processes, shared etcd, multi-host ready |
 | M14 — Init & Observability | 17 | Init step lifecycle, telemetry collection, `cca top`, runtime Exec |
 | M15 — Probes & Readiness | 18 | Startup/liveness/readiness probes, readiness-gated endpoints |
+| M16 — Remote Management | 19 | Container default, MCP server with guardrails, auto-logging hook |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

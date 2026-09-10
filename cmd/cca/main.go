@@ -340,7 +340,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
 		storeKeyPrefix: "/ccattler/",
-		runtimeBackend: "process",
+		runtimeBackend: "container",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {

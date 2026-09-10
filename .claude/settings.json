@@ -9,6 +9,15 @@
             "command": "bash scripts/lint-naming.sh $CLAUDE_FILE_PATH 2>&1 | head -20"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash scripts/log-command.sh"
+          }
+        ]
       }
     ]
   }
