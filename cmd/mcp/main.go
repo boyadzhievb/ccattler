@@ -435,11 +435,15 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 			if toolError != nil {
 				diagnosticLogger.Printf("tool %s error: %v\n", callParams.Name, toolError)
 				writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, false, toolError.Error())
+				errorText := fmt.Sprintf("error: %v", toolError)
+				if toolOutput != "" {
+					errorText = toolOutput + "\n" + errorText
+				}
 				return &jsonRPCResponse{
 					JSONRPC: "2.0",
 					ID:      incomingRequest.ID,
 					Result: mcpToolCallResult{
-						Content: []mcpContent{{Type: "text", Text: fmt.Sprintf("error: %v", toolError)}},
+						Content: []mcpContent{{Type: "text", Text: errorText}},
 						IsError: true,
 					},
 				}
