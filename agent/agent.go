@@ -190,6 +190,9 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				IP:          allocatedIP,
 			}); err != nil {
 				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
+				if nodeAgent.secretProvider != nil {
+					nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
+				}
 				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
 				nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
 				continue
@@ -622,9 +625,9 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for
 // the given instance: its existence marker, owning service, current state, the
-// node it is running on, and its IP address. When a NetworkProvider is
-// configured, the IP is allocated from the node's subnet; otherwise 127.0.0.1
-// is used as a fallback.
+// node it is running on, and its IP address. When knownIP is non-empty it is
+// used directly; otherwise an IP is allocated from the NetworkProvider (falling
+// back to 127.0.0.1 when no provider is configured).
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
 	nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte(""))
 	nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service))
@@ -633,9 +636,9 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 
 	instanceIP := "127.0.0.1"
 	if nodeAgent.networkProvider != nil {
-		allocatedIP, err := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
-		if err != nil {
-			log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceID, err)
+		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
+		if allocateError != nil {
+			log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceID, allocateError)
 		} else {
 			instanceIP = allocatedIP
 			types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP)

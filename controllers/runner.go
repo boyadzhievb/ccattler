@@ -32,12 +32,12 @@ type Runner struct {
 	// eventLog is an optional event log for recording reconciliation events.
 	// When set, the runner emits events for key state changes (instance
 	// creation, failure, placement, etc.) after each reconciliation cycle.
-	eventLog *EventLog
+	eventLog *types.EventLog
 }
 
 // SetEventLog attaches an event log to the runner. When set, the runner
 // emits events for state changes produced by reconciliation cycles.
-func (controllerRunner *Runner) SetEventLog(eventLog *EventLog) {
+func (controllerRunner *Runner) SetEventLog(eventLog *types.EventLog) {
 	controllerRunner.eventLog = eventLog
 }
 

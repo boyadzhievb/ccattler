@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -50,7 +51,7 @@ func CheckHealth(ctx context.Context, probe HealthProbe, host string) bool {
 // The request is bound to the provided context and the given timeout.
 func performHTTPHealthCheck(ctx context.Context, host string, port int, path string, timeout time.Duration) bool {
 	client := &http.Client{Timeout: timeout}
-	url := fmt.Sprintf("http://%s:%d%s", host, port, path)
+	url := fmt.Sprintf("http://%s%s", net.JoinHostPort(host, strconv.Itoa(port)), path)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -68,7 +69,7 @@ func performHTTPHealthCheck(ctx context.Context, host string, port int, path str
 // port within the specified timeout. It returns true if the connection succeeds,
 // indicating that the target is accepting connections.
 func performTCPHealthCheck(host string, port int, timeout time.Duration) bool {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return false

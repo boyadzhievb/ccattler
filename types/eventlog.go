@@ -1,4 +1,4 @@
-package controllers
+package types
 
 import (
 	"context"
@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
-	"github.com/boyadzhievb/ccattler/types"
 )
 
 // SystemEvent records a single occurrence in the cluster's lifecycle. Events
@@ -40,8 +39,8 @@ type EventLog struct {
 	factStore store.StateStore
 	// maxEvents limits the number of events retained. Zero means unlimited.
 	maxEvents int
-	// timeFunc returns the current time. Replaceable in tests.
-	timeFunc func() time.Time
+	// TimeFunc returns the current time. Replaceable in tests.
+	TimeFunc func() time.Time
 	// sequence ensures unique event IDs even when timestamps collide.
 	sequence atomic.Uint64
 }
@@ -52,14 +51,14 @@ func NewEventLog(factStore store.StateStore, maxEvents int) *EventLog {
 	return &EventLog{
 		factStore: factStore,
 		maxEvents: maxEvents,
-		timeFunc:  time.Now,
+		TimeFunc:  time.Now,
 	}
 }
 
 // Emit records a new event to the log. The event ID and timestamp are set
 // automatically. If the log exceeds maxEvents, the oldest events are trimmed.
 func (eventLog *EventLog) Emit(ctx context.Context, kind, target, detail, source string) (*SystemEvent, error) {
-	now := eventLog.timeFunc()
+	now := eventLog.TimeFunc()
 	sequenceNumber := eventLog.sequence.Add(1)
 	eventID := fmt.Sprintf("%d-%04d-%s", now.UnixNano(), sequenceNumber, kind)
 
@@ -69,7 +68,7 @@ func (eventLog *EventLog) Emit(ctx context.Context, kind, target, detail, source
 		Kind:      kind,
 		Target:    target,
 		Detail:    detail,
-		Source:     source,
+		Source:    source,
 	}
 
 	eventJSON, err := json.Marshal(event)
@@ -77,7 +76,7 @@ func (eventLog *EventLog) Emit(ctx context.Context, kind, target, detail, source
 		return nil, fmt.Errorf("marshal event: %w", err)
 	}
 
-	eventKey := fmt.Sprintf("%s/%s", types.PrefixEvent, eventID)
+	eventKey := fmt.Sprintf("%s/%s", PrefixEvent, eventID)
 	if _, err := eventLog.factStore.Put(ctx, eventKey, eventJSON); err != nil {
 		return nil, fmt.Errorf("store event: %w", err)
 	}
@@ -93,7 +92,7 @@ func (eventLog *EventLog) Emit(ctx context.Context, kind, target, detail, source
 // An empty kind returns events of all kinds. Results are ordered by key
 // (chronologically by timestamp-based ID).
 func (eventLog *EventLog) Query(ctx context.Context, kind string, limit int) ([]SystemEvent, error) {
-	allFacts, err := eventLog.factStore.Scan(ctx, types.PrefixEvent+"/")
+	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
 		return nil, fmt.Errorf("scan events: %w", err)
 	}
@@ -120,7 +119,7 @@ func (eventLog *EventLog) Query(ctx context.Context, kind string, limit int) ([]
 // Since returns events that occurred after the given timestamp, up to the
 // specified limit. Results are ordered chronologically.
 func (eventLog *EventLog) Since(ctx context.Context, after time.Time, limit int) ([]SystemEvent, error) {
-	allFacts, err := eventLog.factStore.Scan(ctx, types.PrefixEvent+"/")
+	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
 		return nil, fmt.Errorf("scan events: %w", err)
 	}
@@ -145,7 +144,7 @@ func (eventLog *EventLog) Since(ctx context.Context, after time.Time, limit int)
 
 // ForTarget returns all events affecting the specified target.
 func (eventLog *EventLog) ForTarget(ctx context.Context, target string, limit int) ([]SystemEvent, error) {
-	allFacts, err := eventLog.factStore.Scan(ctx, types.PrefixEvent+"/")
+	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
 		return nil, fmt.Errorf("scan events: %w", err)
 	}
@@ -170,7 +169,7 @@ func (eventLog *EventLog) ForTarget(ctx context.Context, target string, limit in
 
 // Count returns the total number of events in the log.
 func (eventLog *EventLog) Count(ctx context.Context) (int, error) {
-	allFacts, err := eventLog.factStore.Scan(ctx, types.PrefixEvent+"/")
+	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
 		return 0, err
 	}
@@ -179,7 +178,7 @@ func (eventLog *EventLog) Count(ctx context.Context) (int, error) {
 
 // trimOldEvents removes the oldest events when the log exceeds maxEvents.
 func (eventLog *EventLog) trimOldEvents(ctx context.Context) {
-	allFacts, err := eventLog.factStore.Scan(ctx, types.PrefixEvent+"/")
+	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
 		return
 	}

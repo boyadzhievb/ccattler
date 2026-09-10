@@ -143,6 +143,22 @@ func (etcdStore *EtcdStore) Put(ctx context.Context, key string, value []byte) (
 		return getResponse.Kvs[0].ModRevision, nil
 	}
 
+	// Use a transaction to guard against concurrent writes between the Get and Put.
+	// If the key's ModRevision changed since we read it, the transaction fails and
+	// we fall back to an unconditional Put (the value we're writing is still correct).
+	if len(getResponse.Kvs) > 0 {
+		txnResponse, txnError := etcdStore.etcdClient.Txn(ctx).
+			If(clientv3.Compare(clientv3.ModRevision(prefixedKey), "=", getResponse.Kvs[0].ModRevision)).
+			Then(clientv3.OpPut(prefixedKey, string(value))).
+			Commit()
+		if txnError != nil {
+			return 0, txnError
+		}
+		if txnResponse.Succeeded {
+			return txnResponse.Header.Revision, nil
+		}
+	}
+
 	putResponse, putError := etcdStore.etcdClient.Put(ctx, prefixedKey, string(value))
 	if putError != nil {
 		return 0, putError

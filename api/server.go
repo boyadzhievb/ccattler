@@ -6,14 +6,15 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
-	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -23,13 +24,13 @@ import (
 // querying, and modifying the fact store.
 type Server struct {
 	factStore store.StateStore
-	eventLog  *controllers.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	eventLog  *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
 	mux       *http.ServeMux
 	listener  net.Listener
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
-func (apiServer *Server) SetEventLog(eventLog *controllers.EventLog) {
+func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 	apiServer.eventLog = eventLog
 }
 
@@ -51,7 +52,11 @@ func (apiServer *Server) Start(listenAddress string) (string, error) {
 		return "", fmt.Errorf("listen %s: %w", listenAddress, err)
 	}
 	apiServer.listener = listener
-	go http.Serve(listener, apiServer.mux)
+	go func() {
+		if serveError := http.Serve(listener, apiServer.mux); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
+			log.Printf("api server: %v", serveError)
+		}
+	}()
 	return listener.Addr().String(), nil
 }
 
@@ -335,7 +340,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	if apiServer.eventLog == nil {
-		json.NewEncoder(responseWriter).Encode([]controllers.SystemEvent{})
+		json.NewEncoder(responseWriter).Encode([]types.SystemEvent{})
 		return
 	}
 
@@ -351,7 +356,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 		}
 	}
 
-	var events []controllers.SystemEvent
+	var events []types.SystemEvent
 	var queryError error
 
 	if targetFilter != "" {
@@ -368,7 +373,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	}
 
 	if events == nil {
-		events = []controllers.SystemEvent{}
+		events = []types.SystemEvent{}
 	}
 	json.NewEncoder(responseWriter).Encode(events)
 }

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,11 +20,14 @@ import (
 
 // mockSecretProvider is a test double that serves secrets from an in-memory map.
 type mockSecretProvider struct {
-	secrets map[string][]byte    // secretName → plaintext
-	grants  map[string]string    // "service/secret" → mountPath
+	mu      sync.Mutex
+	secrets map[string][]byte // secretName → plaintext
+	grants  map[string]string // "service/secret" → mountPath
 }
 
 func (mockProvider *mockSecretProvider) GetSecretForService(_ context.Context, serviceName, secretName string) ([]byte, string, error) {
+	mockProvider.mu.Lock()
+	defer mockProvider.mu.Unlock()
 	grantKey := serviceName + "/" + secretName
 	mountPath, hasGrant := mockProvider.grants[grantKey]
 	if !hasGrant {
@@ -792,7 +796,9 @@ func TestAgentRotatesSecretWithoutRestart(t *testing.T) {
 	}
 
 	// Rotate the secret in the provider.
+	secretProvider.mu.Lock()
 	secretProvider.secrets["db-password"] = []byte("rotated-password")
+	secretProvider.mu.Unlock()
 
 	// Wait for agent to detect and update the file.
 	waitFor(t, 2*time.Second, "secret rotated on disk", func() bool {

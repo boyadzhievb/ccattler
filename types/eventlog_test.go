@@ -1,4 +1,4 @@
-package controllers
+package types
 
 import (
 	"context"
@@ -105,7 +105,7 @@ func TestEventLogSince(t *testing.T) {
 
 	baseTime := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
 	callCount := 0
-	eventLog.timeFunc = func() time.Time {
+	eventLog.TimeFunc = func() time.Time {
 		callCount++
 		return baseTime.Add(time.Duration(callCount) * time.Minute)
 	}

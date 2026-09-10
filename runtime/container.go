@@ -174,10 +174,10 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 
 	args = append(args, spec.Image)
 
-	cmd := exec.CommandContext(ctx, "docker", args...)
+	dockerRunCommand := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	dockerRunCommand.Stderr = &stderr
+	if err := dockerRunCommand.Run(); err != nil {
 		if configTempDirectoryPath != "" {
 			os.RemoveAll(configTempDirectoryPath)
 		}
@@ -199,12 +199,12 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 	containerRuntime.mutex.Lock()
 	defer containerRuntime.mutex.Unlock()
 
-	name := buildDockerContainerName(id)
-	cmd := exec.CommandContext(ctx, "docker", "stop", "-t", "10", name)
-	cmd.Run()
+	containerName := buildDockerContainerName(id)
+	dockerStopCommand := exec.CommandContext(ctx, "docker", "stop", "-t", "10", containerName)
+	dockerStopCommand.Run()
 
-	rm := exec.CommandContext(ctx, "docker", "rm", "-f", name)
-	rm.Run()
+	dockerRemoveCommand := exec.CommandContext(ctx, "docker", "rm", "-f", containerName)
+	dockerRemoveCommand.Run()
 
 	if configTempDir, hasConfigFiles := containerRuntime.configFileTempDirectories[id]; hasConfigFiles {
 		os.RemoveAll(configTempDir)
@@ -223,18 +223,18 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	containerRuntime.mutex.Lock()
 	defer containerRuntime.mutex.Unlock()
 
-	name := buildDockerContainerName(id)
-	cmd := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Running}}", name)
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
+	containerName := buildDockerContainerName(id)
+	dockerInspectCommand := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Running}}", containerName)
+	var inspectOutput bytes.Buffer
+	dockerInspectCommand.Stdout = &inspectOutput
+	if err := dockerInspectCommand.Run(); err != nil {
 		if !containerRuntime.trackedContainers[id] {
 			return Status{}, ErrNotFound
 		}
 		return Status{ID: id, Running: false}, nil
 	}
 
-	running := strings.TrimSpace(out.String()) == "true"
+	running := strings.TrimSpace(inspectOutput.String()) == "true"
 	return Status{ID: id, Running: running}, nil
 }
 

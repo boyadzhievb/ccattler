@@ -424,7 +424,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
@@ -659,7 +659,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController)
@@ -760,7 +760,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, networkController,
@@ -842,7 +842,7 @@ func executeDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
@@ -912,7 +912,7 @@ func executeDistributedDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController,
@@ -1028,7 +1028,7 @@ func executeNetworkDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
@@ -1149,7 +1149,7 @@ func executeStorageDemoCommand() {
 	rolloutController := controllers.NewRolloutController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
-	eventLog := controllers.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, storageController,
@@ -1401,7 +1401,9 @@ func executeLogsCommand(target string) {
 // executeStatusCommand queries the status API of a running ccattler instance
 // and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
 func executeStatusCommand() {
-	httpResponse, err := http.Get("http://" + statusAPIListenAddress + "/status")
+	statusRequest, _ := http.NewRequest("GET", "http://"+statusAPIListenAddress+"/status", nil)
+	statusRequest.Header.Set("Accept", "text/plain")
+	httpResponse, err := http.DefaultClient.Do(statusRequest)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
@@ -1615,7 +1617,11 @@ func launchStatusAPIServer(factStore store.StateStore) *api.Server {
 	if err != nil {
 		return apiServer
 	}
-	go http.Serve(listener, httpMux)
+	go func() {
+		if serveError := http.Serve(listener, httpMux); serveError != nil {
+			fmt.Fprintf(os.Stderr, "status api server: %v\n", serveError)
+		}
+	}()
 	return apiServer
 }
 
