@@ -1210,6 +1210,9 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Injection prevention — command injection blocked (exec.Command, no shell), path traversal blocked, package path regex validation
 - [x] Auto-logging hook — PostToolUse hook on Bash tool auto-logs commands to COMMAND_HISTORY.md with sensitive data filtering
 - [x] Sensitive data redaction — SSH key paths, passwords, tokens, Bearer headers, long base64 strings filtered from command log
+- [x] Auth token — `--token` or `--token-file` flag, constant-time comparison, blocks all requests if invalid
+- [x] Read-only mode — `--read-only` flag hides mutation tools from list and blocks execution
+- [x] Structured audit log — `--audit-log` flag writes JSON entries (timestamp, tool, args, duration, success/error) with sensitive arg redaction
 
 ### Milestones
 

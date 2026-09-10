@@ -2,12 +2,15 @@ package main
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"strings"
+	"time"
 )
 
 // mcpServerConfig holds all configuration for the MCP server instance.
@@ -18,6 +21,41 @@ type mcpServerConfig struct {
 	logFilePath string
 	// etcdEndpoints is the comma-separated list of etcd endpoints for cca commands.
 	etcdEndpoints string
+	// authToken is the shared secret that must be presented during initialization.
+	// Empty means authentication is disabled (SSH key is the only gate).
+	authToken string
+	// readOnly when true disables all mutation tools (stop, start, deploy, build, pull, apply).
+	readOnly bool
+	// auditLogPath is the path to a structured JSON audit log. Empty means no audit logging.
+	auditLogPath string
+}
+
+// mutationTools lists the tool names that modify state. Blocked when readOnly is true.
+var mutationTools = map[string]bool{
+	"git_pull":        true,
+	"build":           true,
+	"test":            true,
+	"stop_component":  true,
+	"start_component": true,
+	"deploy":          true,
+	"apply_config":    true,
+}
+
+// clientAuthenticated tracks whether the current session has passed token validation.
+// Set to true during handleInitialize if the token matches (or if no token is configured).
+var clientAuthenticated bool
+
+// auditLogger writes structured JSON entries to the audit log file.
+var auditLogger *log.Logger
+
+// auditLogEntry represents a single entry in the structured audit log.
+type auditLogEntry struct {
+	Timestamp  string         `json:"timestamp"`
+	Tool       string         `json:"tool"`
+	Arguments  map[string]any `json:"arguments,omitempty"`
+	DurationMs int64          `json:"duration_ms"`
+	Success    bool           `json:"success"`
+	Error      string         `json:"error,omitempty"`
 }
 
 // jsonRPCRequest represents an incoming JSON-RPC 2.0 request from the MCP client.
@@ -49,6 +87,9 @@ type mcpInitializeParams struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"clientInfo"`
+	// Token is the authentication token presented by the client. Validated against
+	// the server's configured token during initialization.
+	Token string `json:"token,omitempty"`
 }
 
 // mcpInitializeResult is the server's response to an initialize request.
@@ -115,12 +156,29 @@ func main() {
 	repoPathFlag := flag.String("repo", "/home/bojan/ccattler", "path to CCattler repository")
 	logFileFlag := flag.String("log", "/tmp/ccattler-mcp.log", "path to diagnostic log file")
 	etcdFlag := flag.String("etcd", "localhost:2379", "etcd endpoints")
+	tokenFlag := flag.String("token", "", "authentication token (clients must present this during init)")
+	tokenFileFlag := flag.String("token-file", "", "path to file containing the authentication token")
+	readOnlyFlag := flag.Bool("read-only", false, "disable all mutation tools (status and logs only)")
+	auditLogFlag := flag.String("audit-log", "", "path to structured JSON audit log (empty = disabled)")
 	flag.Parse()
+
+	resolvedToken := *tokenFlag
+	if *tokenFileFlag != "" {
+		tokenBytes, tokenReadError := os.ReadFile(*tokenFileFlag)
+		if tokenReadError != nil {
+			fmt.Fprintf(os.Stderr, "failed to read token file: %v\n", tokenReadError)
+			os.Exit(1)
+		}
+		resolvedToken = strings.TrimSpace(string(tokenBytes))
+	}
 
 	serverConfig = mcpServerConfig{
 		repoPath:      *repoPathFlag,
 		logFilePath:   *logFileFlag,
 		etcdEndpoints: *etcdFlag,
+		authToken:     resolvedToken,
+		readOnly:      *readOnlyFlag,
+		auditLogPath:  *auditLogFlag,
 	}
 
 	logFile, logOpenError := os.OpenFile(serverConfig.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -130,7 +188,23 @@ func main() {
 	}
 	defer logFile.Close()
 	diagnosticLogger = log.New(logFile, "mcp: ", log.LstdFlags)
-	diagnosticLogger.Println("CCattler MCP server starting")
+
+	if serverConfig.auditLogPath != "" {
+		auditFile, auditOpenError := os.OpenFile(serverConfig.auditLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if auditOpenError != nil {
+			fmt.Fprintf(os.Stderr, "failed to open audit log: %v\n", auditOpenError)
+			os.Exit(1)
+		}
+		defer auditFile.Close()
+		auditLogger = log.New(auditFile, "", 0)
+	}
+
+	diagnosticLogger.Printf("CCattler MCP server starting (auth=%t, read-only=%t, audit=%t)\n",
+		serverConfig.authToken != "", serverConfig.readOnly, auditLogger != nil)
+
+	if serverConfig.authToken == "" {
+		clientAuthenticated = true
+	}
 
 	runProtocolLoop(os.Stdin, os.Stdout)
 }
@@ -210,8 +284,45 @@ func handleIncomingRequest(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 }
 
 // handleInitialize responds to the MCP initialize handshake with server capabilities.
+// If a token is configured, validates the client's token using constant-time comparison.
 func handleInitialize(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 	diagnosticLogger.Println("handling initialize")
+
+	if serverConfig.authToken != "" {
+		var initParams mcpInitializeParams
+		if incomingRequest.Params != nil {
+			json.Unmarshal(incomingRequest.Params, &initParams)
+		}
+
+		tokenMatch := subtle.ConstantTimeCompare(
+			[]byte(serverConfig.authToken),
+			[]byte(initParams.Token),
+		) == 1
+
+		if !tokenMatch {
+			diagnosticLogger.Println("authentication failed: invalid token")
+			writeAuditEntry("initialize", nil, 0, false, "authentication failed")
+			clientAuthenticated = false
+			return &jsonRPCResponse{
+				JSONRPC: "2.0",
+				ID:      incomingRequest.ID,
+				Error: &jsonRPCError{
+					Code:    -32001,
+					Message: "authentication failed: invalid token",
+				},
+			}
+		}
+
+		clientAuthenticated = true
+		diagnosticLogger.Println("authentication successful")
+		writeAuditEntry("initialize", nil, 0, true, "")
+	}
+
+	modeLabel := "full access"
+	if serverConfig.readOnly {
+		modeLabel = "read-only mode"
+	}
+
 	return &jsonRPCResponse{
 		JSONRPC: "2.0",
 		ID:      incomingRequest.ID,
@@ -222,18 +333,33 @@ func handleInitialize(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 			},
 			ServerInfo: mcpServerInfo{
 				Name:    "ccattler-mcp",
-				Version: "0.1.0",
+				Version: "0.2.0",
 			},
-			Instructions: "CCattler remote management server. Provides tools for building, testing, deploying, and monitoring CCattler on this host. All operations are guardrailed — no arbitrary command execution.",
+			Instructions: fmt.Sprintf("CCattler remote management server (%s). Provides tools for building, testing, deploying, and monitoring CCattler on this host. All operations are guardrailed — no arbitrary command execution.", modeLabel),
 		},
 	}
 }
 
 // handleToolsList returns the list of all registered tools with their schemas.
+// In read-only mode, mutation tools are excluded from the list entirely.
 func handleToolsList(incomingRequest jsonRPCRequest) *jsonRPCResponse {
+	if !clientAuthenticated {
+		return &jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      incomingRequest.ID,
+			Error: &jsonRPCError{
+				Code:    -32001,
+				Message: "not authenticated: send a valid token in the initialize request",
+			},
+		}
+	}
+
 	registeredTools := buildToolRegistry()
 	toolInfoList := make([]mcpToolInfo, 0, len(registeredTools))
 	for _, registeredTool := range registeredTools {
+		if serverConfig.readOnly && mutationTools[registeredTool.name] {
+			continue
+		}
 		toolInfoList = append(toolInfoList, mcpToolInfo{
 			Name:        registeredTool.name,
 			Description: registeredTool.description,
@@ -248,7 +374,20 @@ func handleToolsList(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 }
 
 // handleToolsCall executes a named tool with the provided arguments and returns the result.
+// Enforces authentication (token must have been validated during init), read-only mode
+// (blocks mutation tools), and writes a structured audit log entry for every call.
 func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
+	if !clientAuthenticated {
+		return &jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      incomingRequest.ID,
+			Error: &jsonRPCError{
+				Code:    -32001,
+				Message: "not authenticated: send a valid token in the initialize request",
+			},
+		}
+	}
+
 	var callParams mcpToolCallParams
 	if unmarshalError := json.Unmarshal(incomingRequest.Params, &callParams); unmarshalError != nil {
 		return &jsonRPCResponse{
@@ -261,14 +400,32 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 		}
 	}
 
+	if serverConfig.readOnly && mutationTools[callParams.Name] {
+		diagnosticLogger.Printf("blocked mutation tool %s in read-only mode\n", callParams.Name)
+		writeAuditEntry(callParams.Name, callParams.Arguments, 0, false, "blocked: read-only mode")
+		return &jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      incomingRequest.ID,
+			Result: mcpToolCallResult{
+				Content: []mcpContent{{Type: "text", Text: fmt.Sprintf("error: tool %q is blocked in read-only mode", callParams.Name)}},
+				IsError: true,
+			},
+		}
+	}
+
 	diagnosticLogger.Printf("tool call: %s args=%v\n", callParams.Name, callParams.Arguments)
+
+	callStartTime := time.Now()
 
 	registeredTools := buildToolRegistry()
 	for _, registeredTool := range registeredTools {
 		if registeredTool.name == callParams.Name {
 			toolOutput, toolError := registeredTool.handler(callParams.Arguments)
+			callDuration := time.Since(callStartTime).Milliseconds()
+
 			if toolError != nil {
 				diagnosticLogger.Printf("tool %s error: %v\n", callParams.Name, toolError)
+				writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, false, toolError.Error())
 				return &jsonRPCResponse{
 					JSONRPC: "2.0",
 					ID:      incomingRequest.ID,
@@ -278,6 +435,8 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 					},
 				}
 			}
+
+			writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, true, "")
 			return &jsonRPCResponse{
 				JSONRPC: "2.0",
 				ID:      incomingRequest.ID,
@@ -288,6 +447,7 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 		}
 	}
 
+	writeAuditEntry(callParams.Name, callParams.Arguments, 0, false, "unknown tool")
 	return &jsonRPCResponse{
 		JSONRPC: "2.0",
 		ID:      incomingRequest.ID,
@@ -296,4 +456,52 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 			Message: fmt.Sprintf("unknown tool: %s", callParams.Name),
 		},
 	}
+}
+
+// writeAuditEntry appends a structured JSON entry to the audit log. No-op if audit logging
+// is disabled. Redacts sensitive argument values before writing.
+func writeAuditEntry(toolName string, arguments map[string]any, durationMs int64, success bool, errorMessage string) {
+	if auditLogger == nil {
+		return
+	}
+
+	sanitizedArguments := redactSensitiveArguments(arguments)
+
+	entry := auditLogEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Tool:       toolName,
+		Arguments:  sanitizedArguments,
+		DurationMs: durationMs,
+		Success:    success,
+		Error:      errorMessage,
+	}
+
+	entryBytes, marshalError := json.Marshal(entry)
+	if marshalError != nil {
+		diagnosticLogger.Printf("audit marshal error: %v\n", marshalError)
+		return
+	}
+	auditLogger.Println(string(entryBytes))
+}
+
+// redactSensitiveArguments returns a copy of the arguments map with sensitive values replaced.
+// Redacts values for keys containing "token", "password", "secret", or "key".
+func redactSensitiveArguments(arguments map[string]any) map[string]any {
+	if arguments == nil {
+		return nil
+	}
+
+	redacted := make(map[string]any, len(arguments))
+	for argumentKey, argumentValue := range arguments {
+		lowerKey := strings.ToLower(argumentKey)
+		if strings.Contains(lowerKey, "token") ||
+			strings.Contains(lowerKey, "password") ||
+			strings.Contains(lowerKey, "secret") ||
+			strings.Contains(lowerKey, "key") {
+			redacted[argumentKey] = "[REDACTED]"
+		} else {
+			redacted[argumentKey] = argumentValue
+		}
+	}
+	return redacted
 }
