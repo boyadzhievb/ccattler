@@ -44,6 +44,9 @@ type InstanceStatus struct {
 	MemoryBytes string `json:"memory,omitempty"`
 	InitPhase   string `json:"init_phase,omitempty"`
 	Restarts    string `json:"restarts,omitempty"`
+	Startup     string `json:"startup,omitempty"`
+	Liveness    string `json:"liveness,omitempty"`
+	Readiness   string `json:"readiness,omitempty"`
 }
 
 // NodeStatus represents one node in the cluster status.
@@ -162,11 +165,24 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
 			restartCount = string(restartFact.Value)
 		}
+		startupProbe := ""
+		if startupFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, "startup")); startupErr == nil {
+			startupProbe = string(startupFact.Value)
+		}
+		livenessProbe := ""
+		if livenessFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, "liveness")); livenessErr == nil {
+			livenessProbe = string(livenessFact.Value)
+		}
+		readinessProbe := ""
+		if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, "readiness")); readinessErr == nil {
+			readinessProbe = string(readinessFact.Value)
+		}
 		clusterStatus.Instances = append(clusterStatus.Instances, InstanceStatus{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
 			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
 			CPUMillis: instanceCPU, MemoryBytes: instanceMemory,
 			InitPhase: initPhase, Restarts: restartCount,
+			Startup: startupProbe, Liveness: livenessProbe, Readiness: readinessProbe,
 		})
 	}
 

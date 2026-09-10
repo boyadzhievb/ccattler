@@ -26,8 +26,9 @@ func NewEndpointController() *EndpointController { return &EndpointController{} 
 func (endpointController *EndpointController) Name() string { return "endpoint" }
 
 // Watch returns the fact prefixes the endpoint controller monitors:
-// observed instances (for state and IP), existing endpoints (for staleness
-// detection), and desired services (for exposed port information).
+// observed instances (for state, IP, and probe results), existing endpoints
+// (for staleness detection), and desired services (for exposed port and
+// probe configuration).
 func (endpointController *EndpointController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
@@ -60,19 +61,24 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 	}
 
 	// Parse service exposed ports: serviceName -> first exposed port number.
+	// Also track which services have a readiness probe configured.
 	servicePorts := make(map[string]int)
+	serviceHasReadinessProbe := make(map[string]bool)
 	for _, fact := range facts {
 		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
 			continue
 		}
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		// relativePath = "{name}/expose/{port}"
+		// relativePath = "{name}/expose/{port}" or "{name}/probe/readiness/method"
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) == 3 && pathParts[1] == "expose" {
 			portNumber, _ := strconv.Atoi(pathParts[2])
 			if portNumber > 0 {
 				servicePorts[pathParts[0]] = portNumber
 			}
+		}
+		if len(pathParts) == 4 && pathParts[1] == "probe" && pathParts[2] == "readiness" && pathParts[3] == "method" {
+			serviceHasReadinessProbe[pathParts[0]] = true
 		}
 	}
 
@@ -86,7 +92,8 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		existingEndpoints[relativePath] = true
 	}
 
-	// Determine desired endpoints: running instances with an IP and an exposed port.
+	// Determine desired endpoints: running instances with an IP, an exposed port,
+	// and passing readiness (if a readiness probe is configured for the service).
 	desiredEndpoints := make(map[string]string) // "service/instance" -> "ip:port"
 	for instanceID, fields := range instanceFields {
 		if types.InstanceState(fields["state"]) != types.InstanceRunning {
@@ -100,6 +107,12 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		exposedPort := servicePorts[serviceName]
 		if exposedPort == 0 {
 			continue
+		}
+		if serviceHasReadinessProbe[serviceName] {
+			readinessState := fields["probe/readiness"]
+			if readinessState != string(types.ReadinessProbeReady) {
+				continue
+			}
 		}
 		endpointKey := fmt.Sprintf("%s/%s", serviceName, instanceID)
 		desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)

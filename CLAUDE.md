@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M14 — Init Lifecycle & Observability (Phase 17) IN PROGRESS. M1–M13 complete. Phase 17 adds initialization steps as a first-class lifecycle concept and built-in telemetry collection.
+**Active milestone:** M15 — Probes & Readiness Gates (Phase 18) COMPLETE. M1–M14 complete. Phase 18 adds startup, liveness, and readiness probes as first-class lifecycle concepts with readiness-gated endpoints.
 
 ---
 
@@ -403,6 +403,8 @@ secret_grant (service, secret_name)            — service is authorized to acce
 init_step  (service, index, exec, timeout, retry) — initialization step before main workload
 init_phase (instance, phase)                   — derived init lifecycle state (pending/running/complete/failed)
 utilization (node, cpu, memory, workload_count) — observed resource telemetry
+probe      (service, type, method, path, port, interval, timeout, thresholds) — startup/liveness/readiness config
+probe_state (instance, type, state)    — observed probe result (gates endpoints and restarts)
 ```
 
 ## Domain Language (DSL)
@@ -1190,6 +1192,16 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] API enrichment — InstanceStatus includes CPU, memory, init phase, restarts; NodeStatus includes utilization
 - [x] Init controller wired into all runner creation sites
 
+### Phase 18 — Probes & Readiness Gates
+- [x] Probe state types — `StartupProbeState` (pending/succeeded/failed), `LivenessProbeState` (healthy/unhealthy/unknown), `ReadinessProbeState` (ready/not-ready/unknown)
+- [x] Probe fact keys — desired probe config (method, path, port, interval, timeout, thresholds, initial_delay) and observed probe state per instance
+- [x] DSL `startup`, `liveness`, `readiness` blocks — parsed into `ProbeDecl`, compiled to probe facts per service
+- [x] Agent probe execution engine — per-instance per-probe-type tracking with consecutive success/failure counters
+- [x] Startup gating — liveness and readiness probes blocked until startup probe succeeds
+- [x] Readiness-gated endpoints — endpoint controller only includes instances with readiness=ready (or no readiness probe configured)
+- [x] API enrichment — InstanceStatus includes startup, liveness, readiness probe state fields
+- [x] Reuses existing CheckHealth infrastructure for HTTP and TCP probes
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1208,5 +1220,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M12 — Distributed State | 15 | EtcdStore implementation, CLI `--store etcd`, key prefix isolation, integration tests |
 | M13 — Multi-Process | 16 | Separate server + agent processes, shared etcd, multi-host ready |
 | M14 — Init & Observability | 17 | Init step lifecycle, telemetry collection, `cca top`, runtime Exec |
+| M15 — Probes & Readiness | 18 | Startup/liveness/readiness probes, readiness-gated endpoints |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

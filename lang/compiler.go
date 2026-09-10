@@ -306,6 +306,16 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		})
 	}
 
+	if serviceDecl.Startup != nil {
+		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "startup", serviceDecl.Startup)...)
+	}
+	if serviceDecl.Liveness != nil {
+		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "liveness", serviceDecl.Liveness)...)
+	}
+	if serviceDecl.Readiness != nil {
+		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "readiness", serviceDecl.Readiness)...)
+	}
+
 	for stepIndex, initStep := range serviceDecl.InitSteps {
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredServiceInitStep(serviceDecl.Name, stepIndex), Value: "",
@@ -326,6 +336,50 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 	}
 
 	return facts, nil
+}
+
+// compileProbeDeclaration converts a ProbeDecl into facts for the given probe type.
+func compileProbeDeclaration(serviceName string, probeType string, probeDecl *ProbeDecl) []Fact {
+	var facts []Fact
+	facts = append(facts, Fact{
+		Key: types.KeyDesiredServiceProbeMethod(serviceName, probeType), Value: probeDecl.Method,
+	})
+	if probeDecl.Path != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbePath(serviceName, probeType), Value: probeDecl.Path,
+		})
+	}
+	if probeDecl.Port > 0 {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbePort(serviceName, probeType), Value: strconv.Itoa(probeDecl.Port),
+		})
+	}
+	if probeDecl.Interval != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbeInterval(serviceName, probeType), Value: probeDecl.Interval,
+		})
+	}
+	if probeDecl.Timeout != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbeTimeout(serviceName, probeType), Value: probeDecl.Timeout,
+		})
+	}
+	if probeDecl.FailureThreshold > 0 {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), Value: strconv.Itoa(probeDecl.FailureThreshold),
+		})
+	}
+	if probeDecl.SuccessThreshold > 0 {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), Value: strconv.Itoa(probeDecl.SuccessThreshold),
+		})
+	}
+	if probeDecl.InitialDelay != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceProbeInitialDelay(serviceName, probeType), Value: probeDecl.InitialDelay,
+		})
+	}
+	return facts
 }
 
 // Apply parses a DSL string and writes all resulting facts to the store.

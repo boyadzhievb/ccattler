@@ -40,6 +40,9 @@ type ServiceDecl struct {
 	Secrets      []SecretDecl      // optional secret mount declarations
 	VolumeMounts []VolumeMountDecl // optional volume mount bindings
 	InitSteps    []InitStepDecl    // optional ordered initialization steps
+	Startup      *ProbeDecl        // optional startup probe (gates liveness/readiness)
+	Liveness     *ProbeDecl        // optional liveness probe (triggers restart on failure)
+	Readiness    *ProbeDecl        // optional readiness probe (controls endpoint membership)
 	Line         int               // source line number for error reporting
 }
 
@@ -162,6 +165,19 @@ type InitStepDecl struct {
 	Exec    string // command to execute (e.g. "migrate-db")
 	Timeout string // maximum time for the step to complete (e.g. "30s")
 	Retry   int    // number of retry attempts on failure (0 = no retries)
+}
+
+// ProbeDecl holds configuration for a startup, liveness, or readiness probe.
+// Probes produce observations — they never restart containers directly.
+type ProbeDecl struct {
+	Method           string // "http", "tcp", or "exec"
+	Path             string // URL path for HTTP probes (e.g. "/health/ready")
+	Port             int    // TCP port to probe (0 = derive from service expose)
+	Interval         string // time between checks (e.g. "5s")
+	Timeout          string // max time per check (e.g. "1s")
+	FailureThreshold int    // consecutive failures before state change (default 3)
+	SuccessThreshold int    // consecutive successes before state change (default 1)
+	InitialDelay     string // delay before first probe after startup (e.g. "0s")
 }
 
 // SecretDecl holds a secret reference for a service. Secrets are delivered as

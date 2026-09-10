@@ -366,3 +366,247 @@ func TestParseInitStepRequiresExec(t *testing.T) {
 		t.Fatal("expected error for init block without exec")
 	}
 }
+
+// TestParseServiceWithStartupProbe verifies that a startup probe block with HTTP
+// method and all configurable fields is correctly parsed into a ProbeDecl.
+func TestParseServiceWithStartupProbe(t *testing.T) {
+	input := `service web {
+    image nginx:1.27
+    instances 1
+    startup {
+        http /health
+        port 8080
+        every 2s
+        timeout 1s
+        failure_threshold 30
+        success_threshold 1
+        initial_delay 5s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Startup == nil {
+		t.Fatal("expected startup probe block")
+	}
+	startupProbe := serviceDecl.Startup
+	if startupProbe.Method != "http" {
+		t.Errorf("method: got %s, want http", startupProbe.Method)
+	}
+	if startupProbe.Path != "/health" {
+		t.Errorf("path: got %s, want /health", startupProbe.Path)
+	}
+	if startupProbe.Port != 8080 {
+		t.Errorf("port: got %d, want 8080", startupProbe.Port)
+	}
+	if startupProbe.Interval != "2s" {
+		t.Errorf("interval: got %s, want 2s", startupProbe.Interval)
+	}
+	if startupProbe.Timeout != "1s" {
+		t.Errorf("timeout: got %s, want 1s", startupProbe.Timeout)
+	}
+	if startupProbe.FailureThreshold != 30 {
+		t.Errorf("failure_threshold: got %d, want 30", startupProbe.FailureThreshold)
+	}
+	if startupProbe.SuccessThreshold != 1 {
+		t.Errorf("success_threshold: got %d, want 1", startupProbe.SuccessThreshold)
+	}
+	if startupProbe.InitialDelay != "5s" {
+		t.Errorf("initial_delay: got %s, want 5s", startupProbe.InitialDelay)
+	}
+}
+
+// TestParseServiceWithLivenessProbe verifies that a liveness probe block with TCP
+// method and a subset of fields is correctly parsed into a ProbeDecl.
+func TestParseServiceWithLivenessProbe(t *testing.T) {
+	input := `service web {
+    image nginx:1.27
+    instances 1
+    liveness {
+        tcp
+        port 8080
+        every 10s
+        timeout 2s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Liveness == nil {
+		t.Fatal("expected liveness probe block")
+	}
+	livenessProbe := serviceDecl.Liveness
+	if livenessProbe.Method != "tcp" {
+		t.Errorf("method: got %s, want tcp", livenessProbe.Method)
+	}
+	if livenessProbe.Path != "" {
+		t.Errorf("path: got %s, want empty string for tcp probe", livenessProbe.Path)
+	}
+	if livenessProbe.Port != 8080 {
+		t.Errorf("port: got %d, want 8080", livenessProbe.Port)
+	}
+	if livenessProbe.Interval != "10s" {
+		t.Errorf("interval: got %s, want 10s", livenessProbe.Interval)
+	}
+	if livenessProbe.Timeout != "2s" {
+		t.Errorf("timeout: got %s, want 2s", livenessProbe.Timeout)
+	}
+}
+
+// TestParseServiceWithReadinessProbe verifies that a readiness probe block with HTTP
+// method and minimal fields is correctly parsed into a ProbeDecl.
+func TestParseServiceWithReadinessProbe(t *testing.T) {
+	input := `service web {
+    image nginx:1.27
+    instances 1
+    readiness {
+        http /ready
+        port 8080
+        every 5s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Readiness == nil {
+		t.Fatal("expected readiness probe block")
+	}
+	readinessProbe := serviceDecl.Readiness
+	if readinessProbe.Method != "http" {
+		t.Errorf("method: got %s, want http", readinessProbe.Method)
+	}
+	if readinessProbe.Path != "/ready" {
+		t.Errorf("path: got %s, want /ready", readinessProbe.Path)
+	}
+	if readinessProbe.Port != 8080 {
+		t.Errorf("port: got %d, want 8080", readinessProbe.Port)
+	}
+	if readinessProbe.Interval != "5s" {
+		t.Errorf("interval: got %s, want 5s", readinessProbe.Interval)
+	}
+}
+
+// TestParseServiceWithAllThreeProbes verifies that a service can declare startup,
+// liveness, and readiness probe blocks together, each parsed into its own ProbeDecl.
+func TestParseServiceWithAllThreeProbes(t *testing.T) {
+	input := `service web {
+    image nginx:1.27
+    instances 1
+    startup {
+        http /health
+        port 8080
+        every 2s
+        timeout 1s
+        failure_threshold 30
+        initial_delay 5s
+    }
+    liveness {
+        tcp
+        port 8080
+        every 10s
+        timeout 2s
+    }
+    readiness {
+        http /ready
+        port 8080
+        every 5s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+	serviceDecl := file.Services[0]
+
+	// Verify startup probe
+	if serviceDecl.Startup == nil {
+		t.Fatal("expected startup probe block")
+	}
+	if serviceDecl.Startup.Method != "http" {
+		t.Errorf("startup method: got %s, want http", serviceDecl.Startup.Method)
+	}
+	if serviceDecl.Startup.Path != "/health" {
+		t.Errorf("startup path: got %s, want /health", serviceDecl.Startup.Path)
+	}
+	if serviceDecl.Startup.Port != 8080 {
+		t.Errorf("startup port: got %d, want 8080", serviceDecl.Startup.Port)
+	}
+	if serviceDecl.Startup.Interval != "2s" {
+		t.Errorf("startup interval: got %s, want 2s", serviceDecl.Startup.Interval)
+	}
+	if serviceDecl.Startup.InitialDelay != "5s" {
+		t.Errorf("startup initial_delay: got %s, want 5s", serviceDecl.Startup.InitialDelay)
+	}
+
+	// Verify liveness probe
+	if serviceDecl.Liveness == nil {
+		t.Fatal("expected liveness probe block")
+	}
+	if serviceDecl.Liveness.Method != "tcp" {
+		t.Errorf("liveness method: got %s, want tcp", serviceDecl.Liveness.Method)
+	}
+	if serviceDecl.Liveness.Port != 8080 {
+		t.Errorf("liveness port: got %d, want 8080", serviceDecl.Liveness.Port)
+	}
+	if serviceDecl.Liveness.Interval != "10s" {
+		t.Errorf("liveness interval: got %s, want 10s", serviceDecl.Liveness.Interval)
+	}
+
+	// Verify readiness probe
+	if serviceDecl.Readiness == nil {
+		t.Fatal("expected readiness probe block")
+	}
+	if serviceDecl.Readiness.Method != "http" {
+		t.Errorf("readiness method: got %s, want http", serviceDecl.Readiness.Method)
+	}
+	if serviceDecl.Readiness.Path != "/ready" {
+		t.Errorf("readiness path: got %s, want /ready", serviceDecl.Readiness.Path)
+	}
+	if serviceDecl.Readiness.Port != 8080 {
+		t.Errorf("readiness port: got %d, want 8080", serviceDecl.Readiness.Port)
+	}
+	if serviceDecl.Readiness.Interval != "5s" {
+		t.Errorf("readiness interval: got %s, want 5s", serviceDecl.Readiness.Interval)
+	}
+}
+
+// TestParseProbeDefaultThresholds verifies that FailureThreshold defaults to 3
+// and SuccessThreshold defaults to 1 when neither is explicitly set in the probe block.
+func TestParseProbeDefaultThresholds(t *testing.T) {
+	input := `service web {
+    image nginx:1.27
+    instances 1
+    liveness {
+        http /health
+        port 8080
+        every 10s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Liveness == nil {
+		t.Fatal("expected liveness probe block")
+	}
+	livenessProbe := serviceDecl.Liveness
+	if livenessProbe.FailureThreshold != 3 {
+		t.Errorf("failure_threshold default: got %d, want 3", livenessProbe.FailureThreshold)
+	}
+	if livenessProbe.SuccessThreshold != 1 {
+		t.Errorf("success_threshold default: got %d, want 1", livenessProbe.SuccessThreshold)
+	}
+}

@@ -33,6 +33,7 @@ type Agent struct {
 	materializedSecrets  []MaterializedSecret      // materializedSecrets tracks secrets written for running instances.
 	interval             time.Duration             // interval is the period between periodic reconciliation cycles.
 	lastHealthCheck      map[string]time.Time      // lastHealthCheck tracks when each instance was last health-checked.
+	probeStates          map[string]*instanceProbeState // probeStates tracks probe execution state per instance ID.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -215,6 +216,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		}
 
 		nodeAgent.performHealthCheckAndReportResult(ctx, instanceInfo)
+		nodeAgent.executeProbesForInstance(ctx, instanceInfo)
 		delete(runningByID, instanceInfo.id)
 	}
 
@@ -233,6 +235,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				nodeAgent.detachVolumesForInstance(ctx, instanceID)
 			}
 			nodeAgent.runtime.Stop(ctx, instanceID)
+			nodeAgent.cleanupProbeState(instanceID)
 			if nodeAgent.networkProvider != nil {
 				nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
 				types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)

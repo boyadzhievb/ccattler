@@ -364,6 +364,92 @@ func TestCompileInitSteps(t *testing.T) {
 	}
 }
 
+// TestCompileServiceWithProbes verifies that startup, liveness, and readiness
+// probe declarations are compiled into the correct desired-state probe facts.
+func TestCompileServiceWithProbes(t *testing.T) {
+	file := &File{
+		Services: []ServiceDecl{
+			{
+				Name:      "web",
+				Image:     "nginx:1.28",
+				Instances: 1,
+				Startup: &ProbeDecl{
+					Method:           "http",
+					Path:             "/health/startup",
+					Port:             8080,
+					Interval:         "2s",
+					Timeout:          "1s",
+					FailureThreshold: 30,
+					SuccessThreshold: 1,
+					InitialDelay:     "5s",
+				},
+				Liveness: &ProbeDecl{
+					Method:           "tcp",
+					Port:             8080,
+					Interval:         "10s",
+					Timeout:          "2s",
+					FailureThreshold: 3,
+					SuccessThreshold: 1,
+				},
+				Readiness: &ProbeDecl{
+					Method:           "http",
+					Path:             "/ready",
+					Port:             8080,
+					Interval:         "5s",
+					FailureThreshold: 3,
+					SuccessThreshold: 2,
+				},
+			},
+		},
+	}
+
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatalf("unexpected error: %v", compileError)
+	}
+
+	lookup := factMap(facts)
+
+	if lookup[types.KeyDesiredServiceProbeMethod("web", "startup")] != "http" {
+		t.Errorf("startup method: got %q", lookup[types.KeyDesiredServiceProbeMethod("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbePath("web", "startup")] != "/health/startup" {
+		t.Errorf("startup path: got %q", lookup[types.KeyDesiredServiceProbePath("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbePort("web", "startup")] != "8080" {
+		t.Errorf("startup port: got %q", lookup[types.KeyDesiredServiceProbePort("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbeInterval("web", "startup")] != "2s" {
+		t.Errorf("startup interval: got %q", lookup[types.KeyDesiredServiceProbeInterval("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbeTimeout("web", "startup")] != "1s" {
+		t.Errorf("startup timeout: got %q", lookup[types.KeyDesiredServiceProbeTimeout("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbeFailureThreshold("web", "startup")] != "30" {
+		t.Errorf("startup failure_threshold: got %q", lookup[types.KeyDesiredServiceProbeFailureThreshold("web", "startup")])
+	}
+	if lookup[types.KeyDesiredServiceProbeInitialDelay("web", "startup")] != "5s" {
+		t.Errorf("startup initial_delay: got %q", lookup[types.KeyDesiredServiceProbeInitialDelay("web", "startup")])
+	}
+
+	if lookup[types.KeyDesiredServiceProbeMethod("web", "liveness")] != "tcp" {
+		t.Errorf("liveness method: got %q", lookup[types.KeyDesiredServiceProbeMethod("web", "liveness")])
+	}
+	if lookup[types.KeyDesiredServiceProbePort("web", "liveness")] != "8080" {
+		t.Errorf("liveness port: got %q", lookup[types.KeyDesiredServiceProbePort("web", "liveness")])
+	}
+
+	if lookup[types.KeyDesiredServiceProbeMethod("web", "readiness")] != "http" {
+		t.Errorf("readiness method: got %q", lookup[types.KeyDesiredServiceProbeMethod("web", "readiness")])
+	}
+	if lookup[types.KeyDesiredServiceProbePath("web", "readiness")] != "/ready" {
+		t.Errorf("readiness path: got %q", lookup[types.KeyDesiredServiceProbePath("web", "readiness")])
+	}
+	if lookup[types.KeyDesiredServiceProbeSuccessThreshold("web", "readiness")] != "2" {
+		t.Errorf("readiness success_threshold: got %q", lookup[types.KeyDesiredServiceProbeSuccessThreshold("web", "readiness")])
+	}
+}
+
 func factMap(facts []Fact) map[string]string {
 	factLookup := make(map[string]string)
 	for _, compiledFact := range facts {

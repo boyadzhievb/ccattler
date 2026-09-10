@@ -116,3 +116,50 @@ const (
 	// because the instance just started or no health probe is configured.
 	HealthUnknown HealthStatus = "unknown"
 )
+
+// StartupProbeState represents the result of a startup probe sequence.
+type StartupProbeState string
+
+// Startup probe states.
+const (
+	// StartupProbePending means the startup probe has not yet succeeded.
+	StartupProbePending StartupProbeState = "pending"
+
+	// StartupProbeSucceeded means the startup probe passed its success threshold.
+	StartupProbeSucceeded StartupProbeState = "succeeded"
+
+	// StartupProbeFailed means the startup probe exceeded its failure threshold.
+	StartupProbeFailed StartupProbeState = "failed"
+)
+
+// LivenessProbeState represents the result of the most recent liveness evaluation.
+type LivenessProbeState string
+
+// Liveness probe states.
+const (
+	// LivenessProbeHealthy means the liveness probe is passing.
+	LivenessProbeHealthy LivenessProbeState = "healthy"
+
+	// LivenessProbeUnhealthy means the liveness probe has exceeded its failure threshold.
+	LivenessProbeUnhealthy LivenessProbeState = "unhealthy"
+
+	// LivenessProbeUnknown means no liveness result is available yet.
+	LivenessProbeUnknown LivenessProbeState = "unknown"
+)
+
+// ReadinessProbeState represents whether an instance should receive traffic.
+type ReadinessProbeState string
+
+// Readiness probe states.
+const (
+	// ReadinessProbeReady means the readiness probe is passing and the instance
+	// should be included in endpoint sets.
+	ReadinessProbeReady ReadinessProbeState = "ready"
+
+	// ReadinessProbeNotReady means the readiness probe is failing and the instance
+	// should be excluded from endpoints but NOT restarted.
+	ReadinessProbeNotReady ReadinessProbeState = "not-ready"
+
+	// ReadinessProbeUnknown means no readiness result is available yet.
+	ReadinessProbeUnknown ReadinessProbeState = "unknown"
+)

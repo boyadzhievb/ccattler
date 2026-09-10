@@ -122,6 +122,12 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			if err == nil {
 				serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
 			}
+		case "startup":
+			serviceDecl.Startup, err = parser.parseProbeBlock()
+		case "liveness":
+			serviceDecl.Liveness, err = parser.parseProbeBlock()
+		case "readiness":
+			serviceDecl.Readiness, err = parser.parseProbeBlock()
 		case "init":
 			var initStepDecl InitStepDecl
 			initStepDecl, err = parser.parseInitStepBlock()
@@ -243,6 +249,90 @@ func (parser *Parser) parseHealthBlock() (*HealthDecl, error) {
 		return nil, err
 	}
 	return healthDecl, nil
+}
+
+// parseProbeBlock parses a startup/liveness/readiness probe block. Supported
+// fields: http, tcp, exec (method), port, every (interval), timeout,
+// failure_threshold, success_threshold, initial_delay.
+func (parser *Parser) parseProbeBlock() (*ProbeDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	probeDecl := &ProbeDecl{FailureThreshold: 3, SuccessThreshold: 1}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "http":
+			probeDecl.Method = "http"
+			if parser.currentTokenIs(TokenSlash) {
+				parser.advanceToken()
+				path, pathErr := parser.expectIdentifier()
+				if pathErr != nil {
+					return nil, pathErr
+				}
+				probeDecl.Path = "/" + path
+			}
+		case "tcp":
+			probeDecl.Method = "tcp"
+		case "exec":
+			probeDecl.Method = "exec"
+			// exec command follows as a string
+			if parser.currentTokenIs(TokenString) || parser.currentTokenIs(TokenIdent) {
+				probeDecl.Path = parser.currentToken().Value
+				parser.advanceToken()
+			}
+		case "port":
+			probeDecl.Port, err = parser.expectInteger()
+		case "every":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected interval value, got %s", token.Type)
+			}
+			probeDecl.Interval = token.Value
+			parser.advanceToken()
+		case "timeout":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected timeout value, got %s", token.Type)
+			}
+			probeDecl.Timeout = token.Value
+			parser.advanceToken()
+		case "failure_threshold":
+			probeDecl.FailureThreshold, err = parser.expectInteger()
+		case "success_threshold":
+			probeDecl.SuccessThreshold, err = parser.expectInteger()
+		case "initial_delay":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected duration for initial_delay, got %s", token.Type)
+			}
+			probeDecl.InitialDelay = token.Value
+			parser.advanceToken()
+		default:
+			return nil, parser.parserErrorf("unknown probe field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if probeDecl.Method == "" {
+		return nil, parser.parserErrorf("probe block requires a method (http, tcp, or exec)")
+	}
+
+	return probeDecl, nil
 }
 
 // parseScaleBlock parses a scale { ... } block containing a horizontal sub-block.
