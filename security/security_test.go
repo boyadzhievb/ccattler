@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net"
@@ -196,6 +197,88 @@ func TestCertificateRotator(t *testing.T) {
 	}
 	if clientCert == nil {
 		t.Fatal("nil client TLS certificate")
+	}
+}
+
+// TestRotatorBasedMTLSServer validates the pattern used by cca server --tls:
+// a CertificateRotator provides the server cert via GetCertificate, and the
+// tls.Config requires and verifies client certificates from the same CA.
+func TestRotatorBasedMTLSServer(t *testing.T) {
+	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+
+	serverCertRotator, err := NewCertificateRotator(
+		certificateAuthority,
+		IssueCertificateRequest{
+			CommonName:  "ccattler-server",
+			DNSNames:    []string{"localhost"},
+			IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
+			TTL:         1 * time.Hour,
+		},
+		0.7,
+	)
+	if err != nil {
+		t.Fatalf("create server rotator: %v", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(certificateAuthority.CACertificatePEM())
+
+	serverTLSConfig := &tls.Config{
+		GetCertificate: serverCertRotator.GetCertificate,
+		ClientCAs:      caCertPool,
+		ClientAuth:     tls.RequireAndVerifyClientCert,
+		MinVersion:     tls.VersionTLS13,
+	}
+
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", serverTLSConfig)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.Write([]byte("ok"))
+	})
+	go http.Serve(listener, mux)
+
+	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
+		CommonName: "agent-node-1",
+		TTL:        1 * time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("issue client cert: %v", err)
+	}
+	clientTLSConfig, err := certificateAuthority.ClientTLSConfig(clientCertificate)
+	if err != nil {
+		t.Fatalf("client TLS config: %v", err)
+	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: clientTLSConfig},
+	}
+	resp, err := httpClient.Get("https://" + listener.Addr().String() + "/health")
+	if err != nil {
+		t.Fatalf("mTLS request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("expected ok, got %s", string(body))
+	}
+
+	unauthenticatedClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		}},
+	}
+	_, err = unauthenticatedClient.Get("https://" + listener.Addr().String() + "/health")
+	if err == nil {
+		t.Fatal("expected TLS handshake failure for unauthenticated client")
 	}
 }
 

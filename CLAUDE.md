@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M16 — Container Default & Remote Management (Phase 19) COMPLETE. M1–M15 complete. Phase 19 makes container runtime the default, adds MCP server for guardrailed remote management, and auto-logging command history hook.
+**Active milestone:** M17 — Multi-Host Server (Phase 20) IN PROGRESS. M1–M16 complete. Phase 20 adds configurable API listen address and mTLS to the server for real multi-host deployment.
 
 ---
 
@@ -1008,6 +1008,8 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
+cca server [--listen h:p] [--tls]   # run control plane (--tls enables mTLS with auto CA)
+cca agent --node-id <id>      # run node agent (watches store, runs workloads)
 cca get services              # list services
 cca get instances             # list instances
 cca get nodes                 # list nodes
@@ -1214,6 +1216,14 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Read-only mode — `--read-only` flag hides mutation tools from list and blocks execution
 - [x] Structured audit log — `--audit-log` flag writes JSON entries (timestamp, tool, args, duration, success/error) with sensitive arg redaction
 
+### Phase 20 — Multi-Host Server
+- [x] `--listen` flag — `cca server` binds to configurable address (default `0.0.0.0:9770`) instead of hardcoded localhost
+- [x] `--tls` flag — auto-generates ephemeral CA and server certificate with auto-rotation
+- [x] mTLS enforcement — API server requires and verifies client certificates via TLS 1.3
+- [x] CA certificate output — writes `ca.pem` to `.ccattler/` data directory for agent/client trust
+- [x] Certificate auto-rotation — `CertificateRotator` renews server cert at 70% of TTL
+- [x] Rotator-based mTLS test — validates rotator + mTLS handshake + unauthenticated rejection
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1234,5 +1244,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M14 — Init & Observability | 17 | Init step lifecycle, telemetry collection, `cca top`, runtime Exec |
 | M15 — Probes & Readiness | 18 | Startup/liveness/readiness probes, readiness-gated endpoints |
 | M16 — Remote Management | 19 | Container default, MCP server with guardrails, auto-logging hook |
+| M17 — Multi-Host Server | 20 | `cca server --listen 0.0.0.0:9770 --tls` serves mTLS API to remote agents |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

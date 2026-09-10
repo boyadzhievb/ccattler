@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"crypto/tls"
+	"crypto/x509"
 	"net"
 	"net/http"
 	"os"
@@ -29,6 +31,7 @@ import (
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -278,6 +281,10 @@ type serverCommandConfig struct {
 	etcdEndpoints string
 	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
 	storeKeyPrefix string
+	// listenAddress is the host:port the API server binds to.
+	listenAddress string
+	// tlsEnabled turns on mTLS for the API server with an auto-generated CA.
+	tlsEnabled bool
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -287,6 +294,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
 		storeKeyPrefix: "/ccattler/",
+		listenAddress:  "0.0.0.0:9770",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -307,6 +315,13 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.listenAddress = args[argIndex]
+			}
+		case "--tls":
+			parsedConfig.tlsEnabled = true
 		}
 	}
 
@@ -439,13 +454,88 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	var serverTLSConfig *tls.Config
+	if parsedConfig.tlsEnabled {
+		serverTLSConfig = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
+	}
+
+	statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig)
 	statusAPIServer.SetEventLog(eventLog)
 
-	fmt.Printf("Server running. API on %s. Controllers active. Press Ctrl+C to stop.\n", statusAPIListenAddress)
+	protocol := "http"
+	if parsedConfig.tlsEnabled {
+		protocol = "https (mTLS)"
+	}
+	fmt.Printf("Server running. API on %s (%s). Controllers active. Press Ctrl+C to stop.\n",
+		parsedConfig.listenAddress, protocol)
 
 	<-ctx.Done()
 	fmt.Println("\nServer shutting down...")
+}
+
+// buildServerTLSConfig creates an ephemeral CA, issues a server certificate
+// with auto-rotation, and returns a tls.Config that requires mutual TLS.
+// The CA certificate is written to ca.pem in the .ccattler/ data directory
+// so agents and clients can trust the server.
+func buildServerTLSConfig(ctx context.Context, listenAddress string) *tls.Config {
+	certificateAuthority, err := security.NewCertificateAuthority(10 * 365 * 24 * time.Hour)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating CA: %v\n", err)
+		os.Exit(1)
+	}
+
+	listenHost, _, splitError := net.SplitHostPort(listenAddress)
+	if splitError != nil {
+		listenHost = listenAddress
+	}
+
+	var serverIPAddresses []net.IP
+	if parsedIP := net.ParseIP(listenHost); parsedIP != nil {
+		serverIPAddresses = append(serverIPAddresses, parsedIP)
+	}
+	serverIPAddresses = append(serverIPAddresses, net.ParseIP("127.0.0.1"))
+
+	serverDNSNames := []string{"localhost"}
+	if net.ParseIP(listenHost) == nil && listenHost != "" {
+		serverDNSNames = append(serverDNSNames, listenHost)
+	}
+
+	certificateRequest := security.IssueCertificateRequest{
+		CommonName:  "ccattler-server",
+		DNSNames:    serverDNSNames,
+		IPAddresses: serverIPAddresses,
+		TTL:         24 * time.Hour,
+	}
+
+	serverCertRotator, err := security.NewCertificateRotator(certificateAuthority, certificateRequest, 0.7)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating server certificate: %v\n", err)
+		os.Exit(1)
+	}
+	serverCertRotator.Start(ctx)
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(certificateAuthority.CACertificatePEM())
+
+	dataDirectory := ".ccattler"
+	if mkdirError := os.MkdirAll(dataDirectory, 0700); mkdirError != nil {
+		fmt.Fprintf(os.Stderr, "error creating data directory: %v\n", mkdirError)
+		os.Exit(1)
+	}
+
+	caCertPath := dataDirectory + "/ca.pem"
+	if writeError := os.WriteFile(caCertPath, certificateAuthority.CACertificatePEM(), 0644); writeError != nil {
+		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
+		os.Exit(1)
+	}
+	fmt.Printf("CA certificate written to %s\n", caCertPath)
+
+	return &tls.Config{
+		GetCertificate: serverCertRotator.GetCertificate,
+		ClientCAs:      caCertPool,
+		ClientAuth:     tls.RequireAndVerifyClientCert,
+		MinVersion:     tls.VersionTLS13,
+	}
 }
 
 // executeAgentCommand starts the node agent, which watches the shared state store
@@ -540,6 +630,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for server:")
+	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 0.0.0.0:9770)")
+	fmt.Fprintln(os.Stderr, "  --tls                        enable mTLS (auto-generates CA, writes ca.pem)")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
@@ -681,7 +773,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	nodeAgent := agent.New(localNodeID, factStore, processRuntime)
 	go nodeAgent.Run(ctx)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
@@ -788,7 +880,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	go nodeAgent.Run(ctx)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
@@ -878,7 +970,7 @@ func executeDemoCommand() {
 	fmt.Println("Applying config:")
 	fmt.Println(builtinDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, builtinDemoConfig); err != nil {
@@ -959,7 +1051,7 @@ func executeDistributedDemoCommand() {
 	fmt.Println("\nApplying config:")
 	fmt.Println(distributedDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, distributedDemoConfig); err != nil {
@@ -1080,7 +1172,7 @@ service api {
 	fmt.Println("\nApplying config:")
 	fmt.Println(networkDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, networkDemoConfig); err != nil {
@@ -1212,7 +1304,7 @@ service web {
 	fmt.Println("\nApplying config:")
 	fmt.Println(storageDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, storageDemoConfig); err != nil {
@@ -1656,8 +1748,9 @@ type volumeStatusEntry struct {
 
 // launchStatusAPIServer starts the HTTP API server in the background. It hosts
 // both the legacy /status and /metric endpoints and the new /api/* endpoints.
+// When serverTLSConfig is non-nil, the listener is wrapped with TLS for mTLS.
 // Returns the api.Server so callers can attach optional components like EventLog.
-func launchStatusAPIServer(factStore store.StateStore) *api.Server {
+func launchStatusAPIServer(factStore store.StateStore, listenAddress string, serverTLSConfig *tls.Config) *api.Server {
 	apiServer := api.NewServer(factStore)
 
 	httpMux := http.NewServeMux()
@@ -1695,9 +1788,12 @@ func launchStatusAPIServer(factStore store.StateStore) *api.Server {
 		fmt.Fprintf(responseWriter, "set %s.%s = %s\n", serviceName, metricName, metricValue)
 	})
 
-	listener, err := net.Listen("tcp", statusAPIListenAddress)
+	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		return apiServer
+	}
+	if serverTLSConfig != nil {
+		listener = tls.NewListener(listener, serverTLSConfig)
 	}
 	go func() {
 		if serveError := http.Serve(listener, httpMux); serveError != nil {
