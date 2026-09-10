@@ -67,6 +67,42 @@ const (
 	VolumeAttached VolumeState = "attached"
 )
 
+// InitStepState represents the execution state of a single initialization step.
+type InitStepState string
+
+// Init step execution states.
+const (
+	// InitStepPending means the step has not started yet.
+	InitStepPending InitStepState = "pending"
+
+	// InitStepRunning means the step is currently executing.
+	InitStepRunning InitStepState = "running"
+
+	// InitStepSucceeded means the step completed successfully.
+	InitStepSucceeded InitStepState = "succeeded"
+
+	// InitStepFailed means the step failed to complete.
+	InitStepFailed InitStepState = "failed"
+)
+
+// InitPhase represents the overall initialization phase of an instance.
+type InitPhase string
+
+// Instance initialization phases.
+const (
+	// InitPhasePending means initialization has not started yet.
+	InitPhasePending InitPhase = "pending"
+
+	// InitPhaseRunning means at least one init step is in progress.
+	InitPhaseRunning InitPhase = "running"
+
+	// InitPhaseComplete means all init steps completed successfully.
+	InitPhaseComplete InitPhase = "complete"
+
+	// InitPhaseFailed means an init step failed and initialization cannot proceed.
+	InitPhaseFailed InitPhase = "failed"
+)
+
 // Health check result values.
 const (
 	// HealthHealthy means the instance passed its most recent health check.

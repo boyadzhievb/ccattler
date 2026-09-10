@@ -111,6 +111,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
 			}
+			nodeAgent.collectAndReportNodeTelemetry(ctx)
 		case _, ok := <-placementCh:
 			if !ok {
 				return nil
@@ -148,6 +149,16 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 
 		if !exists || !runtimeStatus.Running {
+			// Run init steps before starting the main workload.
+			if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
+				initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo)
+				if !initSucceeded {
+					log.Printf("agent %s: init failed for %s, skipping workload start", nodeAgent.nodeID, instanceInfo.id)
+					delete(runningByID, instanceInfo.id)
+					continue
+				}
+			}
+
 			// Check volume readiness before starting.
 			if nodeAgent.storageProvider != nil {
 				volumesReady, attachErr := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)

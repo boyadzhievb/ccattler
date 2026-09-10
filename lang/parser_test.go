@@ -307,3 +307,62 @@ func TestParseVolumeErrorUnknownField(t *testing.T) {
 		t.Fatal("expected error for unknown volume field")
 	}
 }
+
+func TestParseInitSteps(t *testing.T) {
+	input := `service api {
+    image my-api:1.4
+    instances 3
+
+    init {
+        exec "migrate-db"
+        timeout 30s
+    }
+
+    init {
+        exec "generate-config"
+        timeout 10s
+        retry 3
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.InitSteps) != 2 {
+		t.Fatalf("expected 2 init steps, got %d", len(serviceDecl.InitSteps))
+	}
+	if serviceDecl.InitSteps[0].Exec != "migrate-db" {
+		t.Errorf("step 0 exec: got %q, want %q", serviceDecl.InitSteps[0].Exec, "migrate-db")
+	}
+	if serviceDecl.InitSteps[0].Timeout != "30s" {
+		t.Errorf("step 0 timeout: got %q, want %q", serviceDecl.InitSteps[0].Timeout, "30s")
+	}
+	if serviceDecl.InitSteps[0].Retry != 0 {
+		t.Errorf("step 0 retry: got %d, want 0", serviceDecl.InitSteps[0].Retry)
+	}
+	if serviceDecl.InitSteps[1].Exec != "generate-config" {
+		t.Errorf("step 1 exec: got %q, want %q", serviceDecl.InitSteps[1].Exec, "generate-config")
+	}
+	if serviceDecl.InitSteps[1].Retry != 3 {
+		t.Errorf("step 1 retry: got %d, want 3", serviceDecl.InitSteps[1].Retry)
+	}
+}
+
+func TestParseInitStepRequiresExec(t *testing.T) {
+	input := `service api {
+    image my-api:1.4
+    instances 1
+
+    init {
+        timeout 30s
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for init block without exec")
+	}
+}

@@ -44,4 +44,15 @@ type Runtime interface {
 
 	// List returns the current state of all known workloads managed by this runtime.
 	List(ctx context.Context) ([]Status, error)
+
+	// Exec runs a command inside the context of a workload. For init steps, the
+	// workload may not yet be started — implementations should handle this by
+	// running the command in the workload's environment. Returns nil on success
+	// or an error if the command fails.
+	Exec(ctx context.Context, id string, execSpec ExecSpec) error
+}
+
+// ExecSpec describes a command to execute inside or alongside a workload.
+type ExecSpec struct {
+	Command string // Command is the shell command to execute.
 }

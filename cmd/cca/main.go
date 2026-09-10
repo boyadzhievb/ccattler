@@ -94,6 +94,12 @@ func main() {
 		executeStorageDemoCommand()
 	case "chaos":
 		executeChaosCommand()
+	case "top":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads>")
+			os.Exit(1)
+		}
+		executeTopCommand(os.Args[2])
 	case "status":
 		executeStatusCommand()
 	case "logs":
@@ -423,12 +429,13 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
-		autoscaleController, intentResolverController, rolloutController)
+		autoscaleController, intentResolverController, rolloutController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -519,6 +526,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "cluster management:")
 	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
 	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
@@ -599,10 +607,11 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	go controllerRunner.Run(ctx)
 
 	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
@@ -658,11 +667,12 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -759,12 +769,13 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, networkController,
-		autoscaleController, intentResolverController, rolloutController)
+		autoscaleController, intentResolverController, rolloutController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -840,12 +851,13 @@ func executeDemoCommand() {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -910,13 +922,14 @@ func executeDistributedDemoCommand() {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -1026,13 +1039,14 @@ func executeNetworkDemoCommand() {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -1147,13 +1161,14 @@ func executeStorageDemoCommand() {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, storageController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController)
+		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
@@ -1426,6 +1441,73 @@ func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 	defer httpResponse.Body.Close()
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 	fmt.Print(string(responseBody))
+}
+
+// executeTopCommand queries the cluster API and displays resource utilization
+// in a tabular format, similar to `kubectl top`.
+func executeTopCommand(resourceType string) {
+	apiBaseURL := "http://" + statusAPIListenAddress + "/api/status"
+	httpResponse, err := http.Get(apiBaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	var clusterStatus api.ClusterStatus
+	if err := json.NewDecoder(httpResponse.Body).Decode(&clusterStatus); err != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", err)
+		os.Exit(1)
+	}
+
+	switch resourceType {
+	case "nodes", "node":
+		fmt.Printf("%-14s  %-12s  %-16s  %-16s  %s\n", "NODE", "STATUS", "CPU", "MEMORY", "WORKLOADS")
+		for _, nodeStatus := range clusterStatus.Nodes {
+			cpuDisplay := formatResourceUsage(nodeStatus.CapacityCPU-nodeStatus.AvailableCPU, nodeStatus.CapacityCPU, "m")
+			memoryDisplay := formatResourceUsage(nodeStatus.CapacityMemory-nodeStatus.AvailableMemory, nodeStatus.CapacityMemory, "Mi")
+			fmt.Printf("%-14s  %-12s  %-16s  %-16s  %d\n",
+				nodeStatus.ID, nodeStatus.State, cpuDisplay, memoryDisplay, nodeStatus.PlacedInstances)
+		}
+	case "workloads", "workload", "instances", "inst":
+		fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n", "WORKLOAD", "NODE", "STATUS", "CPU", "MEMORY", "HEALTH")
+		for _, instanceStatus := range clusterStatus.Instances {
+			healthDisplay := instanceStatus.HealthState
+			if healthDisplay == "" || healthDisplay == "-" {
+				healthDisplay = "-"
+			}
+			nodeDisplay := instanceStatus.NodeID
+			if nodeDisplay == "" {
+				nodeDisplay = "-"
+			}
+			cpuDisplay := instanceStatus.CPUMillis
+			if cpuDisplay == "" {
+				cpuDisplay = "-"
+			} else {
+				cpuDisplay = cpuDisplay + "m"
+			}
+			memDisplay := instanceStatus.MemoryBytes
+			if memDisplay == "" {
+				memDisplay = "-"
+			}
+			workloadName := instanceStatus.ServiceName + "/" + instanceStatus.ID
+			fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n",
+				workloadName, nodeDisplay, instanceStatus.State, cpuDisplay, memDisplay, healthDisplay)
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use 'nodes' or 'workloads')\n", resourceType)
+		os.Exit(1)
+	}
+}
+
+// formatResourceUsage formats a used/capacity pair as "used/capacity unit" or
+// "used/capacity unit (pct%)" for display in `cca top`.
+func formatResourceUsage(used, capacity int64, unit string) string {
+	if capacity <= 0 {
+		return fmt.Sprintf("%d%s", used, unit)
+	}
+	percentage := (used * 100) / capacity
+	return fmt.Sprintf("%d/%d%s (%d%%)", used, capacity, unit, percentage)
 }
 
 // executeGetCommand queries the API for a specific resource type and prints

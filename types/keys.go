@@ -523,6 +523,119 @@ func ScanDesiredServiceSecrets(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/secret/", PrefixDesired, serviceName)
 }
 
+// Node utilization keys. The agent reports current resource utilization as
+// observed facts, separate from capacity/allocated facts used by the scheduler.
+
+// KeyObservedNodeUtilizationCPU returns the store path for a node's current
+// CPU utilization as a percentage (0-100).
+// Path: /ccattler/observed/node/{nodeID}/utilization/cpu
+func KeyObservedNodeUtilizationCPU(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/utilization/cpu", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeUtilizationMemory returns the store path for a node's current
+// memory utilization as a percentage (0-100).
+// Path: /ccattler/observed/node/{nodeID}/utilization/memory
+func KeyObservedNodeUtilizationMemory(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/utilization/memory", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeDiskUsed returns the store path for a node's disk usage as bytes.
+// Path: /ccattler/observed/node/{nodeID}/disk/used
+func KeyObservedNodeDiskUsed(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/disk/used", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeDiskCapacity returns the store path for a node's total disk capacity.
+// Path: /ccattler/observed/node/{nodeID}/disk/capacity
+func KeyObservedNodeDiskCapacity(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/disk/capacity", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeWorkloadCount returns the store path for the number of workloads
+// running on a node.
+// Path: /ccattler/observed/node/{nodeID}/workloads
+func KeyObservedNodeWorkloadCount(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/workloads", PrefixObserved, nodeID)
+}
+
+// Workload utilization keys. The agent reports per-instance resource usage.
+
+// KeyObservedInstanceCPU returns the store path for an instance's current CPU usage
+// in millicores.
+// Path: /ccattler/observed/instance/{instanceID}/cpu
+func KeyObservedInstanceCPU(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/cpu", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceMemory returns the store path for an instance's current memory
+// usage in bytes.
+// Path: /ccattler/observed/instance/{instanceID}/memory
+func KeyObservedInstanceMemory(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/memory", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceRestarts returns the store path for an instance's restart count.
+// Path: /ccattler/observed/instance/{instanceID}/restarts
+func KeyObservedInstanceRestarts(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/restarts", PrefixObserved, instanceID)
+}
+
+// Init step key functions. Init steps are ordered by index (0, 1, 2, ...) and
+// stored as desired facts per service. Observed init results are per-instance.
+
+// KeyDesiredServiceInitStep returns the store path for an init step's root marker.
+// Path: /ccattler/desired/service/{name}/init/{index}
+func KeyDesiredServiceInitStep(serviceName string, stepIndex int) string {
+	return fmt.Sprintf("%s/service/%s/init/%d", PrefixDesired, serviceName, stepIndex)
+}
+
+// KeyDesiredServiceInitStepExec returns the store path for an init step's exec command.
+// Path: /ccattler/desired/service/{name}/init/{index}/exec
+func KeyDesiredServiceInitStepExec(serviceName string, stepIndex int) string {
+	return fmt.Sprintf("%s/service/%s/init/%d/exec", PrefixDesired, serviceName, stepIndex)
+}
+
+// KeyDesiredServiceInitStepTimeout returns the store path for an init step's timeout.
+// Path: /ccattler/desired/service/{name}/init/{index}/timeout
+func KeyDesiredServiceInitStepTimeout(serviceName string, stepIndex int) string {
+	return fmt.Sprintf("%s/service/%s/init/%d/timeout", PrefixDesired, serviceName, stepIndex)
+}
+
+// KeyDesiredServiceInitStepRetry returns the store path for an init step's retry count.
+// Path: /ccattler/desired/service/{name}/init/{index}/retry
+func KeyDesiredServiceInitStepRetry(serviceName string, stepIndex int) string {
+	return fmt.Sprintf("%s/service/%s/init/%d/retry", PrefixDesired, serviceName, stepIndex)
+}
+
+// ScanDesiredServiceInitSteps returns the scan prefix for all init steps of a service.
+func ScanDesiredServiceInitSteps(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/init/", PrefixDesired, serviceName)
+}
+
+// KeyObservedInstanceInitPhase returns the store path for an instance's overall init phase.
+// Path: /ccattler/observed/instance/{instanceID}/init/phase
+func KeyObservedInstanceInitPhase(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/init/phase", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceInitStepState returns the store path for an instance's init step result.
+// Path: /ccattler/observed/instance/{instanceID}/init/step/{index}/state
+func KeyObservedInstanceInitStepState(instanceID string, stepIndex int) string {
+	return fmt.Sprintf("%s/instance/%s/init/step/%d/state", PrefixObserved, instanceID, stepIndex)
+}
+
+// KeyObservedInstanceInitStepReason returns the store path for an init step's failure reason.
+// Path: /ccattler/observed/instance/{instanceID}/init/step/{index}/reason
+func KeyObservedInstanceInitStepReason(instanceID string, stepIndex int) string {
+	return fmt.Sprintf("%s/instance/%s/init/step/%d/reason", PrefixObserved, instanceID, stepIndex)
+}
+
+// ScanObservedInstanceInitSteps returns the scan prefix for all init step observations of an instance.
+func ScanObservedInstanceInitSteps(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/init/step/", PrefixObserved, instanceID)
+}
+
 // Tenant key prefixes.
 const (
 	// PrefixDesiredTenant holds desired tenant definitions and quotas.

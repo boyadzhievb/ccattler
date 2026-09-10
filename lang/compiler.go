@@ -306,6 +306,25 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		})
 	}
 
+	for stepIndex, initStep := range serviceDecl.InitSteps {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceInitStep(serviceDecl.Name, stepIndex), Value: "",
+		})
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceInitStepExec(serviceDecl.Name, stepIndex), Value: initStep.Exec,
+		})
+		if initStep.Timeout != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServiceInitStepTimeout(serviceDecl.Name, stepIndex), Value: initStep.Timeout,
+			})
+		}
+		if initStep.Retry > 0 {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServiceInitStepRetry(serviceDecl.Name, stepIndex), Value: strconv.Itoa(initStep.Retry),
+			})
+		}
+	}
+
 	return facts, nil
 }
 

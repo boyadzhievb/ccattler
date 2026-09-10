@@ -122,6 +122,12 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			if err == nil {
 				serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
 			}
+		case "init":
+			var initStepDecl InitStepDecl
+			initStepDecl, err = parser.parseInitStepBlock()
+			if err == nil {
+				serviceDecl.InitSteps = append(serviceDecl.InitSteps, initStepDecl)
+			}
 		case "volume":
 			volumeName, mountErr := parser.expectIdentifier()
 			if mountErr != nil {
@@ -829,6 +835,55 @@ func (parser *Parser) parseConfigBlock() (*ConfigDecl, error) {
 		return nil, err
 	}
 	return configDecl, nil
+}
+
+// parseInitStepBlock parses an init { exec "cmd" timeout 30s retry 5 } block.
+// Init steps define sequential initialization commands that must complete before
+// the main workload starts.
+func (parser *Parser) parseInitStepBlock() (InitStepDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return InitStepDecl{}, err
+	}
+	parser.skipNewlineTokens()
+
+	initStepDecl := InitStepDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return InitStepDecl{}, err
+		}
+
+		switch key {
+		case "exec":
+			initStepDecl.Exec, err = parser.expectStringOrIdentifier()
+		case "timeout":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return InitStepDecl{}, parser.parserErrorf("expected duration for timeout, got %s", token.Type)
+			}
+			initStepDecl.Timeout = token.Value
+			parser.advanceToken()
+		case "retry":
+			initStepDecl.Retry, err = parser.expectInteger()
+		default:
+			return InitStepDecl{}, parser.parserErrorf("unknown init field %q", key)
+		}
+		if err != nil {
+			return InitStepDecl{}, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return InitStepDecl{}, err
+	}
+
+	if initStepDecl.Exec == "" {
+		return InitStepDecl{}, parser.parserErrorf("init block requires an exec command")
+	}
+
+	return initStepDecl, nil
 }
 
 // parseSecretDeclaration parses a single "secret NAME [PATH]" entry in a

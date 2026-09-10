@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -26,6 +27,10 @@ type factWatcher struct {
 	matchByPrefix bool
 	// eventChannel is the buffered channel on which matching events are delivered.
 	eventChannel chan Event
+	// overflowDetected is set when an event could not be delivered because
+	// the channel buffer was full. The next successful send delivers an
+	// EventOverflow marker before the real event.
+	overflowDetected bool
 }
 
 // MemoryStore is an in-memory implementation of StateStore, used for tests and
@@ -179,6 +184,34 @@ func (memStore *MemoryStore) Scan(_ context.Context, prefix string) ([]Fact, err
 		return matchingFacts[i].Key < matchingFacts[j].Key
 	})
 	return matchingFacts, nil
+}
+
+// ScanWithRevision returns all facts matching the prefix along with the
+// store-global revision at the time of the scan, both read under the same
+// lock to guarantee consistency.
+func (memStore *MemoryStore) ScanWithRevision(_ context.Context, prefix string) (*ScanResult, error) {
+	memStore.mutex.RLock()
+	defer memStore.mutex.RUnlock()
+
+	if memStore.isClosed {
+		return nil, ErrStoreClosed
+	}
+
+	var matchingFacts []Fact
+	for factKey, factEntry := range memStore.facts {
+		if strings.HasPrefix(factKey, prefix) {
+			factCopy := *factEntry
+			factCopy.Value = cloneBytes(factEntry.Value)
+			matchingFacts = append(matchingFacts, factCopy)
+		}
+	}
+	sort.Slice(matchingFacts, func(i, j int) bool {
+		return matchingFacts[i].Key < matchingFacts[j].Key
+	})
+	return &ScanResult{
+		Facts:    matchingFacts,
+		Revision: memStore.currentRevision,
+	}, nil
 }
 
 // Watch creates a new watch subscription for changes to the specified key (or key
@@ -377,11 +410,13 @@ func cloneBytes(value []byte) []byte {
 
 // broadcastEventToWatchers sends the given event to all watchers whose key pattern
 // matches the event's fact key. Prefix watchers match if the fact key starts with
-// their pattern; exact watchers match only on key equality. Events are sent
-// non-blocking -- if a watcher's channel buffer is full, the event is silently
-// dropped for that watcher. Must be called with mutex held.
+// their pattern; exact watchers match only on key equality. When a watcher's
+// channel buffer is full, the event is dropped and an overflow flag is set.
+// On the next successful delivery, an EventOverflow marker is sent first so
+// the consumer knows events were missed. Must be called with mutex held.
 func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
-	for _, activeWatcher := range memStore.activeWatchers {
+	for watcherIndex := range memStore.activeWatchers {
+		activeWatcher := &memStore.activeWatchers[watcherIndex]
 		if activeWatcher.matchByPrefix {
 			if !strings.HasPrefix(event.Fact.Key, activeWatcher.keyPattern) {
 				continue
@@ -391,9 +426,22 @@ func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
 				continue
 			}
 		}
+
+		if activeWatcher.overflowDetected {
+			select {
+			case activeWatcher.eventChannel <- Event{Type: EventOverflow}:
+				activeWatcher.overflowDetected = false
+			default:
+			}
+		}
+
 		select {
 		case activeWatcher.eventChannel <- event:
 		default:
+			if !activeWatcher.overflowDetected {
+				log.Printf("WARNING: watch event dropped for key %s (channel buffer full)", event.Fact.Key)
+			}
+			activeWatcher.overflowDetected = true
 		}
 	}
 }

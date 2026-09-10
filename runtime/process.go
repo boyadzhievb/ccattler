@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -169,6 +170,32 @@ func (processRuntime *ProcessRuntime) List(_ context.Context) ([]Status, error) 
 		result = append(result, processStatus)
 	}
 	return result, nil
+}
+
+// Exec runs a command in the context of a workload's environment. The command
+// is executed as a shell subprocess with the workload's environment variables.
+func (processRuntime *ProcessRuntime) Exec(ctx context.Context, id string, execSpec ExecSpec) error {
+	processRuntime.mutex.Lock()
+	process, ok := processRuntime.processes[id]
+	processRuntime.mutex.Unlock()
+
+	args := strings.Fields(execSpec.Command)
+	if len(args) == 0 {
+		return fmt.Errorf("empty exec command for workload %s", id)
+	}
+
+	command := exec.CommandContext(ctx, args[0], args[1:]...)
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+
+	if ok && process.workloadSpec.Env != nil {
+		command.Env = os.Environ()
+		for envKey, envValue := range process.workloadSpec.Env {
+			command.Env = append(command.Env, envKey+"="+envValue)
+		}
+	}
+
+	return command.Run()
 }
 
 // StopAll gracefully stops every process the runtime is tracking. It is

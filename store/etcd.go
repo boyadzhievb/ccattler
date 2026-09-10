@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -215,6 +216,39 @@ func (etcdStore *EtcdStore) Scan(ctx context.Context, prefix string) ([]Fact, er
 	return matchingFacts, nil
 }
 
+// ScanWithRevision returns all facts matching the prefix along with the
+// cluster-global revision from the etcd response header, guaranteeing the
+// revision is consistent with the returned facts.
+func (etcdStore *EtcdStore) ScanWithRevision(ctx context.Context, prefix string) (*ScanResult, error) {
+	if closedError := etcdStore.checkClosed(); closedError != nil {
+		return nil, closedError
+	}
+
+	getResponse, getError := etcdStore.etcdClient.Get(ctx, etcdStore.prefixedKey(prefix),
+		clientv3.WithPrefix(),
+		clientv3.WithSort(clientv3.SortByKey, clientv3.SortAscend),
+	)
+	if getError != nil {
+		return nil, getError
+	}
+
+	matchingFacts := make([]Fact, 0, len(getResponse.Kvs))
+	for _, keyValue := range getResponse.Kvs {
+		matchingFacts = append(matchingFacts, Fact{
+			Key:            etcdStore.unprefixedKey(string(keyValue.Key)),
+			Value:          keyValue.Value,
+			Revision:       keyValue.ModRevision,
+			CreateRevision: keyValue.CreateRevision,
+			LeaseID:        int64(keyValue.Lease),
+		})
+	}
+
+	return &ScanResult{
+		Facts:    matchingFacts,
+		Revision: getResponse.Header.Revision,
+	}, nil
+}
+
 // Watch creates a subscription that receives events for changes to the specified key
 // (or key prefix, if opts.Prefix is true). Events from etcd's watch stream are
 // translated to CCattler Event types and forwarded to the returned channel. The
@@ -243,6 +277,7 @@ func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOpt
 // closed when the etcd watch channel closes (e.g., on context cancellation or store close).
 func (etcdStore *EtcdStore) forwardEtcdWatchEvents(etcdWatchChannel clientv3.WatchChan, outputChannel chan Event) {
 	defer close(outputChannel)
+	eventsDropped := false
 
 	for watchResponse := range etcdWatchChannel {
 		if watchResponse.Canceled {
@@ -285,9 +320,21 @@ func (etcdStore *EtcdStore) forwardEtcdWatchEvents(etcdWatchChannel clientv3.Wat
 				Prev: previousFact,
 			}
 
+			if eventsDropped {
+				select {
+				case outputChannel <- Event{Type: EventOverflow}:
+					eventsDropped = false
+				default:
+				}
+			}
+
 			select {
 			case outputChannel <- event:
 			default:
+				if !eventsDropped {
+					log.Printf("WARNING: etcd watch event dropped for key %s (channel buffer full)", currentFact.Key)
+				}
+				eventsDropped = true
 			}
 		}
 	}

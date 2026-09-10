@@ -78,6 +78,23 @@ func (simulator *SimulatorRuntime) Status(_ context.Context, id string) (Status,
 	}, nil
 }
 
+// Exec simulates running a command in the context of a workload. In the
+// simulator, this always succeeds if the workload exists and is running,
+// and returns ErrNotFound otherwise.
+func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec ExecSpec) error {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+
+	workload, ok := simulator.workloads[id]
+	if !ok {
+		return ErrNotFound
+	}
+	if !workload.isRunning {
+		return &StartError{ID: id, Reason: "workload not running"}
+	}
+	return nil
+}
+
 // List returns the status of every workload the simulator has ever seen,
 // including those that have been stopped.
 func (simulator *SimulatorRuntime) List(_ context.Context) ([]Status, error) {

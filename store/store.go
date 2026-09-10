@@ -38,6 +38,10 @@ const (
 	EventPut EventType = iota
 	// EventDelete indicates a fact was removed from the store.
 	EventDelete
+	// EventOverflow indicates that watch events were dropped because the
+	// channel buffer was full. The consumer should treat this as a hint to
+	// perform a full resync.
+	EventOverflow
 )
 
 // Compare represents a precondition for a transactional operation.
@@ -77,6 +81,16 @@ type WatchOption struct {
 	Prefix bool
 }
 
+// ScanResult bundles the facts returned by a prefix scan with the store-global
+// revision at which the scan was performed. This enables optimistic concurrency:
+// the caller can detect whether the store changed between scan and write.
+type ScanResult struct {
+	// Facts is the list of facts matching the scan prefix, sorted by key.
+	Facts []Fact
+	// Revision is the store-global revision at the time the scan was executed.
+	Revision int64
+}
+
 // StateStore defines the interface for CCattler's fact store. All components in the
 // system communicate exclusively through the store -- controllers watch for changes,
 // reconcilers read desired and observed state, and the scheduler writes placements.
@@ -95,6 +109,11 @@ type StateStore interface {
 
 	// Scan returns all facts whose keys begin with the given prefix, sorted by key.
 	Scan(ctx context.Context, prefix string) ([]Fact, error)
+	// ScanWithRevision returns all facts whose keys begin with the given prefix,
+	// along with the store-global revision at the time of the scan. This enables
+	// optimistic concurrency control: the caller can verify the store has not
+	// changed between the scan and a subsequent transaction.
+	ScanWithRevision(ctx context.Context, prefix string) (*ScanResult, error)
 	// Watch creates a subscription that receives events for changes to the specified
 	// key (or key prefix, if opts.Prefix is true). The returned channel is closed
 	// when the store is closed.

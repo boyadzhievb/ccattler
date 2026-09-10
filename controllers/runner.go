@@ -150,14 +150,17 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 		if err != nil {
 			return err
 		}
-		go func(watchEventChannel <-chan store.Event) {
+		go func(watchEventChannel <-chan store.Event, controllerName string) {
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case _, ok := <-watchEventChannel:
+				case watchEvent, ok := <-watchEventChannel:
 					if !ok {
 						return
+					}
+					if watchEvent.Type == store.EventOverflow {
+						log.Printf("controller %s: watch events were dropped, triggering resync", controllerName)
 					}
 					select {
 					case reconcileTrigger <- struct{}{}:
@@ -165,7 +168,7 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 					}
 				}
 			}
-		}(watchEventChannel)
+		}(watchEventChannel, controller.Name())
 	}
 
 	if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
@@ -209,43 +212,106 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 	}
 }
 
-// executeReconciliationCycle performs a single reconciliation pass for the
-// given controller. It scans all watched prefixes to collect current facts,
-// calls the controller's Reconcile method to compute desired changes, and
-// applies each change to the store.
+// maxReconciliationAttempts is the maximum number of retries when a
+// reconciliation cycle detects that the store changed between scan and commit.
+const maxReconciliationAttempts = 3
+
+// executeReconciliationCycle performs a single reconciliation pass with
+// optimistic concurrency. It retries up to maxReconciliationAttempts times
+// if the store revision changes between the scan and the commit.
 func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, controller Controller) error {
-	var facts []store.Fact
+	for attemptIndex := 0; attemptIndex < maxReconciliationAttempts; attemptIndex++ {
+		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller)
+		if reconcileError != nil {
+			return reconcileError
+		}
+		if !conflictDetected {
+			return nil
+		}
+		log.Printf("controller %s: reconciliation conflict (attempt %d/%d), retrying",
+			controller.Name(), attemptIndex+1, maxReconciliationAttempts)
+	}
+	log.Printf("controller %s: reconciliation abandoned after %d conflict retries",
+		controller.Name(), maxReconciliationAttempts)
+	return nil
+}
+
+// attemptSingleReconciliation performs one scan-reconcile-commit cycle using
+// revision-aware optimistic concurrency. It snapshots the store at a known
+// revision, computes changes, checks for revision drift, and applies changes
+// via a transaction with per-key revision guards.
+func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context, controller Controller) (conflictDetected bool, reconcileError error) {
+	var allFacts []store.Fact
+	var snapshotRevision int64
+
 	for _, prefix := range controller.Watch() {
-		scanned, err := controllerRunner.store.Scan(ctx, prefix)
-		if err != nil {
-			return err
+		scanResult, scanError := controllerRunner.store.ScanWithRevision(ctx, prefix)
+		if scanError != nil {
+			return false, scanError
 		}
-		facts = append(facts, scanned...)
+		allFacts = append(allFacts, scanResult.Facts...)
+		if scanResult.Revision > snapshotRevision {
+			snapshotRevision = scanResult.Revision
+		}
 	}
 
-	changes, err := controller.Reconcile(ctx, facts)
-	if err != nil {
-		return err
+	changes, reconcileError := controller.Reconcile(ctx, allFacts)
+	if reconcileError != nil {
+		return false, reconcileError
+	}
+	if len(changes) == 0 {
+		return false, nil
 	}
 
+	currentRevision, revisionError := controllerRunner.store.Revision(ctx)
+	if revisionError != nil {
+		return false, revisionError
+	}
+	if currentRevision != snapshotRevision {
+		return true, nil
+	}
+
+	scannedFactRevisions := make(map[string]int64, len(allFacts))
+	for _, scannedFact := range allFacts {
+		scannedFactRevisions[scannedFact.Key] = scannedFact.Revision
+	}
+
+	var transactionCompares []store.Compare
+	var transactionOperations []store.Op
 	for _, change := range changes {
-		switch change.Type {
-		case store.OpPut:
-			if _, err := controllerRunner.store.Put(ctx, change.Key, change.Value); err != nil {
-				return err
-			}
-		case store.OpDelete:
-			if err := controllerRunner.store.Delete(ctx, change.Key); err != nil {
-				return err
-			}
+		transactionOperations = append(transactionOperations, store.Op{
+			Type:  change.Type,
+			Key:   change.Key,
+			Value: change.Value,
+		})
+		if factRevision, existedInScan := scannedFactRevisions[change.Key]; existedInScan {
+			transactionCompares = append(transactionCompares, store.Compare{
+				Key:      change.Key,
+				Revision: factRevision,
+			})
+		} else if change.Type == store.OpPut {
+			transactionCompares = append(transactionCompares, store.Compare{
+				Key:      change.Key,
+				Revision: 0,
+			})
 		}
+	}
+
+	transactionSucceeded, transactionError := controllerRunner.store.Transaction(
+		ctx, transactionCompares, transactionOperations, nil,
+	)
+	if transactionError != nil {
+		return false, transactionError
+	}
+	if !transactionSucceeded {
+		return true, nil
 	}
 
 	if controllerRunner.eventLog != nil {
 		controllerRunner.emitEventsForChanges(ctx, controller, changes)
 	}
 
-	return nil
+	return false, nil
 }
 
 // emitEventsForChanges inspects the change keys produced by a reconciliation

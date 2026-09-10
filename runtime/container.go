@@ -260,6 +260,27 @@ func (containerRuntime *ContainerRuntime) List(ctx context.Context) ([]Status, e
 	return result, nil
 }
 
+// Exec runs a command inside a running docker container via `docker exec`.
+func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, execSpec ExecSpec) error {
+	containerRuntime.mutex.Lock()
+	tracked := containerRuntime.trackedContainers[id]
+	containerRuntime.mutex.Unlock()
+
+	if !tracked {
+		return ErrNotFound
+	}
+
+	containerName := buildDockerContainerName(id)
+	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
+	dockerExecCommand := exec.CommandContext(ctx, "docker", args...)
+	var stderr bytes.Buffer
+	dockerExecCommand.Stderr = &stderr
+	if err := dockerExecCommand.Run(); err != nil {
+		return fmt.Errorf("docker exec in %s: %v: %s", id, err, stderr.String())
+	}
+	return nil
+}
+
 // StopAll terminates and removes every tracked container that is currently
 // marked as running, cleans up all config file temp directories, then removes
 // the docker network if one was created. Typically called during shutdown.

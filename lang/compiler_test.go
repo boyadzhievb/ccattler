@@ -319,6 +319,51 @@ func TestApplyWithConfig(t *testing.T) {
 	}
 }
 
+func TestCompileInitSteps(t *testing.T) {
+	file := &File{
+		Services: []ServiceDecl{
+			{
+				Name:      "api",
+				Image:     "my-api:1.4",
+				Instances: 3,
+				InitSteps: []InitStepDecl{
+					{Exec: "migrate-db", Timeout: "30s"},
+					{Exec: "generate-config", Timeout: "10s", Retry: 5},
+				},
+			},
+		},
+	}
+
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatalf("unexpected error: %v", compileError)
+	}
+
+	lookup := factMap(facts)
+
+	if lookup[types.KeyDesiredServiceInitStep("api", 0)] != "" {
+		t.Fatalf("expected empty marker for init step 0, got %q", lookup[types.KeyDesiredServiceInitStep("api", 0)])
+	}
+	if _, exists := lookup[types.KeyDesiredServiceInitStep("api", 0)]; !exists {
+		t.Fatal("init step 0 marker not found")
+	}
+	if lookup[types.KeyDesiredServiceInitStepExec("api", 0)] != "migrate-db" {
+		t.Fatalf("expected exec 'migrate-db', got %q", lookup[types.KeyDesiredServiceInitStepExec("api", 0)])
+	}
+	if lookup[types.KeyDesiredServiceInitStepTimeout("api", 0)] != "30s" {
+		t.Fatalf("expected timeout '30s', got %q", lookup[types.KeyDesiredServiceInitStepTimeout("api", 0)])
+	}
+	if _, exists := lookup[types.KeyDesiredServiceInitStepRetry("api", 0)]; exists {
+		t.Fatal("retry should not be set for step 0 (retry=0)")
+	}
+	if lookup[types.KeyDesiredServiceInitStepExec("api", 1)] != "generate-config" {
+		t.Fatalf("expected exec 'generate-config', got %q", lookup[types.KeyDesiredServiceInitStepExec("api", 1)])
+	}
+	if lookup[types.KeyDesiredServiceInitStepRetry("api", 1)] != "5" {
+		t.Fatalf("expected retry '5', got %q", lookup[types.KeyDesiredServiceInitStepRetry("api", 1)])
+	}
+}
+
 func factMap(facts []Fact) map[string]string {
 	factLookup := make(map[string]string)
 	for _, compiledFact := range facts {

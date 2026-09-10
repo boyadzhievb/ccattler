@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M13 — Multi-Process (Phase 16) IN PROGRESS. M1–M12 complete. Phase 16 splits CCattler into separate server and agent processes communicating through a shared etcd store.
+**Active milestone:** M14 — Init Lifecycle & Observability (Phase 17) IN PROGRESS. M1–M13 complete. Phase 17 adds initialization steps as a first-class lifecycle concept and built-in telemetry collection.
 
 ---
 
@@ -400,6 +400,9 @@ placement  (instance_id, node_id)
 config     (service, key, value, type)        — env var or file, declarative desired state
 secret     (name)                              — secret exists (value in encrypted store, never here)
 secret_grant (service, secret_name)            — service is authorized to access secret
+init_step  (service, index, exec, timeout, retry) — initialization step before main workload
+init_phase (instance, phase)                   — derived init lifecycle state (pending/running/complete/failed)
+utilization (node, cpu, memory, workload_count) — observed resource telemetry
 ```
 
 ## Domain Language (DSL)
@@ -412,6 +415,17 @@ service web {
     instances 3
 
     expose 8080
+
+    init {
+        exec "db-migrate --run"
+        timeout 30s
+        retry 3
+    }
+
+    init {
+        exec "cache-warm"
+        timeout 10s
+    }
 
     health {
         http /health
@@ -538,6 +552,8 @@ StateStore
 
 Controllers never know which backend they're using. **Build the semantic control plane first; make Linux/container/distributed infrastructure replaceable adapters underneath.**
 
+Runtime interface includes `Exec(ctx, id, ExecSpec)` for running commands inside a workload — used by init steps and diagnostics.
+
 ### Logical Node Simulation
 
 Test scheduling and failure on one laptop with fake nodes:
@@ -623,6 +639,16 @@ RULE expose_running(service):
 RULE replace_failed_instance(instance):
     if instance.state = failed:
         create replacement
+```
+
+### Init Controller
+```
+RULE derive_init_phase(instance):
+    steps = desired_init_steps(instance.service)
+    if all steps succeeded: phase = complete
+    if any step failed:    phase = failed
+    if any step running:   phase = running
+    else:                  phase = pending
 ```
 
 ### Autoscaling (Unified Scaling Engine)
@@ -922,8 +948,9 @@ observer   reconciler  reporter
 ```
 
 - **Observer** — reads Linux state (`/proc`, `/sys`, cgroups, container runtime) to determine what is actually running
-- **Reconciler** — compares desired state (from store) with observed state, executes `ensure_*()` operations via containerd/runc. Resolves config and secrets at reconciliation time: reads config facts, obtains authorized secret copies, materializes both into the container as environment variables, config files, or secret files
+- **Reconciler** — compares desired state (from store) with observed state, executes `ensure_*()` operations via containerd/runc. Runs init steps before main workload start (sequential, with retry/backoff). Resolves config and secrets at reconciliation time: reads config facts, obtains authorized secret copies, materializes both into the container as environment variables, config files, or secret files
 - **Reporter** — publishes actual state, health, capacity, and events back to the store
+- **Telemetry** — collects per-node workload count and per-instance CPU/memory usage, writes as observed facts (powers `cca top`)
 
 The node agent is the materialization boundary for config and secrets:
 
@@ -988,6 +1015,7 @@ cca scale web 20              # change desired count
 cca logs [service]            # view cluster event log (optionally filtered by service)
 cca status                    # cluster overview
 cca watch [prefix]            # stream fact store changes
+cca top [nodes|workloads]     # resource utilization (CPU, memory, instances)
 cca metric set <svc> <m> <v>  # inject simulated metric
 ```
 
@@ -1150,6 +1178,18 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Update `cca apply` to accept `--store etcd` for writing facts to shared store
 - [x] End-to-end test: etcd + server + agent + apply workflow
 
+### Phase 17 — Init Lifecycle & Observability
+- [x] Init step types — `InitStepState` (pending/running/succeeded/failed), `InitPhase` (pending/running/complete/failed)
+- [x] Init step fact keys — desired step definitions (exec, timeout, retry) and observed step state/reason
+- [x] DSL `init` block — parsed into `InitStepDecl`, compiled to init step facts per service
+- [x] Init controller — watches desired init steps + observed results, derives per-instance init phase
+- [x] Agent init execution — sequential steps with timeout, exponential backoff retry, state reporting
+- [x] Runtime `Exec` interface — ExecSpec on all three runtime adapters (simulator, process, container)
+- [x] Observability telemetry — agent collects per-node workload count and per-instance CPU/memory
+- [x] `cca top` command — node and workload resource utilization tables
+- [x] API enrichment — InstanceStatus includes CPU, memory, init phase, restarts; NodeStatus includes utilization
+- [x] Init controller wired into all runner creation sites
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1167,5 +1207,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M11 — Correctness | 14 | Store idempotency, atomic txns, watch safety, controller resilience |
 | M12 — Distributed State | 15 | EtcdStore implementation, CLI `--store etcd`, key prefix isolation, integration tests |
 | M13 — Multi-Process | 16 | Separate server + agent processes, shared etcd, multi-host ready |
+| M14 — Init & Observability | 17 | Init step lifecycle, telemetry collection, `cca top`, runtime Exec |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

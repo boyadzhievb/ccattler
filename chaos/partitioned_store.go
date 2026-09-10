@@ -96,6 +96,14 @@ func (partitionedStore *PartitionedStore) Scan(ctx context.Context, prefix strin
 	return partitionedStore.underlyingStore.Scan(ctx, prefix)
 }
 
+// ScanWithRevision returns facts and the store revision atomically. Returns ErrPartitioned if partitioned.
+func (partitionedStore *PartitionedStore) ScanWithRevision(ctx context.Context, prefix string) (*store.ScanResult, error) {
+	if err := partitionedStore.checkPartition(); err != nil {
+		return nil, err
+	}
+	return partitionedStore.underlyingStore.ScanWithRevision(ctx, prefix)
+}
+
 // Watch creates a subscription for changes to the specified key or prefix.
 // Returns ErrPartitioned if the store is partitioned at call time.
 // Pre-partition watches continue delivering events from the underlying store.

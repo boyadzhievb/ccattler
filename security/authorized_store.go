@@ -84,6 +84,17 @@ func (authorizedStore *AuthorizedStore) Scan(ctx context.Context, prefix string)
 	return authorizedStore.inner.Scan(ctx, prefix)
 }
 
+// ScanWithRevision reads all facts with the given prefix and the store revision, checking read permission.
+func (authorizedStore *AuthorizedStore) ScanWithRevision(ctx context.Context, prefix string) (*store.ScanResult, error) {
+	principal := PrincipalFromContext(ctx)
+	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, prefix); err != nil {
+		authorizedStore.logDenied(principal, "scan", prefix)
+		return nil, err
+	}
+	authorizedStore.logAllowed(principal, "scan", prefix)
+	return authorizedStore.inner.ScanWithRevision(ctx, prefix)
+}
+
 // Watch creates a watcher on the given key/prefix, checking watch permission.
 func (authorizedStore *AuthorizedStore) Watch(ctx context.Context, key string, opts store.WatchOption) (<-chan store.Event, error) {
 	principal := PrincipalFromContext(ctx)

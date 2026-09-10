@@ -40,17 +40,23 @@ type InstanceStatus struct {
 	NodeID      string `json:"node"`
 	IPAddress   string `json:"ip"`
 	HealthState string `json:"health"`
+	CPUMillis   string `json:"cpu,omitempty"`
+	MemoryBytes string `json:"memory,omitempty"`
+	InitPhase   string `json:"init_phase,omitempty"`
+	Restarts    string `json:"restarts,omitempty"`
 }
 
 // NodeStatus represents one node in the cluster status.
 type NodeStatus struct {
-	ID              string `json:"id"`
-	State           string `json:"state"`
-	PlacedInstances int    `json:"instances"`
-	AvailableCPU    int64  `json:"available_cpu"`
-	CapacityCPU     int64  `json:"capacity_cpu"`
-	AvailableMemory int64  `json:"available_memory"`
-	CapacityMemory  int64  `json:"capacity_memory"`
+	ID                string `json:"id"`
+	State             string `json:"state"`
+	PlacedInstances   int    `json:"instances"`
+	AvailableCPU      int64  `json:"available_cpu"`
+	CapacityCPU       int64  `json:"capacity_cpu"`
+	AvailableMemory   int64  `json:"available_memory"`
+	CapacityMemory    int64  `json:"capacity_memory"`
+	UtilizationCPU    string `json:"utilization_cpu,omitempty"`
+	UtilizationMemory string `json:"utilization_memory,omitempty"`
 }
 
 // NetworkStatus represents a service's networking configuration.
@@ -140,9 +146,27 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 		if instanceIPAddress == "" {
 			instanceIPAddress = "-"
 		}
+		instanceCPU := ""
+		if cpuFact, cpuErr := factStore.Get(ctx, types.KeyObservedInstanceCPU(instance.ID)); cpuErr == nil {
+			instanceCPU = string(cpuFact.Value)
+		}
+		instanceMemory := ""
+		if memFact, memErr := factStore.Get(ctx, types.KeyObservedInstanceMemory(instance.ID)); memErr == nil {
+			instanceMemory = string(memFact.Value)
+		}
+		initPhase := ""
+		if initFact, initErr := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instance.ID)); initErr == nil {
+			initPhase = string(initFact.Value)
+		}
+		restartCount := ""
+		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
+			restartCount = string(restartFact.Value)
+		}
 		clusterStatus.Instances = append(clusterStatus.Instances, InstanceStatus{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
 			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
+			CPUMillis: instanceCPU, MemoryBytes: instanceMemory,
+			InitPhase: initPhase, Restarts: restartCount,
 		})
 	}
 
@@ -248,10 +272,19 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 				placedInstanceCount++
 			}
 		}
+		utilizationCPU := ""
+		if cpuUtilFact, cpuErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationCPU(node.ID)); cpuErr == nil {
+			utilizationCPU = string(cpuUtilFact.Value)
+		}
+		utilizationMemory := ""
+		if memUtilFact, memErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationMemory(node.ID)); memErr == nil {
+			utilizationMemory = string(memUtilFact.Value)
+		}
 		clusterStatus.Nodes = append(clusterStatus.Nodes, NodeStatus{
 			ID: node.ID, State: string(node.State), PlacedInstances: placedInstanceCount,
 			AvailableCPU: node.AvailableCPU, CapacityCPU: node.CapacityCPU,
 			AvailableMemory: node.AvailableMemory, CapacityMemory: node.CapacityMemory,
+			UtilizationCPU: utilizationCPU, UtilizationMemory: utilizationMemory,
 		})
 	}
 

@@ -39,6 +39,7 @@ type ServiceDecl struct {
 	Config       *ConfigDecl       // optional config block (env vars, config files)
 	Secrets      []SecretDecl      // optional secret mount declarations
 	VolumeMounts []VolumeMountDecl // optional volume mount bindings
+	InitSteps    []InitStepDecl    // optional ordered initialization steps
 	Line         int               // source line number for error reporting
 }
 
@@ -152,6 +153,15 @@ type EnvVarDecl struct {
 type ConfigFileDecl struct {
 	Path    string // filesystem path to mount the config file at
 	Content string // file contents (inline or template reference)
+}
+
+// InitStepDecl represents a single "init { ... }" block in a service declaration.
+// Init steps run sequentially before the main workload starts. Each step defines
+// an exec command with optional timeout and retry configuration.
+type InitStepDecl struct {
+	Exec    string // command to execute (e.g. "migrate-db")
+	Timeout string // maximum time for the step to complete (e.g. "30s")
+	Retry   int    // number of retry attempts on failure (0 = no retries)
 }
 
 // SecretDecl holds a secret reference for a service. Secrets are delivered as
