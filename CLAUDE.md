@@ -1228,6 +1228,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Agent TLS flags — `cca agent --cert/--key/--ca` for agent-side mTLS credential loading
 - [x] Vagrant + Ansible deployment — `deploy/` directory with dual-provider Vagrantfile (libvirt + VirtualBox) and 5 Ansible roles
 - [x] Deployment plan updated — dual-provider testing on Linux, libvirt primary, VirtualBox secondary
+- [x] Multi-host demo — real cluster across .43 (ctrl+worker-2) and .215 (worker-1), 4 nginx + 2 redis containers, accessible from LAN
 
 ### Milestones
 

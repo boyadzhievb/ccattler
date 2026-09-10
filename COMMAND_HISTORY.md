@@ -22,3 +22,15 @@
 | 2026-09-10 19:19 | `go test ./security/ -v` | Verify security tests pass |
 | 2026-09-10 19:20 | `go build ./cmd/cca/` | Verify agent TLS flags compile |
 | 2026-09-10 19:25 | `go build ./cmd/cca/` | Final build verification after all changes |
+| 2026-09-10 20:50 | `GOOS=linux GOARCH=amd64 go build -o /tmp/cca-linux-amd64 ./cmd/cca/` | Cross-compile cca for Linux |
+| 2026-09-10 20:50 | `scp ... /tmp/cca-linux-amd64 bojan@192.168.100.43:/tmp/cca` | Deploy binary to .43 |
+| 2026-09-10 20:50 | `scp ... /tmp/cca-linux-amd64 bozhan@192.168.100.215:/tmp/cca` | Deploy binary to .215 |
+| 2026-09-10 21:00 | `ssh .43 'echo ... >> ~/.ssh/authorized_keys'` | Exchange SSH keys between hosts |
+| 2026-09-10 21:05 | `ssh .43 'sudo tee -a /etc/default/etcd ...'` | Configure etcd to listen on all interfaces |
+| 2026-09-10 21:10 | `ssh .43 'nohup /tmp/cca server ...'` | Start cca server on .43 |
+| 2026-09-10 21:10 | `ssh .43 'nohup /tmp/cca agent --node-id worker-2 ...'` | Start agent on .43 |
+| 2026-09-10 21:10 | `ssh .215 'nohup /tmp/cca agent --node-id worker-1 ...'` | Start agent on .215 |
+| 2026-09-10 21:15 | `ssh .215 'sudo apt-get install -y docker.io'` | Install Docker on .215 |
+| 2026-09-10 21:20 | `cca apply deploy/cluster-test.ccattler --store etcd ...` | Deploy 4 nginx + 2 redis across cluster |
+| 2026-09-10 21:25 | `curl http://192.168.100.43:80` | Verify nginx accessible from Mac via .43 |
+| 2026-09-10 21:25 | `curl http://192.168.100.215:80` | Verify nginx accessible from Mac via .215 |
