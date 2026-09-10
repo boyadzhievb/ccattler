@@ -204,6 +204,15 @@ func main() {
 
 	if serverConfig.authToken == "" {
 		clientAuthenticated = true
+	} else if transportToken := os.Getenv("CCATTLER_MCP_TOKEN"); transportToken != "" {
+		if subtle.ConstantTimeCompare([]byte(serverConfig.authToken), []byte(transportToken)) == 1 {
+			clientAuthenticated = true
+			diagnosticLogger.Println("pre-authenticated via CCATTLER_MCP_TOKEN environment variable")
+			writeAuditEntry("initialize", nil, 0, true, "pre-authenticated via env var")
+		} else {
+			fmt.Fprintf(os.Stderr, "CCATTLER_MCP_TOKEN does not match configured token\n")
+			os.Exit(1)
+		}
 	}
 
 	runProtocolLoop(os.Stdin, os.Stdout)
@@ -288,7 +297,7 @@ func handleIncomingRequest(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 func handleInitialize(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 	diagnosticLogger.Println("handling initialize")
 
-	if serverConfig.authToken != "" {
+	if serverConfig.authToken != "" && !clientAuthenticated {
 		var initParams mcpInitializeParams
 		if incomingRequest.Params != nil {
 			json.Unmarshal(incomingRequest.Params, &initParams)
@@ -314,7 +323,7 @@ func handleInitialize(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 		}
 
 		clientAuthenticated = true
-		diagnosticLogger.Println("authentication successful")
+		diagnosticLogger.Println("authentication successful via init token")
 		writeAuditEntry("initialize", nil, 0, true, "")
 	}
 
