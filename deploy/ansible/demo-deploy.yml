@@ -9,6 +9,14 @@
   gather_facts: false
   tags: [vagrant]
   tasks:
+    - name: Destroy existing VMs (idempotent)
+      shell: vagrant destroy -f
+      args:
+        chdir: "{{ playbook_dir }}"
+      environment:
+        VAGRANT_VAGRANTFILE: "{{ playbook_dir }}/demo-Vagrantfile"
+      ignore_errors: true
+
     - name: Start VMs (no provisioning)
       shell: vagrant up --no-provision
       args:
