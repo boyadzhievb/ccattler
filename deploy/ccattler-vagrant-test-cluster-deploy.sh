@@ -50,15 +50,25 @@ download_release() {
         return
     fi
 
-    echo "Downloading CCattler ${CCATTLER_VERSION}..."
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+    esac
+
+    echo "Downloading CCattler ${CCATTLER_VERSION} (linux/${arch})..."
     mkdir -p "$INSTALL_DIR"
 
     curl -fsSL "${RELEASE_URL}/ccattler-deploy.tar.gz" -o /tmp/ccattler-deploy.tar.gz
     tar -xzf /tmp/ccattler-deploy.tar.gz -C "$INSTALL_DIR"
     rm /tmp/ccattler-deploy.tar.gz
 
-    curl -fsSL "${RELEASE_URL}/cca-linux-amd64" -o "$INSTALL_DIR/ansible/cca-linux-amd64"
+    curl -fsSL "${RELEASE_URL}/cca-${CCATTLER_VERSION}-linux-${arch}.tar.gz" -o /tmp/cca.tar.gz
+    tar -xzf /tmp/cca.tar.gz -C "$INSTALL_DIR/ansible"
+    mv "$INSTALL_DIR/ansible/cca" "$INSTALL_DIR/ansible/cca-linux-amd64"
     chmod +x "$INSTALL_DIR/ansible/cca-linux-amd64"
+    rm /tmp/cca.tar.gz
 
     echo "Installed to ${INSTALL_DIR}"
 }

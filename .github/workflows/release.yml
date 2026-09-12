@@ -56,8 +56,25 @@ jobs:
             cca-*.tar.gz
             cca-*.tar.gz.sha256
 
+  package-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package deploy directory
+        run: |
+          tar czf ccattler-deploy.tar.gz -C deploy ansible
+          sha256sum ccattler-deploy.tar.gz > ccattler-deploy.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ccattler-deploy
+          path: |
+            ccattler-deploy.tar.gz
+            ccattler-deploy.tar.gz.sha256
+
   release:
-    needs: build
+    needs: [build, package-deploy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -73,4 +90,5 @@ jobs:
           files: |
             cca-*.tar.gz
             cca-*.tar.gz.sha256
+            ccattler-deploy.tar.gz
             checksums.txt
