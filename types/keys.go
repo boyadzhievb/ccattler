@@ -4,7 +4,7 @@ import "fmt"
 
 // Root is the top-level prefix for all CCattler keys in the fact store.
 // Every key in the store begins with this prefix.
-const Root = "/ccattler"
+const Root = ""
 
 // Top-level key prefixes. Each prefix partitions the fact store into a
 // distinct concern: desired state, effective (derived) state, observed
@@ -47,110 +47,110 @@ const (
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
-// Path: /ccattler/desired/service/{name}
+// Path: desired/service/{name}
 func KeyDesiredService(name string) string {
 	return fmt.Sprintf("%s/service/%s", PrefixDesired, name)
 }
 
 // KeyDesiredServiceImage returns the store path for a service's container image.
-// Path: /ccattler/desired/service/{name}/image
+// Path: desired/service/{name}/image
 func KeyDesiredServiceImage(name string) string {
 	return fmt.Sprintf("%s/service/%s/image", PrefixDesired, name)
 }
 
 // KeyDesiredServiceInstances returns the store path for a service's desired instance count.
-// Path: /ccattler/desired/service/{name}/instances
+// Path: desired/service/{name}/instances
 func KeyDesiredServiceInstances(name string) string {
 	return fmt.Sprintf("%s/service/%s/instances", PrefixDesired, name)
 }
 
 // KeyDesiredServiceExpose returns the store path for a service's exposed port entry.
-// Path: /ccattler/desired/service/{name}/expose/{port}
+// Path: desired/service/{name}/expose/{port}
 func KeyDesiredServiceExpose(name string, port int) string {
 	return fmt.Sprintf("%s/service/%s/expose/%d", PrefixDesired, name, port)
 }
 
 // KeyDesiredServiceResourcesCPU returns the store path for a service's CPU resource requirement.
-// Path: /ccattler/desired/service/{name}/resources/cpu
+// Path: desired/service/{name}/resources/cpu
 func KeyDesiredServiceResourcesCPU(name string) string {
 	return fmt.Sprintf("%s/service/%s/resources/cpu", PrefixDesired, name)
 }
 
 // KeyDesiredServiceResourcesMemory returns the store path for a service's memory resource requirement.
-// Path: /ccattler/desired/service/{name}/resources/memory
+// Path: desired/service/{name}/resources/memory
 func KeyDesiredServiceResourcesMemory(name string) string {
 	return fmt.Sprintf("%s/service/%s/resources/memory", PrefixDesired, name)
 }
 
 // KeyDesiredServiceHealthMethod returns the store path for a service's health check method (http, tcp, exec).
-// Path: /ccattler/desired/service/{name}/health/method
+// Path: desired/service/{name}/health/method
 func KeyDesiredServiceHealthMethod(name string) string {
 	return fmt.Sprintf("%s/service/%s/health/method", PrefixDesired, name)
 }
 
 // KeyDesiredServiceHealthPath returns the store path for a service's health check HTTP path.
-// Path: /ccattler/desired/service/{name}/health/path
+// Path: desired/service/{name}/health/path
 func KeyDesiredServiceHealthPath(name string) string {
 	return fmt.Sprintf("%s/service/%s/health/path", PrefixDesired, name)
 }
 
 // KeyDesiredServiceHealthInterval returns the store path for a service's health check interval.
-// Path: /ccattler/desired/service/{name}/health/interval
+// Path: desired/service/{name}/health/interval
 func KeyDesiredServiceHealthInterval(name string) string {
 	return fmt.Sprintf("%s/service/%s/health/interval", PrefixDesired, name)
 }
 
 // KeyEffectiveServiceInstances returns the store path for a service's effective (resolved)
 // instance count, derived from all intent layers.
-// Path: /ccattler/effective/service/{name}/instances
+// Path: effective/service/{name}/instances
 func KeyEffectiveServiceInstances(name string) string {
 	return fmt.Sprintf("%s/service/%s/instances", PrefixEffective, name)
 }
 
 // KeyObservedNode returns the store path for a node's root marker key.
-// Path: /ccattler/observed/node/{nodeID}
+// Path: observed/node/{nodeID}
 func KeyObservedNode(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeState returns the store path for a node's observed lifecycle state.
-// Path: /ccattler/observed/node/{nodeID}/state
+// Path: observed/node/{nodeID}/state
 func KeyObservedNodeState(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/state", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeCapacityCPU returns the store path for a node's total CPU capacity.
-// Path: /ccattler/observed/node/{nodeID}/capacity/cpu
+// Path: observed/node/{nodeID}/capacity/cpu
 func KeyObservedNodeCapacityCPU(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/capacity/cpu", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeCapacityMemory returns the store path for a node's total memory capacity.
-// Path: /ccattler/observed/node/{nodeID}/capacity/memory
+// Path: observed/node/{nodeID}/capacity/memory
 func KeyObservedNodeCapacityMemory(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/capacity/memory", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeAvailableCPU returns the store path for a node's currently available CPU.
-// Path: /ccattler/observed/node/{nodeID}/available/cpu
+// Path: observed/node/{nodeID}/available/cpu
 func KeyObservedNodeAvailableCPU(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/available/cpu", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeAvailableMemory returns the store path for a node's currently available memory.
-// Path: /ccattler/observed/node/{nodeID}/available/memory
+// Path: observed/node/{nodeID}/available/memory
 func KeyObservedNodeAvailableMemory(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/available/memory", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeArchitecture returns the store path for a node's CPU architecture.
-// Path: /ccattler/observed/node/{nodeID}/architecture
+// Path: observed/node/{nodeID}/architecture
 func KeyObservedNodeArchitecture(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/architecture", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeZone returns the store path for a node's availability zone.
-// Path: /ccattler/observed/node/{nodeID}/zone
+// Path: observed/node/{nodeID}/zone
 func KeyObservedNodeZone(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/zone", PrefixObserved, nodeID)
 }
@@ -158,43 +158,43 @@ func KeyObservedNodeZone(nodeID string) string {
 // KeyObservedNodeAddress returns the store path for a node's advertised
 // routable IP address. This is the LAN-reachable address other nodes use
 // for cross-host data plane DNAT targets.
-// Path: /ccattler/observed/node/{nodeID}/address
+// Path: observed/node/{nodeID}/address
 func KeyObservedNodeAddress(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/address", PrefixObserved, nodeID)
 }
 
 // KeyObservedInstance returns the store path for an instance's root marker key.
-// Path: /ccattler/observed/instance/{instanceID}
+// Path: observed/instance/{instanceID}
 func KeyObservedInstance(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceService returns the store path for an instance's parent service name.
-// Path: /ccattler/observed/instance/{instanceID}/service
+// Path: observed/instance/{instanceID}/service
 func KeyObservedInstanceService(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/service", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceNode returns the store path for the node an instance is running on.
-// Path: /ccattler/observed/instance/{instanceID}/node
+// Path: observed/instance/{instanceID}/node
 func KeyObservedInstanceNode(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/node", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceState returns the store path for an instance's lifecycle state.
-// Path: /ccattler/observed/instance/{instanceID}/state
+// Path: observed/instance/{instanceID}/state
 func KeyObservedInstanceState(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/state", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceImage returns the store path for the container image an instance is running.
-// Path: /ccattler/observed/instance/{instanceID}/image
+// Path: observed/instance/{instanceID}/image
 func KeyObservedInstanceImage(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/image", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceIP returns the store path for an instance's assigned IP address.
-// Path: /ccattler/observed/instance/{instanceID}/ip
+// Path: observed/instance/{instanceID}/ip
 func KeyObservedInstanceIP(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/ip", PrefixObserved, instanceID)
 }
@@ -203,20 +203,20 @@ func KeyObservedInstanceIP(instanceID string) string {
 // mapped to a container's exposed port. This is the port on the host's
 // LAN address that forwards to the container, used by the data plane for
 // cross-host DNAT targets.
-// Path: /ccattler/observed/instance/{instanceID}/hostport
+// Path: observed/instance/{instanceID}/hostport
 func KeyObservedInstanceHostPort(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/hostport", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceHealth returns the store path for an instance's latest health check result.
-// Path: /ccattler/observed/instance/{instanceID}/health
+// Path: observed/instance/{instanceID}/health
 func KeyObservedInstanceHealth(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/health", PrefixObserved, instanceID)
 }
 
 // KeyObservedMetric returns the store path for a simulated metric value used by
 // the autoscaler. Metrics are keyed by service name and metric name.
-// Path: /ccattler/observed/metric/service/{service}/{metric}
+// Path: observed/metric/service/{service}/{metric}
 func KeyObservedMetric(service, metric string) string {
 	return fmt.Sprintf("%s/metric/service/%s/%s", PrefixObserved, service, metric)
 }
@@ -278,28 +278,28 @@ const (
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
 // for a given instance. The value stored at this key is the target node ID.
-// Path: /ccattler/placement/instance/{instanceID}
+// Path: placement/instance/{instanceID}
 func KeyPlacementInstance(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s", PrefixPlacement, instanceID)
 }
 
 // KeyEndpoint returns the store path for a service instance's network endpoint.
 // The value stored at this key is the IP:port pair.
-// Path: /ccattler/endpoint/service/{serviceName}/{instanceID}
+// Path: endpoint/service/{serviceName}/{instanceID}
 func KeyEndpoint(serviceName, instanceID string) string {
 	return fmt.Sprintf("%s/service/%s/%s", PrefixEndpoint, serviceName, instanceID)
 }
 
 // KeyIntentUserServiceInstances returns the store path for the user intent layer's
 // desired instance count for a service.
-// Path: /ccattler/intent/user/service/{name}/instances
+// Path: intent/user/service/{name}/instances
 func KeyIntentUserServiceInstances(name string) string {
 	return fmt.Sprintf("%s/user/service/%s/instances", PrefixIntent, name)
 }
 
 // KeyIntentAutoscalerServiceInstances returns the store path for the autoscaler
 // intent layer's recommended instance count for a service.
-// Path: /ccattler/intent/autoscaler/service/{name}/instances
+// Path: intent/autoscaler/service/{name}/instances
 func KeyIntentAutoscalerServiceInstances(name string) string {
 	return fmt.Sprintf("%s/autoscaler/service/%s/instances", PrefixIntent, name)
 }
@@ -307,58 +307,58 @@ func KeyIntentAutoscalerServiceInstances(name string) string {
 // KeyLeaseNode returns the store path for a node's heartbeat lease key.
 // The node agent periodically refreshes this lease; expiry signals the node
 // is unreachable.
-// Path: /ccattler/lease/node/{nodeID}
+// Path: lease/node/{nodeID}
 func KeyLeaseNode(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s", PrefixLease, nodeID)
 }
 
 // KeyNetworkNodeSubnet returns the store path for a node's assigned subnet CIDR.
-// Path: /ccattler/network/node/{nodeID}/subnet
+// Path: network/node/{nodeID}/subnet
 func KeyNetworkNodeSubnet(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/subnet", PrefixNetwork, nodeID)
 }
 
 // KeyNetworkAllocation returns the store path for an instance's allocated IP address.
-// Path: /ccattler/network/allocation/{instanceID}
+// Path: network/allocation/{instanceID}
 func KeyNetworkAllocation(instanceID string) string {
 	return fmt.Sprintf("%s/allocation/%s", PrefixNetwork, instanceID)
 }
 
 // KeyNetworkVIPService returns the store path for a service's virtual IP address.
-// Path: /ccattler/network/vip/service/{serviceName}
+// Path: network/vip/service/{serviceName}
 func KeyNetworkVIPService(serviceName string) string {
 	return fmt.Sprintf("%s/vip/service/%s", PrefixNetwork, serviceName)
 }
 
 // KeyNetworkVIPServicePort returns the store path for a service VIP's port number.
-// Path: /ccattler/network/vip/service/{serviceName}/port
+// Path: network/vip/service/{serviceName}/port
 func KeyNetworkVIPServicePort(serviceName string) string {
 	return fmt.Sprintf("%s/vip/service/%s/port", PrefixNetwork, serviceName)
 }
 
 // KeyNetworkDNS returns the store path for a service's DNS name-to-VIP mapping.
-// Path: /ccattler/network/dns/{serviceName}
+// Path: network/dns/{serviceName}
 func KeyNetworkDNS(serviceName string) string {
 	return fmt.Sprintf("%s/dns/%s", PrefixNetwork, serviceName)
 }
 
 // KeyDesiredServiceScaleHorizontalMin returns the store path for a service's
 // horizontal autoscaling minimum instance count.
-// Path: /ccattler/desired/service/{name}/scale/horizontal/min
+// Path: desired/service/{name}/scale/horizontal/min
 func KeyDesiredServiceScaleHorizontalMin(name string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/min", PrefixDesired, name)
 }
 
 // KeyDesiredServiceScaleHorizontalMax returns the store path for a service's
 // horizontal autoscaling maximum instance count.
-// Path: /ccattler/desired/service/{name}/scale/horizontal/max
+// Path: desired/service/{name}/scale/horizontal/max
 func KeyDesiredServiceScaleHorizontalMax(name string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/max", PrefixDesired, name)
 }
 
 // KeyDesiredServiceScaleHorizontalTarget returns the store path for a single
 // autoscaling target metric and its threshold value.
-// Path: /ccattler/desired/service/{name}/scale/horizontal/target/{metric}
+// Path: desired/service/{name}/scale/horizontal/target/{metric}
 func KeyDesiredServiceScaleHorizontalTarget(name string, metric string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/target/%s", PrefixDesired, name, metric)
 }
@@ -512,20 +512,20 @@ func KeyObservedServiceRolloutFailures(name string) string {
 }
 
 // KeyDesiredServiceConfigEnv returns the store path for a service's environment variable.
-// Path: /ccattler/desired/service/{name}/config/env/{varName}
+// Path: desired/service/{name}/config/env/{varName}
 func KeyDesiredServiceConfigEnv(serviceName, varName string) string {
 	return fmt.Sprintf("%s/service/%s/config/env/%s", PrefixDesired, serviceName, varName)
 }
 
 // KeyDesiredServiceConfigFile returns the store path for a service's config file.
-// Path: /ccattler/desired/service/{name}/config/file/{path}
+// Path: desired/service/{name}/config/file/{path}
 func KeyDesiredServiceConfigFile(serviceName, filePath string) string {
 	return fmt.Sprintf("%s/service/%s/config/file/%s", PrefixDesired, serviceName, filePath)
 }
 
 // KeyDesiredServiceSecret returns the store path for a service's secret grant.
 // The value is the mount path.
-// Path: /ccattler/desired/service/{name}/secret/{secretName}
+// Path: desired/service/{name}/secret/{secretName}
 func KeyDesiredServiceSecret(serviceName, secretName string) string {
 	return fmt.Sprintf("%s/service/%s/secret/%s", PrefixDesired, serviceName, secretName)
 }
@@ -545,33 +545,33 @@ func ScanDesiredServiceSecrets(serviceName string) string {
 
 // KeyObservedNodeUtilizationCPU returns the store path for a node's current
 // CPU utilization as a percentage (0-100).
-// Path: /ccattler/observed/node/{nodeID}/utilization/cpu
+// Path: observed/node/{nodeID}/utilization/cpu
 func KeyObservedNodeUtilizationCPU(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/utilization/cpu", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeUtilizationMemory returns the store path for a node's current
 // memory utilization as a percentage (0-100).
-// Path: /ccattler/observed/node/{nodeID}/utilization/memory
+// Path: observed/node/{nodeID}/utilization/memory
 func KeyObservedNodeUtilizationMemory(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/utilization/memory", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeDiskUsed returns the store path for a node's disk usage as bytes.
-// Path: /ccattler/observed/node/{nodeID}/disk/used
+// Path: observed/node/{nodeID}/disk/used
 func KeyObservedNodeDiskUsed(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/disk/used", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeDiskCapacity returns the store path for a node's total disk capacity.
-// Path: /ccattler/observed/node/{nodeID}/disk/capacity
+// Path: observed/node/{nodeID}/disk/capacity
 func KeyObservedNodeDiskCapacity(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/disk/capacity", PrefixObserved, nodeID)
 }
 
 // KeyObservedNodeWorkloadCount returns the store path for the number of workloads
 // running on a node.
-// Path: /ccattler/observed/node/{nodeID}/workloads
+// Path: observed/node/{nodeID}/workloads
 func KeyObservedNodeWorkloadCount(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/workloads", PrefixObserved, nodeID)
 }
@@ -580,20 +580,20 @@ func KeyObservedNodeWorkloadCount(nodeID string) string {
 
 // KeyObservedInstanceCPU returns the store path for an instance's current CPU usage
 // in millicores.
-// Path: /ccattler/observed/instance/{instanceID}/cpu
+// Path: observed/instance/{instanceID}/cpu
 func KeyObservedInstanceCPU(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/cpu", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceMemory returns the store path for an instance's current memory
 // usage in bytes.
-// Path: /ccattler/observed/instance/{instanceID}/memory
+// Path: observed/instance/{instanceID}/memory
 func KeyObservedInstanceMemory(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/memory", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceRestarts returns the store path for an instance's restart count.
-// Path: /ccattler/observed/instance/{instanceID}/restarts
+// Path: observed/instance/{instanceID}/restarts
 func KeyObservedInstanceRestarts(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/restarts", PrefixObserved, instanceID)
 }
@@ -602,7 +602,7 @@ func KeyObservedInstanceRestarts(instanceID string) string {
 // timestamp when an instance started draining. The failure controller writes this
 // when a liveness or startup probe triggers a graceful drain instead of an
 // immediate stop.
-// Path: /ccattler/observed/instance/{instanceID}/drain_since
+// Path: observed/instance/{instanceID}/drain_since
 func KeyObservedInstanceDrainSince(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixObserved, instanceID)
 }
@@ -611,25 +611,25 @@ func KeyObservedInstanceDrainSince(instanceID string) string {
 // stored as desired facts per service. Observed init results are per-instance.
 
 // KeyDesiredServiceInitStep returns the store path for an init step's root marker.
-// Path: /ccattler/desired/service/{name}/init/{index}
+// Path: desired/service/{name}/init/{index}
 func KeyDesiredServiceInitStep(serviceName string, stepIndex int) string {
 	return fmt.Sprintf("%s/service/%s/init/%d", PrefixDesired, serviceName, stepIndex)
 }
 
 // KeyDesiredServiceInitStepExec returns the store path for an init step's exec command.
-// Path: /ccattler/desired/service/{name}/init/{index}/exec
+// Path: desired/service/{name}/init/{index}/exec
 func KeyDesiredServiceInitStepExec(serviceName string, stepIndex int) string {
 	return fmt.Sprintf("%s/service/%s/init/%d/exec", PrefixDesired, serviceName, stepIndex)
 }
 
 // KeyDesiredServiceInitStepTimeout returns the store path for an init step's timeout.
-// Path: /ccattler/desired/service/{name}/init/{index}/timeout
+// Path: desired/service/{name}/init/{index}/timeout
 func KeyDesiredServiceInitStepTimeout(serviceName string, stepIndex int) string {
 	return fmt.Sprintf("%s/service/%s/init/%d/timeout", PrefixDesired, serviceName, stepIndex)
 }
 
 // KeyDesiredServiceInitStepRetry returns the store path for an init step's retry count.
-// Path: /ccattler/desired/service/{name}/init/{index}/retry
+// Path: desired/service/{name}/init/{index}/retry
 func KeyDesiredServiceInitStepRetry(serviceName string, stepIndex int) string {
 	return fmt.Sprintf("%s/service/%s/init/%d/retry", PrefixDesired, serviceName, stepIndex)
 }
@@ -640,19 +640,19 @@ func ScanDesiredServiceInitSteps(serviceName string) string {
 }
 
 // KeyObservedInstanceInitPhase returns the store path for an instance's overall init phase.
-// Path: /ccattler/observed/instance/{instanceID}/init/phase
+// Path: observed/instance/{instanceID}/init/phase
 func KeyObservedInstanceInitPhase(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/init/phase", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceInitStepState returns the store path for an instance's init step result.
-// Path: /ccattler/observed/instance/{instanceID}/init/step/{index}/state
+// Path: observed/instance/{instanceID}/init/step/{index}/state
 func KeyObservedInstanceInitStepState(instanceID string, stepIndex int) string {
 	return fmt.Sprintf("%s/instance/%s/init/step/%d/state", PrefixObserved, instanceID, stepIndex)
 }
 
 // KeyObservedInstanceInitStepReason returns the store path for an init step's failure reason.
-// Path: /ccattler/observed/instance/{instanceID}/init/step/{index}/reason
+// Path: observed/instance/{instanceID}/init/step/{index}/reason
 func KeyObservedInstanceInitStepReason(instanceID string, stepIndex int) string {
 	return fmt.Sprintf("%s/instance/%s/init/step/%d/reason", PrefixObserved, instanceID, stepIndex)
 }
@@ -675,73 +675,73 @@ const (
 )
 
 // KeyDesiredTenant returns the store path for a tenant's root marker key.
-// Path: /ccattler/desired/tenant/{name}
+// Path: desired/tenant/{name}
 func KeyDesiredTenant(tenantName string) string {
 	return fmt.Sprintf("%s%s", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantQuotaCPU returns the store path for a tenant's CPU quota in millicores.
-// Path: /ccattler/desired/tenant/{name}/quota/cpu
+// Path: desired/tenant/{name}/quota/cpu
 func KeyDesiredTenantQuotaCPU(tenantName string) string {
 	return fmt.Sprintf("%s%s/quota/cpu", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantQuotaMemory returns the store path for a tenant's memory quota in bytes.
-// Path: /ccattler/desired/tenant/{name}/quota/memory
+// Path: desired/tenant/{name}/quota/memory
 func KeyDesiredTenantQuotaMemory(tenantName string) string {
 	return fmt.Sprintf("%s%s/quota/memory", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantQuotaInstances returns the store path for a tenant's maximum instance count.
-// Path: /ccattler/desired/tenant/{name}/quota/instances
+// Path: desired/tenant/{name}/quota/instances
 func KeyDesiredTenantQuotaInstances(tenantName string) string {
 	return fmt.Sprintf("%s%s/quota/instances", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantQuotaVolumes returns the store path for a tenant's maximum volume count.
-// Path: /ccattler/desired/tenant/{name}/quota/volumes
+// Path: desired/tenant/{name}/quota/volumes
 func KeyDesiredTenantQuotaVolumes(tenantName string) string {
 	return fmt.Sprintf("%s%s/quota/volumes", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantQuotaStorage returns the store path for a tenant's total storage quota.
-// Path: /ccattler/desired/tenant/{name}/quota/storage
+// Path: desired/tenant/{name}/quota/storage
 func KeyDesiredTenantQuotaStorage(tenantName string) string {
 	return fmt.Sprintf("%s%s/quota/storage", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredTenantWeight returns the store path for a tenant's scheduling weight.
-// Path: /ccattler/desired/tenant/{name}/weight
+// Path: desired/tenant/{name}/weight
 func KeyDesiredTenantWeight(tenantName string) string {
 	return fmt.Sprintf("%s%s/weight", PrefixDesiredTenant, tenantName)
 }
 
 // KeyObservedTenantUsageCPU returns the store path for a tenant's current CPU usage.
-// Path: /ccattler/observed/tenant/{name}/usage/cpu
+// Path: observed/tenant/{name}/usage/cpu
 func KeyObservedTenantUsageCPU(tenantName string) string {
 	return fmt.Sprintf("%s%s/usage/cpu", PrefixObservedTenant, tenantName)
 }
 
 // KeyObservedTenantUsageMemory returns the store path for a tenant's current memory usage.
-// Path: /ccattler/observed/tenant/{name}/usage/memory
+// Path: observed/tenant/{name}/usage/memory
 func KeyObservedTenantUsageMemory(tenantName string) string {
 	return fmt.Sprintf("%s%s/usage/memory", PrefixObservedTenant, tenantName)
 }
 
 // KeyObservedTenantUsageInstances returns the store path for a tenant's current instance count.
-// Path: /ccattler/observed/tenant/{name}/usage/instances
+// Path: observed/tenant/{name}/usage/instances
 func KeyObservedTenantUsageInstances(tenantName string) string {
 	return fmt.Sprintf("%s%s/usage/instances", PrefixObservedTenant, tenantName)
 }
 
 // KeyObservedTenantUsageVolumes returns the store path for a tenant's current volume count.
-// Path: /ccattler/observed/tenant/{name}/usage/volumes
+// Path: observed/tenant/{name}/usage/volumes
 func KeyObservedTenantUsageVolumes(tenantName string) string {
 	return fmt.Sprintf("%s%s/usage/volumes", PrefixObservedTenant, tenantName)
 }
 
 // KeyDesiredServiceOwner returns the store path for a service's owning tenant.
-// Path: /ccattler/desired/service/{name}/owner
+// Path: desired/service/{name}/owner
 func KeyDesiredServiceOwner(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/owner", PrefixDesired, serviceName)
 }
@@ -756,14 +756,14 @@ const (
 )
 
 // KeyExportService returns the store path for a shared service export marker.
-// Path: /ccattler/export/{serviceName}
+// Path: export/{serviceName}
 func KeyExportService(serviceName string) string {
 	return fmt.Sprintf("%s%s", PrefixExport, serviceName)
 }
 
 // KeyExportServiceAllowTenant returns the store path for a tenant allowed to
 // consume an exported service.
-// Path: /ccattler/export/{serviceName}/allow/{tenantName}
+// Path: export/{serviceName}/allow/{tenantName}
 func KeyExportServiceAllowTenant(serviceName, tenantName string) string {
 	return fmt.Sprintf("%s%s/allow/%s", PrefixExport, serviceName, tenantName)
 }
@@ -775,7 +775,7 @@ func ScanExportServiceAllowTenants(serviceName string) string {
 }
 
 // KeyImportService returns the store path for a service's import declaration.
-// Path: /ccattler/import/{consumerService}/uses/{exportedService}
+// Path: import/{consumerService}/uses/{exportedService}
 func KeyImportService(consumerService, exportedService string) string {
 	return fmt.Sprintf("%s%s/uses/%s", PrefixImport, consumerService, exportedService)
 }
@@ -789,149 +789,149 @@ func ScanImportsForService(consumerService string) string {
 
 // KeyDesiredTenantState returns the store path for a tenant's lifecycle state
 // (active, deleting).
-// Path: /ccattler/desired/tenant/{name}/state
+// Path: desired/tenant/{name}/state
 func KeyDesiredTenantState(tenantName string) string {
 	return fmt.Sprintf("%s%s/state", PrefixDesiredTenant, tenantName)
 }
 
 // KeyDesiredVolume returns the store path for a volume's root marker key.
-// Path: /ccattler/desired/volume/{name}
+// Path: desired/volume/{name}
 func KeyDesiredVolume(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s", PrefixDesired, volumeName)
 }
 
 // KeyDesiredVolumeSize returns the store path for a volume's declared size.
-// Path: /ccattler/desired/volume/{name}/size
+// Path: desired/volume/{name}/size
 func KeyDesiredVolumeSize(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/size", PrefixDesired, volumeName)
 }
 
 // KeyDesiredVolumePersistent returns the store path for a volume's persistence flag.
-// Path: /ccattler/desired/volume/{name}/persistent
+// Path: desired/volume/{name}/persistent
 func KeyDesiredVolumePersistent(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/persistent", PrefixDesired, volumeName)
 }
 
 // KeyDesiredServiceVolume returns the store path binding a service to a named
 // volume. The value stored at this key is the mount path inside the instance.
-// Path: /ccattler/desired/service/{serviceName}/volume/{volumeName}
+// Path: desired/service/{serviceName}/volume/{volumeName}
 func KeyDesiredServiceVolume(serviceName string, volumeName string) string {
 	return fmt.Sprintf("%s/service/%s/volume/%s", PrefixDesired, serviceName, volumeName)
 }
 
 // KeyObservedVolume returns the store path for an observed volume's root marker.
-// Path: /ccattler/observed/volume/{name}
+// Path: observed/volume/{name}
 func KeyObservedVolume(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeState returns the store path for an observed volume's lifecycle state.
-// Path: /ccattler/observed/volume/{name}/state
+// Path: observed/volume/{name}/state
 func KeyObservedVolumeState(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/state", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeNode returns the store path for the node a volume is attached to.
-// Path: /ccattler/observed/volume/{name}/node
+// Path: observed/volume/{name}/node
 func KeyObservedVolumeNode(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/node", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeInstance returns the store path for the instance a volume is mounted into.
-// Path: /ccattler/observed/volume/{name}/instance
+// Path: observed/volume/{name}/instance
 func KeyObservedVolumeInstance(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/instance", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeSize returns the store path for an observed volume's size.
-// Path: /ccattler/observed/volume/{name}/size
+// Path: observed/volume/{name}/size
 func KeyObservedVolumeSize(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/size", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeMountPath returns the store path for an observed volume's mount path.
-// Path: /ccattler/observed/volume/{name}/mount_path
+// Path: observed/volume/{name}/mount_path
 func KeyObservedVolumeMountPath(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/mount_path", PrefixObserved, volumeName)
 }
 
 // ---------------------------------------------------------------------------
 // Desired probe config keys (per service, per probe type)
-// Pattern: /ccattler/desired/service/{name}/probe/{probeType}/{field}
+// Pattern: desired/service/{name}/probe/{probeType}/{field}
 // Probe types: startup, liveness, readiness
 // ---------------------------------------------------------------------------
 
 // KeyDesiredServiceProbeMethod returns the store path for a probe's check method.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/method
+// Path: desired/service/{name}/probe/{probeType}/method
 func KeyDesiredServiceProbeMethod(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/method", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbePath returns the store path for a probe's check path.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/path
+// Path: desired/service/{name}/probe/{probeType}/path
 func KeyDesiredServiceProbePath(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/path", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbePort returns the store path for a probe's check port.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/port
+// Path: desired/service/{name}/probe/{probeType}/port
 func KeyDesiredServiceProbePort(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/port", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeInterval returns the store path for a probe's check interval.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/interval
+// Path: desired/service/{name}/probe/{probeType}/interval
 func KeyDesiredServiceProbeInterval(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/interval", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeTimeout returns the store path for a probe's check timeout.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/timeout
+// Path: desired/service/{name}/probe/{probeType}/timeout
 func KeyDesiredServiceProbeTimeout(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/timeout", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeFailureThreshold returns the store path for a probe's failure threshold.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/failure_threshold
+// Path: desired/service/{name}/probe/{probeType}/failure_threshold
 func KeyDesiredServiceProbeFailureThreshold(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/failure_threshold", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeSuccessThreshold returns the store path for a probe's success threshold.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/success_threshold
+// Path: desired/service/{name}/probe/{probeType}/success_threshold
 func KeyDesiredServiceProbeSuccessThreshold(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/success_threshold", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeInitialDelay returns the store path for a probe's initial delay
 // before the first check runs.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/initial_delay
+// Path: desired/service/{name}/probe/{probeType}/initial_delay
 func KeyDesiredServiceProbeInitialDelay(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/initial_delay", PrefixDesired, serviceName, probeType)
 }
 
 // ScanDesiredServiceProbe returns the scan prefix for all config fields of a
 // specific probe type on a service.
-// Path: /ccattler/desired/service/{name}/probe/{probeType}/
+// Path: desired/service/{name}/probe/{probeType}/
 func ScanDesiredServiceProbe(serviceName string, probeType string) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/", PrefixDesired, serviceName, probeType)
 }
 
 // ---------------------------------------------------------------------------
 // Observed probe result keys (per instance, per probe type)
-// Pattern: /ccattler/observed/instance/{instanceID}/probe/{probeType}
+// Pattern: observed/instance/{instanceID}/probe/{probeType}
 // ---------------------------------------------------------------------------
 
 // KeyObservedInstanceProbeState returns the store path for an observed probe
 // result on a specific instance and probe type (startup, liveness, readiness).
-// Path: /ccattler/observed/instance/{instanceID}/probe/{probeType}
+// Path: observed/instance/{instanceID}/probe/{probeType}
 func KeyObservedInstanceProbeState(instanceID string, probeType string) string {
 	return fmt.Sprintf("%s/instance/%s/probe/%s", PrefixObserved, instanceID, probeType)
 }
 
 // ScanObservedInstanceProbes returns the scan prefix for all probe results
 // on a specific instance.
-// Path: /ccattler/observed/instance/{instanceID}/probe/
+// Path: observed/instance/{instanceID}/probe/
 func ScanObservedInstanceProbes(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/probe/", PrefixObserved, instanceID)
 }
