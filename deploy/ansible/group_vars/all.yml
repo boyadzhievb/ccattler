@@ -1,7 +1,5 @@
 etcd_version: "3.5.14"
 
-etcd_endpoints: "http://192.168.100.43:2379"
-
 cca_cert_dir: /etc/ccattler/pki
 cca_ca_validity_days: 365
 cca_cert_validity_days: 90
