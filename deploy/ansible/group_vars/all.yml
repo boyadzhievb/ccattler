@@ -1,4 +1,6 @@
 etcd_version: "3.5.14"
+nerdctl_version: "2.0.3"
+cni_plugins_version: "1.9.1"
 
 cca_cert_dir: /etc/ccattler/pki
 cca_ca_validity_days: 365

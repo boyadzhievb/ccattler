@@ -703,12 +703,12 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	var runtimeAdapter runtime.Runtime
 	if parsedConfig.runtimeBackend == "container" {
-		if _, err := exec.LookPath("docker"); err != nil {
-			fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
+		if _, err := exec.LookPath("nerdctl"); err != nil {
+			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
 			os.Exit(1)
 		}
 		containerRuntime := runtime.NewContainerRuntime()
-		containerRuntime.SetDockerNetwork("cca-net", network.DefaultClusterCIDR)
+		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
 		runtimeAdapter = containerRuntime
 	} else {
 		runtimeAdapter = runtime.NewProcessRuntime()
@@ -1324,13 +1324,13 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 }
 
 // executeLiveContainerCommand parses a .ccattler file and starts real OCI containers
-// via the ContainerRuntime (docker CLI) and node agent. When watchModeEnabled is
+// via the ContainerRuntime (nerdctl CLI) and node agent. When watchModeEnabled is
 // true, prints status every 2 seconds with timestamps; otherwise prints status once
 // and blocks until Ctrl+C.
 func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		fmt.Fprintln(os.Stderr, "error: docker is not installed or not in PATH")
-		fmt.Fprintln(os.Stderr, "install Docker Desktop (macOS/Windows) or docker-ce (Linux)")
+	if _, err := exec.LookPath("nerdctl"); err != nil {
+		fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
+		fmt.Fprintln(os.Stderr, "install nerdctl from https://github.com/containerd/nerdctl")
 		fmt.Fprintln(os.Stderr, "alternatively, use 'cca run <file>' to run as OS processes instead")
 		os.Exit(1)
 	}
@@ -1383,9 +1383,9 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 
-	// Start node agent with container runtime for real Docker container execution.
+	// Start node agent with container runtime for real nerdctl container execution.
 	containerRuntime := runtime.NewContainerRuntime()
-	containerRuntime.SetDockerNetwork("cca-net", network.DefaultClusterCIDR)
+	containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
 
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)

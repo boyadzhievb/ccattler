@@ -18,20 +18,20 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// testDockerNetworkName is used by container integration tests to avoid
+// testNetworkName is used by container integration tests to avoid
 // colliding with the "cca-net" network used by the live run-container command.
-const testDockerNetworkName = "cca-test-net"
+const testNetworkName = "cca-test-net"
 
-// skipIfDockerUnavailable skips the test when the docker CLI is not installed
-// or the docker daemon is not responding.
-func skipIfDockerUnavailable(t *testing.T) {
+// skipIfNerdctlUnavailable skips the test when the nerdctl CLI is not installed
+// or the container runtime is not responding.
+func skipIfNerdctlUnavailable(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found in PATH, skipping container integration test")
+	if _, err := exec.LookPath("nerdctl"); err != nil {
+		t.Skip("nerdctl not found in PATH, skipping container integration test")
 	}
-	dockerInfoCommand := exec.Command("docker", "info")
-	if err := dockerInfoCommand.Run(); err != nil {
-		t.Skip("docker daemon not running, skipping container integration test")
+	nerdctlInfoCommand := exec.Command("nerdctl", "info")
+	if err := nerdctlInfoCommand.Run(); err != nil {
+		t.Skip("nerdctl runtime not running, skipping container integration test")
 	}
 }
 
@@ -39,10 +39,10 @@ func skipIfDockerUnavailable(t *testing.T) {
 // that deploys an nginx container through the CCattler control plane, verifies
 // it receives an IP from the cluster network, mounts a custom index.html via
 // config file materialization, and confirms the page content via HTTP from a
-// curl container on the same network. Requires Docker to be installed and
-// running; skipped automatically when Docker is unavailable.
+// curl container on the same network. Requires nerdctl to be installed and
+// running; skipped automatically when nerdctl is unavailable.
 func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
-	skipIfDockerUnavailable(t)
+	skipIfNerdctlUnavailable(t)
 
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
@@ -70,9 +70,9 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	go controllerRunner.Run(ctx)
 
-	// Create ContainerRuntime with a dedicated test docker network.
+	// Create ContainerRuntime with a dedicated test nerdctl network.
 	containerRuntime := runtime.NewContainerRuntime()
-	containerRuntime.SetDockerNetwork(testDockerNetworkName, network.DefaultClusterCIDR)
+	containerRuntime.SetNetwork(testNetworkName, network.DefaultClusterCIDR)
 	defer containerRuntime.StopAll(context.Background())
 
 	// Create a network provider for IP allocation.
@@ -119,11 +119,11 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify the custom page content by running a curl container on the same
-	// docker network. This works on all platforms including macOS/Docker Desktop
-	// where container IPs on bridge networks are not reachable from the host.
+	// nerdctl network. This works on all platforms including macOS where
+	// container IPs on bridge networks are not reachable from the host.
 	curlTargetURL := fmt.Sprintf("http://%s:80/", allocatedInstanceIP)
-	curlCommand := exec.CommandContext(ctx, "docker", "run", "--rm",
-		"--network", testDockerNetworkName,
+	curlCommand := exec.CommandContext(ctx, "nerdctl", "run", "--rm",
+		"--network", testNetworkName,
 		"curlimages/curl:latest",
 		"-s", "-f", "--max-time", "5",
 		curlTargetURL)
