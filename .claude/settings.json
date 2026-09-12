@@ -10,8 +10,35 @@
       ]
     }
   },
+  "attribution": {
+    "commit": ""
+  },
   "hooks": {
-    "postToolUse": [
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "if": "Bash(git commit *)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "INPUT=$(cat); CMD=$(echo \"$INPUT\" | jq -r '.tool_input.command // \"\"'); if echo \"$CMD\" | grep -qi 'Co-Authored-By'; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: Do not add Co-Authored-By to commits. Remove it and retry.\"}}'; fi",
+            "statusMessage": "Checking commit for Co-Authored-By..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "if": "Bash(git tag *)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "INPUT=$(cat); CMD=$(echo \"$INPUT\" | jq -r '.tool_input.command // \"\"'); if echo \"$CMD\" | grep -q 'git tag' && ! echo \"$CMD\" | grep -q 'git tag -'; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: Use annotated tags (git tag -a v0.X.0 -m summary). No lightweight tags.\"}}'; fi",
+            "statusMessage": "Checking tag convention..."
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
       {
         "matcher": "Edit|Write",
         "hooks": [

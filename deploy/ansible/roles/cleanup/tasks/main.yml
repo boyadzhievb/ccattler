@@ -1,0 +1,56 @@
+---
+- name: Stop cca-agent if running
+  systemd:
+    name: cca-agent
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Stop cca-server if running
+  systemd:
+    name: cca-server
+    state: stopped
+    enabled: false
+  failed_when: false
+
+- name: Stop etcd if running
+  systemd:
+    name: etcd
+    state: stopped
+    enabled: false
+  failed_when: false
+  when: "'etcd' in group_names"
+
+- name: Remove old systemd units
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/systemd/system/cca-agent.service
+    - /etc/systemd/system/cca-server.service
+    - /etc/systemd/system/etcd.service
+
+- name: Reload systemd
+  systemd:
+    daemon_reload: true
+
+- name: Remove CCattler certificates and config
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/ccattler/pki
+    - /etc/ccattler
+    - /var/lib/ccattler
+    - /var/log/ccattler
+
+- name: Remove etcd data
+  file:
+    path: /var/lib/etcd
+    state: absent
+  when: "'etcd' in group_names"
+
+- name: Remove old cca binary
+  file:
+    path: /usr/local/bin/cca
+    state: absent

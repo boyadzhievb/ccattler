@@ -1,0 +1,28 @@
+[Unit]
+Description=CCattler Node Agent
+Documentation=https://github.com/boyadzhievb/ccattler
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+# NODE_ID, ETCD_ENDPOINTS, and ADVERTISE_ADDRESS are set in the
+# environment file, which is unique per host.
+EnvironmentFile=/etc/ccattler/agent.env
+ExecStart=/usr/local/bin/cca agent \
+    --node-id ${NODE_ID} \
+    --store etcd \
+    --endpoints ${ETCD_ENDPOINTS} \
+    --store-prefix / \
+    --advertise-address ${ADVERTISE_ADDRESS}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cca-agent
+# Root required for iptables data plane rules.
+User=root
+
+[Install]
+WantedBy=multi-user.target

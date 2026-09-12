@@ -1,49 +1,54 @@
 ---
+- name: Verify CCattler binary exists
+  stat:
+    path: "{{ playbook_dir }}/cca-linux-amd64"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  register: ccattler_binary
+
+- name: Fail if binary is missing
+  fail:
+    msg: "Place cca-linux-amd64 in {{ playbook_dir }}/ before running (download from releases or build with: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o cca-linux-amd64 ./cmd/cca)"
+  when: not ccattler_binary.stat.exists
+  run_once: true
+
 - name: Install base packages
   apt:
     name:
       - curl
-      - git
-      - build-essential
-      - containerd
+      - ca-certificates
+      - gnupg
     state: present
     update_cache: true
 
-- name: Download Go {{ go_version }}
-  get_url:
-    url: "https://go.dev/dl/go{{ go_version }}.linux-amd64.tar.gz"
-    dest: /tmp/go.tar.gz
-
-- name: Extract Go to /usr/local
-  unarchive:
-    src: /tmp/go.tar.gz
-    dest: /usr/local
-    remote_src: true
-    creates: /usr/local/go/bin/go
-
-- name: Add Go to system PATH
-  copy:
-    dest: /etc/profile.d/go.sh
-    content: |
-      export PATH=$PATH:/usr/local/go/bin
-      export GOPATH=/home/vagrant/go
-
-- name: Sync CCattler source to VM
-  synchronize:
-    src: "{{ ccattler_src }}"
-    dest: /opt/ccattler/
-    rsync_opts:
-      - "--exclude=.git"
-      - "--exclude=.vagrant"
-      - "--exclude=deploy/.vagrant"
-
-- name: Build CCattler binary
+- name: Add Docker GPG key
   shell: |
-    export PATH=$PATH:/usr/local/go/bin
-    cd /opt/ccattler
-    go build -o /usr/local/bin/cca ./cmd/cca
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
   args:
-    creates: /usr/local/bin/cca
+    creates: /etc/apt/keyrings/docker.gpg
+
+- name: Add Docker apt repository
+  copy:
+    dest: /etc/apt/sources.list.d/docker.list
+    content: >
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg]
+      https://download.docker.com/linux/ubuntu
+      {{ ansible_distribution_release }} stable
+
+- name: Install containerd.io
+  apt:
+    name: containerd.io
+    state: present
+    update_cache: true
+
+- name: Copy CCattler binary to node
+  copy:
+    src: "{{ playbook_dir }}/cca-linux-amd64"
+    dest: /usr/local/bin/cca
+    mode: "0755"
 
 - name: Verify cca binary
   command: /usr/local/bin/cca --help

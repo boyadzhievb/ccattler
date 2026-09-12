@@ -1,0 +1,105 @@
+---
+# Test cluster: create libvirt VMs, deploy CCattler, deploy Java test app
+#
+# Run on 192.168.100.43:
+#   cd /path/to/ccattler/deploy/ansible
+#   ansible-playbook -i test-inventory.ini test-deploy.yml
+
+- name: Create test VMs with vagrant
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [vagrant]
+  tasks:
+    - name: Start VMs (no provisioning)
+      shell: VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant up --no-provision
+      args:
+        chdir: "{{ playbook_dir }}"
+
+    - name: Wait for VMs to accept SSH
+      wait_for:
+        host: "{{ item }}"
+        port: 22
+        timeout: 180
+      loop:
+        - 192.168.122.10
+        - 192.168.122.20
+
+- name: Clean up old state (skip with --skip-tags cleanup)
+  hosts: all
+  become: true
+  tags: [cleanup]
+  roles:
+    - cleanup
+
+- name: Common setup on all nodes
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Install and start etcd
+  hosts: etcd
+  become: true
+  roles:
+    - etcd
+
+- name: Generate CA and distribute certificates
+  hosts: all
+  become: true
+  roles:
+    - certificates
+
+- name: Provision control-plane nodes
+  hosts: controlplane
+  become: true
+  roles:
+    - controlplane
+
+- name: Provision worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+- name: Deploy Java test application
+  hosts: controlplane
+  become: false
+  tags: [testapp]
+  tasks:
+    - name: Copy test app config to control plane
+      become: true
+      copy:
+        src: "{{ playbook_dir }}/java-test-app.ccattler"
+        dest: /tmp/java-test-app.ccattler
+        mode: "0644"
+
+    - name: Wait for CCattler server to be ready
+      wait_for:
+        port: 9770
+        host: "{{ ansible_host }}"
+        timeout: 30
+
+    - name: Apply Java test app
+      command: >
+        /usr/local/bin/cca apply /tmp/java-test-app.ccattler
+        --store etcd
+        --endpoints {{ etcd_endpoints }}
+
+    - name: Wait for containers to start
+      pause:
+        seconds: 20
+
+    - name: Verify Java app is running
+      shell: docker ps --filter name=cca- --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['workers'] }}"
+      register: container_list
+
+    - name: Show running containers
+      debug:
+        msg: "{{ item.stdout_lines }}"
+      loop: "{{ container_list.results }}"
+      loop_control:
+        label: "{{ item.item }}"

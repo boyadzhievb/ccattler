@@ -1,0 +1,32 @@
+# -*- mode: ruby -*-
+# Test CCattler cluster on libvirt VMs (runs on 192.168.100.43)
+#
+# VMs are created without provisioning — use test-deploy.yml for that.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/ubuntu2204"
+
+  config.vm.provider "libvirt" do |lv|
+    lv.driver = "kvm"
+  end
+
+  config.vm.define "cca-test-ctrl" do |node|
+    node.vm.hostname = "cca-test-ctrl"
+    node.vm.network "private_network", ip: "192.168.122.10"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
+  end
+
+  config.vm.define "cca-test-worker" do |node|
+    node.vm.hostname = "cca-test-worker"
+    node.vm.network "private_network", ip: "192.168.122.20"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
+  end
+end

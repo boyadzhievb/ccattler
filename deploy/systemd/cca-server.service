@@ -1,0 +1,22 @@
+[Unit]
+Description=CCattler Control Plane Server
+Documentation=https://github.com/boyadzhievb/ccattler
+After=network-online.target etcd.service
+Wants=network-online.target
+Requires=etcd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca server \
+    --listen 0.0.0.0:9770 \
+    --store etcd \
+    --endpoints localhost:2379 \
+    --store-prefix /
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cca-server
+
+[Install]
+WantedBy=multi-user.target

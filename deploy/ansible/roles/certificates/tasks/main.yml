@@ -14,7 +14,7 @@
         openssl req -new -x509
         -key {{ cca_cert_dir }}/ca-key.pem
         -out {{ cca_cert_dir }}/ca.pem
-        -days 365
+        -days {{ cca_ca_validity_days }}
         -subj "/CN=CCattler Root CA/O=CCattler"
       args:
         creates: "{{ cca_cert_dir }}/ca.pem"
@@ -50,24 +50,29 @@
   args:
     creates: "{{ cca_cert_dir }}/node-key.pem"
 
-- name: Set SPIFFE identity based on role
+- name: Build SAN list based on node roles
   set_fact:
-    spiffe_id: >-
-      {%- if 'controlplane' in group_names -%}
-        spiffe://ccattler/controller/{{ inventory_hostname }}
-      {%- elif 'workers' in group_names -%}
-        spiffe://ccattler/node/{{ node_id | default(inventory_hostname) }}
-      {%- elif 'etcd' in group_names -%}
-        spiffe://ccattler/store/{{ inventory_hostname }}
+    node_san_list: >-
+      {%- set sans = [] -%}
+      {%- if 'etcd' in group_names -%}
+        {%- set _ = sans.append('URI:spiffe://ccattler/store/' + inventory_hostname) -%}
       {%- endif -%}
+      {%- if 'controlplane' in group_names -%}
+        {%- set _ = sans.append('URI:spiffe://ccattler/controller/' + inventory_hostname) -%}
+      {%- endif -%}
+      {%- if 'workers' in group_names -%}
+        {%- set _ = sans.append('URI:spiffe://ccattler/node/' + (node_id | default(inventory_hostname))) -%}
+      {%- endif -%}
+      {%- set _ = sans.append('IP:' + ansible_host) -%}
+      {{ sans | join(',') }}
 
-- name: Generate CSR with SPIFFE SAN
+- name: Generate CSR with SPIFFE SANs
   command: >
     openssl req -new
     -key {{ cca_cert_dir }}/node-key.pem
     -out {{ cca_cert_dir }}/node.csr
     -subj "/CN={{ inventory_hostname }}/O=CCattler"
-    -addext "subjectAltName=URI:{{ spiffe_id }},IP:{{ ansible_host }}"
+    -addext "subjectAltName={{ node_san_list }}"
   args:
     creates: "{{ cca_cert_dir }}/node.csr"
 
@@ -88,7 +93,7 @@
         -CAkey {{ cca_cert_dir }}/ca-key.pem
         -CAcreateserial
         -out {{ cca_cert_dir }}/node.pem
-        -days 1
+        -days {{ cca_cert_validity_days }}
         -copy_extensions copyall
       args:
         creates: "{{ cca_cert_dir }}/node.pem"

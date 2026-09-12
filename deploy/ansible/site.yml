@@ -1,4 +1,11 @@
 ---
+- name: Clean up old state (skip with --skip-tags cleanup)
+  hosts: all
+  become: true
+  tags: [cleanup]
+  roles:
+    - cleanup
+
 - name: Common setup on all nodes
   hosts: all
   become: true
