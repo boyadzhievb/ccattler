@@ -9,41 +9,42 @@ const Root = ""
 // Top-level key prefixes. Each prefix partitions the fact store into a
 // distinct concern: desired state, effective (derived) state, observed
 // (actual) state, scheduler placements, network endpoints, intent layers,
-// node leases, and event history.
+// node leases, and event history. Keys are relative paths without a leading
+// slash; the store prefix handles namespacing (e.g. "/ccattler/" + "desired/...").
 const (
 	// PrefixDesired holds user-declared desired state for services.
-	PrefixDesired = Root + "/desired"
+	PrefixDesired = "desired"
 
 	// PrefixEffective holds the derived effective state after resolving
 	// all intent layers (user, autoscaler, policy).
-	PrefixEffective = Root + "/effective"
+	PrefixEffective = "effective"
 
 	// PrefixObserved holds the actual observed state reported by node agents,
 	// including node capacity, instance status, and metrics.
-	PrefixObserved = Root + "/observed"
+	PrefixObserved = "observed"
 
 	// PrefixPlacement holds scheduler placement decisions mapping instances
 	// to the nodes they should run on.
-	PrefixPlacement = Root + "/placement"
+	PrefixPlacement = "placement"
 
 	// PrefixEndpoint holds derived network endpoint facts for running
 	// service instances, used for traffic routing and service discovery.
-	PrefixEndpoint = Root + "/endpoint"
+	PrefixEndpoint = "endpoint"
 
 	// PrefixIntent holds per-layer intent facts (user, autoscaler, policy)
 	// that are merged to produce effective state.
-	PrefixIntent = Root + "/intent"
+	PrefixIntent = "intent"
 
 	// PrefixLease holds node heartbeat leases. A lease expiring signals
 	// that the node is unreachable.
-	PrefixLease = Root + "/lease"
+	PrefixLease = "lease"
 
 	// PrefixEvent holds append-only event history for audit and debugging.
-	PrefixEvent = Root + "/event"
+	PrefixEvent = "event"
 
 	// PrefixNetwork holds networking facts: per-node subnets, per-instance
 	// IP allocations, service VIPs, and DNS name mappings.
-	PrefixNetwork = Root + "/network"
+	PrefixNetwork = "network"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -749,10 +750,10 @@ func KeyDesiredServiceOwner(serviceName string) string {
 // Shared service export/import keys.
 const (
 	// PrefixExport holds shared service export declarations.
-	PrefixExport = Root + "/export/"
+	PrefixExport = "export/"
 
 	// PrefixImport holds service import ("uses") declarations.
-	PrefixImport = Root + "/import/"
+	PrefixImport = "import/"
 )
 
 // KeyExportService returns the store path for a shared service export marker.

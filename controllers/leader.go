@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
-	"github.com/boyadzhievb/ccattler/types"
 )
 
 // LeaderElection implements leader election for multi-node control planes.
@@ -48,10 +47,10 @@ type LeaderElectionConfig struct {
 }
 
 // leaderLeaseKey is the fact store key used for the leader lease.
-const leaderLeaseKey = types.Root + "/leader/controlplane"
+const leaderLeaseKey = "leader/controlplane"
 
 // leaderLeaseHolderKey stores the identity of the current leader.
-const leaderLeaseHolderKey = types.Root + "/leader/controlplane/holder"
+const leaderLeaseHolderKey = "leader/controlplane/holder"
 
 // NewLeaderElection creates a leader election instance for the given node.
 func NewLeaderElection(factStore store.StateStore, config LeaderElectionConfig) *LeaderElection {

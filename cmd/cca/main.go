@@ -138,7 +138,7 @@ func main() {
 		}
 		executeScaleCommand(os.Args[2], os.Args[3])
 	case "watch":
-		prefix := types.Root + "/"
+		prefix := ""
 		if len(os.Args) >= 3 {
 			prefix = os.Args[2]
 		}
@@ -190,7 +190,7 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 	parsedConfig := applyCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler",
+		storeKeyPrefix: "/ccattler/",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -233,7 +233,7 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 	parsedConfig := runCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler",
+		storeKeyPrefix: "/ccattler/",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -313,7 +313,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 	parsedConfig := serverCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler",
+		storeKeyPrefix: "/ccattler/",
 		listenAddress:  "0.0.0.0:9770",
 	}
 
@@ -396,7 +396,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	parsedConfig := agentCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler",
+		storeKeyPrefix: "/ccattler/",
 		runtimeBackend: "container",
 	}
 
@@ -760,7 +760,7 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 	parsedConfig := tokenCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler",
+		storeKeyPrefix: "/ccattler/",
 		tokenTTL:       "15m",
 	}
 
@@ -1121,7 +1121,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --watch, -w                  print status every 2s (run only)")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: memory)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
-	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for server:")
 	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 0.0.0.0:9770)")
@@ -1131,7 +1131,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --ca <path>                  PEM CA certificate for client verification")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
-	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for agent:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
@@ -1141,14 +1141,14 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --ca <path>                  PEM CA certificate for server verification")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
-	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for token:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               scope token to a specific node (optional)")
 	fmt.Fprintln(os.Stderr, "  --ttl <duration>             token lifetime (default: 15m)")
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
-	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for join:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
