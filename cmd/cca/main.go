@@ -365,14 +365,15 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
 // the node agent against a shared state store.
 type agentCommandConfig struct {
-	storeBackend   string
-	etcdEndpoints  string
-	storeKeyPrefix string
-	nodeID         string
-	runtimeBackend string
-	tlsCertPath    string
-	tlsKeyPath     string
-	tlsCACertPath  string
+	storeBackend     string
+	etcdEndpoints    string
+	storeKeyPrefix   string
+	nodeID           string
+	runtimeBackend   string
+	advertiseAddress string
+	tlsCertPath      string
+	tlsKeyPath       string
+	tlsCACertPath    string
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -427,6 +428,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.tlsCACertPath = args[argIndex]
+			}
+		case "--advertise-address":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.advertiseAddress = args[argIndex]
 			}
 		}
 	}
@@ -674,6 +680,15 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 
 	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
+
+	if parsedConfig.advertiseAddress != "" {
+		nodeAgent.SetAdvertiseAddress(parsedConfig.advertiseAddress)
+		iptablesDataPlane := network.NewIptablesDataPlane()
+		nodeAgent.SetDataPlaneProvider(iptablesDataPlane)
+		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
+			parsedConfig.nodeID, parsedConfig.advertiseAddress)
+	}
+
 	go nodeAgent.Run(ctx)
 
 	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
@@ -681,6 +696,9 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	<-ctx.Done()
 	fmt.Printf("\nAgent %s shutting down...\n", parsedConfig.nodeID)
+	if nodeAgent.DataPlaneProvider() != nil {
+		nodeAgent.DataPlaneProvider().Cleanup(context.Background())
+	}
 	if processRuntime, ok := runtimeAdapter.(*runtime.ProcessRuntime); ok {
 		processRuntime.StopAll(context.Background())
 	}

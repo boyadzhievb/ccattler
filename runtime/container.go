@@ -22,6 +22,7 @@ type ContainerRuntime struct {
 	mutex                    sync.Mutex      // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
 	trackedContainers        map[string]bool // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
 	allocatedHostPorts       map[int]int     // allocatedHostPorts tracks the next host port offset per container port.
+	instanceHostPorts        map[string]int  // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
 	configFileTempDirectories map[string]string // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
 	dockerNetworkName        string          // dockerNetworkName is the docker network to connect containers to for IP assignment.
 	dockerNetworkCIDR        string          // dockerNetworkCIDR is the subnet CIDR for the docker network (e.g. "10.100.0.0/16").
@@ -34,6 +35,7 @@ func NewContainerRuntime() *ContainerRuntime {
 	return &ContainerRuntime{
 		trackedContainers:         make(map[string]bool),
 		allocatedHostPorts:        make(map[int]int),
+		instanceHostPorts:         make(map[string]int),
 		configFileTempDirectories: make(map[string]string),
 	}
 }
@@ -160,10 +162,14 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB*1024*1024))
 	}
 
-	for _, containerPort := range spec.Ports {
+	firstHostPort := 0
+	for portIndex, containerPort := range spec.Ports {
 		hostPort := containerPort + containerRuntime.allocatedHostPorts[containerPort]
 		containerRuntime.allocatedHostPorts[containerPort]++
 		args = append(args, "-p", fmt.Sprintf("%d:%d", hostPort, containerPort))
+		if portIndex == 0 {
+			firstHostPort = hostPort
+		}
 	}
 
 	args = append(args, volumeMountArgs...)
@@ -185,10 +191,22 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	containerRuntime.trackedContainers[spec.ID] = true
+	if firstHostPort > 0 {
+		containerRuntime.instanceHostPorts[spec.ID] = firstHostPort
+	}
 	if configTempDirectoryPath != "" {
 		containerRuntime.configFileTempDirectories[spec.ID] = configTempDirectoryPath
 	}
 	return nil
+}
+
+// HostPortForInstance returns the host port allocated to the given workload's
+// first exposed port. Returns 0 if the workload has no port mapping or was
+// not started by this runtime.
+func (containerRuntime *ContainerRuntime) HostPortForInstance(instanceID string) int {
+	containerRuntime.mutex.Lock()
+	defer containerRuntime.mutex.Unlock()
+	return containerRuntime.instanceHostPorts[instanceID]
 }
 
 // Stop terminates and removes the docker container for the workload identified

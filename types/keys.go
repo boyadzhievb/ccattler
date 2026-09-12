@@ -155,6 +155,14 @@ func KeyObservedNodeZone(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/zone", PrefixObserved, nodeID)
 }
 
+// KeyObservedNodeAddress returns the store path for a node's advertised
+// routable IP address. This is the LAN-reachable address other nodes use
+// for cross-host data plane DNAT targets.
+// Path: /ccattler/observed/node/{nodeID}/address
+func KeyObservedNodeAddress(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/address", PrefixObserved, nodeID)
+}
+
 // KeyObservedInstance returns the store path for an instance's root marker key.
 // Path: /ccattler/observed/instance/{instanceID}
 func KeyObservedInstance(instanceID string) string {
@@ -189,6 +197,15 @@ func KeyObservedInstanceImage(instanceID string) string {
 // Path: /ccattler/observed/instance/{instanceID}/ip
 func KeyObservedInstanceIP(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/ip", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceHostPort returns the store path for the host port
+// mapped to a container's exposed port. This is the port on the host's
+// LAN address that forwards to the container, used by the data plane for
+// cross-host DNAT targets.
+// Path: /ccattler/observed/instance/{instanceID}/hostport
+func KeyObservedInstanceHostPort(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/hostport", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceHealth returns the store path for an instance's latest health check result.

@@ -24,15 +24,17 @@ import (
 //   - Reconciler: compares desired state (placements) with observed, calls runtime.Start/Stop
 //   - Reporter: publishes actual state back to the store
 type Agent struct {
-	nodeID               string                   // nodeID is the unique identifier for the node this agent manages.
-	store                store.StateStore         // store is the fact store used to read desired state and write observed state.
-	runtime              runtime.Runtime          // runtime is the pluggable container/process runtime adapter.
-	networkProvider      network.NetworkProvider   // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
-	storageProvider      storage.StorageProvider   // storageProvider manages volume attach/detach; nil means no volume support.
-	secretProvider       SecretProvider            // secretProvider retrieves decrypted secrets; nil means no secret support.
-	materializedSecrets  []MaterializedSecret      // materializedSecrets tracks secrets written for running instances.
-	interval             time.Duration             // interval is the period between periodic reconciliation cycles.
-	lastHealthCheck      map[string]time.Time      // lastHealthCheck tracks when each instance was last health-checked.
+	nodeID               string                        // nodeID is the unique identifier for the node this agent manages.
+	store                store.StateStore              // store is the fact store used to read desired state and write observed state.
+	runtime              runtime.Runtime               // runtime is the pluggable container/process runtime adapter.
+	networkProvider      network.NetworkProvider        // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	dataPlaneProvider    network.DataPlaneProvider      // dataPlaneProvider programs VIP DNAT rules; nil means no data plane.
+	storageProvider      storage.StorageProvider        // storageProvider manages volume attach/detach; nil means no volume support.
+	secretProvider       SecretProvider                 // secretProvider retrieves decrypted secrets; nil means no secret support.
+	materializedSecrets  []MaterializedSecret           // materializedSecrets tracks secrets written for running instances.
+	advertiseAddress     string                        // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
+	interval             time.Duration                 // interval is the period between periodic reconciliation cycles.
+	lastHealthCheck      map[string]time.Time          // lastHealthCheck tracks when each instance was last health-checked.
 	probeStates          map[string]*instanceProbeState // probeStates tracks probe execution state per instance ID.
 }
 
@@ -71,6 +73,27 @@ func (nodeAgent *Agent) SetSecretProvider(secretProvider SecretProvider) {
 	nodeAgent.secretProvider = secretProvider
 }
 
+// SetDataPlaneProvider configures the agent to program VIP DNAT forwarding
+// rules on each reconciliation cycle. When set, the agent reads VIP and
+// endpoint facts from the store and calls the provider to ensure iptables
+// rules match the desired state.
+func (nodeAgent *Agent) SetDataPlaneProvider(dataPlaneProvider network.DataPlaneProvider) {
+	nodeAgent.dataPlaneProvider = dataPlaneProvider
+}
+
+// SetAdvertiseAddress configures the LAN-routable IP address for this node.
+// This address is published to the store so other nodes' data plane
+// providers can build cross-host DNAT targets.
+func (nodeAgent *Agent) SetAdvertiseAddress(advertiseAddress string) {
+	nodeAgent.advertiseAddress = advertiseAddress
+}
+
+// DataPlaneProvider returns the configured data plane provider, or nil if
+// no data plane is configured. Used during shutdown for cleanup.
+func (nodeAgent *Agent) DataPlaneProvider() network.DataPlaneProvider {
+	return nodeAgent.dataPlaneProvider
+}
+
 // SetInterval overrides the default periodic reconciliation interval.
 // This is typically used in tests to speed up convergence.
 func (nodeAgent *Agent) SetInterval(reconciliationInterval time.Duration) {
@@ -87,6 +110,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	nodeAgent.store.Put(ctx, types.KeyObservedNode(nodeAgent.nodeID), []byte(""))
 	nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
 	nodeAgent.writeHeartbeat(ctx)
+	nodeAgent.publishNodeAdvertiseAddress(ctx)
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
@@ -113,6 +137,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
 			}
 			nodeAgent.collectAndReportNodeTelemetry(ctx)
+			nodeAgent.reconcileDataPlane(ctx)
 		case _, ok := <-placementCh:
 			if !ok {
 				return nil
@@ -208,6 +233,10 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
 				nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
 				continue
+			}
+			if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
+				hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
+				nodeAgent.publishInstanceHostPort(ctx, instanceInfo.id, hostPort)
 			}
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))

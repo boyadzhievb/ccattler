@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M17 — Multi-Host Server (Phase 20) IN PROGRESS. M1–M16 complete. Phase 20 adds configurable API listen address, mTLS, external cert loading (--cert/--key/--ca), and Vagrant+Ansible multi-node deployment automation.
+**Active milestone:** M18 — VIP Data Plane (Phase 21) IN PROGRESS. M1–M17 complete. Phase 21 adds iptables DNAT-based VIP load balancing across hosts, analogous to kube-proxy iptables mode.
 
 ---
 
@@ -1009,7 +1009,7 @@ cca apply <file>              # deploy config (simulated, prints status and exit
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
 cca server [--listen h:p] [--tls] [--cert/--key/--ca]  # control plane (--tls auto CA, or --cert/--key/--ca external)
-cca agent --node-id <id> [--cert/--key/--ca]           # node agent (optional mTLS creds)
+cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>]  # node agent (mTLS, VIP data plane)
 cca get services              # list services
 cca get instances             # list instances
 cca get nodes                 # list nodes
@@ -1230,6 +1230,18 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Deployment plan updated — dual-provider testing on Linux, libvirt primary, VirtualBox secondary
 - [x] Multi-host demo — real cluster across .43 (ctrl+worker-2) and .215 (worker-1), 4 nginx + 2 redis containers, accessible from LAN
 
+### Phase 21 — VIP Data Plane
+- [x] `DataPlaneProvider` interface — pluggable VIP forwarding abstraction (`ReconcileVIPDataPlane`, `Cleanup`)
+- [x] `ServiceVIPConfig` / `DataPlaneBackend` types — describe desired forwarding state per service
+- [x] `IptablesDataPlane` implementation — iptables nat-table DNAT rules with round-robin via statistic module (--mode nth), per-service chains (`CCA_SVC_*`), `CCA_SERVICES` main chain, `cca0` dummy interface for VIP addresses
+- [x] `SimulatorDataPlane` implementation — records reconciliation calls for test verification
+- [x] Agent data plane reconciliation — reads VIP + endpoint facts, resolves local (container IP) vs remote (host IP + host port) backends, calls data plane provider each tick
+- [x] Cross-host backend resolution — local instances use container IP:port, remote instances use node advertise address + Docker host port mapping
+- [x] Node advertise address — `--advertise-address` flag on agent, published to store for cross-host resolution
+- [x] Host port tracking — `ContainerRuntime.HostPortForInstance()`, agent publishes host port facts after container start
+- [x] Fact keys — `observed/node/{id}/address` for node LAN address, `observed/instance/{id}/hostport` for Docker host port mapping
+- [ ] End-to-end test — `curl http://10.200.0.1:80` round-robins across containers on .43 and .215
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1251,5 +1263,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M15 — Probes & Readiness | 18 | Startup/liveness/readiness probes, readiness-gated endpoints |
 | M16 — Remote Management | 19 | Container default, MCP server with guardrails, auto-logging hook |
 | M17 — Multi-Host Server | 20 | `cca server --listen 0.0.0.0:9770 --tls` serves mTLS API to remote agents |
+| M18 — VIP Data Plane | 21 | `curl http://10.200.0.1:80` round-robins across containers on multiple hosts |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
