@@ -1,0 +1,22 @@
+# CCattler demo cluster (Vagrant VMs)
+#   cca-demo-ctrl   (192.168.56.10): etcd + control plane + worker
+#   cca-demo-worker (192.168.56.20): worker only
+
+[etcd]
+cca-demo-ctrl ansible_host=192.168.56.10 ansible_ssh_private_key_file=.vagrant/machines/cca-demo-ctrl/PROVIDER_PLACEHOLDER/private_key
+
+[controlplane]
+cca-demo-ctrl
+
+[workers]
+cca-demo-ctrl node_id=demo-node-1
+cca-demo-worker ansible_host=192.168.56.20 node_id=demo-node-2 ansible_ssh_private_key_file=.vagrant/machines/cca-demo-worker/PROVIDER_PLACEHOLDER/private_key
+
+[ccattler:children]
+controlplane
+workers
+
+[all:vars]
+ansible_user=vagrant
+ansible_ssh_common_args=-o StrictHostKeyChecking=no
+etcd_endpoints=http://192.168.56.10:2379

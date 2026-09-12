@@ -1,0 +1,26 @@
+# CCattler cluster inventory — edit this file with your host details.
+#
+# Minimum: 1 control plane node (runs etcd + server + worker)
+# Recommended: 1 control plane + 1 or more workers
+#
+# Example:
+#   node-1 (10.0.0.1):  etcd + control plane + worker
+#   node-2 (10.0.0.2):  worker only
+
+[etcd]
+node-1 ansible_host=10.0.0.1 ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+[controlplane]
+node-1
+
+[workers]
+node-1 node_id=node-1
+# node-2 ansible_host=10.0.0.2 ansible_user=ubuntu node_id=node-2 ansible_ssh_private_key_file=~/.ssh/id_rsa
+
+[ccattler:children]
+controlplane
+workers
+
+[all:vars]
+ansible_ssh_common_args=-o StrictHostKeyChecking=no
+etcd_endpoints=http://10.0.0.1:2379
