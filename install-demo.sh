@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Deploy CCattler on existing hosts.
+# Create a CCattler demo cluster on Vagrant VMs (libvirt).
 #
-#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
 #
-# Prerequisites: curl, tar, ansible
-# First run creates inventory.ini for you to edit. Second run deploys.
+# Creates 2 VMs, deploys etcd + CCattler cluster, deploys a Java test app.
+# Prerequisites: curl, tar, ansible, vagrant, libvirt
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ log_info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 log_ok()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 log_error() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; }
 
-for dependency in curl tar ansible-playbook; do
+for dependency in curl tar ansible-playbook vagrant; do
     if ! command -v "$dependency" >/dev/null; then
         log_error "Missing: $dependency"
         exit 1
@@ -53,13 +53,16 @@ log_ok "Downloaded to $INSTALL_DIR"
 
 cd "$ANSIBLE_DIR"
 
-if [ ! -f inventory.ini ]; then
-    cp inventory.ini.template inventory.ini
-    log_info "Created $ANSIBLE_DIR/inventory.ini"
-    log_info "Edit it with your host details, then run this script again."
-    exit 0
-fi
+sed "s/PROVIDER_PLACEHOLDER/libvirt/g" demo-inventory.ini.template > demo-inventory.ini
 
-log_info "Deploying CCattler..."
-ansible-playbook -i inventory.ini site.yml
-log_ok "CCattler deployed!"
+export VAGRANT_VAGRANTFILE="$ANSIBLE_DIR/demo-Vagrantfile"
+export CCA_VAGRANT_PROVIDER="libvirt"
+
+log_info "Creating demo cluster (2 VMs + CCattler + Java app)..."
+ansible-playbook -i demo-inventory.ini demo-deploy.yml
+
+log_ok "Demo cluster is running!"
+echo ""
+echo "  To clean up:"
+echo "    cd $ANSIBLE_DIR"
+echo "    VAGRANT_VAGRANTFILE=$ANSIBLE_DIR/demo-Vagrantfile vagrant destroy -f"

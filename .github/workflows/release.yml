@@ -66,9 +66,6 @@ jobs:
           tar czf ccattler-deploy.tar.gz -C deploy ansible
           sha256sum ccattler-deploy.tar.gz > ccattler-deploy.tar.gz.sha256
 
-      - name: Prepare install script
-        run: chmod +x install.sh
-
       - uses: actions/upload-artifact@v7
         with:
           name: ccattler-deploy
@@ -76,6 +73,7 @@ jobs:
             ccattler-deploy.tar.gz
             ccattler-deploy.tar.gz.sha256
             install.sh
+            install-demo.sh
 
   release:
     needs: [build, package-deploy]
@@ -96,4 +94,5 @@ jobs:
             cca-*.tar.gz.sha256
             ccattler-deploy.tar.gz
             install.sh
+            install-demo.sh
             checksums.txt

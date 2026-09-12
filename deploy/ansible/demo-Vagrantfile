@@ -1,62 +1,28 @@
 # -*- mode: ruby -*-
-# CCattler demo cluster — libvirt/KVM on Linux, QEMU on macOS.
+# CCattler demo cluster — libvirt/KVM on Linux.
 #
-# Provider is auto-detected or set via CCA_VAGRANT_PROVIDER / VAGRANT_DEFAULT_PROVIDER.
-# Install the provider plugin first:
-#   Linux:  vagrant plugin install vagrant-libvirt
-#   macOS:  vagrant plugin install vagrant-qemu
-
-PROVIDER = ENV["CCA_VAGRANT_PROVIDER"] || ENV["VAGRANT_DEFAULT_PROVIDER"] || (
-  RUBY_PLATFORM.include?("darwin") ? "qemu" : "libvirt"
-)
-
-CTRL_IP   = "192.168.56.10"
-WORKER_IP = "192.168.56.20"
+# Prerequisite: vagrant plugin install vagrant-libvirt
 
 Vagrant.configure("2") do |config|
-  if PROVIDER == "qemu"
-    config.vm.box = "perk/ubuntu-2204-arm64"
-  else
-    config.vm.box = "generic/ubuntu2204"
-  end
+  config.vm.box = "generic/ubuntu2204"
 
-  # --- control plane + worker ------------------------------------------------
   config.vm.define "cca-demo-ctrl" do |node|
     node.vm.hostname = "cca-demo-ctrl"
-    node.vm.network "private_network", ip: CTRL_IP
-
-    if PROVIDER == "qemu"
-      node.vm.provider "qemu" do |qe|
-        qe.memory = "2048"
-        qe.smp    = "2"
-        qe.arch   = "aarch64"
-      end
-    else
-      node.vm.provider "libvirt" do |lv|
-        lv.driver = "kvm"
-        lv.memory = 2048
-        lv.cpus   = 2
-      end
+    node.vm.network "private_network", ip: "192.168.56.10"
+    node.vm.provider "libvirt" do |lv|
+      lv.driver = "kvm"
+      lv.memory = 2048
+      lv.cpus   = 2
     end
   end
 
-  # --- worker only -----------------------------------------------------------
   config.vm.define "cca-demo-worker" do |node|
     node.vm.hostname = "cca-demo-worker"
-    node.vm.network "private_network", ip: WORKER_IP
-
-    if PROVIDER == "qemu"
-      node.vm.provider "qemu" do |qe|
-        qe.memory = "2048"
-        qe.smp    = "2"
-        qe.arch   = "aarch64"
-      end
-    else
-      node.vm.provider "libvirt" do |lv|
-        lv.driver = "kvm"
-        lv.memory = 2048
-        lv.cpus   = 2
-      end
+    node.vm.network "private_network", ip: "192.168.56.20"
+    node.vm.provider "libvirt" do |lv|
+      lv.driver = "kvm"
+      lv.memory = 2048
+      lv.cpus   = 2
     end
   end
 end
