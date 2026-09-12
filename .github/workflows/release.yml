@@ -26,9 +26,9 @@ jobs:
             label: linux-arm64
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -49,7 +49,7 @@ jobs:
           sha256sum "${archive}" > "${archive}.sha256"
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: cca-${{ matrix.label }}
           path: |
@@ -59,14 +59,14 @@ jobs:
   package-deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Package deploy directory
         run: |
           tar czf ccattler-deploy.tar.gz -C deploy ansible
           sha256sum ccattler-deploy.tar.gz > ccattler-deploy.tar.gz.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ccattler-deploy
           path: |
@@ -77,7 +77,7 @@ jobs:
     needs: [build, package-deploy]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
 

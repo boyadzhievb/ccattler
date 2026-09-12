@@ -264,6 +264,72 @@ function Installation() {
             </div>
           </div>
         </div>
+
+        {/* Test cluster */}
+        <div className="mt-12 border border-[#a3e8a0]/20 rounded-lg p-8 bg-[#a3e8a0]/[0.02]">
+          <div className="flex items-center gap-2.5 mb-6">
+            <div className="w-2 h-2 rounded-full bg-[#a3e8a0]" />
+            <span className="font-mono text-xs text-[#a3e8a0]/80 tracking-widest uppercase">Test cluster (Vagrant + libvirt)</span>
+          </div>
+          <p className="text-sm text-white/40 leading-relaxed mb-6">
+            Spin up a full two-node CCattler cluster on libvirt VMs. Creates VMs, deploys CCattler, and runs a Java test app — all from a single script.
+            Requires <code className="text-white/50">ansible</code>, <code className="text-white/50">vagrant</code>, and <code className="text-white/50">libvirt</code> on the host.
+          </p>
+
+          <div className="border border-white/8 rounded-lg overflow-hidden mb-6">
+            <div className="border-b border-white/6 bg-white/[0.025] px-4 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-white/10" />
+                <div className="w-2 h-2 rounded-full bg-white/10" />
+                <div className="w-2 h-2 rounded-full bg-white/10" />
+              </div>
+              <button
+                onClick={() => copyToClipboard("curl -fsSL https://raw.githubusercontent.com/boyadzhievb/ccattler/master/deploy/ccattler-vagrant-test-cluster-deploy.sh -o ccattler-vagrant-test-cluster-deploy.sh && chmod +x ccattler-vagrant-test-cluster-deploy.sh && ./ccattler-vagrant-test-cluster-deploy.sh test up", "vagrant")}
+                className="font-mono text-[10px] text-white/30 hover:text-white/60 transition-colors"
+              >
+                {copied === "vagrant" ? "copied!" : "copy"}
+              </button>
+            </div>
+            <div className="p-5 bg-[#04040c] font-mono text-sm space-y-1">
+              <div><span className="text-white/25"># Download the deploy script</span></div>
+              <div>
+                <span className="text-[#6378ff]/60">$</span>
+                <span className="text-white/60"> curl -fsSL https://raw.githubusercontent.com/</span>
+              </div>
+              <div>
+                <span className="text-white/60">  boyadzhievb/ccattler/master/deploy/</span>
+              </div>
+              <div>
+                <span className="text-white/60">  ccattler-vagrant-test-cluster-deploy.sh -o deploy.sh</span>
+              </div>
+              <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> chmod +x deploy.sh</span></div>
+              <div className="pt-2"><span className="text-white/25"># Create VMs + deploy CCattler + Java test app</span></div>
+              <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> ./deploy.sh test up</span></div>
+              <div><span className="text-[#a3e8a0]/60">Creating test VMs...</span></div>
+              <div><span className="text-[#a3e8a0]/60">Deploying CCattler...</span></div>
+              <div><span className="text-[#a3e8a0]/60">Deploying Java test app...</span></div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
+            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
+              <div className="text-white/25 mb-1">test status</div>
+              <div className="text-white/50">VM status</div>
+            </div>
+            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
+              <div className="text-white/25 mb-1">test ssh &lt;vm&gt;</div>
+              <div className="text-white/50">SSH into VM</div>
+            </div>
+            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
+              <div className="text-white/25 mb-1">test destroy</div>
+              <div className="text-white/50">Tear down</div>
+            </div>
+            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
+              <div className="text-white/25 mb-1">test rebuild</div>
+              <div className="text-white/50">Fresh start</div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );
