@@ -121,6 +121,17 @@ func (nodeAgent *Agent) resolveServiceBackends(ctx context.Context, serviceName 
 		instanceNodeID := string(instanceNodeFact.Value)
 
 		if instanceNodeID == nodeAgent.nodeID {
+			hostPortFact, hostPortErr := nodeAgent.store.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
+			if hostPortErr == nil {
+				hostPort, parseErr := strconv.Atoi(string(hostPortFact.Value))
+				if parseErr == nil && hostPort > 0 {
+					backends = append(backends, network.DataPlaneBackend{
+						Address: "127.0.0.1",
+						Port:    hostPort,
+					})
+					continue
+				}
+			}
 			backends = append(backends, network.DataPlaneBackend{
 				Address: endpointIP,
 				Port:    endpointPort,

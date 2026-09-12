@@ -19,14 +19,15 @@ import (
 // Config files specified in Spec.ConfigFiles are materialized to a temporary
 // directory on the host and bind-mounted read-only into the container.
 type ContainerRuntime struct {
-	mutex                    sync.Mutex      // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
-	trackedContainers        map[string]bool // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
-	allocatedHostPorts       map[int]int     // allocatedHostPorts tracks the next host port offset per container port.
-	instanceHostPorts        map[string]int  // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
+	mutex                    sync.Mutex        // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
+	trackedContainers        map[string]bool   // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
+	containerNames           map[string]string // containerNames maps workload IDs to their Docker container names.
+	allocatedHostPorts       map[int]int       // allocatedHostPorts tracks the next host port offset per container port.
+	instanceHostPorts        map[string]int    // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
 	configFileTempDirectories map[string]string // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
-	dockerNetworkName        string          // dockerNetworkName is the docker network to connect containers to for IP assignment.
-	dockerNetworkCIDR        string          // dockerNetworkCIDR is the subnet CIDR for the docker network (e.g. "10.100.0.0/16").
-	networkReady             bool            // networkReady is true once the docker network has been verified or created.
+	dockerNetworkName        string            // dockerNetworkName is the docker network to connect containers to for IP assignment.
+	dockerNetworkCIDR        string            // dockerNetworkCIDR is the subnet CIDR for the docker network (e.g. "10.100.0.0/16").
+	networkReady             bool              // networkReady is true once the docker network has been verified or created.
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
@@ -34,6 +35,7 @@ type ContainerRuntime struct {
 func NewContainerRuntime() *ContainerRuntime {
 	return &ContainerRuntime{
 		trackedContainers:         make(map[string]bool),
+		containerNames:            make(map[string]string),
 		allocatedHostPorts:        make(map[int]int),
 		instanceHostPorts:         make(map[string]int),
 		configFileTempDirectories: make(map[string]string),
@@ -146,7 +148,8 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 		return nil
 	}
 
-	args := []string{"run", "-d", "--name", buildDockerContainerName(spec.ID)}
+	containerName := buildDockerContainerName(spec.ServiceName, spec.ID)
+	args := []string{"run", "-d", "--name", containerName}
 
 	if spec.IP != "" && containerRuntime.dockerNetworkName != "" {
 		args = append(args, "--network", containerRuntime.dockerNetworkName, "--ip", spec.IP)
@@ -191,6 +194,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	containerRuntime.trackedContainers[spec.ID] = true
+	containerRuntime.containerNames[spec.ID] = containerName
 	if firstHostPort > 0 {
 		containerRuntime.instanceHostPorts[spec.ID] = firstHostPort
 	}
@@ -217,7 +221,7 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 	containerRuntime.mutex.Lock()
 	defer containerRuntime.mutex.Unlock()
 
-	containerName := buildDockerContainerName(id)
+	containerName := containerRuntime.resolveContainerName(id)
 	dockerStopCommand := exec.CommandContext(ctx, "docker", "stop", "-t", "10", containerName)
 	dockerStopCommand.Run()
 
@@ -241,7 +245,7 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	containerRuntime.mutex.Lock()
 	defer containerRuntime.mutex.Unlock()
 
-	containerName := buildDockerContainerName(id)
+	containerName := containerRuntime.resolveContainerName(id)
 	dockerInspectCommand := exec.CommandContext(ctx, "docker", "inspect", "--format", "{{.State.Running}}", containerName)
 	var inspectOutput bytes.Buffer
 	dockerInspectCommand.Stdout = &inspectOutput
@@ -282,13 +286,13 @@ func (containerRuntime *ContainerRuntime) List(ctx context.Context) ([]Status, e
 func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, execSpec ExecSpec) error {
 	containerRuntime.mutex.Lock()
 	tracked := containerRuntime.trackedContainers[id]
+	containerName := containerRuntime.resolveContainerName(id)
 	containerRuntime.mutex.Unlock()
 
 	if !tracked {
 		return ErrNotFound
 	}
 
-	containerName := buildDockerContainerName(id)
 	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
 	dockerExecCommand := exec.CommandContext(ctx, "docker", args...)
 	var stderr bytes.Buffer
@@ -329,9 +333,22 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 	}
 }
 
-// buildDockerContainerName generates a deterministic docker container name from
-// a workload ID by prefixing it with "cca-". This ensures container names
-// are predictable and scoped to this orchestrator.
-func buildDockerContainerName(id string) string {
-	return "cca-" + id
+// buildDockerContainerName generates a deterministic docker container name
+// from a service name and instance ID, following the Kubernetes pattern of
+// {resource}-{hash}. For example, "web-a8f31bc2" instead of "cca-a8f31bc2".
+func buildDockerContainerName(serviceName string, instanceID string) string {
+	if serviceName != "" {
+		return serviceName + "-" + instanceID
+	}
+	return "cca-" + instanceID
+}
+
+// resolveContainerName returns the tracked Docker container name for an
+// instance. Falls back to "cca-{id}" for containers started before service
+// names were tracked.
+func (containerRuntime *ContainerRuntime) resolveContainerName(instanceID string) string {
+	if trackedName, exists := containerRuntime.containerNames[instanceID]; exists {
+		return trackedName
+	}
+	return "cca-" + instanceID
 }

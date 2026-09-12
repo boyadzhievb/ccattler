@@ -111,6 +111,7 @@ func (iptablesDataPlane *IptablesDataPlane) Cleanup(_ context.Context) error {
 	removeJumpFromBuiltinChain("PREROUTING", iptablesMainChain)
 	removeJumpFromBuiltinChain("OUTPUT", iptablesMainChain)
 	flushAndDeleteChain(iptablesMainChain)
+	removeMasqueradeForDNAT()
 
 	for vipAddress := range iptablesDataPlane.activeVIPAddresses {
 		removeVIPAddressFromInterface(vipAddress)
@@ -135,6 +136,10 @@ func (iptablesDataPlane *IptablesDataPlane) ensureGlobalChainAndJumpRules() erro
 		return err
 	}
 	if err := ensureJumpToChain("OUTPUT", iptablesMainChain); err != nil {
+		return err
+	}
+
+	if err := ensureMasqueradeForDNAT(); err != nil {
 		return err
 	}
 
@@ -175,6 +180,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig 
 
 		if remainingBackends > 1 {
 			if err := runIptablesStrict("-t", "nat", "-A", chainName,
+				"-p", "tcp",
 				"-m", "statistic", "--mode", "nth",
 				"--every", fmt.Sprintf("%d", remainingBackends), "--packet", "0",
 				"-j", "DNAT", "--to-destination", destination); err != nil {
@@ -182,6 +188,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig 
 			}
 		} else {
 			if err := runIptablesStrict("-t", "nat", "-A", chainName,
+				"-p", "tcp",
 				"-j", "DNAT", "--to-destination", destination); err != nil {
 				return fmt.Errorf("adding final DNAT rule for %s: %w", destination, err)
 			}
@@ -218,6 +225,31 @@ func (iptablesDataPlane *IptablesDataPlane) removeStaleVIPAddresses(desiredAddre
 			log.Printf("dataplane: removed stale VIP %s", vipAddress)
 		}
 	}
+}
+
+// ensureMasqueradeForDNAT adds a POSTROUTING MASQUERADE rule for DNAT'd
+// packets leaving non-loopback interfaces. Without this, cross-host DNAT'd
+// packets retain the VIP source address which the remote host cannot route
+// back to. This mirrors kube-proxy's masquerade behavior.
+func ensureMasqueradeForDNAT() error {
+	masqueradeArgs := []string{"-t", "nat", "-C", "POSTROUTING",
+		"!", "-o", "lo", "-m", "conntrack", "--ctstate", "DNAT",
+		"-j", "MASQUERADE"}
+	if runIptables(masqueradeArgs...) == nil {
+		return nil
+	}
+	insertArgs := []string{"-t", "nat", "-A", "POSTROUTING",
+		"!", "-o", "lo", "-m", "conntrack", "--ctstate", "DNAT",
+		"-j", "MASQUERADE"}
+	return runIptablesStrict(insertArgs...)
+}
+
+// removeMasqueradeForDNAT removes the POSTROUTING MASQUERADE rule added
+// by ensureMasqueradeForDNAT.
+func removeMasqueradeForDNAT() {
+	runIptables("-t", "nat", "-D", "POSTROUTING",
+		"!", "-o", "lo", "-m", "conntrack", "--ctstate", "DNAT",
+		"-j", "MASQUERADE")
 }
 
 // ensureJumpToChain inserts a jump rule from a builtin chain (PREROUTING or
