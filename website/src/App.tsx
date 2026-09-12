@@ -14,7 +14,7 @@ function Nav() {
           </span>
         </div>
         <div className="hidden md:flex items-center gap-8">
-          {["Install", "Philosophy", "Concepts", "Architecture", "Capabilities", "Status", "Examples"].map((item) => (
+          {["Install", "Philosophy", "Concepts", "Architecture", "Capabilities", "Status", "Examples", "Releases"].map((item) => (
             <a
               key={item}
               href={`#${item.toLowerCase()}`}
@@ -1150,6 +1150,107 @@ function Examples() {
   );
 }
 
+function Releases() {
+  const releases = [
+    {
+      version: "v0.11.0",
+      date: "2026-09-12",
+      title: "Ansible Deployment Infrastructure",
+      changes: [
+        "Bootstrap script downloads playbook + binary from GitHub releases",
+        "Two deployment paths: test VMs (vagrant + libvirt) and bare metal",
+        "Cleanup role wipes old state before fresh deploys",
+        "Java test app (Tomcat) for cluster validation",
+        "containerd.io from Docker apt repo, 90-day certificate validity",
+      ],
+    },
+    {
+      version: "v0.10.0",
+      date: "2026-09-12",
+      title: "Node Enrollment",
+      changes: [
+        "cca token create/list/revoke for join token management",
+        "cca join for automated certificate acquisition",
+        "Agent auto-discovers certs from .ccattler/ directory",
+        "Replaces manual certificate provisioning for new nodes",
+      ],
+    },
+    {
+      version: "v0.9.0",
+      date: "2026-09-10",
+      title: "Container Default & MCP Server",
+      changes: [
+        "Container runtime as default (--runtime process for opt-in process mode)",
+        "MCP server with 14 guardrailed tools for remote management",
+        "Auto-logging hook with sensitive data redaction",
+        "Auth token, read-only mode, structured audit log",
+      ],
+    },
+  ];
+
+  return (
+    <section id="releases" className="relative py-32 border-t border-white/5">
+      <div className="absolute inset-0 grid-bg opacity-30" />
+      <div className="relative max-w-6xl mx-auto px-6">
+        <div className="mb-16">
+          <div className="font-mono text-xs text-[#6378ff]/70 tracking-widest uppercase mb-4">§ 06b · Releases</div>
+          <h2 className="text-4xl md:text-5xl font-bold text-white leading-tight tracking-tight max-w-2xl">
+            What shipped.
+            <span className="text-white/35"> Recent releases.</span>
+          </h2>
+        </div>
+
+        <div className="space-y-6">
+          {releases.map((release, index) => (
+            <div
+              key={release.version}
+              className={`border rounded-lg p-8 ${
+                index === 0
+                  ? "border-[#6378ff]/30 bg-[#6378ff]/[0.03] glow-blue"
+                  : "border-white/8 bg-white/[0.015]"
+              }`}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <span className={`font-mono text-lg font-bold ${index === 0 ? "text-[#6378ff]" : "text-white/70"}`}>
+                    {release.version}
+                  </span>
+                  {index === 0 && (
+                    <span className="font-mono text-[10px] tracking-wider uppercase px-2 py-0.5 rounded-full border border-[#a3e8a0]/30 text-[#a3e8a0]/70 bg-[#a3e8a0]/[0.05]">
+                      latest
+                    </span>
+                  )}
+                </div>
+                <span className="font-mono text-xs text-white/25">{release.date}</span>
+              </div>
+
+              <h3 className="text-white/80 font-medium mb-4">{release.title}</h3>
+
+              <ul className="space-y-1.5">
+                {release.changes.map((change, changeIndex) => (
+                  <li key={changeIndex} className="flex items-start gap-2 text-sm text-white/40">
+                    <span className="text-[#6378ff]/50 mt-1 shrink-0">-</span>
+                    {change}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-8 text-center">
+          <a
+            href="https://github.com/boyadzhievb/ccattler/releases"
+            className="inline-flex items-center gap-2 font-mono text-sm text-[#6378ff]/70 hover:text-[#6378ff] transition-colors border border-[#6378ff]/20 hover:border-[#6378ff]/40 rounded-lg px-6 py-3"
+          >
+            View all releases on GitHub →
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function CTA() {
   return (
     <section className="relative py-36 border-t border-white/5">
@@ -1258,6 +1359,7 @@ export default function App() {
       <Capabilities />
       <ProjectStatus />
       <Examples />
+      <Releases />
       <CTA />
     </div>
   );
