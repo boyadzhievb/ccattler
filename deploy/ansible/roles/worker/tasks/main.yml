@@ -33,7 +33,7 @@
 - name: Wait for agent to register in etcd
   command: >
     etcdctl --endpoints={{ etcd_endpoints }}
-    get /ccattler/node/{{ node_id | default(inventory_hostname) }} --print-value-only
+    get --prefix /ccattler/observed/node/{{ node_id | default(inventory_hostname) }} --keys-only --limit 1
   delegate_to: "{{ groups['etcd'][0] }}"
   register: node_registered
   retries: 10
