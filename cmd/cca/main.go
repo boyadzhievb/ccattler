@@ -190,7 +190,7 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 	parsedConfig := applyCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/",
+		storeKeyPrefix: "",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -233,7 +233,7 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 	parsedConfig := runCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/",
+		storeKeyPrefix: "",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -313,7 +313,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 	parsedConfig := serverCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/",
+		storeKeyPrefix: "",
 		listenAddress:  "0.0.0.0:9770",
 	}
 
@@ -396,7 +396,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	parsedConfig := agentCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/",
+		storeKeyPrefix: "",
 		runtimeBackend: "container",
 	}
 
@@ -760,7 +760,7 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 	parsedConfig := tokenCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/",
+		storeKeyPrefix: "",
 		tokenTTL:       "15m",
 	}
 
