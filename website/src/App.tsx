@@ -181,11 +181,11 @@ function Installation() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Quick install */}
+          {/* Deploy on existing hosts */}
           <div className="border border-[#6378ff]/25 rounded-lg p-8 bg-[#6378ff]/[0.03] glow-blue">
             <div className="flex items-center gap-2.5 mb-6">
               <div className="w-2 h-2 rounded-full bg-[#6378ff]" />
-              <span className="font-mono text-xs text-[#6378ff]/80 tracking-widest uppercase">Quick install</span>
+              <span className="font-mono text-xs text-[#6378ff]/80 tracking-widest uppercase">Deploy on existing hosts</span>
             </div>
 
             <div className="border border-white/8 rounded-lg overflow-hidden mb-6">
@@ -196,26 +196,38 @@ function Installation() {
                   <div className="w-2 h-2 rounded-full bg-white/10" />
                 </div>
                 <button
-                  onClick={() => copyToClipboard("curl -fsSL https://raw.githubusercontent.com/boyadzhievb/ccattler/master/scripts/install.sh | sh", "curl")}
+                  onClick={() => copyToClipboard("curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash", "curl")}
                   className="font-mono text-[10px] text-white/30 hover:text-white/60 transition-colors"
                 >
                   {copied === "curl" ? "copied!" : "copy"}
                 </button>
               </div>
-              <div className="p-5 bg-[#04040c] font-mono text-sm">
+              <div className="p-5 bg-[#04040c] font-mono text-sm space-y-1">
+                <div><span className="text-white/25"># First run — downloads Ansible + creates inventory template</span></div>
                 <div>
                   <span className="text-[#6378ff]/60">$</span>
-                  <span className="text-white/60"> curl -fsSL https://raw.githubusercontent.com/</span>
+                  <span className="text-white/60"> curl -fsSL https://github.com/boyadzhievb/</span>
                 </div>
                 <div>
-                  <span className="text-white/60">  boyadzhievb/ccattler/master/scripts/install.sh | sh</span>
+                  <span className="text-white/60">  ccattler/releases/latest/download/install.sh | bash</span>
+                </div>
+                <div className="pt-2"><span className="text-white/25"># Edit inventory with your host IPs</span></div>
+                <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> vi ~/.ccattler/ansible/inventory.ini</span></div>
+                <div className="pt-2"><span className="text-white/25"># Second run — deploys CCattler cluster</span></div>
+                <div>
+                  <span className="text-[#6378ff]/60">$</span>
+                  <span className="text-white/60"> curl -fsSL https://github.com/boyadzhievb/</span>
+                </div>
+                <div>
+                  <span className="text-white/60">  ccattler/releases/latest/download/install.sh | bash</span>
                 </div>
               </div>
             </div>
 
             <p className="text-sm text-white/35 leading-relaxed">
-              Detects your OS and architecture automatically. Installs the <code className="text-white/50">cca</code> binary to <code className="text-white/50">/usr/local/bin</code>.
-              Supports macOS and Linux (amd64 / arm64).
+              Downloads the Ansible playbook and <code className="text-white/50">cca</code> binary from GitHub releases.
+              First run creates an inventory template. Edit it with your host details, then run again to deploy.
+              Requires <code className="text-white/50">curl</code>, <code className="text-white/50">tar</code>, <code className="text-white/50">ansible</code>.
             </p>
           </div>
 
@@ -257,7 +269,7 @@ function Installation() {
               </div>
               <div className="border border-white/6 rounded bg-[#04040c] p-4 font-mono text-sm space-y-1">
                 <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca version</span></div>
-                <div><span className="text-[#a3e8a0]/60">cca v0.11.0</span></div>
+                <div><span className="text-[#a3e8a0]/60">cca v0.12.0</span></div>
                 <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca demo</span></div>
                 <div><span className="text-[#a3e8a0]/60">Applying config...</span></div>
               </div>
@@ -265,14 +277,14 @@ function Installation() {
           </div>
         </div>
 
-        {/* Test cluster */}
+        {/* Demo cluster */}
         <div className="mt-12 border border-[#a3e8a0]/20 rounded-lg p-8 bg-[#a3e8a0]/[0.02]">
           <div className="flex items-center gap-2.5 mb-6">
             <div className="w-2 h-2 rounded-full bg-[#a3e8a0]" />
-            <span className="font-mono text-xs text-[#a3e8a0]/80 tracking-widest uppercase">Test cluster (Vagrant + libvirt)</span>
+            <span className="font-mono text-xs text-[#a3e8a0]/80 tracking-widest uppercase">Demo cluster (Vagrant + libvirt)</span>
           </div>
           <p className="text-sm text-white/40 leading-relaxed mb-6">
-            Spin up a full two-node CCattler cluster on libvirt VMs. Creates VMs, deploys CCattler, and runs a Java test app — all from a single script.
+            Spin up a full two-node CCattler cluster on libvirt VMs. Creates VMs, deploys CCattler, and runs a Java test app — one command.
             Requires <code className="text-white/50">ansible</code>, <code className="text-white/50">vagrant</code>, and <code className="text-white/50">libvirt</code> on the host.
           </p>
 
@@ -284,49 +296,25 @@ function Installation() {
                 <div className="w-2 h-2 rounded-full bg-white/10" />
               </div>
               <button
-                onClick={() => copyToClipboard("curl -fsSL https://raw.githubusercontent.com/boyadzhievb/ccattler/master/deploy/ccattler-vagrant-test-cluster-deploy.sh -o ccattler-vagrant-test-cluster-deploy.sh && chmod +x ccattler-vagrant-test-cluster-deploy.sh && ./ccattler-vagrant-test-cluster-deploy.sh test up", "vagrant")}
+                onClick={() => copyToClipboard("curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash", "vagrant")}
                 className="font-mono text-[10px] text-white/30 hover:text-white/60 transition-colors"
               >
                 {copied === "vagrant" ? "copied!" : "copy"}
               </button>
             </div>
             <div className="p-5 bg-[#04040c] font-mono text-sm space-y-1">
-              <div><span className="text-white/25"># Download the deploy script</span></div>
               <div>
                 <span className="text-[#6378ff]/60">$</span>
-                <span className="text-white/60"> curl -fsSL https://raw.githubusercontent.com/</span>
+                <span className="text-white/60"> curl -fsSL https://github.com/boyadzhievb/</span>
               </div>
               <div>
-                <span className="text-white/60">  boyadzhievb/ccattler/master/deploy/</span>
+                <span className="text-white/60">  ccattler/releases/latest/download/install-demo.sh | bash</span>
               </div>
-              <div>
-                <span className="text-white/60">  ccattler-vagrant-test-cluster-deploy.sh -o deploy.sh</span>
-              </div>
-              <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> chmod +x deploy.sh</span></div>
-              <div className="pt-2"><span className="text-white/25"># Create VMs + deploy CCattler + Java test app</span></div>
-              <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> ./deploy.sh test up</span></div>
-              <div><span className="text-[#a3e8a0]/60">Creating test VMs...</span></div>
+              <div className="pt-2"><span className="text-[#a3e8a0]/60">Downloading CCattler v0.12.0...</span></div>
+              <div><span className="text-[#a3e8a0]/60">Creating demo cluster (2 VMs)...</span></div>
               <div><span className="text-[#a3e8a0]/60">Deploying CCattler...</span></div>
               <div><span className="text-[#a3e8a0]/60">Deploying Java test app...</span></div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs font-mono">
-            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
-              <div className="text-white/25 mb-1">test status</div>
-              <div className="text-white/50">VM status</div>
-            </div>
-            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
-              <div className="text-white/25 mb-1">test ssh &lt;vm&gt;</div>
-              <div className="text-white/50">SSH into VM</div>
-            </div>
-            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
-              <div className="text-white/25 mb-1">test destroy</div>
-              <div className="text-white/50">Tear down</div>
-            </div>
-            <div className="border border-white/6 rounded px-3 py-2 bg-white/[0.02]">
-              <div className="text-white/25 mb-1">test rebuild</div>
-              <div className="text-white/50">Fresh start</div>
+              <div><span className="text-[#a3e8a0]/60">Demo cluster is running!</span></div>
             </div>
           </div>
         </div>
@@ -1153,6 +1141,17 @@ function Examples() {
 function Releases() {
   const releases = [
     {
+      version: "v0.12.0",
+      date: "2026-09-12",
+      title: "Split Install Scripts",
+      changes: [
+        "install-demo.sh — one command creates Vagrant VMs + deploys cluster + Java app",
+        "install.sh — two-pass deploy for existing hosts (create inventory, then deploy)",
+        "Libvirt-only Vagrant provider, simplified demo Vagrantfile",
+        "Scripts download Ansible playbook + binary from GitHub releases",
+      ],
+    },
+    {
       version: "v0.11.0",
       date: "2026-09-12",
       title: "Ansible Deployment Infrastructure",
@@ -1310,16 +1309,17 @@ function CTA() {
           <div className="p-5 bg-[#04040c] font-mono text-sm space-y-2">
             <div>
               <span className="text-[#6378ff]/60">$</span>
-              <span className="text-white/60"> curl -fsSL install.ccattler.dev | sh</span>
+              <span className="text-white/60"> curl -fsSL .../install.sh | bash</span>
             </div>
-            <div className="text-white/25 text-xs">Installing cca v0.11.0...</div>
-            <div className="text-[#a3e8a0]/70 text-xs">✓ cca installed to /usr/local/bin</div>
+            <div className="text-white/25 text-xs">Downloading CCattler v0.12.0...</div>
+            <div className="text-[#a3e8a0]/70 text-xs">✓ Downloaded to ~/.ccattler</div>
+            <div className="text-white/25 text-xs">Created inventory.ini — edit and re-run</div>
             <div className="mt-3">
               <span className="text-[#6378ff]/60">$</span>
-              <span className="text-white/60"> cca init &amp;&amp; cca up</span>
+              <span className="text-white/60"> curl -fsSL .../install.sh | bash</span>
             </div>
-            <div className="text-white/25 text-xs">Starting control plane...</div>
-            <div className="text-[#a3e8a0]/70 text-xs">✓ Reconciliation loop active</div>
+            <div className="text-white/25 text-xs">Deploying CCattler...</div>
+            <div className="text-[#a3e8a0]/70 text-xs">✓ CCattler deployed!</div>
           </div>
         </div>
       </div>

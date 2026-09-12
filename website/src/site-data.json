@@ -92,6 +92,48 @@
       "phase": "Phase 16",
       "demo": "Separate server + agent processes, shared etcd, multi-node scheduling",
       "complete": true
+    },
+    {
+      "id": "M14",
+      "name": "Init & Observability",
+      "phase": "Phase 17",
+      "demo": "Init step lifecycle, telemetry collection, cca top, runtime Exec",
+      "complete": true
+    },
+    {
+      "id": "M15",
+      "name": "Probes & Readiness",
+      "phase": "Phase 18",
+      "demo": "Startup/liveness/readiness probes, readiness-gated endpoints",
+      "complete": true
+    },
+    {
+      "id": "M16",
+      "name": "Remote Management",
+      "phase": "Phase 19",
+      "demo": "Container default, MCP server with guardrails, auto-logging hook",
+      "complete": true
+    },
+    {
+      "id": "M17",
+      "name": "Multi-Host Server",
+      "phase": "Phase 20",
+      "demo": "cca server --listen --tls serves mTLS API to remote agents",
+      "complete": true
+    },
+    {
+      "id": "M18",
+      "name": "VIP Data Plane",
+      "phase": "Phase 21",
+      "demo": "curl VIP round-robins across containers on multiple hosts",
+      "complete": true
+    },
+    {
+      "id": "M19",
+      "name": "Node Enrollment",
+      "phase": "Phase 22",
+      "demo": "cca token create, cca join, agent auto-discovers certs and runs",
+      "complete": true
     }
   ],
   "examples": [
