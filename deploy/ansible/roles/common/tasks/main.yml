@@ -51,7 +51,7 @@
     mode: "0755"
 
 - name: Verify cca binary
-  command: /usr/local/bin/cca --help
+  command: /usr/local/bin/cca version
   changed_when: false
 
 - name: Create CCattler directories
