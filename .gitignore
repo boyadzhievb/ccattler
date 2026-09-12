@@ -2,4 +2,5 @@
 /cca-linux*
 /mcp
 /ccattler-mcp
+.mcp.json
 deploy/ansible/cca-linux-amd64
