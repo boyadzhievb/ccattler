@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M18 — VIP Data Plane (Phase 21) IN PROGRESS. M1–M17 complete. Phase 21 adds iptables DNAT-based VIP load balancing across hosts, analogous to kube-proxy iptables mode.
+**Active milestone:** M19 — Node Enrollment (Phase 22) COMPLETE. M1–M19 complete. Phase 22 adds `cca join` node enrollment: token-based authentication, automatic certificate issuance, and agent cert auto-discovery.
 
 ---
 
@@ -1010,6 +1010,10 @@ cca run [--watch] <file>      # start real OS processes (--watch for live status
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
 cca server [--listen h:p] [--tls] [--cert/--key/--ca]  # control plane (--tls auto CA, or --cert/--key/--ca external)
 cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>]  # node agent (mTLS, VIP data plane)
+cca token create [--node-id <id>] [--ttl 15m]  # generate join token
+cca token list                # list active join tokens
+cca token revoke <token>      # revoke a join token
+cca join <server> <token> --node-id <id> [--ca-cert <path>]  # enroll node
 cca get services              # list services
 cca get instances             # list instances
 cca get nodes                 # list nodes
@@ -1240,7 +1244,21 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Node advertise address — `--advertise-address` flag on agent, published to store for cross-host resolution
 - [x] Host port tracking — `ContainerRuntime.HostPortForInstance()`, agent publishes host port facts after container start
 - [x] Fact keys — `observed/node/{id}/address` for node LAN address, `observed/instance/{id}/hostport` for Docker host port mapping
-- [ ] End-to-end test — `curl http://10.200.0.1:80` round-robins across containers on .43 and .215
+- [x] Local backend host port resolution — agents use `127.0.0.1:<hostPort>` for local backends instead of container IP:port when no Docker network IP is assigned
+- [x] POSTROUTING MASQUERADE for cross-host DNAT — fixes source address for packets DNAT'd to remote hosts (mirrors kube-proxy masquerade)
+- [x] End-to-end test — `curl http://10.200.0.1:80` round-robins across 4 nginx containers on .43 and .215, redis VIP returns `+PONG`
+
+### Phase 22 — Node Enrollment
+- [x] `POST /api/enroll` endpoint — validates join token, issues certificate, binds RBAC role, returns cert/key/CA
+- [x] Server enrollment wiring — auto-CA mode creates `EnrollmentService`, TLS uses `VerifyClientCertIfGiven` with middleware enforcing client certs on all non-enrollment endpoints
+- [x] `cca token create` — generates join token stored in etcd, prints join command
+- [x] `cca token list` — shows active (non-expired) tokens with masked values
+- [x] `cca token revoke <token>` — removes a join token from the store
+- [x] `cca join <server> <token> --node-id <id>` — contacts server, presents token, receives and writes cert/key/CA to `.ccattler/`
+- [x] `--ca-cert` flag for join — verifies server certificate against provided CA (recommended for production)
+- [x] Agent cert auto-discovery — detects `.ccattler/node.pem`, `node-key.pem`, `ca.pem` when no `--cert/--key/--ca` flags provided
+- [x] Local IP detection — `cca join` automatically includes node's non-loopback IPv4 addresses in the certificate
+- [x] Enrollment tests — token validation, certificate issuance, token consumption (one-time use), field validation
 
 ### Milestones
 
@@ -1264,5 +1282,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M16 — Remote Management | 19 | Container default, MCP server with guardrails, auto-logging hook |
 | M17 — Multi-Host Server | 20 | `cca server --listen 0.0.0.0:9770 --tls` serves mTLS API to remote agents |
 | M18 — VIP Data Plane | 21 | `curl http://10.200.0.1:80` round-robins across containers on multiple hosts |
+| M19 — Node Enrollment | 22 | `cca token create` → `cca join` → agent auto-discovers certs and runs |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

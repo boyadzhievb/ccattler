@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -347,5 +348,152 @@ func TestMethodNotAllowed(t *testing.T) {
 		if resp.StatusCode != 405 {
 			t.Errorf("%s %s: expected 405, got %d", tt.method, tt.path, resp.StatusCode)
 		}
+	}
+}
+
+// newTestServerWithEnrollment creates an API server with a CA and enrollment
+// service enabled, returns the base URL, a join token, and a cleanup function.
+func newTestServerWithEnrollment(t *testing.T) (string, string, func()) {
+	t.Helper()
+	factStore := store.NewMemoryStore()
+	apiServer := NewServer(factStore)
+
+	certificateAuthority, err := security.NewCertificateAuthority(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("create CA: %v", err)
+	}
+
+	enrollmentService := security.NewEnrollmentService(factStore, certificateAuthority, nil, 1*time.Hour)
+	apiServer.SetEnrollmentService(enrollmentService)
+
+	joinToken, err := enrollmentService.GenerateJoinToken(context.Background(), "", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+
+	baseURL := "http://" + address
+	cleanup := func() {
+		apiServer.Close()
+		factStore.Close()
+	}
+	return baseURL, joinToken.Token, cleanup
+}
+
+func TestEnrollNodeSuccess(t *testing.T) {
+	baseURL, tokenValue, cleanup := newTestServerWithEnrollment(t)
+	defer cleanup()
+
+	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1","ip_addresses":["192.168.1.10"]}`, tokenValue)
+	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var enrollResponse enrollmentResponseBody
+	json.NewDecoder(resp.Body).Decode(&enrollResponse)
+
+	if enrollResponse.Error != "" {
+		t.Fatalf("unexpected error: %s", enrollResponse.Error)
+	}
+	if enrollResponse.Principal != "node:worker-1" {
+		t.Fatalf("expected principal node:worker-1, got %s", enrollResponse.Principal)
+	}
+	if enrollResponse.CertificatePEM == "" {
+		t.Fatal("expected certificate PEM, got empty")
+	}
+	if enrollResponse.PrivateKeyPEM == "" {
+		t.Fatal("expected private key PEM, got empty")
+	}
+	if enrollResponse.CACertPEM == "" {
+		t.Fatal("expected CA cert PEM, got empty")
+	}
+}
+
+func TestEnrollNodeInvalidToken(t *testing.T) {
+	baseURL, _, cleanup := newTestServerWithEnrollment(t)
+	defer cleanup()
+
+	requestBody := `{"token":"invalid-token-value","node_id":"worker-1"}`
+	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+
+	var enrollResponse enrollmentResponseBody
+	json.NewDecoder(resp.Body).Decode(&enrollResponse)
+	if enrollResponse.Error == "" {
+		t.Fatal("expected error message, got empty")
+	}
+}
+
+func TestEnrollNodeTokenConsumed(t *testing.T) {
+	baseURL, tokenValue, cleanup := newTestServerWithEnrollment(t)
+	defer cleanup()
+
+	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1"}`, tokenValue)
+
+	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("first enrollment expected 200, got %d", resp.StatusCode)
+	}
+
+	resp2, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != 403 {
+		t.Fatalf("second enrollment expected 403 (token consumed), got %d", resp2.StatusCode)
+	}
+}
+
+func TestEnrollNodeMissingFields(t *testing.T) {
+	baseURL, _, cleanup := newTestServerWithEnrollment(t)
+	defer cleanup()
+
+	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(`{"token":"abc"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400 for missing node_id, got %d", resp.StatusCode)
+	}
+}
+
+func TestEnrollEndpointMethodNotAllowed(t *testing.T) {
+	baseURL, _, cleanup := newTestServerWithEnrollment(t)
+	defer cleanup()
+
+	resp, err := http.Get(baseURL + "/api/enroll")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 405 {
+		t.Fatalf("expected 405, got %d", resp.StatusCode)
 	}
 }

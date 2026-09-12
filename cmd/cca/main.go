@@ -79,6 +79,20 @@ func main() {
 	case "server":
 		parsedServerConfig := parseServerCommandArgs(os.Args[2:])
 		executeServerCommand(parsedServerConfig)
+	case "token":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca token <create|list|revoke> [flags]")
+			os.Exit(1)
+		}
+		parsedTokenConfig := parseTokenCommandArgs(os.Args[2:])
+		executeTokenCommand(parsedTokenConfig)
+	case "join":
+		parsedJoinConfig := parseJoinCommandArgs(os.Args[2:])
+		if parsedJoinConfig.serverAddress == "" || parsedJoinConfig.joinToken == "" || parsedJoinConfig.nodeID == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca join <server-url> <token> --node-id <id> [--ca-cert <path>] [--data-dir <path>]")
+			os.Exit(1)
+		}
+		executeJoinCommand(parsedJoinConfig)
 	case "agent":
 		parsedAgentConfig := parseAgentCommandArgs(os.Args[2:])
 		if parsedAgentConfig.nodeID == "" {
@@ -176,7 +190,7 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 	parsedConfig := applyCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeKeyPrefix: "/",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -219,7 +233,7 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 	parsedConfig := runCommandConfig{
 		storeBackend:   "memory",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeKeyPrefix: "/",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -299,7 +313,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 	parsedConfig := serverCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeKeyPrefix: "/",
 		listenAddress:  "0.0.0.0:9770",
 	}
 
@@ -382,7 +396,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	parsedConfig := agentCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeKeyPrefix: "/",
 		runtimeBackend: "container",
 	}
 
@@ -518,14 +532,23 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	go controllerRunner.Run(ctx)
 
 	var serverTLSConfig *tls.Config
+	var clusterCertificateAuthority *security.CertificateAuthority
+	enrollmentEnabled := false
 	if parsedConfig.tlsCertPath != "" {
 		serverTLSConfig = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
 	} else if parsedConfig.tlsEnabled {
-		serverTLSConfig = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
+		serverTLSConfig, clusterCertificateAuthority = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
+		enrollmentEnabled = true
 	}
 
-	statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig)
+	statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 	statusAPIServer.SetEventLog(eventLog)
+
+	if clusterCertificateAuthority != nil {
+		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 24*time.Hour)
+		statusAPIServer.SetEnrollmentService(enrollmentService)
+		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
+	}
 
 	protocol := "http"
 	if parsedConfig.tlsEnabled {
@@ -539,10 +562,11 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 }
 
 // buildServerTLSConfig creates an ephemeral CA, issues a server certificate
-// with auto-rotation, and returns a tls.Config that requires mutual TLS.
-// The CA certificate is written to ca.pem in the .ccattler/ data directory
-// so agents and clients can trust the server.
-func buildServerTLSConfig(ctx context.Context, listenAddress string) *tls.Config {
+// with auto-rotation, and returns a tls.Config plus the CA. The TLS config uses
+// VerifyClientCertIfGiven so the enrollment endpoint can accept unauthenticated
+// connections while all other endpoints enforce client certs via middleware. The
+// CA certificate is written to ca.pem in the .ccattler/ data directory.
+func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Config, *security.CertificateAuthority) {
 	certificateAuthority, err := security.NewCertificateAuthority(10 * 365 * 24 * time.Hour)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating CA: %v\n", err)
@@ -598,9 +622,9 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) *tls.Config
 	return &tls.Config{
 		GetCertificate: serverCertRotator.GetCertificate,
 		ClientCAs:      caCertPool,
-		ClientAuth:     tls.RequireAndVerifyClientCert,
+		ClientAuth:     tls.VerifyClientCertIfGiven,
 		MinVersion:     tls.VersionTLS13,
-	}
+	}, certificateAuthority
 }
 
 // loadServerTLSConfig reads PEM-encoded certificate, key, and CA files from
@@ -652,6 +676,17 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			parsedConfig.nodeID, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	}
 
+	if parsedConfig.tlsCertPath == "" {
+		discoveredCertPath := ".ccattler/node.pem"
+		discoveredKeyPath := ".ccattler/node-key.pem"
+		discoveredCACertPath := ".ccattler/ca.pem"
+		if fileExists(discoveredCertPath) && fileExists(discoveredKeyPath) && fileExists(discoveredCACertPath) {
+			parsedConfig.tlsCertPath = discoveredCertPath
+			parsedConfig.tlsKeyPath = discoveredKeyPath
+			parsedConfig.tlsCACertPath = discoveredCACertPath
+			fmt.Printf("Agent %s auto-discovered credentials from .ccattler/\n", parsedConfig.nodeID)
+		}
+	}
 	if parsedConfig.tlsCertPath != "" {
 		_ = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
 		fmt.Printf("Agent %s TLS credentials loaded\n", parsedConfig.nodeID)
@@ -707,6 +742,345 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 }
 
+// tokenCommandConfig holds parsed flags for the "token" command, which manages
+// enrollment join tokens stored in the shared fact store.
+type tokenCommandConfig struct {
+	action         string // "create", "list", or "revoke"
+	nodeID         string // optional: scope token to a specific node
+	tokenTTL       string // default "15m"
+	tokenValue     string // for revoke: the token prefix to match
+	storeBackend   string
+	etcdEndpoints  string
+	storeKeyPrefix string
+}
+
+// parseTokenCommandArgs extracts the subcommand and flags from the arguments
+// following "token".
+func parseTokenCommandArgs(args []string) tokenCommandConfig {
+	parsedConfig := tokenCommandConfig{
+		storeBackend:   "etcd",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/",
+		tokenTTL:       "15m",
+	}
+
+	if len(args) > 0 {
+		parsedConfig.action = args[0]
+	}
+
+	for argIndex := 1; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--node-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.nodeID = args[argIndex]
+			}
+		case "--ttl":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tokenTTL = args[argIndex]
+			}
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		default:
+			if parsedConfig.action == "revoke" && parsedConfig.tokenValue == "" {
+				parsedConfig.tokenValue = currentArg
+			}
+		}
+	}
+
+	return parsedConfig
+}
+
+// executeTokenCommand dispatches to the appropriate token subcommand: create
+// generates a new join token, list shows active tokens, and revoke removes one.
+func executeTokenCommand(parsedConfig tokenCommandConfig) {
+	factStore, storeCreationError := createStateStoreFromServerConfig(
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+	if storeCreationError != nil {
+		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
+		os.Exit(1)
+	}
+	defer factStore.Close()
+
+	enrollmentService := security.NewEnrollmentService(factStore, nil, nil, 0)
+
+	ctx := context.Background()
+
+	switch parsedConfig.action {
+	case "create":
+		tokenDuration, parseError := time.ParseDuration(parsedConfig.tokenTTL)
+		if parseError != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid TTL %q: %v\n", parsedConfig.tokenTTL, parseError)
+			os.Exit(1)
+		}
+
+		joinToken, createError := enrollmentService.GenerateJoinToken(ctx, parsedConfig.nodeID, tokenDuration)
+		if createError != nil {
+			fmt.Fprintf(os.Stderr, "error creating token: %v\n", createError)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Token:   %s\n", joinToken.Token)
+		fmt.Printf("Expires: %s (in %s)\n", joinToken.ExpiresAt.Format("2006-01-02 15:04:05"), parsedConfig.tokenTTL)
+		if parsedConfig.nodeID != "" {
+			fmt.Printf("Node:    %s (scoped)\n", parsedConfig.nodeID)
+		} else {
+			fmt.Println("Node:    any")
+		}
+		fmt.Println()
+		fmt.Println("Join command:")
+		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", joinToken.Token)
+
+	case "list":
+		tokens, listError := enrollmentService.ListJoinTokens(ctx)
+		if listError != nil {
+			fmt.Fprintf(os.Stderr, "error listing tokens: %v\n", listError)
+			os.Exit(1)
+		}
+
+		if len(tokens) == 0 {
+			fmt.Println("no active join tokens")
+			return
+		}
+
+		fmt.Printf("%-72s  %-12s  %s\n", "TOKEN", "NODE", "EXPIRES")
+		for _, token := range tokens {
+			nodeScope := "any"
+			if token.NodeID != "" {
+				nodeScope = token.NodeID
+			}
+			expiresIn := time.Until(token.ExpiresAt).Round(time.Second)
+			fmt.Printf("%-72s  %-12s  %s (in %s)\n",
+				token.Token, nodeScope, token.ExpiresAt.Format("15:04:05"), expiresIn)
+		}
+
+	case "revoke":
+		if parsedConfig.tokenValue == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca token revoke <token-prefix>")
+			os.Exit(1)
+		}
+		revokeError := enrollmentService.RevokeJoinToken(ctx, parsedConfig.tokenValue)
+		if revokeError != nil {
+			fmt.Fprintf(os.Stderr, "error revoking token: %v\n", revokeError)
+			os.Exit(1)
+		}
+		fmt.Println("Token revoked.")
+
+	default:
+		fmt.Fprintln(os.Stderr, "usage: cca token <create|list|revoke> [flags]")
+		os.Exit(1)
+	}
+}
+
+// joinCommandConfig holds parsed flags for the "join" command, which enrolls
+// a node with the cluster by presenting a join token to the server.
+type joinCommandConfig struct {
+	serverAddress string // https://host:port
+	joinToken     string
+	nodeID        string
+	caCertPath    string // optional: verify server cert against this CA
+	dataDirectory string // where to write cert/key/ca (default ".ccattler")
+}
+
+// parseJoinCommandArgs extracts the server URL, token, and flags from the
+// arguments following "join".
+func parseJoinCommandArgs(args []string) joinCommandConfig {
+	parsedConfig := joinCommandConfig{
+		dataDirectory: ".ccattler",
+	}
+
+	positionalIndex := 0
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--node-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.nodeID = args[argIndex]
+			}
+		case "--ca-cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.caCertPath = args[argIndex]
+			}
+		case "--data-dir":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.dataDirectory = args[argIndex]
+			}
+		default:
+			if positionalIndex == 0 {
+				parsedConfig.serverAddress = currentArg
+			} else if positionalIndex == 1 {
+				parsedConfig.joinToken = currentArg
+			}
+			positionalIndex++
+		}
+	}
+
+	return parsedConfig
+}
+
+// executeJoinCommand enrolls this node with the cluster by contacting the
+// server's enrollment endpoint, presenting the join token, and saving the
+// issued certificate material to the data directory.
+func executeJoinCommand(parsedConfig joinCommandConfig) {
+	fmt.Printf("Enrolling node %s with %s...\n", parsedConfig.nodeID, parsedConfig.serverAddress)
+
+	var transportTLSConfig *tls.Config
+	if parsedConfig.caCertPath != "" {
+		caCertPEM, readError := os.ReadFile(parsedConfig.caCertPath)
+		if readError != nil {
+			fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
+			os.Exit(1)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
+			os.Exit(1)
+		}
+		transportTLSConfig = &tls.Config{
+			RootCAs:    caCertPool,
+			MinVersion: tls.VersionTLS13,
+		}
+	} else {
+		transportTLSConfig = &tls.Config{
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS13,
+		}
+		fmt.Println("WARNING: no --ca-cert provided, server certificate will not be verified")
+	}
+
+	httpClient := &http.Client{
+		Transport: &http.Transport{TLSClientConfig: transportTLSConfig},
+		Timeout:   30 * time.Second,
+	}
+
+	localIPAddresses := detectLocalIPAddresses()
+	ipStrings := make([]string, len(localIPAddresses))
+	for ipIndex, ipAddr := range localIPAddresses {
+		ipStrings[ipIndex] = ipAddr.String()
+	}
+
+	enrollmentRequestBody, _ := json.Marshal(map[string]interface{}{
+		"token":        parsedConfig.joinToken,
+		"node_id":      parsedConfig.nodeID,
+		"ip_addresses": ipStrings,
+	})
+
+	enrollmentURL := parsedConfig.serverAddress + "/api/enroll"
+	httpResponse, requestError := httpClient.Post(enrollmentURL, "application/json",
+		strings.NewReader(string(enrollmentRequestBody)))
+	if requestError != nil {
+		fmt.Fprintf(os.Stderr, "error contacting server: %v\n", requestError)
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+
+	var enrollmentResponse struct {
+		CertificatePEM string `json:"certificate_pem"`
+		PrivateKeyPEM  string `json:"private_key_pem"`
+		CACertPEM      string `json:"ca_cert_pem"`
+		Principal      string `json:"principal"`
+		Error          string `json:"error"`
+	}
+	if jsonError := json.Unmarshal(responseBody, &enrollmentResponse); jsonError != nil {
+		fmt.Fprintf(os.Stderr, "error parsing response: %v\n", jsonError)
+		os.Exit(1)
+	}
+
+	if enrollmentResponse.Error != "" {
+		fmt.Fprintf(os.Stderr, "enrollment failed: %s\n", enrollmentResponse.Error)
+		os.Exit(1)
+	}
+
+	if mkdirError := os.MkdirAll(parsedConfig.dataDirectory, 0700); mkdirError != nil {
+		fmt.Fprintf(os.Stderr, "error creating data directory: %v\n", mkdirError)
+		os.Exit(1)
+	}
+
+	certPath := parsedConfig.dataDirectory + "/node.pem"
+	keyPath := parsedConfig.dataDirectory + "/node-key.pem"
+	caCertPath := parsedConfig.dataDirectory + "/ca.pem"
+
+	if writeError := os.WriteFile(certPath, []byte(enrollmentResponse.CertificatePEM), 0644); writeError != nil {
+		fmt.Fprintf(os.Stderr, "error writing certificate: %v\n", writeError)
+		os.Exit(1)
+	}
+	if writeError := os.WriteFile(keyPath, []byte(enrollmentResponse.PrivateKeyPEM), 0600); writeError != nil {
+		fmt.Fprintf(os.Stderr, "error writing private key: %v\n", writeError)
+		os.Exit(1)
+	}
+	if writeError := os.WriteFile(caCertPath, []byte(enrollmentResponse.CACertPEM), 0644); writeError != nil {
+		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
+		os.Exit(1)
+	}
+
+	fmt.Println()
+	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
+	fmt.Printf("  Certificate: %s\n", certPath)
+	fmt.Printf("  Private key: %s\n", keyPath)
+	fmt.Printf("  CA cert:     %s\n", caCertPath)
+	fmt.Println()
+	fmt.Println("Start the agent with:")
+	fmt.Printf("  cca agent --node-id %s --cert %s --key %s --ca %s\n",
+		parsedConfig.nodeID, certPath, keyPath, caCertPath)
+}
+
+// fileExists returns true if the given path exists and is a regular file.
+func fileExists(filePath string) bool {
+	fileInfo, statError := os.Stat(filePath)
+	return statError == nil && !fileInfo.IsDir()
+}
+
+// detectLocalIPAddresses returns the non-loopback IPv4 addresses of this machine.
+func detectLocalIPAddresses() []net.IP {
+	var localAddresses []net.IP
+	networkInterfaces, interfaceError := net.Interfaces()
+	if interfaceError != nil {
+		return localAddresses
+	}
+	for _, networkInterface := range networkInterfaces {
+		if networkInterface.Flags&net.FlagUp == 0 || networkInterface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		interfaceAddresses, addressError := networkInterface.Addrs()
+		if addressError != nil {
+			continue
+		}
+		for _, interfaceAddress := range interfaceAddresses {
+			var ipAddress net.IP
+			switch typedAddress := interfaceAddress.(type) {
+			case *net.IPNet:
+				ipAddress = typedAddress.IP
+			case *net.IPAddr:
+				ipAddress = typedAddress.IP
+			}
+			if ipAddress != nil && ipAddress.To4() != nil && !ipAddress.IsLoopback() {
+				localAddresses = append(localAddresses, ipAddress)
+			}
+		}
+	}
+	return localAddresses
+}
+
 // printUsage prints the CLI help text listing all available commands to stderr.
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: cca <command>")
@@ -720,6 +1094,12 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  server [flags]               run control plane (controllers + API)")
 	fmt.Fprintln(os.Stderr, "  agent [flags]                run node agent (watches store, runs workloads)")
 	fmt.Fprintln(os.Stderr, "  apply --store etcd <file>    write facts to shared store")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "node enrollment:")
+	fmt.Fprintln(os.Stderr, "  token create [flags]         generate a join token for node enrollment")
+	fmt.Fprintln(os.Stderr, "  token list [flags]           list active join tokens")
+	fmt.Fprintln(os.Stderr, "  token revoke <token> [flags] revoke a join token")
+	fmt.Fprintln(os.Stderr, "  join <server> <token> [flags] enroll this node with the cluster")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "demos:")
 	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")
@@ -762,6 +1142,18 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flags for token:")
+	fmt.Fprintln(os.Stderr, "  --node-id <id>               scope token to a specific node (optional)")
+	fmt.Fprintln(os.Stderr, "  --ttl <duration>             token lifetime (default: 15m)")
+	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
+	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
+	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flags for join:")
+	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
+	fmt.Fprintln(os.Stderr, "  --ca-cert <path>             PEM CA certificate to verify server (recommended)")
+	fmt.Fprintln(os.Stderr, "  --data-dir <path>            directory for cert/key files (default: .ccattler)")
 }
 
 // executeApplyCommand parses a .ccattler file and writes facts to the state store.
@@ -893,7 +1285,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	nodeAgent := agent.New(localNodeID, factStore, processRuntime)
 	go nodeAgent.Run(ctx)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
@@ -1000,7 +1392,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	go nodeAgent.Run(ctx)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
@@ -1090,7 +1482,7 @@ func executeDemoCommand() {
 	fmt.Println("Applying config:")
 	fmt.Println(builtinDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, builtinDemoConfig); err != nil {
@@ -1171,7 +1563,7 @@ func executeDistributedDemoCommand() {
 	fmt.Println("\nApplying config:")
 	fmt.Println(distributedDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, distributedDemoConfig); err != nil {
@@ -1292,7 +1684,7 @@ service api {
 	fmt.Println("\nApplying config:")
 	fmt.Println(networkDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, networkDemoConfig); err != nil {
@@ -1424,7 +1816,7 @@ service web {
 	fmt.Println("\nApplying config:")
 	fmt.Println(storageDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil)
+	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, storageDemoConfig); err != nil {
@@ -1866,11 +2258,30 @@ type volumeStatusEntry struct {
 	MountPath string `json:"mount_path,omitempty"` // filesystem mount path
 }
 
+// requireClientCertMiddleware wraps an HTTP handler to reject requests that
+// lack a verified client certificate. The /api/enroll path is exempted because
+// joining nodes do not yet have credentials.
+func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/enroll" {
+			wrappedHandler.ServeHTTP(responseWriter, request)
+			return
+		}
+		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+			http.Error(responseWriter, "client certificate required", http.StatusUnauthorized)
+			return
+		}
+		wrappedHandler.ServeHTTP(responseWriter, request)
+	})
+}
+
 // launchStatusAPIServer starts the HTTP API server in the background. It hosts
 // both the legacy /status and /metric endpoints and the new /api/* endpoints.
 // When serverTLSConfig is non-nil, the listener is wrapped with TLS for mTLS.
+// When enrollmentEnabled is true, client certs are enforced via middleware
+// (except on /api/enroll) instead of at the TLS layer.
 // Returns the api.Server so callers can attach optional components like EventLog.
-func launchStatusAPIServer(factStore store.StateStore, listenAddress string, serverTLSConfig *tls.Config) *api.Server {
+func launchStatusAPIServer(factStore store.StateStore, listenAddress string, serverTLSConfig *tls.Config, enrollmentEnabled bool) *api.Server {
 	apiServer := api.NewServer(factStore)
 
 	httpMux := http.NewServeMux()
@@ -1915,8 +2326,14 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 	if serverTLSConfig != nil {
 		listener = tls.NewListener(listener, serverTLSConfig)
 	}
+
+	var serverHandler http.Handler = httpMux
+	if enrollmentEnabled {
+		serverHandler = requireClientCertMiddleware(httpMux)
+	}
+
 	go func() {
-		if serveError := http.Serve(listener, httpMux); serveError != nil {
+		if serveError := http.Serve(listener, serverHandler); serveError != nil {
 			fmt.Fprintf(os.Stderr, "status api server: %v\n", serveError)
 		}
 	}()

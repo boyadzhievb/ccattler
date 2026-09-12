@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -23,15 +24,23 @@ import (
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
-	factStore store.StateStore
-	eventLog  *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
-	mux       *http.ServeMux
-	listener  net.Listener
+	factStore         store.StateStore
+	eventLog          *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	enrollmentService *security.EnrollmentService
+	mux               *http.ServeMux
+	listener          net.Listener
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
 func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 	apiServer.eventLog = eventLog
+}
+
+// SetEnrollmentService attaches the enrollment service to the server, enabling
+// the POST /api/enroll endpoint for node enrollment via join tokens.
+func (apiServer *Server) SetEnrollmentService(enrollmentService *security.EnrollmentService) {
+	apiServer.enrollmentService = enrollmentService
+	apiServer.mux.HandleFunc("/api/enroll", apiServer.handleEnroll)
 }
 
 // NewServer creates a new API server backed by the given fact store.
@@ -376,6 +385,78 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 		events = []types.SystemEvent{}
 	}
 	json.NewEncoder(responseWriter).Encode(events)
+}
+
+// enrollmentRequestBody is the JSON body for POST /api/enroll.
+type enrollmentRequestBody struct {
+	Token       string   `json:"token"`
+	NodeID      string   `json:"node_id"`
+	IPAddresses []string `json:"ip_addresses"`
+}
+
+// enrollmentResponseBody is the JSON response for POST /api/enroll.
+type enrollmentResponseBody struct {
+	CertificatePEM string `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
+	CACertPEM      string `json:"ca_cert_pem,omitempty"`
+	Principal      string `json:"principal,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// handleEnroll serves POST /api/enroll for node enrollment. The joining node
+// presents a join token and node ID; the server validates the token, issues a
+// certificate, binds the node-agent RBAC role, and returns the credentials.
+func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	if apiServer.enrollmentService == nil {
+		responseWriter.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "enrollment not available"})
+		return
+	}
+
+	var requestBody enrollmentRequestBody
+	if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "invalid JSON"})
+		return
+	}
+
+	if requestBody.Token == "" || requestBody.NodeID == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "token and node_id required"})
+		return
+	}
+
+	var parsedIPAddresses []net.IP
+	for _, ipString := range requestBody.IPAddresses {
+		if parsedIP := net.ParseIP(ipString); parsedIP != nil {
+			parsedIPAddresses = append(parsedIPAddresses, parsedIP)
+		}
+	}
+
+	enrollmentResponse, enrollmentError := apiServer.enrollmentService.EnrollNode(request.Context(), security.EnrollmentRequest{
+		Token:       requestBody.Token,
+		NodeID:      requestBody.NodeID,
+		IPAddresses: parsedIPAddresses,
+	})
+	if enrollmentError != nil {
+		responseWriter.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: enrollmentError.Error()})
+		return
+	}
+
+	json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{
+		CertificatePEM: string(enrollmentResponse.CertificatePEM),
+		PrivateKeyPEM:  string(enrollmentResponse.PrivateKeyPEM),
+		CACertPEM:      string(enrollmentResponse.CACertPEM),
+		Principal:      enrollmentResponse.Principal,
+	})
 }
 
 // handleMetric serves POST /api/metric to inject a simulated metric value.
