@@ -269,7 +269,7 @@ function Installation() {
               </div>
               <div className="border border-white/6 rounded bg-[#04040c] p-4 font-mono text-sm space-y-1">
                 <div><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca version</span></div>
-                <div><span className="text-[#a3e8a0]/60">cca v0.12.0</span></div>
+                <div><span className="text-[#a3e8a0]/60">cca v0.20.1</span></div>
                 <div className="pt-2"><span className="text-[#6378ff]/60">$</span><span className="text-white/60"> cca demo</span></div>
                 <div><span className="text-[#a3e8a0]/60">Applying config...</span></div>
               </div>
@@ -310,7 +310,7 @@ function Installation() {
               <div>
                 <span className="text-white/60">  ccattler/releases/latest/download/install-demo.sh | bash</span>
               </div>
-              <div className="pt-2"><span className="text-[#a3e8a0]/60">Downloading CCattler v0.12.0...</span></div>
+              <div className="pt-2"><span className="text-[#a3e8a0]/60">Downloading CCattler v0.20.1...</span></div>
               <div><span className="text-[#a3e8a0]/60">Creating demo cluster (2 VMs)...</span></div>
               <div><span className="text-[#a3e8a0]/60">Deploying CCattler...</span></div>
               <div><span className="text-[#a3e8a0]/60">Deploying Java test app...</span></div>
@@ -1141,6 +1141,29 @@ function Examples() {
 function Releases() {
   const releases = [
     {
+      version: "v0.20.1",
+      date: "2026-09-13",
+      title: "Service Networking & Placement",
+      changes: [
+        "DNS server — cca server --dns resolves *.ccattler.local to VIPs",
+        "HTTP reverse proxy — cca agent --proxy routes by Host header with round-robin",
+        "Placement DSL — require/prefer/restrict/accept replaces K8s affinity jargon",
+        "Ansible enables DNS + proxy by default, downloads examples from GitHub",
+        "Install scripts fix for non-blocking IO in terminal environments",
+      ],
+    },
+    {
+      version: "v0.20.0",
+      date: "2026-09-13",
+      title: "Scheduler Placement & Cross-Host Endpoints",
+      changes: [
+        "Cross-host endpoints — EndpointController uses nodeAddress:hostPort",
+        "Require/prefer/restrict/accept placement constraints in scheduler",
+        "Placement fact keys and DSL parsing for label-based scheduling",
+        "516 tests passing across 13 packages",
+      ],
+    },
+    {
       version: "v0.12.0",
       date: "2026-09-12",
       title: "Split Install Scripts",
@@ -1311,7 +1334,7 @@ function CTA() {
               <span className="text-[#6378ff]/60">$</span>
               <span className="text-white/60"> curl -fsSL .../install.sh | bash</span>
             </div>
-            <div className="text-white/25 text-xs">Downloading CCattler v0.12.0...</div>
+            <div className="text-white/25 text-xs">Downloading CCattler v0.20.1...</div>
             <div className="text-[#a3e8a0]/70 text-xs">✓ Downloaded to ~/.ccattler</div>
             <div className="text-white/25 text-xs">Created inventory.ini — edit and re-run</div>
             <div className="mt-3">

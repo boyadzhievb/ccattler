@@ -1,5 +1,5 @@
 {
-  "testCount": 439,
+  "testCount": 516,
   "packageCount": 13,
   "milestones": [
     {
@@ -134,6 +134,13 @@
       "phase": "Phase 22",
       "demo": "cca token create, cca join, agent auto-discovers certs and runs",
       "complete": true
+    },
+    {
+      "id": "M20",
+      "name": "Service Networking & Placement",
+      "phase": "Phase 23",
+      "demo": "DNS, HTTP proxy, require/prefer/restrict/accept placement",
+      "complete": true
     }
   ],
   "examples": [
@@ -237,7 +244,22 @@
     {
       "keyword": "placement",
       "context": "service",
-      "description": "Block declaring placement constraints: architecture filtering and zone spread"
+      "description": "Block declaring placement constraints: require/prefer labels, accept restrictions, architecture, zone spread"
+    },
+    {
+      "keyword": "require",
+      "context": "placement",
+      "description": "Hard constraint: node must have this label key=value to be eligible (e.g. require gpu = true)"
+    },
+    {
+      "keyword": "prefer",
+      "context": "placement",
+      "description": "Soft preference: nodes with this label score higher but are not required (e.g. prefer region = us-east)"
+    },
+    {
+      "keyword": "accept",
+      "context": "placement",
+      "description": "Tolerate a node restriction: allows scheduling on nodes that restrict this label (e.g. accept dedicated-compute)"
     },
     {
       "keyword": "update",
