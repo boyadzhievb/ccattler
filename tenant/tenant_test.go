@@ -1247,7 +1247,7 @@ func TestPolicyGateDenyRBAC(t *testing.T) {
 	rbac.AddRole(security.Role{
 		Name: "reader",
 		Rules: []security.Rule{
-			{KeyPrefix: "/ccattler/", Operations: []security.Permission{security.PermissionRead}},
+			{KeyPrefix: "", Operations: []security.Permission{security.PermissionRead}},
 		},
 	})
 	rbac.BindRole(security.RoleBinding{Principal: "user:bob", RoleName: "reader"})
@@ -1409,8 +1409,8 @@ func TestAuditViewEntriesForTenant(t *testing.T) {
 
 	view := NewTenantAuditView(auditLog, registry)
 
-	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "/ccattler/desired/service/payments/checkout/image", Decision: "ALLOW"})
-	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "/ccattler/desired/service/frontend/web/image", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "desired/service/payments/checkout/image", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "desired/service/frontend/web/image", Decision: "ALLOW"})
 	auditLog.Log(security.AuditEntry{Principal: "user:carol", Action: "apply", Target: "payments/checkout", Decision: "DENY"})
 
 	paymentsEntries := view.EntriesForTenant("payments")
@@ -1455,8 +1455,8 @@ func TestAuditViewDeniedEntries(t *testing.T) {
 
 	view := NewTenantAuditView(auditLog, registry)
 
-	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "/ccattler/desired/service/payments/checkout", Decision: "ALLOW"})
-	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "/ccattler/desired/service/payments/api", Decision: "DENY"})
+	auditLog.Log(security.AuditEntry{Principal: "user:alice", Action: "apply", Target: "desired/service/payments/checkout", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "user:bob", Action: "apply", Target: "desired/service/payments/api", Decision: "DENY"})
 	auditLog.Log(security.AuditEntry{Principal: "user:carol", Action: "apply", Target: "frontend/web", Decision: "DENY"})
 
 	// Denied entries for payments.
@@ -1513,7 +1513,7 @@ func TestAuditViewTenantVisibilityByPrincipal(t *testing.T) {
 
 	view := NewTenantAuditView(auditLog, registry)
 
-	auditLog.Log(security.AuditEntry{Principal: "node:payments-node-1", Action: "heartbeat", Target: "/ccattler/lease/node/n1", Decision: "ALLOW"})
+	auditLog.Log(security.AuditEntry{Principal: "node:payments-node-1", Action: "heartbeat", Target: "lease/node/n1", Decision: "ALLOW"})
 
 	entries := view.EntriesForTenant("payments")
 	if len(entries) != 1 {

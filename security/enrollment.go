@@ -15,10 +15,10 @@ import (
 )
 
 // JoinTokenPrefix is the fact store prefix for node join tokens.
-const JoinTokenPrefix = "/ccattler/enrollment/token/"
+const JoinTokenPrefix = "enrollment/token/"
 
 // EnrolledNodePrefix is the fact store prefix for enrolled node records.
-const EnrolledNodePrefix = "/ccattler/enrollment/node/"
+const EnrolledNodePrefix = "enrollment/node/"
 
 // JoinToken represents a token that authorizes a node to join the cluster.
 type JoinToken struct {

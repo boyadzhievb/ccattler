@@ -288,19 +288,19 @@ func TestRBACAuthorizeAllowed(t *testing.T) {
 	authorizer.AddRole(Role{
 		Name: "node-agent",
 		Rules: []Rule{
-			{KeyPrefix: "/ccattler/observed/", Operations: []Permission{PermissionRead, PermissionWrite}},
-			{KeyPrefix: "/ccattler/desired/", Operations: []Permission{PermissionRead}},
+			{KeyPrefix: "observed/", Operations: []Permission{PermissionRead, PermissionWrite}},
+			{KeyPrefix: "desired/", Operations: []Permission{PermissionRead}},
 		},
 	})
 	authorizer.BindRole(RoleBinding{Principal: "node:node-1", RoleName: "node-agent"})
 
-	if err := authorizer.Authorize("node:node-1", PermissionRead, "/ccattler/observed/instance/i1/state"); err != nil {
+	if err := authorizer.Authorize("node:node-1", PermissionRead, "observed/instance/i1/state"); err != nil {
 		t.Fatalf("expected allow, got: %v", err)
 	}
-	if err := authorizer.Authorize("node:node-1", PermissionWrite, "/ccattler/observed/instance/i1/state"); err != nil {
+	if err := authorizer.Authorize("node:node-1", PermissionWrite, "observed/instance/i1/state"); err != nil {
 		t.Fatalf("expected allow, got: %v", err)
 	}
-	if err := authorizer.Authorize("node:node-1", PermissionRead, "/ccattler/desired/service/web/image"); err != nil {
+	if err := authorizer.Authorize("node:node-1", PermissionRead, "desired/service/web/image"); err != nil {
 		t.Fatalf("expected allow, got: %v", err)
 	}
 }
@@ -311,23 +311,23 @@ func TestRBACAuthorizeDenied(t *testing.T) {
 	authorizer.AddRole(Role{
 		Name: "node-agent",
 		Rules: []Rule{
-			{KeyPrefix: "/ccattler/observed/", Operations: []Permission{PermissionRead, PermissionWrite}},
+			{KeyPrefix: "observed/", Operations: []Permission{PermissionRead, PermissionWrite}},
 		},
 	})
 	authorizer.BindRole(RoleBinding{Principal: "node:node-1", RoleName: "node-agent"})
 
 	// Write to desired/ should be denied for a node agent.
-	if err := authorizer.Authorize("node:node-1", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+	if err := authorizer.Authorize("node:node-1", PermissionWrite, "desired/service/web/image"); err == nil {
 		t.Fatal("expected deny for write to desired/")
 	}
 
 	// Delete should be denied (not in node-agent permissions).
-	if err := authorizer.Authorize("node:node-1", PermissionDelete, "/ccattler/observed/instance/i1"); err == nil {
+	if err := authorizer.Authorize("node:node-1", PermissionDelete, "observed/instance/i1"); err == nil {
 		t.Fatal("expected deny for delete")
 	}
 
 	// Unknown principal should be denied.
-	if err := authorizer.Authorize("node:unknown", PermissionRead, "/ccattler/observed/instance/i1"); err == nil {
+	if err := authorizer.Authorize("node:unknown", PermissionRead, "observed/instance/i1"); err == nil {
 		t.Fatal("expected deny for unknown principal")
 	}
 }
@@ -343,22 +343,22 @@ func TestRBACBuiltinRoles(t *testing.T) {
 	authorizer.BindRole(RoleBinding{Principal: "controller:scheduler", RoleName: "scheduler"})
 
 	// Admin can do anything.
-	if err := authorizer.Authorize("admin", PermissionDelete, "/ccattler/desired/service/web"); err != nil {
+	if err := authorizer.Authorize("admin", PermissionDelete, "desired/service/web"); err != nil {
 		t.Fatalf("admin should be allowed: %v", err)
 	}
 
 	// Node can write observed.
-	if err := authorizer.Authorize("node:n1", PermissionWrite, "/ccattler/observed/instance/i1/state"); err != nil {
+	if err := authorizer.Authorize("node:n1", PermissionWrite, "observed/instance/i1/state"); err != nil {
 		t.Fatalf("node should write observed: %v", err)
 	}
 
 	// Node cannot write desired.
-	if err := authorizer.Authorize("node:n1", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+	if err := authorizer.Authorize("node:n1", PermissionWrite, "desired/service/web/image"); err == nil {
 		t.Fatal("node should not write desired")
 	}
 
 	// Scheduler can write placement.
-	if err := authorizer.Authorize("controller:scheduler", PermissionWrite, "/ccattler/placement/instance/i1"); err != nil {
+	if err := authorizer.Authorize("controller:scheduler", PermissionWrite, "placement/instance/i1"); err != nil {
 		t.Fatalf("scheduler should write placement: %v", err)
 	}
 }
@@ -368,18 +368,18 @@ func TestRBACRemoveBinding(t *testing.T) {
 	authorizer.AddRole(Role{
 		Name: "reader",
 		Rules: []Rule{
-			{KeyPrefix: "/", Operations: []Permission{PermissionRead}},
+			{KeyPrefix: "", Operations: []Permission{PermissionRead}},
 		},
 	})
 	authorizer.BindRole(RoleBinding{Principal: "user:alice", RoleName: "reader"})
 
-	if err := authorizer.Authorize("user:alice", PermissionRead, "/ccattler/desired/"); err != nil {
+	if err := authorizer.Authorize("user:alice", PermissionRead, "desired/"); err != nil {
 		t.Fatalf("should be allowed: %v", err)
 	}
 
 	authorizer.RemoveBinding("user:alice")
 
-	if err := authorizer.Authorize("user:alice", PermissionRead, "/ccattler/desired/"); err == nil {
+	if err := authorizer.Authorize("user:alice", PermissionRead, "desired/"); err == nil {
 		t.Fatal("should be denied after removal")
 	}
 }
@@ -736,7 +736,7 @@ func TestABACTeamIsolation(t *testing.T) {
 	authorizer.AddPolicy(ABACPolicy{
 		Name:               "platform-team-desired",
 		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
-		TargetKeyPrefix:    "/ccattler/desired/",
+		TargetKeyPrefix:    "desired/",
 		AllowedOperations:  []Permission{PermissionRead, PermissionWrite},
 	})
 
@@ -748,11 +748,11 @@ func TestABACTeamIsolation(t *testing.T) {
 		{Key: "team", Value: "frontend"},
 	})
 
-	if err := authorizer.Authorize("user:alice", PermissionWrite, "/ccattler/desired/service/web/image"); err != nil {
+	if err := authorizer.Authorize("user:alice", PermissionWrite, "desired/service/web/image"); err != nil {
 		t.Fatalf("platform team should be allowed: %v", err)
 	}
 
-	if err := authorizer.Authorize("user:bob", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+	if err := authorizer.Authorize("user:bob", PermissionWrite, "desired/service/web/image"); err == nil {
 		t.Fatal("frontend team should be denied write to desired/")
 	}
 }
@@ -766,7 +766,7 @@ func TestABACProductionGate(t *testing.T) {
 			{Key: "environment", Value: "production"},
 			{Key: "role", Value: "deployer"},
 		},
-		TargetKeyPrefix:   "/ccattler/desired/",
+		TargetKeyPrefix:   "desired/",
 		AllowedOperations: []Permission{PermissionWrite},
 	})
 
@@ -779,11 +779,11 @@ func TestABACProductionGate(t *testing.T) {
 		{Key: "role", Value: "deployer"},
 	})
 
-	if err := authorizer.Authorize("user:deployer", PermissionWrite, "/ccattler/desired/service/web/image"); err != nil {
+	if err := authorizer.Authorize("user:deployer", PermissionWrite, "desired/service/web/image"); err != nil {
 		t.Fatalf("prod deployer should be allowed: %v", err)
 	}
 
-	if err := authorizer.Authorize("user:dev", PermissionWrite, "/ccattler/desired/service/web/image"); err == nil {
+	if err := authorizer.Authorize("user:dev", PermissionWrite, "desired/service/web/image"); err == nil {
 		t.Fatal("staging deployer should be denied production writes")
 	}
 }
@@ -793,7 +793,7 @@ func TestCombinedRBACAndABAC(t *testing.T) {
 	rbacAuthorizer.AddRole(Role{
 		Name: "reader",
 		Rules: []Rule{
-			{KeyPrefix: "/ccattler/", Operations: []Permission{PermissionRead}},
+			{KeyPrefix: "", Operations: []Permission{PermissionRead}},
 		},
 	})
 	rbacAuthorizer.BindRole(RoleBinding{Principal: "user:alice", RoleName: "reader"})
@@ -802,7 +802,7 @@ func TestCombinedRBACAndABAC(t *testing.T) {
 	abacAuthorizer.AddPolicy(ABACPolicy{
 		Name:               "team-write",
 		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
-		TargetKeyPrefix:    "/ccattler/desired/",
+		TargetKeyPrefix:    "desired/",
 		AllowedOperations:  []Permission{PermissionWrite},
 	})
 	abacAuthorizer.SetPrincipalAttributes("user:alice", []Attribute{{Key: "team", Value: "platform"}})
@@ -810,17 +810,17 @@ func TestCombinedRBACAndABAC(t *testing.T) {
 	combined := NewCombinedAuthorizer(rbacAuthorizer, abacAuthorizer)
 
 	// Read allowed via RBAC.
-	if err := combined.Authorize("user:alice", PermissionRead, "/ccattler/desired/service/web"); err != nil {
+	if err := combined.Authorize("user:alice", PermissionRead, "desired/service/web"); err != nil {
 		t.Fatalf("read should be allowed via RBAC: %v", err)
 	}
 
 	// Write allowed via ABAC (RBAC denies it, but ABAC allows).
-	if err := combined.Authorize("user:alice", PermissionWrite, "/ccattler/desired/service/web"); err != nil {
+	if err := combined.Authorize("user:alice", PermissionWrite, "desired/service/web"); err != nil {
 		t.Fatalf("write should be allowed via ABAC: %v", err)
 	}
 
 	// Delete denied by both.
-	if err := combined.Authorize("user:alice", PermissionDelete, "/ccattler/desired/service/web"); err == nil {
+	if err := combined.Authorize("user:alice", PermissionDelete, "desired/service/web"); err == nil {
 		t.Fatal("delete should be denied by both RBAC and ABAC")
 	}
 }
@@ -940,7 +940,7 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 	}
 
 	// RBAC binding should exist.
-	if err := rbacAuthorizer.Authorize("node:node-1", PermissionWrite, "/ccattler/observed/instance/i1/state"); err != nil {
+	if err := rbacAuthorizer.Authorize("node:node-1", PermissionWrite, "observed/instance/i1/state"); err != nil {
 		t.Fatalf("node-1 should have node-agent role: %v", err)
 	}
 
@@ -1036,7 +1036,7 @@ func TestEnrollmentListAndRemove(t *testing.T) {
 	}
 
 	// RBAC binding should be removed.
-	if err := rbacAuthorizer.Authorize("node:node-a", PermissionRead, "/ccattler/observed/"); err == nil {
+	if err := rbacAuthorizer.Authorize("node:node-a", PermissionRead, "observed/"); err == nil {
 		t.Fatal("removed node should not have RBAC binding")
 	}
 }

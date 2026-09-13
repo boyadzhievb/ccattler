@@ -24,7 +24,7 @@ func NewTenantAuditView(auditLog security.AuditLogger, registry *TenantRegistry)
 
 // EntriesForTenant returns audit entries visible to the given tenant.
 // An entry is visible if:
-//   - The target contains the tenant name as a path prefix (e.g. "/ccattler/desired/service/payments/...")
+//   - The target contains the tenant name as a path prefix (e.g. "desired/service/payments/...")
 //   - The principal belongs to the tenant (e.g. "user:alice" with tenant attribute)
 //   - The target references a service owned by the tenant
 func (view *TenantAuditView) EntriesForTenant(tenantName string) []security.AuditEntry {

@@ -44,7 +44,7 @@ type FactSchema struct {
 	// Name uniquely identifies this schema (e.g. "firewall_rule", "metric_target").
 	Name string
 	// KeyPrefix is the fact store prefix where facts of this type live
-	// (e.g. "/ccattler/desired/firewall_rule/").
+	// (e.g. "desired/firewall_rule/").
 	KeyPrefix string
 	// Fields lists the sub-key fields for this fact type.
 	Fields []FieldSchema

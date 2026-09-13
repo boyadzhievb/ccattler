@@ -12,13 +12,13 @@ import (
 )
 
 // BootstrapTokenKey is the fact store key for the one-time bootstrap token.
-const BootstrapTokenKey = "/ccattler/bootstrap/token"
+const BootstrapTokenKey = "bootstrap/token"
 
 // BootstrapExpiryKey is the fact store key for the bootstrap token expiry timestamp.
-const BootstrapExpiryKey = "/ccattler/bootstrap/expiry"
+const BootstrapExpiryKey = "bootstrap/expiry"
 
 // BootstrapUsedKey is the fact store key marking the bootstrap token as consumed.
-const BootstrapUsedKey = "/ccattler/bootstrap/used"
+const BootstrapUsedKey = "bootstrap/used"
 
 // BootstrapResult contains the generated bootstrap token and its expiry.
 type BootstrapResult struct {

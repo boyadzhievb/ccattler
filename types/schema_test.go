@@ -7,7 +7,7 @@ func TestSchemaRegistryRegisterAndGet(t *testing.T) {
 
 	schema := FactSchema{
 		Name:      "firewall_rule",
-		KeyPrefix: "/ccattler/desired/firewall_rule/",
+		KeyPrefix: "desired/firewall_rule/",
 		Fields: []FieldSchema{
 			{Name: "source", Type: FieldTypeString, Required: true},
 			{Name: "destination", Type: FieldTypeString, Required: true},
@@ -38,7 +38,7 @@ func TestSchemaRegistryDuplicateReject(t *testing.T) {
 
 	schema := FactSchema{
 		Name:      "metric",
-		KeyPrefix: "/ccattler/desired/metric/",
+		KeyPrefix: "desired/metric/",
 		Fields:    []FieldSchema{{Name: "value", Type: FieldTypeString}},
 	}
 
@@ -54,7 +54,7 @@ func TestSchemaRegistryValidateSuccess(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "firewall_rule",
-		KeyPrefix: "/ccattler/desired/firewall_rule/",
+		KeyPrefix: "desired/firewall_rule/",
 		Fields: []FieldSchema{
 			{Name: "source", Type: FieldTypeString, Required: true},
 			{Name: "destination", Type: FieldTypeString, Required: true},
@@ -81,7 +81,7 @@ func TestSchemaRegistryValidateRequiredMissing(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "firewall_rule",
-		KeyPrefix: "/ccattler/desired/firewall_rule/",
+		KeyPrefix: "desired/firewall_rule/",
 		Fields: []FieldSchema{
 			{Name: "source", Type: FieldTypeString, Required: true},
 			{Name: "port", Type: FieldTypeInteger, Required: true},
@@ -103,7 +103,7 @@ func TestSchemaRegistryValidateInvalidInteger(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "rule",
-		KeyPrefix: "/ccattler/desired/rule/",
+		KeyPrefix: "desired/rule/",
 		Fields: []FieldSchema{
 			{Name: "port", Type: FieldTypeInteger},
 		},
@@ -120,7 +120,7 @@ func TestSchemaRegistryValidateInvalidBoolean(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "toggle",
-		KeyPrefix: "/ccattler/desired/toggle/",
+		KeyPrefix: "desired/toggle/",
 		Fields: []FieldSchema{
 			{Name: "enabled", Type: FieldTypeBoolean},
 		},
@@ -142,7 +142,7 @@ func TestSchemaRegistryValidateInvalidEnum(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "rule",
-		KeyPrefix: "/ccattler/desired/rule/",
+		KeyPrefix: "desired/rule/",
 		Fields: []FieldSchema{
 			{Name: "action", Type: FieldTypeEnum, EnumValues: []string{"allow", "deny"}},
 		},
@@ -159,7 +159,7 @@ func TestSchemaRegistryValidateUnknownField(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "rule",
-		KeyPrefix: "/ccattler/desired/rule/",
+		KeyPrefix: "desired/rule/",
 		Fields: []FieldSchema{
 			{Name: "port", Type: FieldTypeInteger},
 		},
@@ -176,13 +176,13 @@ func TestSchemaRegistryValidateFactKey(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "firewall_rule",
-		KeyPrefix: "/ccattler/desired/firewall_rule/",
+		KeyPrefix: "desired/firewall_rule/",
 		Fields: []FieldSchema{
 			{Name: "port", Type: FieldTypeInteger},
 		},
 	})
 
-	schemaName, entityName, fieldName, err := registry.ValidateFactKey("/ccattler/desired/firewall_rule/rule-1/port")
+	schemaName, entityName, fieldName, err := registry.ValidateFactKey("desired/firewall_rule/rule-1/port")
 	if err != nil {
 		t.Fatalf("validate key: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestSchemaRegistryValidateFactKey(t *testing.T) {
 func TestSchemaRegistryValidateFactKeyNoMatch(t *testing.T) {
 	registry := NewSchemaRegistry()
 
-	_, _, _, err := registry.ValidateFactKey("/ccattler/desired/service/web/image")
+	_, _, _, err := registry.ValidateFactKey("desired/service/web/image")
 	if err == nil {
 		t.Fatal("should fail for unregistered key prefix")
 	}
@@ -211,12 +211,12 @@ func TestSchemaRegistryListSchemas(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "rule_a",
-		KeyPrefix: "/ccattler/desired/rule_a/",
+		KeyPrefix: "desired/rule_a/",
 		Fields:    []FieldSchema{{Name: "value", Type: FieldTypeString}},
 	})
 	registry.Register(FactSchema{
 		Name:      "rule_b",
-		KeyPrefix: "/ccattler/desired/rule_b/",
+		KeyPrefix: "desired/rule_b/",
 		Fields:    []FieldSchema{{Name: "value", Type: FieldTypeString}},
 	})
 
@@ -231,7 +231,7 @@ func TestSchemaRegistryUnregister(t *testing.T) {
 
 	registry.Register(FactSchema{
 		Name:      "temp",
-		KeyPrefix: "/ccattler/desired/temp/",
+		KeyPrefix: "desired/temp/",
 		Fields:    []FieldSchema{{Name: "value", Type: FieldTypeString}},
 	})
 

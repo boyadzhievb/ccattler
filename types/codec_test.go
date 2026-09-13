@@ -277,23 +277,23 @@ func TestKeyPaths(t *testing.T) {
 	tests := []struct {
 		got, want string
 	}{
-		{KeyDesiredService("web"), "/ccattler/desired/service/web"},
-		{KeyDesiredServiceImage("web"), "/ccattler/desired/service/web/image"},
-		{KeyDesiredServiceInstances("web"), "/ccattler/desired/service/web/instances"},
-		{KeyDesiredServiceExpose("web", 8080), "/ccattler/desired/service/web/expose/8080"},
-		{KeyEffectiveServiceInstances("web"), "/ccattler/effective/service/web/instances"},
-		{KeyObservedNode("node-1"), "/ccattler/observed/node/node-1"},
-		{KeyObservedNodeState("node-1"), "/ccattler/observed/node/node-1/state"},
-		{KeyObservedInstance("a8f31"), "/ccattler/observed/instance/a8f31"},
-		{KeyObservedInstanceState("a8f31"), "/ccattler/observed/instance/a8f31/state"},
-		{KeyPlacementInstance("a8f31"), "/ccattler/placement/instance/a8f31"},
-		{KeyEndpoint("web", "a8f31"), "/ccattler/endpoint/service/web/a8f31"},
-		{KeyLeaseNode("node-1"), "/ccattler/lease/node/node-1"},
-		{KeyNetworkNodeSubnet("node-1"), "/ccattler/network/node/node-1/subnet"},
-		{KeyNetworkAllocation("a8f31"), "/ccattler/network/allocation/a8f31"},
-		{KeyNetworkVIPService("web"), "/ccattler/network/vip/service/web"},
-		{KeyNetworkVIPServicePort("web"), "/ccattler/network/vip/service/web/port"},
-		{KeyNetworkDNS("web"), "/ccattler/network/dns/web"},
+		{KeyDesiredService("web"), "desired/service/web"},
+		{KeyDesiredServiceImage("web"), "desired/service/web/image"},
+		{KeyDesiredServiceInstances("web"), "desired/service/web/instances"},
+		{KeyDesiredServiceExpose("web", 8080), "desired/service/web/expose/8080"},
+		{KeyEffectiveServiceInstances("web"), "effective/service/web/instances"},
+		{KeyObservedNode("node-1"), "observed/node/node-1"},
+		{KeyObservedNodeState("node-1"), "observed/node/node-1/state"},
+		{KeyObservedInstance("a8f31"), "observed/instance/a8f31"},
+		{KeyObservedInstanceState("a8f31"), "observed/instance/a8f31/state"},
+		{KeyPlacementInstance("a8f31"), "placement/instance/a8f31"},
+		{KeyEndpoint("web", "a8f31"), "endpoint/service/web/a8f31"},
+		{KeyLeaseNode("node-1"), "lease/node/node-1"},
+		{KeyNetworkNodeSubnet("node-1"), "network/node/node-1/subnet"},
+		{KeyNetworkAllocation("a8f31"), "network/allocation/a8f31"},
+		{KeyNetworkVIPService("web"), "network/vip/service/web"},
+		{KeyNetworkVIPServicePort("web"), "network/vip/service/web/port"},
+		{KeyNetworkDNS("web"), "network/dns/web"},
 	}
 	for _, tt := range tests {
 		if tt.got != tt.want {
@@ -404,16 +404,16 @@ func TestVolumeKeyPaths(t *testing.T) {
 	tests := []struct {
 		got, want string
 	}{
-		{KeyDesiredVolume("pgdata"), "/ccattler/desired/volume/pgdata"},
-		{KeyDesiredVolumeSize("pgdata"), "/ccattler/desired/volume/pgdata/size"},
-		{KeyDesiredVolumePersistent("pgdata"), "/ccattler/desired/volume/pgdata/persistent"},
-		{KeyDesiredServiceVolume("postgres", "pgdata"), "/ccattler/desired/service/postgres/volume/pgdata"},
-		{KeyObservedVolume("pgdata"), "/ccattler/observed/volume/pgdata"},
-		{KeyObservedVolumeState("pgdata"), "/ccattler/observed/volume/pgdata/state"},
-		{KeyObservedVolumeNode("pgdata"), "/ccattler/observed/volume/pgdata/node"},
-		{KeyObservedVolumeInstance("pgdata"), "/ccattler/observed/volume/pgdata/instance"},
-		{KeyObservedVolumeSize("pgdata"), "/ccattler/observed/volume/pgdata/size"},
-		{KeyObservedVolumeMountPath("pgdata"), "/ccattler/observed/volume/pgdata/mount_path"},
+		{KeyDesiredVolume("pgdata"), "desired/volume/pgdata"},
+		{KeyDesiredVolumeSize("pgdata"), "desired/volume/pgdata/size"},
+		{KeyDesiredVolumePersistent("pgdata"), "desired/volume/pgdata/persistent"},
+		{KeyDesiredServiceVolume("postgres", "pgdata"), "desired/service/postgres/volume/pgdata"},
+		{KeyObservedVolume("pgdata"), "observed/volume/pgdata"},
+		{KeyObservedVolumeState("pgdata"), "observed/volume/pgdata/state"},
+		{KeyObservedVolumeNode("pgdata"), "observed/volume/pgdata/node"},
+		{KeyObservedVolumeInstance("pgdata"), "observed/volume/pgdata/instance"},
+		{KeyObservedVolumeSize("pgdata"), "observed/volume/pgdata/size"},
+		{KeyObservedVolumeMountPath("pgdata"), "observed/volume/pgdata/mount_path"},
 	}
 	for _, tt := range tests {
 		if tt.got != tt.want {

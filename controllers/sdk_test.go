@@ -9,13 +9,13 @@ import (
 
 func TestFactMapEntities(t *testing.T) {
 	facts := []store.Fact{
-		{Key: "/ccattler/desired/service/web/image", Value: []byte("nginx:1.27")},
-		{Key: "/ccattler/desired/service/web/instances", Value: []byte("3")},
-		{Key: "/ccattler/desired/service/api/image", Value: []byte("api:v2")},
-		{Key: "/ccattler/desired/service/api/instances", Value: []byte("5")},
+		{Key: "desired/service/web/image", Value: []byte("nginx:1.27")},
+		{Key: "desired/service/web/instances", Value: []byte("3")},
+		{Key: "desired/service/api/image", Value: []byte("api:v2")},
+		{Key: "desired/service/api/instances", Value: []byte("5")},
 	}
 
-	factMap := NewFactMap(facts, "/ccattler/desired/service/")
+	factMap := NewFactMap(facts, "desired/service/")
 
 	entities := factMap.Entities()
 	if len(entities) != 2 {
@@ -83,10 +83,10 @@ func TestFactMapGetFieldMissing(t *testing.T) {
 func TestFactMapIgnoresNonMatchingPrefix(t *testing.T) {
 	facts := []store.Fact{
 		{Key: "/other/prefix/web/image", Value: []byte("nginx")},
-		{Key: "/ccattler/desired/service/api/image", Value: []byte("api:v1")},
+		{Key: "desired/service/api/image", Value: []byte("api:v1")},
 	}
 
-	factMap := NewFactMap(facts, "/ccattler/desired/service/")
+	factMap := NewFactMap(facts, "desired/service/")
 
 	entities := factMap.Entities()
 	if len(entities) != 1 {
@@ -112,7 +112,7 @@ func TestFactMapRaw(t *testing.T) {
 func TestCustomControllerInterface(t *testing.T) {
 	var reconciled bool
 
-	controller := NewCustomController("test-ctrl", []string{"/ccattler/desired/service/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
+	controller := NewCustomController("test-ctrl", []string{"desired/service/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
 		reconciled = true
 
 		entities := facts.Entities()
@@ -120,7 +120,7 @@ func TestCustomControllerInterface(t *testing.T) {
 		for _, entity := range entities {
 			image := facts.GetField(entity, "image")
 			if image != "" {
-				changes = append(changes, PutChange("/ccattler/processed/"+entity, image))
+				changes = append(changes, PutChange("processed/"+entity, image))
 			}
 		}
 		return changes, nil
@@ -131,13 +131,13 @@ func TestCustomControllerInterface(t *testing.T) {
 	}
 
 	prefixes := controller.Watch()
-	if len(prefixes) != 1 || prefixes[0] != "/ccattler/desired/service/" {
+	if len(prefixes) != 1 || prefixes[0] != "desired/service/" {
 		t.Errorf("unexpected prefixes: %v", prefixes)
 	}
 
 	facts := []store.Fact{
-		{Key: "/ccattler/desired/service/web/image", Value: []byte("nginx:1.27")},
-		{Key: "/ccattler/desired/service/api/image", Value: []byte("api:v2")},
+		{Key: "desired/service/web/image", Value: []byte("nginx:1.27")},
+		{Key: "desired/service/api/image", Value: []byte("api:v2")},
 	}
 
 	changes, err := controller.Reconcile(context.Background(), facts)
@@ -157,15 +157,15 @@ func TestCustomControllerWithRunner(t *testing.T) {
 	defer memoryStore.Close()
 	ctx := context.Background()
 
-	memoryStore.Put(ctx, "/ccattler/desired/custom/item-1/status", []byte("pending"))
-	memoryStore.Put(ctx, "/ccattler/desired/custom/item-2/status", []byte("active"))
+	memoryStore.Put(ctx, "desired/custom/item-1/status", []byte("pending"))
+	memoryStore.Put(ctx, "desired/custom/item-2/status", []byte("active"))
 
-	controller := NewCustomController("custom", []string{"/ccattler/desired/custom/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
+	controller := NewCustomController("custom", []string{"desired/custom/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
 		changes := make([]Change, 0)
 		for _, entity := range facts.Entities() {
 			status := facts.GetField(entity, "status")
 			if status == "pending" {
-				changes = append(changes, PutChange("/ccattler/observed/custom/"+entity+"/status", "processing"))
+				changes = append(changes, PutChange("observed/custom/"+entity+"/status", "processing"))
 			}
 		}
 		return changes, nil
@@ -175,7 +175,7 @@ func TestCustomControllerWithRunner(t *testing.T) {
 	var _ Controller = controller
 
 	// Simulate a reconciliation cycle.
-	allFacts, _ := memoryStore.Scan(ctx, "/ccattler/desired/custom/")
+	allFacts, _ := memoryStore.Scan(ctx, "desired/custom/")
 	changes, err := controller.Reconcile(ctx, allFacts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -183,8 +183,8 @@ func TestCustomControllerWithRunner(t *testing.T) {
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 change (only pending item), got %d", len(changes))
 	}
-	if changes[0].Key != "/ccattler/observed/custom/item-1/status" {
-		t.Errorf("key = %q, want /ccattler/observed/custom/item-1/status", changes[0].Key)
+	if changes[0].Key != "observed/custom/item-1/status" {
+		t.Errorf("key = %q, want observed/custom/item-1/status", changes[0].Key)
 	}
 }
 

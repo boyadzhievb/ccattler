@@ -9,7 +9,7 @@ import (
 )
 
 // NetworkPolicyPrefix is the fact store prefix for network policy rules.
-const NetworkPolicyPrefix = "/ccattler/policy/network/"
+const NetworkPolicyPrefix = "policy/network/"
 
 // PolicyAction represents the action to take on matching traffic.
 type PolicyAction string

@@ -15,10 +15,10 @@ import (
 )
 
 // SecretStorePrefix is the fact store prefix for encrypted secrets.
-const SecretStorePrefix = "/ccattler/secrets/"
+const SecretStorePrefix = "secrets/"
 
 // SecretGrantPrefix is the fact store prefix for secret grants.
-const SecretGrantPrefix = "/ccattler/desired/"
+const SecretGrantPrefix = "desired/"
 
 // SecretStore manages encrypted secrets in the fact store using envelope
 // encryption. Each secret is encrypted with a data encryption key (DEK)

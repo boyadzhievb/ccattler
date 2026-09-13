@@ -53,6 +53,7 @@ func (autoscaleController *AutoscaleController) Watch() []string {
 		types.ScanDesiredServices,
 		types.ScanObservedMetrics,
 		types.ScanObservedInstances,
+		types.ScanIntentAutoscalerServices,
 	}
 }
 

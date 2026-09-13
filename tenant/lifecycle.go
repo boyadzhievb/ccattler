@@ -84,17 +84,17 @@ func (lifecycle *TenantLifecycle) CreateTenant(ctx context.Context, tenantName s
 	}
 
 	// Network isolation boundary marker.
-	networkBoundaryKey := fmt.Sprintf("/ccattler/tenant/%s/network/boundary", tenantName)
+	networkBoundaryKey := fmt.Sprintf("tenant/%s/network/boundary", tenantName)
 	lifecycle.factStore.Put(ctx, networkBoundaryKey, []byte("isolated"))
 	result.NetworkBoundary = true
 
 	// Secret namespace reservation.
-	secretSpaceKey := fmt.Sprintf("/ccattler/tenant/%s/secrets/namespace", tenantName)
+	secretSpaceKey := fmt.Sprintf("tenant/%s/secrets/namespace", tenantName)
 	lifecycle.factStore.Put(ctx, secretSpaceKey, []byte("reserved"))
 	result.SecretSpace = true
 
 	// Audit stream marker.
-	auditStreamKey := fmt.Sprintf("/ccattler/tenant/%s/audit/stream", tenantName)
+	auditStreamKey := fmt.Sprintf("tenant/%s/audit/stream", tenantName)
 	lifecycle.factStore.Put(ctx, auditStreamKey, []byte("active"))
 	result.AuditStream = true
 
@@ -256,7 +256,7 @@ func (lifecycle *TenantLifecycle) deleteExports(ctx context.Context, tenantName 
 // deleteTenantInfraFacts removes tenant infrastructure facts (network boundary,
 // secret namespace, audit stream).
 func (lifecycle *TenantLifecycle) deleteTenantInfraFacts(ctx context.Context, tenantName string) {
-	infraPrefix := fmt.Sprintf("/ccattler/tenant/%s/", tenantName)
+	infraPrefix := fmt.Sprintf("tenant/%s/", tenantName)
 	infraFacts, err := lifecycle.factStore.Scan(ctx, infraPrefix)
 	if err != nil {
 		return

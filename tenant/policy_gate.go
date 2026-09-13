@@ -8,6 +8,7 @@ import (
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // PolicyGate implements the admission pipeline that every change must pass
@@ -171,7 +172,7 @@ func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInp
 
 // getTenantState reads the tenant lifecycle state from the store.
 func (gate *PolicyGate) getTenantState(ctx context.Context, tenantName string) (TenantState, error) {
-	fact, err := gate.factStore.Get(ctx, fmt.Sprintf("/ccattler/desired/tenant/%s/state", tenantName))
+	fact, err := gate.factStore.Get(ctx, types.KeyDesiredTenantState(tenantName))
 	if err != nil {
 		return "", err
 	}

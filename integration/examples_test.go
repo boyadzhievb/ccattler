@@ -40,7 +40,7 @@ func TestAllExamplesParseAndApply(t *testing.T) {
 			}
 
 			// Verify at least one desired service was created.
-			desiredFacts, _ := factStore.Scan(ctx, "/ccattler/desired/service/")
+			desiredFacts, _ := factStore.Scan(ctx, "desired/service/")
 			if len(desiredFacts) == 0 {
 				t.Errorf("%s: expected at least one desired service fact", exampleName)
 			}

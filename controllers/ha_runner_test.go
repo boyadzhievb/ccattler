@@ -15,7 +15,7 @@ func TestHARunnerStartsControllersOnLeadership(t *testing.T) {
 	defer cancel()
 
 	// Seed a fact for the controller to reconcile.
-	memoryStore.Put(ctx, "/ccattler/effective/service/web/instances", []byte("3"))
+	memoryStore.Put(ctx, "effective/service/web/instances", []byte("3"))
 
 	metrics := NewMetricsCollector()
 
@@ -49,13 +49,13 @@ func TestHARunnerMetricsWrapping(t *testing.T) {
 	metrics := NewMetricsCollector()
 
 	// Create a custom controller that produces changes.
-	testController := NewCustomController("test", []string{"/ccattler/test/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
-		return []Change{PutChange("/ccattler/output/done", "true")}, nil
+	testController := NewCustomController("test", []string{"test/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
+		return []Change{PutChange("output/done", "true")}, nil
 	})
 
 	// Wrap and reconcile directly.
 	wrapped := &metricsWrappedController{inner: testController, metrics: metrics}
-	facts := []store.Fact{{Key: "/ccattler/test/item", Value: []byte("value")}}
+	facts := []store.Fact{{Key: "test/item", Value: []byte("value")}}
 	changes, err := wrapped.Reconcile(ctx, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -80,7 +80,7 @@ func TestHARunnerFailoverTransfersControllers(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
-	memoryStore.Put(context.Background(), "/ccattler/effective/service/web/instances", []byte("2"))
+	memoryStore.Put(context.Background(), "effective/service/web/instances", []byte("2"))
 
 	metrics1 := NewMetricsCollector()
 	metrics2 := NewMetricsCollector()

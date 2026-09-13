@@ -4,3 +4,6 @@
 /ccattler-mcp
 .mcp.json
 deploy/ansible/cca-linux-amd64
+deploy/ansible/inventory.ini
+deploy/demo-multihost.sh
+COMMAND_HISTORY.md

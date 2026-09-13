@@ -263,14 +263,6 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		return false, nil
 	}
 
-	currentRevision, revisionError := controllerRunner.store.Revision(ctx)
-	if revisionError != nil {
-		return false, revisionError
-	}
-	if currentRevision != snapshotRevision {
-		return true, nil
-	}
-
 	scannedFactRevisions := make(map[string]int64, len(allFacts))
 	for _, scannedFact := range allFacts {
 		scannedFactRevisions[scannedFact.Key] = scannedFact.Revision

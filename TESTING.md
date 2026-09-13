@@ -1,6 +1,6 @@
 # CCattler Test Plan
 
-249 tests across 11 packages. Every milestone has a "must test" headline scenario, supported by unit and integration tests.
+512 tests across 13 packages. Every milestone has a "must test" headline scenario, supported by unit and integration tests.
 
 ## How to Run
 
