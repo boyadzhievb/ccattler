@@ -61,5 +61,18 @@ if [ ! -f inventory.ini ]; then
 fi
 
 log_info "Deploying CCattler..."
-ansible-playbook -i inventory.ini site.yml
+python3 -c "
+import subprocess, sys, os
+proc = subprocess.Popen(
+    ['ansible-playbook', '-i', 'inventory.ini', 'site.yml'],
+    cwd='$ANSIBLE_DIR',
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT
+)
+for line in proc.stdout:
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+sys.exit(proc.wait())
+"
 log_ok "CCattler deployed!"

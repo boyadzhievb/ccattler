@@ -16,7 +16,7 @@
 
 - name: Fail if binary is missing
   fail:
-    msg: "Place cca-linux-{{ go_arch }} in {{ playbook_dir }}/ before running (download from releases or build with: GOOS=linux GOARCH={{ go_arch }} CGO_ENABLED=0 go build -o cca-linux-{{ go_arch }} ./cmd/cca)"
+    msg: "cca-linux-{{ go_arch }} not found in {{ playbook_dir }}/ — install.sh downloads it from releases automatically"
   when: not ccattler_binary.stat.exists
   run_once: true
 

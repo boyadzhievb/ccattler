@@ -35,3 +35,9 @@
   become: true
   roles:
     - worker
+
+- name: Deploy test application
+  hosts: controlplane
+  become: true
+  roles:
+    - testapp

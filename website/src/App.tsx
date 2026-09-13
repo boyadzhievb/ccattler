@@ -226,8 +226,8 @@ function Installation() {
 
             <p className="text-sm text-white/35 leading-relaxed">
               Downloads the Ansible playbook and <code className="text-white/50">cca</code> binary from GitHub releases.
-              First run creates an inventory template. Edit it with your host details, then run again to deploy.
-              Requires <code className="text-white/50">curl</code>, <code className="text-white/50">tar</code>, <code className="text-white/50">ansible</code>.
+              First run creates an inventory template. Edit it with your node IPs, SSH users, and key paths, then run again to deploy.
+              Requires passwordless SSH to all nodes, plus <code className="text-white/50">curl</code>, <code className="text-white/50">tar</code>, <code className="text-white/50">ansible</code> on the machine running the script.
             </p>
           </div>
 

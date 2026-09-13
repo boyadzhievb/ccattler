@@ -12,6 +12,29 @@
     state: started
     daemon_reload: true
 
+- name: Create examples directory
+  file:
+    path: /var/lib/ccattler/examples
+    state: directory
+    mode: "0755"
+
+- name: List example files from GitHub
+  uri:
+    url: "https://api.github.com/repos/boyadzhievb/ccattler/contents/examples"
+    return_content: true
+    headers:
+      Accept: "application/vnd.github.v3+json"
+  register: examples_listing
+
+- name: Download example files
+  get_url:
+    url: "{{ item.download_url }}"
+    dest: "/var/lib/ccattler/examples/{{ item.name }}"
+    mode: "0644"
+  loop: "{{ examples_listing.json | selectattr('name', 'match', '.*\\.ccattler$') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Wait for cca server API to respond
   wait_for:
     host: "{{ ansible_host }}"

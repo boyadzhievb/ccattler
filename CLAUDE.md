@@ -1274,6 +1274,11 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Placement DSL — `require label = value` (hard constraint), `prefer label = value` (soft preference), `accept label` (tolerate restricted nodes)
 - [x] Scheduler placement logic — filters by require labels and node restrictions, scores by prefer labels, combined with existing architecture/zone/resource constraints
 - [x] Human-readable naming — replaces K8s "affinity/anti-affinity/taints/tolerations" with require/prefer/restrict/accept
+- [x] Ansible DNS + proxy — server template enables `--dns`, agent template enables `--proxy` by default
+- [x] Ansible examples download — controlplane role fetches `.ccattler` examples from GitHub repo at deploy time
+- [x] Ansible testapp role — deploys test service after cluster is up
+- [x] Install script Ansible fix — `install.sh` and `install-demo.sh` wrap ansible-playbook in python3 Popen to avoid non-blocking IO errors
+- [x] Website install docs — clarified passwordless SSH prerequisite and inventory editing flow
 
 ### Milestones
 

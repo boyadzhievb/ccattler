@@ -10,6 +10,7 @@ ExecStart=/usr/local/bin/cca agent \
   --store etcd \
   --endpoints {{ etcd_endpoints }} \
   --advertise-address {{ ansible_host }} \
+  --proxy --proxy-listen {{ ansible_host }}:80 \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
   --ca {{ cca_cert_dir }}/ca.pem

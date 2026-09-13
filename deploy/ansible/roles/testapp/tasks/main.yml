@@ -1,0 +1,11 @@
+---
+- name: Wait for worker agents to register
+  pause:
+    seconds: 10
+
+- name: Apply test service
+  shell: >
+    /usr/local/bin/cca apply --store etcd --endpoints {{ etcd_endpoints }}
+    /var/lib/ccattler/examples/web-container.ccattler
+  register: apply_result
+  changed_when: "'wrote' in apply_result.stdout"

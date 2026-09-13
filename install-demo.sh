@@ -60,7 +60,20 @@ export VAGRANT_VAGRANTFILE="$ANSIBLE_DIR/demo-Vagrantfile"
 export CCA_VAGRANT_PROVIDER="libvirt"
 
 log_info "Creating demo cluster (2 VMs + CCattler + Java app)..."
-ansible-playbook -i demo-inventory.ini demo-deploy.yml
+python3 -c "
+import subprocess, sys, os
+proc = subprocess.Popen(
+    ['ansible-playbook', '-i', 'demo-inventory.ini', 'demo-deploy.yml'],
+    cwd='$ANSIBLE_DIR',
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT
+)
+for line in proc.stdout:
+    sys.stdout.buffer.write(line)
+    sys.stdout.buffer.flush()
+sys.exit(proc.wait())
+"
 
 log_ok "Demo cluster is running!"
 echo ""
