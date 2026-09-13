@@ -305,6 +305,10 @@ type serverCommandConfig struct {
 	tlsKeyPath string
 	// tlsCACertPath is the path to a PEM-encoded CA certificate for verifying client certs.
 	tlsCACertPath string
+	// dnsEnabled starts the built-in DNS server alongside the control plane.
+	dnsEnabled bool
+	// dnsListenAddress is the host:port the DNS server binds to (default ":15353").
+	dnsListenAddress string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -357,7 +361,19 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				argIndex++
 				parsedConfig.tlsCACertPath = args[argIndex]
 			}
+		case "--dns":
+			parsedConfig.dnsEnabled = true
+		case "--dns-listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.dnsListenAddress = args[argIndex]
+				parsedConfig.dnsEnabled = true
+			}
 		}
+	}
+
+	if parsedConfig.dnsEnabled && parsedConfig.dnsListenAddress == "" {
+		parsedConfig.dnsListenAddress = ":15353"
 	}
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
@@ -384,10 +400,12 @@ type agentCommandConfig struct {
 	storeKeyPrefix   string
 	nodeID           string
 	runtimeBackend   string
-	advertiseAddress string
-	tlsCertPath      string
-	tlsKeyPath       string
-	tlsCACertPath    string
+	advertiseAddress   string
+	tlsCertPath        string
+	tlsKeyPath         string
+	tlsCACertPath      string
+	proxyEnabled       bool
+	proxyListenAddress string
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -448,7 +466,19 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.advertiseAddress = args[argIndex]
 			}
+		case "--proxy":
+			parsedConfig.proxyEnabled = true
+		case "--proxy-listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.proxyListenAddress = args[argIndex]
+				parsedConfig.proxyEnabled = true
+			}
 		}
+	}
+
+	if parsedConfig.proxyEnabled && parsedConfig.proxyListenAddress == "" {
+		parsedConfig.proxyListenAddress = "0.0.0.0:80"
 	}
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
@@ -548,6 +578,18 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 24*time.Hour)
 		statusAPIServer.SetEnrollmentService(enrollmentService)
 		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
+	}
+
+	if parsedConfig.dnsEnabled {
+		serviceResolver := network.NewStoreBackedResolver(factStore)
+		dnsServer := network.NewDNSServer(serviceResolver, parsedConfig.dnsListenAddress)
+		go func() {
+			if dnsStartError := dnsServer.Start(ctx); dnsStartError != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "DNS server error: %v\n", dnsStartError)
+			}
+		}()
+		fmt.Printf("DNS server listening on %s (resolving *.%s)\n",
+			parsedConfig.dnsListenAddress, network.DefaultDNSDomain)
 	}
 
 	protocol := "http"
@@ -725,6 +767,18 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 
 	go nodeAgent.Run(ctx)
+
+	if parsedConfig.proxyEnabled {
+		serviceResolver := network.NewStoreBackedResolver(factStore)
+		serviceProxy := network.NewUserSpaceProxy(serviceResolver, parsedConfig.proxyListenAddress)
+		go func() {
+			if proxyStartError := serviceProxy.Start(ctx); proxyStartError != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
+			}
+		}()
+		fmt.Printf("Agent %s: HTTP proxy listening on %s (Host header routing)\n",
+			parsedConfig.nodeID, parsedConfig.proxyListenAddress)
+	}
 
 	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
 		parsedConfig.nodeID, parsedConfig.runtimeBackend)

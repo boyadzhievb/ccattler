@@ -5,6 +5,7 @@
 #
 # Creates 2 VMs, deploys etcd + CCattler cluster, deploys a Java test app.
 # Prerequisites: curl, tar, ansible, vagrant, libvirt
+# Host OS: Ubuntu 22.04+ or Debian 12+ (needs Python 3.9+ and OpenSSL 3.0+)
 
 set -euo pipefail
 

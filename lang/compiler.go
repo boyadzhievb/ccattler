@@ -257,6 +257,21 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 				Key: types.KeyDesiredServicePlacementZonePolicy(serviceDecl.Name), Value: serviceDecl.Placement.ZonePolicy,
 			})
 		}
+		for _, requireRule := range serviceDecl.Placement.Require {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServicePlacementRequire(serviceDecl.Name, requireRule.Label), Value: requireRule.Value,
+			})
+		}
+		for _, preferRule := range serviceDecl.Placement.Prefer {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServicePlacementPrefer(serviceDecl.Name, preferRule.Label), Value: preferRule.Value,
+			})
+		}
+		for _, acceptLabel := range serviceDecl.Placement.Accept {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServicePlacementAccept(serviceDecl.Name, acceptLabel), Value: "",
+			})
+		}
 	}
 
 	if serviceDecl.Update != nil {

@@ -9,6 +9,7 @@ ExecStart=/usr/local/bin/cca agent \
   --node-id {{ node_id | default(inventory_hostname) }} \
   --store etcd \
   --endpoints {{ etcd_endpoints }} \
+  --advertise-address {{ ansible_host }} \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
   --ca {{ cca_cert_dir }}/ca.pem

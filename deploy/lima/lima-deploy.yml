@@ -1,0 +1,396 @@
+---
+# CCattler Lima demo — self-contained single-VM playbook for macOS
+#
+# All-in-one: etcd + cca-server + cca-agent on a single Lima VM (cca-ctrl).
+# Run: ansible-playbook -i lima-inventory.ini lima-deploy.yml
+
+- name: Clean up old state
+  hosts: all
+  become: true
+  tags: [cleanup]
+  tasks:
+    - name: Stop CCattler services
+      systemd:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+      failed_when: false
+      loop:
+        - cca-agent
+        - cca-server
+        - etcd
+
+    - name: Remove old systemd units
+      file:
+        path: "/etc/systemd/system/{{ item }}"
+        state: absent
+      loop:
+        - cca-agent.service
+        - cca-server.service
+        - etcd.service
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Remove old state
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/ccattler
+        - /var/lib/ccattler
+        - /var/log/ccattler
+        - /var/lib/etcd
+        - /usr/local/bin/cca
+
+- name: Install dependencies
+  hosts: all
+  become: true
+  vars:
+    go_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+    nerdctl_version: "2.0.3"
+    cni_plugins_version: "1.9.1"
+    etcd_version: "3.5.14"
+    cca_binary: "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
+  tasks:
+    - name: Verify CCattler binary exists on host
+      stat:
+        path: "{{ cca_binary }}"
+      delegate_to: localhost
+      become: false
+      register: ccattler_binary
+
+    - name: Fail if binary is missing
+      fail:
+        msg: "{{ cca_binary }} not found — run install-lima-demo.sh to download it."
+      when: not ccattler_binary.stat.exists
+
+    - name: Install base packages
+      apt:
+        name: [curl, ca-certificates, gnupg]
+        state: present
+        update_cache: true
+
+    - name: Download nerdctl
+      get_url:
+        url: "https://github.com/containerd/nerdctl/releases/download/v{{ nerdctl_version }}/nerdctl-{{ nerdctl_version }}-linux-{{ go_arch }}.tar.gz"
+        dest: /tmp/nerdctl.tar.gz
+      register: nerdctl_download
+
+    - name: Extract nerdctl
+      unarchive:
+        src: /tmp/nerdctl.tar.gz
+        dest: /usr/local/bin
+        remote_src: true
+      when: nerdctl_download.changed
+
+    - name: Download CNI plugins
+      get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-{{ go_arch }}-v{{ cni_plugins_version }}.tgz"
+        dest: /tmp/cni-plugins.tgz
+      register: cni_download
+
+    - name: Create CNI plugins directory
+      file:
+        path: /opt/cni/bin
+        state: directory
+        mode: "0755"
+
+    - name: Extract CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: true
+      when: cni_download.changed
+
+    - name: Download etcd
+      get_url:
+        url: "https://github.com/etcd-io/etcd/releases/download/v{{ etcd_version }}/etcd-v{{ etcd_version }}-linux-{{ go_arch }}.tar.gz"
+        dest: /tmp/etcd.tar.gz
+
+    - name: Extract etcd
+      unarchive:
+        src: /tmp/etcd.tar.gz
+        dest: /tmp
+        remote_src: true
+
+    - name: Install etcd binaries
+      copy:
+        src: "/tmp/etcd-v{{ etcd_version }}-linux-{{ go_arch }}/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: "0755"
+        remote_src: true
+      loop: [etcd, etcdctl]
+
+    - name: Copy CCattler binary
+      copy:
+        src: "{{ cca_binary }}"
+        dest: /usr/local/bin/cca
+        mode: "0755"
+
+    - name: Verify cca binary
+      command: /usr/local/bin/cca version
+      changed_when: false
+
+    - name: Create directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /etc/ccattler
+        - /etc/ccattler/pki
+        - /var/lib/ccattler
+        - /var/log/ccattler
+        - /var/lib/etcd
+
+- name: Start etcd
+  hosts: all
+  become: true
+  tasks:
+    - name: Install etcd systemd unit
+      copy:
+        dest: /etc/systemd/system/etcd.service
+        content: |
+          [Unit]
+          Description=etcd — CCattler fact store
+          After=network.target
+
+          [Service]
+          Type=notify
+          ExecStart=/usr/local/bin/etcd \
+            --name cca-ctrl \
+            --data-dir /var/lib/etcd \
+            --listen-client-urls http://127.0.0.1:2379 \
+            --advertise-client-urls http://127.0.0.1:2379
+          Restart=on-failure
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start etcd
+      systemd:
+        name: etcd
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for etcd
+      command: etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
+      register: etcd_health
+      retries: 10
+      delay: 3
+      until: etcd_health.rc == 0
+      changed_when: false
+
+- name: Generate certificates
+  hosts: all
+  become: true
+  vars:
+    cca_cert_dir: /etc/ccattler/pki
+  tasks:
+    - name: Generate CA private key
+      command: openssl ecparam -genkey -name prime256v1 -out {{ cca_cert_dir }}/ca-key.pem
+      args:
+        creates: "{{ cca_cert_dir }}/ca-key.pem"
+
+    - name: Generate CA certificate
+      command: >
+        openssl req -new -x509
+        -key {{ cca_cert_dir }}/ca-key.pem
+        -out {{ cca_cert_dir }}/ca.pem
+        -days 365
+        -subj "/CN=CCattler Root CA/O=CCattler"
+      args:
+        creates: "{{ cca_cert_dir }}/ca.pem"
+
+    - name: Generate node private key
+      command: openssl ecparam -genkey -name prime256v1 -out {{ cca_cert_dir }}/node-key.pem
+      args:
+        creates: "{{ cca_cert_dir }}/node-key.pem"
+
+    - name: Generate CSR
+      command: >
+        openssl req -new
+        -key {{ cca_cert_dir }}/node-key.pem
+        -out {{ cca_cert_dir }}/node.csr
+        -subj "/CN=cca-ctrl/O=CCattler"
+        -addext "subjectAltName=URI:spiffe://ccattler/controller/cca-ctrl,URI:spiffe://ccattler/node/node-1,IP:127.0.0.1"
+      args:
+        creates: "{{ cca_cert_dir }}/node.csr"
+
+    - name: Sign the CSR
+      command: >
+        openssl x509 -req
+        -in {{ cca_cert_dir }}/node.csr
+        -CA {{ cca_cert_dir }}/ca.pem
+        -CAkey {{ cca_cert_dir }}/ca-key.pem
+        -CAcreateserial
+        -out {{ cca_cert_dir }}/node.pem
+        -days 90
+        -copy_extensions copyall
+      args:
+        creates: "{{ cca_cert_dir }}/node.pem"
+
+    - name: Set cert permissions
+      file:
+        path: "{{ item }}"
+        mode: "0600"
+      loop:
+        - "{{ cca_cert_dir }}/ca-key.pem"
+        - "{{ cca_cert_dir }}/node-key.pem"
+        - "{{ cca_cert_dir }}/node.pem"
+
+- name: Start cca-server
+  hosts: all
+  become: true
+  vars:
+    cca_cert_dir: /etc/ccattler/pki
+  tasks:
+    - name: Install cca-server systemd unit
+      copy:
+        dest: /etc/systemd/system/cca-server.service
+        content: |
+          [Unit]
+          Description=CCattler Server
+          After=etcd.service
+          Requires=etcd.service
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/cca server \
+            --store etcd \
+            --endpoints http://127.0.0.1:2379 \
+            --listen 127.0.0.1:9770 \
+            --cert {{ cca_cert_dir }}/node.pem \
+            --key {{ cca_cert_dir }}/node-key.pem \
+            --ca {{ cca_cert_dir }}/ca.pem
+          Restart=on-failure
+          RestartSec=5
+          StandardOutput=append:/var/log/ccattler/server.log
+          StandardError=append:/var/log/ccattler/server.log
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start cca-server
+      systemd:
+        name: cca-server
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for server
+      wait_for:
+        host: 127.0.0.1
+        port: 9770
+        timeout: 45
+
+- name: Start cca-agent
+  hosts: all
+  become: true
+  vars:
+    cca_cert_dir: /etc/ccattler/pki
+  tasks:
+    - name: Configure containerd
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        enabled: true
+        state: restarted
+
+    - name: Install cca-agent systemd unit
+      copy:
+        dest: /etc/systemd/system/cca-agent.service
+        content: |
+          [Unit]
+          Description=CCattler Agent — node-1
+          After=cca-server.service containerd.service
+          Requires=containerd.service
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/cca agent \
+            --node-id node-1 \
+            --store etcd \
+            --endpoints http://127.0.0.1:2379 \
+            --cert {{ cca_cert_dir }}/node.pem \
+            --key {{ cca_cert_dir }}/node-key.pem \
+            --ca {{ cca_cert_dir }}/ca.pem
+          Restart=on-failure
+          RestartSec=5
+          StandardOutput=append:/var/log/ccattler/agent.log
+          StandardError=append:/var/log/ccattler/agent.log
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Start cca-agent
+      systemd:
+        name: cca-agent
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for agent registration
+      command: >
+        etcdctl --endpoints=http://127.0.0.1:2379
+        get --prefix /ccattler/observed/node/node-1 --keys-only --limit 1
+      register: node_registered
+      retries: 10
+      delay: 3
+      until: node_registered.stdout | length > 0
+      changed_when: false
+
+- name: Deploy Java test app
+  hosts: all
+  become: true
+  tags: [testapp]
+  tasks:
+    - name: Copy test app config
+      copy:
+        src: "{{ playbook_dir }}/../ansible/java-test-app.ccattler"
+        dest: /tmp/java-test-app.ccattler
+        mode: "0644"
+
+    - name: Apply test app
+      command: >
+        /usr/local/bin/cca apply /tmp/java-test-app.ccattler
+        --store etcd --endpoints http://127.0.0.1:2379
+
+    - name: Wait for containers to start
+      pause:
+        seconds: 30
+
+    - name: Check running containers
+      command: nerdctl ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
+      register: container_list
+
+    - name: Show containers
+      debug:
+        msg: "{{ container_list.stdout_lines }}"
+
+    - name: Print summary
+      debug:
+        msg: |
+          ============================================
+          CCattler Lima demo is running!
+
+          VM:       cca-ctrl (all-in-one)
+          etcd:     127.0.0.1:2379 (forwarded to localhost:2379)
+          server:   127.0.0.1:9770 (forwarded to localhost:9770)
+          agent:    node-1
+          webapp:   2 x tomcat:11-jre21
+
+          Commands:
+            limactl shell cca-ctrl                — SSH into the VM
+            limactl shell cca-ctrl sudo nerdctl ps — list containers
+            limactl stop cca-ctrl                  — stop VM
+            limactl delete cca-ctrl                — destroy VM
+          ============================================

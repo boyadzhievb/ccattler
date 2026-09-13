@@ -26,12 +26,14 @@ func NewEndpointController() *EndpointController { return &EndpointController{} 
 func (endpointController *EndpointController) Name() string { return "endpoint" }
 
 // Watch returns the fact prefixes the endpoint controller monitors:
-// observed instances (for state, IP, and probe results), existing endpoints
+// observed instances (for state, IP, host port, and probe results),
+// observed nodes (for advertise addresses), existing endpoints
 // (for staleness detection), and desired services (for exposed port and
 // probe configuration).
 func (endpointController *EndpointController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
+		types.ScanObservedNodes,
 		types.ScanEndpoints,
 		types.ScanDesiredServices,
 	}
@@ -82,6 +84,19 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		}
 	}
 
+	// Parse node advertise addresses: nodeID -> address.
+	nodeAddresses := make(map[string]string)
+	for _, fact := range facts {
+		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
+			continue
+		}
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) == 2 && pathParts[1] == "address" {
+			nodeAddresses[pathParts[0]] = string(fact.Value)
+		}
+	}
+
 	// Parse existing endpoints: "service/instance" -> true.
 	existingEndpoints := make(map[string]bool)
 	for _, fact := range facts {
@@ -94,6 +109,8 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 
 	// Determine desired endpoints: running instances with an IP, an exposed port,
 	// and passing readiness (if a readiness probe is configured for the service).
+	// When a node advertise address and host port are available, use those for
+	// cross-host reachability instead of the container-local IP.
 	desiredEndpoints := make(map[string]string) // "service/instance" -> "ip:port"
 	for instanceID, fields := range instanceFields {
 		if types.InstanceState(fields["state"]) != types.InstanceRunning {
@@ -115,7 +132,15 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 			}
 		}
 		endpointKey := fmt.Sprintf("%s/%s", serviceName, instanceID)
-		desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
+
+		hostPort := fields["hostport"]
+		nodeID := fields["node"]
+		nodeAddress := nodeAddresses[nodeID]
+		if hostPort != "" && nodeAddress != "" {
+			desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, hostPort)
+		} else {
+			desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
+		}
 	}
 
 	var changes []Change

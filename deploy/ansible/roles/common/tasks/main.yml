@@ -1,7 +1,14 @@
 ---
+- name: Check Ubuntu version
+  assert:
+    that:
+      - ansible_distribution == "Ubuntu" or ansible_distribution == "Debian"
+      - ansible_distribution_major_version | int >= 22 or ansible_distribution == "Debian"
+    fail_msg: "CCattler requires Ubuntu 22.04+ or Debian 12+ (found {{ ansible_distribution }} {{ ansible_distribution_version }}). Python 3.9+ and OpenSSL 3.0+ are needed."
+
 - name: Verify CCattler binary exists
   stat:
-    path: "{{ playbook_dir }}/cca-linux-amd64"
+    path: "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
   delegate_to: localhost
   run_once: true
   become: false
@@ -9,7 +16,7 @@
 
 - name: Fail if binary is missing
   fail:
-    msg: "Place cca-linux-amd64 in {{ playbook_dir }}/ before running (download from releases or build with: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o cca-linux-amd64 ./cmd/cca)"
+    msg: "Place cca-linux-{{ go_arch }} in {{ playbook_dir }}/ before running (download from releases or build with: GOOS=linux GOARCH={{ go_arch }} CGO_ENABLED=0 go build -o cca-linux-{{ go_arch }} ./cmd/cca)"
   when: not ccattler_binary.stat.exists
   run_once: true
 
@@ -30,7 +37,7 @@
 
 - name: Install nerdctl
   get_url:
-    url: "https://github.com/containerd/nerdctl/releases/download/v{{ nerdctl_version }}/nerdctl-{{ nerdctl_version }}-linux-amd64.tar.gz"
+    url: "https://github.com/containerd/nerdctl/releases/download/v{{ nerdctl_version }}/nerdctl-{{ nerdctl_version }}-linux-{{ go_arch }}.tar.gz"
     dest: /tmp/nerdctl.tar.gz
   register: nerdctl_download
 
@@ -43,7 +50,7 @@
 
 - name: Install CNI plugins
   get_url:
-    url: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-amd64-v{{ cni_plugins_version }}.tgz"
+    url: "https://github.com/containernetworking/plugins/releases/download/v{{ cni_plugins_version }}/cni-plugins-linux-{{ go_arch }}-v{{ cni_plugins_version }}.tgz"
     dest: /tmp/cni-plugins.tgz
   register: cni_download
 
@@ -62,7 +69,7 @@
 
 - name: Copy CCattler binary to node
   copy:
-    src: "{{ playbook_dir }}/cca-linux-amd64"
+    src: "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
     dest: /usr/local/bin/cca
     mode: "0755"
 

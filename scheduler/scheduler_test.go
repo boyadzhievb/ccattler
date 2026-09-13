@@ -317,6 +317,286 @@ func TestNoResourceRequirements(t *testing.T) {
 	}
 }
 
+func TestRequireLabelPlacement(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires gpu=true.
+		kv(types.KeyDesiredServicePlacementRequire("ml-training", "gpu"), "true"),
+		// node-1 has no gpu label — should be skipped.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		// node-2 has gpu=true — should be selected.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should place on node-2 (has gpu=true), got %s", changes[0].Value)
+	}
+}
+
+func TestRequireLabelMismatch(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires gpu=true.
+		kv(types.KeyDesiredServicePlacementRequire("ml-training", "gpu"), "true"),
+		// node-1 has gpu=false — label exists but value doesn't match.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "false"),
+		// node-2 has no gpu label at all.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No node satisfies require — falls back to all candidates.
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement (fallback), got %d", len(changes))
+	}
+}
+
+func TestMultipleRequireLabels(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "special"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires gpu=true AND ssd=true.
+		kv(types.KeyDesiredServicePlacementRequire("special", "gpu"), "true"),
+		kv(types.KeyDesiredServicePlacementRequire("special", "ssd"), "true"),
+		// node-1 has gpu=true only.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
+		// node-2 has gpu=true and ssd=true.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
+		kv(types.KeyObservedNodeLabel("node-2", "ssd"), "true"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should place on node-2 (has both labels), got %s", changes[0].Value)
+	}
+}
+
+func TestPreferLabelScoring(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service prefers region=us-east.
+		kv(types.KeyDesiredServicePlacementPrefer("web", "region"), "us-east"),
+		// node-1 has region=us-west.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-1", "region"), "us-west"),
+		// node-2 has region=us-east — preferred.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-2", "region"), "us-east"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should prefer node-2 (region=us-east), got %s", changes[0].Value)
+	}
+}
+
+func TestPreferFallsBackToLeastLoaded(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service prefers region=us-east, but no node has that label.
+		kv(types.KeyDesiredServicePlacementPrefer("web", "region"), "us-east"),
+		// Both nodes have equal load, neither matches.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	// Both score 0 preferences, falls back to least loaded (first alphabetically).
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should fall back to least-loaded node-1, got %s", changes[0].Value)
+	}
+}
+
+func TestRestrictedNodeExcluded(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// node-1 is restricted with "dedicated-compute".
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		// node-2 has no restrictions.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should skip restricted node-1, got %s", changes[0].Value)
+	}
+}
+
+func TestAcceptRestrictedNode(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service accepts "dedicated-compute" restriction.
+		kv(types.KeyDesiredServicePlacementAccept("ml-training", "dedicated-compute"), ""),
+		// node-1 is restricted — service accepts it.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		// node-2 has no restrictions.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	// Both nodes eligible — node-1 accepted, node-2 unrestricted. Least-loaded picks first.
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should place on node-1 (restriction accepted), got %s", changes[0].Value)
+	}
+}
+
+func TestAcceptMissingRestrictionLabel(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service accepts "gpu-pool" but node-1 has "dedicated-compute" restriction.
+		kv(types.KeyDesiredServicePlacementAccept("web", "gpu-pool"), ""),
+		// node-1 restricted with "dedicated-compute" — not accepted.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		// node-2 unrestricted.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should skip node-1 (wrong restriction), got %s", changes[0].Value)
+	}
+}
+
+func TestRequireAndPreferCombined(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires gpu=true, prefers region=us-east.
+		kv(types.KeyDesiredServicePlacementRequire("ml-training", "gpu"), "true"),
+		kv(types.KeyDesiredServicePlacementPrefer("ml-training", "region"), "us-east"),
+		// node-1: gpu=true, region=us-west — satisfies require, not preferred.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
+		kv(types.KeyObservedNodeLabel("node-1", "region"), "us-west"),
+		// node-2: gpu=true, region=us-east — satisfies require + preferred.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
+		kv(types.KeyObservedNodeLabel("node-2", "region"), "us-east"),
+		// node-3: no gpu — filtered out by require.
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-3", "region"), "us-east"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should place on node-2 (gpu=true + preferred region), got %s", changes[0].Value)
+	}
+}
+
+func TestRestrictAndRequireCombined(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires gpu=true and accepts dedicated-compute.
+		kv(types.KeyDesiredServicePlacementRequire("ml-training", "gpu"), "true"),
+		kv(types.KeyDesiredServicePlacementAccept("ml-training", "dedicated-compute"), ""),
+		// node-1: gpu=true, restricted — service accepts restriction.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
+		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		// node-2: gpu=false, no restriction.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "false"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should place on node-1 (gpu + accepted restriction), got %s", changes[0].Value)
+	}
+}
+
 func TestControllerInterface(t *testing.T) {
 	placementScheduler := NewScheduler()
 	if placementScheduler.Name() != "scheduler" {

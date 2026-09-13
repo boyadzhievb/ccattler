@@ -471,6 +471,41 @@ func KeyDesiredServicePlacementZonePolicy(name string) string {
 	return fmt.Sprintf("%s/service/%s/placement/zone", PrefixDesired, name)
 }
 
+// KeyDesiredServicePlacementRequire returns the store path for a hard node label
+// requirement. The scheduler will only place instances on nodes where this label matches.
+// Path: desired/service/{name}/placement/require/{label}
+func KeyDesiredServicePlacementRequire(name, label string) string {
+	return fmt.Sprintf("%s/service/%s/placement/require/%s", PrefixDesired, name, label)
+}
+
+// KeyDesiredServicePlacementPrefer returns the store path for a soft node label
+// preference. The scheduler gives a scoring bonus to nodes matching this label.
+// Path: desired/service/{name}/placement/prefer/{label}
+func KeyDesiredServicePlacementPrefer(name, label string) string {
+	return fmt.Sprintf("%s/service/%s/placement/prefer/%s", PrefixDesired, name, label)
+}
+
+// KeyDesiredServicePlacementAccept returns the store path for a node restriction
+// acceptance. Services with this key can be placed on restricted nodes.
+// Path: desired/service/{name}/placement/accept/{label}
+func KeyDesiredServicePlacementAccept(name, label string) string {
+	return fmt.Sprintf("%s/service/%s/placement/accept/%s", PrefixDesired, name, label)
+}
+
+// KeyObservedNodeLabel returns the store path for a node's label used for
+// placement matching (require/prefer).
+// Path: observed/node/{nodeID}/label/{label}
+func KeyObservedNodeLabel(nodeID, label string) string {
+	return fmt.Sprintf("%s/node/%s/label/%s", PrefixObserved, nodeID, label)
+}
+
+// KeyObservedNodeRestrict returns the store path for a node restriction that
+// prevents scheduling unless the service explicitly accepts it.
+// Path: observed/node/{nodeID}/restrict/{label}
+func KeyObservedNodeRestrict(nodeID, label string) string {
+	return fmt.Sprintf("%s/node/%s/restrict/%s", PrefixObserved, nodeID, label)
+}
+
 // KeyDesiredServiceUpdateMaxUnavailable returns the store path for the maximum number
 // of instances that can be unavailable during a rolling update.
 func KeyDesiredServiceUpdateMaxUnavailable(name string) string {

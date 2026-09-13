@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M19 — Node Enrollment (Phase 22) COMPLETE. M1–M19 complete. Phase 22 adds `cca join` node enrollment: token-based authentication, automatic certificate issuance, and agent cert auto-discovery.
+**Active milestone:** M20 — Service Networking & Placement (Phase 23) COMPLETE. M1–M20 complete. Phase 23 adds cross-host endpoints, DNS server, HTTP reverse proxy, and human-readable placement constraints (require/prefer/restrict/accept).
 
 ---
 
@@ -405,6 +405,8 @@ init_phase (instance, phase)                   — derived init lifecycle state 
 utilization (node, cpu, memory, workload_count) — observed resource telemetry
 probe      (service, type, method, path, port, interval, timeout, thresholds) — startup/liveness/readiness config
 probe_state (instance, type, state)    — observed probe result (gates endpoints and restarts)
+node_label (node_id, label, value)     — key-value label on a node for placement matching
+node_restrict (node_id, label)         — node restriction preventing scheduling without accept
 ```
 
 ## Domain Language (DSL)
@@ -457,6 +459,9 @@ service web {
     placement {
         architecture amd64
         zone spread
+        require gpu = true
+        prefer region = us-east
+        accept dedicated-compute
     }
 }
 
@@ -757,7 +762,7 @@ Output:
     place on node-b
 ```
 
-Considerations: resource fit, anti-affinity (spread instances across nodes), existing allocation.
+Considerations: resource fit, spread (distribute across nodes/zones), existing allocation, placement constraints (require/prefer/restrict/accept).
 
 ## Networking
 
@@ -1260,6 +1265,16 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Local IP detection — `cca join` automatically includes node's non-loopback IPv4 addresses in the certificate
 - [x] Enrollment tests — token validation, certificate issuance, token consumption (one-time use), field validation
 
+### Phase 23 — Service Networking & Placement
+- [x] Cross-host endpoints — EndpointController uses nodeAddress:hostPort instead of 127.0.0.1 for remote instances
+- [x] DNS server wired to CLI — `cca server --dns` starts UDP DNS resolving `*.ccattler.local` → VIP (default `:15353`)
+- [x] UserSpaceProxy HTTP reverse proxy — routes by Host header with round-robin load balancing, replaces unreliable iptables DNAT
+- [x] Proxy wired to CLI — `cca agent --proxy` starts HTTP proxy on configurable address (default `0.0.0.0:80`)
+- [x] Placement fact keys — `placement/require/{label}`, `placement/prefer/{label}`, `placement/accept/{label}`, `observed/node/{id}/label/{label}`, `observed/node/{id}/restrict/{label}`
+- [x] Placement DSL — `require label = value` (hard constraint), `prefer label = value` (soft preference), `accept label` (tolerate restricted nodes)
+- [x] Scheduler placement logic — filters by require labels and node restrictions, scores by prefer labels, combined with existing architecture/zone/resource constraints
+- [x] Human-readable naming — replaces K8s "affinity/anti-affinity/taints/tolerations" with require/prefer/restrict/accept
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1283,5 +1298,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M17 — Multi-Host Server | 20 | `cca server --listen 0.0.0.0:9770 --tls` serves mTLS API to remote agents |
 | M18 — VIP Data Plane | 21 | `curl http://10.200.0.1:80` round-robins across containers on multiple hosts |
 | M19 — Node Enrollment | 22 | `cca token create` → `cca join` → agent auto-discovers certs and runs |
+| M20 — Service Networking | 23 | `curl -H "Host: web" http://node:80` round-robins via proxy, DNS resolves VIPs, require/prefer/restrict/accept placement |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

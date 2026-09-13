@@ -88,6 +88,8 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 			availMemory:  node.availMemory - usedMemory[node.id],
 			architecture: node.architecture,
 			zone:         node.zone,
+			labels:       node.labels,
+			restrictions: node.restrictions,
 		})
 	}
 	if len(alive) == 0 {
@@ -136,6 +138,11 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 			candidates = selectZoneSpreadCandidates(candidates, serviceName, serviceZoneCounts)
 		}
 
+		// Score candidates by soft preferences (prefer labels).
+		if constraint != nil && len(constraint.prefer) > 0 {
+			candidates = rankByPreferences(candidates, constraint.prefer, loadPerNode, reqCPU, reqMemory)
+		}
+
 		best := selectLeastLoadedNode(candidates, loadPerNode, reqCPU, reqMemory)
 		if best == "" {
 			continue
@@ -182,6 +189,10 @@ type candidateNode struct {
 	architecture string
 	// zone is the availability zone the node resides in.
 	zone string
+	// labels holds key-value pairs assigned to the node for placement matching.
+	labels map[string]string
+	// restrictions holds labels that prevent scheduling unless the service accepts them.
+	restrictions map[string]string
 }
 
 // selectLeastLoadedNode picks the alive node with sufficient resources and the
@@ -242,6 +253,10 @@ type schedulerNodeInfo struct {
 	architecture string
 	// zone is the availability zone this node resides in.
 	zone string
+	// labels holds key-value pairs assigned to the node for placement matching.
+	labels map[string]string
+	// restrictions holds labels that prevent scheduling unless the service accepts them.
+	restrictions map[string]string
 }
 
 // extractInstanceInfoFromFacts parses the flat list of store facts and returns
@@ -291,17 +306,29 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 		node.id = nodeID
 		if len(parts) == 2 {
 			fieldValue := string(fact.Value)
-			switch parts[1] {
-			case "state":
+			switch {
+			case parts[1] == "state":
 				node.state = types.NodeState(fieldValue)
-			case "available/cpu":
+			case parts[1] == "available/cpu":
 				node.availCPU, _ = strconv.ParseInt(fieldValue, 10, 64)
-			case "available/memory":
+			case parts[1] == "available/memory":
 				node.availMemory, _ = strconv.ParseInt(fieldValue, 10, 64)
-			case "architecture":
+			case parts[1] == "architecture":
 				node.architecture = fieldValue
-			case "zone":
+			case parts[1] == "zone":
 				node.zone = fieldValue
+			case strings.HasPrefix(parts[1], "label/"):
+				labelName := strings.TrimPrefix(parts[1], "label/")
+				if node.labels == nil {
+					node.labels = make(map[string]string)
+				}
+				node.labels[labelName] = fieldValue
+			case strings.HasPrefix(parts[1], "restrict/"):
+				restrictLabel := strings.TrimPrefix(parts[1], "restrict/")
+				if node.restrictions == nil {
+					node.restrictions = make(map[string]string)
+				}
+				node.restrictions[restrictLabel] = fieldValue
 			}
 		}
 		nodes[nodeID] = node
@@ -332,6 +359,12 @@ type servicePlacementConstraint struct {
 	architecture string
 	// zonePolicy is "spread" for zone-aware distribution, or a specific zone name.
 	zonePolicy string
+	// require holds hard node label requirements — the node must have each label with the specified value.
+	require map[string]string
+	// prefer holds soft node label preferences — matching nodes get a scoring bonus.
+	prefer map[string]string
+	// accept holds node restriction labels this service tolerates — allowing placement on restricted nodes.
+	accept map[string]bool
 }
 
 // extractPlacementConstraints parses placement constraint facts per service.
@@ -352,22 +385,43 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 		if constraints[serviceName] == nil {
 			constraints[serviceName] = &servicePlacementConstraint{}
 		}
-		switch suffix {
-		case "placement/architecture":
-			constraints[serviceName].architecture = string(fact.Value)
-		case "placement/zone":
-			constraints[serviceName].zonePolicy = string(fact.Value)
+		constraint := constraints[serviceName]
+		switch {
+		case suffix == "placement/architecture":
+			constraint.architecture = string(fact.Value)
+		case suffix == "placement/zone":
+			constraint.zonePolicy = string(fact.Value)
+		case strings.HasPrefix(suffix, "placement/require/"):
+			labelName := strings.TrimPrefix(suffix, "placement/require/")
+			if constraint.require == nil {
+				constraint.require = make(map[string]string)
+			}
+			constraint.require[labelName] = string(fact.Value)
+		case strings.HasPrefix(suffix, "placement/prefer/"):
+			labelName := strings.TrimPrefix(suffix, "placement/prefer/")
+			if constraint.prefer == nil {
+				constraint.prefer = make(map[string]string)
+			}
+			constraint.prefer[labelName] = string(fact.Value)
+		case strings.HasPrefix(suffix, "placement/accept/"):
+			labelName := strings.TrimPrefix(suffix, "placement/accept/")
+			if constraint.accept == nil {
+				constraint.accept = make(map[string]bool)
+			}
+			constraint.accept[labelName] = true
 		}
 	}
 	return constraints
 }
 
 // filterByConstraints returns only the candidate nodes that satisfy the
-// placement constraints for the given service.
+// placement constraints for the given service. This enforces architecture,
+// zone, require (hard label match), and restrict/accept (node restriction
+// tolerance) constraints.
 func filterByConstraints(candidates []candidateNode, serviceName string, constraints map[string]*servicePlacementConstraint) []candidateNode {
 	constraint := constraints[serviceName]
 	if constraint == nil {
-		return candidates
+		return filterByRestrictions(candidates, nil)
 	}
 
 	var filtered []candidateNode
@@ -378,6 +432,12 @@ func filterByConstraints(candidates []candidateNode, serviceName string, constra
 		if constraint.zonePolicy != "" && constraint.zonePolicy != "spread" && candidate.zone != "" && candidate.zone != constraint.zonePolicy {
 			continue
 		}
+		if !satisfiesRequireLabels(candidate, constraint.require) {
+			continue
+		}
+		if !toleratesRestrictions(candidate, constraint.accept) {
+			continue
+		}
 		filtered = append(filtered, candidate)
 	}
 
@@ -385,6 +445,83 @@ func filterByConstraints(candidates []candidateNode, serviceName string, constra
 		return candidates
 	}
 	return filtered
+}
+
+// satisfiesRequireLabels checks whether a candidate node has all the required
+// label key-value pairs. Returns true if all requirements are met.
+func satisfiesRequireLabels(candidate candidateNode, requireLabels map[string]string) bool {
+	for label, requiredValue := range requireLabels {
+		nodeValue, hasLabel := candidate.labels[label]
+		if !hasLabel || nodeValue != requiredValue {
+			return false
+		}
+	}
+	return true
+}
+
+// toleratesRestrictions checks whether a service accepts all restrictions on a
+// candidate node. A node with restrictions can only host services that explicitly
+// accept each restriction label. Returns true if the node has no restrictions
+// or if the service accepts all of them.
+func toleratesRestrictions(candidate candidateNode, acceptLabels map[string]bool) bool {
+	for restrictLabel := range candidate.restrictions {
+		if !acceptLabels[restrictLabel] {
+			return false
+		}
+	}
+	return true
+}
+
+// filterByRestrictions removes restricted nodes from candidates when the service
+// has no accept declarations. Used when there are no placement constraints at all.
+func filterByRestrictions(candidates []candidateNode, acceptLabels map[string]bool) []candidateNode {
+	var filtered []candidateNode
+	for _, candidate := range candidates {
+		if toleratesRestrictions(candidate, acceptLabels) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	if len(filtered) == 0 {
+		return candidates
+	}
+	return filtered
+}
+
+// rankByPreferences reorders candidates so that nodes matching more prefer
+// labels appear first. Among nodes with equal preference scores, the original
+// order (which feeds into least-loaded selection) is preserved. This is a soft
+// constraint — non-matching nodes remain eligible, they just rank lower.
+func rankByPreferences(candidates []candidateNode, preferLabels map[string]string, loadPerNode map[string]int, reqCPU, reqMemory int64) []candidateNode {
+	type scoredCandidate struct {
+		candidate      candidateNode
+		preferScore    int
+		originalIndex  int
+	}
+
+	scored := make([]scoredCandidate, len(candidates))
+	for index, candidate := range candidates {
+		preferScore := 0
+		for label, preferredValue := range preferLabels {
+			if candidate.labels[label] == preferredValue {
+				preferScore++
+			}
+		}
+		scored[index] = scoredCandidate{
+			candidate:     candidate,
+			preferScore:   preferScore,
+			originalIndex: index,
+		}
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].preferScore > scored[j].preferScore
+	})
+
+	reordered := make([]candidateNode, len(candidates))
+	for index, entry := range scored {
+		reordered[index] = entry.candidate
+	}
+	return reordered
 }
 
 // selectZoneSpreadCandidates filters candidates to prefer nodes in the zone

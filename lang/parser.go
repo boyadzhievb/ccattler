@@ -636,6 +636,41 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 			placementDecl.Architecture, err = parser.expectIdentifier()
 		case "zone":
 			placementDecl.ZonePolicy, err = parser.expectIdentifier()
+		case "require":
+			var matchDecl PlacementMatchDecl
+			matchDecl.Label, err = parser.expectIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			if err = parser.expectToken(TokenEquals); err != nil {
+				return nil, err
+			}
+			matchDecl.Value, err = parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			placementDecl.Require = append(placementDecl.Require, matchDecl)
+		case "prefer":
+			var matchDecl PlacementMatchDecl
+			matchDecl.Label, err = parser.expectIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			if err = parser.expectToken(TokenEquals); err != nil {
+				return nil, err
+			}
+			matchDecl.Value, err = parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			placementDecl.Prefer = append(placementDecl.Prefer, matchDecl)
+		case "accept":
+			var acceptLabel string
+			acceptLabel, err = parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			placementDecl.Accept = append(placementDecl.Accept, acceptLabel)
 		default:
 			return nil, parser.parserErrorf("unknown placement field %q", key)
 		}

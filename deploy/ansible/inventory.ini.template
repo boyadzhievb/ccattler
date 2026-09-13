@@ -1,5 +1,6 @@
 # CCattler cluster inventory — edit this file with your host details.
 #
+# Requirement: Ubuntu 22.04+ or Debian 12+ on all nodes
 # Minimum: 1 control plane node (runs etcd + server + worker)
 # Recommended: 1 control plane + 1 or more workers
 #

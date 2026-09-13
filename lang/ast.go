@@ -129,8 +129,17 @@ type VerticalScaleDecl struct {
 
 // PlacementDecl holds placement constraints for a service.
 type PlacementDecl struct {
-	Architecture string // required CPU architecture (e.g. "amd64")
-	ZonePolicy   string // "spread" for zone-aware spreading or a specific zone name
+	Architecture string               // required CPU architecture (e.g. "amd64")
+	ZonePolicy   string               // "spread" for zone-aware spreading or a specific zone name
+	Require      []PlacementMatchDecl // hard node label requirements
+	Prefer       []PlacementMatchDecl // soft node label preferences
+	Accept       []string             // accept node restrictions (tolerate restricted nodes)
+}
+
+// PlacementMatchDecl holds a label=value pair for placement require or prefer rules.
+type PlacementMatchDecl struct {
+	Label string // node label name (e.g. "region", "gpu", "ssd")
+	Value string // required or preferred value (e.g. "us-east", "true")
 }
 
 // UpdateDecl holds the rolling update strategy for a service.

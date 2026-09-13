@@ -1,0 +1,22 @@
+# Lima VM: CCattler all-in-one (etcd + server + agent)
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+  - location: "https://cloud-images.ubuntu.com/releases/22.04/release/ubuntu-22.04-server-cloudimg-amd64.img"
+    arch: "x86_64"
+
+cpus: 2
+memory: "4GiB"
+disk: "15GiB"
+
+portForwards:
+  - guestPort: 2379
+    hostPort: 2379
+  - guestPort: 9770
+    hostPort: 9770
+  - guestPort: 8080
+    hostPort: 8080
+
+containerd:
+  system: true
+  user: false
