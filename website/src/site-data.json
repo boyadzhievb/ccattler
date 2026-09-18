@@ -1,6 +1,6 @@
 {
   "testCount": 516,
-  "packageCount": 13,
+  "packageCount": 14,
   "milestones": [
     {
       "id": "M1",
@@ -70,76 +70,6 @@
       "name": "Production",
       "phase": "Phase 13",
       "demo": "Observability, HA control plane, extensibility",
-      "complete": true
-    },
-    {
-      "id": "M11",
-      "name": "Correctness",
-      "phase": "Phase 14",
-      "demo": "Store idempotency, atomic txns, watch safety, controller resilience",
-      "complete": true
-    },
-    {
-      "id": "M12",
-      "name": "Distributed State",
-      "phase": "Phase 15",
-      "demo": "EtcdStore, CLI --store etcd, key prefix isolation, integration tests",
-      "complete": true
-    },
-    {
-      "id": "M13",
-      "name": "Multi-Process",
-      "phase": "Phase 16",
-      "demo": "Separate server + agent processes, shared etcd, multi-node scheduling",
-      "complete": true
-    },
-    {
-      "id": "M14",
-      "name": "Init & Observability",
-      "phase": "Phase 17",
-      "demo": "Init step lifecycle, telemetry collection, cca top, runtime Exec",
-      "complete": true
-    },
-    {
-      "id": "M15",
-      "name": "Probes & Readiness",
-      "phase": "Phase 18",
-      "demo": "Startup/liveness/readiness probes, readiness-gated endpoints",
-      "complete": true
-    },
-    {
-      "id": "M16",
-      "name": "Remote Management",
-      "phase": "Phase 19",
-      "demo": "Container default, MCP server with guardrails, auto-logging hook",
-      "complete": true
-    },
-    {
-      "id": "M17",
-      "name": "Multi-Host Server",
-      "phase": "Phase 20",
-      "demo": "cca server --listen --tls serves mTLS API to remote agents",
-      "complete": true
-    },
-    {
-      "id": "M18",
-      "name": "VIP Data Plane",
-      "phase": "Phase 21",
-      "demo": "curl VIP round-robins across containers on multiple hosts",
-      "complete": true
-    },
-    {
-      "id": "M19",
-      "name": "Node Enrollment",
-      "phase": "Phase 22",
-      "demo": "cca token create, cca join, agent auto-discovers certs and runs",
-      "complete": true
-    },
-    {
-      "id": "M20",
-      "name": "Service Networking & Placement",
-      "phase": "Phase 23",
-      "demo": "DNS, HTTP proxy, require/prefer/restrict/accept placement",
       "complete": true
     }
   ],
@@ -244,22 +174,7 @@
     {
       "keyword": "placement",
       "context": "service",
-      "description": "Block declaring placement constraints: require/prefer labels, accept restrictions, architecture, zone spread"
-    },
-    {
-      "keyword": "require",
-      "context": "placement",
-      "description": "Hard constraint: node must have this label key=value to be eligible (e.g. require gpu = true)"
-    },
-    {
-      "keyword": "prefer",
-      "context": "placement",
-      "description": "Soft preference: nodes with this label score higher but are not required (e.g. prefer region = us-east)"
-    },
-    {
-      "keyword": "accept",
-      "context": "placement",
-      "description": "Tolerate a node restriction: allows scheduling on nodes that restrict this label (e.g. accept dedicated-compute)"
+      "description": "Block declaring placement constraints: architecture filtering and zone spread"
     },
     {
       "keyword": "update",
