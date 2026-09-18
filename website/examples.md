@@ -21,7 +21,7 @@ service web {
 ```bash
 cca apply examples/basic.ccattler       # simulated
 cca run examples/basic.ccattler          # real OS processes
-cca run-container examples/basic.ccattler # Docker containers
+cca run-container examples/basic.ccattler # OCI containers (nerdctl/containerd)
 ```
 
 ## Multiple services
@@ -169,7 +169,7 @@ service web {
 
 ## Container deployment with config
 
-Real Docker containers with a mounted configuration file.
+Real OCI containers with a mounted configuration file.
 
 ```hcl
 service web {

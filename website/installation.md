@@ -9,7 +9,7 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 | **OS** | Linux (Ubuntu 22.04+, Debian 12+) or macOS (for local dev) |
 | **Architecture** | amd64 or arm64 |
 | **Go** | 1.22+ (only if building from source) |
-| **Docker/containerd** | Required for container runtime; optional for simulation mode |
+| **containerd + nerdctl** | Required for container runtime; optional for simulation mode. Docker Desktop includes both. |
 | **etcd** | Required for multi-node clusters (installed by Ansible) |
 
 ## Binary download

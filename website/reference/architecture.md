@@ -117,7 +117,7 @@ The runtime is pluggable:
 |---|---|
 | `SimulatorRuntime` | Pure simulation, no processes (testing) |
 | `ProcessRuntime` | Linux processes (development) |
-| `ContainerRuntime` | containerd/Docker (production) |
+| `ContainerRuntime` | nerdctl/containerd (production) |
 
 ## API
 

@@ -46,7 +46,7 @@ For multi-node clusters, the endpoint controller resolves backend addresses diff
 | Instance location | Backend address |
 |---|---|
 | Local (same node) | Container IP:port |
-| Remote (different node) | Node advertise address + Docker host port |
+| Remote (different node) | Node advertise address + host port mapping |
 
 The `--advertise-address` flag on the agent publishes the node's LAN IP for cross-host resolution.
 

@@ -27,7 +27,7 @@ Each keyword:
 ### Apply it
 
 ```bash
-# Simulated (no Docker needed)
+# Simulated (no containers needed)
 cca apply myapp.ccattler
 
 # Real containers

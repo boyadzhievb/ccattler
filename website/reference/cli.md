@@ -23,7 +23,7 @@ cca run --watch web.ccattler    # run with live status updates
 
 ### `cca run-container [--watch] <file>`
 
-Start real Docker containers managed by the reconciler.
+Start real OCI containers via nerdctl/containerd, managed by the reconciler.
 
 ```bash
 cca run-container web.ccattler

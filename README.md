@@ -4,6 +4,32 @@
 
 CCattler herds and manages containers by maintaining state and constraints, rather than exposing an object model to the user. No Pods. No ReplicaSets. No YAML. Just declare what you want, and the system makes it so.
 
+## Quick start
+
+```bash
+# Install
+curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+
+# See the reconciliation loop in action (simulated — no containers)
+cca demo
+
+# Run real OCI containers (requires containerd + nerdctl)
+cca run-container examples/basic.ccattler
+
+# Run real OS processes (no containerd needed)
+cca run examples/basic.ccattler
+```
+
+CCattler has three runtime modes:
+
+| Command | Runtime | What it does |
+|---|---|---|
+| `cca apply` / `cca demo` | Simulator | Shows reconciliation output — no real processes or containers |
+| `cca run` | Process | Starts real OS processes managed by the reconciler |
+| `cca run-container` | Container (nerdctl/containerd) | Pulls images, starts real OCI containers |
+
+The container runtime uses **nerdctl** (the containerd CLI) to pull images and manage containers. Docker Desktop includes containerd, or you can install containerd + nerdctl standalone.
+
 ## Why?
 
 Kubernetes is powerful, but its user-facing abstraction is its internal object model: Deployments, ReplicaSets, Pods, Services, `apiVersion/kind`, and deeply nested YAML serializing implementation details. CCattler asks: what if the user never had to think in those terms?
@@ -141,17 +167,16 @@ ccattler/
 
 ## Status
 
-Early development. The fact store interface and in-memory implementation are complete with tests. See [CLAUDE.md](CLAUDE.md) for the full design and implementation roadmap.
+20 milestones complete — from the core fact store through distributed state, multi-host deployment, VIP data plane, node enrollment, and service networking with DNS and placement constraints. 516+ tests across 14 packages. Deployed and tested on real multi-host clusters.
+
+## Documentation
+
+Full documentation at **[ccattler.org](https://ccattler.org)** — getting started, installation, concepts, guides, CLI reference, DSL grammar, and operations.
 
 ## Design documents
 
 - [CLAUDE.md](CLAUDE.md) — Complete architecture, design philosophy, and phased implementation plan
 - [etcd-schema.md](etcd-schema.md) — etcd key layout, consistency model, and worked examples
-- [design.md](design.md) — Detailed system design (store, controllers, node agents, API)
-- [auths.md](auths.md) — Security model (mTLS, CA, RBAC, ABAC, secrets, audit)
-- [tenancy.md](tenancy.md) — Multi-tenancy (ownership, quotas, isolation, shared services)
-- [autoscaliing.md](autoscaliing.md) — Unified autoscaling engine
-- [miniccat.md](miniccat.md) — Laptop-first development strategy
 
 ## License
 
