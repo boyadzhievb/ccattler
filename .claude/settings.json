@@ -28,6 +28,17 @@
       },
       {
         "matcher": "Bash",
+        "if": "Bash(git commit *)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/boyadboz/REPOS/ccattler && go vet ./... 2>&1; VET=$?; if [ $VET -ne 0 ]; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: go vet failed. Fix vet warnings before committing.\"}}'; fi",
+            "statusMessage": "Running go vet..."
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
         "if": "Bash(git tag *)",
         "hooks": [
           {
