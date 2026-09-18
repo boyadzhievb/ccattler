@@ -69,23 +69,7 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 		}
 	}
 
-	// Collect service exposed ports: serviceName -> first exposed port.
-	servicePorts := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		pathParts := strings.Split(relativePath, "/")
-		if len(pathParts) == 3 && pathParts[1] == "expose" {
-			portNumber, _ := strconv.Atoi(pathParts[2])
-			if portNumber > 0 {
-				if _, alreadySet := servicePorts[pathParts[0]]; !alreadySet {
-					servicePorts[pathParts[0]] = portNumber
-				}
-			}
-		}
-	}
+	servicePorts := extractServiceExposedPorts(facts)
 
 	// Collect existing VIPs: serviceName -> VIP address.
 	existingVIPs := make(map[string]string)

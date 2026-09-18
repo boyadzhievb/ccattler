@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -44,41 +43,18 @@ func (endpointController *EndpointController) Watch() []string {
 // missing endpoints and delete stale ones. An endpoint is desired when
 // an instance is running, has an IP, and its service exposes a port.
 func (endpointController *EndpointController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	// Parse instance info: instanceID -> {field -> value}.
-	instanceFields := make(map[string]map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
-			continue
-		}
-		instanceID := pathParts[0]
-		if instanceFields[instanceID] == nil {
-			instanceFields[instanceID] = make(map[string]string)
-		}
-		instanceFields[instanceID][pathParts[1]] = string(fact.Value)
-	}
+	instanceFields := parseInstanceFieldsFromFacts(facts)
 
-	// Parse service exposed ports: serviceName -> first exposed port number.
-	// Also track which services have a readiness probe configured.
-	servicePorts := make(map[string]int)
+	servicePorts := extractServiceExposedPorts(facts)
+
+	// Track which services have a readiness probe configured.
 	serviceHasReadinessProbe := make(map[string]bool)
 	for _, fact := range facts {
 		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
 			continue
 		}
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		// relativePath = "{name}/expose/{port}" or "{name}/probe/readiness/method"
 		pathParts := strings.Split(relativePath, "/")
-		if len(pathParts) == 3 && pathParts[1] == "expose" {
-			portNumber, _ := strconv.Atoi(pathParts[2])
-			if portNumber > 0 {
-				servicePorts[pathParts[0]] = portNumber
-			}
-		}
 		if len(pathParts) == 4 && pathParts[1] == "probe" && pathParts[2] == "readiness" && pathParts[3] == "method" {
 			serviceHasReadinessProbe[pathParts[0]] = true
 		}

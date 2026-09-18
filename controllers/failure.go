@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -69,22 +68,7 @@ func (failureController *FailureController) Watch() []string {
 //     it if the grace period has elapsed)
 //  3. Startup failed on running instance — immediate stop and replace
 func (failureController *FailureController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	instanceFields := make(map[string]map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
-			continue
-		}
-		instanceID := pathParts[0]
-		if instanceFields[instanceID] == nil {
-			instanceFields[instanceID] = make(map[string]string)
-		}
-		instanceFields[instanceID][pathParts[1]] = string(fact.Value)
-	}
+	instanceFields := parseInstanceFieldsFromFacts(facts)
 
 	now := failureController.NowFunc()
 	var changes []Change

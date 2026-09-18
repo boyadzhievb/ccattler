@@ -124,8 +124,13 @@ type metricsWrappedController struct {
 	metrics *MetricsCollector
 }
 
-func (wrapped *metricsWrappedController) Name() string      { return wrapped.inner.Name() }
-func (wrapped *metricsWrappedController) Watch() []string    { return wrapped.inner.Watch() }
+// Name returns the wrapped controller's name for identification in metrics and logs.
+func (wrapped *metricsWrappedController) Name() string { return wrapped.inner.Name() }
+
+// Watch delegates to the wrapped controller's Watch to return its observed fact prefixes.
+func (wrapped *metricsWrappedController) Watch() []string { return wrapped.inner.Watch() }
+
+// Reconcile delegates to the wrapped controller and records reconciliation duration and change count in the metrics collector.
 func (wrapped *metricsWrappedController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	startTime := time.Now()
 	changes, err := wrapped.inner.Reconcile(ctx, facts)
