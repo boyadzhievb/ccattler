@@ -117,6 +117,9 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 		logging.Default().Error("initial reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 	}
 
+	// Start the independent probe scheduler goroutine.
+	go nodeAgent.runProbeScheduler(ctx)
+
 	// Watch for placement changes and reconcile periodically.
 	ticker := time.NewTicker(nodeAgent.interval)
 	defer ticker.Stop()
@@ -138,14 +141,49 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			}
 			nodeAgent.collectAndReportNodeTelemetry(ctx)
 			nodeAgent.reconcileDataPlane(ctx)
-		case _, ok := <-placementCh:
+		case watchEvent, ok := <-placementCh:
 			if !ok {
 				return nil
+			}
+			if watchEvent.Type == store.EventOverflow {
+				logging.Default().Warn("watch events dropped, triggering full resync", "agent", nodeAgent.nodeID)
 			}
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
 		}
+	}
+}
+
+// runProbeScheduler runs health checks and probes on their own timing, independent
+// of the reconciliation loop. This prevents slow reconciliation from delaying
+// liveness/readiness checks and allows probes to run at their configured intervals
+// regardless of reconciliation frequency.
+func (nodeAgent *Agent) runProbeScheduler(ctx context.Context) {
+	probeTicker := time.NewTicker(nodeAgent.interval)
+	defer probeTicker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-probeTicker.C:
+			nodeAgent.executeProbePass(ctx)
+		}
+	}
+}
+
+// executeProbePass runs health checks and probes for all instances placed on
+// this node. Called by the independent probe scheduler goroutine.
+func (nodeAgent *Agent) executeProbePass(ctx context.Context) {
+	desired, err := nodeAgent.findInstancesPlacedOnThisNode(ctx)
+	if err != nil {
+		return
+	}
+
+	for _, instanceInfo := range desired {
+		nodeAgent.performHealthCheckAndReportResult(ctx, instanceInfo)
+		nodeAgent.executeProbesForInstance(ctx, instanceInfo)
 	}
 }
 
@@ -238,14 +276,14 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
 				nodeAgent.publishInstanceHostPort(ctx, instanceInfo.id, hostPort)
 			}
-			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
+			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
 		} else {
-			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceRunning)
+			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 		}
 
-		nodeAgent.performHealthCheckAndReportResult(ctx, instanceInfo)
-		nodeAgent.executeProbesForInstance(ctx, instanceInfo)
 		delete(runningByID, instanceInfo.id)
 	}
 
@@ -367,12 +405,13 @@ func (nodeAgent *Agent) performHealthCheckAndReportResult(ctx context.Context, i
 		}
 	}
 
-	ip := "127.0.0.1"
-	if factEntry, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id)); err == nil {
-		ip = string(factEntry.Value)
+	ipFact, ipError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id))
+	if ipError != nil || len(ipFact.Value) == 0 {
+		return
 	}
+	instanceIP := string(ipFact.Value)
 
-	healthy := CheckHealth(ctx, probe, ip)
+	healthy := CheckHealth(ctx, probe, instanceIP)
 	status := types.HealthUnknown
 	if healthy {
 		status = types.HealthHealthy
@@ -666,26 +705,42 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 	}
 }
 
+// observeInstanceState queries the runtime for the actual state of an instance
+// and returns the corresponding InstanceState. This ensures state reporting is
+// based on runtime observation rather than treating a successful Start() call
+// as proof of liveness.
+func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) types.InstanceState {
+	observedStatus, statusError := nodeAgent.runtime.Status(ctx, instanceID)
+	if statusError != nil {
+		return types.InstanceStarting
+	}
+	if observedStatus.Running {
+		return types.InstanceRunning
+	}
+	if observedStatus.ExitCode != 0 || observedStatus.Error != "" {
+		return types.InstanceFailed
+	}
+	return types.InstanceStarting
+}
+
 // publishInstanceStateToStore writes a complete set of observed-state facts for
 // the given instance: its existence marker, owning service, current state, the
-// node it is running on, and its IP address. When knownIP is non-empty it is
-// used directly; otherwise an IP is allocated from the NetworkProvider (falling
-// back to 127.0.0.1 when no provider is configured).
+// node it is running on, and its IP address. When a NetworkProvider is configured,
+// an IP is allocated from the node's subnet. Without a provider, no IP is
+// assigned — consumers must check for the IP fact before using it.
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
 	nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte(""))
 	nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service))
 	nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state)))
 	nodeAgent.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(nodeAgent.nodeID))
 
-	instanceIP := "127.0.0.1"
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
 		if allocateError != nil {
 			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceID, "error", allocateError.Error())
 		} else {
-			instanceIP = allocatedIP
+			nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(allocatedIP))
 			types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP)
 		}
 	}
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(instanceIP))
 }

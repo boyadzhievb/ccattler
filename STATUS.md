@@ -2,14 +2,15 @@
 
 ## Current Milestone
 
-M22 — Observability (Phase 25)
+M23 — P0 Correctness (Phase 26)
 
-- 6/6 items done
+- 7/7 items done
 - Status: complete
-- Items: Prometheus `/metrics` endpoint, structured JSON logging, `cca logs`, health endpoint, Grafana dashboards, alert rules
+- Items: runtime observation authoritative, 127.0.0.1 fallback removed, watch overflow resync, init restart-safe, probes decoupled, race tests, restart lifecycle tests
 
 ## Recent Completions
 
+- [2026-09-19] M23 Phase 26 — P0 Correctness: observation-based state, no 127.0.0.1 fallback, watch overflow handling, init restart-safety, decoupled probes, race/restart tests
 - [2026-09-19] M22 Phase 25 item 1 — Prometheus `/metrics` endpoint with counters, gauges, histograms
 - [2026-09-19] M21 Phase 24 — describe, events, diff, errors, completions, column formatting, API describe
 - [2026-09-18] v0.20.2 — Tech debt cleanup, AI agent team infrastructure
@@ -28,4 +29,4 @@ M22 — Observability (Phase 25)
 - Test files: 49
 - Total Go lines: ~41K
 - Latest release: v0.20.1
-- Milestones complete: M1–M21
+- Milestones complete: M1–M22

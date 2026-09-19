@@ -116,7 +116,9 @@ type StateStore interface {
 	ScanWithRevision(ctx context.Context, prefix string) (*ScanResult, error)
 	// Watch creates a subscription that receives events for changes to the specified
 	// key (or key prefix, if opts.Prefix is true). The returned channel is closed
-	// when the store is closed.
+	// when the store is closed. If the internal buffer fills, events may be dropped
+	// and an EventOverflow is sent. Consumers MUST treat EventOverflow as a signal
+	// to perform a full resync — dropped events must never cause permanent state drift.
 	Watch(ctx context.Context, key string, opts WatchOption) (<-chan Event, error)
 
 	// Transaction atomically evaluates the compare preconditions and, if all pass,

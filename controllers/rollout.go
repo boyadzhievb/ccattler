@@ -142,7 +142,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 			if stopped >= canStop {
 				break
 			}
-			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending {
+			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending || instanceInfo.state == types.InstanceStarting {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
 					Key:   types.KeyObservedInstanceState(instanceInfo.id),
