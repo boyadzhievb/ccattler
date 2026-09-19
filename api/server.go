@@ -92,6 +92,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/logs", apiServer.handleLogs)
 	apiServer.mux.HandleFunc("/api/describe", apiServer.handleDescribe)
 	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
+	apiServer.mux.HandleFunc("/api/diff", apiServer.handleDiff)
 	apiServer.mux.HandleFunc("/api/metric", apiServer.handleMetric)
 }
 
@@ -489,6 +490,56 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 			flusher.Flush()
 		}
 	}
+}
+
+// handleDiff serves POST /api/diff, accepting DSL configuration and returning
+// the list of facts that would be added, modified, or unchanged — without
+// writing anything to the store.
+func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	requestContext := request.Context()
+
+	var dslContent string
+	contentType := request.Header.Get("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		var requestBody struct {
+			Config string `json:"config"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
+			responseWriter.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+			return
+		}
+		dslContent = requestBody.Config
+	} else {
+		rawBody, err := io.ReadAll(request.Body)
+		if err != nil {
+			responseWriter.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(responseWriter).Encode(map[string]string{"error": "read body: " + err.Error()})
+			return
+		}
+		dslContent = string(rawBody)
+	}
+
+	if dslContent == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "empty config"})
+		return
+	}
+
+	changes, diffError := lang.Diff(requestContext, apiServer.factStore, dslContent)
+	if diffError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": diffError.Error()})
+		return
+	}
+
+	json.NewEncoder(responseWriter).Encode(changes)
 }
 
 // enrollmentRequestBody is the JSON body for POST /api/enroll.
