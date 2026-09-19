@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -125,6 +126,9 @@ func main() {
 			logsTarget = os.Args[2]
 		}
 		executeLogsCommand(logsTarget)
+	case "events":
+		parsedEventsConfig := parseEventsCommandArgs(os.Args[2:])
+		executeEventsCommand(parsedEventsConfig)
 	case "describe":
 		if len(os.Args) < 4 {
 			fmt.Fprintln(os.Stderr, "usage: cca describe <service|node|instance> <name>")
@@ -1173,6 +1177,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  describe <type> <name>       detailed view (service, node, instance)")
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
+	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
 	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
@@ -2037,6 +2042,121 @@ func findNodeRunningService(ctx context.Context, factStore store.StateStore, ser
 		}
 	}
 	return ""
+}
+
+// eventsCommandConfig holds parsed flags for the "events" command.
+type eventsCommandConfig struct {
+	// followMode enables real-time streaming of new events via SSE.
+	followMode bool
+	// serviceFilter limits output to events whose target contains this service name.
+	serviceFilter string
+}
+
+// parseEventsCommandArgs extracts --follow and --service flags from the
+// arguments following "events".
+func parseEventsCommandArgs(args []string) eventsCommandConfig {
+	parsedConfig := eventsCommandConfig{}
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--follow", "-f":
+			parsedConfig.followMode = true
+		case "--service", "-s":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.serviceFilter = args[argIndex]
+			}
+		}
+	}
+	return parsedConfig
+}
+
+// executeEventsCommand shows cluster events. In default mode it fetches recent
+// events from the API. With --follow it connects to the SSE stream and prints
+// new events in real time. The --service flag filters events by service name.
+func executeEventsCommand(parsedConfig eventsCommandConfig) {
+	if parsedConfig.followMode {
+		executeEventsFollowMode(parsedConfig.serviceFilter)
+		return
+	}
+
+	apiURL := "http://" + statusAPIListenAddress + "/api/logs"
+	if parsedConfig.serviceFilter != "" {
+		apiURL += "?target=" + parsedConfig.serviceFilter
+	}
+	httpResponse, err := http.Get(apiURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	var events []struct {
+		Timestamp time.Time `json:"timestamp"`
+		Kind      string    `json:"kind"`
+		Target    string    `json:"target"`
+		Detail    string    `json:"detail"`
+		Source    string    `json:"source"`
+	}
+	if err := json.NewDecoder(httpResponse.Body).Decode(&events); err != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(events) == 0 {
+		fmt.Println("no events")
+		return
+	}
+
+	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
+	for _, event := range events {
+		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
+		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+	}
+}
+
+// executeEventsFollowMode connects to the SSE event stream and prints new
+// events as they arrive. Blocks until interrupted with Ctrl-C.
+func executeEventsFollowMode(serviceFilter string) {
+	apiURL := "http://" + statusAPIListenAddress + "/api/events/stream"
+	if serviceFilter != "" {
+		apiURL += "?service=" + serviceFilter
+	}
+
+	httpResponse, err := http.Get(apiURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.Header.Get("Content-Type") != "text/event-stream" {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "unexpected response: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+
+	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
+
+	scanner := bufio.NewScanner(httpResponse.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		eventJSON := strings.TrimPrefix(line, "data: ")
+		var event struct {
+			Timestamp time.Time `json:"timestamp"`
+			Kind      string    `json:"kind"`
+			Target    string    `json:"target"`
+			Detail    string    `json:"detail"`
+		}
+		if err := json.Unmarshal([]byte(eventJSON), &event); err != nil {
+			continue
+		}
+		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
+		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+	}
 }
 
 // executeLogsCommand queries the cluster event log from a running ccattler
