@@ -166,6 +166,12 @@ func main() {
 			os.Exit(1)
 		}
 		executeMetricSetCommand(os.Args[3], os.Args[4], os.Args[5])
+	case "completion":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca completion <bash|zsh>")
+			os.Exit(1)
+		}
+		executeCompletionCommand(os.Args[2])
 	default:
 		printUsage()
 		os.Exit(1)
@@ -1228,6 +1234,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
 	fmt.Fprintln(os.Stderr, "  --ca-cert <path>             PEM CA certificate to verify server (recommended)")
 	fmt.Fprintln(os.Stderr, "  --data-dir <path>            directory for cert/key files (default: .ccattler)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "shell completion:")
+	fmt.Fprintln(os.Stderr, "  completion bash               output bash completion script")
+	fmt.Fprintln(os.Stderr, "  completion zsh                output zsh completion script")
 }
 
 // executeApplyCommand parses a .ccattler file and writes facts to the state store.
@@ -3253,6 +3263,261 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 	}
 
 	return textBuilder.String()
+}
+
+// executeCompletionCommand outputs shell completion scripts for bash or zsh.
+func executeCompletionCommand(shellName string) {
+	switch shellName {
+	case "bash":
+		fmt.Print(bashCompletionScript)
+	case "zsh":
+		fmt.Print(buildZshCompletionScript())
+	default:
+		fmt.Fprintf(os.Stderr, "unsupported shell %q (use bash or zsh)\n", shellName)
+		os.Exit(1)
+	}
+}
+
+const bashCompletionScript = `# cca bash completion — source this or add to .bashrc:
+#   eval "$(cca completion bash)"
+
+_cca_completions() {
+    local current_word="${COMP_WORDS[COMP_CWORD]}"
+    local previous_word="${COMP_WORDS[COMP_CWORD-1]}"
+
+    local commands="apply run run-container server agent token join demo demo-distributed demo-network demo-storage chaos top status describe get diff events logs scale watch metric completion version"
+
+    if [ "$COMP_CWORD" -eq 1 ]; then
+        COMPREPLY=($(compgen -W "$commands" -- "$current_word"))
+        return
+    fi
+
+    local command="${COMP_WORDS[1]}"
+
+    case "$command" in
+        get)
+            COMPREPLY=($(compgen -W "services instances nodes volumes networking secrets config" -- "$current_word"))
+            ;;
+        top)
+            COMPREPLY=($(compgen -W "nodes workloads" -- "$current_word"))
+            ;;
+        describe)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "service node instance" -- "$current_word"))
+            fi
+            ;;
+        token)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "create list revoke" -- "$current_word"))
+            fi
+            case "$previous_word" in
+                --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
+                --ttl|--node-id|--endpoints|--store-prefix) ;;
+                create|list|revoke) COMPREPLY=($(compgen -W "--store --endpoints --store-prefix --node-id --ttl" -- "$current_word")) ;;
+            esac
+            ;;
+        metric)
+            if [ "$COMP_CWORD" -eq 2 ]; then
+                COMPREPLY=($(compgen -W "set" -- "$current_word"))
+            fi
+            ;;
+        completion)
+            COMPREPLY=($(compgen -W "bash zsh" -- "$current_word"))
+            ;;
+        apply|diff)
+            case "$previous_word" in
+                --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
+                --endpoints|--store-prefix) ;;
+                *) COMPREPLY=($(compgen -f -W "--store --endpoints --store-prefix" -- "$current_word")) ;;
+            esac
+            ;;
+        run|run-container)
+            case "$previous_word" in
+                --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
+                --endpoints|--store-prefix) ;;
+                *) COMPREPLY=($(compgen -f -W "--watch -w --store --endpoints --store-prefix" -- "$current_word")) ;;
+            esac
+            ;;
+        server)
+            case "$previous_word" in
+                --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
+                --listen|--endpoints|--store-prefix) ;;
+                --cert|--key|--ca) COMPREPLY=($(compgen -f -- "$current_word")) ;;
+                *) COMPREPLY=($(compgen -W "--listen --tls --cert --key --ca --store --endpoints --store-prefix --dns --dns-listen" -- "$current_word")) ;;
+            esac
+            ;;
+        agent)
+            case "$previous_word" in
+                --runtime) COMPREPLY=($(compgen -W "process container" -- "$current_word")) ;;
+                --node-id|--endpoints|--store-prefix|--advertise-address) ;;
+                --cert|--key|--ca) COMPREPLY=($(compgen -f -- "$current_word")) ;;
+                *) COMPREPLY=($(compgen -W "--node-id --runtime --cert --key --ca --store --endpoints --store-prefix --advertise-address --proxy --proxy-listen" -- "$current_word")) ;;
+            esac
+            ;;
+        join)
+            case "$previous_word" in
+                --node-id|--data-dir) ;;
+                --ca-cert) COMPREPLY=($(compgen -f -- "$current_word")) ;;
+                *) COMPREPLY=($(compgen -W "--node-id --ca-cert --data-dir" -- "$current_word")) ;;
+            esac
+            ;;
+        events)
+            case "$previous_word" in
+                --service|-s) ;;
+                *) COMPREPLY=($(compgen -W "--follow -f --service -s" -- "$current_word")) ;;
+            esac
+            ;;
+    esac
+}
+
+complete -F _cca_completions cca
+`
+
+// buildZshCompletionScript generates the zsh completion script as a string.
+// Built with a string builder because the script contains backticks that
+// cannot appear inside a Go raw string literal.
+func buildZshCompletionScript() string {
+	var builder strings.Builder
+	builder.WriteString("#compdef cca\n")
+	builder.WriteString("# cca zsh completion — source this or add to fpath:\n")
+	builder.WriteString("#   eval \"$(cca completion zsh)\"\n\n")
+	builder.WriteString("_cca() {\n")
+	builder.WriteString("    local -a commands\n")
+	builder.WriteString("    commands=(\n")
+	for _, entry := range []struct{ name, description string }{
+		{"apply", "parse .ccattler file and show reconciliation"},
+		{"run", "start real processes"},
+		{"run-container", "start real containers"},
+		{"server", "run control plane (controllers + API)"},
+		{"agent", "run node agent"},
+		{"token", "manage join tokens (create/list/revoke)"},
+		{"join", "enroll this node with the cluster"},
+		{"demo", "built-in demo with simulated runtime"},
+		{"demo-distributed", "3 simulated nodes with recovery"},
+		{"demo-network", "3 nodes with IP, VIPs, DNS, LB"},
+		{"demo-storage", "3 nodes with persistent volumes"},
+		{"chaos", "random failure injection"},
+		{"top", "resource utilization overview"},
+		{"status", "show cluster status"},
+		{"describe", "detailed resource view"},
+		{"get", "list resources"},
+		{"diff", "dry-run apply showing fact changes"},
+		{"events", "event stream"},
+		{"logs", "cluster event log"},
+		{"scale", "scale a service"},
+		{"watch", "stream fact store changes"},
+		{"metric", "inject simulated metric"},
+		{"completion", "output shell completion script"},
+		{"version", "print version"},
+	} {
+		fmt.Fprintf(&builder, "        '%s:%s'\n", entry.name, entry.description)
+	}
+	builder.WriteString("    )\n\n")
+	builder.WriteString("    if (( CURRENT == 2 )); then\n")
+	builder.WriteString("        _describe 'command' commands\n")
+	builder.WriteString("        return\n")
+	builder.WriteString("    fi\n\n")
+	builder.WriteString("    case \"${words[2]}\" in\n")
+	builder.WriteString("        get)\n")
+	builder.WriteString("            local -a resources\n")
+	builder.WriteString("            resources=('services' 'instances' 'nodes' 'volumes' 'networking' 'secrets' 'config')\n")
+	builder.WriteString("            _describe 'resource' resources\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        top)\n")
+	builder.WriteString("            local -a views\n")
+	builder.WriteString("            views=('nodes' 'workloads')\n")
+	builder.WriteString("            _describe 'view' views\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        describe)\n")
+	builder.WriteString("            if (( CURRENT == 3 )); then\n")
+	builder.WriteString("                local -a types\n")
+	builder.WriteString("                types=('service' 'node' 'instance')\n")
+	builder.WriteString("                _describe 'type' types\n")
+	builder.WriteString("            fi\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        token)\n")
+	builder.WriteString("            if (( CURRENT == 3 )); then\n")
+	builder.WriteString("                local -a subcommands\n")
+	builder.WriteString("                subcommands=('create:generate a join token' 'list:list active tokens' 'revoke:revoke a token')\n")
+	builder.WriteString("                _describe 'subcommand' subcommands\n")
+	builder.WriteString("            else\n")
+	builder.WriteString("                _arguments \\\n")
+	builder.WriteString("                    '--store[state store backend]:backend:(memory etcd)' \\\n")
+	builder.WriteString("                    '--endpoints[etcd endpoints]:endpoints:' \\\n")
+	builder.WriteString("                    '--store-prefix[etcd key prefix]:prefix:' \\\n")
+	builder.WriteString("                    '--node-id[scope to node]:node:' \\\n")
+	builder.WriteString("                    '--ttl[token lifetime]:duration:'\n")
+	builder.WriteString("            fi\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        metric)\n")
+	builder.WriteString("            if (( CURRENT == 3 )); then\n")
+	builder.WriteString("                local -a subcommands\n")
+	builder.WriteString("                subcommands=('set:inject simulated metric')\n")
+	builder.WriteString("                _describe 'subcommand' subcommands\n")
+	builder.WriteString("            fi\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        completion)\n")
+	builder.WriteString("            local -a shells\n")
+	builder.WriteString("            shells=('bash' 'zsh')\n")
+	builder.WriteString("            _describe 'shell' shells\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        apply|diff)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
+	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
+	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
+	builder.WriteString("                '*:file:_files -g \"*.ccattler *.ccl\"'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        run|run-container)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '(-w --watch)'{-w,--watch}'[print status periodically]' \\\n")
+	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
+	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
+	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
+	builder.WriteString("                '*:file:_files -g \"*.ccattler *.ccl\"'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        server)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '--listen[API listen address]:address:' \\\n")
+	builder.WriteString("                '--tls[enable mTLS]' \\\n")
+	builder.WriteString("                '--cert[PEM server certificate]:file:_files' \\\n")
+	builder.WriteString("                '--key[PEM server private key]:file:_files' \\\n")
+	builder.WriteString("                '--ca[PEM CA certificate]:file:_files' \\\n")
+	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
+	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
+	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
+	builder.WriteString("                '--dns[enable DNS server]' \\\n")
+	builder.WriteString("                '--dns-listen[DNS listen address]:address:'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        agent)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '--node-id[unique node identifier]:id:' \\\n")
+	builder.WriteString("                '--runtime[workload runtime]:runtime:(process container)' \\\n")
+	builder.WriteString("                '--cert[PEM agent certificate]:file:_files' \\\n")
+	builder.WriteString("                '--key[PEM agent private key]:file:_files' \\\n")
+	builder.WriteString("                '--ca[PEM CA certificate]:file:_files' \\\n")
+	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
+	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
+	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
+	builder.WriteString("                '--advertise-address[node LAN address]:address:' \\\n")
+	builder.WriteString("                '--proxy[enable HTTP proxy]' \\\n")
+	builder.WriteString("                '--proxy-listen[proxy listen address]:address:'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        join)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '--node-id[unique node identifier]:id:' \\\n")
+	builder.WriteString("                '--ca-cert[PEM CA certificate]:file:_files' \\\n")
+	builder.WriteString("                '--data-dir[cert/key directory]:directory:_directories'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("        events)\n")
+	builder.WriteString("            _arguments \\\n")
+	builder.WriteString("                '(-f --follow)'{-f,--follow}'[stream events in real-time]' \\\n")
+	builder.WriteString("                '(-s --service)'{-s,--service}'[filter by service]:service:'\n")
+	builder.WriteString("            ;;\n")
+	builder.WriteString("    esac\n")
+	builder.WriteString("}\n\n")
+	builder.WriteString("_cca \"$@\"\n")
+	return builder.String()
 }
 
 // annotateErrorWithFileName sets the File field on a ParseError if the error
