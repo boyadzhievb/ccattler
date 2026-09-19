@@ -56,11 +56,12 @@ var (
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
-	factStore         store.StateStore
-	eventLog          *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
-	enrollmentService *security.EnrollmentService
-	mux               *http.ServeMux
-	listener          net.Listener
+	factStore            store.StateStore
+	eventLog             *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	enrollmentService    *security.EnrollmentService
+	workloadTokenIssuer  *security.WorkloadTokenIssuer
+	mux                  *http.ServeMux
+	listener             net.Listener
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
@@ -73,6 +74,14 @@ func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 func (apiServer *Server) SetEnrollmentService(enrollmentService *security.EnrollmentService) {
 	apiServer.enrollmentService = enrollmentService
 	apiServer.mux.HandleFunc("/api/enroll", apiServer.handleEnroll)
+}
+
+// SetWorkloadTokenIssuer attaches the OIDC workload token issuer to the server,
+// enabling the /.well-known/openid-configuration and /oidc/jwks endpoints.
+func (apiServer *Server) SetWorkloadTokenIssuer(workloadTokenIssuer *security.WorkloadTokenIssuer) {
+	apiServer.workloadTokenIssuer = workloadTokenIssuer
+	apiServer.mux.HandleFunc("/.well-known/openid-configuration", apiServer.handleOIDCDiscovery)
+	apiServer.mux.HandleFunc("/oidc/jwks", apiServer.handleOIDCJWKS)
 }
 
 // NewServer creates a new API server backed by the given fact store.
@@ -787,4 +796,32 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 		"metric":  metricName,
 		"value":   metricValue,
 	})
+}
+
+// handleOIDCDiscovery serves the OpenID Connect discovery document at
+// /.well-known/openid-configuration. Cloud providers fetch this to locate
+// the JWKS endpoint for verifying workload identity tokens.
+func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	discoveryDocument := apiServer.workloadTokenIssuer.OIDCDiscoveryDocument()
+	responseWriter.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(responseWriter).Encode(discoveryDocument)
+}
+
+// handleOIDCJWKS serves the JSON Web Key Set at /oidc/jwks containing the
+// public signing key. Cloud providers use this to verify workload token
+// signatures during credential exchange.
+func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	jwksDocument := apiServer.workloadTokenIssuer.JWKSDocument()
+	responseWriter.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(responseWriter).Encode(jwksDocument)
 }

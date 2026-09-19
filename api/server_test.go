@@ -1031,3 +1031,129 @@ func TestHealthzEndpointHealthy(t *testing.T) {
 		t.Error("expected store check in health response")
 	}
 }
+
+func TestOIDCDiscoveryEndpoint(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+	apiServer.SetWorkloadTokenIssuer(tokenIssuer)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	response, err := http.Get("http://" + address + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatalf("GET discovery: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", response.StatusCode)
+	}
+
+	var discoveryDoc security.OIDCDiscoveryResponse
+	if err := json.NewDecoder(response.Body).Decode(&discoveryDoc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if discoveryDoc.Issuer != "https://ccattler.example.com" {
+		t.Errorf("issuer: got %q", discoveryDoc.Issuer)
+	}
+	if discoveryDoc.JWKSURI != "https://ccattler.example.com/oidc/jwks" {
+		t.Errorf("jwks_uri: got %q", discoveryDoc.JWKSURI)
+	}
+}
+
+func TestOIDCJWKSEndpoint(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+	apiServer.SetWorkloadTokenIssuer(tokenIssuer)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	response, err := http.Get("http://" + address + "/oidc/jwks")
+	if err != nil {
+		t.Fatalf("GET jwks: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", response.StatusCode)
+	}
+
+	var jwksDoc security.JWKSResponse
+	if err := json.NewDecoder(response.Body).Decode(&jwksDoc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(jwksDoc.Keys) != 1 {
+		t.Fatalf("expected 1 key, got %d", len(jwksDoc.Keys))
+	}
+
+	jwkEntry := jwksDoc.Keys[0]
+	if jwkEntry.KeyType != "EC" {
+		t.Errorf("kty: got %q, want EC", jwkEntry.KeyType)
+	}
+	if jwkEntry.Algorithm != "ES256" {
+		t.Errorf("alg: got %q, want ES256", jwkEntry.Algorithm)
+	}
+	if jwkEntry.Curve != "P-256" {
+		t.Errorf("crv: got %q, want P-256", jwkEntry.Curve)
+	}
+	if jwkEntry.KeyID == "" {
+		t.Error("kid is empty")
+	}
+}
+
+func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+	apiServer.SetWorkloadTokenIssuer(tokenIssuer)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	baseURL := "http://" + address
+
+	endpoints := []string{
+		"/.well-known/openid-configuration",
+		"/oidc/jwks",
+	}
+	for _, endpoint := range endpoints {
+		response, err := http.Post(baseURL+endpoint, "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST %s: %v", endpoint, err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST %s: got %d, want 405", endpoint, response.StatusCode)
+		}
+	}
+}
