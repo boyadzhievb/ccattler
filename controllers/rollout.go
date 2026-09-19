@@ -29,7 +29,7 @@ func (rolloutController *RolloutController) Watch() []string {
 	return []string{
 		types.ScanDesiredServices,
 		types.ScanObservedInstances,
-		types.ScanObservedServices,
+		types.ScanDerivedServices,
 		types.ScanPlacements,
 	}
 }
@@ -72,7 +72,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 			if rolloutState[serviceName] == "rolling" {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedServiceRolloutState(serviceName),
+					Key:   types.KeyDerivedServiceRolloutState(serviceName),
 					Value: []byte("complete"),
 				})
 			}
@@ -83,12 +83,12 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 		if previousImage == "" {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
-				Key:   types.KeyObservedServiceRolloutImage(serviceName),
+				Key:   types.KeyDerivedServiceRolloutImage(serviceName),
 				Value: []byte(oldImageInstances[0].image),
 			})
 			changes = append(changes, Change{
 				Type:  store.OpPut,
-				Key:   types.KeyObservedServiceRolloutState(serviceName),
+				Key:   types.KeyDerivedServiceRolloutState(serviceName),
 				Value: []byte("rolling"),
 			})
 		}
@@ -102,7 +102,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 			})
 			changes = append(changes, Change{
 				Type:  store.OpPut,
-				Key:   types.KeyObservedServiceRolloutState(serviceName),
+				Key:   types.KeyDerivedServiceRolloutState(serviceName),
 				Value: []byte("rollback"),
 			})
 			continue
@@ -250,10 +250,10 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 	return result
 }
 
-// extractRolloutState returns rollout tracking facts.
+// extractRolloutState returns rollout tracking facts from the derived prefix.
 func extractRolloutState(facts []store.Fact) map[string]string {
 	state := make(map[string]string)
-	prefix := types.PrefixObserved + "/service/"
+	prefix := types.PrefixDerived + "/service/"
 	for _, fact := range facts {
 		if !strings.HasPrefix(fact.Key, prefix) {
 			continue

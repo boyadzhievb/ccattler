@@ -197,7 +197,7 @@ func TestFailureLivenessUnhealthyBeginsDrain(t *testing.T) {
 		t.Errorf("readiness should be not-ready, got %s", changes[0].Value)
 	}
 
-	if changes[1].Key != types.KeyObservedInstanceDrainSince("aaa") {
+	if changes[1].Key != types.KeyDerivedInstanceDrainSince("aaa") {
 		t.Errorf("second change should set drain_since, got key %s", changes[1].Key)
 	}
 	expectedTimestamp := fmt.Sprintf("%d", fixedTime.UnixMilli())
@@ -221,7 +221,7 @@ func TestFailureLivenessDrainCompletesAfterGracePeriod(t *testing.T) {
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
 		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
-		kv(types.KeyObservedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
+		kv(types.KeyDerivedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
 	)
 
 	changes, err := failureController.Reconcile(context.Background(), facts)
@@ -254,7 +254,7 @@ func TestFailureLivenessDrainWaitsBeforeGracePeriod(t *testing.T) {
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
 		kv(types.KeyObservedInstanceProbeState("aaa", "liveness"), string(types.LivenessProbeUnhealthy)),
-		kv(types.KeyObservedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
+		kv(types.KeyDerivedInstanceDrainSince("aaa"), fmt.Sprintf("%d", drainStart.UnixMilli())),
 	)
 
 	changes, err := failureController.Reconcile(context.Background(), facts)

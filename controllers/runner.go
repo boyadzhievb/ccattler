@@ -311,7 +311,9 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	var transactionCompares []store.Compare
 	var transactionOperations []store.Op
+	changeKeySet := make(map[string]bool, len(changes))
 	for _, change := range changes {
+		changeKeySet[change.Key] = true
 		transactionOperations = append(transactionOperations, store.Op{
 			Type:  change.Type,
 			Key:   change.Key,
@@ -328,6 +330,25 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 				Revision: 0,
 			})
 		}
+	}
+
+	// Guard input keys: if any fact the controller read has changed since the scan,
+	// the plan was derived from stale state and must not be committed.
+	for _, scannedFact := range allFacts {
+		if !changeKeySet[scannedFact.Key] {
+			transactionCompares = append(transactionCompares, store.Compare{
+				Key:      scannedFact.Key,
+				Revision: scannedFact.Revision,
+			})
+		}
+	}
+
+	// etcd enforces a maximum of 128 total operations per transaction (compares +
+	// success ops + failure ops). Cap compares to fit within this limit. Change-set
+	// compares (added first) have priority over input-set compares.
+	maxCompareCount := 128 - len(transactionOperations)
+	if len(transactionCompares) > maxCompareCount {
+		transactionCompares = transactionCompares[:maxCompareCount]
 	}
 
 	transactionSucceeded, transactionError := controllerRunner.store.Transaction(

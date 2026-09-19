@@ -32,6 +32,7 @@ func (initController *InitController) Watch() []string {
 	return []string{
 		types.ScanDesiredServices,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 	}
 }
 
@@ -59,7 +60,7 @@ func (initController *InitController) Reconcile(ctx context.Context, facts []sto
 		if string(derivedPhase) != currentPhase {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
-				Key:   types.KeyObservedInstanceInitPhase(instanceID),
+				Key:   types.KeyDerivedInstanceInitPhase(instanceID),
 				Value: []byte(string(derivedPhase)),
 			})
 		}
@@ -142,12 +143,13 @@ func (initController *InitController) collectObservedInitStepStates(facts []stor
 func (initController *InitController) collectCurrentInitPhases(facts []store.Fact) map[string]string {
 	phases := make(map[string]string)
 	phaseSuffix := "/init/phase"
+	derivedInstancePrefix := types.PrefixDerived + "/instance/"
 
 	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.PrefixObserved+"/instance/") || !strings.HasSuffix(fact.Key, phaseSuffix) {
+		if !strings.HasPrefix(fact.Key, derivedInstancePrefix) || !strings.HasSuffix(fact.Key, phaseSuffix) {
 			continue
 		}
-		instanceID := fact.Key[len(types.PrefixObserved+"/instance/") : len(fact.Key)-len(phaseSuffix)]
+		instanceID := fact.Key[len(derivedInstancePrefix) : len(fact.Key)-len(phaseSuffix)]
 		phases[instanceID] = string(fact.Value)
 	}
 

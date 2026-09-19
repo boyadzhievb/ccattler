@@ -58,7 +58,7 @@ func (brokerController *CredentialBrokerController) Watch() []string {
 	return []string{
 		types.ScanDesiredCloudIdentities,
 		types.ScanDesiredCredentialBroker,
-		types.ScanObservedCredentials,
+		types.ScanDerivedCredentials,
 		types.ScanObservedInstances,
 		"desired/service/",
 	}
@@ -106,12 +106,12 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 			if !adapterExists {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialState(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
 					Value: []byte("error"),
 				})
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialError(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
 					Value: []byte(fmt.Sprintf("no adapter for provider %q", identityConfig.Provider)),
 				})
 				continue
@@ -122,12 +122,12 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 			if mintError != nil {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialState(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
 					Value: []byte("error"),
 				})
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialError(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
 					Value: []byte(mintError.Error()),
 				})
 				continue
@@ -137,12 +137,12 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 			if exchangeError != nil {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialState(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
 					Value: []byte("error"),
 				})
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedCredentialError(instanceID, bindingIdentity),
+					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
 					Value: []byte(exchangeError.Error()),
 				})
 				continue
@@ -150,15 +150,15 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 
 			issuedAt := time.Now()
 			changes = append(changes,
-				Change{Type: store.OpPut, Key: types.KeyObservedCredentialState(instanceID, bindingIdentity), Value: []byte("active")},
-				Change{Type: store.OpPut, Key: types.KeyObservedCredentialIssuedAt(instanceID, bindingIdentity), Value: []byte(issuedAt.Format(time.RFC3339))},
-				Change{Type: store.OpPut, Key: types.KeyObservedCredentialExpiresAt(instanceID, bindingIdentity), Value: []byte(credential.ExpiresAt.Format(time.RFC3339))},
+				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialState(instanceID, bindingIdentity), Value: []byte("active")},
+				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialIssuedAt(instanceID, bindingIdentity), Value: []byte(issuedAt.Format(time.RFC3339))},
+				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialExpiresAt(instanceID, bindingIdentity), Value: []byte(credential.ExpiresAt.Format(time.RFC3339))},
 			)
 
 			if existingState.errorMessage != "" {
 				changes = append(changes, Change{
 					Type: store.OpDelete,
-					Key:  types.KeyObservedCredentialError(instanceID, bindingIdentity),
+					Key:  types.KeyDerivedCredentialError(instanceID, bindingIdentity),
 				})
 			}
 		}
@@ -176,16 +176,16 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 
 		if _, instanceExists := instanceServices[instanceID]; !instanceExists || !runningInstances[instanceID] {
 			if credentialState.state != "" {
-				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyObservedCredentialState(instanceID, identityName)})
+				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialState(instanceID, identityName)})
 			}
 			if credentialState.expiresAt != "" {
-				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyObservedCredentialExpiresAt(instanceID, identityName)})
+				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialExpiresAt(instanceID, identityName)})
 			}
 			if credentialState.issuedAt != "" {
-				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyObservedCredentialIssuedAt(instanceID, identityName)})
+				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialIssuedAt(instanceID, identityName)})
 			}
 			if credentialState.errorMessage != "" {
-				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyObservedCredentialError(instanceID, identityName)})
+				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialError(instanceID, identityName)})
 			}
 		}
 	}
@@ -306,10 +306,10 @@ func parseRunningInstances(facts []store.Fact) map[string]bool {
 func parseCredentialStates(facts []store.Fact) map[string]credentialState {
 	states := make(map[string]credentialState)
 	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedCredentials) {
+		if !strings.HasPrefix(fact.Key, types.ScanDerivedCredentials) {
 			continue
 		}
-		remainder := strings.TrimPrefix(fact.Key, types.ScanObservedCredentials)
+		remainder := strings.TrimPrefix(fact.Key, types.ScanDerivedCredentials)
 		// format: {instance}/{identity}/{field}
 		parts := strings.SplitN(remainder, "/", 3)
 		if len(parts) != 3 {

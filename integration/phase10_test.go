@@ -539,7 +539,7 @@ func TestRollbackOnHealthFailure(t *testing.T) {
 
 	// Wait for rollout controller to detect the mismatch and start rolling.
 	waitFor(t, 5*time.Second, "rollout state becomes rolling", func() bool {
-		fact, err := factStore.Get(ctx, types.KeyObservedServiceRolloutState("web"))
+		fact, err := factStore.Get(ctx, types.KeyDerivedServiceRolloutState("web"))
 		return err == nil && string(fact.Value) == "rolling"
 	})
 

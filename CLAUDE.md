@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M30 — Identity RBAC & CLI (Phase 33). M1–M29 complete.
+**Active milestone:** M32 — Cloud Controller Manager (Phase 35). M1–M31a complete.
 
 ---
 
@@ -1013,7 +1013,7 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
-cca server [--listen h:p] [--tls] [--cert/--key/--ca]  # control plane (--tls auto CA, or --cert/--key/--ca external)
+cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>]  # control plane (--api-only for stateless replicas, --controllers-only for leader-elected controllers)
 cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>]  # node agent (mTLS, VIP data plane)
 cca token create [--node-id <id>] [--ttl 15m]  # generate join token
 cca token list                # list active join tokens
@@ -1365,13 +1365,22 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Prior phases include deterministic tests: SimulatorCloudAdapter verifies credential lifecycle (8 broker tests), agent format tests (6 tests)
 
 ### Phase 34 — API Horizontal Scalability
-- [ ] Separate API server from controller runner — API can be deployed as independent replicas
-- [ ] Stateless API replicas — all reads/writes go directly to etcd, no local state
-- [ ] Leader election only for controllers — API replicas serve requests regardless of leadership
-- [ ] `cca server --api-only` flag — runs API without controllers (for scaling API independently)
-- [ ] `cca server --controllers-only` flag — runs controllers without API (leader-elected)
-- [ ] Load balancer readiness — `/healthz` returns ready only when etcd is reachable
-- [ ] Watch multiplexing — shared etcd watches across API replicas to reduce etcd load
+- [x] Separate API server from controller runner — API can be deployed as independent replicas
+- [x] Stateless API replicas — all reads/writes go directly to etcd, no local state
+- [x] Leader election only for controllers — API replicas serve requests regardless of leadership
+- [x] `cca server --api-only` flag — runs API without controllers (for scaling API independently)
+- [x] `cca server --controllers-only` flag — runs controllers without API (leader-elected)
+- [x] Load balancer readiness — `/healthz` returns ready only when etcd is reachable
+- [x] Watch multiplexing — shared etcd watches across API replicas to reduce etcd load
+
+### Phase 35a — P0 Correctness Pass (Architecture Review)
+- [x] etcd Put simplification — removed CAS transaction fallback that defeated optimistic concurrency
+- [x] Transaction snapshot CAS — runner guards input-set facts (not just output keys) in transactions, capped at etcd 128-op limit
+- [x] VIP allocation race — resolved by input-set CAS (network VIP facts protected during allocation)
+- [x] `derived/` prefix — controller-derived state separated from agent-observed state (`derived/service/`, `derived/instance/`, `derived/credential/`)
+- [x] Migrated clean keys — rollout state, init phase, drain_since, credential lifecycle moved from `observed/` to `derived/`
+- [x] Init dual authority resolved — agent no longer writes init phase; InitController is sole authority via `derived/instance/{id}/init/phase`
+- [x] RBAC updated — `controller`, `credential-broker`, `node-agent` roles include `derived/` prefix permissions
 
 ### Phase 35 — Cloud Controller Manager
 - [ ] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
@@ -1418,6 +1427,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M29 — Agent Credentials | 32 | `CredentialProvider` interface, materialize/refresh/cleanup files, AWS/GCP/Azure formats, token projection |
 | M30 — Identity RBAC & CLI | 33 | `credential-broker` RBAC role, audit trail, `cca get/describe cloud-identities`, lifecycle + e2e tests |
 | M31 — API HA | 34 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
+| M31a — Correctness II | 35a | Transaction snapshot CAS, derived/ prefix, init dual authority resolved, etcd Put simplified |
 | M32 — Cloud Controller | 35 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

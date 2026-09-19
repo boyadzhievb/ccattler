@@ -63,7 +63,7 @@ func TestInitControllerAllStepsSucceeded(t *testing.T) {
 	if string(changes[0].Value) != "complete" {
 		t.Fatalf("expected init phase 'complete', got %q", string(changes[0].Value))
 	}
-	if changes[0].Key != types.KeyObservedInstanceInitPhase("inst-1") {
+	if changes[0].Key != types.KeyDerivedInstanceInitPhase("inst-1") {
 		t.Fatalf("unexpected key: %s", changes[0].Key)
 	}
 }
@@ -132,7 +132,7 @@ func TestInitControllerNoChangeWhenPhaseAlreadyCurrent(t *testing.T) {
 		{Key: types.KeyDesiredServiceInitStepExec("api", 0), Value: []byte("migrate-db")},
 		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("api")},
 		{Key: types.KeyObservedInstanceInitStepState("inst-1", 0), Value: []byte("succeeded")},
-		{Key: types.KeyObservedInstanceInitPhase("inst-1"), Value: []byte("complete")},
+		{Key: types.KeyDerivedInstanceInitPhase("inst-1"), Value: []byte("complete")},
 	}
 
 	changes, reconcileError := initController.Reconcile(testContext, facts)
@@ -194,7 +194,7 @@ func TestInitControllerMultipleInstances(t *testing.T) {
 	phaseByInstance := make(map[string]string)
 	for _, change := range changes {
 		for _, instanceID := range []string{"inst-1", "inst-2"} {
-			if change.Key == types.KeyObservedInstanceInitPhase(instanceID) {
+			if change.Key == types.KeyDerivedInstanceInitPhase(instanceID) {
 				phaseByInstance[instanceID] = string(change.Value)
 			}
 		}

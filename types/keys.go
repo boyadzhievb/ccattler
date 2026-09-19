@@ -45,6 +45,12 @@ const (
 	// PrefixNetwork holds networking facts: per-node subnets, per-instance
 	// IP allocations, service VIPs, and DNS name mappings.
 	PrefixNetwork = "network"
+
+	// PrefixDerived holds controller-derived state that is computed from
+	// observed and desired facts but not directly reported by node agents.
+	// Examples: rollout tracking, credential lifecycle, init phase derivation,
+	// drain coordination.
+	PrefixDerived = "derived"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -275,6 +281,18 @@ const (
 
 	// ScanIntentAutoscalerServices scans all autoscaler intent layer facts.
 	ScanIntentAutoscalerServices = PrefixIntent + "/autoscaler/service/"
+
+	// ScanDerivedServices scans all controller-derived service-level facts
+	// (rollout state, rollout previous image).
+	ScanDerivedServices = PrefixDerived + "/service/"
+
+	// ScanDerivedInstances scans all controller-derived instance-level facts
+	// (init phase, drain coordination).
+	ScanDerivedInstances = PrefixDerived + "/instance/"
+
+	// ScanDerivedCredentials scans all controller-derived credential state
+	// (broker lifecycle, expiry, errors).
+	ScanDerivedCredentials = PrefixDerived + "/credential/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -1151,4 +1169,71 @@ func KeyObservedCredentialIssuedAt(instanceID string, identityName string) strin
 // Path: observed/credential/{instanceID}/{identityName}/error
 func KeyObservedCredentialError(instanceID string, identityName string) string {
 	return fmt.Sprintf("%s/credential/%s/%s/error", PrefixObserved, instanceID, identityName)
+}
+
+// ---------------------------------------------------------------------------
+// Derived key functions (controller-derived state, not agent observations)
+// ---------------------------------------------------------------------------
+
+// KeyDerivedServiceRolloutState returns the store path for a service's rollout state.
+// Path: derived/service/{name}/rollout/state
+func KeyDerivedServiceRolloutState(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/state", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutImage returns the store path tracking the previous image
+// during a rolling update for rollback purposes.
+// Path: derived/service/{name}/rollout/previous_image
+func KeyDerivedServiceRolloutImage(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/previous_image", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutFailures returns the count of failed new-image instances
+// during a rollout, used for rollback decisions.
+// Path: derived/service/{name}/rollout/failures
+func KeyDerivedServiceRolloutFailures(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/failures", PrefixDerived, name)
+}
+
+// KeyDerivedInstanceInitPhase returns the store path for a controller-derived init
+// phase. The init controller is the sole authority for this key; it derives the
+// phase from per-step observed results written by the agent.
+// Path: derived/instance/{instanceID}/init/phase
+func KeyDerivedInstanceInitPhase(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/init/phase", PrefixDerived, instanceID)
+}
+
+// KeyDerivedInstanceDrainSince returns the store path for the Unix-millisecond
+// timestamp when the failure controller began draining an instance.
+// Path: derived/instance/{instanceID}/drain_since
+func KeyDerivedInstanceDrainSince(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixDerived, instanceID)
+}
+
+// KeyDerivedCredentialState returns the broker-derived credential state for an
+// instance's cloud identity binding.
+// Path: derived/credential/{instanceID}/{identityName}/state
+func KeyDerivedCredentialState(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/state", PrefixDerived, instanceID, identityName)
+}
+
+// KeyDerivedCredentialExpiresAt returns the broker-derived expiry timestamp for an
+// instance's cloud credential.
+// Path: derived/credential/{instanceID}/{identityName}/expires_at
+func KeyDerivedCredentialExpiresAt(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/expires_at", PrefixDerived, instanceID, identityName)
+}
+
+// KeyDerivedCredentialIssuedAt returns the broker-derived issuance timestamp for an
+// instance's cloud credential.
+// Path: derived/credential/{instanceID}/{identityName}/issued_at
+func KeyDerivedCredentialIssuedAt(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/issued_at", PrefixDerived, instanceID, identityName)
+}
+
+// KeyDerivedCredentialError returns the broker-derived last error for an instance's
+// cloud credential.
+// Path: derived/credential/{instanceID}/{identityName}/error
+func KeyDerivedCredentialError(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/error", PrefixDerived, instanceID, identityName)
 }

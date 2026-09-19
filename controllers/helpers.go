@@ -8,25 +8,33 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// parseInstanceFieldsFromFacts scans observed instance facts and returns a
-// nested map keyed by instance ID, where each inner map holds field name to
-// value pairs (e.g. "state" -> "running", "service" -> "web").
+// parseInstanceFieldsFromFacts scans observed and derived instance facts and
+// returns a nested map keyed by instance ID, where each inner map holds field
+// name to value pairs (e.g. "state" -> "running", "service" -> "web",
+// "drain_since" -> "1726704000000").
 func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]string {
 	instanceFields := make(map[string]map[string]string)
+	instancePrefixes := []string{
+		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
+	}
 	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
+		for _, instancePrefix := range instancePrefixes {
+			if !strings.HasPrefix(fact.Key, instancePrefix) {
+				continue
+			}
+			relativePath := strings.TrimPrefix(fact.Key, instancePrefix)
+			pathParts := strings.SplitN(relativePath, "/", 2)
+			if len(pathParts) != 2 {
+				break
+			}
+			instanceID := pathParts[0]
+			if instanceFields[instanceID] == nil {
+				instanceFields[instanceID] = make(map[string]string)
+			}
+			instanceFields[instanceID][pathParts[1]] = string(fact.Value)
+			break
 		}
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
-			continue
-		}
-		instanceID := pathParts[0]
-		if instanceFields[instanceID] == nil {
-			instanceFields[instanceID] = make(map[string]string)
-		}
-		instanceFields[instanceID][pathParts[1]] = string(fact.Value)
 	}
 	return instanceFields
 }
