@@ -29,6 +29,7 @@ import (
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/infra"
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
@@ -332,6 +333,10 @@ type serverCommandConfig struct {
 	dnsEnabled bool
 	// dnsListenAddress is the host:port the DNS server binds to (default ":15353").
 	dnsListenAddress string
+	// logLevel controls the minimum severity of log messages (debug/info/warn/error).
+	logLevel string
+	// logFormat selects human-readable or JSON log output (human/json).
+	logFormat string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -392,6 +397,16 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				parsedConfig.dnsListenAddress = args[argIndex]
 				parsedConfig.dnsEnabled = true
 			}
+		case "--log-level":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.logLevel = args[argIndex]
+			}
+		case "--log-format":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.logFormat = args[argIndex]
+			}
 		}
 	}
 
@@ -429,6 +444,8 @@ type agentCommandConfig struct {
 	tlsCACertPath      string
 	proxyEnabled       bool
 	proxyListenAddress string
+	logLevel           string
+	logFormat          string
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -497,6 +514,16 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				parsedConfig.proxyListenAddress = args[argIndex]
 				parsedConfig.proxyEnabled = true
 			}
+		case "--log-level":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.logLevel = args[argIndex]
+			}
+		case "--log-format":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.logFormat = args[argIndex]
+			}
 		}
 	}
 
@@ -532,6 +559,19 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	return parsedConfig
 }
 
+// configureLogger sets up the process-wide structured logger from CLI flags.
+func configureLogger(logLevel string, logFormat string) {
+	level := logging.LevelInfo
+	if logLevel != "" {
+		level = logging.ParseLevel(logLevel)
+	}
+	format := logging.FormatHuman
+	if logFormat == "json" {
+		format = logging.FormatJSON
+	}
+	logging.SetDefault(logging.New(os.Stderr, level, format))
+}
+
 // createStateStoreFromServerConfig builds the appropriate StateStore for
 // the server or agent command configuration.
 func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefix string) (store.StateStore, error) {
@@ -550,6 +590,7 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 // and the HTTP API server. It connects to the shared state store and blocks
 // until Ctrl+C. No node agent or runtime — that runs separately via "cca agent".
 func executeServerCommand(parsedConfig serverCommandConfig) {
+	configureLogger(parsedConfig.logLevel, parsedConfig.logFormat)
 	factStore, storeCreationError := createStateStoreFromServerConfig(
 		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	if storeCreationError != nil {
@@ -728,6 +769,7 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 // for placements assigned to this node and reconciles the local runtime. It
 // registers the node, starts the appropriate runtime, and blocks until Ctrl+C.
 func executeAgentCommand(parsedConfig agentCommandConfig) {
+	configureLogger(parsedConfig.logLevel, parsedConfig.logFormat)
 	factStore, storeCreationError := createStateStoreFromServerConfig(
 		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	if storeCreationError != nil {

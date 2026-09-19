@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"sync"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // DefaultDNSDomain is the DNS suffix used for service discovery. Queries for
@@ -119,7 +120,7 @@ func (dnsServer *DNSServer) handleDNSQuery(ctx context.Context, connection *net.
 
 	parsedIP := net.ParseIP(virtualIP).To4()
 	if parsedIP == nil {
-		log.Printf("dns: invalid VIP for service %s: %s", serviceName, virtualIP)
+		logging.Default().Warn("invalid VIP for service", "service", serviceName, "vip", virtualIP)
 		return
 	}
 

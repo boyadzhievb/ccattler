@@ -3,12 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -67,14 +67,21 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 		if execError == nil {
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded)))
-			log.Printf("agent %s: init step %d (%s) succeeded for instance %s",
-				nodeAgent.nodeID, stepDefinition.index, stepDefinition.exec, instanceInfo.id)
+			logging.Default().Info("init step succeeded",
+				"agent", nodeAgent.nodeID,
+				"step", fmt.Sprintf("%d", stepDefinition.index),
+				"exec", stepDefinition.exec,
+				"instance", instanceInfo.id)
 			return true
 		}
 
-		log.Printf("agent %s: init step %d (%s) failed for instance %s (attempt %d/%d): %v",
-			nodeAgent.nodeID, stepDefinition.index, stepDefinition.exec, instanceInfo.id,
-			attemptIndex+1, maxAttempts, execError)
+		logging.Default().Warn("init step failed",
+			"agent", nodeAgent.nodeID,
+			"step", fmt.Sprintf("%d", stepDefinition.index),
+			"exec", stepDefinition.exec,
+			"instance", instanceInfo.id,
+			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, maxAttempts),
+			"error", execError.Error())
 
 		if attemptIndex < maxAttempts-1 {
 			backoffDuration := time.Duration(1<<uint(attemptIndex)) * time.Second

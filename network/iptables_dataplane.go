@@ -3,10 +3,11 @@ package network
 import (
 	"context"
 	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // iptablesMainChain is the top-level CCattler chain in the nat table.
@@ -81,12 +82,12 @@ func (iptablesDataPlane *IptablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 		desiredVIPAddresses[serviceConfig.VirtualIP] = true
 
 		if err := iptablesDataPlane.reconcileServiceChain(serviceConfig, chainName); err != nil {
-			log.Printf("dataplane: failed to reconcile chain %s: %v", chainName, err)
+			logging.Default().Error("failed to reconcile chain", "chain", chainName, "error", err.Error())
 			continue
 		}
 
 		if err := iptablesDataPlane.ensureVIPAddress(serviceConfig.VirtualIP); err != nil {
-			log.Printf("dataplane: failed to add VIP %s: %v", serviceConfig.VirtualIP, err)
+			logging.Default().Error("failed to add VIP", "vip", serviceConfig.VirtualIP, "error", err.Error())
 		}
 	}
 
@@ -210,7 +211,7 @@ func (iptablesDataPlane *IptablesDataPlane) removeStaleServiceChains(desiredChai
 			removeJumpRuleFromMainChain(chainName)
 			flushAndDeleteChain(chainName)
 			delete(iptablesDataPlane.activeServiceChains, chainName)
-			log.Printf("dataplane: removed stale chain %s", chainName)
+			logging.Default().Info("removed stale chain", "chain", chainName)
 		}
 	}
 }
@@ -222,7 +223,7 @@ func (iptablesDataPlane *IptablesDataPlane) removeStaleVIPAddresses(desiredAddre
 		if !desiredAddresses[vipAddress] {
 			removeVIPAddressFromInterface(vipAddress)
 			delete(iptablesDataPlane.activeVIPAddresses, vipAddress)
-			log.Printf("dataplane: removed stale VIP %s", vipAddress)
+			logging.Default().Info("removed stale VIP", "vip", vipAddress)
 		}
 	}
 }

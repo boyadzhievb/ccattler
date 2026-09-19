@@ -3,9 +3,9 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -17,7 +17,7 @@ import (
 func (nodeAgent *Agent) collectAndReportNodeTelemetry(ctx context.Context) {
 	workloads, listError := nodeAgent.runtime.List(ctx)
 	if listError != nil {
-		log.Printf("agent %s: telemetry: failed to list workloads: %v", nodeAgent.nodeID, listError)
+		logging.Default().Error("telemetry: failed to list workloads", "agent", nodeAgent.nodeID, "error", listError.Error())
 		return
 	}
 

@@ -1292,7 +1292,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ### Phase 25 — Observability
 - [x] Prometheus `/metrics` endpoint on API server — reconciliation duration, scheduling decisions, instance state transitions, store operation latency, active watches
-- [ ] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
+- [x] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
 - [ ] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
 - [ ] Health endpoint — `GET /healthz` returns controller health, etcd connectivity, certificate expiry status
 - [ ] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
