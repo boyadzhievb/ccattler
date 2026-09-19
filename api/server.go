@@ -90,6 +90,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/scale", apiServer.handleScale)
 	apiServer.mux.HandleFunc("/api/status", apiServer.handleStatus)
 	apiServer.mux.HandleFunc("/api/logs", apiServer.handleLogs)
+	apiServer.mux.HandleFunc("/api/describe", apiServer.handleDescribe)
 	apiServer.mux.HandleFunc("/api/metric", apiServer.handleMetric)
 }
 
@@ -385,6 +386,51 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 		events = []types.SystemEvent{}
 	}
 	json.NewEncoder(responseWriter).Encode(events)
+}
+
+// handleDescribe serves GET /api/describe returning a detailed single-resource
+// view aggregating all related facts, health state, placement, and recent events.
+// Query parameters: type (service, node, instance) and name (resource identifier).
+func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	requestContext := request.Context()
+
+	resourceType := request.URL.Query().Get("type")
+	resourceName := request.URL.Query().Get("name")
+	if resourceType == "" || resourceName == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type and name query parameters required"})
+		return
+	}
+
+	var result interface{}
+	var describeError error
+
+	switch resourceType {
+	case "service", "svc":
+		result, describeError = buildServiceDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
+	case "node":
+		result, describeError = buildNodeDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
+	case "instance", "inst":
+		result, describeError = buildInstanceDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
+	default:
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type must be service, node, or instance"})
+		return
+	}
+
+	if describeError != nil {
+		responseWriter.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": describeError.Error()})
+		return
+	}
+
+	json.NewEncoder(responseWriter).Encode(result)
 }
 
 // enrollmentRequestBody is the JSON body for POST /api/enroll.

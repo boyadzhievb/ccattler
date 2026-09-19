@@ -497,3 +497,255 @@ func TestEnrollEndpointMethodNotAllowed(t *testing.T) {
 		t.Fatalf("expected 405, got %d", resp.StatusCode)
 	}
 }
+
+func TestDescribeService(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	types.WriteService(ctx, factStore, types.Service{
+		Name: "web", Image: "nginx:1.28", Instances: 3, Ports: []int{8080},
+		CPU: "500m", Memory: "512Mi",
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{
+		ID: "inst-1", Service: "web", State: types.InstanceRunning, IP: "10.0.1.4",
+	})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "inst-1", NodeID: "node-a"})
+	types.WriteEndpoint(ctx, factStore, types.Endpoint{
+		Service: "web", InstanceID: "inst-1", IP: "10.0.1.4", Port: 8080,
+	})
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{Service: "web", VIP: "10.200.0.1", Port: 80})
+
+	resp, err := http.Get(baseURL + "/api/describe?type=service&name=web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var serviceDetail ServiceDescribe
+	json.NewDecoder(resp.Body).Decode(&serviceDetail)
+
+	if serviceDetail.Name != "web" {
+		t.Fatalf("expected web, got %s", serviceDetail.Name)
+	}
+	if serviceDetail.Image != "nginx:1.28" {
+		t.Fatalf("expected nginx:1.28, got %s", serviceDetail.Image)
+	}
+	if serviceDetail.DesiredInstances != 3 {
+		t.Fatalf("expected 3 desired, got %d", serviceDetail.DesiredInstances)
+	}
+	if serviceDetail.RunningInstances != 1 {
+		t.Fatalf("expected 1 running, got %d", serviceDetail.RunningInstances)
+	}
+	if len(serviceDetail.Instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(serviceDetail.Instances))
+	}
+	if serviceDetail.Instances[0].ID != "inst-1" {
+		t.Fatalf("expected inst-1, got %s", serviceDetail.Instances[0].ID)
+	}
+	if serviceDetail.Resources == nil || serviceDetail.Resources.CPU != "500m" {
+		t.Fatal("expected resources with CPU 500m")
+	}
+	if serviceDetail.Networking == nil || serviceDetail.Networking.VIP != "10.200.0.1" {
+		t.Fatal("expected networking with VIP 10.200.0.1")
+	}
+	if len(serviceDetail.Endpoints) != 1 || serviceDetail.Endpoints[0] != "10.0.1.4:8080" {
+		t.Fatalf("expected endpoint 10.0.1.4:8080, got %v", serviceDetail.Endpoints)
+	}
+}
+
+func TestDescribeNode(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	types.WriteNode(ctx, factStore, types.Node{
+		ID: "node-a", State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 2000, AvailableMemory: 4096,
+		Architecture: "amd64", Zone: "us-east-1a",
+	})
+	factStore.Put(ctx, types.KeyObservedNodeAddress("node-a"), []byte("192.168.1.10"))
+
+	types.WriteInstance(ctx, factStore, types.Instance{
+		ID: "inst-1", Service: "web", State: types.InstanceRunning, IP: "10.0.1.4",
+	})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "inst-1", NodeID: "node-a"})
+
+	resp, err := http.Get(baseURL + "/api/describe?type=node&name=node-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var nodeDetail NodeDescribe
+	json.NewDecoder(resp.Body).Decode(&nodeDetail)
+
+	if nodeDetail.ID != "node-a" {
+		t.Fatalf("expected node-a, got %s", nodeDetail.ID)
+	}
+	if nodeDetail.State != "alive" {
+		t.Fatalf("expected alive, got %s", nodeDetail.State)
+	}
+	if nodeDetail.Address != "192.168.1.10" {
+		t.Fatalf("expected 192.168.1.10, got %s", nodeDetail.Address)
+	}
+	if nodeDetail.Architecture != "amd64" {
+		t.Fatalf("expected amd64, got %s", nodeDetail.Architecture)
+	}
+	if nodeDetail.CapacityCPU != 4000 {
+		t.Fatalf("expected 4000 cpu, got %d", nodeDetail.CapacityCPU)
+	}
+	if len(nodeDetail.Instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(nodeDetail.Instances))
+	}
+	if nodeDetail.Instances[0].Service != "web" {
+		t.Fatalf("expected service web, got %s", nodeDetail.Instances[0].Service)
+	}
+}
+
+func TestDescribeInstance(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	types.WriteInstance(ctx, factStore, types.Instance{
+		ID: "inst-1", Service: "web", State: types.InstanceRunning,
+		Image: "nginx:1.28", IP: "10.0.1.4", Health: types.HealthHealthy,
+	})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "inst-1", NodeID: "node-a"})
+	factStore.Put(ctx, types.KeyObservedInstanceCPU("inst-1"), []byte("120"))
+	factStore.Put(ctx, types.KeyObservedInstanceMemory("inst-1"), []byte("64Mi"))
+	factStore.Put(ctx, types.KeyObservedInstanceRestarts("inst-1"), []byte("2"))
+	types.WriteEndpoint(ctx, factStore, types.Endpoint{
+		Service: "web", InstanceID: "inst-1", IP: "10.0.1.4", Port: 8080,
+	})
+
+	resp, err := http.Get(baseURL + "/api/describe?type=instance&name=inst-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var instanceDetail InstanceDescribe
+	json.NewDecoder(resp.Body).Decode(&instanceDetail)
+
+	if instanceDetail.ID != "inst-1" {
+		t.Fatalf("expected inst-1, got %s", instanceDetail.ID)
+	}
+	if instanceDetail.ServiceName != "web" {
+		t.Fatalf("expected web, got %s", instanceDetail.ServiceName)
+	}
+	if instanceDetail.NodeID != "node-a" {
+		t.Fatalf("expected node-a, got %s", instanceDetail.NodeID)
+	}
+	if instanceDetail.State != "running" {
+		t.Fatalf("expected running, got %s", instanceDetail.State)
+	}
+	if instanceDetail.CPUMillis != "120" {
+		t.Fatalf("expected 120, got %s", instanceDetail.CPUMillis)
+	}
+	if instanceDetail.Restarts != "2" {
+		t.Fatalf("expected 2, got %s", instanceDetail.Restarts)
+	}
+	if instanceDetail.Endpoint != "10.0.1.4:8080" {
+		t.Fatalf("expected 10.0.1.4:8080, got %s", instanceDetail.Endpoint)
+	}
+}
+
+func TestDescribeNotFound(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(baseURL + "/api/describe?type=service&name=nonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestDescribeMissingParams(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(baseURL + "/api/describe?type=service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestDescribeInvalidType(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(baseURL + "/api/describe?type=unknown&name=foo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
+
+func TestDescribeServiceWithEvents(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	apiServer := NewServer(factStore)
+	eventLog := types.NewEventLog(factStore, 100)
+	apiServer.SetEventLog(eventLog)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer apiServer.Close()
+	defer factStore.Close()
+
+	ctx := context.Background()
+	types.WriteService(ctx, factStore, types.Service{
+		Name: "web", Image: "nginx:1.28", Instances: 1,
+	})
+	eventLog.Emit(ctx, "service.created", "web", "service web created", "cli")
+
+	baseURL := "http://" + address
+	resp, err := http.Get(baseURL + "/api/describe?type=service&name=web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var serviceDetail ServiceDescribe
+	json.NewDecoder(resp.Body).Decode(&serviceDetail)
+
+	if len(serviceDetail.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(serviceDetail.Events))
+	}
+	if serviceDetail.Events[0].Kind != "service.created" {
+		t.Fatalf("expected service.created, got %s", serviceDetail.Events[0].Kind)
+	}
+}

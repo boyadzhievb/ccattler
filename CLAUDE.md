@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M20 — Service Networking & Placement (Phase 23) COMPLETE. M1–M20 complete. Phase 23 adds cross-host endpoints, DNS server, HTTP reverse proxy, and human-readable placement constraints (require/prefer/restrict/accept).
+**Active milestone:** M21 — CLI & UX (Phase 24). M1–M20 complete.
 
 ---
 
@@ -1280,6 +1280,31 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Install script Ansible fix — `install.sh` and `install-demo.sh` wrap ansible-playbook in python3 Popen to avoid non-blocking IO errors
 - [x] Website install docs — clarified passwordless SSH prerequisite and inventory editing flow
 
+### Phase 24 — CLI & UX
+- [x] `cca describe <service|node|instance>` — detailed single-resource view showing all related facts, health state, placement, recent events
+- [ ] `cca events [--follow] [--service <name>]` — real-time event stream with optional filtering by service
+- [ ] `cca diff <file>` — dry-run apply that shows what facts would change (added/modified/removed) without committing
+- [ ] Colored terminal output — tables with aligned columns, status indicators (green running, red failed, yellow pending), box-drawing for structure
+- [ ] Better error messages — DSL parse errors show line/column with source context, runtime errors suggest corrective actions
+- [ ] Shell completions — bash and zsh completion scripts for commands, subcommands, and resource names (generated from `cca get` output)
+- [ ] `cca get` column formatting — aligned columns, human-readable durations (e.g. "3m ago" instead of timestamps), truncation for long values
+- [x] API `describe` endpoint — `GET /api/describe?type=service&name=web` returns aggregated detail view
+
+### Phase 25 — Observability
+- [ ] Prometheus `/metrics` endpoint on API server — reconciliation duration, scheduling decisions, instance state transitions, store operation latency, active watches
+- [ ] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
+- [ ] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
+- [ ] Health endpoint — `GET /healthz` returns controller health, etcd connectivity, certificate expiry status
+- [ ] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
+- [ ] Alert rule templates — node unreachable, instance crash-looping, scheduling failures, certificate approaching expiry, etcd latency
+
+### Phase 26 — Storage Resilience
+- [ ] Volume migration on node failure — detect orphaned volumes on unreachable nodes, reattach to replacement node after scheduling
+- [ ] Volume snapshot before migration — create a point-in-time snapshot as a safety net before moving data
+- [ ] Storage health monitoring — disk usage observed facts per node, capacity warning thresholds, `cca top volumes` view
+- [ ] Volume resize — grow a volume without detach/remount (online resize where supported)
+- [ ] Volume replication — optional synchronous replication across nodes for critical persistent volumes
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1304,5 +1329,8 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M18 — VIP Data Plane | 21 | `curl http://10.200.0.1:80` round-robins across containers on multiple hosts |
 | M19 — Node Enrollment | 22 | `cca token create` → `cca join` → agent auto-discovers certs and runs |
 | M20 — Service Networking | 23 | `curl -H "Host: web" http://node:80` round-robins via proxy, DNS resolves VIPs, require/prefer/restrict/accept placement |
+| M21 — CLI & UX | 24 | `cca describe web` shows full resource detail, `cca events --follow` streams live, `cca diff` previews changes, colored tables |
+| M22 — Observability | 25 | `/metrics` serves Prometheus, structured JSON logs, `cca logs web --follow`, `/healthz`, Grafana dashboards |
+| M23 — Storage Resilience | 26 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
