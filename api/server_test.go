@@ -1170,6 +1170,141 @@ func TestStatusIncludesCloudIdentities(t *testing.T) {
 	}
 }
 
+func TestHealthzAPIOnlyModeSkipsControllerCheck(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	apiServer.SetServerMode(ServerModeAPIOnly)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	healthResponse, err := http.Get("http://" + address + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer healthResponse.Body.Close()
+
+	if healthResponse.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", healthResponse.StatusCode)
+	}
+
+	var result struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	json.NewDecoder(healthResponse.Body).Decode(&result)
+
+	if result.Status != "healthy" {
+		t.Errorf("expected healthy, got %s", result.Status)
+	}
+	if result.Mode != "api-only" {
+		t.Errorf("expected mode api-only, got %s", result.Mode)
+	}
+
+	for _, check := range result.Checks {
+		if check.Name == "controllers" {
+			t.Error("api-only mode should not include controllers check")
+		}
+	}
+}
+
+func TestHealthzFullModeIncludesControllerCheck(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	healthResponse, err := http.Get("http://" + address + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer healthResponse.Body.Close()
+
+	var result struct {
+		Status string `json:"status"`
+		Mode   string `json:"mode"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	json.NewDecoder(healthResponse.Body).Decode(&result)
+
+	if result.Mode != "full" {
+		t.Errorf("expected mode full, got %s", result.Mode)
+	}
+
+	foundControllerCheck := false
+	for _, check := range result.Checks {
+		if check.Name == "controllers" {
+			foundControllerCheck = true
+		}
+	}
+	if !foundControllerCheck {
+		t.Error("full mode should include controllers check")
+	}
+}
+
+func TestWatchWithMultiplexer(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	multiplexer := NewWatchMultiplexer(factStore)
+	apiServer.SetWatchMultiplexer(multiplexer)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	baseURL := "http://" + address
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/watch?prefix=desired/service/", nil)
+	httpResponse, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %s", httpResponse.Header.Get("Content-Type"))
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		factStore.Put(context.Background(), "desired/service/web/image", []byte("nginx:1.29"))
+	}()
+
+	buf := make([]byte, 4096)
+	n, readErr := httpResponse.Body.Read(buf)
+	if readErr != nil && readErr != io.EOF {
+		t.Fatal(readErr)
+	}
+	eventData := string(buf[:n])
+	if !strings.Contains(eventData, "nginx:1.29") {
+		t.Fatalf("expected SSE event with nginx:1.29, got: %s", eventData)
+	}
+}
+
 func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

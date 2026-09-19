@@ -53,6 +53,19 @@ var (
 	)
 )
 
+// ServerMode controls which components the API server expects to be available,
+// affecting health checks and operational behavior.
+type ServerMode string
+
+const (
+	// ServerModeFull indicates both API and controllers run in this process.
+	// Health checks verify store connectivity and controller leader lease.
+	ServerModeFull ServerMode = "full"
+	// ServerModeAPIOnly indicates this process runs only the stateless API.
+	// Health checks verify store connectivity only — no controller lease check.
+	ServerModeAPIOnly ServerMode = "api-only"
+)
+
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
@@ -60,6 +73,8 @@ type Server struct {
 	eventLog             *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
 	enrollmentService    *security.EnrollmentService
 	workloadTokenIssuer  *security.WorkloadTokenIssuer
+	watchMultiplexer     *WatchMultiplexer
+	serverMode           ServerMode
 	mux                  *http.ServeMux
 	listener             net.Listener
 }
@@ -84,11 +99,25 @@ func (apiServer *Server) SetWorkloadTokenIssuer(workloadTokenIssuer *security.Wo
 	apiServer.mux.HandleFunc("/oidc/jwks", apiServer.handleOIDCJWKS)
 }
 
+// SetServerMode configures the operational mode, which affects health check
+// behavior. API-only replicas skip the controller lease check.
+func (apiServer *Server) SetServerMode(mode ServerMode) {
+	apiServer.serverMode = mode
+}
+
+// SetWatchMultiplexer attaches a watch multiplexer to the server. When set,
+// watch and event-stream endpoints share underlying store watches instead of
+// each opening their own, reducing etcd load as API replicas scale.
+func (apiServer *Server) SetWatchMultiplexer(multiplexer *WatchMultiplexer) {
+	apiServer.watchMultiplexer = multiplexer
+}
+
 // NewServer creates a new API server backed by the given fact store.
 func NewServer(factStore store.StateStore) *Server {
 	apiServer := &Server{
-		factStore: factStore,
-		mux:       http.NewServeMux(),
+		factStore:  factStore,
+		serverMode: ServerModeFull,
+		mux:        http.NewServeMux(),
 	}
 	apiServer.registerRoutes()
 	return apiServer
@@ -166,9 +195,10 @@ type healthCheckResult struct {
 	Message string `json:"message,omitempty"`
 }
 
-// handleHealthz returns the health of the control plane: store connectivity,
-// controller presence, and overall readiness. Returns 200 when healthy, 503
-// when any critical check fails.
+// handleHealthz returns the health of the control plane. In full mode it
+// checks store connectivity and controller leader presence. In api-only mode
+// it checks only store connectivity — the critical signal for load-balancer
+// readiness. Returns 200 when healthy, 503 when any critical check fails.
 func (apiServer *Server) handleHealthz(responseWriter http.ResponseWriter, request *http.Request) {
 	ctx := request.Context()
 	checks := []healthCheckResult{}
@@ -189,28 +219,33 @@ func (apiServer *Server) handleHealthz(responseWriter http.ResponseWriter, reque
 		})
 	}
 
-	controllerFacts, _ := apiServer.factStore.Scan(ctx, "leader/")
-	if len(controllerFacts) > 0 {
-		checks = append(checks, healthCheckResult{
-			Name:   "controllers",
-			Status: "healthy",
-		})
-	} else {
-		checks = append(checks, healthCheckResult{
-			Name:    "controllers",
-			Status:  "unknown",
-			Message: "no leader lease found",
-		})
+	if apiServer.serverMode == ServerModeFull {
+		controllerFacts, _ := apiServer.factStore.Scan(ctx, "leader/")
+		if len(controllerFacts) > 0 {
+			checks = append(checks, healthCheckResult{
+				Name:   "controllers",
+				Status: "healthy",
+			})
+		} else {
+			checks = append(checks, healthCheckResult{
+				Name:    "controllers",
+				Status:  "unknown",
+				Message: "no leader lease found",
+			})
+		}
 	}
 
+	serverModeLabel := string(apiServer.serverMode)
 	responseWriter.Header().Set("Content-Type", "application/json")
 	if !healthy {
 		responseWriter.WriteHeader(http.StatusServiceUnavailable)
 	}
 	result := struct {
 		Status string              `json:"status"`
+		Mode   string              `json:"mode"`
 		Checks []healthCheckResult `json:"checks"`
 	}{
+		Mode:   serverModeLabel,
 		Checks: checks,
 	}
 	if healthy {
@@ -393,9 +428,16 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	watchContext, cancelWatch := context.WithCancel(request.Context())
 	defer cancelWatch()
 
-	eventChannel, err := apiServer.factStore.Watch(watchContext, prefix, store.WatchOption{Prefix: true})
-	if err != nil {
-		http.Error(responseWriter, "watch: "+err.Error(), http.StatusInternalServerError)
+	var eventChannel <-chan store.Event
+	var watchError error
+
+	if apiServer.watchMultiplexer != nil {
+		eventChannel, watchError = apiServer.watchMultiplexer.Subscribe(watchContext, prefix)
+	} else {
+		eventChannel, watchError = apiServer.factStore.Watch(watchContext, prefix, store.WatchOption{Prefix: true})
+	}
+	if watchError != nil {
+		http.Error(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -609,9 +651,17 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 	watchContext, cancelWatch := context.WithCancel(request.Context())
 	defer cancelWatch()
 
-	eventChannel, err := apiServer.factStore.Watch(watchContext, types.PrefixEvent+"/", store.WatchOption{Prefix: true})
-	if err != nil {
-		http.Error(responseWriter, "watch: "+err.Error(), http.StatusInternalServerError)
+	eventPrefix := types.PrefixEvent + "/"
+	var eventChannel <-chan store.Event
+	var watchError error
+
+	if apiServer.watchMultiplexer != nil {
+		eventChannel, watchError = apiServer.watchMultiplexer.Subscribe(watchContext, eventPrefix)
+	} else {
+		eventChannel, watchError = apiServer.factStore.Watch(watchContext, eventPrefix, store.WatchOption{Prefix: true})
+	}
+	if watchError != nil {
+		http.Error(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
 		return
 	}
 

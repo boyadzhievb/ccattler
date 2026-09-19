@@ -334,6 +334,12 @@ type serverCommandConfig struct {
 	logLevel string
 	// logFormat selects human-readable or JSON log output (human/json).
 	logFormat string
+	// apiOnly runs the stateless API server without controllers, for horizontal scaling.
+	apiOnly bool
+	// controllersOnly runs leader-elected controllers without the API server.
+	controllersOnly bool
+	// nodeID identifies this control-plane replica for leader election (defaults to hostname).
+	nodeID string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -404,6 +410,15 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				argIndex++
 				parsedConfig.logFormat = args[argIndex]
 			}
+		case "--api-only":
+			parsedConfig.apiOnly = true
+		case "--controllers-only":
+			parsedConfig.controllersOnly = true
+		case "--node-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.nodeID = args[argIndex]
+			}
 		}
 	}
 
@@ -422,6 +437,20 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			os.Exit(1)
 		}
 		parsedConfig.tlsEnabled = true
+	}
+
+	if parsedConfig.apiOnly && parsedConfig.controllersOnly {
+		fmt.Fprintln(os.Stderr, "error: --api-only and --controllers-only are mutually exclusive")
+		os.Exit(1)
+	}
+
+	if parsedConfig.nodeID == "" {
+		hostname, _ := os.Hostname()
+		if hostname != "" {
+			parsedConfig.nodeID = hostname
+		} else {
+			parsedConfig.nodeID = "controlplane-1"
+		}
 	}
 
 	return parsedConfig
@@ -603,62 +632,95 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	nodeFailureController := controllers.NewNodeFailureController()
-	networkController := controllers.NewNetworkController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
+	runControllers := !parsedConfig.apiOnly
+	runAPIServer := !parsedConfig.controllersOnly
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController, networkController,
-		autoscaleController, intentResolverController, rolloutController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	if runControllers {
+		instanceController := controllers.NewInstanceController()
+		schedulerController := scheduler.NewScheduler()
+		endpointController := controllers.NewEndpointController()
+		failureController := controllers.NewFailureController()
+		nodeFailureController := controllers.NewNodeFailureController()
+		networkController := controllers.NewNetworkController()
+		autoscaleController := controllers.NewAutoscaleController()
+		intentResolverController := controllers.NewIntentResolverController()
+		rolloutController := controllers.NewRolloutController()
+		initController := controllers.NewInitController()
 
-	var serverTLSConfig *tls.Config
-	var clusterCertificateAuthority *security.CertificateAuthority
-	enrollmentEnabled := false
-	if parsedConfig.tlsCertPath != "" {
-		serverTLSConfig = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
-	} else if parsedConfig.tlsEnabled {
-		serverTLSConfig, clusterCertificateAuthority = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
-		enrollmentEnabled = true
-	}
+		metricsCollector := controllers.NewMetricsCollector()
+		haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
+			instanceController, schedulerController, endpointController,
+			failureController, nodeFailureController, networkController,
+			autoscaleController, intentResolverController, rolloutController,
+			initController)
 
-	statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
-	statusAPIServer.SetEventLog(eventLog)
-
-	if clusterCertificateAuthority != nil {
-		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 24*time.Hour)
-		statusAPIServer.SetEnrollmentService(enrollmentService)
-		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
-	}
-
-	if parsedConfig.dnsEnabled {
-		serviceResolver := network.NewStoreBackedResolver(factStore)
-		dnsServer := network.NewDNSServer(serviceResolver, parsedConfig.dnsListenAddress)
 		go func() {
-			if dnsStartError := dnsServer.Start(ctx); dnsStartError != nil && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "DNS server error: %v\n", dnsStartError)
+			if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {
+				fmt.Fprintf(os.Stderr, "controller runner error: %v\n", runError)
 			}
 		}()
-		fmt.Printf("DNS server listening on %s (resolving *.%s)\n",
-			parsedConfig.dnsListenAddress, network.DefaultDNSDomain)
+		fmt.Printf("Controllers started with leader election (node: %s)\n", parsedConfig.nodeID)
+	}
+
+	if runAPIServer {
+		var serverTLSConfig *tls.Config
+		var clusterCertificateAuthority *security.CertificateAuthority
+		enrollmentEnabled := false
+		if parsedConfig.tlsCertPath != "" {
+			serverTLSConfig = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
+		} else if parsedConfig.tlsEnabled {
+			serverTLSConfig, clusterCertificateAuthority = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
+			enrollmentEnabled = true
+		}
+
+		statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
+		statusAPIServer.SetEventLog(eventLog)
+		statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
+
+		if parsedConfig.apiOnly {
+			statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
+		}
+
+		if clusterCertificateAuthority != nil {
+			enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 24*time.Hour)
+			statusAPIServer.SetEnrollmentService(enrollmentService)
+			fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
+		}
+
+		if parsedConfig.dnsEnabled {
+			serviceResolver := network.NewStoreBackedResolver(factStore)
+			dnsServer := network.NewDNSServer(serviceResolver, parsedConfig.dnsListenAddress)
+			go func() {
+				if dnsStartError := dnsServer.Start(ctx); dnsStartError != nil && ctx.Err() == nil {
+					fmt.Fprintf(os.Stderr, "DNS server error: %v\n", dnsStartError)
+				}
+			}()
+			fmt.Printf("DNS server listening on %s (resolving *.%s)\n",
+				parsedConfig.dnsListenAddress, network.DefaultDNSDomain)
+		}
+	}
+
+	modeLabel := "full"
+	if parsedConfig.apiOnly {
+		modeLabel = "api-only"
+	} else if parsedConfig.controllersOnly {
+		modeLabel = "controllers-only"
 	}
 
 	protocol := "http"
 	if parsedConfig.tlsEnabled {
 		protocol = "https (mTLS)"
 	}
-	fmt.Printf("Server running. API on %s (%s). Controllers active. Press Ctrl+C to stop.\n",
-		parsedConfig.listenAddress, protocol)
+
+	if runAPIServer {
+		fmt.Printf("Server running (%s). API on %s (%s). Press Ctrl+C to stop.\n",
+			modeLabel, parsedConfig.listenAddress, protocol)
+	} else {
+		fmt.Printf("Server running (%s). Leader election active (node: %s). Press Ctrl+C to stop.\n",
+			modeLabel, parsedConfig.nodeID)
+	}
 
 	<-ctx.Done()
 	fmt.Println("\nServer shutting down...")
@@ -3354,7 +3416,8 @@ type volumeStatusEntry struct {
 // joining nodes do not yet have credentials.
 func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/api/enroll" {
+		switch request.URL.Path {
+		case "/api/enroll", "/healthz", "/metrics":
 			wrappedHandler.ServeHTTP(responseWriter, request)
 			return
 		}
@@ -3377,6 +3440,15 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/api/", apiServer.Handler())
+
+	// Expose /healthz and /metrics at the root level so load balancers and
+	// Prometheus scrapers can reach them without the /api/ prefix.
+	httpMux.Handle("/healthz", apiServer.Handler())
+	httpMux.Handle("/metrics", apiServer.Handler())
+
+	// Expose OIDC endpoints at root level when configured.
+	httpMux.Handle("/.well-known/", apiServer.Handler())
+	httpMux.Handle("/oidc/", apiServer.Handler())
 
 	// Legacy status endpoint for backward compatibility with 'cca status'.
 	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
