@@ -28,23 +28,29 @@ type Fact struct {
 
 // Compile converts a parsed AST into a list of facts.
 func Compile(file *File) ([]Fact, error) {
+	return CompileWithSource(file, nil)
+}
+
+// CompileWithSource converts a parsed AST into a list of facts, using the
+// provided source lines for richer error context in diagnostics.
+func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 	var facts []Fact
 	for _, tenantDecl := range file.Tenants {
-		tenantFacts, err := compileTenantDeclaration(tenantDecl)
+		tenantFacts, err := compileTenantDeclaration(tenantDecl, sourceLines)
 		if err != nil {
 			return nil, err
 		}
 		facts = append(facts, tenantFacts...)
 	}
 	for _, volumeDecl := range file.Volumes {
-		volumeFacts, err := compileVolumeDeclaration(volumeDecl)
+		volumeFacts, err := compileVolumeDeclaration(volumeDecl, sourceLines)
 		if err != nil {
 			return nil, err
 		}
 		facts = append(facts, volumeFacts...)
 	}
 	for _, serviceDecl := range file.Services {
-		serviceFacts, err := compileServiceDeclaration(serviceDecl)
+		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines)
 		if err != nil {
 			return nil, err
 		}
@@ -54,9 +60,13 @@ func Compile(file *File) ([]Fact, error) {
 }
 
 // compileTenantDeclaration converts a TenantDecl into its corresponding facts.
-func compileTenantDeclaration(tenantDecl TenantDecl) ([]Fact, error) {
+func compileTenantDeclaration(tenantDecl TenantDecl, sourceLines []string) ([]Fact, error) {
 	if tenantDecl.Name == "" {
-		return nil, fmt.Errorf("line %d: tenant name is required", tenantDecl.Line)
+		return nil, &ParseError{
+			Line:       tenantDecl.Line,
+			Message:    "tenant name is required",
+			SourceLine: sourceLineAt(sourceLines, tenantDecl.Line),
+		}
 	}
 
 	facts := []Fact{
@@ -101,9 +111,13 @@ func compileTenantDeclaration(tenantDecl TenantDecl) ([]Fact, error) {
 }
 
 // compileVolumeDeclaration converts a single VolumeDecl into its corresponding facts.
-func compileVolumeDeclaration(volumeDecl VolumeDecl) ([]Fact, error) {
+func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fact, error) {
 	if volumeDecl.Name == "" {
-		return nil, fmt.Errorf("line %d: volume name is required", volumeDecl.Line)
+		return nil, &ParseError{
+			Line:       volumeDecl.Line,
+			Message:    "volume name is required",
+			SourceLine: sourceLineAt(sourceLines, volumeDecl.Line),
+		}
 	}
 
 	persistentValue := "false"
@@ -120,15 +134,24 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl) ([]Fact, error) {
 }
 
 // compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
-func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
+func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([]Fact, error) {
 	if serviceDecl.Name == "" {
-		return nil, fmt.Errorf("line %d: service name is required", serviceDecl.Line)
+		return nil, &ParseError{
+			Line: serviceDecl.Line, Message: "service name is required",
+			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+		}
 	}
 	if serviceDecl.Image == "" {
-		return nil, fmt.Errorf("line %d: service %q requires an image", serviceDecl.Line, serviceDecl.Name)
+		return nil, &ParseError{
+			Line: serviceDecl.Line, Message: fmt.Sprintf("service %q requires an image", serviceDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+		}
 	}
 	if serviceDecl.Instances < 0 {
-		return nil, fmt.Errorf("line %d: service %q instances must be >= 0", serviceDecl.Line, serviceDecl.Name)
+		return nil, &ParseError{
+			Line: serviceDecl.Line, Message: fmt.Sprintf("service %q instances must be >= 0", serviceDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+		}
 	}
 
 	facts := []Fact{
@@ -151,7 +174,10 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 
 	for _, port := range serviceDecl.Ports {
 		if port < 1 || port > 65535 {
-			return nil, fmt.Errorf("line %d: service %q port %d out of range", serviceDecl.Line, serviceDecl.Name, port)
+			return nil, &ParseError{
+				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q port %d out of range (1-65535)", serviceDecl.Name, port),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
 		}
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredServiceExpose(serviceDecl.Name, port), Value: "",
@@ -181,10 +207,16 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 	if serviceDecl.Scale != nil && serviceDecl.Scale.Horizontal != nil {
 		horizontal := serviceDecl.Scale.Horizontal
 		if horizontal.Min < 0 {
-			return nil, fmt.Errorf("line %d: service %q scale min must be >= 0", serviceDecl.Line, serviceDecl.Name)
+			return nil, &ParseError{
+				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale min must be >= 0", serviceDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
 		}
 		if horizontal.Max < horizontal.Min {
-			return nil, fmt.Errorf("line %d: service %q scale max must be >= min", serviceDecl.Line, serviceDecl.Name)
+			return nil, &ParseError{
+				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale max must be >= min", serviceDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
 		}
 		facts = append(facts,
 			Fact{Key: types.KeyDesiredServiceScaleHorizontalMin(serviceDecl.Name), Value: strconv.Itoa(horizontal.Min)},
@@ -192,7 +224,10 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		)
 		for _, target := range horizontal.Targets {
 			if target.Value <= 0 {
-				return nil, fmt.Errorf("line %d: service %q scale target %q must be > 0", serviceDecl.Line, serviceDecl.Name, target.Metric)
+				return nil, &ParseError{
+					Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale target %q must be > 0", serviceDecl.Name, target.Metric),
+					SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				}
 			}
 			facts = append(facts, Fact{
 				Key:   types.KeyDesiredServiceScaleHorizontalTarget(serviceDecl.Name, target.Metric),
@@ -201,7 +236,10 @@ func compileServiceDeclaration(serviceDecl ServiceDecl) ([]Fact, error) {
 		}
 		for _, event := range horizontal.Events {
 			if event.Target <= 0 {
-				return nil, fmt.Errorf("line %d: service %q event target for %q must be > 0", serviceDecl.Line, serviceDecl.Name, event.Source)
+				return nil, &ParseError{
+					Line: serviceDecl.Line, Message: fmt.Sprintf("service %q event target for %q must be > 0", serviceDecl.Name, event.Source),
+					SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				}
 			}
 			facts = append(facts, Fact{
 				Key:   types.KeyDesiredServiceScaleHorizontalEvent(serviceDecl.Name, event.Source),
@@ -399,17 +437,18 @@ func compileProbeDeclaration(serviceName string, probeType string, probeDecl *Pr
 
 // Apply parses a DSL string and writes all resulting facts to the store.
 func Apply(ctx context.Context, stateStore store.StateStore, input string) error {
-	file, err := Parse(input)
-	if err != nil {
-		return err
+	file, parseError := Parse(input)
+	if parseError != nil {
+		return parseError
 	}
-	facts, err := Compile(file)
-	if err != nil {
-		return err
+	sourceLines := splitSourceLines(input)
+	facts, compileError := CompileWithSource(file, sourceLines)
+	if compileError != nil {
+		return compileError
 	}
 	for _, fact := range facts {
-		if _, err := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); err != nil {
-			return fmt.Errorf("writing %s: %w", fact.Key, err)
+		if _, putError := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); putError != nil {
+			return fmt.Errorf("writing %s: %w", fact.Key, putError)
 		}
 	}
 	return nil
@@ -428,13 +467,14 @@ type FactChange struct {
 // writing anything. Facts that exist in the store but not in the compiled
 // output are not reported — diff only shows what the apply would write.
 func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]FactChange, error) {
-	file, err := Parse(input)
-	if err != nil {
-		return nil, err
+	file, parseError := Parse(input)
+	if parseError != nil {
+		return nil, parseError
 	}
-	facts, err := Compile(file)
-	if err != nil {
-		return nil, err
+	sourceLines := splitSourceLines(input)
+	facts, compileError := CompileWithSource(file, sourceLines)
+	if compileError != nil {
+		return nil, compileError
 	}
 	var changes []FactChange
 	for _, fact := range facts {

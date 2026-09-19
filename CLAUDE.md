@@ -1285,7 +1285,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] `cca events [--follow] [--service <name>]` — real-time event stream with optional filtering by service
 - [x] `cca diff <file>` — dry-run apply that shows what facts would change (added/modified/removed) without committing
 - [x] ~Colored terminal output~ — dropped: data is already readable without colors, not worth the complexity
-- [ ] Better error messages — DSL parse errors show line/column with source context, runtime errors suggest corrective actions
+- [x] Better error messages — DSL parse errors show line/column with source context, runtime errors suggest corrective actions
 - [ ] Shell completions — bash and zsh completion scripts for commands, subcommands, and resource names (generated from `cca get` output)
 - [ ] `cca get` column formatting — aligned columns, human-readable durations (e.g. "3m ago" instead of timestamps), truncation for long values
 - [x] API `describe` endpoint — `GET /api/describe?type=service&name=web` returns aggregated detail view

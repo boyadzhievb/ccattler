@@ -8,8 +8,10 @@ import (
 // Parser is a recursive-descent parser that transforms a flat token stream
 // into an AST representing a CCattler configuration file.
 type Parser struct {
-	tokens   []Token // tokens is the complete list of tokens produced by the lexer.
-	position int     // position is the current read position within the token slice.
+	tokens      []Token  // tokens is the complete list of tokens produced by the lexer.
+	position    int      // position is the current read position within the token slice.
+	sourceLines []string // sourceLines holds the original source text split by line for error context.
+	fileName    string   // fileName is the source file path, included in error messages when set.
 }
 
 // NewParser creates a Parser from a pre-lexed token slice.
@@ -19,11 +21,26 @@ func NewParser(tokens []Token) *Parser {
 
 // Parse lexes the input string and parses the resulting tokens into a File AST.
 func Parse(input string) (*File, error) {
-	tokens, err := NewLexer(input).Tokenize()
-	if err != nil {
-		return nil, err
+	tokens, lexerError := NewLexer(input).Tokenize()
+	if lexerError != nil {
+		return nil, lexerError
 	}
-	return NewParser(tokens).ParseFile()
+	parser := NewParser(tokens)
+	parser.sourceLines = splitSourceLines(input)
+	return parser.ParseFile()
+}
+
+// ParseWithFileName lexes the input and parses it, including the filename in
+// any error messages for better diagnostic output.
+func ParseWithFileName(input string, fileName string) (*File, error) {
+	tokens, lexerError := NewLexer(input).Tokenize()
+	if lexerError != nil {
+		return nil, lexerError
+	}
+	parser := NewParser(tokens)
+	parser.sourceLines = splitSourceLines(input)
+	parser.fileName = fileName
+	return parser.ParseFile()
 }
 
 // ParseFile parses the top-level declarations of a CCattler file and returns
@@ -1124,9 +1141,16 @@ func (parser *Parser) parseQuotaBlock() (*QuotaDecl, error) {
 	return quotaDecl, nil
 }
 
-// parserErrorf returns a formatted error that includes the current token's
-// line and column for diagnostic context.
+// parserErrorf returns a structured ParseError that includes the current
+// token's line and column, plus the offending source line for diagnostic
+// context with a caret pointing at the error position.
 func (parser *Parser) parserErrorf(format string, args ...any) error {
 	token := parser.currentToken()
-	return fmt.Errorf("line %d col %d: %s", token.Line, token.Col, fmt.Sprintf(format, args...))
+	return &ParseError{
+		File:       parser.fileName,
+		Line:       token.Line,
+		Col:        token.Col,
+		Message:    fmt.Sprintf(format, args...),
+		SourceLine: sourceLineAt(parser.sourceLines, token.Line),
+	}
 }
