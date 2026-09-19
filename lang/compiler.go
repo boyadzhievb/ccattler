@@ -49,6 +49,20 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, volumeFacts...)
 	}
+	for _, cloudIdentityDecl := range file.CloudIdentities {
+		identityFacts, err := compileCloudIdentityDeclaration(cloudIdentityDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, identityFacts...)
+	}
+	if file.CredentialBroker != nil {
+		brokerFacts, err := compileCredentialBrokerDeclaration(*file.CredentialBroker, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, brokerFacts...)
+	}
 	for _, serviceDecl := range file.Services {
 		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines)
 		if err != nil {
@@ -359,6 +373,25 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 		})
 	}
 
+	for _, cloudIdentityBinding := range serviceDecl.CloudIdentities {
+		facts = append(facts, Fact{
+			Key:   types.KeyDesiredServiceCloudIdentity(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+			Value: "",
+		})
+		if cloudIdentityBinding.MountPath != "" {
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceCloudIdentityMountPath(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+				Value: cloudIdentityBinding.MountPath,
+			})
+		}
+		if cloudIdentityBinding.DeliverMode != "" {
+			facts = append(facts, Fact{
+				Key:   types.KeyDesiredServiceCloudIdentityDeliverMode(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+				Value: cloudIdentityBinding.DeliverMode,
+			})
+		}
+	}
+
 	if serviceDecl.Startup != nil {
 		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "startup", serviceDecl.Startup)...)
 	}
@@ -386,6 +419,131 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 				Key: types.KeyDesiredServiceInitStepRetry(serviceDecl.Name, stepIndex), Value: strconv.Itoa(initStep.Retry),
 			})
 		}
+	}
+
+	return facts, nil
+}
+
+// compileCloudIdentityDeclaration validates and converts a CloudIdentityDecl into facts.
+func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, sourceLines []string) ([]Fact, error) {
+	if cloudIdentityDecl.Name == "" {
+		return nil, &ParseError{
+			Line:       cloudIdentityDecl.Line,
+			Message:    "cloud_identity name is required",
+			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+		}
+	}
+	if cloudIdentityDecl.Provider == "" {
+		return nil, &ParseError{
+			Line:       cloudIdentityDecl.Line,
+			Message:    fmt.Sprintf("cloud_identity %q requires a provider (aws, gcp, or azure)", cloudIdentityDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+		}
+	}
+
+	switch cloudIdentityDecl.Provider {
+	case "aws":
+		if cloudIdentityDecl.Role == "" {
+			return nil, &ParseError{
+				Line:       cloudIdentityDecl.Line,
+				Message:    fmt.Sprintf("cloud_identity %q with provider aws requires a role", cloudIdentityDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+			}
+		}
+	case "gcp":
+		if cloudIdentityDecl.ServiceAccount == "" {
+			return nil, &ParseError{
+				Line:       cloudIdentityDecl.Line,
+				Message:    fmt.Sprintf("cloud_identity %q with provider gcp requires a service_account", cloudIdentityDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+			}
+		}
+		if cloudIdentityDecl.Pool == "" {
+			return nil, &ParseError{
+				Line:       cloudIdentityDecl.Line,
+				Message:    fmt.Sprintf("cloud_identity %q with provider gcp requires a pool", cloudIdentityDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+			}
+		}
+	case "azure":
+		if cloudIdentityDecl.ClientID == "" {
+			return nil, &ParseError{
+				Line:       cloudIdentityDecl.Line,
+				Message:    fmt.Sprintf("cloud_identity %q with provider azure requires a client_id", cloudIdentityDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+			}
+		}
+		if cloudIdentityDecl.TenantID == "" {
+			return nil, &ParseError{
+				Line:       cloudIdentityDecl.Line,
+				Message:    fmt.Sprintf("cloud_identity %q with provider azure requires a tenant_id", cloudIdentityDecl.Name),
+				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+			}
+		}
+	default:
+		return nil, &ParseError{
+			Line:       cloudIdentityDecl.Line,
+			Message:    fmt.Sprintf("cloud_identity %q has unknown provider %q (must be aws, gcp, or azure)", cloudIdentityDecl.Name, cloudIdentityDecl.Provider),
+			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
+		}
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredCloudIdentity(cloudIdentityDecl.Name), Value: ""},
+		{Key: types.KeyDesiredCloudIdentityProvider(cloudIdentityDecl.Name), Value: cloudIdentityDecl.Provider},
+	}
+
+	if cloudIdentityDecl.Role != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudIdentityRole(cloudIdentityDecl.Name), Value: cloudIdentityDecl.Role,
+		})
+	}
+	if cloudIdentityDecl.ServiceAccount != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudIdentityServiceAccount(cloudIdentityDecl.Name), Value: cloudIdentityDecl.ServiceAccount,
+		})
+	}
+	if cloudIdentityDecl.Pool != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudIdentityPool(cloudIdentityDecl.Name), Value: cloudIdentityDecl.Pool,
+		})
+	}
+	if cloudIdentityDecl.ClientID != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudIdentityClientID(cloudIdentityDecl.Name), Value: cloudIdentityDecl.ClientID,
+		})
+	}
+	if cloudIdentityDecl.TenantID != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudIdentityTenantID(cloudIdentityDecl.Name), Value: cloudIdentityDecl.TenantID,
+		})
+	}
+
+	return facts, nil
+}
+
+// compileCredentialBrokerDeclaration validates and converts a CredentialBrokerDecl into facts.
+func compileCredentialBrokerDeclaration(credentialBrokerDecl CredentialBrokerDecl, sourceLines []string) ([]Fact, error) {
+	if credentialBrokerDecl.OIDCIssuer == "" {
+		return nil, &ParseError{
+			Line:       credentialBrokerDecl.Line,
+			Message:    "credential_broker requires an oidc_issuer",
+			SourceLine: sourceLineAt(sourceLines, credentialBrokerDecl.Line),
+		}
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredCredentialBrokerOIDCIssuer(), Value: credentialBrokerDecl.OIDCIssuer},
+	}
+	if credentialBrokerDecl.CredentialTTL != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCredentialBrokerCredentialTTL(), Value: credentialBrokerDecl.CredentialTTL,
+		})
+	}
+	if credentialBrokerDecl.RefreshBefore != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCredentialBrokerRefreshBefore(), Value: credentialBrokerDecl.RefreshBefore,
+		})
 	}
 
 	return facts, nil

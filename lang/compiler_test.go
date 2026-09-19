@@ -520,6 +520,154 @@ func TestDiffDetectsModified(t *testing.T) {
 	}
 }
 
+func TestCompileCloudIdentityAWS(t *testing.T) {
+	facts, err := Compile(&File{
+		CloudIdentities: []CloudIdentityDecl{
+			{
+				Name:     "payments_s3",
+				Provider: "aws",
+				Role:     "arn:aws:iam::123456789012:role/payments-s3-access",
+				Line:     1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	factMap := make(map[string]string)
+	for _, fact := range facts {
+		factMap[fact.Key] = fact.Value
+	}
+	if _, exists := factMap[types.KeyDesiredCloudIdentity("payments_s3")]; !exists {
+		t.Error("missing root cloud identity marker fact")
+	}
+	if factMap[types.KeyDesiredCloudIdentityProvider("payments_s3")] != "aws" {
+		t.Error("provider fact missing or wrong")
+	}
+	if factMap[types.KeyDesiredCloudIdentityRole("payments_s3")] != "arn:aws:iam::123456789012:role/payments-s3-access" {
+		t.Error("role fact missing or wrong")
+	}
+}
+
+func TestCompileCloudIdentityGCPValidation(t *testing.T) {
+	_, err := Compile(&File{
+		CloudIdentities: []CloudIdentityDecl{
+			{Name: "test_gcp", Provider: "gcp", ServiceAccount: "sa@proj.iam.gserviceaccount.com", Line: 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error: gcp requires pool")
+	}
+}
+
+func TestCompileCloudIdentityAzureValidation(t *testing.T) {
+	_, err := Compile(&File{
+		CloudIdentities: []CloudIdentityDecl{
+			{Name: "test_azure", Provider: "azure", ClientID: "abc-123", Line: 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error: azure requires tenant_id")
+	}
+}
+
+func TestCompileCloudIdentityUnknownProvider(t *testing.T) {
+	_, err := Compile(&File{
+		CloudIdentities: []CloudIdentityDecl{
+			{Name: "test_bad", Provider: "oracle", Line: 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+}
+
+func TestCompileCloudIdentityMissingProvider(t *testing.T) {
+	_, err := Compile(&File{
+		CloudIdentities: []CloudIdentityDecl{
+			{Name: "test_noprov", Line: 1},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+}
+
+func TestCompileCredentialBroker(t *testing.T) {
+	facts, err := Compile(&File{
+		CredentialBroker: &CredentialBrokerDecl{
+			OIDCIssuer:    "https://ccattler.example.com",
+			CredentialTTL: "1h",
+			RefreshBefore: "15m",
+			Line:          1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	factMap := make(map[string]string)
+	for _, fact := range facts {
+		factMap[fact.Key] = fact.Value
+	}
+	if factMap[types.KeyDesiredCredentialBrokerOIDCIssuer()] != "https://ccattler.example.com" {
+		t.Error("oidc_issuer fact missing or wrong")
+	}
+	if factMap[types.KeyDesiredCredentialBrokerCredentialTTL()] != "1h" {
+		t.Error("credential_ttl fact missing or wrong")
+	}
+	if factMap[types.KeyDesiredCredentialBrokerRefreshBefore()] != "15m" {
+		t.Error("refresh_before fact missing or wrong")
+	}
+}
+
+func TestCompileCredentialBrokerMissingIssuer(t *testing.T) {
+	_, err := Compile(&File{
+		CredentialBroker: &CredentialBrokerDecl{
+			CredentialTTL: "1h",
+			Line:          1,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for missing oidc_issuer")
+	}
+}
+
+func TestCompileServiceWithCloudIdentityBinding(t *testing.T) {
+	facts, err := Compile(&File{
+		Services: []ServiceDecl{
+			{
+				Name:      "payments",
+				Image:     "payments:1.0",
+				Instances: 2,
+				CloudIdentities: []CloudIdentityBindingDecl{
+					{
+						IdentityName: "payments_s3",
+						MountPath:    "/var/run/cloud-creds",
+						DeliverMode:  "token",
+					},
+				},
+				Line: 1,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	factMap := make(map[string]string)
+	for _, fact := range facts {
+		factMap[fact.Key] = fact.Value
+	}
+	if _, exists := factMap[types.KeyDesiredServiceCloudIdentity("payments", "payments_s3")]; !exists {
+		t.Error("missing service cloud identity binding marker fact")
+	}
+	if factMap[types.KeyDesiredServiceCloudIdentityMountPath("payments", "payments_s3")] != "/var/run/cloud-creds" {
+		t.Error("mount_path fact missing or wrong")
+	}
+	if factMap[types.KeyDesiredServiceCloudIdentityDeliverMode("payments", "payments_s3")] != "token" {
+		t.Error("deliver_mode fact missing or wrong")
+	}
+}
+
 func TestDiffDetectsUnchanged(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

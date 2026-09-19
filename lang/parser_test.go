@@ -649,3 +649,157 @@ func TestParseServiceWithExecProbe(t *testing.T) {
 		t.Errorf("failure_threshold: got %d, want 5", livenessProbe.FailureThreshold)
 	}
 }
+
+func TestParseCloudIdentityAWS(t *testing.T) {
+	file, err := Parse(`cloud_identity payments_s3 {
+    provider aws
+    role "arn:aws:iam::123456789012:role/payments-s3-access"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(file.CloudIdentities) != 1 {
+		t.Fatalf("expected 1 cloud identity, got %d", len(file.CloudIdentities))
+	}
+	cloudIdentityDecl := file.CloudIdentities[0]
+	if cloudIdentityDecl.Name != "payments_s3" {
+		t.Errorf("name: got %q, want payments_s3", cloudIdentityDecl.Name)
+	}
+	if cloudIdentityDecl.Provider != "aws" {
+		t.Errorf("provider: got %q, want aws", cloudIdentityDecl.Provider)
+	}
+	if cloudIdentityDecl.Role != "arn:aws:iam::123456789012:role/payments-s3-access" {
+		t.Errorf("role: got %q", cloudIdentityDecl.Role)
+	}
+}
+
+func TestParseCloudIdentityGCP(t *testing.T) {
+	file, err := Parse(`cloud_identity analytics_bq {
+    provider gcp
+    service_account "analytics@project.iam.gserviceaccount.com"
+    pool "projects/123/locations/global/workloadIdentityPools/ccattler"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	cloudIdentityDecl := file.CloudIdentities[0]
+	if cloudIdentityDecl.Provider != "gcp" {
+		t.Errorf("provider: got %q, want gcp", cloudIdentityDecl.Provider)
+	}
+	if cloudIdentityDecl.ServiceAccount != "analytics@project.iam.gserviceaccount.com" {
+		t.Errorf("service_account: got %q", cloudIdentityDecl.ServiceAccount)
+	}
+	if cloudIdentityDecl.Pool != "projects/123/locations/global/workloadIdentityPools/ccattler" {
+		t.Errorf("pool: got %q", cloudIdentityDecl.Pool)
+	}
+}
+
+func TestParseCloudIdentityAzure(t *testing.T) {
+	file, err := Parse(`cloud_identity storage_blob {
+    provider azure
+    client_id "11111111-2222-3333-4444-555555555555"
+    tenant_id "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	cloudIdentityDecl := file.CloudIdentities[0]
+	if cloudIdentityDecl.Provider != "azure" {
+		t.Errorf("provider: got %q, want azure", cloudIdentityDecl.Provider)
+	}
+	if cloudIdentityDecl.ClientID != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("client_id: got %q", cloudIdentityDecl.ClientID)
+	}
+	if cloudIdentityDecl.TenantID != "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" {
+		t.Errorf("tenant_id: got %q", cloudIdentityDecl.TenantID)
+	}
+}
+
+func TestParseCredentialBroker(t *testing.T) {
+	file, err := Parse(`credential_broker {
+    oidc_issuer "https://ccattler.example.com"
+    credential_ttl "1h"
+    refresh_before "15m"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if file.CredentialBroker == nil {
+		t.Fatal("expected credential_broker to be parsed")
+	}
+	brokerDecl := file.CredentialBroker
+	if brokerDecl.OIDCIssuer != "https://ccattler.example.com" {
+		t.Errorf("oidc_issuer: got %q", brokerDecl.OIDCIssuer)
+	}
+	if brokerDecl.CredentialTTL != "1h" {
+		t.Errorf("credential_ttl: got %q, want 1h", brokerDecl.CredentialTTL)
+	}
+	if brokerDecl.RefreshBefore != "15m" {
+		t.Errorf("refresh_before: got %q, want 15m", brokerDecl.RefreshBefore)
+	}
+}
+
+func TestParseCloudIdentityBindingInService(t *testing.T) {
+	file, err := Parse(`service payments {
+    image payments:1.0
+    instances 2
+    cloud_identity payments_s3 {
+        mount_path "/var/run/cloud-creds"
+        deliver token
+    }
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.CloudIdentities) != 1 {
+		t.Fatalf("expected 1 cloud identity binding, got %d", len(serviceDecl.CloudIdentities))
+	}
+	binding := serviceDecl.CloudIdentities[0]
+	if binding.IdentityName != "payments_s3" {
+		t.Errorf("identity_name: got %q, want payments_s3", binding.IdentityName)
+	}
+	if binding.MountPath != "/var/run/cloud-creds" {
+		t.Errorf("mount_path: got %q", binding.MountPath)
+	}
+	if binding.DeliverMode != "token" {
+		t.Errorf("deliver_mode: got %q, want token", binding.DeliverMode)
+	}
+}
+
+func TestParseCloudIdentityBindingDefaultDeliverMode(t *testing.T) {
+	file, err := Parse(`service payments {
+    image payments:1.0
+    instances 1
+    cloud_identity payments_s3 {
+        mount_path "/var/run/cloud-creds"
+    }
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	binding := file.Services[0].CloudIdentities[0]
+	if binding.DeliverMode != "credentials" {
+		t.Errorf("default deliver_mode: got %q, want credentials", binding.DeliverMode)
+	}
+}
+
+func TestParseCloudIdentityUnknownField(t *testing.T) {
+	_, err := Parse(`cloud_identity test_id {
+    provider aws
+    bogus_field "value"
+}`)
+	if err == nil {
+		t.Fatal("expected error for unknown cloud_identity field")
+	}
+}
+
+func TestParseCredentialBrokerUnknownField(t *testing.T) {
+	_, err := Parse(`credential_broker {
+    oidc_issuer "https://example.com"
+    unknown_field "value"
+}`)
+	if err == nil {
+		t.Fatal("expected error for unknown credential_broker field")
+	}
+}

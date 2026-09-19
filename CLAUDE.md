@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M24 — Storage Resilience (Phase 27). M1–M23 complete.
+**Active milestone:** M25 — Identity DSL (Phase 28). M1–M24 complete.
 
 ---
 
@@ -1314,30 +1314,38 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Volume resize — ResizeVolume in StorageProvider, controller detects desired size != observed size, expand-only
 - [x] Volume replication — desired replicas config, replica_count/replica_state observed facts, syncing state on scale-up
 
-### Phase 28 — Workload Identity Federation
-- [ ] `CloudIdentityDecl` AST node — provider, role, service_account, pool, client_id, tenant_id
-- [ ] `CloudIdentityBindingDecl` AST node — identity name, mount path, deliver mode (credentials or token)
-- [ ] `CredentialBrokerDecl` AST node — oidc_issuer, credential_ttl, refresh_before
-- [ ] DSL `cloud_identity` top-level block — provider-specific fields (aws: role ARN, gcp: service_account+pool, azure: client_id+tenant_id)
-- [ ] DSL `cloud_identity` in service block — binding with mount path and deliver mode
-- [ ] DSL `credential_broker` top-level configuration block
-- [ ] DSL validation — provider-specific required fields, binding references existing identity
-- [ ] Compiler — cloud identity facts (`desired/cloud_identity/{name}/...`), service binding facts, broker config facts
-- [ ] Fact key functions — `KeyDesiredCloudIdentity*`, `KeyDesiredServiceCloudIdentity*`, `KeyObservedCredential*`, `KeyDesiredCredentialBroker*`
-- [ ] Scan prefix constants — `ScanDesiredCloudIdentities`, `ScanDesiredServiceCloudIdentities`, `ScanObservedCredentials`
+### Phase 28 — Identity DSL & Facts
+- [x] `CloudIdentityDecl` AST node — provider, role, service_account, pool, client_id, tenant_id
+- [x] `CloudIdentityBindingDecl` AST node — identity name, mount path, deliver mode (credentials or token)
+- [x] `CredentialBrokerDecl` AST node — oidc_issuer, credential_ttl, refresh_before
+- [x] DSL `cloud_identity` top-level block — provider-specific fields (aws: role ARN, gcp: service_account+pool, azure: client_id+tenant_id)
+- [x] DSL `cloud_identity` in service block — binding with mount path and deliver mode
+- [x] DSL `credential_broker` top-level configuration block
+- [x] DSL validation — provider-specific required fields (aws: role, gcp: service_account+pool, azure: client_id+tenant_id), unknown provider rejection
+- [x] Compiler — cloud identity facts (`desired/cloud_identity/{name}/...`), service binding facts, broker config facts
+- [x] Fact key functions — `KeyDesiredCloudIdentity*`, `KeyDesiredServiceCloudIdentity*`, `KeyObservedCredential*`, `KeyDesiredCredentialBroker*`
+- [x] Scan prefix constants — `ScanDesiredCloudIdentities`, `ScanDesiredServiceCloudIdentities`, `ScanObservedCredentials`
+
+### Phase 29 — OIDC Infrastructure
 - [ ] OIDC signing key — ECDSA P-256 key pair for JWT signing (reuses existing CA infrastructure)
 - [ ] OIDC token issuer — `MintWorkloadToken(spiffeID, audience)` creates signed JWTs with SPIFFE subject claims
 - [ ] OIDC discovery endpoint — `GET /.well-known/openid-configuration` on API server
 - [ ] OIDC JWKS endpoint — `GET /oidc/jwks` serves public signing key in JWK format
+
+### Phase 30 — Cloud Provider Adapters
 - [ ] Cloud provider adapter interface — `ExchangeToken(jwt, identityConfig) → CloudCredential`
 - [ ] AWS STS adapter — `AssumeRoleWithWebIdentity` with OIDC JWT and IAM role ARN
 - [ ] GCP STS adapter — Google Security Token Service exchange with workload identity pool
 - [ ] Azure adapter — Azure AD federated credential exchange
 - [ ] Credential store — AES-256-GCM encrypted storage at `credentials/` prefix (reuses SecretStore pattern)
+
+### Phase 31 — Credential Broker
 - [ ] Credential broker controller — watches identity bindings + running instances, issues and refreshes credentials
 - [ ] Credential broker proactive refresh — re-issue credentials before TTL expiry (configurable refresh_before window)
 - [ ] Credential broker garbage collection — revoke and delete credentials for stopped/deleted instances
 - [ ] Credential state facts — `observed/credential/{instance}/{identity}/state`, `/expires_at`, `/issued_at`, `/error`
+
+### Phase 32 — Agent Credential Materialization
 - [ ] `CredentialProvider` interface in agent — `GetCredentialForInstance(ctx, service, instance, identity)`
 - [ ] Node agent credential materialization — write credential/token files to mount path on instance start
 - [ ] Node agent credential refresh — re-read on each reconciliation tick, overwrite if broker has refreshed
@@ -1346,6 +1354,8 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] GCP credential file format — Application Default Credentials JSON
 - [ ] Azure credential file format — token file for Azure SDK
 - [ ] Token projection mode — deliver signed JWT directly for workloads with embedded cloud SDKs
+
+### Phase 33 — Identity RBAC, CLI & Tests
 - [ ] RBAC role `credential-broker` — scoped least-privilege permissions for the broker controller
 - [ ] RBAC update `node-agent` — add read access to `credentials/` and cloud identity bindings
 - [ ] Audit trail — credential issuance, refresh, revocation events via EventLog
@@ -1354,7 +1364,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Deterministic tests — mock STS adapters, verify credential lifecycle (issue, refresh, revoke, garbage collect)
 - [ ] Integration test — end-to-end: DSL → facts → broker → encrypted credential → agent materialization
 
-### Phase 29 — API Horizontal Scalability
+### Phase 34 — API Horizontal Scalability
 - [ ] Separate API server from controller runner — API can be deployed as independent replicas
 - [ ] Stateless API replicas — all reads/writes go directly to etcd, no local state
 - [ ] Leader election only for controllers — API replicas serve requests regardless of leadership
@@ -1363,7 +1373,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Load balancer readiness — `/healthz` returns ready only when etcd is reachable
 - [ ] Watch multiplexing — shared etcd watches across API replicas to reduce etcd load
 
-### Phase 30 — Cloud Controller Manager
+### Phase 35 — Cloud Controller Manager
 - [ ] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
 - [ ] AWS cloud provider — EC2 instance management, ELB/NLB service load balancers, VPC route table entries
 - [ ] GCP cloud provider — GCE instance management, Cloud Load Balancing, VPC routes
@@ -1401,8 +1411,13 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M22 — Observability | 25 | `/metrics` serves Prometheus, structured JSON logs, `cca logs web --follow`, `/healthz`, Grafana dashboards |
 | M23 — P0 Correctness | 26 | Runtime observation authoritative, no 127.0.0.1 fallback, watch overflow resync, init restart-safe, probes decoupled, race-safe |
 | M24 — Storage Resilience | 27 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
-| M25 — Workload Identity | 28 | `cloud_identity payments-s3 { provider aws, role ... }` federates SPIFFE to cloud IAM, broker issues short-lived credentials, agent materializes credential files |
-| M26 — API HA | 29 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
-| M27 — Cloud Controller | 30 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
+| M25 — Identity DSL | 28 | `cloud_identity` and `credential_broker` DSL blocks, compiler emits identity facts, key functions and scan prefixes |
+| M26 — OIDC Infrastructure | 29 | ECDSA signing key, `MintWorkloadToken` JWT issuer, `/.well-known/openid-configuration` and `/oidc/jwks` endpoints |
+| M27 — Cloud Adapters | 30 | `ExchangeToken` interface, AWS STS / GCP STS / Azure adapters, AES-256-GCM credential store |
+| M28 — Credential Broker | 31 | Broker controller issues/refreshes/revokes credentials, proactive TTL refresh, garbage collection |
+| M29 — Agent Credentials | 32 | `CredentialProvider` interface, materialize/refresh/cleanup files, AWS/GCP/Azure formats, token projection |
+| M30 — Identity RBAC & CLI | 33 | `credential-broker` RBAC role, audit trail, `cca get/describe cloud-identities`, lifecycle + e2e tests |
+| M31 — API HA | 34 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
+| M32 — Cloud Controller | 35 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

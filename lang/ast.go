@@ -2,9 +2,11 @@ package lang
 
 // File is the root of the AST — a list of top-level declarations.
 type File struct {
-	Services []ServiceDecl // top-level service blocks in the source file
-	Volumes  []VolumeDecl  // top-level volume blocks in the source file
-	Tenants  []TenantDecl  // top-level tenant blocks in the source file
+	Services         []ServiceDecl        // top-level service blocks in the source file
+	Volumes          []VolumeDecl         // top-level volume blocks in the source file
+	Tenants          []TenantDecl         // top-level tenant blocks in the source file
+	CloudIdentities  []CloudIdentityDecl  // top-level cloud_identity blocks in the source file
+	CredentialBroker *CredentialBrokerDecl // optional top-level credential_broker block
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -38,8 +40,9 @@ type ServiceDecl struct {
 	Update       *UpdateDecl       // optional rolling update strategy
 	Config       *ConfigDecl       // optional config block (env vars, config files)
 	Secrets      []SecretDecl      // optional secret mount declarations
-	VolumeMounts []VolumeMountDecl // optional volume mount bindings
-	InitSteps    []InitStepDecl    // optional ordered initialization steps
+	VolumeMounts       []VolumeMountDecl          // optional volume mount bindings
+	CloudIdentities    []CloudIdentityBindingDecl // optional cloud identity bindings
+	InitSteps          []InitStepDecl             // optional ordered initialization steps
 	Startup      *ProbeDecl        // optional startup probe (gates liveness/readiness)
 	Liveness     *ProbeDecl        // optional liveness probe (triggers restart on failure)
 	Readiness    *ProbeDecl        // optional readiness probe (controls endpoint membership)
@@ -194,4 +197,35 @@ type ProbeDecl struct {
 type SecretDecl struct {
 	Name      string // secret name in the encrypted store
 	MountPath string // filesystem path to mount the secret at (default: /run/secrets/{name})
+}
+
+// CloudIdentityDecl represents a top-level "cloud_identity" block declaring a
+// cloud IAM identity that workloads can assume via OIDC federation.
+type CloudIdentityDecl struct {
+	Name           string // unique identity name (e.g. "payments-s3")
+	Provider       string // cloud provider: "aws", "gcp", or "azure"
+	Role           string // AWS IAM role ARN
+	ServiceAccount string // GCP service account email
+	Pool           string // GCP workload identity pool
+	ClientID       string // Azure AD application client ID
+	TenantID       string // Azure AD tenant ID
+	Line           int    // source line number for error reporting
+}
+
+// CloudIdentityBindingDecl represents a "cloud_identity" binding inside a
+// service block. It binds a named cloud identity to the service's instances,
+// specifying how credentials are delivered.
+type CloudIdentityBindingDecl struct {
+	IdentityName string // name of the top-level cloud_identity to bind
+	MountPath    string // filesystem path for credential files (e.g. "/var/run/cloud-creds")
+	DeliverMode  string // "credentials" (provider-specific file) or "token" (raw JWT)
+}
+
+// CredentialBrokerDecl represents the top-level "credential_broker" block
+// configuring the OIDC issuer and credential lifecycle parameters.
+type CredentialBrokerDecl struct {
+	OIDCIssuer    string // OIDC issuer URL (e.g. "https://ccattler.example.com")
+	CredentialTTL string // credential lifetime (e.g. "1h")
+	RefreshBefore string // refresh window before expiry (e.g. "15m")
+	Line          int    // source line number for error reporting
 }

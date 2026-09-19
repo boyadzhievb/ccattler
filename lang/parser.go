@@ -74,6 +74,18 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Tenants = append(file.Tenants, *tenantDecl)
+		case "cloud_identity":
+			cloudIdentityDecl, err := parser.parseCloudIdentityDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.CloudIdentities = append(file.CloudIdentities, *cloudIdentityDecl)
+		case "credential_broker":
+			credentialBrokerDecl, err := parser.parseCredentialBrokerDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.CredentialBroker = credentialBrokerDecl
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -164,6 +176,12 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 				VolumeName: volumeName,
 				MountPath:  mountPath,
 			})
+		case "cloud_identity":
+			cloudIdentityBinding, bindErr := parser.parseCloudIdentityBindingInService()
+			if bindErr != nil {
+				return nil, bindErr
+			}
+			serviceDecl.CloudIdentities = append(serviceDecl.CloudIdentities, cloudIdentityBinding)
 		default:
 			return nil, parser.parserErrorf("unknown service field %q", key)
 		}
@@ -1144,6 +1162,147 @@ func (parser *Parser) parseQuotaBlock() (*QuotaDecl, error) {
 // parserErrorf returns a structured ParseError that includes the current
 // token's line and column, plus the offending source line for diagnostic
 // context with a caret pointing at the error position.
+// parseCloudIdentityDeclaration parses a top-level "cloud_identity" block.
+// Syntax: cloud_identity <name> { provider <p>, role <r>, ... }
+func (parser *Parser) parseCloudIdentityDeclaration() (*CloudIdentityDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "cloud_identity"
+
+	name, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	cloudIdentityDecl := &CloudIdentityDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "provider":
+			cloudIdentityDecl.Provider, err = parser.expectIdentifier()
+		case "role":
+			cloudIdentityDecl.Role, err = parser.expectStringOrIdentifier()
+		case "service_account":
+			cloudIdentityDecl.ServiceAccount, err = parser.expectStringOrIdentifier()
+		case "pool":
+			cloudIdentityDecl.Pool, err = parser.expectStringOrIdentifier()
+		case "client_id":
+			cloudIdentityDecl.ClientID, err = parser.expectStringOrIdentifier()
+		case "tenant_id":
+			cloudIdentityDecl.TenantID, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown cloud_identity field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return cloudIdentityDecl, nil
+}
+
+// parseCredentialBrokerDeclaration parses the top-level "credential_broker" block.
+// Syntax: credential_broker { oidc_issuer <url>, credential_ttl <dur>, refresh_before <dur> }
+func (parser *Parser) parseCredentialBrokerDeclaration() (*CredentialBrokerDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "credential_broker"
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	credentialBrokerDecl := &CredentialBrokerDecl{Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "oidc_issuer":
+			credentialBrokerDecl.OIDCIssuer, err = parser.expectStringOrIdentifier()
+		case "credential_ttl":
+			credentialBrokerDecl.CredentialTTL, err = parser.expectStringOrIdentifier()
+		case "refresh_before":
+			credentialBrokerDecl.RefreshBefore, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown credential_broker field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return credentialBrokerDecl, nil
+}
+
+// parseCloudIdentityBindingInService parses a "cloud_identity" binding inside
+// a service block.
+// Syntax: cloud_identity <identity_name> { mount_path <path>, deliver <mode> }
+func (parser *Parser) parseCloudIdentityBindingInService() (CloudIdentityBindingDecl, error) {
+	identityName, err := parser.expectIdentifier()
+	if err != nil {
+		return CloudIdentityBindingDecl{}, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return CloudIdentityBindingDecl{}, err
+	}
+	parser.skipNewlineTokens()
+
+	binding := CloudIdentityBindingDecl{
+		IdentityName: identityName,
+		DeliverMode:  "credentials",
+	}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return CloudIdentityBindingDecl{}, err
+		}
+
+		switch key {
+		case "mount_path":
+			binding.MountPath, err = parser.expectStringOrIdentifier()
+		case "deliver":
+			binding.DeliverMode, err = parser.expectIdentifier()
+		default:
+			return CloudIdentityBindingDecl{}, parser.parserErrorf("unknown cloud_identity binding field %q", key)
+		}
+		if err != nil {
+			return CloudIdentityBindingDecl{}, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return CloudIdentityBindingDecl{}, err
+	}
+	return binding, nil
+}
+
 func (parser *Parser) parserErrorf(format string, args ...any) error {
 	token := parser.currentToken()
 	return &ParseError{
