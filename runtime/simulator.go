@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 )
 
@@ -97,6 +99,17 @@ func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec E
 		return &StartError{ID: id, Reason: "exec probe failed (injected)"}
 	}
 	return nil
+}
+
+// Logs returns an empty reader for simulated workloads.
+func (simulator *SimulatorRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+
+	if _, ok := simulator.workloads[id]; !ok {
+		return nil, ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 // List returns the status of every workload the simulator has ever seen,

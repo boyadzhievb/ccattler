@@ -1,6 +1,9 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // Spec describes a workload to run. It carries all the information a runtime
 // backend needs to start a process or container: the command/image, environment
@@ -50,6 +53,11 @@ type Runtime interface {
 	// running the command in the workload's environment. Returns nil on success
 	// or an error if the command fails.
 	Exec(ctx context.Context, id string, execSpec ExecSpec) error
+
+	// Logs returns the stdout/stderr output of a workload. When follow is true,
+	// the returned reader streams new output as it is produced (blocking read).
+	// The caller must close the returned ReadCloser when done.
+	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
 }
 
 // ExecSpec describes a command to execute inside or alongside a workload.

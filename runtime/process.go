@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -196,6 +197,18 @@ func (processRuntime *ProcessRuntime) Exec(ctx context.Context, id string, execS
 	}
 
 	return command.Run()
+}
+
+// Logs returns a reader with a message indicating that log capture is not
+// available for the process runtime (output goes to parent stdout/stderr).
+func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {
+	processRuntime.mutex.Lock()
+	defer processRuntime.mutex.Unlock()
+
+	if _, ok := processRuntime.processes[id]; !ok {
+		return nil, ErrNotFound
+	}
+	return io.NopCloser(strings.NewReader("log capture not available for process runtime\n")), nil
 }
 
 // StopAll gracefully stops every process the runtime is tracking. It is

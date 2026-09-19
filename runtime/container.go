@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,6 +302,53 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 		return fmt.Errorf("nerdctl exec in %s: %v: %s", id, err, stderr.String())
 	}
 	return nil
+}
+
+// Logs returns the stdout/stderr output of a container via `nerdctl logs`.
+// When follow is true, the returned reader streams new output as it arrives.
+func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+	containerRuntime.mutex.Lock()
+	tracked := containerRuntime.trackedContainers[id]
+	containerName := containerRuntime.resolveContainerName(id)
+	containerRuntime.mutex.Unlock()
+
+	if !tracked {
+		return nil, ErrNotFound
+	}
+
+	logsArgs := []string{"logs"}
+	if follow {
+		logsArgs = append(logsArgs, "--follow")
+	}
+	logsArgs = append(logsArgs, containerName)
+
+	logsCommand := exec.CommandContext(ctx, "nerdctl", logsArgs...)
+	stdoutPipe, pipeError := logsCommand.StdoutPipe()
+	if pipeError != nil {
+		return nil, fmt.Errorf("nerdctl logs pipe: %w", pipeError)
+	}
+	logsCommand.Stderr = logsCommand.Stdout
+
+	if startError := logsCommand.Start(); startError != nil {
+		return nil, fmt.Errorf("nerdctl logs start: %w", startError)
+	}
+
+	return &commandReadCloser{reader: stdoutPipe, command: logsCommand}, nil
+}
+
+// commandReadCloser wraps an io.Reader and waits for the command to finish on Close.
+type commandReadCloser struct {
+	reader  io.ReadCloser
+	command *exec.Cmd
+}
+
+func (commandReader *commandReadCloser) Read(buffer []byte) (int, error) {
+	return commandReader.reader.Read(buffer)
+}
+
+func (commandReader *commandReadCloser) Close() error {
+	commandReader.reader.Close()
+	return commandReader.command.Wait()
 }
 
 // StopAll terminates and removes every tracked container that is currently
