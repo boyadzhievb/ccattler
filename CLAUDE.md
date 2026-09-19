@@ -1025,7 +1025,7 @@ cca get nodes                 # list nodes
 cca get secrets               # list secrets and their grants
 cca get config                # list config entries (env vars and files)
 cca scale web 20              # change desired count
-cca logs [service]            # view cluster event log (optionally filtered by service)
+cca logs <service> [--follow] [--instance <id>]  # aggregate container stdout/stderr logs
 cca status                    # cluster overview
 cca watch [prefix]            # stream fact store changes
 cca top [nodes|workloads]     # resource utilization (CPU, memory, instances)
@@ -1293,7 +1293,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 ### Phase 25 — Observability
 - [x] Prometheus `/metrics` endpoint on API server — reconciliation duration, scheduling decisions, instance state transitions, store operation latency, active watches
 - [x] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
-- [ ] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
+- [x] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
 - [ ] Health endpoint — `GET /healthz` returns controller health, etcd connectivity, certificate expiry status
 - [ ] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
 - [ ] Alert rule templates — node unreachable, instance crash-looping, scheduling failures, certificate approaching expiry, etcd latency
@@ -1345,6 +1345,25 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Deterministic tests — mock STS adapters, verify credential lifecycle (issue, refresh, revoke, garbage collect)
 - [ ] Integration test — end-to-end: DSL → facts → broker → encrypted credential → agent materialization
 
+### Phase 28 — API Horizontal Scalability
+- [ ] Separate API server from controller runner — API can be deployed as independent replicas
+- [ ] Stateless API replicas — all reads/writes go directly to etcd, no local state
+- [ ] Leader election only for controllers — API replicas serve requests regardless of leadership
+- [ ] `cca server --api-only` flag — runs API without controllers (for scaling API independently)
+- [ ] `cca server --controllers-only` flag — runs controllers without API (leader-elected)
+- [ ] Load balancer readiness — `/healthz` returns ready only when etcd is reachable
+- [ ] Watch multiplexing — shared etcd watches across API replicas to reduce etcd load
+
+### Phase 29 — Cloud Controller Manager
+- [ ] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
+- [ ] AWS cloud provider — EC2 instance management, ELB/NLB service load balancers, VPC route table entries
+- [ ] GCP cloud provider — GCE instance management, Cloud Load Balancing, VPC routes
+- [ ] Azure cloud provider — VM management, Azure Load Balancer, route tables
+- [ ] Node lifecycle controller — detect terminated cloud instances, cordon + drain, remove stale node facts
+- [ ] Cloud load balancer controller — watch services with `expose external`, create/update/delete cloud LBs
+- [ ] Cloud route controller — program cloud VPC routes for pod-to-pod cross-node networking
+- [ ] DSL `cloud` top-level block — provider, region, credentials reference, instance types
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1373,5 +1392,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M22 — Observability | 25 | `/metrics` serves Prometheus, structured JSON logs, `cca logs web --follow`, `/healthz`, Grafana dashboards |
 | M23 — Storage Resilience | 26 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
 | M24 — Workload Identity | 27 | `cloud_identity payments-s3 { provider aws, role ... }` federates SPIFFE to cloud IAM, broker issues short-lived credentials, agent materializes credential files |
+| M25 — API HA | 28 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
+| M26 — Cloud Controller | 29 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

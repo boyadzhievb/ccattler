@@ -122,11 +122,8 @@ func main() {
 	case "status":
 		executeStatusCommand()
 	case "logs":
-		logsTarget := ""
-		if len(os.Args) >= 3 {
-			logsTarget = os.Args[2]
-		}
-		executeLogsCommand(logsTarget)
+		parsedLogsConfig := parseLogsCommandArgs(os.Args[2:])
+		executeLogsCommand(parsedLogsConfig)
 	case "diff":
 		parsedDiffConfig := parseDiffCommandArgs(os.Args[2:])
 		if parsedDiffConfig.configFilePath == "" {
@@ -1234,7 +1231,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
 	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
-	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
+	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>]  container stdout/stderr")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
@@ -2352,42 +2349,135 @@ func executeEventsFollowMode(serviceFilter string) {
 	}
 }
 
-// executeLogsCommand queries the cluster event log from a running ccattler
-// instance. When a target is provided, only events affecting that resource are
-// shown. Prints events as a formatted table with timestamp, kind, target, and detail.
-func executeLogsCommand(target string) {
-	apiURL := "http://" + statusAPIListenAddress + "/api/logs"
-	if target != "" {
-		apiURL += "?target=" + target
+// logsCommandConfig holds parsed flags for the "logs" command.
+type logsCommandConfig struct {
+	serviceName string
+	instanceID  string
+	follow      bool
+}
+
+// parseLogsCommandArgs extracts flags from the arguments following "logs".
+func parseLogsCommandArgs(args []string) logsCommandConfig {
+	parsedConfig := logsCommandConfig{}
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--follow", "-f":
+			parsedConfig.follow = true
+		case "--instance":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.instanceID = args[argIndex]
+			}
+		default:
+			if !strings.HasPrefix(currentArg, "-") && parsedConfig.serviceName == "" {
+				parsedConfig.serviceName = currentArg
+			}
+		}
 	}
+	return parsedConfig
+}
+
+// executeLogsCommand streams container stdout/stderr logs for a service or
+// specific instance. Uses nerdctl/docker logs on the local machine.
+func executeLogsCommand(parsedConfig logsCommandConfig) {
+	if parsedConfig.serviceName == "" && parsedConfig.instanceID == "" {
+		fmt.Fprintln(os.Stderr, "usage: cca logs <service> [--follow] [--instance <id>]")
+		os.Exit(1)
+	}
+
+	if parsedConfig.instanceID != "" {
+		streamContainerLogs(parsedConfig.instanceID, parsedConfig.follow)
+		return
+	}
+
+	apiURL := "http://" + statusAPIListenAddress + "/api/state?prefix=" + "observed/instance/"
 	httpResponse, err := http.Get(apiURL)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run', 'server', or 'demo' running?")
 		os.Exit(1)
 	}
 	defer httpResponse.Body.Close()
 
-	var events []struct {
-		Timestamp time.Time `json:"timestamp"`
-		Kind      string    `json:"kind"`
-		Target    string    `json:"target"`
-		Detail    string    `json:"detail"`
-		Source    string    `json:"source"`
+	var facts []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
 	}
-	if err := json.NewDecoder(httpResponse.Body).Decode(&events); err != nil {
-		fmt.Fprintf(os.Stderr, "decode response: %v\n", err)
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&facts); decodeError != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
 		os.Exit(1)
 	}
 
-	if len(events) == 0 {
-		fmt.Println("no events")
+	instanceIDs := findInstanceIDsForService(facts, parsedConfig.serviceName)
+	if len(instanceIDs) == 0 {
+		fmt.Fprintf(os.Stderr, "no running instances found for service %q\n", parsedConfig.serviceName)
+		os.Exit(1)
+	}
+
+	if parsedConfig.follow {
+		streamContainerLogs(instanceIDs[0], true)
 		return
 	}
 
-	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
-	for _, event := range events {
-		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
-		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+	for _, instanceID := range instanceIDs {
+		fmt.Printf("==> %s <==\n", instanceID)
+		streamContainerLogs(instanceID, false)
+		fmt.Println()
+	}
+}
+
+// findInstanceIDsForService scans observed facts to find instance IDs belonging
+// to the given service that are in a running state.
+func findInstanceIDsForService(facts []struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}, serviceName string) []string {
+	serviceMap := make(map[string]bool)
+	stateMap := make(map[string]string)
+
+	for _, fact := range facts {
+		key := fact.Key
+		if strings.HasSuffix(key, "/service") && fact.Value == serviceName {
+			instanceID := strings.TrimPrefix(key, "observed/instance/")
+			instanceID = strings.TrimSuffix(instanceID, "/service")
+			serviceMap[instanceID] = true
+		}
+		if strings.HasSuffix(key, "/state") {
+			instanceID := strings.TrimPrefix(key, "observed/instance/")
+			instanceID = strings.TrimSuffix(instanceID, "/state")
+			stateMap[instanceID] = fact.Value
+		}
+	}
+
+	var instanceIDs []string
+	for instanceID := range serviceMap {
+		if stateMap[instanceID] == "running" {
+			instanceIDs = append(instanceIDs, instanceID)
+		}
+	}
+	sort.Strings(instanceIDs)
+	return instanceIDs
+}
+
+// streamContainerLogs runs nerdctl logs for the given instance and streams
+// output to stdout. Falls back to docker if nerdctl is not available.
+func streamContainerLogs(instanceID string, follow bool) {
+	containerTool := "nerdctl"
+	if _, lookupErr := exec.LookPath("nerdctl"); lookupErr != nil {
+		containerTool = "docker"
+	}
+
+	logsArgs := []string{"logs"}
+	if follow {
+		logsArgs = append(logsArgs, "--follow")
+	}
+	logsArgs = append(logsArgs, "cca-"+instanceID)
+
+	logsCommand := exec.Command(containerTool, logsArgs...)
+	logsCommand.Stdout = os.Stdout
+	logsCommand.Stderr = os.Stderr
+	if runError := logsCommand.Run(); runError != nil {
+		fmt.Fprintf(os.Stderr, "logs for %s: %v\n", instanceID, runError)
 	}
 }
 
