@@ -8,19 +8,21 @@ import (
 
 // Lexer tokenizes CCattler DSL source text into a stream of tokens.
 type Lexer struct {
-	input    []rune // source text as a slice of Unicode code points
-	position int    // current read position in the input slice
-	line     int    // current line number (1-based) for error reporting
-	column   int    // current column number (1-based) for error reporting
+	input       []rune   // source text as a slice of Unicode code points
+	position    int      // current read position in the input slice
+	line        int      // current line number (1-based) for error reporting
+	column      int      // current column number (1-based) for error reporting
+	sourceLines []string // original source split by line for error context
 }
 
 // NewLexer creates a new Lexer initialized to the beginning of the given input string.
 func NewLexer(input string) *Lexer {
 	return &Lexer{
-		input:    []rune(input),
-		position: 0,
-		line:     1,
-		column:   1,
+		input:       []rune(input),
+		position:    0,
+		line:        1,
+		column:      1,
+		sourceLines: splitSourceLines(input),
 	}
 }
 
@@ -91,7 +93,12 @@ func (lexer *Lexer) scanNextToken() (Token, error) {
 		return lexer.scanIdentifier(), nil
 	}
 
-	return Token{}, fmt.Errorf("line %d col %d: unexpected character %q", lexer.line, lexer.column, currentChar)
+	return Token{}, &ParseError{
+		Line:       lexer.line,
+		Col:        lexer.column,
+		Message:    fmt.Sprintf("unexpected character %q", currentChar),
+		SourceLine: sourceLineAt(lexer.sourceLines, lexer.line),
+	}
 }
 
 // advanceCursor moves the lexer forward by one rune, updating line and column tracking.
@@ -136,13 +143,23 @@ func (lexer *Lexer) scanQuotedString() (Token, error) {
 	var builder strings.Builder
 	for lexer.position < len(lexer.input) && lexer.input[lexer.position] != '"' {
 		if lexer.input[lexer.position] == '\n' {
-			return Token{}, fmt.Errorf("line %d col %d: unterminated string", startLine, startCol)
+			return Token{}, &ParseError{
+				Line:       startLine,
+				Col:        startCol,
+				Message:    "unterminated string",
+				SourceLine: sourceLineAt(lexer.sourceLines, startLine),
+			}
 		}
 		builder.WriteRune(lexer.input[lexer.position])
 		lexer.advanceCursor()
 	}
 	if lexer.position >= len(lexer.input) {
-		return Token{}, fmt.Errorf("line %d col %d: unterminated string", startLine, startCol)
+		return Token{}, &ParseError{
+			Line:       startLine,
+			Col:        startCol,
+			Message:    "unterminated string",
+			SourceLine: sourceLineAt(lexer.sourceLines, startLine),
+		}
 	}
 	lexer.advanceCursor() // skip closing quote
 	return Token{Type: TokenString, Value: builder.String(), Line: startLine, Col: startCol}, nil

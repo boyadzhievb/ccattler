@@ -1256,7 +1256,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
 		if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
-			fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
 			os.Exit(1)
 		}
 		fmt.Println("Facts written to store. Controllers will reconcile.")
@@ -1294,7 +1294,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 
 	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
-		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
 		os.Exit(1)
 	}
 
@@ -1364,7 +1364,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
-		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}
 
@@ -1471,7 +1471,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 
 	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
-		fmt.Fprintf(os.Stderr, "apply error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}
 
@@ -2123,7 +2123,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 
 		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
 		if diffError != nil {
-			fmt.Fprintf(os.Stderr, "diff error: %v\n", diffError)
+			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)
 		}
 		printDiffChanges(changes)
@@ -2138,7 +2138,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 
 		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
 		if diffError != nil {
-			fmt.Fprintf(os.Stderr, "diff error: %v\n", diffError)
+			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)
 		}
 		printDiffChanges(changes)
@@ -3253,4 +3253,13 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 	}
 
 	return textBuilder.String()
+}
+
+// annotateErrorWithFileName sets the File field on a ParseError if the error
+// is of that type. This adds the source filename to diagnostic output.
+func annotateErrorWithFileName(originalError error, fileName string) error {
+	if parseError, isParseError := originalError.(*lang.ParseError); isParseError {
+		parseError.File = fileName
+	}
+	return originalError
 }
