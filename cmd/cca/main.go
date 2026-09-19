@@ -125,6 +125,12 @@ func main() {
 			logsTarget = os.Args[2]
 		}
 		executeLogsCommand(logsTarget)
+	case "describe":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: cca describe <service|node|instance> <name>")
+			os.Exit(1)
+		}
+		executeDescribeCommand(os.Args[2], os.Args[3])
 	case "get":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking|secrets|config>")
@@ -1164,6 +1170,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "cluster management:")
 	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  describe <type> <name>       detailed view (service, node, instance)")
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
 	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
@@ -2166,6 +2173,393 @@ func formatResourceUsage(used, capacity int64, unit string) string {
 	}
 	percentage := (used * 100) / capacity
 	return fmt.Sprintf("%d/%d%s (%d%%)", used, capacity, unit, percentage)
+}
+
+// executeDescribeCommand queries the describe API for a single resource and
+// prints a detailed human-readable view of all related facts, health state,
+// placement, networking, and recent events.
+func executeDescribeCommand(resourceType, resourceName string) {
+	normalizedType := resourceType
+	switch resourceType {
+	case "service", "svc":
+		normalizedType = "service"
+	case "node":
+		normalizedType = "node"
+	case "instance", "inst":
+		normalizedType = "instance"
+	default:
+		fmt.Fprintf(os.Stderr, "unknown resource type: %s (use service, node, or instance)\n", resourceType)
+		os.Exit(1)
+	}
+
+	apiURL := fmt.Sprintf("http://%s/api/describe?type=%s&name=%s",
+		statusAPIListenAddress, normalizedType, resourceName)
+	httpResponse, err := http.Get(apiURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.StatusCode == http.StatusNotFound {
+		var errorBody map[string]string
+		json.NewDecoder(httpResponse.Body).Decode(&errorBody)
+		fmt.Fprintf(os.Stderr, "%s\n", errorBody["error"])
+		os.Exit(1)
+	}
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+
+	switch normalizedType {
+	case "service":
+		var serviceDetail api.ServiceDescribe
+		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&serviceDetail); decodeErr != nil {
+			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
+			os.Exit(1)
+		}
+		printServiceDescribe(serviceDetail)
+	case "node":
+		var nodeDetail api.NodeDescribe
+		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&nodeDetail); decodeErr != nil {
+			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
+			os.Exit(1)
+		}
+		printNodeDescribe(nodeDetail)
+	case "instance":
+		var instanceDetail api.InstanceDescribe
+		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&instanceDetail); decodeErr != nil {
+			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
+			os.Exit(1)
+		}
+		printInstanceDescribe(instanceDetail)
+	}
+}
+
+// printServiceDescribe renders a ServiceDescribe as human-readable text output.
+func printServiceDescribe(serviceDetail api.ServiceDescribe) {
+	fmt.Printf("Name:       %s\n", serviceDetail.Name)
+	fmt.Printf("Image:      %s\n", serviceDetail.Image)
+	fmt.Printf("Instances:  %d desired, %d running\n", serviceDetail.DesiredInstances, serviceDetail.RunningInstances)
+	if len(serviceDetail.ExposedPorts) > 0 {
+		portStrings := make([]string, len(serviceDetail.ExposedPorts))
+		for portIndex, port := range serviceDetail.ExposedPorts {
+			portStrings[portIndex] = fmt.Sprintf("%d", port)
+		}
+		fmt.Printf("Ports:      %s\n", strings.Join(portStrings, ", "))
+	}
+
+	if serviceDetail.Resources != nil {
+		fmt.Println()
+		fmt.Println("Resources:")
+		if serviceDetail.Resources.CPU != "" {
+			fmt.Printf("  CPU:      %s\n", serviceDetail.Resources.CPU)
+		}
+		if serviceDetail.Resources.Memory != "" {
+			fmt.Printf("  Memory:   %s\n", serviceDetail.Resources.Memory)
+		}
+	}
+
+	if serviceDetail.Placement != nil {
+		fmt.Println()
+		fmt.Println("Placement:")
+		if serviceDetail.Placement.Architecture != "" {
+			fmt.Printf("  Architecture:  %s\n", serviceDetail.Placement.Architecture)
+		}
+		if serviceDetail.Placement.ZonePolicy != "" {
+			fmt.Printf("  Zone policy:   %s\n", serviceDetail.Placement.ZonePolicy)
+		}
+		for label, value := range serviceDetail.Placement.Require {
+			fmt.Printf("  Require:       %s = %s\n", label, value)
+		}
+		for label, value := range serviceDetail.Placement.Prefer {
+			fmt.Printf("  Prefer:        %s = %s\n", label, value)
+		}
+		for _, label := range serviceDetail.Placement.Accept {
+			fmt.Printf("  Accept:        %s\n", label)
+		}
+	}
+
+	if serviceDetail.Health != nil {
+		fmt.Println()
+		fmt.Println("Health Check:")
+		fmt.Printf("  Method:    %s\n", serviceDetail.Health.Method)
+		if serviceDetail.Health.Path != "" {
+			fmt.Printf("  Path:      %s\n", serviceDetail.Health.Path)
+		}
+		if serviceDetail.Health.Interval != "" {
+			fmt.Printf("  Interval:  %s\n", serviceDetail.Health.Interval)
+		}
+	}
+
+	if len(serviceDetail.Probes) > 0 {
+		fmt.Println()
+		fmt.Println("Probes:")
+		for _, probe := range serviceDetail.Probes {
+			fmt.Printf("  %s:\n", probe.Type)
+			fmt.Printf("    Method:    %s\n", probe.Method)
+			if probe.Path != "" {
+				fmt.Printf("    Path:      %s\n", probe.Path)
+			}
+			if probe.Port != "" {
+				fmt.Printf("    Port:      %s\n", probe.Port)
+			}
+			if probe.Interval != "" {
+				fmt.Printf("    Interval:  %s\n", probe.Interval)
+			}
+			if probe.Timeout != "" {
+				fmt.Printf("    Timeout:   %s\n", probe.Timeout)
+			}
+		}
+	}
+
+	if len(serviceDetail.InitSteps) > 0 {
+		fmt.Println()
+		fmt.Println("Init Steps:")
+		for _, step := range serviceDetail.InitSteps {
+			fmt.Printf("  [%d] exec %q", step.Index, step.Exec)
+			if step.Timeout != "" {
+				fmt.Printf("  timeout=%s", step.Timeout)
+			}
+			if step.Retry != "" {
+				fmt.Printf("  retry=%s", step.Retry)
+			}
+			fmt.Println()
+		}
+	}
+
+	if serviceDetail.Autoscaling != nil {
+		fmt.Println()
+		fmt.Println("Autoscaling:")
+		fmt.Printf("  Min: %d  Max: %d\n", serviceDetail.Autoscaling.Min, serviceDetail.Autoscaling.Max)
+		for _, target := range serviceDetail.Autoscaling.Targets {
+			fmt.Printf("  Target:  %s = %d\n", target.Metric, target.Value)
+		}
+	}
+
+	if serviceDetail.UpdateStrategy != nil {
+		fmt.Println()
+		fmt.Println("Update Strategy:")
+		if serviceDetail.UpdateStrategy.MaxUnavailable != "" {
+			fmt.Printf("  Max unavailable:  %s\n", serviceDetail.UpdateStrategy.MaxUnavailable)
+		}
+		if serviceDetail.UpdateStrategy.MaxExtra != "" {
+			fmt.Printf("  Max extra:        %s\n", serviceDetail.UpdateStrategy.MaxExtra)
+		}
+	}
+
+	if serviceDetail.Rollout != nil {
+		fmt.Println()
+		fmt.Println("Rollout:")
+		fmt.Printf("  State:  %s\n", serviceDetail.Rollout.State)
+		if serviceDetail.Rollout.PreviousImage != "" {
+			fmt.Printf("  Previous image:  %s\n", serviceDetail.Rollout.PreviousImage)
+		}
+		if serviceDetail.Rollout.Failures != "" {
+			fmt.Printf("  Failures:        %s\n", serviceDetail.Rollout.Failures)
+		}
+	}
+
+	if serviceDetail.Networking != nil {
+		fmt.Println()
+		fmt.Println("Networking:")
+		if serviceDetail.Networking.VIP != "" {
+			fmt.Printf("  VIP:   %s\n", serviceDetail.Networking.VIP)
+		}
+		if serviceDetail.Networking.Port > 0 {
+			fmt.Printf("  Port:  %d\n", serviceDetail.Networking.Port)
+		}
+		if serviceDetail.Networking.DNS != "" {
+			fmt.Printf("  DNS:   %s\n", serviceDetail.Networking.DNS)
+		}
+	}
+
+	if len(serviceDetail.Config) > 0 {
+		fmt.Println()
+		fmt.Println("Config:")
+		for _, configEntry := range serviceDetail.Config {
+			fmt.Printf("  [%s] %s = %s\n", configEntry.Type, configEntry.Key, configEntry.Value)
+		}
+	}
+
+	if len(serviceDetail.Secrets) > 0 {
+		fmt.Println()
+		fmt.Println("Secrets:")
+		for _, secretGrant := range serviceDetail.Secrets {
+			fmt.Printf("  %s -> %s\n", secretGrant.Name, secretGrant.MountPath)
+		}
+	}
+
+	if len(serviceDetail.Endpoints) > 0 {
+		fmt.Println()
+		fmt.Println("Endpoints:")
+		for _, endpoint := range serviceDetail.Endpoints {
+			fmt.Printf("  %s\n", endpoint)
+		}
+	}
+
+	if len(serviceDetail.Instances) > 0 {
+		fmt.Println()
+		fmt.Println("Instances:")
+		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
+			"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS")
+		for _, instanceSummary := range serviceDetail.Instances {
+			restartDisplay := instanceSummary.Restarts
+			if restartDisplay == "" {
+				restartDisplay = "0"
+			}
+			fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
+				instanceSummary.ID, instanceSummary.State, instanceSummary.NodeID,
+				instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
+		}
+	}
+
+	printDescribeEvents(serviceDetail.Events)
+}
+
+// printNodeDescribe renders a NodeDescribe as human-readable text output.
+func printNodeDescribe(nodeDetail api.NodeDescribe) {
+	fmt.Printf("ID:            %s\n", nodeDetail.ID)
+	fmt.Printf("State:         %s\n", nodeDetail.State)
+	if nodeDetail.Address != "" {
+		fmt.Printf("Address:       %s\n", nodeDetail.Address)
+	}
+	if nodeDetail.Architecture != "" {
+		fmt.Printf("Architecture:  %s\n", nodeDetail.Architecture)
+	}
+	if nodeDetail.Zone != "" {
+		fmt.Printf("Zone:          %s\n", nodeDetail.Zone)
+	}
+	if nodeDetail.Subnet != "" {
+		fmt.Printf("Subnet:        %s\n", nodeDetail.Subnet)
+	}
+
+	fmt.Println()
+	fmt.Println("Resources:")
+	fmt.Printf("  CPU:     %d/%dm available\n", nodeDetail.AvailableCPU, nodeDetail.CapacityCPU)
+	fmt.Printf("  Memory:  %d/%dMi available\n", nodeDetail.AvailableMemory, nodeDetail.CapacityMemory)
+	if nodeDetail.UtilizationCPU != "" {
+		fmt.Printf("  CPU utilization:     %s%%\n", nodeDetail.UtilizationCPU)
+	}
+	if nodeDetail.UtilizationMemory != "" {
+		fmt.Printf("  Memory utilization:  %s%%\n", nodeDetail.UtilizationMemory)
+	}
+	if nodeDetail.WorkloadCount != "" {
+		fmt.Printf("  Workloads:           %s\n", nodeDetail.WorkloadCount)
+	}
+
+	if len(nodeDetail.Labels) > 0 {
+		fmt.Println()
+		fmt.Println("Labels:")
+		labelNames := make([]string, 0, len(nodeDetail.Labels))
+		for labelName := range nodeDetail.Labels {
+			labelNames = append(labelNames, labelName)
+		}
+		sort.Strings(labelNames)
+		for _, labelName := range labelNames {
+			fmt.Printf("  %s = %s\n", labelName, nodeDetail.Labels[labelName])
+		}
+	}
+
+	if len(nodeDetail.Restrictions) > 0 {
+		fmt.Println()
+		fmt.Println("Restrictions:")
+		for _, restriction := range nodeDetail.Restrictions {
+			fmt.Printf("  %s\n", restriction)
+		}
+	}
+
+	if len(nodeDetail.Instances) > 0 {
+		fmt.Println()
+		fmt.Println("Instances:")
+		fmt.Printf("  %-20s  %-14s  %-10s  %-16s  %-10s  %s\n",
+			"ID", "SERVICE", "STATE", "IP", "HEALTH", "RESTARTS")
+		for _, instanceSummary := range nodeDetail.Instances {
+			restartDisplay := instanceSummary.Restarts
+			if restartDisplay == "" {
+				restartDisplay = "0"
+			}
+			fmt.Printf("  %-20s  %-14s  %-10s  %-16s  %-10s  %s\n",
+				instanceSummary.ID, instanceSummary.Service, instanceSummary.State,
+				instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
+		}
+	}
+
+	printDescribeEvents(nodeDetail.Events)
+}
+
+// printInstanceDescribe renders an InstanceDescribe as human-readable text output.
+func printInstanceDescribe(instanceDetail api.InstanceDescribe) {
+	fmt.Printf("ID:         %s\n", instanceDetail.ID)
+	fmt.Printf("Service:    %s\n", instanceDetail.ServiceName)
+	fmt.Printf("Node:       %s\n", instanceDetail.NodeID)
+	fmt.Printf("State:      %s\n", instanceDetail.State)
+	if instanceDetail.Image != "" {
+		fmt.Printf("Image:      %s\n", instanceDetail.Image)
+	}
+	if instanceDetail.IPAddress != "" {
+		fmt.Printf("IP:         %s\n", instanceDetail.IPAddress)
+	}
+	if instanceDetail.HostPort != "" {
+		fmt.Printf("Host port:  %s\n", instanceDetail.HostPort)
+	}
+	if instanceDetail.Endpoint != "" {
+		fmt.Printf("Endpoint:   %s\n", instanceDetail.Endpoint)
+	}
+
+	fmt.Println()
+	fmt.Println("Health:")
+	healthDisplay := instanceDetail.HealthState
+	if healthDisplay == "" {
+		healthDisplay = "-"
+	}
+	fmt.Printf("  Status:     %s\n", healthDisplay)
+	if instanceDetail.InitPhase != "" {
+		fmt.Printf("  Init:       %s\n", instanceDetail.InitPhase)
+	}
+	if instanceDetail.StartupProbe != "" {
+		fmt.Printf("  Startup:    %s\n", instanceDetail.StartupProbe)
+	}
+	if instanceDetail.LivenessProbe != "" {
+		fmt.Printf("  Liveness:   %s\n", instanceDetail.LivenessProbe)
+	}
+	if instanceDetail.ReadinessProbe != "" {
+		fmt.Printf("  Readiness:  %s\n", instanceDetail.ReadinessProbe)
+	}
+
+	restartDisplay := instanceDetail.Restarts
+	if restartDisplay == "" {
+		restartDisplay = "0"
+	}
+	fmt.Printf("  Restarts:   %s\n", restartDisplay)
+
+	if instanceDetail.CPUMillis != "" || instanceDetail.MemoryBytes != "" {
+		fmt.Println()
+		fmt.Println("Resources:")
+		if instanceDetail.CPUMillis != "" {
+			fmt.Printf("  CPU:     %sm\n", instanceDetail.CPUMillis)
+		}
+		if instanceDetail.MemoryBytes != "" {
+			fmt.Printf("  Memory:  %s\n", instanceDetail.MemoryBytes)
+		}
+	}
+
+	printDescribeEvents(instanceDetail.Events)
+}
+
+// printDescribeEvents renders the recent events section for any describe output.
+func printDescribeEvents(events []api.DescribeEvent) {
+	if len(events) == 0 {
+		return
+	}
+	fmt.Println()
+	fmt.Println("Events:")
+	fmt.Printf("  %-20s  %-22s  %s\n", "TIMESTAMP", "KIND", "DETAIL")
+	for _, event := range events {
+		fmt.Printf("  %-20s  %-22s  %s\n", event.Timestamp, event.Kind, event.Detail)
+	}
 }
 
 // executeGetCommand queries the API for a specific resource type and prints

@@ -2,23 +2,15 @@
 
 ## Current Milestone
 
-M20 — Service Networking & Placement (Phase 23) **COMPLETE**
+M21 — CLI & UX (Phase 24)
 
-- All 13/13 items done
-- Tagged: v0.20.0, v0.20.1
-- Demo: `curl -H "Host: web" http://node:80` round-robins via proxy, DNS resolves VIPs, require/prefer/restrict/accept placement
-
-## Next Milestone
-
-M21 — not yet defined. Candidates:
-- Cluster autoscaling (infrastructure provider integration)
-- Observability dashboard (Prometheus/Grafana integration)
-- CLI improvements (interactive mode, better error messages)
-- Multi-cluster federation
-- Persistent volume migration on node failure
+- 2/8 items done
+- Status: in progress
+- Items: `cca describe`, `cca events`, `cca diff`, colored output, better errors, shell completions, column formatting, API describe endpoint
 
 ## Recent Completions
 
+- [2026-09-18] v0.20.2 — Tech debt cleanup, AI agent team infrastructure
 - [2026-09-18] M20 Phase 23 — cross-host endpoints, DNS server, HTTP reverse proxy, placement constraints
 - [2026-09-18] v0.20.1 — README and docs updates, VitePress documentation site
 - [2026-09-14] M19 Phase 22 — node enrollment via `cca token create` / `cca join`
