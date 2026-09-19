@@ -52,6 +52,13 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── volume/{name}/attached_node
 │   └── volume/{name}/state                   # attached | detached | error
 │
+├── derived/                        # controller-derived state (not agent observations)
+│   ├── service/{name}/rollout/state          # rolling | complete | rollback
+│   ├── service/{name}/rollout/previous_image # rollback image
+│   ├── instance/{instance-id}/init/phase     # pending | running | complete | failed
+│   ├── instance/{instance-id}/drain_since    # Unix millis when drain began
+│   └── credential/{instance-id}/{identity}/  # broker credential lifecycle
+│
 ├── placement/                      # scheduling decisions (written by scheduler)
 │   └── instance/{instance-id}      # value = node-id
 │
@@ -86,6 +93,7 @@ The most important structural choice. These two trees are written by different a
 |------|---------|-------|
 | `desired/` | Users, policy controllers, autoscaler | Trusted — authenticated, authorized |
 | `observed/` | Node agents | Partially trusted — can only report reality |
+| `derived/` | Controllers | Trusted — computed from desired + observed facts |
 | `placement/` | Scheduler | Trusted — control plane component |
 | `endpoint/` | Network controller | Trusted — derived from observed |
 | `effective/` | Intent resolver | Trusted — computed from intent layers |

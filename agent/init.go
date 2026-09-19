@@ -36,8 +36,6 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 		return true
 	}
 
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitPhase(instanceInfo.id), []byte(string(types.InitPhaseRunning)))
-
 	for _, stepDefinition := range stepDefinitions {
 		existingState := nodeAgent.readInitStepState(ctx, instanceInfo.id, stepDefinition.index)
 		if existingState == string(types.InitStepSucceeded) {
@@ -52,12 +50,10 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 
 		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition)
 		if !succeeded {
-			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitPhase(instanceInfo.id), []byte(string(types.InitPhaseFailed)))
 			return false
 		}
 	}
 
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitPhase(instanceInfo.id), []byte(string(types.InitPhaseComplete)))
 	return true
 }
 
@@ -177,7 +173,7 @@ func (nodeAgent *Agent) loadInitStepDefinitions(ctx context.Context, serviceName
 
 // readCurrentInitPhase reads the current init phase for an instance from the store.
 func (nodeAgent *Agent) readCurrentInitPhase(ctx context.Context, instanceID string) string {
-	phaseFact, phaseError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID))
+	phaseFact, phaseError := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceInitPhase(instanceID))
 	if phaseError != nil {
 		return ""
 	}

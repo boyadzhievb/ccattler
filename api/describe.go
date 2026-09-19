@@ -404,7 +404,7 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 	if memFact, memErr := factStore.Get(ctx, types.KeyObservedInstanceMemory(instanceID)); memErr == nil {
 		describe.MemoryBytes = string(memFact.Value)
 	}
-	if initFact, initErr := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID)); initErr == nil {
+	if initFact, initErr := factStore.Get(ctx, types.KeyDerivedInstanceInitPhase(instanceID)); initErr == nil {
 		describe.InitPhase = string(initFact.Value)
 	}
 	if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instanceID)); restartErr == nil {
@@ -619,15 +619,15 @@ func buildServiceUpdateStrategy(ctx context.Context, factStore store.StateStore,
 
 // buildServiceRollout reads the current rollout state.
 func buildServiceRollout(ctx context.Context, factStore store.StateStore, serviceName string) *DescribeRollout {
-	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedServiceRolloutState(serviceName))
+	stateFact, stateErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutState(serviceName))
 	if stateErr != nil {
 		return nil
 	}
 	rollout := &DescribeRollout{State: string(stateFact.Value)}
-	if imageFact, imageErr := factStore.Get(ctx, types.KeyObservedServiceRolloutImage(serviceName)); imageErr == nil {
+	if imageFact, imageErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutImage(serviceName)); imageErr == nil {
 		rollout.PreviousImage = string(imageFact.Value)
 	}
-	if failFact, failErr := factStore.Get(ctx, types.KeyObservedServiceRolloutFailures(serviceName)); failErr == nil {
+	if failFact, failErr := factStore.Get(ctx, types.KeyDerivedServiceRolloutFailures(serviceName)); failErr == nil {
 		rollout.Failures = string(failFact.Value)
 	}
 	return rollout

@@ -1006,7 +1006,7 @@ func TestAgentInitRestartSafety(t *testing.T) {
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
 
 	// Simulate agent crash: init step 0 was left in "running" state.
-	factStore.Put(ctx, types.KeyObservedInstanceInitPhase(instanceID), []byte(string(types.InitPhaseRunning)))
+	factStore.Put(ctx, types.KeyDerivedInstanceInitPhase(instanceID), []byte(string(types.InitPhaseRunning)))
 	factStore.Put(ctx, types.KeyObservedInstanceInitStepState(instanceID, 0), []byte(string(types.InitStepRunning)))
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
@@ -1015,11 +1015,8 @@ func TestAgentInitRestartSafety(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	// The agent should detect the stale "running" step, mark it failed, re-execute,
-	// and eventually complete init + start the workload.
-	waitFor(t, 3*time.Second, "init phase complete after restart recovery", func() bool {
-		phaseFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID))
-		return err == nil && string(phaseFact.Value) == string(types.InitPhaseComplete)
-	})
+	// and eventually complete init + start the workload. The InitController (not
+	// running here) derives the phase; the agent only writes per-step results.
 
 	// Step 0 should be succeeded.
 	waitFor(t, 2*time.Second, "init step 0 succeeded", func() bool {
@@ -1064,10 +1061,11 @@ func TestAgentInitSkipsCompletedSteps(t *testing.T) {
 
 	go nodeAgent.Run(ctx)
 
-	// Init should complete — step 0 skipped, step 1 executed.
-	waitFor(t, 3*time.Second, "init phase complete", func() bool {
-		phaseFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID))
-		return err == nil && string(phaseFact.Value) == string(types.InitPhaseComplete)
+	// Init should complete — step 0 skipped, step 1 executed. The InitController
+	// derives the phase; the agent only writes per-step results.
+	waitFor(t, 3*time.Second, "init step 1 succeeded", func() bool {
+		stepFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitStepState(instanceID, 1))
+		return err == nil && string(stepFact.Value) == string(types.InitStepSucceeded)
 	})
 
 	// Both steps should show succeeded.

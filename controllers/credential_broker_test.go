@@ -54,17 +54,17 @@ func TestCredentialBrokerIssuesCredentialForRunningInstance(t *testing.T) {
 	}
 
 	changeMap := changesToMap(changes)
-	stateKey := types.KeyObservedCredentialState("inst-1", "payments_s3")
+	stateKey := types.KeyDerivedCredentialState("inst-1", "payments_s3")
 	if changeMap[stateKey] != "active" {
 		t.Errorf("expected credential state 'active', got %q", changeMap[stateKey])
 	}
 
-	issuedKey := types.KeyObservedCredentialIssuedAt("inst-1", "payments_s3")
+	issuedKey := types.KeyDerivedCredentialIssuedAt("inst-1", "payments_s3")
 	if _, exists := changeMap[issuedKey]; !exists {
 		t.Error("expected issued_at fact to be set")
 	}
 
-	expiresKey := types.KeyObservedCredentialExpiresAt("inst-1", "payments_s3")
+	expiresKey := types.KeyDerivedCredentialExpiresAt("inst-1", "payments_s3")
 	if _, exists := changeMap[expiresKey]; !exists {
 		t.Error("expected expires_at fact to be set")
 	}
@@ -105,9 +105,9 @@ func TestCredentialBrokerSkipsActiveNonExpiredCredential(t *testing.T) {
 		{Key: "desired/service/payments/cloud_identity/payments_s3", Value: []byte("")},
 		{Key: "observed/instance/inst-1/service", Value: []byte("payments")},
 		{Key: "observed/instance/inst-1/state", Value: []byte("running")},
-		{Key: types.KeyObservedCredentialState("inst-1", "payments_s3"), Value: []byte("active")},
-		{Key: types.KeyObservedCredentialExpiresAt("inst-1", "payments_s3"), Value: []byte(futureExpiry)},
-		{Key: types.KeyObservedCredentialIssuedAt("inst-1", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
+		{Key: types.KeyDerivedCredentialState("inst-1", "payments_s3"), Value: []byte("active")},
+		{Key: types.KeyDerivedCredentialExpiresAt("inst-1", "payments_s3"), Value: []byte(futureExpiry)},
+		{Key: types.KeyDerivedCredentialIssuedAt("inst-1", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
 	}
 
 	changes, err := brokerController.Reconcile(testContext, facts)
@@ -133,8 +133,8 @@ func TestCredentialBrokerRefreshesNearExpiry(t *testing.T) {
 		{Key: "desired/service/payments/cloud_identity/payments_s3", Value: []byte("")},
 		{Key: "observed/instance/inst-1/service", Value: []byte("payments")},
 		{Key: "observed/instance/inst-1/state", Value: []byte("running")},
-		{Key: types.KeyObservedCredentialState("inst-1", "payments_s3"), Value: []byte("active")},
-		{Key: types.KeyObservedCredentialExpiresAt("inst-1", "payments_s3"), Value: []byte(nearExpiry)},
+		{Key: types.KeyDerivedCredentialState("inst-1", "payments_s3"), Value: []byte("active")},
+		{Key: types.KeyDerivedCredentialExpiresAt("inst-1", "payments_s3"), Value: []byte(nearExpiry)},
 	}
 
 	changes, err := brokerController.Reconcile(testContext, facts)
@@ -143,7 +143,7 @@ func TestCredentialBrokerRefreshesNearExpiry(t *testing.T) {
 	}
 
 	changeMap := changesToMap(changes)
-	if changeMap[types.KeyObservedCredentialState("inst-1", "payments_s3")] != "active" {
+	if changeMap[types.KeyDerivedCredentialState("inst-1", "payments_s3")] != "active" {
 		t.Error("expected credential to be refreshed")
 	}
 }
@@ -155,9 +155,9 @@ func TestCredentialBrokerGarbageCollectsStoppedInstance(t *testing.T) {
 	facts := []store.Fact{
 		{Key: "desired/cloud_identity/payments_s3", Value: []byte("")},
 		{Key: "desired/cloud_identity/payments_s3/provider", Value: []byte("aws")},
-		{Key: types.KeyObservedCredentialState("inst-gone", "payments_s3"), Value: []byte("active")},
-		{Key: types.KeyObservedCredentialExpiresAt("inst-gone", "payments_s3"), Value: []byte(time.Now().Add(1 * time.Hour).Format(time.RFC3339))},
-		{Key: types.KeyObservedCredentialIssuedAt("inst-gone", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
+		{Key: types.KeyDerivedCredentialState("inst-gone", "payments_s3"), Value: []byte("active")},
+		{Key: types.KeyDerivedCredentialExpiresAt("inst-gone", "payments_s3"), Value: []byte(time.Now().Add(1 * time.Hour).Format(time.RFC3339))},
+		{Key: types.KeyDerivedCredentialIssuedAt("inst-gone", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
 	}
 
 	changes, err := brokerController.Reconcile(testContext, facts)
@@ -197,10 +197,10 @@ func TestCredentialBrokerErrorOnMissingAdapter(t *testing.T) {
 	}
 
 	changeMap := changesToMap(changes)
-	if changeMap[types.KeyObservedCredentialState("inst-1", "test_id")] != "error" {
+	if changeMap[types.KeyDerivedCredentialState("inst-1", "test_id")] != "error" {
 		t.Error("expected credential state 'error' when no adapter registered")
 	}
-	errorKey := types.KeyObservedCredentialError("inst-1", "test_id")
+	errorKey := types.KeyDerivedCredentialError("inst-1", "test_id")
 	if _, exists := changeMap[errorKey]; !exists {
 		t.Error("expected error message fact")
 	}

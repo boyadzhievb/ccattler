@@ -124,9 +124,10 @@ func (etcdStore *EtcdStore) Get(ctx context.Context, key string) (*Fact, error) 
 	}, nil
 }
 
-// Put creates or updates the fact at the given key. For idempotency, it first reads
-// the current value and skips the write if the value is unchanged — matching the
-// MemoryStore behavior that prevents unnecessary revision bumps and watch events.
+// Put creates or updates the fact at the given key unconditionally. For idempotency,
+// it first reads the current value and skips the write if the value is unchanged —
+// matching the MemoryStore behavior that prevents unnecessary revision bumps and watch
+// events. Put is unconditional (last-writer-wins); use Transaction for conditional writes.
 // Returns the store-global revision after the operation.
 func (etcdStore *EtcdStore) Put(ctx context.Context, key string, value []byte) (int64, error) {
 	if closedError := etcdStore.checkClosed(); closedError != nil {
@@ -142,22 +143,6 @@ func (etcdStore *EtcdStore) Put(ctx context.Context, key string, value []byte) (
 	}
 	if len(getResponse.Kvs) > 0 && bytes.Equal(getResponse.Kvs[0].Value, value) {
 		return getResponse.Kvs[0].ModRevision, nil
-	}
-
-	// Use a transaction to guard against concurrent writes between the Get and Put.
-	// If the key's ModRevision changed since we read it, the transaction fails and
-	// we fall back to an unconditional Put (the value we're writing is still correct).
-	if len(getResponse.Kvs) > 0 {
-		txnResponse, txnError := etcdStore.etcdClient.Txn(ctx).
-			If(clientv3.Compare(clientv3.ModRevision(prefixedKey), "=", getResponse.Kvs[0].ModRevision)).
-			Then(clientv3.OpPut(prefixedKey, string(value))).
-			Commit()
-		if txnError != nil {
-			return 0, txnError
-		}
-		if txnResponse.Succeeded {
-			return txnResponse.Header.Revision, nil
-		}
 	}
 
 	putResponse, putError := etcdStore.etcdClient.Put(ctx, prefixedKey, string(value))

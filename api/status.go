@@ -169,7 +169,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 			instanceMemory = string(memFact.Value)
 		}
 		initPhase := ""
-		if initFact, initErr := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instance.ID)); initErr == nil {
+		if initFact, initErr := factStore.Get(ctx, types.KeyDerivedInstanceInitPhase(instance.ID)); initErr == nil {
 			initPhase = string(initFact.Value)
 		}
 		restartCount := ""

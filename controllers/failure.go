@@ -59,6 +59,7 @@ func (failureController *FailureController) Name() string { return "failure" }
 func (failureController *FailureController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 	}
 }
 
@@ -130,7 +131,7 @@ func (failureController *FailureController) beginDrain(instanceID string, now ti
 		},
 		{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceDrainSince(instanceID),
+			Key:   types.KeyDerivedInstanceDrainSince(instanceID),
 			Value: []byte(fmt.Sprintf("%d", now.UnixMilli())),
 		},
 	}

@@ -1391,9 +1391,9 @@ func TestRBACCredentialBrokerRole(t *testing.T) {
 		t.Fatalf("broker should read cloud identities: %v", err)
 	}
 
-	// Broker can write observed credentials.
-	if err := authorizer.Authorize("controller:credential-broker", PermissionWrite, "observed/credential/inst-1/payments_s3/state"); err != nil {
-		t.Fatalf("broker should write observed credentials: %v", err)
+	// Broker can write derived credentials.
+	if err := authorizer.Authorize("controller:credential-broker", PermissionWrite, "derived/credential/inst-1/payments_s3/state"); err != nil {
+		t.Fatalf("broker should write derived credentials: %v", err)
 	}
 
 	// Broker can write to encrypted credential store.
@@ -1419,9 +1419,9 @@ func TestRBACNodeAgentCredentialAccess(t *testing.T) {
 		t.Fatalf("node agent should read credentials: %v", err)
 	}
 
-	// Node agent can read credential state.
-	if err := authorizer.Authorize("node:n1", PermissionRead, "observed/credential/inst-1/payments_s3/state"); err != nil {
-		t.Fatalf("node agent should read credential state: %v", err)
+	// Node agent can read derived credential state.
+	if err := authorizer.Authorize("node:n1", PermissionRead, "derived/credential/inst-1/payments_s3/state"); err != nil {
+		t.Fatalf("node agent should read derived credential state: %v", err)
 	}
 
 	// Node agent cannot write credentials.
