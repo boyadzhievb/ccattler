@@ -3015,8 +3015,10 @@ func executeGetCommand(resourceType string) {
 		printSecretsTable(status.Secrets)
 	case "config", "cfg":
 		printConfigTable(status.Config)
+	case "cloud-identities", "cloud-identity", "identities":
+		printCloudIdentitiesTable(status.CloudIdentities)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config)\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities)\n", resourceType)
 		os.Exit(1)
 	}
 }
@@ -3219,6 +3221,27 @@ func printConfigTable(configEntries []api.ConfigStatus) {
 			entry.Type,
 			entry.Key,
 			truncateValue(entry.Value, 50),
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printCloudIdentitiesTable(cloudIdentities []api.CloudIdentityStatus) {
+	if len(cloudIdentities) == 0 {
+		fmt.Println("No cloud identities found.")
+		return
+	}
+	header := []string{"NAME", "PROVIDER", "SERVICES"}
+	var rows [][]string
+	for _, identity := range cloudIdentities {
+		services := "-"
+		if len(identity.Services) > 0 {
+			services = strings.Join(identity.Services, ", ")
+		}
+		rows = append(rows, []string{
+			identity.Name,
+			identity.Provider,
+			services,
 		})
 	}
 	printAlignedTable(header, rows)

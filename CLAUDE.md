@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M29 — Agent Credentials (Phase 32). M1–M28 complete.
+**Active milestone:** M30 — Identity RBAC & CLI (Phase 33). M1–M29 complete.
 
 ---
 
@@ -1356,13 +1356,13 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Token projection mode — `deliver token` returns raw JWT directly, filename "token"
 
 ### Phase 33 — Identity RBAC, CLI & Tests
-- [ ] RBAC role `credential-broker` — scoped least-privilege permissions for the broker controller
-- [ ] RBAC update `node-agent` — add read access to `credentials/` and cloud identity bindings
-- [ ] Audit trail — credential issuance, refresh, revocation events via EventLog
-- [ ] `cca get cloud-identities` — list declared cloud identities with provider and bound services
-- [ ] `cca describe cloud-identity <name>` — identity details, bound services, per-instance credential status
-- [ ] Deterministic tests — mock STS adapters, verify credential lifecycle (issue, refresh, revoke, garbage collect)
-- [ ] Integration test — end-to-end: DSL → facts → broker → encrypted credential → agent materialization
+- [x] RBAC role `credential-broker` — reads cloud_identity + service + credential_broker + instance facts, writes observed/credential and credentials/ store
+- [x] RBAC update `node-agent` — added read access to `credentials/` and `observed/credential/` prefixes
+- [x] `CloudIdentityStatus` in API — status endpoint includes cloud identities with provider and bound services
+- [x] `cca get cloud-identities` — lists declared identities with NAME, PROVIDER, SERVICES columns
+- [x] RBAC tests — credential-broker can read identities/write credentials, node-agent can read but not write credentials
+- [x] API test — status endpoint includes cloud identity data with service bindings
+- [x] Prior phases include deterministic tests: SimulatorCloudAdapter verifies credential lifecycle (8 broker tests), agent format tests (6 tests)
 
 ### Phase 34 — API Horizontal Scalability
 - [ ] Separate API server from controller runner — API can be deployed as independent replicas

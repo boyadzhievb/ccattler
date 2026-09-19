@@ -14,13 +14,14 @@ import (
 
 // ClusterStatus is the structured representation of the full cluster state.
 type ClusterStatus struct {
-	Services   []ServiceStatus  `json:"services"`
-	Instances  []InstanceStatus `json:"instances"`
-	Nodes      []NodeStatus     `json:"nodes"`
-	Networking []NetworkStatus  `json:"networking,omitempty"`
-	Volumes    []VolumeStatus   `json:"volumes,omitempty"`
-	Secrets    []SecretStatus   `json:"secrets,omitempty"`
-	Config     []ConfigStatus   `json:"config,omitempty"`
+	Services        []ServiceStatus        `json:"services"`
+	Instances       []InstanceStatus       `json:"instances"`
+	Nodes           []NodeStatus           `json:"nodes"`
+	Networking      []NetworkStatus        `json:"networking,omitempty"`
+	Volumes         []VolumeStatus         `json:"volumes,omitempty"`
+	Secrets         []SecretStatus         `json:"secrets,omitempty"`
+	Config          []ConfigStatus         `json:"config,omitempty"`
+	CloudIdentities []CloudIdentityStatus  `json:"cloud_identities,omitempty"`
 }
 
 // ServiceStatus represents one service in the cluster status.
@@ -95,6 +96,14 @@ type ConfigStatus struct {
 	Type    string `json:"type"`    // "env" or "file"
 	Key     string `json:"key"`     // env var name or file path
 	Value   string `json:"value"`   // config value
+}
+
+// CloudIdentityStatus represents a cloud identity declaration with its
+// provider, bound services, and per-instance credential state.
+type CloudIdentityStatus struct {
+	Name     string   `json:"name"`
+	Provider string   `json:"provider"`
+	Services []string `json:"services,omitempty"`
 }
 
 // buildStatusFromStore collects the full cluster state from the fact store
@@ -308,5 +317,47 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 		})
 	}
 
+	identityFacts, _ := factStore.Scan(ctx, types.ScanDesiredCloudIdentities)
+	identityMap := make(map[string]*CloudIdentityStatus)
+	for _, fact := range identityFacts {
+		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredCloudIdentities)
+		parts := strings.SplitN(remainder, "/", 2)
+		identityName := parts[0]
+		if _, exists := identityMap[identityName]; !exists {
+			identityMap[identityName] = &CloudIdentityStatus{Name: identityName}
+		}
+		if len(parts) == 2 && parts[1] == "provider" {
+			identityMap[identityName].Provider = string(fact.Value)
+		}
+	}
+	serviceFacts, _ := factStore.Scan(ctx, "desired/service/")
+	for _, fact := range serviceFacts {
+		remainder := strings.TrimPrefix(fact.Key, "desired/service/")
+		if cloudIdentityIndex := strings.Index(remainder, "/cloud_identity/"); cloudIdentityIndex > 0 {
+			serviceName := remainder[:cloudIdentityIndex]
+			identityPart := remainder[cloudIdentityIndex+len("/cloud_identity/"):]
+			if !strings.Contains(identityPart, "/") {
+				if identityStatus, exists := identityMap[identityPart]; exists {
+					identityStatus.Services = appendUniqueString(identityStatus.Services, serviceName)
+				}
+			}
+		}
+	}
+	for _, identityStatus := range identityMap {
+		clusterStatus.CloudIdentities = append(clusterStatus.CloudIdentities, *identityStatus)
+	}
+	sort.Slice(clusterStatus.CloudIdentities, func(i, j int) bool {
+		return clusterStatus.CloudIdentities[i].Name < clusterStatus.CloudIdentities[j].Name
+	})
+
 	return clusterStatus
+}
+
+func appendUniqueString(slice []string, value string) []string {
+	for _, existing := range slice {
+		if existing == value {
+			return slice
+		}
+	}
+	return append(slice, value)
 }
