@@ -1282,7 +1282,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ### Phase 24 — CLI & UX
 - [x] `cca describe <service|node|instance>` — detailed single-resource view showing all related facts, health state, placement, recent events
-- [ ] `cca events [--follow] [--service <name>]` — real-time event stream with optional filtering by service
+- [x] `cca events [--follow] [--service <name>]` — real-time event stream with optional filtering by service
 - [ ] `cca diff <file>` — dry-run apply that shows what facts would change (added/modified/removed) without committing
 - [ ] Colored terminal output — tables with aligned columns, status indicators (green running, red failed, yellow pending), box-drawing for structure
 - [ ] Better error messages — DSL parse errors show line/column with source context, runtime errors suggest corrective actions

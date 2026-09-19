@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -747,5 +748,126 @@ func TestDescribeServiceWithEvents(t *testing.T) {
 	}
 	if serviceDetail.Events[0].Kind != "service.created" {
 		t.Fatalf("expected service.created, got %s", serviceDetail.Events[0].Kind)
+	}
+}
+
+func TestEventStreamSSE(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	apiServer := NewServer(factStore)
+	eventLog := types.NewEventLog(factStore, 100)
+	apiServer.SetEventLog(eventLog)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer apiServer.Close()
+	defer factStore.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	baseURL := "http://" + address
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/events/stream", nil)
+	httpResponse, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("expected text/event-stream, got %s", httpResponse.Header.Get("Content-Type"))
+	}
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		eventLog.Emit(context.Background(), "instance.created", "service/web", "instance inst-1 created", "instance-controller")
+	}()
+
+	scanner := bufio.NewScanner(httpResponse.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		eventJSON := strings.TrimPrefix(line, "data: ")
+		var receivedEvent types.SystemEvent
+		if err := json.Unmarshal([]byte(eventJSON), &receivedEvent); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		if receivedEvent.Kind != "instance.created" {
+			t.Fatalf("expected instance.created, got %s", receivedEvent.Kind)
+		}
+		if receivedEvent.Target != "service/web" {
+			t.Fatalf("expected service/web, got %s", receivedEvent.Target)
+		}
+		return
+	}
+	t.Fatal("no SSE event received")
+}
+
+func TestEventStreamServiceFilter(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	apiServer := NewServer(factStore)
+	eventLog := types.NewEventLog(factStore, 100)
+	apiServer.SetEventLog(eventLog)
+
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer apiServer.Close()
+	defer factStore.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	baseURL := "http://" + address
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/events/stream?service=web", nil)
+	httpResponse, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResponse.Body.Close()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		eventLog.Emit(context.Background(), "instance.created", "service/api", "api instance created", "controller")
+		time.Sleep(50 * time.Millisecond)
+		eventLog.Emit(context.Background(), "instance.created", "service/web", "web instance created", "controller")
+	}()
+
+	scanner := bufio.NewScanner(httpResponse.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		eventJSON := strings.TrimPrefix(line, "data: ")
+		var receivedEvent types.SystemEvent
+		if err := json.Unmarshal([]byte(eventJSON), &receivedEvent); err != nil {
+			t.Fatalf("unmarshal event: %v", err)
+		}
+		if !strings.Contains(receivedEvent.Target, "web") {
+			t.Fatalf("expected event for web, got target %s", receivedEvent.Target)
+		}
+		return
+	}
+	t.Fatal("no filtered SSE event received")
+}
+
+func TestEventStreamMethodNotAllowed(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	request, _ := http.NewRequest(http.MethodPost, baseURL+"/api/events/stream", nil)
+	httpResponse, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.StatusCode != 405 {
+		t.Fatalf("expected 405, got %d", httpResponse.StatusCode)
 	}
 }

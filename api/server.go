@@ -91,6 +91,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/status", apiServer.handleStatus)
 	apiServer.mux.HandleFunc("/api/logs", apiServer.handleLogs)
 	apiServer.mux.HandleFunc("/api/describe", apiServer.handleDescribe)
+	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
 	apiServer.mux.HandleFunc("/api/metric", apiServer.handleMetric)
 }
 
@@ -431,6 +432,63 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 	}
 
 	json.NewEncoder(responseWriter).Encode(result)
+}
+
+// handleEventStream serves GET /api/events/stream as a Server-Sent Events
+// stream of cluster events. New events written to the event log are sent as
+// JSON-encoded SSE data lines in real time. Supports optional service query
+// parameter to filter events whose target contains the service name.
+func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := responseWriter.(http.Flusher)
+	if !ok {
+		http.Error(responseWriter, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	serviceFilter := request.URL.Query().Get("service")
+
+	watchContext, cancelWatch := context.WithCancel(request.Context())
+	defer cancelWatch()
+
+	eventChannel, err := apiServer.factStore.Watch(watchContext, types.PrefixEvent+"/", store.WatchOption{Prefix: true})
+	if err != nil {
+		http.Error(responseWriter, "watch: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "text/event-stream")
+	responseWriter.Header().Set("Cache-Control", "no-cache")
+	responseWriter.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case storeEvent, open := <-eventChannel:
+			if !open {
+				return
+			}
+			if storeEvent.Type == store.EventDelete {
+				continue
+			}
+			var systemEvent types.SystemEvent
+			if err := json.Unmarshal(storeEvent.Fact.Value, &systemEvent); err != nil {
+				continue
+			}
+			if serviceFilter != "" && !strings.Contains(systemEvent.Target, serviceFilter) {
+				continue
+			}
+			eventBytes, _ := json.Marshal(systemEvent)
+			fmt.Fprintf(responseWriter, "data: %s\n\n", eventBytes)
+			flusher.Flush()
+		}
+	}
 }
 
 // enrollmentRequestBody is the JSON body for POST /api/enroll.
