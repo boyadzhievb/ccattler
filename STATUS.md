@@ -4,7 +4,7 @@
 
 M21 — CLI & UX (Phase 24)
 
-- 6/8 items done
+- 7/8 items done
 - Status: in progress
 - Items: `cca describe`, `cca events`, `cca diff`, colored output, better errors, shell completions, column formatting, API describe endpoint
 
