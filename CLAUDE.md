@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M21 — CLI & UX (Phase 24). M1–M20 complete.
+**Active milestone:** M22 — Observability (Phase 25). M1–M21 complete.
 
 ---
 
@@ -1291,7 +1291,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] API `describe` endpoint — `GET /api/describe?type=service&name=web` returns aggregated detail view
 
 ### Phase 25 — Observability
-- [ ] Prometheus `/metrics` endpoint on API server — reconciliation duration, scheduling decisions, instance state transitions, store operation latency, active watches
+- [x] Prometheus `/metrics` endpoint on API server — reconciliation duration, scheduling decisions, instance state transitions, store operation latency, active watches
 - [ ] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
 - [ ] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
 - [ ] Health endpoint — `GET /healthz` returns controller health, etcd connectivity, certificate expiry status

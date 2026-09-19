@@ -949,3 +949,42 @@ func TestDiffEndpointInvalidDSL(t *testing.T) {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
+
+func TestMetricsEndpoint(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceInstances("web"), []byte("3"))
+	factStore.Put(ctx, types.KeyObservedInstanceState("inst-1"), []byte("running"))
+	factStore.Put(ctx, types.KeyObservedInstanceState("inst-2"), []byte("running"))
+	factStore.Put(ctx, types.KeyObservedInstanceState("inst-3"), []byte("pending"))
+
+	metricsResponse, err := http.Get(baseURL + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer metricsResponse.Body.Close()
+
+	if metricsResponse.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", metricsResponse.StatusCode)
+	}
+
+	metricsBody, _ := io.ReadAll(metricsResponse.Body)
+	metricsText := string(metricsBody)
+
+	if !strings.Contains(metricsText, "ccattler_services 1") {
+		t.Errorf("expected ccattler_services 1, got:\n%s", metricsText)
+	}
+	if !strings.Contains(metricsText, "ccattler_instances") {
+		t.Error("expected ccattler_instances gauge in output")
+	}
+	if !strings.Contains(metricsText, "# TYPE ccattler_api_requests_total counter") {
+		t.Error("expected api request counter type declaration")
+	}
+	if !strings.Contains(metricsText, "# TYPE ccattler_api_request_duration_seconds histogram") {
+		t.Error("expected API request duration histogram type declaration")
+	}
+}

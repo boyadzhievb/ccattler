@@ -8,8 +8,33 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
+)
+
+var (
+	reconciliationDuration = metrics.DefaultRegistry.RegisterHistogram(
+		"ccattler_reconciliation_duration_seconds",
+		"Time spent in a single reconciliation cycle",
+		metrics.DurationBuckets(),
+		"controller",
+	)
+	reconciliationTotal = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_reconciliation_total",
+		"Total number of reconciliation cycles",
+		"controller", "result",
+	)
+	reconciliationConflicts = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_reconciliation_conflicts_total",
+		"Total number of optimistic concurrency conflicts",
+		"controller",
+	)
+	reconciliationChanges = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_reconciliation_changes_total",
+		"Total number of fact changes committed by reconciliation",
+		"controller",
+	)
 )
 
 // Runner manages the lifecycle of a set of controllers. It starts each
@@ -220,19 +245,29 @@ const maxReconciliationAttempts = 3
 // optimistic concurrency. It retries up to maxReconciliationAttempts times
 // if the store revision changes between the scan and the commit.
 func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, controller Controller) error {
+	startTime := metrics.Timer()
+	controllerName := controller.Name()
+
 	for attemptIndex := 0; attemptIndex < maxReconciliationAttempts; attemptIndex++ {
 		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller)
 		if reconcileError != nil {
+			reconciliationTotal.Inc(controllerName, "error")
+			reconciliationDuration.ObserveSince(startTime, controllerName)
 			return reconcileError
 		}
 		if !conflictDetected {
+			reconciliationTotal.Inc(controllerName, "success")
+			reconciliationDuration.ObserveSince(startTime, controllerName)
 			return nil
 		}
+		reconciliationConflicts.Inc(controllerName)
 		log.Printf("controller %s: reconciliation conflict (attempt %d/%d), retrying",
-			controller.Name(), attemptIndex+1, maxReconciliationAttempts)
+			controllerName, attemptIndex+1, maxReconciliationAttempts)
 	}
+	reconciliationTotal.Inc(controllerName, "abandoned")
+	reconciliationDuration.ObserveSince(startTime, controllerName)
 	log.Printf("controller %s: reconciliation abandoned after %d conflict retries",
-		controller.Name(), maxReconciliationAttempts)
+		controllerName, maxReconciliationAttempts)
 	return nil
 }
 
@@ -298,6 +333,8 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	if !transactionSucceeded {
 		return true, nil
 	}
+
+	reconciliationChanges.Add(int64(len(changes)), controller.Name())
 
 	if controllerRunner.eventLog != nil {
 		controllerRunner.emitEventsForChanges(ctx, controller, changes)
