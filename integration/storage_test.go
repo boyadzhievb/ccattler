@@ -254,11 +254,16 @@ func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
 	// Kill the node — it stops heartbeating, lease expires, node marked unreachable.
 	cluster.killNode[attachedNodeID]()
 
-	// Wait for StorageController to force-detach.
-	waitFor(t, 5*time.Second, "volume force-detached to available", func() bool {
+	// Wait for StorageController to force-detach — volume transitions to migrating.
+	waitFor(t, 5*time.Second, "volume force-detached to migrating", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAvailable
+		return err == nil && volume.State == types.VolumeMigrating
 	})
+
+	migratingVolume, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
+	if migratingVolume.MigrationSource != attachedNodeID {
+		t.Errorf("migration source = %s, want %s", migratingVolume.MigrationSource, attachedNodeID)
+	}
 }
 
 // TestMultipleServicesIndependentVolumes verifies that two services with
@@ -422,10 +427,10 @@ func TestVolumeReattachAfterForceDetach(t *testing.T) {
 	cluster.killNode[originalNodeID]()
 	cluster.storageProvider.ForceDetach(ctx, "pgdata")
 
-	// Wait for the volume to be force-detached by the StorageController.
-	waitFor(t, 20*time.Second, "volume available after force-detach", func() bool {
+	// Wait for the volume to enter migrating state after force-detach by the StorageController.
+	waitFor(t, 20*time.Second, "volume migrating after force-detach", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAvailable
+		return err == nil && (volume.State == types.VolumeMigrating || volume.State == types.VolumeAttached)
 	})
 
 	// Wait for the volume to be reattached on a different node.

@@ -364,6 +364,12 @@ func WriteDesiredVolume(ctx context.Context, stateStore store.StateStore, volume
 	return nil
 }
 
+// WriteDesiredVolumeReplicas writes the desired replica count for a volume.
+func WriteDesiredVolumeReplicas(ctx context.Context, stateStore store.StateStore, volumeName string, replicas int) error {
+	_, err := stateStore.Put(ctx, KeyDesiredVolumeReplicas(volumeName), []byte(strconv.Itoa(replicas)))
+	return err
+}
+
 // WriteObservedVolume writes a volume's observed state as flat key-value pairs
 // under the observed/volume/ prefix.
 func WriteObservedVolume(ctx context.Context, stateStore store.StateStore, volume Volume) error {
@@ -380,6 +386,21 @@ func WriteObservedVolume(ctx context.Context, stateStore store.StateStore, volum
 	}
 	if volume.MountPath != "" {
 		puts = append(puts, struct{ key, val string }{KeyObservedVolumeMountPath(volume.Name), volume.MountPath})
+	}
+	if volume.MigrationSource != "" {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeMigrationSource(volume.Name), volume.MigrationSource})
+	}
+	if volume.UsedBytes > 0 {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeUsedBytes(volume.Name), fmt.Sprintf("%d", volume.UsedBytes)})
+	}
+	if volume.CapacityBytes > 0 {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeCapacityBytes(volume.Name), fmt.Sprintf("%d", volume.CapacityBytes)})
+	}
+	if volume.ReplicaCount > 0 {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeReplicaCount(volume.Name), strconv.Itoa(volume.ReplicaCount)})
+	}
+	if volume.ReplicaState != "" {
+		puts = append(puts, struct{ key, val string }{KeyObservedVolumeReplicaState(volume.Name), string(volume.ReplicaState)})
 	}
 	for _, putEntry := range puts {
 		if _, err := stateStore.Put(ctx, putEntry.key, []byte(putEntry.val)); err != nil {
@@ -417,6 +438,16 @@ func ReadObservedVolume(ctx context.Context, stateStore store.StateStore, volume
 			volume.Instance = val
 		case "mount_path":
 			volume.MountPath = val
+		case "migration_source":
+			volume.MigrationSource = val
+		case "used_bytes":
+			volume.UsedBytes, _ = strconv.ParseInt(val, 10, 64)
+		case "capacity_bytes":
+			volume.CapacityBytes, _ = strconv.ParseInt(val, 10, 64)
+		case "replica_count":
+			volume.ReplicaCount, _ = strconv.Atoi(val)
+		case "replica_state":
+			volume.ReplicaState = ReplicaState(val)
 		}
 	}
 	return volume, nil
@@ -451,6 +482,11 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 		volume.Node = fields["node"]
 		volume.Instance = fields["instance"]
 		volume.MountPath = fields["mount_path"]
+		volume.MigrationSource = fields["migration_source"]
+		volume.UsedBytes, _ = strconv.ParseInt(fields["used_bytes"], 10, 64)
+		volume.CapacityBytes, _ = strconv.ParseInt(fields["capacity_bytes"], 10, 64)
+		volume.ReplicaCount, _ = strconv.Atoi(fields["replica_count"])
+		volume.ReplicaState = ReplicaState(fields["replica_state"])
 		volumes = append(volumes, volume)
 	}
 	return volumes, nil

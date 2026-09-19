@@ -72,12 +72,14 @@ type NetworkStatus struct {
 
 // VolumeStatus represents one persistent volume in the cluster status.
 type VolumeStatus struct {
-	Name      string `json:"name"`
-	Size      string `json:"size"`
-	State     string `json:"state"`
-	Node      string `json:"node,omitempty"`
-	Instance  string `json:"instance,omitempty"`
-	MountPath string `json:"mount_path,omitempty"`
+	Name          string `json:"name"`
+	Size          string `json:"size"`
+	State         string `json:"state"`
+	Node          string `json:"node,omitempty"`
+	Instance      string `json:"instance,omitempty"`
+	MountPath     string `json:"mount_path,omitempty"`
+	UsedBytes     int64  `json:"used_bytes,omitempty"`
+	CapacityBytes int64  `json:"capacity_bytes,omitempty"`
 }
 
 // SecretStatus represents one secret in the cluster status. Only the name and
@@ -223,12 +225,14 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
 	for _, volume := range allVolumes {
 		clusterStatus.Volumes = append(clusterStatus.Volumes, VolumeStatus{
-			Name:      volume.Name,
-			Size:      volume.Size,
-			State:     string(volume.State),
-			Node:      volume.Node,
-			Instance:  volume.Instance,
-			MountPath: volume.MountPath,
+			Name:          volume.Name,
+			Size:          volume.Size,
+			State:         string(volume.State),
+			Node:          volume.Node,
+			Instance:      volume.Instance,
+			MountPath:     volume.MountPath,
+			UsedBytes:     volume.UsedBytes,
+			CapacityBytes: volume.CapacityBytes,
 		})
 	}
 

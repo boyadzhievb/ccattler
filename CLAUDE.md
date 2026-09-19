@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M23 — P0 Correctness (Phase 26). M1–M22 complete.
+**Active milestone:** M24 — Storage Resilience (Phase 27). M1–M23 complete.
 
 ---
 
@@ -1308,11 +1308,11 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Agent restart lifecycle tests — restart during starting, running, and init phases all converge correctly
 
 ### Phase 27 — Storage Resilience
-- [ ] Volume migration on node failure — detect orphaned volumes on unreachable nodes, reattach to replacement node after scheduling
-- [ ] Volume snapshot before migration — create a point-in-time snapshot as a safety net before moving data
-- [ ] Storage health monitoring — disk usage observed facts per node, capacity warning thresholds, `cca top volumes` view
-- [ ] Volume resize — grow a volume without detach/remount (online resize where supported)
-- [ ] Volume replication — optional synchronous replication across nodes for critical persistent volumes
+- [x] Volume migration on node failure — VolumeMigrating state, migration metadata (source node), force-detach → migrating → reattach lifecycle, migration metadata cleared after reattach
+- [x] Volume snapshot before migration — SnapshotVolume in StorageProvider, controller snapshots before force-detach, last_snapshot fact recorded
+- [x] Storage health monitoring — VolumeUsage in StorageProvider, agent reports used_bytes/capacity_bytes, `cca top volumes` command
+- [x] Volume resize — ResizeVolume in StorageProvider, controller detects desired size != observed size, expand-only
+- [x] Volume replication — desired replicas config, replica_count/replica_state observed facts, syncing state on scale-up
 
 ### Phase 28 — Workload Identity Federation
 - [ ] `CloudIdentityDecl` AST node — provider, role, service_account, pool, client_id, tenant_id

@@ -31,4 +31,18 @@ type StorageProvider interface {
 	// IsAttached reports whether a volume is currently attached and to which
 	// node. Returns (false, "", nil) for unattached or unknown volumes.
 	IsAttached(ctx context.Context, volumeName string) (bool, string, error)
+
+	// SnapshotVolume creates a point-in-time snapshot of the named volume.
+	// The snapshotName identifies the snapshot for later restoration.
+	// Returns an error if the volume does not exist.
+	SnapshotVolume(ctx context.Context, volumeName string, snapshotName string) error
+
+	// VolumeUsage returns the used and total bytes for a volume.
+	// Returns (0, 0, nil) for unknown or detached volumes.
+	VolumeUsage(ctx context.Context, volumeName string) (usedBytes int64, totalBytes int64, err error)
+
+	// ResizeVolume changes the capacity of a volume. Only expansion is
+	// supported — shrinking returns an error. Returns an error if the volume
+	// does not exist.
+	ResizeVolume(ctx context.Context, volumeName string, newSizeBytes int64) error
 }

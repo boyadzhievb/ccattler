@@ -115,7 +115,7 @@ func main() {
 		executeChaosCommand()
 	case "top":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads>")
+			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads|volumes>")
 			os.Exit(1)
 		}
 		executeTopCommand(os.Args[2])
@@ -2562,8 +2562,26 @@ func executeTopCommand(resourceType string) {
 			fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n",
 				workloadName, nodeDisplay, instanceStatus.State, cpuDisplay, memDisplay, healthDisplay)
 		}
+	case "volumes", "volume", "vol":
+		fmt.Printf("%-16s  %-10s  %-12s  %-14s  %-16s  %s\n", "VOLUME", "STATE", "SIZE", "NODE", "USAGE", "INSTANCE")
+		for _, volumeStatus := range clusterStatus.Volumes {
+			nodeDisplay := volumeStatus.Node
+			if nodeDisplay == "" {
+				nodeDisplay = "-"
+			}
+			instanceDisplay := volumeStatus.Instance
+			if instanceDisplay == "" {
+				instanceDisplay = "-"
+			}
+			usageDisplay := "-"
+			if volumeStatus.CapacityBytes > 0 {
+				usageDisplay = formatResourceUsage(volumeStatus.UsedBytes, volumeStatus.CapacityBytes, "B")
+			}
+			fmt.Printf("%-16s  %-10s  %-12s  %-14s  %-16s  %s\n",
+				volumeStatus.Name, volumeStatus.State, volumeStatus.Size, nodeDisplay, usageDisplay, instanceDisplay)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource: %s (use 'nodes' or 'workloads')\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use 'nodes', 'workloads', or 'volumes')\n", resourceType)
 		os.Exit(1)
 	}
 }

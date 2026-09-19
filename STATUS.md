@@ -2,14 +2,15 @@
 
 ## Current Milestone
 
-M23 — P0 Correctness (Phase 26)
+M24 — Storage Resilience (Phase 27)
 
-- 7/7 items done
+- 5/5 items done
 - Status: complete
-- Items: runtime observation authoritative, 127.0.0.1 fallback removed, watch overflow resync, init restart-safe, probes decoupled, race tests, restart lifecycle tests
+- Items: volume migration on node failure, snapshot before migration, storage health monitoring + cca top volumes, volume resize, volume replication
 
 ## Recent Completions
 
+- [2026-09-19] M24 Phase 27 — Storage Resilience: VolumeMigrating state, pre-migration snapshots, usage monitoring, online resize, replication state tracking
 - [2026-09-19] M23 Phase 26 — P0 Correctness: observation-based state, no 127.0.0.1 fallback, watch overflow handling, init restart-safety, decoupled probes, race/restart tests
 - [2026-09-19] M22 Phase 25 item 1 — Prometheus `/metrics` endpoint with counters, gauges, histograms
 - [2026-09-19] M21 Phase 24 — describe, events, diff, errors, completions, column formatting, API describe
@@ -27,6 +28,6 @@ M23 — P0 Correctness (Phase 26)
 
 - Source files: 87
 - Test files: 49
-- Total Go lines: ~41K
+- Total Go lines: ~42K
 - Latest release: v0.20.1
-- Milestones complete: M1–M22
+- Milestones complete: M1–M24

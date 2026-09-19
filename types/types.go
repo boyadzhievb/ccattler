@@ -88,11 +88,16 @@ type ScaleTarget struct {
 // node and mounted into a service instance. Volumes survive instance
 // restarts and node moves — the data follows the workload.
 type Volume struct {
-	Name       string      // Name is the unique identifier for this volume (e.g. "pgdata").
-	Size       string      // Size is the raw DSL size string (e.g. "100Gi"), not parsed to bytes.
-	Persistent bool        // Persistent is true if the volume's data survives instance deletion.
-	State      VolumeState // State is the current lifecycle state (available, attached).
-	Node       string      // Node is the ID of the node this volume is attached to, empty if available.
-	Instance   string      // Instance is the ID of the instance this volume is mounted into, empty if unmounted.
-	MountPath  string      // MountPath is the filesystem path where the volume is mounted.
+	Name            string      // Name is the unique identifier for this volume (e.g. "pgdata").
+	Size            string      // Size is the raw DSL size string (e.g. "100Gi"), not parsed to bytes.
+	Persistent      bool        // Persistent is true if the volume's data survives instance deletion.
+	State           VolumeState // State is the current lifecycle state (available, attached, migrating).
+	Node            string      // Node is the ID of the node this volume is attached to, empty if available.
+	Instance        string      // Instance is the ID of the instance this volume is mounted into, empty if unmounted.
+	MountPath       string      // MountPath is the filesystem path where the volume is mounted.
+	MigrationSource string      // MigrationSource is the node the volume was detached from during migration.
+	UsedBytes       int64        // UsedBytes is the current disk usage in bytes.
+	CapacityBytes   int64        // CapacityBytes is the total volume capacity in bytes.
+	ReplicaCount    int          // ReplicaCount is the current number of synchronized replicas.
+	ReplicaState    ReplicaState // ReplicaState is the sync state (synced, syncing, degraded).
 }
