@@ -988,3 +988,46 @@ func TestMetricsEndpoint(t *testing.T) {
 		t.Error("expected API request duration histogram type declaration")
 	}
 }
+
+func TestHealthzEndpointHealthy(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	healthResponse, err := http.Get(baseURL + "/healthz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer healthResponse.Body.Close()
+
+	if healthResponse.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", healthResponse.StatusCode)
+	}
+
+	var result struct {
+		Status string `json:"status"`
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+		} `json:"checks"`
+	}
+	if decodeErr := json.NewDecoder(healthResponse.Body).Decode(&result); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+
+	if result.Status != "healthy" {
+		t.Errorf("expected status=healthy, got %s", result.Status)
+	}
+
+	storeFound := false
+	for _, check := range result.Checks {
+		if check.Name == "store" {
+			storeFound = true
+			if check.Status != "healthy" {
+				t.Errorf("expected store=healthy, got %s", check.Status)
+			}
+		}
+	}
+	if !storeFound {
+		t.Error("expected store check in health response")
+	}
+}

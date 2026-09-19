@@ -126,6 +126,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
 	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
+	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
 	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
 }
 
@@ -147,6 +148,68 @@ func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, reque
 	nodeCount.Set(int64(len(status.Nodes)))
 
 	metrics.DefaultRegistry.Handler().ServeHTTP(responseWriter, request)
+}
+
+// healthCheckResult describes the health status of a single component.
+type healthCheckResult struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Message string `json:"message,omitempty"`
+}
+
+// handleHealthz returns the health of the control plane: store connectivity,
+// controller presence, and overall readiness. Returns 200 when healthy, 503
+// when any critical check fails.
+func (apiServer *Server) handleHealthz(responseWriter http.ResponseWriter, request *http.Request) {
+	ctx := request.Context()
+	checks := []healthCheckResult{}
+	healthy := true
+
+	_, revisionError := apiServer.factStore.Revision(ctx)
+	if revisionError != nil {
+		checks = append(checks, healthCheckResult{
+			Name:    "store",
+			Status:  "unhealthy",
+			Message: revisionError.Error(),
+		})
+		healthy = false
+	} else {
+		checks = append(checks, healthCheckResult{
+			Name:   "store",
+			Status: "healthy",
+		})
+	}
+
+	controllerFacts, _ := apiServer.factStore.Scan(ctx, "leader/")
+	if len(controllerFacts) > 0 {
+		checks = append(checks, healthCheckResult{
+			Name:   "controllers",
+			Status: "healthy",
+		})
+	} else {
+		checks = append(checks, healthCheckResult{
+			Name:    "controllers",
+			Status:  "unknown",
+			Message: "no leader lease found",
+		})
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	if !healthy {
+		responseWriter.WriteHeader(http.StatusServiceUnavailable)
+	}
+	result := struct {
+		Status string              `json:"status"`
+		Checks []healthCheckResult `json:"checks"`
+	}{
+		Checks: checks,
+	}
+	if healthy {
+		result.Status = "healthy"
+	} else {
+		result.Status = "unhealthy"
+	}
+	json.NewEncoder(responseWriter).Encode(result)
 }
 
 // instrumentedHandler wraps an HTTP handler to record request count and duration
