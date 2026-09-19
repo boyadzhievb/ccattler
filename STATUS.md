@@ -2,14 +2,15 @@
 
 ## Current Milestone
 
-M24 — Storage Resilience (Phase 27)
+M25 — Identity DSL (Phase 28)
 
-- 5/5 items done
+- 10/10 items done
 - Status: complete
-- Items: volume migration on node failure, snapshot before migration, storage health monitoring + cca top volumes, volume resize, volume replication
+- Items: CloudIdentityDecl AST, CloudIdentityBindingDecl AST, CredentialBrokerDecl AST, cloud_identity top-level parser, cloud_identity service binding parser, credential_broker parser, provider-specific validation, compiler fact emission, fact key functions, scan prefix constants
 
 ## Recent Completions
 
+- [2026-09-19] M25 Phase 28 — Identity DSL & Facts: cloud_identity and credential_broker AST nodes, parsers, compiler with provider validation (aws/gcp/azure), fact keys, scan prefixes, 16 tests
 - [2026-09-19] M24 Phase 27 — Storage Resilience: VolumeMigrating state, pre-migration snapshots, usage monitoring, online resize, replication state tracking
 - [2026-09-19] M23 Phase 26 — P0 Correctness: observation-based state, no 127.0.0.1 fallback, watch overflow handling, init restart-safety, decoupled probes, race/restart tests
 - [2026-09-19] M22 Phase 25 item 1 — Prometheus `/metrics` endpoint with counters, gauges, histograms
@@ -30,4 +31,4 @@ M24 — Storage Resilience (Phase 27)
 - Test files: 49
 - Total Go lines: ~42K
 - Latest release: v0.20.1
-- Milestones complete: M1–M24
+- Milestones complete: M1–M25

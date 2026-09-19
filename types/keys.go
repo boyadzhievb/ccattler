@@ -1021,3 +1021,134 @@ func KeyObservedInstanceProbeState(instanceID string, probeType string) string {
 func ScanObservedInstanceProbes(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/probe/", PrefixObserved, instanceID)
 }
+
+// ---------------------------------------------------------------------------
+// Cloud identity keys
+// Pattern: desired/cloud_identity/{name}/{field}
+// Pattern: desired/service/{name}/cloud_identity/{identityName}/{field}
+// Pattern: desired/credential_broker/{field}
+// Pattern: observed/credential/{instanceID}/{identityName}/{field}
+// ---------------------------------------------------------------------------
+
+const (
+	// ScanDesiredCloudIdentities scans all desired cloud identity definitions.
+	ScanDesiredCloudIdentities = PrefixDesired + "/cloud_identity/"
+
+	// ScanDesiredCredentialBroker scans the credential broker configuration.
+	ScanDesiredCredentialBroker = PrefixDesired + "/credential_broker/"
+
+	// ScanObservedCredentials scans all observed credential state.
+	ScanObservedCredentials = PrefixObserved + "/credential/"
+)
+
+// KeyDesiredCloudIdentity returns the root marker for a cloud identity.
+// Path: desired/cloud_identity/{name}
+func KeyDesiredCloudIdentity(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityProvider returns the cloud provider for an identity.
+// Path: desired/cloud_identity/{name}/provider
+func KeyDesiredCloudIdentityProvider(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/provider", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityRole returns the IAM role ARN (AWS).
+// Path: desired/cloud_identity/{name}/role
+func KeyDesiredCloudIdentityRole(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/role", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityServiceAccount returns the GCP service account email.
+// Path: desired/cloud_identity/{name}/service_account
+func KeyDesiredCloudIdentityServiceAccount(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/service_account", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityPool returns the GCP workload identity pool.
+// Path: desired/cloud_identity/{name}/pool
+func KeyDesiredCloudIdentityPool(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/pool", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityClientID returns the Azure AD client ID.
+// Path: desired/cloud_identity/{name}/client_id
+func KeyDesiredCloudIdentityClientID(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/client_id", PrefixDesired, identityName)
+}
+
+// KeyDesiredCloudIdentityTenantID returns the Azure AD tenant ID.
+// Path: desired/cloud_identity/{name}/tenant_id
+func KeyDesiredCloudIdentityTenantID(identityName string) string {
+	return fmt.Sprintf("%s/cloud_identity/%s/tenant_id", PrefixDesired, identityName)
+}
+
+// KeyDesiredServiceCloudIdentity returns the root marker for a service's cloud
+// identity binding.
+// Path: desired/service/{serviceName}/cloud_identity/{identityName}
+func KeyDesiredServiceCloudIdentity(serviceName string, identityName string) string {
+	return fmt.Sprintf("%s/service/%s/cloud_identity/%s", PrefixDesired, serviceName, identityName)
+}
+
+// KeyDesiredServiceCloudIdentityMountPath returns the mount path for a service's
+// cloud identity credential files.
+// Path: desired/service/{serviceName}/cloud_identity/{identityName}/mount_path
+func KeyDesiredServiceCloudIdentityMountPath(serviceName string, identityName string) string {
+	return fmt.Sprintf("%s/service/%s/cloud_identity/%s/mount_path", PrefixDesired, serviceName, identityName)
+}
+
+// KeyDesiredServiceCloudIdentityDeliverMode returns how credentials are delivered
+// ("credentials" or "token").
+// Path: desired/service/{serviceName}/cloud_identity/{identityName}/deliver_mode
+func KeyDesiredServiceCloudIdentityDeliverMode(serviceName string, identityName string) string {
+	return fmt.Sprintf("%s/service/%s/cloud_identity/%s/deliver_mode", PrefixDesired, serviceName, identityName)
+}
+
+// ScanDesiredServiceCloudIdentities returns the scan prefix for all cloud
+// identity bindings of a service.
+// Path: desired/service/{serviceName}/cloud_identity/
+func ScanDesiredServiceCloudIdentities(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/cloud_identity/", PrefixDesired, serviceName)
+}
+
+// KeyDesiredCredentialBrokerOIDCIssuer returns the OIDC issuer URL.
+// Path: desired/credential_broker/oidc_issuer
+func KeyDesiredCredentialBrokerOIDCIssuer() string {
+	return PrefixDesired + "/credential_broker/oidc_issuer"
+}
+
+// KeyDesiredCredentialBrokerCredentialTTL returns the credential lifetime.
+// Path: desired/credential_broker/credential_ttl
+func KeyDesiredCredentialBrokerCredentialTTL() string {
+	return PrefixDesired + "/credential_broker/credential_ttl"
+}
+
+// KeyDesiredCredentialBrokerRefreshBefore returns the refresh-before window.
+// Path: desired/credential_broker/refresh_before
+func KeyDesiredCredentialBrokerRefreshBefore() string {
+	return PrefixDesired + "/credential_broker/refresh_before"
+}
+
+// KeyObservedCredentialState returns the credential state for an instance's identity.
+// Path: observed/credential/{instanceID}/{identityName}/state
+func KeyObservedCredentialState(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/state", PrefixObserved, instanceID, identityName)
+}
+
+// KeyObservedCredentialExpiresAt returns the expiry timestamp for an instance's credential.
+// Path: observed/credential/{instanceID}/{identityName}/expires_at
+func KeyObservedCredentialExpiresAt(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/expires_at", PrefixObserved, instanceID, identityName)
+}
+
+// KeyObservedCredentialIssuedAt returns the issuance timestamp for an instance's credential.
+// Path: observed/credential/{instanceID}/{identityName}/issued_at
+func KeyObservedCredentialIssuedAt(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/issued_at", PrefixObserved, instanceID, identityName)
+}
+
+// KeyObservedCredentialError returns the last error for an instance's credential.
+// Path: observed/credential/{instanceID}/{identityName}/error
+func KeyObservedCredentialError(instanceID string, identityName string) string {
+	return fmt.Sprintf("%s/credential/%s/%s/error", PrefixObserved, instanceID, identityName)
+}
