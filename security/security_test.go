@@ -2,12 +2,18 @@ package security
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -1165,5 +1171,218 @@ func TestPrincipalContext(t *testing.T) {
 	ctx = WithPrincipal(ctx, "node:n1")
 	if principal := PrincipalFromContext(ctx); principal != "node:n1" {
 		t.Fatalf("expected node:n1, got %s", principal)
+	}
+}
+
+func TestWorkloadTokenIssuerCreation(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+	if tokenIssuer.IssuerURL() != "https://ccattler.example.com" {
+		t.Errorf("issuer URL: got %q", tokenIssuer.IssuerURL())
+	}
+	if tokenIssuer.PublicKey() == nil {
+		t.Fatal("public key is nil")
+	}
+	if tokenIssuer.KeyID() == "" {
+		t.Fatal("key ID is empty")
+	}
+}
+
+func TestMintWorkloadToken(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	spiffeID := "spiffe://ccattler/payments/checkout"
+	audience := "sts.amazonaws.com"
+	tokenString, err := tokenIssuer.MintWorkloadToken(spiffeID, audience, 1*time.Hour)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+	if tokenString == "" {
+		t.Fatal("token is empty")
+	}
+
+	// Verify the token using the existing OIDCAuthenticator
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer:   "https://ccattler.example.com",
+		Audience: "sts.amazonaws.com",
+	}, tokenIssuer.PublicKey())
+
+	authResult, err := authenticator.Authenticate(tokenString)
+	if err != nil {
+		t.Fatalf("authenticate: %v", err)
+	}
+
+	expectedPrincipal := "user:" + spiffeID
+	if authResult.Principal != expectedPrincipal {
+		t.Errorf("principal: got %q, want %q", authResult.Principal, expectedPrincipal)
+	}
+}
+
+func TestMintWorkloadTokenIncludesKeyID(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	tokenString, err := tokenIssuer.MintWorkloadToken("spiffe://ccattler/web", "sts.amazonaws.com", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+
+	// Decode header to check kid
+	parts := splitJWT(tokenString)
+	if parts == nil {
+		t.Fatal("invalid JWT format")
+	}
+
+	headerJSON, _ := decodeBase64URL(parts[0])
+	var header map[string]string
+	if err := jsonUnmarshalMap(headerJSON, &header); err != nil {
+		t.Fatalf("parse header: %v", err)
+	}
+
+	if header["kid"] != tokenIssuer.KeyID() {
+		t.Errorf("kid in header: got %q, want %q", header["kid"], tokenIssuer.KeyID())
+	}
+	if header["alg"] != "ES256" {
+		t.Errorf("alg: got %q, want ES256", header["alg"])
+	}
+}
+
+func TestOIDCDiscoveryDocument(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	discoveryDoc := tokenIssuer.OIDCDiscoveryDocument()
+	if discoveryDoc.Issuer != "https://ccattler.example.com" {
+		t.Errorf("issuer: got %q", discoveryDoc.Issuer)
+	}
+	if discoveryDoc.JWKSURI != "https://ccattler.example.com/oidc/jwks" {
+		t.Errorf("jwks_uri: got %q", discoveryDoc.JWKSURI)
+	}
+	if len(discoveryDoc.IDTokenSigningAlgValues) != 1 || discoveryDoc.IDTokenSigningAlgValues[0] != "ES256" {
+		t.Errorf("signing algs: got %v", discoveryDoc.IDTokenSigningAlgValues)
+	}
+}
+
+func TestJWKSDocument(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	jwksDoc := tokenIssuer.JWKSDocument()
+	if len(jwksDoc.Keys) != 1 {
+		t.Fatalf("expected 1 JWK, got %d", len(jwksDoc.Keys))
+	}
+
+	jwkEntry := jwksDoc.Keys[0]
+	if jwkEntry.KeyType != "EC" {
+		t.Errorf("kty: got %q, want EC", jwkEntry.KeyType)
+	}
+	if jwkEntry.Algorithm != "ES256" {
+		t.Errorf("alg: got %q, want ES256", jwkEntry.Algorithm)
+	}
+	if jwkEntry.Curve != "P-256" {
+		t.Errorf("crv: got %q, want P-256", jwkEntry.Curve)
+	}
+	if jwkEntry.KeyID != tokenIssuer.KeyID() {
+		t.Errorf("kid: got %q, want %q", jwkEntry.KeyID, tokenIssuer.KeyID())
+	}
+	if jwkEntry.X == "" || jwkEntry.Y == "" {
+		t.Error("JWK coordinates are empty")
+	}
+}
+
+func TestJWKSVerifiesMintedToken(t *testing.T) {
+	tokenIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	tokenString, err := tokenIssuer.MintWorkloadToken("spiffe://ccattler/web", "sts.amazonaws.com", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("mint token: %v", err)
+	}
+
+	// Reconstruct public key from JWKS document to verify the token
+	jwksDoc := tokenIssuer.JWKSDocument()
+	jwkEntry := jwksDoc.Keys[0]
+
+	xBytes, _ := decodeBase64URL(jwkEntry.X)
+	yBytes, _ := decodeBase64URL(jwkEntry.Y)
+
+	reconstructedKey := reconstructECPublicKey(xBytes, yBytes)
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer:   "https://ccattler.example.com",
+		Audience: "sts.amazonaws.com",
+	}, reconstructedKey)
+
+	_, err = authenticator.Authenticate(tokenString)
+	if err != nil {
+		t.Fatalf("token minted by issuer should verify against JWKS public key: %v", err)
+	}
+}
+
+func TestWorkloadTokenIssuerWithExistingKey(t *testing.T) {
+	originalIssuer, err := NewWorkloadTokenIssuer("https://ccattler.example.com")
+	if err != nil {
+		t.Fatalf("create issuer: %v", err)
+	}
+
+	// Create a second issuer with the same key
+	restoredIssuer := NewWorkloadTokenIssuerWithKey("https://ccattler.example.com", originalIssuer.signingKey)
+
+	if restoredIssuer.KeyID() != originalIssuer.KeyID() {
+		t.Errorf("key ID should be deterministic: got %q, want %q", restoredIssuer.KeyID(), originalIssuer.KeyID())
+	}
+
+	// Token from restored issuer should verify against original public key
+	tokenString, err := restoredIssuer.MintWorkloadToken("spiffe://ccattler/web", "test", 1*time.Hour)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+
+	authenticator := NewOIDCAuthenticator(OIDCConfig{
+		Issuer: "https://ccattler.example.com",
+	}, originalIssuer.PublicKey())
+
+	_, err = authenticator.Authenticate(tokenString)
+	if err != nil {
+		t.Fatalf("restored issuer token should verify: %v", err)
+	}
+}
+
+// --- test helpers for JWT parsing ---
+
+func splitJWT(tokenString string) []string {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	return parts
+}
+
+func decodeBase64URL(encoded string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(encoded)
+}
+
+func jsonUnmarshalMap(data []byte, target *map[string]string) error {
+	return json.Unmarshal(data, target)
+}
+
+func reconstructECPublicKey(xBytes, yBytes []byte) *ecdsa.PublicKey {
+	return &ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
 	}
 }

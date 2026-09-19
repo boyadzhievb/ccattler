@@ -2,14 +2,15 @@
 
 ## Current Milestone
 
-M25 — Identity DSL (Phase 28)
+M26 — OIDC Infrastructure (Phase 29)
 
-- 10/10 items done
+- 4/4 items done
 - Status: complete
-- Items: CloudIdentityDecl AST, CloudIdentityBindingDecl AST, CredentialBrokerDecl AST, cloud_identity top-level parser, cloud_identity service binding parser, credential_broker parser, provider-specific validation, compiler fact emission, fact key functions, scan prefix constants
+- Items: ECDSA P-256 signing key with deterministic key ID, MintWorkloadToken JWT issuer, /.well-known/openid-configuration endpoint, /oidc/jwks JWKS endpoint
 
 ## Recent Completions
 
+- [2026-09-19] M26 Phase 29 — OIDC Infrastructure: WorkloadTokenIssuer with ECDSA P-256 signing, MintWorkloadToken, OIDC discovery + JWKS endpoints, 10 tests
 - [2026-09-19] M25 Phase 28 — Identity DSL & Facts: cloud_identity and credential_broker AST nodes, parsers, compiler with provider validation (aws/gcp/azure), fact keys, scan prefixes, 16 tests
 - [2026-09-19] M24 Phase 27 — Storage Resilience: VolumeMigrating state, pre-migration snapshots, usage monitoring, online resize, replication state tracking
 - [2026-09-19] M23 Phase 26 — P0 Correctness: observation-based state, no 127.0.0.1 fallback, watch overflow handling, init restart-safety, decoupled probes, race/restart tests
@@ -27,8 +28,8 @@ M25 — Identity DSL (Phase 28)
 
 ## Metrics
 
-- Source files: 87
+- Source files: 88
 - Test files: 49
-- Total Go lines: ~42K
+- Total Go lines: ~43K
 - Latest release: v0.20.1
-- Milestones complete: M1–M25
+- Milestones complete: M1–M26

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M25 — Identity DSL (Phase 28). M1–M24 complete.
+**Active milestone:** M26 — OIDC Infrastructure (Phase 29). M1–M25 complete.
 
 ---
 
@@ -1327,10 +1327,10 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Scan prefix constants — `ScanDesiredCloudIdentities`, `ScanDesiredServiceCloudIdentities`, `ScanObservedCredentials`
 
 ### Phase 29 — OIDC Infrastructure
-- [ ] OIDC signing key — ECDSA P-256 key pair for JWT signing (reuses existing CA infrastructure)
-- [ ] OIDC token issuer — `MintWorkloadToken(spiffeID, audience)` creates signed JWTs with SPIFFE subject claims
-- [ ] OIDC discovery endpoint — `GET /.well-known/openid-configuration` on API server
-- [ ] OIDC JWKS endpoint — `GET /oidc/jwks` serves public signing key in JWK format
+- [x] OIDC signing key — ECDSA P-256 key pair for JWT signing, deterministic key ID from public key hash, `NewWorkloadTokenIssuer` and `NewWorkloadTokenIssuerWithKey`
+- [x] OIDC token issuer — `MintWorkloadToken(spiffeID, audience, ttl)` creates signed ES256 JWTs with SPIFFE subject, issuer, audience, iat/exp claims, kid header
+- [x] OIDC discovery endpoint — `GET /.well-known/openid-configuration` on API server via `SetWorkloadTokenIssuer`, returns issuer, jwks_uri, supported algs
+- [x] OIDC JWKS endpoint — `GET /oidc/jwks` serves public signing key as JWK with EC P-256 coordinates, padded to 32 bytes
 
 ### Phase 30 — Cloud Provider Adapters
 - [ ] Cloud provider adapter interface — `ExchangeToken(jwt, identityConfig) → CloudCredential`
