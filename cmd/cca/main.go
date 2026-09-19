@@ -2850,29 +2850,228 @@ func executeGetCommand(resourceType string) {
 		os.Exit(1)
 	}
 
-	var output interface{}
 	switch resourceType {
 	case "services", "svc":
-		output = status.Services
+		printServicesTable(status.Services)
 	case "instances", "inst":
-		output = status.Instances
+		printInstancesTable(status.Instances)
 	case "nodes":
-		output = status.Nodes
+		printNodesTable(status.Nodes)
 	case "volumes", "vol":
-		output = status.Volumes
+		printVolumesTable(status.Volumes)
 	case "networking", "net":
-		output = status.Networking
+		printNetworkingTable(status.Networking)
 	case "secrets", "secret":
-		output = status.Secrets
+		printSecretsTable(status.Secrets)
 	case "config", "cfg":
-		output = status.Config
+		printConfigTable(status.Config)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config)\n", resourceType)
 		os.Exit(1)
 	}
+}
 
-	formattedJSON, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Println(string(formattedJSON))
+// printAlignedTable renders rows as an aligned table with a header row. Column
+// widths are computed from the maximum cell width in each column.
+func printAlignedTable(header []string, rows [][]string) {
+	columnWidths := make([]int, len(header))
+	for columnIndex, columnHeader := range header {
+		columnWidths[columnIndex] = len(columnHeader)
+	}
+	for _, row := range rows {
+		for columnIndex, cell := range row {
+			if columnIndex < len(columnWidths) && len(cell) > columnWidths[columnIndex] {
+				columnWidths[columnIndex] = len(cell)
+			}
+		}
+	}
+
+	formatLine := func(cells []string) string {
+		var builder strings.Builder
+		for columnIndex, cell := range cells {
+			if columnIndex > 0 {
+				builder.WriteString("  ")
+			}
+			if columnIndex < len(columnWidths) {
+				fmt.Fprintf(&builder, "%-*s", columnWidths[columnIndex], cell)
+			} else {
+				builder.WriteString(cell)
+			}
+		}
+		return builder.String()
+	}
+
+	fmt.Println(formatLine(header))
+	for _, row := range rows {
+		fmt.Println(formatLine(row))
+	}
+}
+
+// truncateValue shortens a string to maxLength, appending "..." if truncated.
+func truncateValue(value string, maxLength int) string {
+	if len(value) <= maxLength {
+		return value
+	}
+	if maxLength <= 3 {
+		return value[:maxLength]
+	}
+	return value[:maxLength-3] + "..."
+}
+
+func printServicesTable(services []api.ServiceStatus) {
+	header := []string{"NAME", "IMAGE", "DESIRED", "RUNNING", "PORTS"}
+	var rows [][]string
+	for _, service := range services {
+		portStrings := make([]string, len(service.ExposedPorts))
+		for portIndex, port := range service.ExposedPorts {
+			portStrings[portIndex] = fmt.Sprintf("%d", port)
+		}
+		portsDisplay := strings.Join(portStrings, ",")
+		if portsDisplay == "" {
+			portsDisplay = "-"
+		}
+		rows = append(rows, []string{
+			service.Name,
+			truncateValue(service.Image, 40),
+			fmt.Sprintf("%d", service.DesiredCount),
+			fmt.Sprintf("%d", service.RunningCount),
+			portsDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printInstancesTable(instances []api.InstanceStatus) {
+	header := []string{"ID", "SERVICE", "STATE", "NODE", "IP", "HEALTH"}
+	var rows [][]string
+	for _, instance := range instances {
+		healthDisplay := instance.HealthState
+		if healthDisplay == "" {
+			healthDisplay = "-"
+		}
+		ipDisplay := instance.IPAddress
+		if ipDisplay == "" {
+			ipDisplay = "-"
+		}
+		rows = append(rows, []string{
+			truncateValue(instance.ID, 12),
+			instance.ServiceName,
+			instance.State,
+			instance.NodeID,
+			ipDisplay,
+			healthDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printNodesTable(nodes []api.NodeStatus) {
+	header := []string{"ID", "STATE", "INSTANCES", "CPU (avail/total)", "MEMORY (avail/total)"}
+	var rows [][]string
+	for _, node := range nodes {
+		cpuDisplay := fmt.Sprintf("%dm/%dm", node.AvailableCPU, node.CapacityCPU)
+		memoryDisplay := fmt.Sprintf("%dMi/%dMi", node.AvailableMemory, node.CapacityMemory)
+		rows = append(rows, []string{
+			node.ID,
+			node.State,
+			fmt.Sprintf("%d", node.PlacedInstances),
+			cpuDisplay,
+			memoryDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printVolumesTable(volumes []api.VolumeStatus) {
+	if len(volumes) == 0 {
+		fmt.Println("No volumes found.")
+		return
+	}
+	header := []string{"NAME", "SIZE", "STATE", "NODE", "INSTANCE", "MOUNT"}
+	var rows [][]string
+	for _, volume := range volumes {
+		nodeDisplay := volume.Node
+		if nodeDisplay == "" {
+			nodeDisplay = "-"
+		}
+		instanceDisplay := volume.Instance
+		if instanceDisplay == "" {
+			instanceDisplay = "-"
+		}
+		mountDisplay := volume.MountPath
+		if mountDisplay == "" {
+			mountDisplay = "-"
+		}
+		rows = append(rows, []string{
+			volume.Name,
+			volume.Size,
+			volume.State,
+			nodeDisplay,
+			truncateValue(instanceDisplay, 12),
+			mountDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printNetworkingTable(networking []api.NetworkStatus) {
+	if len(networking) == 0 {
+		fmt.Println("No networking entries found.")
+		return
+	}
+	header := []string{"SERVICE", "VIP", "PORT", "DNS"}
+	var rows [][]string
+	for _, entry := range networking {
+		dnsDisplay := entry.DNS
+		if dnsDisplay == "" {
+			dnsDisplay = "-"
+		}
+		rows = append(rows, []string{
+			entry.ServiceName,
+			entry.VIP,
+			fmt.Sprintf("%d", entry.Port),
+			dnsDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printSecretsTable(secrets []api.SecretStatus) {
+	if len(secrets) == 0 {
+		fmt.Println("No secrets found.")
+		return
+	}
+	header := []string{"NAME", "GRANTED TO"}
+	var rows [][]string
+	for _, secret := range secrets {
+		grantedDisplay := strings.Join(secret.GrantedTo, ", ")
+		if grantedDisplay == "" {
+			grantedDisplay = "-"
+		}
+		rows = append(rows, []string{
+			secret.Name,
+			grantedDisplay,
+		})
+	}
+	printAlignedTable(header, rows)
+}
+
+func printConfigTable(configEntries []api.ConfigStatus) {
+	if len(configEntries) == 0 {
+		fmt.Println("No config entries found.")
+		return
+	}
+	header := []string{"SERVICE", "TYPE", "KEY", "VALUE"}
+	var rows [][]string
+	for _, entry := range configEntries {
+		rows = append(rows, []string{
+			entry.Service,
+			entry.Type,
+			entry.Key,
+			truncateValue(entry.Value, 50),
+		})
+	}
+	printAlignedTable(header, rows)
 }
 
 // executeScaleCommand sends a scale request to the API to change a service's
