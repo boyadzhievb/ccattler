@@ -2,10 +2,10 @@ package controllers
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -97,11 +97,11 @@ func (haRunner *HARunner) startControllers() {
 	haRunner.runner = NewRunner(haRunner.factStore, wrappedControllers...)
 	go func() {
 		if err := haRunner.runner.Run(controllerCtx); err != nil && controllerCtx.Err() == nil {
-			log.Printf("ha-runner: controller error: %v", err)
+			logging.Default().Error("controller error", "component", "ha-runner", "error", err.Error())
 		}
 	}()
 
-	log.Printf("ha-runner: controllers started (leader)")
+	logging.Default().Info("controllers started (leader)", "component", "ha-runner")
 }
 
 // stopControllers is called when this node loses leadership. It cancels
@@ -114,7 +114,7 @@ func (haRunner *HARunner) stopControllers() {
 		haRunner.cancelRunner()
 		haRunner.cancelRunner = nil
 		haRunner.runner = nil
-		log.Printf("ha-runner: controllers stopped (lost leadership)")
+		logging.Default().Info("controllers stopped (lost leadership)", "component", "ha-runner")
 	}
 }
 

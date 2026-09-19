@@ -3,10 +3,10 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -149,7 +149,7 @@ func (election *LeaderElection) tryAcquireOrRenew(ctx context.Context) {
 		}
 		if ok {
 			election.isLeader = true
-			log.Printf("leader election: %s acquired leadership (expired lease)", election.nodeID)
+			logging.Default().Info("acquired leadership (expired lease)", "node", election.nodeID)
 			if election.onAcquired != nil {
 				election.onAcquired()
 			}
@@ -172,7 +172,7 @@ func (election *LeaderElection) acquireLease(ctx context.Context, nowStr string)
 	}
 	if ok {
 		election.isLeader = true
-		log.Printf("leader election: %s acquired leadership (new lease)", election.nodeID)
+		logging.Default().Info("acquired leadership (new lease)", "node", election.nodeID)
 		if election.onAcquired != nil {
 			election.onAcquired()
 		}
@@ -191,7 +191,7 @@ func (election *LeaderElection) release(ctx context.Context) {
 	election.factStore.Delete(ctx, leaderLeaseKey)
 	election.factStore.Delete(ctx, leaderLeaseHolderKey)
 	election.isLeader = false
-	log.Printf("leader election: %s released leadership", election.nodeID)
+	logging.Default().Info("released leadership", "node", election.nodeID)
 	if election.onLost != nil {
 		election.onLost()
 	}

@@ -3,11 +3,11 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -153,7 +153,11 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 		if attemptIndex < len(backoffDelays)-1 {
 			attemptIndex++
 		}
-		log.Printf("controller %s failed (attempt %d), retrying in %v: %v", controller.Name(), attemptIndex, delay, err)
+		logging.Default().Warn("controller failed, retrying",
+			"controller", controller.Name(),
+			"attempt", fmt.Sprintf("%d", attemptIndex),
+			"delay", delay.String(),
+			"error", err.Error())
 
 		select {
 		case <-ctx.Done():
@@ -185,7 +189,7 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 						return
 					}
 					if watchEvent.Type == store.EventOverflow {
-						log.Printf("controller %s: watch events were dropped, triggering resync", controllerName)
+						logging.Default().Warn("watch events dropped, triggering resync", "controller", controllerName)
 					}
 					select {
 					case reconcileTrigger <- struct{}{}:
@@ -214,7 +218,7 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 			return ctx.Err()
 		case <-resyncChannel:
 			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
-				log.Printf("controller %s resync error: %v", controller.Name(), err)
+				logging.Default().Error("resync error", "controller", controller.Name(), "error", err.Error())
 			}
 		case <-reconcileTrigger:
 			if controllerRunner.debounce > 0 {
@@ -231,7 +235,7 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 				}
 			}
 			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
-				log.Printf("controller %s reconcile error: %v", controller.Name(), err)
+				logging.Default().Error("reconcile error", "controller", controller.Name(), "error", err.Error())
 			}
 		}
 	}
@@ -261,13 +265,15 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 			return nil
 		}
 		reconciliationConflicts.Inc(controllerName)
-		log.Printf("controller %s: reconciliation conflict (attempt %d/%d), retrying",
-			controllerName, attemptIndex+1, maxReconciliationAttempts)
+		logging.Default().Warn("reconciliation conflict, retrying",
+			"controller", controllerName,
+			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, maxReconciliationAttempts))
 	}
 	reconciliationTotal.Inc(controllerName, "abandoned")
 	reconciliationDuration.ObserveSince(startTime, controllerName)
-	log.Printf("controller %s: reconciliation abandoned after %d conflict retries",
-		controllerName, maxReconciliationAttempts)
+	logging.Default().Warn("reconciliation abandoned after conflict retries",
+		"controller", controllerName,
+		"retries", fmt.Sprintf("%d", maxReconciliationAttempts))
 	return nil
 }
 

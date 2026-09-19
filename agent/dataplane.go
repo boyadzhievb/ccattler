@@ -3,10 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -24,12 +24,12 @@ func (nodeAgent *Agent) reconcileDataPlane(ctx context.Context) {
 
 	serviceVIPConfigs, err := nodeAgent.buildServiceVIPConfigs(ctx)
 	if err != nil {
-		log.Printf("agent %s: dataplane: failed to build VIP configs: %v", nodeAgent.nodeID, err)
+		logging.Default().Error("dataplane: failed to build VIP configs", "agent", nodeAgent.nodeID, "error", err.Error())
 		return
 	}
 
 	if err := nodeAgent.dataPlaneProvider.ReconcileVIPDataPlane(ctx, serviceVIPConfigs); err != nil {
-		log.Printf("agent %s: dataplane: reconcile error: %v", nodeAgent.nodeID, err)
+		logging.Default().Error("dataplane: reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 	}
 }
 
@@ -76,7 +76,7 @@ func (nodeAgent *Agent) buildServiceVIPConfigs(ctx context.Context) ([]network.S
 
 		backends, err := nodeAgent.resolveServiceBackends(ctx, serviceName)
 		if err != nil {
-			log.Printf("agent %s: dataplane: failed to resolve backends for %s: %v", nodeAgent.nodeID, serviceName, err)
+			logging.Default().Error("dataplane: failed to resolve backends", "agent", nodeAgent.nodeID, "service", serviceName, "error", err.Error())
 			continue
 		}
 		vipConfig.Backends = backends

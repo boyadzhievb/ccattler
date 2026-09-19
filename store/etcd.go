@@ -3,10 +3,10 @@ package store
 import (
 	"bytes"
 	"context"
-	"log"
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -332,7 +332,7 @@ func (etcdStore *EtcdStore) forwardEtcdWatchEvents(etcdWatchChannel clientv3.Wat
 			case outputChannel <- event:
 			default:
 				if !eventsDropped {
-					log.Printf("WARNING: etcd watch event dropped for key %s (channel buffer full)", currentFact.Key)
+					logging.Default().Warn("etcd watch event dropped (channel buffer full)", "key", currentFact.Key)
 				}
 				eventsDropped = true
 			}

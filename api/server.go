@@ -9,13 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -95,7 +95,7 @@ func (apiServer *Server) Start(listenAddress string) (string, error) {
 	apiServer.listener = listener
 	go func() {
 		if serveError := http.Serve(listener, apiServer.mux); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
-			log.Printf("api server: %v", serveError)
+			logging.Default().Error("api server error", "error", serveError.Error())
 		}
 	}()
 	return listener.Addr().String(), nil

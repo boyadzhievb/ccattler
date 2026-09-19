@@ -2,10 +2,11 @@ package agent
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -113,7 +114,7 @@ func (nodeAgent *Agent) executeStartupProbe(ctx context.Context, instanceInfo pl
 		tracker.consecutiveFailures = 0
 		if tracker.consecutiveSuccesses >= config.successThreshold {
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeSucceeded)))
-			log.Printf("agent %s: startup probe succeeded for %s", nodeAgent.nodeID, instanceInfo.id)
+			logging.Default().Info("startup probe succeeded", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 			return true
 		}
 	} else {
@@ -121,7 +122,7 @@ func (nodeAgent *Agent) executeStartupProbe(ctx context.Context, instanceInfo pl
 		tracker.consecutiveSuccesses = 0
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeFailed)))
-			log.Printf("agent %s: startup probe failed for %s (threshold %d reached)", nodeAgent.nodeID, instanceInfo.id, config.failureThreshold)
+			logging.Default().Warn("startup probe failed", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
 			return false
 		}
 	}
@@ -159,7 +160,7 @@ func (nodeAgent *Agent) executeLivenessProbe(ctx context.Context, instanceInfo p
 		tracker.consecutiveSuccesses = 0
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "liveness"), []byte(string(types.LivenessProbeUnhealthy)))
-			log.Printf("agent %s: liveness probe unhealthy for %s (threshold %d reached)", nodeAgent.nodeID, instanceInfo.id, config.failureThreshold)
+			logging.Default().Warn("liveness probe unhealthy", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
 		}
 	}
 }

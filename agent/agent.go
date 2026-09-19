@@ -3,13 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/storage"
@@ -114,7 +114,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
-		log.Printf("agent %s: initial reconcile error: %v", nodeAgent.nodeID, err)
+		logging.Default().Error("initial reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 	}
 
 	// Watch for placement changes and reconcile periodically.
@@ -134,7 +134,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
 			nodeAgent.writeHeartbeat(ctx)
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
-				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
+				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
 			nodeAgent.collectAndReportNodeTelemetry(ctx)
 			nodeAgent.reconcileDataPlane(ctx)
@@ -143,7 +143,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 				return nil
 			}
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
-				log.Printf("agent %s: reconcile error: %v", nodeAgent.nodeID, err)
+				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
 		}
 	}
@@ -179,7 +179,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
 				initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo)
 				if !initSucceeded {
-					log.Printf("agent %s: init failed for %s, skipping workload start", nodeAgent.nodeID, instanceInfo.id)
+					logging.Default().Warn("init failed, skipping workload start", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 					delete(runningByID, instanceInfo.id)
 					continue
 				}
@@ -189,7 +189,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			if nodeAgent.storageProvider != nil {
 				volumesReady, attachErr := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)
 				if attachErr != nil {
-					log.Printf("agent %s: volume error for %s: %v", nodeAgent.nodeID, instanceInfo.id, attachErr)
+					logging.Default().Error("volume error", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", attachErr.Error())
 				}
 				if !volumesReady {
 					delete(runningByID, instanceInfo.id)
@@ -212,7 +212,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			if nodeAgent.networkProvider != nil {
 				ip, allocErr := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceInfo.id)
 				if allocErr != nil {
-					log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceInfo.id, allocErr)
+					logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", allocErr.Error())
 				} else {
 					allocatedIP = ip
 				}
@@ -226,7 +226,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 				Ports:       exposedPorts,
 				IP:          allocatedIP,
 			}); err != nil {
-				log.Printf("agent %s: failed to start %s: %v", nodeAgent.nodeID, instanceInfo.id, err)
+				logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", err.Error())
 				if nodeAgent.secretProvider != nil {
 					nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
 				}
@@ -504,18 +504,18 @@ func (nodeAgent *Agent) materializeSecretsForInstance(ctx context.Context, insta
 		secretName := strings.TrimPrefix(grantFact.Key, secretPrefix)
 		plaintext, mountPath, err := nodeAgent.secretProvider.GetSecretForService(ctx, instanceInfo.service, secretName)
 		if err != nil {
-			log.Printf("agent %s: secret %s for %s/%s: %v", nodeAgent.nodeID, secretName, instanceInfo.service, instanceInfo.id, err)
+			logging.Default().Error("secret retrieval failed", "agent", nodeAgent.nodeID, "secret", secretName, "service", instanceInfo.service, "instance", instanceInfo.id, "error", err.Error())
 			continue
 		}
 
 		parentDirectory := filepath.Dir(mountPath)
 		if err := os.MkdirAll(parentDirectory, 0700); err != nil {
-			log.Printf("agent %s: mkdir %s: %v", nodeAgent.nodeID, parentDirectory, err)
+			logging.Default().Error("mkdir failed", "agent", nodeAgent.nodeID, "path", parentDirectory, "error", err.Error())
 			continue
 		}
 
 		if err := os.WriteFile(mountPath, plaintext, 0600); err != nil {
-			log.Printf("agent %s: write secret %s to %s: %v", nodeAgent.nodeID, secretName, mountPath, err)
+			logging.Default().Error("write secret failed", "agent", nodeAgent.nodeID, "secret", secretName, "path", mountPath, "error", err.Error())
 			continue
 		}
 
@@ -536,7 +536,7 @@ func (nodeAgent *Agent) cleanupSecretsForInstance(instanceID string) {
 	for _, materializedSecret := range nodeAgent.materializedSecrets {
 		if materializedSecret.InstanceID == instanceID {
 			if err := os.Remove(materializedSecret.MountPath); err != nil && !os.IsNotExist(err) {
-				log.Printf("agent %s: remove secret %s: %v", nodeAgent.nodeID, materializedSecret.MountPath, err)
+				logging.Default().Warn("remove secret failed", "agent", nodeAgent.nodeID, "path", materializedSecret.MountPath, "error", err.Error())
 			}
 			continue
 		}
@@ -564,7 +564,7 @@ func (nodeAgent *Agent) refreshMaterializedSecrets(ctx context.Context) {
 		existingContent, readErr := os.ReadFile(materializedSecret.MountPath)
 		if readErr != nil || string(existingContent) != string(plaintext) {
 			os.WriteFile(materializedSecret.MountPath, plaintext, 0600)
-			log.Printf("agent %s: rotated secret %s for instance %s", nodeAgent.nodeID, materializedSecret.SecretName, materializedSecret.InstanceID)
+			logging.Default().Info("rotated secret", "agent", nodeAgent.nodeID, "secret", materializedSecret.SecretName, "instance", materializedSecret.InstanceID)
 		}
 	}
 }
@@ -681,7 +681,7 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
 		if allocateError != nil {
-			log.Printf("agent %s: failed to allocate IP for %s: %v", nodeAgent.nodeID, instanceID, allocateError)
+			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceID, "error", allocateError.Error())
 		} else {
 			instanceIP = allocatedIP
 			types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP)
