@@ -1,0 +1,67 @@
+{
+  "dashboard": {
+    "title": "CCattler Node Detail",
+    "uid": "ccattler-node-detail",
+    "tags": ["ccattler"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "node",
+          "type": "query",
+          "query": "label_values(ccattler_nodes, node)",
+          "refresh": 2
+        }
+      ]
+    },
+    "panels": [
+      {
+        "title": "Node Count",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+        "targets": [{ "expr": "ccattler_nodes", "legendFormat": "total" }]
+      },
+      {
+        "title": "Instances per Node",
+        "type": "bargauge",
+        "gridPos": { "h": 8, "w": 12, "x": 4, "y": 0 },
+        "targets": [{ "expr": "ccattler_instances{state=\"running\"}", "legendFormat": "{{node}}" }]
+      },
+      {
+        "title": "Reconciliation Rate by Controller",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_total[5m])", "legendFormat": "{{controller}} {{result}}" }
+        ]
+      },
+      {
+        "title": "Reconciliation Duration by Controller",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          { "expr": "histogram_quantile(0.99, rate(ccattler_reconciliation_duration_seconds_bucket[5m]))", "legendFormat": "{{controller}} p99" },
+          { "expr": "histogram_quantile(0.50, rate(ccattler_reconciliation_duration_seconds_bucket[5m]))", "legendFormat": "{{controller}} p50" }
+        ]
+      },
+      {
+        "title": "Scheduling Conflicts",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_conflicts_total[5m])", "legendFormat": "{{controller}}" }
+        ]
+      },
+      {
+        "title": "API Request Duration Distribution",
+        "type": "heatmap",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "targets": [
+          { "expr": "rate(ccattler_api_request_duration_seconds_bucket[5m])", "legendFormat": "{{le}}" }
+        ]
+      }
+    ]
+  }
+}

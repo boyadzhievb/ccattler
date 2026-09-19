@@ -4,8 +4,8 @@
 
 M22 — Observability (Phase 25)
 
-- 4/6 items done
-- Status: in progress
+- 6/6 items done
+- Status: complete
 - Items: Prometheus `/metrics` endpoint, structured JSON logging, `cca logs`, health endpoint, Grafana dashboards, alert rules
 
 ## Recent Completions
