@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -869,5 +870,82 @@ func TestEventStreamMethodNotAllowed(t *testing.T) {
 
 	if httpResponse.StatusCode != 405 {
 		t.Fatalf("expected 405, got %d", httpResponse.StatusCode)
+	}
+}
+
+func TestDiffEndpointAllNew(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	dslConfig := "service web {\n  image nginx:1.28\n  instances 3\n}"
+	resp, err := http.Post(baseURL+"/api/diff", "text/plain", strings.NewReader(dslConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
+	}
+
+	var changes []lang.FactChange
+	json.NewDecoder(resp.Body).Decode(&changes)
+
+	if len(changes) == 0 {
+		t.Fatal("expected changes")
+	}
+	for _, change := range changes {
+		if change.Type != "add" {
+			t.Errorf("expected add, got %s for %s", change.Type, change.Key)
+		}
+	}
+}
+
+func TestDiffEndpointDetectsModified(t *testing.T) {
+	baseURL, factStore, cleanup := newTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	types.WriteService(ctx, factStore, types.Service{
+		Name: "web", Image: "nginx:1.27", Instances: 2,
+	})
+
+	dslConfig := "service web {\n  image nginx:1.28\n  instances 3\n}"
+	resp, err := http.Post(baseURL+"/api/diff", "text/plain", strings.NewReader(dslConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var changes []lang.FactChange
+	json.NewDecoder(resp.Body).Decode(&changes)
+
+	foundImageModify := false
+	for _, change := range changes {
+		if change.Key == types.KeyDesiredServiceImage("web") && change.Type == "modify" {
+			foundImageModify = true
+			if change.OldValue != "nginx:1.27" {
+				t.Fatalf("expected old nginx:1.27, got %s", change.OldValue)
+			}
+		}
+	}
+	if !foundImageModify {
+		t.Fatal("expected image modify change")
+	}
+}
+
+func TestDiffEndpointInvalidDSL(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Post(baseURL+"/api/diff", "text/plain", strings.NewReader("invalid {{ config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 400 {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }

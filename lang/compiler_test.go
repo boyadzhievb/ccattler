@@ -457,3 +457,88 @@ func factMap(facts []Fact) map[string]string {
 	}
 	return factLookup
 }
+
+func TestDiffAllNew(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	changes, err := Diff(context.Background(), factStore, `service web {
+    image nginx:1.28
+    instances 3
+}`)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+
+	for _, change := range changes {
+		if change.Type != "add" {
+			t.Errorf("expected all adds, got %s for %s", change.Type, change.Key)
+		}
+	}
+	if len(changes) == 0 {
+		t.Fatal("expected some changes")
+	}
+}
+
+func TestDiffDetectsModified(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx := context.Background()
+	Apply(ctx, factStore, `service web {
+    image nginx:1.27
+    instances 2
+}`)
+
+	changes, err := Diff(ctx, factStore, `service web {
+    image nginx:1.28
+    instances 3
+}`)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+
+	changesByKey := make(map[string]FactChange)
+	for _, change := range changes {
+		changesByKey[change.Key] = change
+	}
+
+	imageChange := changesByKey[types.KeyDesiredServiceImage("web")]
+	if imageChange.Type != "modify" {
+		t.Fatalf("expected image modify, got %s", imageChange.Type)
+	}
+	if imageChange.OldValue != "nginx:1.27" {
+		t.Fatalf("expected old nginx:1.27, got %s", imageChange.OldValue)
+	}
+	if imageChange.NewValue != "nginx:1.28" {
+		t.Fatalf("expected new nginx:1.28, got %s", imageChange.NewValue)
+	}
+
+	instanceChange := changesByKey[types.KeyDesiredServiceInstances("web")]
+	if instanceChange.Type != "modify" {
+		t.Fatalf("expected instances modify, got %s", instanceChange.Type)
+	}
+}
+
+func TestDiffDetectsUnchanged(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx := context.Background()
+	dslContent := `service web {
+    image nginx:1.28
+    instances 3
+}`
+	Apply(ctx, factStore, dslContent)
+
+	changes, err := Diff(ctx, factStore, dslContent)
+	if err != nil {
+		t.Fatalf("diff: %v", err)
+	}
+
+	for _, change := range changes {
+		if change.Type != "unchanged" {
+			t.Errorf("expected all unchanged, got %s for %s", change.Type, change.Key)
+		}
+	}
+}

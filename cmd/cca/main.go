@@ -126,6 +126,13 @@ func main() {
 			logsTarget = os.Args[2]
 		}
 		executeLogsCommand(logsTarget)
+	case "diff":
+		parsedDiffConfig := parseDiffCommandArgs(os.Args[2:])
+		if parsedDiffConfig.configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca diff [--store memory|etcd] [--endpoints host:port,...] <file>")
+			os.Exit(1)
+		}
+		executeDiffCommand(parsedDiffConfig)
 	case "events":
 		parsedEventsConfig := parseEventsCommandArgs(os.Args[2:])
 		executeEventsCommand(parsedEventsConfig)
@@ -1177,6 +1184,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  describe <type> <name>       detailed view (service, node, instance)")
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
+	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
 	fmt.Fprintln(os.Stderr, "  logs [service]               cluster event log (optionally filtered)")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
@@ -2042,6 +2050,139 @@ func findNodeRunningService(ctx context.Context, factStore store.StateStore, ser
 		}
 	}
 	return ""
+}
+
+// diffCommandConfig holds parsed flags for the "diff" command.
+type diffCommandConfig struct {
+	// configFilePath is the path to the .ccattler DSL file to diff.
+	configFilePath string
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+}
+
+// parseDiffCommandArgs extracts the config file path and optional store flags
+// from the arguments following "diff".
+func parseDiffCommandArgs(args []string) diffCommandConfig {
+	parsedConfig := diffCommandConfig{
+		storeBackend:   "memory",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+	}
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		default:
+			if !strings.HasPrefix(currentArg, "-") {
+				parsedConfig.configFilePath = currentArg
+			}
+		}
+	}
+	return parsedConfig
+}
+
+// executeDiffCommand parses a .ccattler file and shows what facts would change
+// without writing anything. In etcd mode it compares against the live store.
+// In memory mode (default) everything is an "add" since the store is empty.
+func executeDiffCommand(parsedConfig diffCommandConfig) {
+	fileData, err := os.ReadFile(parsedConfig.configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, err)
+		os.Exit(1)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if parsedConfig.storeBackend == "etcd" {
+		factStore, storeCreationError := createStateStoreFromServerConfig(
+			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		if storeCreationError != nil {
+			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
+			os.Exit(1)
+		}
+		defer factStore.Close()
+
+		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
+		if diffError != nil {
+			fmt.Fprintf(os.Stderr, "diff error: %v\n", diffError)
+			os.Exit(1)
+		}
+		printDiffChanges(changes)
+		return
+	}
+
+	apiURL := "http://" + statusAPIListenAddress + "/api/diff"
+	httpResponse, diffErr := http.Post(apiURL, "text/plain", strings.NewReader(string(fileData)))
+	if diffErr != nil {
+		factStore := store.NewMemoryStore()
+		defer factStore.Close()
+
+		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
+		if diffError != nil {
+			fmt.Fprintf(os.Stderr, "diff error: %v\n", diffError)
+			os.Exit(1)
+		}
+		printDiffChanges(changes)
+		return
+	}
+	defer httpResponse.Body.Close()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "diff error: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+
+	var changes []lang.FactChange
+	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&changes); decodeErr != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
+		os.Exit(1)
+	}
+	printDiffChanges(changes)
+}
+
+// printDiffChanges renders fact changes as human-readable diff output.
+func printDiffChanges(changes []lang.FactChange) {
+	addedCount := 0
+	modifiedCount := 0
+	unchangedCount := 0
+
+	for _, change := range changes {
+		switch change.Type {
+		case "add":
+			addedCount++
+			fmt.Printf("+ %s = %s\n", change.Key, change.NewValue)
+		case "modify":
+			modifiedCount++
+			fmt.Printf("~ %s\n", change.Key)
+			fmt.Printf("  - %s\n", change.OldValue)
+			fmt.Printf("  + %s\n", change.NewValue)
+		case "unchanged":
+			unchangedCount++
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("%d added, %d modified, %d unchanged\n", addedCount, modifiedCount, unchangedCount)
 }
 
 // eventsCommandConfig holds parsed flags for the "events" command.

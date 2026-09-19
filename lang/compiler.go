@@ -414,3 +414,51 @@ func Apply(ctx context.Context, stateStore store.StateStore, input string) error
 	}
 	return nil
 }
+
+// FactChange describes a single fact that would be added or modified by an apply.
+type FactChange struct {
+	Key      string `json:"key"`
+	OldValue string `json:"old_value,omitempty"`
+	NewValue string `json:"new_value"`
+	Type     string `json:"type"` // "add", "modify", or "unchanged"
+}
+
+// Diff parses a DSL string, compiles it to facts, and compares each fact
+// against the current store state. It returns a list of changes without
+// writing anything. Facts that exist in the store but not in the compiled
+// output are not reported — diff only shows what the apply would write.
+func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]FactChange, error) {
+	file, err := Parse(input)
+	if err != nil {
+		return nil, err
+	}
+	facts, err := Compile(file)
+	if err != nil {
+		return nil, err
+	}
+	var changes []FactChange
+	for _, fact := range facts {
+		existing, getError := stateStore.Get(ctx, fact.Key)
+		if getError != nil {
+			changes = append(changes, FactChange{
+				Key:      fact.Key,
+				NewValue: fact.Value,
+				Type:     "add",
+			})
+		} else if string(existing.Value) != fact.Value {
+			changes = append(changes, FactChange{
+				Key:      fact.Key,
+				OldValue: string(existing.Value),
+				NewValue: fact.Value,
+				Type:     "modify",
+			})
+		} else {
+			changes = append(changes, FactChange{
+				Key:      fact.Key,
+				NewValue: fact.Value,
+				Type:     "unchanged",
+			})
+		}
+	}
+	return changes, nil
+}

@@ -1283,8 +1283,8 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 ### Phase 24 — CLI & UX
 - [x] `cca describe <service|node|instance>` — detailed single-resource view showing all related facts, health state, placement, recent events
 - [x] `cca events [--follow] [--service <name>]` — real-time event stream with optional filtering by service
-- [ ] `cca diff <file>` — dry-run apply that shows what facts would change (added/modified/removed) without committing
-- [ ] Colored terminal output — tables with aligned columns, status indicators (green running, red failed, yellow pending), box-drawing for structure
+- [x] `cca diff <file>` — dry-run apply that shows what facts would change (added/modified/removed) without committing
+- [x] ~Colored terminal output~ — dropped: data is already readable without colors, not worth the complexity
 - [ ] Better error messages — DSL parse errors show line/column with source context, runtime errors suggest corrective actions
 - [ ] Shell completions — bash and zsh completion scripts for commands, subcommands, and resource names (generated from `cca get` output)
 - [ ] `cca get` column formatting — aligned columns, human-readable durations (e.g. "3m ago" instead of timestamps), truncation for long values
@@ -1304,6 +1304,46 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Storage health monitoring — disk usage observed facts per node, capacity warning thresholds, `cca top volumes` view
 - [ ] Volume resize — grow a volume without detach/remount (online resize where supported)
 - [ ] Volume replication — optional synchronous replication across nodes for critical persistent volumes
+
+### Phase 27 — Workload Identity Federation
+- [ ] `CloudIdentityDecl` AST node — provider, role, service_account, pool, client_id, tenant_id
+- [ ] `CloudIdentityBindingDecl` AST node — identity name, mount path, deliver mode (credentials or token)
+- [ ] `CredentialBrokerDecl` AST node — oidc_issuer, credential_ttl, refresh_before
+- [ ] DSL `cloud_identity` top-level block — provider-specific fields (aws: role ARN, gcp: service_account+pool, azure: client_id+tenant_id)
+- [ ] DSL `cloud_identity` in service block — binding with mount path and deliver mode
+- [ ] DSL `credential_broker` top-level configuration block
+- [ ] DSL validation — provider-specific required fields, binding references existing identity
+- [ ] Compiler — cloud identity facts (`desired/cloud_identity/{name}/...`), service binding facts, broker config facts
+- [ ] Fact key functions — `KeyDesiredCloudIdentity*`, `KeyDesiredServiceCloudIdentity*`, `KeyObservedCredential*`, `KeyDesiredCredentialBroker*`
+- [ ] Scan prefix constants — `ScanDesiredCloudIdentities`, `ScanDesiredServiceCloudIdentities`, `ScanObservedCredentials`
+- [ ] OIDC signing key — ECDSA P-256 key pair for JWT signing (reuses existing CA infrastructure)
+- [ ] OIDC token issuer — `MintWorkloadToken(spiffeID, audience)` creates signed JWTs with SPIFFE subject claims
+- [ ] OIDC discovery endpoint — `GET /.well-known/openid-configuration` on API server
+- [ ] OIDC JWKS endpoint — `GET /oidc/jwks` serves public signing key in JWK format
+- [ ] Cloud provider adapter interface — `ExchangeToken(jwt, identityConfig) → CloudCredential`
+- [ ] AWS STS adapter — `AssumeRoleWithWebIdentity` with OIDC JWT and IAM role ARN
+- [ ] GCP STS adapter — Google Security Token Service exchange with workload identity pool
+- [ ] Azure adapter — Azure AD federated credential exchange
+- [ ] Credential store — AES-256-GCM encrypted storage at `credentials/` prefix (reuses SecretStore pattern)
+- [ ] Credential broker controller — watches identity bindings + running instances, issues and refreshes credentials
+- [ ] Credential broker proactive refresh — re-issue credentials before TTL expiry (configurable refresh_before window)
+- [ ] Credential broker garbage collection — revoke and delete credentials for stopped/deleted instances
+- [ ] Credential state facts — `observed/credential/{instance}/{identity}/state`, `/expires_at`, `/issued_at`, `/error`
+- [ ] `CredentialProvider` interface in agent — `GetCredentialForInstance(ctx, service, instance, identity)`
+- [ ] Node agent credential materialization — write credential/token files to mount path on instance start
+- [ ] Node agent credential refresh — re-read on each reconciliation tick, overwrite if broker has refreshed
+- [ ] Node agent credential cleanup — remove credential files on instance stop
+- [ ] AWS credential file format — INI-style `[default]` credentials file for standard SDK
+- [ ] GCP credential file format — Application Default Credentials JSON
+- [ ] Azure credential file format — token file for Azure SDK
+- [ ] Token projection mode — deliver signed JWT directly for workloads with embedded cloud SDKs
+- [ ] RBAC role `credential-broker` — scoped least-privilege permissions for the broker controller
+- [ ] RBAC update `node-agent` — add read access to `credentials/` and cloud identity bindings
+- [ ] Audit trail — credential issuance, refresh, revocation events via EventLog
+- [ ] `cca get cloud-identities` — list declared cloud identities with provider and bound services
+- [ ] `cca describe cloud-identity <name>` — identity details, bound services, per-instance credential status
+- [ ] Deterministic tests — mock STS adapters, verify credential lifecycle (issue, refresh, revoke, garbage collect)
+- [ ] Integration test — end-to-end: DSL → facts → broker → encrypted credential → agent materialization
 
 ### Milestones
 
@@ -1332,5 +1372,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M21 — CLI & UX | 24 | `cca describe web` shows full resource detail, `cca events --follow` streams live, `cca diff` previews changes, colored tables |
 | M22 — Observability | 25 | `/metrics` serves Prometheus, structured JSON logs, `cca logs web --follow`, `/healthz`, Grafana dashboards |
 | M23 — Storage Resilience | 26 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
+| M24 — Workload Identity | 27 | `cloud_identity payments-s3 { provider aws, role ... }` federates SPIFFE to cloud IAM, broker issues short-lived credentials, agent materializes credential files |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
