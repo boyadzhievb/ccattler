@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M22 — Observability (Phase 25). M1–M21 complete.
+**Active milestone:** M23 — P0 Correctness (Phase 26). M1–M22 complete.
 
 ---
 
@@ -1298,14 +1298,23 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
 - [x] Alert rule templates — node unreachable, instance crash-looping, scheduling failures, certificate approaching expiry, etcd latency
 
-### Phase 26 — Storage Resilience
+### Phase 26 — P0 Correctness
+- [x] Runtime observation authoritative — add `InstanceStarting` state, agent observes via `Status()` after `Start()` instead of treating action as truth
+- [x] Remove 127.0.0.1 fallback — no IP assigned without NetworkProvider, health/probes skip when IP unavailable
+- [x] Watch overflow → full resync — agent handles `EventOverflow` on placement watch, `Watch()` contract documented
+- [x] Init restart-safety — stale "running" init steps treated as failed on agent restart, re-executed with retries
+- [x] Decouple probes from reconciliation — independent `runProbeScheduler` goroutine with own ticker
+- [x] Race/concurrency tests — agent runs with `-race`, concurrent reconciliation + probes verified safe
+- [x] Agent restart lifecycle tests — restart during starting, running, and init phases all converge correctly
+
+### Phase 27 — Storage Resilience
 - [ ] Volume migration on node failure — detect orphaned volumes on unreachable nodes, reattach to replacement node after scheduling
 - [ ] Volume snapshot before migration — create a point-in-time snapshot as a safety net before moving data
 - [ ] Storage health monitoring — disk usage observed facts per node, capacity warning thresholds, `cca top volumes` view
 - [ ] Volume resize — grow a volume without detach/remount (online resize where supported)
 - [ ] Volume replication — optional synchronous replication across nodes for critical persistent volumes
 
-### Phase 27 — Workload Identity Federation
+### Phase 28 — Workload Identity Federation
 - [ ] `CloudIdentityDecl` AST node — provider, role, service_account, pool, client_id, tenant_id
 - [ ] `CloudIdentityBindingDecl` AST node — identity name, mount path, deliver mode (credentials or token)
 - [ ] `CredentialBrokerDecl` AST node — oidc_issuer, credential_ttl, refresh_before
@@ -1345,7 +1354,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Deterministic tests — mock STS adapters, verify credential lifecycle (issue, refresh, revoke, garbage collect)
 - [ ] Integration test — end-to-end: DSL → facts → broker → encrypted credential → agent materialization
 
-### Phase 28 — API Horizontal Scalability
+### Phase 29 — API Horizontal Scalability
 - [ ] Separate API server from controller runner — API can be deployed as independent replicas
 - [ ] Stateless API replicas — all reads/writes go directly to etcd, no local state
 - [ ] Leader election only for controllers — API replicas serve requests regardless of leadership
@@ -1354,7 +1363,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [ ] Load balancer readiness — `/healthz` returns ready only when etcd is reachable
 - [ ] Watch multiplexing — shared etcd watches across API replicas to reduce etcd load
 
-### Phase 29 — Cloud Controller Manager
+### Phase 30 — Cloud Controller Manager
 - [ ] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
 - [ ] AWS cloud provider — EC2 instance management, ELB/NLB service load balancers, VPC route table entries
 - [ ] GCP cloud provider — GCE instance management, Cloud Load Balancing, VPC routes
@@ -1390,9 +1399,10 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M20 — Service Networking | 23 | `curl -H "Host: web" http://node:80` round-robins via proxy, DNS resolves VIPs, require/prefer/restrict/accept placement |
 | M21 — CLI & UX | 24 | `cca describe web` shows full resource detail, `cca events --follow` streams live, `cca diff` previews changes, colored tables |
 | M22 — Observability | 25 | `/metrics` serves Prometheus, structured JSON logs, `cca logs web --follow`, `/healthz`, Grafana dashboards |
-| M23 — Storage Resilience | 26 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
-| M24 — Workload Identity | 27 | `cloud_identity payments-s3 { provider aws, role ... }` federates SPIFFE to cloud IAM, broker issues short-lived credentials, agent materializes credential files |
-| M25 — API HA | 28 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
-| M26 — Cloud Controller | 29 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
+| M23 — P0 Correctness | 26 | Runtime observation authoritative, no 127.0.0.1 fallback, watch overflow resync, init restart-safe, probes decoupled, race-safe |
+| M24 — Storage Resilience | 27 | Volume migrates to new node on failure, snapshots before migration, `cca top volumes`, online resize |
+| M25 — Workload Identity | 28 | `cloud_identity payments-s3 { provider aws, role ... }` federates SPIFFE to cloud IAM, broker issues short-lived credentials, agent materializes credential files |
+| M26 — API HA | 29 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
+| M27 — Cloud Controller | 30 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

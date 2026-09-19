@@ -43,6 +43,12 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 		if existingState == string(types.InitStepSucceeded) {
 			continue
 		}
+		// A step left in "running" state from a previous agent incarnation is
+		// treated as failed — the agent crashed before recording the outcome.
+		if existingState == string(types.InitStepRunning) {
+			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed)))
+			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), []byte("agent restarted during execution"))
+		}
 
 		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition)
 		if !succeeded {

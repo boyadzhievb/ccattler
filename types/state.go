@@ -11,8 +11,14 @@ const (
 	// It is waiting to be scheduled onto a node and started by the node agent.
 	InstancePending InstanceState = "pending"
 
+	// InstanceStarting means the runtime accepted the start operation but the
+	// workload has not yet been confirmed running by runtime observation. This
+	// state prevents treating a successful Start() call as proof of liveness.
+	InstanceStarting InstanceState = "starting"
+
 	// InstanceRunning means the instance is actively running on a node.
-	// The node agent has confirmed the container or process is alive.
+	// The node agent has confirmed via runtime observation (Status/List) that
+	// the container or process is alive.
 	InstanceRunning InstanceState = "running"
 
 	// InstanceFailed means the instance encountered an error and is no longer

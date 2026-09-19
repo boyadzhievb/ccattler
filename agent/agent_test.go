@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,60 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// delayedStartRuntime wraps a SimulatorRuntime but reports instances as not-running
+// for a configurable number of Status() calls after Start(). This tests the
+// observation-based state reporting: Start() succeeding should not be treated as
+// proof that the workload is running.
+type delayedStartRuntime struct {
+	inner        *runtime.SimulatorRuntime
+	statusCounts map[string]int // how many Status() calls have been made per instance
+	delayCount   int            // Status() returns not-running for this many calls after Start()
+	mu           sync.Mutex
+}
+
+func newDelayedStartRuntime(delayCount int) *delayedStartRuntime {
+	return &delayedStartRuntime{
+		inner:        runtime.NewSimulatorRuntime(),
+		statusCounts: make(map[string]int),
+		delayCount:   delayCount,
+	}
+}
+
+func (delayed *delayedStartRuntime) Start(ctx context.Context, spec runtime.Spec) error {
+	delayed.mu.Lock()
+	delayed.statusCounts[spec.ID] = 0
+	delayed.mu.Unlock()
+	return delayed.inner.Start(ctx, spec)
+}
+
+func (delayed *delayedStartRuntime) Stop(ctx context.Context, instanceID string) error {
+	return delayed.inner.Stop(ctx, instanceID)
+}
+
+func (delayed *delayedStartRuntime) Status(ctx context.Context, instanceID string) (runtime.Status, error) {
+	delayed.mu.Lock()
+	count := delayed.statusCounts[instanceID]
+	delayed.statusCounts[instanceID] = count + 1
+	delayed.mu.Unlock()
+
+	if count < delayed.delayCount {
+		return runtime.Status{ID: instanceID, Running: false}, nil
+	}
+	return delayed.inner.Status(ctx, instanceID)
+}
+
+func (delayed *delayedStartRuntime) List(ctx context.Context) ([]runtime.Status, error) {
+	return delayed.inner.List(ctx)
+}
+
+func (delayed *delayedStartRuntime) Exec(ctx context.Context, instanceID string, execSpec runtime.ExecSpec) error {
+	return delayed.inner.Exec(ctx, instanceID, execSpec)
+}
+
+func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
+	return delayed.inner.Logs(ctx, instanceID, follow)
+}
 
 // mockSecretProvider is a test double that serves secrets from an in-memory map.
 type mockSecretProvider struct {
@@ -220,9 +275,10 @@ func TestAgentReportsHealthy(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceHealthPath("web"), []byte("/health"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", port), []byte(""))
 
-	// Place instance and set its IP.
+	// Place instance and pre-set its IP so health checks have a target.
 	types.WriteInstance(ctx, factStore, types.Instance{ID: "eee", Service: "web", State: types.InstancePending})
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "eee", NodeID: "node-1"})
+	factStore.Put(ctx, types.KeyObservedInstanceIP("eee"), []byte("127.0.0.1"))
 
 	go nodeAgent.Run(ctx)
 
@@ -255,6 +311,7 @@ func TestAgentReportsUnhealthy(t *testing.T) {
 
 	types.WriteInstance(ctx, factStore, types.Instance{ID: "fff", Service: "web", State: types.InstancePending})
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "fff", NodeID: "node-1"})
+	factStore.Put(ctx, types.KeyObservedInstanceIP("fff"), []byte("127.0.0.1"))
 
 	go nodeAgent.Run(ctx)
 
@@ -369,9 +426,10 @@ func TestAgentWithNetworkProviderWritesAllocationFact(t *testing.T) {
 	})
 }
 
-// TestAgentWithoutNetworkProviderUsesLoopback verifies backward compatibility:
-// agents without a NetworkProvider still assign 127.0.0.1.
-func TestAgentWithoutNetworkProviderUsesLoopback(t *testing.T) {
+// TestAgentWithoutNetworkProviderNoIPAssigned verifies that without a
+// NetworkProvider, no IP fact is written. A missing IP is semantically correct:
+// it means the network is unavailable, rather than a misleading 127.0.0.1.
+func TestAgentWithoutNetworkProviderNoIPAssigned(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -388,13 +446,20 @@ func TestAgentWithoutNetworkProviderUsesLoopback(t *testing.T) {
 
 	go nodeAgent.Run(ctx)
 
-	waitFor(t, 2*time.Second, "instance gets 127.0.0.1", func() bool {
-		ipFact, err := factStore.Get(ctx, types.KeyObservedInstanceIP("net-ccc"))
-		return err == nil && string(ipFact.Value) == "127.0.0.1"
+	// Wait for instance to be reported.
+	waitFor(t, 2*time.Second, "instance state observed", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("net-ccc"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceRunning)
 	})
 
+	// No IP fact should exist without a NetworkProvider.
+	_, err := factStore.Get(ctx, types.KeyObservedInstanceIP("net-ccc"))
+	if err == nil {
+		t.Error("IP fact should not exist without NetworkProvider")
+	}
+
 	// No network allocation fact should exist.
-	_, err := factStore.Get(ctx, types.KeyNetworkAllocation("net-ccc"))
+	_, err = factStore.Get(ctx, types.KeyNetworkAllocation("net-ccc"))
 	if err == nil {
 		t.Error("network allocation fact should not exist without NetworkProvider")
 	}
@@ -811,5 +876,300 @@ func TestAgentRotatesSecretWithoutRestart(t *testing.T) {
 	if string(stateFact.Value) != "running" {
 		t.Fatalf("instance should still be running, got %s", string(stateFact.Value))
 	}
+}
+
+// TestAgentInitRestartSafety verifies that if an init step was left in "running"
+// state (simulating an agent crash mid-init), the agent marks it as failed and
+// retries it, rather than skipping or hanging.
+func TestAgentInitRestartSafety(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "init-svc"
+	instanceID := "init-aaa"
+
+	// Set up service with one init step (root marker + exec command).
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 0), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 0), []byte("echo setup"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	// Simulate agent crash: init step 0 was left in "running" state.
+	factStore.Put(ctx, types.KeyObservedInstanceInitPhase(instanceID), []byte(string(types.InitPhaseRunning)))
+	factStore.Put(ctx, types.KeyObservedInstanceInitStepState(instanceID, 0), []byte(string(types.InitStepRunning)))
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	// The agent should detect the stale "running" step, mark it failed, re-execute,
+	// and eventually complete init + start the workload.
+	waitFor(t, 3*time.Second, "init phase complete after restart recovery", func() bool {
+		phaseFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID))
+		return err == nil && string(phaseFact.Value) == string(types.InitPhaseComplete)
+	})
+
+	// Step 0 should be succeeded.
+	waitFor(t, 2*time.Second, "init step 0 succeeded", func() bool {
+		stepFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitStepState(instanceID, 0))
+		return err == nil && string(stepFact.Value) == string(types.InitStepSucceeded)
+	})
+
+	// Instance should be running.
+	waitFor(t, 2*time.Second, "instance running after init recovery", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return err == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+}
+
+// TestAgentInitSkipsCompletedSteps verifies that already-succeeded init steps
+// are not re-executed across reconciliation cycles.
+func TestAgentInitSkipsCompletedSteps(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "init-skip-svc"
+	instanceID := "init-bbb"
+
+	// Service with two init steps (root markers + exec commands).
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 0), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 0), []byte("echo step0"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 1), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 1), []byte("echo step1"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	// Step 0 already succeeded (persisted from previous agent incarnation).
+	factStore.Put(ctx, types.KeyObservedInstanceInitStepState(instanceID, 0), []byte(string(types.InitStepSucceeded)))
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	// Init should complete — step 0 skipped, step 1 executed.
+	waitFor(t, 3*time.Second, "init phase complete", func() bool {
+		phaseFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitPhase(instanceID))
+		return err == nil && string(phaseFact.Value) == string(types.InitPhaseComplete)
+	})
+
+	// Both steps should show succeeded.
+	for stepIndex := 0; stepIndex < 2; stepIndex++ {
+		stepFact, err := factStore.Get(ctx, types.KeyObservedInstanceInitStepState(instanceID, stepIndex))
+		if err != nil || string(stepFact.Value) != string(types.InitStepSucceeded) {
+			t.Errorf("step %d: want succeeded, got %v (err: %v)", stepIndex, string(stepFact.Value), err)
+		}
+	}
+}
+
+// TestAgentConcurrentReconcileAndProbes verifies that the reconciliation loop
+// and independent probe scheduler can run concurrently without races.
+// Must be run with -race to be effective.
+func TestAgentConcurrentReconcileAndProbes(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+	nodeAgent.SetInterval(20 * time.Millisecond)
+
+	// Set up multiple services with health probes to maximize concurrency.
+	for serviceIndex := 0; serviceIndex < 5; serviceIndex++ {
+		serviceName := fmt.Sprintf("concurrent-svc-%d", serviceIndex)
+		instanceID := fmt.Sprintf("concurrent-%d", serviceIndex)
+		factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+		types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+		types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+	}
+
+	go nodeAgent.Run(ctx)
+
+	// Let the agent run with concurrent reconciliation + probes for a while.
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify all instances converged to running.
+	for serviceIndex := 0; serviceIndex < 5; serviceIndex++ {
+		instanceID := fmt.Sprintf("concurrent-%d", serviceIndex)
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		if err != nil {
+			t.Errorf("instance %s: state not found", instanceID)
+			continue
+		}
+		if string(stateFact.Value) != string(types.InstanceRunning) {
+			t.Errorf("instance %s: want running, got %s", instanceID, string(stateFact.Value))
+		}
+	}
+}
+
+// TestAgentRestartDuringStarting verifies that an agent restart while an
+// instance is in "starting" state correctly re-observes and converges.
+func TestAgentRestartDuringStarting(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "restart-svc"
+	instanceID := "restart-aaa"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	// Simulate: previous agent left instance in "starting" state but it's actually
+	// running in the simulator (simulating the runtime having finished starting
+	// after the agent crashed).
+	factStore.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStarting)))
+	factStore.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(serviceName))
+	factStore.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte("node-1"))
+	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "app:1.0"})
+
+	// New agent incarnation starts.
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	// Agent should observe the running instance and update state to "running".
+	waitFor(t, 2*time.Second, "instance converges to running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return err == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+}
+
+// TestAgentRestartDuringRunning verifies that an agent restart while instances
+// are running correctly re-observes all instance states.
+func TestAgentRestartDuringRunning(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx1, cancel1 := context.WithCancel(context.Background())
+
+	nodeAgent1 := New("node-1", factStore, simulatorRuntime)
+	nodeAgent1.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx1, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx1, factStore, types.Instance{ID: "restart-bbb", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx1, factStore, types.Placement{InstanceID: "restart-bbb", NodeID: "node-1"})
+
+	go nodeAgent1.Run(ctx1)
+
+	waitFor(t, 2*time.Second, "instance running under first agent", func() bool {
+		stateFact, err := factStore.Get(ctx1, types.KeyObservedInstanceState("restart-bbb"))
+		return err == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	// Simulate agent crash/restart.
+	cancel1()
+	time.Sleep(50 * time.Millisecond)
+
+	// Second agent incarnation.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+
+	nodeAgent2 := New("node-1", factStore, simulatorRuntime)
+	nodeAgent2.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent2.Run(ctx2)
+
+	// Instance should still be running — second agent observes the runtime.
+	time.Sleep(200 * time.Millisecond)
+	stateFact, err := factStore.Get(ctx2, types.KeyObservedInstanceState("restart-bbb"))
+	if err != nil {
+		t.Fatal("instance state not found after agent restart")
+	}
+	if string(stateFact.Value) != string(types.InstanceRunning) {
+		t.Errorf("instance state after restart: want running, got %s", string(stateFact.Value))
+	}
+}
+
+// TestAgentObservesRuntimeStateBeforePublishing verifies that after Start()
+// succeeds, the agent observes runtime state via Status() before publishing.
+// With a delayed-start runtime, the first observation should report "starting"
+// instead of immediately assuming "running".
+func TestAgentObservesRuntimeStateBeforePublishing(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	delayedRuntime := newDelayedStartRuntime(2)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, delayedRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "obs-aaa", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "obs-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// First, the agent should publish "starting" because Status() returns not-running.
+	waitFor(t, 2*time.Second, "instance state=starting in store", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("obs-aaa"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceStarting)
+	})
+
+	// Eventually, after enough reconciliation cycles, Status() returns running.
+	waitFor(t, 2*time.Second, "instance state=running in store", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("obs-aaa"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceRunning)
+	})
+}
+
+// TestAgentObservationBasedStateForExistingInstances verifies that even for
+// instances already in the runtime (the else branch), the agent observes
+// current runtime state rather than blindly publishing "running".
+func TestAgentObservationBasedStateForExistingInstances(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "obs-bbb", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "obs-bbb", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("obs-bbb"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceRunning)
+	})
+
+	// Kill the instance in the runtime — the agent should observe the change.
+	simulatorRuntime.Stop(ctx, "obs-bbb")
+
+	// On the next reconciliation cycle, the agent will see it's not running via
+	// List() and try to restart it. After restart + observation, it should be
+	// running again (simulator Start() is immediate).
+	waitFor(t, 2*time.Second, "instance re-observed as running after restart", func() bool {
+		runtimeStatus, err := simulatorRuntime.Status(ctx, "obs-bbb")
+		return err == nil && runtimeStatus.Running
+	})
 }
 

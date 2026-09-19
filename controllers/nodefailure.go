@@ -140,7 +140,7 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 			continue
 		}
 		instanceState := types.InstanceState(currentInstanceStates[instanceID])
-		if instanceState == types.InstanceRunning || instanceState == types.InstancePending {
+		if instanceState == types.InstanceRunning || instanceState == types.InstancePending || instanceState == types.InstanceStarting {
 			proposedChanges = append(proposedChanges, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyObservedInstanceState(instanceID),

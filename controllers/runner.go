@@ -382,6 +382,8 @@ func classifyChangeAsEvent(change Change) (string, string, string) {
 			return "instance.failed", "instance/" + instanceID, fmt.Sprintf("instance %s has failed", instanceID)
 		case string(types.InstancePending):
 			return "instance.created", "instance/" + instanceID, fmt.Sprintf("instance %s created (pending)", instanceID)
+		case string(types.InstanceStarting):
+			return "instance.starting", "instance/" + instanceID, fmt.Sprintf("instance %s is starting", instanceID)
 		case string(types.InstanceStopped):
 			return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped", instanceID)
 		}

@@ -56,10 +56,11 @@ func (nodeAgent *Agent) executeProbesForInstance(ctx context.Context, instanceIn
 	probeState := nodeAgent.getOrCreateProbeState(instanceInfo.id)
 	now := time.Now()
 
-	instanceIP := "127.0.0.1"
-	if ipFact, ipErr := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id)); ipErr == nil {
-		instanceIP = string(ipFact.Value)
+	ipFact, ipErr := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id))
+	if ipErr != nil || len(ipFact.Value) == 0 {
+		return
 	}
+	instanceIP := string(ipFact.Value)
 
 	startupComplete := true
 	if startupConfig != nil {
