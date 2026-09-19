@@ -1295,8 +1295,8 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Structured JSON logging — configurable log level (debug/info/warn/error), JSON format for machine consumption, human-readable format for terminal
 - [x] `cca logs <service> [--follow] [--instance <id>]` — aggregate container stdout/stderr logs across instances
 - [x] Health endpoint — `GET /healthz` returns controller health, etcd connectivity, certificate expiry status
-- [ ] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
-- [ ] Alert rule templates — node unreachable, instance crash-looping, scheduling failures, certificate approaching expiry, etcd latency
+- [x] Grafana dashboard templates — cluster overview (nodes, instances, services), per-service detail (instances, health, restarts), per-node detail (CPU, memory, workloads)
+- [x] Alert rule templates — node unreachable, instance crash-looping, scheduling failures, certificate approaching expiry, etcd latency
 
 ### Phase 26 — Storage Resilience
 - [ ] Volume migration on node failure — detect orphaned volumes on unreachable nodes, reattach to replacement node after scheduling

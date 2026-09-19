@@ -1,0 +1,74 @@
+groups:
+  - name: ccattler-cluster
+    rules:
+      - alert: NodeUnreachable
+        expr: ccattler_nodes{state="unreachable"} > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node {{ $labels.node }} is unreachable"
+          description: "Node has been unreachable for more than 2 minutes. Instances will be rescheduled."
+
+      - alert: InstanceCrashLooping
+        expr: rate(ccattler_reconciliation_changes_total{controller="failure"}[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Instance crash-loop detected"
+          description: "The failure controller is making more than 0.5 changes/sec for 5 minutes, indicating instances are restarting repeatedly."
+
+      - alert: SchedulingFailures
+        expr: rate(ccattler_reconciliation_total{controller="scheduler",result="error"}[5m]) > 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scheduler encountering errors"
+          description: "The scheduler is producing errors, which may indicate insufficient cluster capacity or placement constraint conflicts."
+
+      - alert: ReconciliationConflictsHigh
+        expr: rate(ccattler_reconciliation_conflicts_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High reconciliation conflict rate"
+          description: "Controllers are experiencing more than 1 conflict/sec for 5 minutes. This indicates high contention on the fact store."
+
+      - alert: APILatencyHigh
+        expr: histogram_quantile(0.99, rate(ccattler_api_request_duration_seconds_bucket[5m])) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p99 latency exceeds 1 second"
+          description: "The 99th percentile API response time has been above 1 second for 5 minutes."
+
+      - alert: StoreUnhealthy
+        expr: up{job="ccattler"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CCattler control plane unreachable"
+          description: "The /metrics endpoint is not responding, indicating the control plane is down."
+
+      - alert: FailedInstancesPresent
+        expr: ccattler_instances{state="failed"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Failed instances detected"
+          description: "{{ $value }} instances are in failed state for more than 5 minutes."
+
+      - alert: ReconciliationAbandoned
+        expr: rate(ccattler_reconciliation_total{result="abandoned"}[5m]) > 0
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reconciliation cycles being abandoned"
+          description: "Controller {{ $labels.controller }} is abandoning reconciliation cycles after max conflict retries."

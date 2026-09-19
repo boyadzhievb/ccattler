@@ -1,0 +1,97 @@
+{
+  "dashboard": {
+    "title": "CCattler Cluster Overview",
+    "uid": "ccattler-cluster-overview",
+    "tags": ["ccattler"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "panels": [
+      {
+        "title": "Services",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+        "targets": [{ "expr": "ccattler_services", "legendFormat": "services" }]
+      },
+      {
+        "title": "Nodes",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+        "targets": [{ "expr": "ccattler_nodes", "legendFormat": "nodes" }]
+      },
+      {
+        "title": "Instances by State",
+        "type": "piechart",
+        "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+        "targets": [{ "expr": "ccattler_instances", "legendFormat": "{{state}}" }]
+      },
+      {
+        "title": "Running Instances",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 0, "y": 4 },
+        "targets": [{ "expr": "ccattler_instances{state=\"running\"}", "legendFormat": "running" }]
+      },
+      {
+        "title": "Failed Instances",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 4, "y": 4 },
+        "targets": [{ "expr": "ccattler_instances{state=\"failed\"}", "legendFormat": "failed" }],
+        "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 1, "color": "red" }] } } }
+      },
+      {
+        "title": "Reconciliation Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_total[5m])", "legendFormat": "{{controller}} ({{result}})" }
+        ]
+      },
+      {
+        "title": "Reconciliation Duration (p99)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          { "expr": "histogram_quantile(0.99, rate(ccattler_reconciliation_duration_seconds_bucket[5m]))", "legendFormat": "{{controller}} p99" }
+        ]
+      },
+      {
+        "title": "API Request Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "targets": [
+          { "expr": "rate(ccattler_api_requests_total[5m])", "legendFormat": "{{endpoint}} {{method}} {{status}}" }
+        ]
+      },
+      {
+        "title": "API Request Duration (p99)",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "targets": [
+          { "expr": "histogram_quantile(0.99, rate(ccattler_api_request_duration_seconds_bucket[5m]))", "legendFormat": "{{endpoint}} p99" }
+        ]
+      },
+      {
+        "title": "Active Watches",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+        "targets": [{ "expr": "ccattler_active_watches", "legendFormat": "watches" }]
+      },
+      {
+        "title": "Reconciliation Conflicts",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_conflicts_total[5m])", "legendFormat": "{{controller}}" }
+        ]
+      },
+      {
+        "title": "Fact Changes Rate",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_changes_total[5m])", "legendFormat": "{{controller}}" }
+        ]
+      }
+    ]
+  }
+}

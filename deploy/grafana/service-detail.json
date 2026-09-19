@@ -1,0 +1,74 @@
+{
+  "dashboard": {
+    "title": "CCattler Service Detail",
+    "uid": "ccattler-service-detail",
+    "tags": ["ccattler"],
+    "timezone": "browser",
+    "refresh": "10s",
+    "time": { "from": "now-1h", "to": "now" },
+    "templating": {
+      "list": [
+        {
+          "name": "service",
+          "type": "query",
+          "query": "label_values(ccattler_instances, service)",
+          "refresh": 2
+        }
+      ]
+    },
+    "panels": [
+      {
+        "title": "Instance Count by State",
+        "type": "piechart",
+        "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+        "targets": [{ "expr": "ccattler_instances{service=\"$service\"}", "legendFormat": "{{state}}" }]
+      },
+      {
+        "title": "Running Instances",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+        "targets": [{ "expr": "ccattler_instances{service=\"$service\",state=\"running\"}", "legendFormat": "running" }]
+      },
+      {
+        "title": "Failed Instances",
+        "type": "stat",
+        "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+        "targets": [{ "expr": "ccattler_instances{service=\"$service\",state=\"failed\"}", "legendFormat": "failed" }],
+        "fieldConfig": { "defaults": { "thresholds": { "steps": [{ "value": 0, "color": "green" }, { "value": 1, "color": "red" }] } } }
+      },
+      {
+        "title": "Reconciliation Duration",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+        "targets": [
+          { "expr": "histogram_quantile(0.50, rate(ccattler_reconciliation_duration_seconds_bucket{controller=\"instance\"}[5m]))", "legendFormat": "instance p50" },
+          { "expr": "histogram_quantile(0.99, rate(ccattler_reconciliation_duration_seconds_bucket{controller=\"instance\"}[5m]))", "legendFormat": "instance p99" }
+        ]
+      },
+      {
+        "title": "Reconciliation Outcomes",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_total{controller=\"instance\"}[5m])", "legendFormat": "{{result}}" }
+        ]
+      },
+      {
+        "title": "API Requests to Apply",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+        "targets": [
+          { "expr": "rate(ccattler_api_requests_total{endpoint=\"apply\"}[5m])", "legendFormat": "{{status}}" }
+        ]
+      },
+      {
+        "title": "Fact Changes",
+        "type": "timeseries",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "targets": [
+          { "expr": "rate(ccattler_reconciliation_changes_total[5m])", "legendFormat": "{{controller}}" }
+        ]
+      }
+    ]
+  }
+}
