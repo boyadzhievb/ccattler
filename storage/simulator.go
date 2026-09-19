@@ -9,8 +9,14 @@ import (
 // simulatedVolume tracks the state of a single volume in the simulator.
 type simulatedVolume struct {
 	sizeBytes      int64  // sizeBytes is the declared volume capacity.
+	usedBytes      int64  // usedBytes is simulated disk usage.
 	attachedNodeID string // attachedNodeID is the node currently holding the volume, empty if detached.
 	mountPath      string // mountPath is the filesystem path where the volume is mounted.
+}
+
+// simulatedSnapshot records that a snapshot was taken.
+type simulatedSnapshot struct {
+	volumeName string // volumeName is the source volume.
 }
 
 // SimulatorStorageProvider implements StorageProvider using in-memory state.
@@ -20,7 +26,9 @@ type simulatedVolume struct {
 type SimulatorStorageProvider struct {
 	// volumes maps volume name to its simulated state.
 	volumes map[string]*simulatedVolume
-	// mutex protects the volumes map for concurrent access.
+	// snapshots maps snapshot name to its metadata.
+	snapshots map[string]*simulatedSnapshot
+	// mutex protects the volumes and snapshots maps for concurrent access.
 	mutex sync.Mutex
 }
 
@@ -28,7 +36,8 @@ type SimulatorStorageProvider struct {
 // no pre-existing volumes.
 func NewSimulatorStorageProvider() *SimulatorStorageProvider {
 	return &SimulatorStorageProvider{
-		volumes: make(map[string]*simulatedVolume),
+		volumes:   make(map[string]*simulatedVolume),
+		snapshots: make(map[string]*simulatedSnapshot),
 	}
 }
 
@@ -127,6 +136,76 @@ func (simulatorStorageProvider *SimulatorStorageProvider) IsAttached(_ context.C
 	}
 
 	return true, existingVolume.attachedNodeID, nil
+}
+
+// SnapshotVolume records a point-in-time snapshot of the named volume.
+// In the simulator this only records that the snapshot was taken; no real
+// data is captured.
+func (simulatorStorageProvider *SimulatorStorageProvider) SnapshotVolume(_ context.Context, volumeName string, snapshotName string) error {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+
+	if _, volumeExists := simulatorStorageProvider.volumes[volumeName]; !volumeExists {
+		return fmt.Errorf("volume %q does not exist", volumeName)
+	}
+
+	simulatorStorageProvider.snapshots[snapshotName] = &simulatedSnapshot{
+		volumeName: volumeName,
+	}
+	return nil
+}
+
+// Snapshots returns the names of all recorded snapshots.
+func (simulatorStorageProvider *SimulatorStorageProvider) Snapshots() []string {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+
+	snapshotNames := make([]string, 0, len(simulatorStorageProvider.snapshots))
+	for snapshotName := range simulatorStorageProvider.snapshots {
+		snapshotNames = append(snapshotNames, snapshotName)
+	}
+	return snapshotNames
+}
+
+// VolumeUsage returns simulated usage and capacity for a volume.
+func (simulatorStorageProvider *SimulatorStorageProvider) VolumeUsage(_ context.Context, volumeName string) (int64, int64, error) {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+
+	existingVolume, volumeExists := simulatorStorageProvider.volumes[volumeName]
+	if !volumeExists {
+		return 0, 0, nil
+	}
+
+	return existingVolume.usedBytes, existingVolume.sizeBytes, nil
+}
+
+// SetVolumeUsage sets the simulated disk usage for a volume.
+func (simulatorStorageProvider *SimulatorStorageProvider) SetVolumeUsage(volumeName string, usedBytes int64) {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+
+	if existingVolume, volumeExists := simulatorStorageProvider.volumes[volumeName]; volumeExists {
+		existingVolume.usedBytes = usedBytes
+	}
+}
+
+// ResizeVolume changes the capacity of a volume. Only expansion is supported.
+func (simulatorStorageProvider *SimulatorStorageProvider) ResizeVolume(_ context.Context, volumeName string, newSizeBytes int64) error {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+
+	existingVolume, volumeExists := simulatorStorageProvider.volumes[volumeName]
+	if !volumeExists {
+		return fmt.Errorf("volume %q does not exist", volumeName)
+	}
+
+	if newSizeBytes < existingVolume.sizeBytes {
+		return fmt.Errorf("cannot shrink volume %q from %d to %d bytes", volumeName, existingVolume.sizeBytes, newSizeBytes)
+	}
+
+	existingVolume.sizeBytes = newSizeBytes
+	return nil
 }
 
 // ForceDetach detaches a volume regardless of which node holds it. This is

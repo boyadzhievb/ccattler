@@ -848,6 +848,14 @@ func KeyDesiredVolumePersistent(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/persistent", PrefixDesired, volumeName)
 }
 
+// KeyDesiredVolumeReplicas returns the store path for a volume's desired
+// replication count. Value "1" means no replication; higher values enable
+// synchronous replication to that many copies.
+// Path: desired/volume/{name}/replicas
+func KeyDesiredVolumeReplicas(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/replicas", PrefixDesired, volumeName)
+}
+
 // KeyDesiredServiceVolume returns the store path binding a service to a named
 // volume. The value stored at this key is the mount path inside the instance.
 // Path: desired/service/{serviceName}/volume/{volumeName}
@@ -889,6 +897,48 @@ func KeyObservedVolumeSize(volumeName string) string {
 // Path: observed/volume/{name}/mount_path
 func KeyObservedVolumeMountPath(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/mount_path", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeMigrationSource returns the store path for the node a volume
+// was force-detached from during migration.
+// Path: observed/volume/{name}/migration_source
+func KeyObservedVolumeMigrationSource(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/migration_source", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeLastSnapshot returns the store path for a volume's most
+// recent snapshot name.
+// Path: observed/volume/{name}/last_snapshot
+func KeyObservedVolumeLastSnapshot(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/last_snapshot", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeUsedBytes returns the store path for a volume's current
+// disk usage in bytes.
+// Path: observed/volume/{name}/used_bytes
+func KeyObservedVolumeUsedBytes(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/used_bytes", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeCapacityBytes returns the store path for a volume's total
+// capacity in bytes.
+// Path: observed/volume/{name}/capacity_bytes
+func KeyObservedVolumeCapacityBytes(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/capacity_bytes", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeReplicaCount returns the store path for the current number
+// of synchronized replicas of a volume.
+// Path: observed/volume/{name}/replica_count
+func KeyObservedVolumeReplicaCount(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/replica_count", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeReplicaState returns the store path for the replication
+// sync state of a volume ("synced", "syncing", "degraded").
+// Path: observed/volume/{name}/replica_state
+func KeyObservedVolumeReplicaState(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/replica_state", PrefixObserved, volumeName)
 }
 
 // ---------------------------------------------------------------------------

@@ -71,6 +71,26 @@ const (
 	// mounted into an instance. Only one node can hold a ReadWriteOnce
 	// volume at a time.
 	VolumeAttached VolumeState = "attached"
+
+	// VolumeMigrating means the volume is being moved from an unreachable node
+	// to a new node. The storage controller sets this state before force-detach
+	// and clears it when the volume is successfully reattached elsewhere.
+	VolumeMigrating VolumeState = "migrating"
+)
+
+// ReplicaState represents the synchronization state of a replicated volume.
+type ReplicaState string
+
+// Replication sync states.
+const (
+	// ReplicaSynced means all replicas are synchronized and up-to-date.
+	ReplicaSynced ReplicaState = "synced"
+
+	// ReplicaSyncing means replicas are being synchronized to match the primary.
+	ReplicaSyncing ReplicaState = "syncing"
+
+	// ReplicaDegraded means one or more replicas are out of sync or unavailable.
+	ReplicaDegraded ReplicaState = "degraded"
 )
 
 // InitStepState represents the execution state of a single initialization step.

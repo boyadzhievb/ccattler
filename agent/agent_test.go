@@ -734,6 +734,112 @@ func TestAgentServiceWithoutVolumesUnaffected(t *testing.T) {
 	})
 }
 
+// TestAgentReattachesMigratingVolume verifies that when a volume is in
+// VolumeMigrating state (force-detached from an unreachable node), the agent
+// on the new node attaches it, sets state to attached, and clears migration
+// metadata.
+func TestAgentReattachesMigratingVolume(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100)
+
+	nodeAgent := New("node-2", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name:            "pgdata",
+		Size:            "100Gi",
+		State:           types.VolumeMigrating,
+		MigrationSource: "node-1",
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "mig-aaa", Service: "postgres", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "mig-aaa", NodeID: "node-2"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running with migrated volume", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("mig-aaa"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	volumeStateFact, err := factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(volumeStateFact.Value) != string(types.VolumeAttached) {
+		t.Errorf("volume state = %s, want attached", volumeStateFact.Value)
+	}
+
+	volumeNodeFact, _ := factStore.Get(ctx, types.KeyObservedVolumeNode("pgdata"))
+	if string(volumeNodeFact.Value) != "node-2" {
+		t.Errorf("volume node = %s, want node-2", volumeNodeFact.Value)
+	}
+
+	_, migrationSourceErr := factStore.Get(ctx, types.KeyObservedVolumeMigrationSource("pgdata"))
+	if migrationSourceErr == nil {
+		t.Error("expected migration_source cleared after reattach")
+	}
+}
+
+// TestAgentReportsVolumeUsage verifies that the agent writes usage facts when
+// attaching a volume that has usage data from the storage provider.
+func TestAgentReportsVolumeUsage(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 107374182400)
+	simulatorStorageProvider.SetVolumeUsage("pgdata", 53687091200)
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(simulatorStorageProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAvailable,
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "usage-aaa", Service: "postgres", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "usage-aaa", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("usage-aaa"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	usedFact, err := factStore.Get(ctx, types.KeyObservedVolumeUsedBytes("pgdata"))
+	if err != nil {
+		t.Fatal("expected used_bytes fact")
+	}
+	if string(usedFact.Value) != "53687091200" {
+		t.Errorf("used_bytes = %s, want 53687091200", usedFact.Value)
+	}
+
+	capacityFact, err := factStore.Get(ctx, types.KeyObservedVolumeCapacityBytes("pgdata"))
+	if err != nil {
+		t.Fatal("expected capacity_bytes fact")
+	}
+	if string(capacityFact.Value) != "107374182400" {
+		t.Errorf("capacity_bytes = %s, want 107374182400", capacityFact.Value)
+	}
+}
+
 func TestAgentMaterializesSecretsBeforeStart(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

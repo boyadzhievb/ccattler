@@ -654,6 +654,10 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			return false, nil
 		}
 
+		if volumeState != types.VolumeAvailable && volumeState != types.VolumeMigrating {
+			return false, nil
+		}
+
 		mountPath, err := nodeAgent.storageProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
 		if err != nil {
 			return false, fmt.Errorf("attaching volume %s: %w", volumeName, err)
@@ -665,14 +669,21 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			sizeValue = string(sizeFact.Value)
 		}
 
+		var usedBytes, capacityBytes int64
+		usedBytes, capacityBytes, _ = nodeAgent.storageProvider.VolumeUsage(ctx, volumeName)
+
 		types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
-			Name:      volumeName,
-			Size:      sizeValue,
-			State:     types.VolumeAttached,
-			Node:      nodeAgent.nodeID,
-			Instance:  instanceInfo.id,
-			MountPath: mountPath,
+			Name:          volumeName,
+			Size:          sizeValue,
+			State:         types.VolumeAttached,
+			Node:          nodeAgent.nodeID,
+			Instance:      instanceInfo.id,
+			MountPath:     mountPath,
+			UsedBytes:     usedBytes,
+			CapacityBytes: capacityBytes,
 		})
+
+		nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName))
 	}
 
 	return true, nil
