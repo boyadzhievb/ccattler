@@ -16,9 +16,41 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
+)
+
+var (
+	apiRequestsTotal = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_api_requests_total",
+		"Total API requests by endpoint and status",
+		"endpoint", "method", "status",
+	)
+	apiRequestDuration = metrics.DefaultRegistry.RegisterHistogram(
+		"ccattler_api_request_duration_seconds",
+		"API request latency by endpoint",
+		metrics.DurationBuckets(),
+		"endpoint",
+	)
+	activeWatches = metrics.DefaultRegistry.RegisterGauge(
+		"ccattler_active_watches",
+		"Number of active SSE watch/event stream connections",
+	)
+	instancesByState = metrics.DefaultRegistry.RegisterGauge(
+		"ccattler_instances",
+		"Current instance count by state",
+		"state",
+	)
+	serviceCount = metrics.DefaultRegistry.RegisterGauge(
+		"ccattler_services",
+		"Total number of registered services",
+	)
+	nodeCount = metrics.DefaultRegistry.RegisterGauge(
+		"ccattler_nodes",
+		"Total number of registered nodes",
+	)
 )
 
 // Server is the CCattler HTTP API server that provides endpoints for reading,
@@ -84,16 +116,62 @@ func (apiServer *Server) Handler() http.Handler {
 
 // registerRoutes sets up all API endpoint handlers.
 func (apiServer *Server) registerRoutes() {
-	apiServer.mux.HandleFunc("/api/state", apiServer.handleState)
-	apiServer.mux.HandleFunc("/api/apply", apiServer.handleApply)
+	apiServer.mux.HandleFunc("/api/state", apiServer.instrumentedHandler("state", apiServer.handleState))
+	apiServer.mux.HandleFunc("/api/apply", apiServer.instrumentedHandler("apply", apiServer.handleApply))
 	apiServer.mux.HandleFunc("/api/watch", apiServer.handleWatch)
-	apiServer.mux.HandleFunc("/api/scale", apiServer.handleScale)
-	apiServer.mux.HandleFunc("/api/status", apiServer.handleStatus)
-	apiServer.mux.HandleFunc("/api/logs", apiServer.handleLogs)
-	apiServer.mux.HandleFunc("/api/describe", apiServer.handleDescribe)
+	apiServer.mux.HandleFunc("/api/scale", apiServer.instrumentedHandler("scale", apiServer.handleScale))
+	apiServer.mux.HandleFunc("/api/status", apiServer.instrumentedHandler("status", apiServer.handleStatus))
+	apiServer.mux.HandleFunc("/api/logs", apiServer.instrumentedHandler("logs", apiServer.handleLogs))
+	apiServer.mux.HandleFunc("/api/describe", apiServer.instrumentedHandler("describe", apiServer.handleDescribe))
 	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
-	apiServer.mux.HandleFunc("/api/diff", apiServer.handleDiff)
-	apiServer.mux.HandleFunc("/api/metric", apiServer.handleMetric)
+	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
+	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
+	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
+}
+
+// handleMetrics serves Prometheus-format metrics. Before emitting the
+// registry, it snapshots cluster state into gauges so scrapers see current
+// instance/service/node counts without a separate status query.
+func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, request *http.Request) {
+	ctx := request.Context()
+	status := buildStatusFromStore(ctx, apiServer.factStore)
+
+	instancesByState.Set(0, "pending")
+	instancesByState.Set(0, "running")
+	instancesByState.Set(0, "failed")
+	instancesByState.Set(0, "stopped")
+	for _, instance := range status.Instances {
+		instancesByState.Inc(instance.State)
+	}
+	serviceCount.Set(int64(len(status.Services)))
+	nodeCount.Set(int64(len(status.Nodes)))
+
+	metrics.DefaultRegistry.Handler().ServeHTTP(responseWriter, request)
+}
+
+// instrumentedHandler wraps an HTTP handler to record request count and duration
+// metrics. Watch and event stream endpoints are not wrapped because they are
+// long-lived SSE connections.
+func (apiServer *Server) instrumentedHandler(endpointName string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(responseWriter http.ResponseWriter, request *http.Request) {
+		startTime := metrics.Timer()
+		wrappedWriter := &statusCapturingWriter{ResponseWriter: responseWriter, statusCode: 200}
+		handler(wrappedWriter, request)
+		apiRequestDuration.ObserveSince(startTime, endpointName)
+		apiRequestsTotal.Inc(endpointName, request.Method, strconv.Itoa(wrappedWriter.statusCode))
+	}
+}
+
+// statusCapturingWriter wraps http.ResponseWriter to capture the status code
+// for metrics recording.
+type statusCapturingWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (writer *statusCapturingWriter) WriteHeader(statusCode int) {
+	writer.statusCode = statusCode
+	writer.ResponseWriter.WriteHeader(statusCode)
 }
 
 // factResponse is a single fact in JSON API responses.
@@ -248,6 +326,9 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 		http.Error(responseWriter, "watch: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	activeWatches.Inc()
+	defer activeWatches.Dec()
 
 	responseWriter.Header().Set("Content-Type", "text/event-stream")
 	responseWriter.Header().Set("Cache-Control", "no-cache")
@@ -461,6 +542,9 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 		http.Error(responseWriter, "watch: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	activeWatches.Inc()
+	defer activeWatches.Dec()
 
 	responseWriter.Header().Set("Content-Type", "text/event-stream")
 	responseWriter.Header().Set("Cache-Control", "no-cache")

@@ -2,14 +2,16 @@
 
 ## Current Milestone
 
-M21 — CLI & UX (Phase 24)
+M22 — Observability (Phase 25)
 
-- 8/8 items done
-- Status: complete
-- Items: `cca describe`, `cca events`, `cca diff`, colored output, better errors, shell completions, column formatting, API describe endpoint
+- 1/6 items done
+- Status: in progress
+- Items: Prometheus `/metrics` endpoint, structured JSON logging, `cca logs`, health endpoint, Grafana dashboards, alert rules
 
 ## Recent Completions
 
+- [2026-09-19] M22 Phase 25 item 1 — Prometheus `/metrics` endpoint with counters, gauges, histograms
+- [2026-09-19] M21 Phase 24 — describe, events, diff, errors, completions, column formatting, API describe
 - [2026-09-18] v0.20.2 — Tech debt cleanup, AI agent team infrastructure
 - [2026-09-18] M20 Phase 23 — cross-host endpoints, DNS server, HTTP reverse proxy, placement constraints
 - [2026-09-18] v0.20.1 — README and docs updates, VitePress documentation site
@@ -22,8 +24,8 @@ M21 — CLI & UX (Phase 24)
 
 ## Metrics
 
-- Source files: 85
-- Test files: 48
-- Total Go lines: ~40K
+- Source files: 87
+- Test files: 49
+- Total Go lines: ~41K
 - Latest release: v0.20.1
-- Milestones complete: M1–M20
+- Milestones complete: M1–M21
