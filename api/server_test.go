@@ -1123,6 +1123,53 @@ func TestOIDCJWKSEndpoint(t *testing.T) {
 	}
 }
 
+func TestStatusIncludesCloudIdentities(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx := context.Background()
+	factStore.Put(ctx, "desired/cloud_identity/payments_s3", []byte(""))
+	factStore.Put(ctx, "desired/cloud_identity/payments_s3/provider", []byte("aws"))
+	factStore.Put(ctx, "desired/service/payments/cloud_identity/payments_s3", []byte(""))
+
+	apiServer := NewServer(factStore)
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer apiServer.Close()
+
+	response, err := http.Get("http://" + address + "/api/status")
+	if err != nil {
+		t.Fatalf("GET status: %v", err)
+	}
+	defer response.Body.Close()
+
+	var status struct {
+		CloudIdentities []struct {
+			Name     string   `json:"name"`
+			Provider string   `json:"provider"`
+			Services []string `json:"services"`
+		} `json:"cloud_identities"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(status.CloudIdentities) != 1 {
+		t.Fatalf("expected 1 cloud identity, got %d", len(status.CloudIdentities))
+	}
+	if status.CloudIdentities[0].Name != "payments_s3" {
+		t.Errorf("name: got %q", status.CloudIdentities[0].Name)
+	}
+	if status.CloudIdentities[0].Provider != "aws" {
+		t.Errorf("provider: got %q", status.CloudIdentities[0].Provider)
+	}
+	if len(status.CloudIdentities[0].Services) != 1 || status.CloudIdentities[0].Services[0] != "payments" {
+		t.Errorf("services: got %v", status.CloudIdentities[0].Services)
+	}
+}
+
 func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

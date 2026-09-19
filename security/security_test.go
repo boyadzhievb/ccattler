@@ -1379,6 +1379,57 @@ func jsonUnmarshalMap(data []byte, target *map[string]string) error {
 	return json.Unmarshal(data, target)
 }
 
+func TestRBACCredentialBrokerRole(t *testing.T) {
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "controller:credential-broker", RoleName: "credential-broker"})
+
+	// Broker can read cloud identity config.
+	if err := authorizer.Authorize("controller:credential-broker", PermissionRead, "desired/cloud_identity/payments_s3/provider"); err != nil {
+		t.Fatalf("broker should read cloud identities: %v", err)
+	}
+
+	// Broker can write observed credentials.
+	if err := authorizer.Authorize("controller:credential-broker", PermissionWrite, "observed/credential/inst-1/payments_s3/state"); err != nil {
+		t.Fatalf("broker should write observed credentials: %v", err)
+	}
+
+	// Broker can write to encrypted credential store.
+	if err := authorizer.Authorize("controller:credential-broker", PermissionWrite, "credentials/inst-1/payments_s3"); err != nil {
+		t.Fatalf("broker should write credentials: %v", err)
+	}
+
+	// Broker cannot write desired service config.
+	if err := authorizer.Authorize("controller:credential-broker", PermissionWrite, "desired/service/web/image"); err == nil {
+		t.Fatal("broker should not write desired service")
+	}
+}
+
+func TestRBACNodeAgentCredentialAccess(t *testing.T) {
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
+
+	// Node agent can read credentials.
+	if err := authorizer.Authorize("node:n1", PermissionRead, "credentials/inst-1/payments_s3"); err != nil {
+		t.Fatalf("node agent should read credentials: %v", err)
+	}
+
+	// Node agent can read credential state.
+	if err := authorizer.Authorize("node:n1", PermissionRead, "observed/credential/inst-1/payments_s3/state"); err != nil {
+		t.Fatalf("node agent should read credential state: %v", err)
+	}
+
+	// Node agent cannot write credentials.
+	if err := authorizer.Authorize("node:n1", PermissionWrite, "credentials/inst-1/payments_s3"); err == nil {
+		t.Fatal("node agent should not write credentials")
+	}
+}
+
 func reconstructECPublicKey(xBytes, yBytes []byte) *ecdsa.PublicKey {
 	return &ecdsa.PublicKey{
 		Curve: elliptic.P256(),

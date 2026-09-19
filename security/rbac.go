@@ -131,6 +131,8 @@ func BuiltinRoles() []Role {
 				{KeyPrefix: "desired/", Operations: []Permission{PermissionRead, PermissionWatch}},
 				{KeyPrefix: "effective/", Operations: []Permission{PermissionRead, PermissionWatch}},
 				{KeyPrefix: "placement/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "credentials/", Operations: []Permission{PermissionRead}},
+				{KeyPrefix: "observed/credential/", Operations: []Permission{PermissionRead}},
 			},
 		},
 		{
@@ -152,6 +154,17 @@ func BuiltinRoles() []Role {
 				{KeyPrefix: "placement/", Operations: []Permission{PermissionRead, PermissionWatch}},
 				{KeyPrefix: "endpoint/", Operations: []Permission{PermissionRead, PermissionWrite, PermissionDelete}},
 				{KeyPrefix: "network/", Operations: []Permission{PermissionRead, PermissionWrite}},
+			},
+		},
+		{
+			Name: "credential-broker",
+			Rules: []Rule{
+				{KeyPrefix: "desired/cloud_identity/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "desired/service/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "desired/credential_broker/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "observed/instance/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "observed/credential/", Operations: []Permission{PermissionRead, PermissionWrite, PermissionDelete}},
+				{KeyPrefix: "credentials/", Operations: []Permission{PermissionRead, PermissionWrite, PermissionDelete}},
 			},
 		},
 		{
