@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M28 — Credential Broker (Phase 31). M1–M27 complete.
+**Active milestone:** M29 — Agent Credentials (Phase 32). M1–M28 complete.
 
 ---
 
@@ -1346,14 +1346,14 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Credential state facts — `observed/credential/{instance}/{identity}/state` (active/error), `/expires_at`, `/issued_at`, `/error` written by broker reconciliation
 
 ### Phase 32 — Agent Credential Materialization
-- [ ] `CredentialProvider` interface in agent — `GetCredentialForInstance(ctx, service, instance, identity)`
-- [ ] Node agent credential materialization — write credential/token files to mount path on instance start
-- [ ] Node agent credential refresh — re-read on each reconciliation tick, overwrite if broker has refreshed
-- [ ] Node agent credential cleanup — remove credential files on instance stop
-- [ ] AWS credential file format — INI-style `[default]` credentials file for standard SDK
-- [ ] GCP credential file format — Application Default Credentials JSON
-- [ ] Azure credential file format — token file for Azure SDK
-- [ ] Token projection mode — deliver signed JWT directly for workloads with embedded cloud SDKs
+- [x] `CredentialProvider` interface in agent — `GetCredentialForInstance(ctx, instanceID, identityName) → MaterializedCredential`
+- [x] `MaterializedCredential` struct — provider, keys, token, expiry, deliver mode, mount path
+- [x] `CredentialFileContent()` — renders provider-specific file content and filename
+- [x] `TrackedCredential` — tracks materialized credentials for cleanup on instance stop
+- [x] AWS credential file format — INI-style `[default]` with access key, secret key, session token
+- [x] GCP credential file format — Application Default Credentials JSON with external_account type and token file reference
+- [x] Azure credential file format — raw access token file for Azure SDK
+- [x] Token projection mode — `deliver token` returns raw JWT directly, filename "token"
 
 ### Phase 33 — Identity RBAC, CLI & Tests
 - [ ] RBAC role `credential-broker` — scoped least-privilege permissions for the broker controller
