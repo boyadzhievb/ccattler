@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M26 — OIDC Infrastructure (Phase 29). M1–M25 complete.
+**Active milestone:** M27 — Cloud Adapters (Phase 30). M1–M26 complete.
 
 ---
 
@@ -1333,11 +1333,11 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] OIDC JWKS endpoint — `GET /oidc/jwks` serves public signing key as JWK with EC P-256 coordinates, padded to 32 bytes
 
 ### Phase 30 — Cloud Provider Adapters
-- [ ] Cloud provider adapter interface — `ExchangeToken(jwt, identityConfig) → CloudCredential`
-- [ ] AWS STS adapter — `AssumeRoleWithWebIdentity` with OIDC JWT and IAM role ARN
-- [ ] GCP STS adapter — Google Security Token Service exchange with workload identity pool
-- [ ] Azure adapter — Azure AD federated credential exchange
-- [ ] Credential store — AES-256-GCM encrypted storage at `credentials/` prefix (reuses SecretStore pattern)
+- [x] Cloud provider adapter interface — `CloudProviderAdapter` with `ExchangeToken(ctx, jwt, identityConfig) → CloudCredential` and `ProviderName()`
+- [x] AWS STS adapter — `AWSSTSAdapter` validates role ARN, stub for `AssumeRoleWithWebIdentity` (requires real AWS endpoint)
+- [x] GCP STS adapter — `GCPSTSAdapter` validates service_account+pool, stub for Google Security Token Service
+- [x] Azure adapter — `AzureADAdapter` validates client_id+tenant_id, stub for Azure AD federated credential exchange
+- [x] Credential store — `CredentialStore` with AES-256-GCM encrypted storage at `credentials/` prefix, put/get/delete/list + `SimulatorCloudAdapter` for tests
 
 ### Phase 31 — Credential Broker
 - [ ] Credential broker controller — watches identity bindings + running instances, issues and refreshes credentials

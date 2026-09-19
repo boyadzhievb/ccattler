@@ -1386,3 +1386,227 @@ func reconstructECPublicKey(xBytes, yBytes []byte) *ecdsa.PublicKey {
 		Y:     new(big.Int).SetBytes(yBytes),
 	}
 }
+
+func TestSimulatorCloudAdapterExchangeToken(t *testing.T) {
+	expectedCredential := &CloudCredential{
+		Provider:     "aws",
+		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",
+		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		SessionToken: "FwoGZXIvYXdzEBYaDH...",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+
+	simulatorAdapter := NewSimulatorCloudAdapter("aws", expectedCredential)
+	if simulatorAdapter.ProviderName() != "aws" {
+		t.Errorf("provider: got %q, want aws", simulatorAdapter.ProviderName())
+	}
+
+	credential, err := simulatorAdapter.ExchangeToken(context.Background(), "test-jwt", CloudIdentityConfig{
+		Name:     "test",
+		Provider: "aws",
+		Role:     "arn:aws:iam::123456789012:role/test",
+	})
+	if err != nil {
+		t.Fatalf("exchange: %v", err)
+	}
+	if credential.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("access key: got %q", credential.AccessKeyID)
+	}
+	if simulatorAdapter.ExchangeCount() != 1 {
+		t.Errorf("exchange count: got %d, want 1", simulatorAdapter.ExchangeCount())
+	}
+}
+
+func TestAWSSTSAdapterRequiresRole(t *testing.T) {
+	adapter := NewAWSSTSAdapter("us-east-1", "")
+	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+		Provider: "aws",
+	})
+	if err == nil || !strings.Contains(err.Error(), "role ARN is required") {
+		t.Fatalf("expected role required error, got: %v", err)
+	}
+}
+
+func TestGCPSTSAdapterRequiresServiceAccount(t *testing.T) {
+	adapter := NewGCPSTSAdapter("")
+	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+		Provider: "gcp",
+	})
+	if err == nil || !strings.Contains(err.Error(), "service_account is required") {
+		t.Fatalf("expected service_account required error, got: %v", err)
+	}
+}
+
+func TestGCPSTSAdapterRequiresPool(t *testing.T) {
+	adapter := NewGCPSTSAdapter("")
+	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+		Provider:       "gcp",
+		ServiceAccount: "sa@proj.iam.gserviceaccount.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "pool is required") {
+		t.Fatalf("expected pool required error, got: %v", err)
+	}
+}
+
+func TestAzureADAdapterRequiresClientID(t *testing.T) {
+	adapter := NewAzureADAdapter("")
+	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+		Provider: "azure",
+	})
+	if err == nil || !strings.Contains(err.Error(), "client_id is required") {
+		t.Fatalf("expected client_id required error, got: %v", err)
+	}
+}
+
+func TestAzureADAdapterRequiresTenantID(t *testing.T) {
+	adapter := NewAzureADAdapter("")
+	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+		Provider: "azure",
+		ClientID: "abc-123",
+	})
+	if err == nil || !strings.Contains(err.Error(), "tenant_id is required") {
+		t.Fatalf("expected tenant_id required error, got: %v", err)
+	}
+}
+
+func TestCredentialStoreRoundTrip(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	masterKey := make([]byte, 32)
+	for index := range masterKey {
+		masterKey[index] = byte(index)
+	}
+
+	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	originalCredential := &CloudCredential{
+		Provider:     "aws",
+		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",
+		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		SessionToken: "FwoGZXIvYXdzEBYaDH...",
+		ExpiresAt:    time.Unix(1695200000, 0),
+	}
+
+	ctx := context.Background()
+	if err := credentialStore.PutCredential(ctx, "instance-1", "payments_s3", originalCredential); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	retrieved, err := credentialStore.GetCredential(ctx, "instance-1", "payments_s3")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+
+	if retrieved.Provider != originalCredential.Provider {
+		t.Errorf("provider: got %q, want %q", retrieved.Provider, originalCredential.Provider)
+	}
+	if retrieved.AccessKeyID != originalCredential.AccessKeyID {
+		t.Errorf("access key: got %q", retrieved.AccessKeyID)
+	}
+	if retrieved.SecretKey != originalCredential.SecretKey {
+		t.Errorf("secret key: got %q", retrieved.SecretKey)
+	}
+	if retrieved.SessionToken != originalCredential.SessionToken {
+		t.Errorf("session token: got %q", retrieved.SessionToken)
+	}
+	if !retrieved.ExpiresAt.Equal(originalCredential.ExpiresAt) {
+		t.Errorf("expires: got %v, want %v", retrieved.ExpiresAt, originalCredential.ExpiresAt)
+	}
+}
+
+func TestCredentialStoreDelete(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	masterKey := make([]byte, 32)
+	for index := range masterKey {
+		masterKey[index] = byte(index)
+	}
+
+	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	ctx := context.Background()
+	credentialStore.PutCredential(ctx, "instance-1", "test_id", &CloudCredential{
+		Provider:  "gcp",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	})
+
+	if err := credentialStore.DeleteCredential(ctx, "instance-1", "test_id"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	_, err = credentialStore.GetCredential(ctx, "instance-1", "test_id")
+	if err == nil {
+		t.Fatal("expected error after delete")
+	}
+}
+
+func TestCredentialStoreListCredentials(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	masterKey := make([]byte, 32)
+	for index := range masterKey {
+		masterKey[index] = byte(index)
+	}
+
+	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	ctx := context.Background()
+	credentialStore.PutCredential(ctx, "inst-a", "id1", &CloudCredential{Provider: "aws", ExpiresAt: time.Now()})
+	credentialStore.PutCredential(ctx, "inst-b", "id2", &CloudCredential{Provider: "gcp", ExpiresAt: time.Now()})
+
+	credentialKeys, err := credentialStore.ListCredentials(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(credentialKeys) != 2 {
+		t.Fatalf("expected 2 credentials, got %d", len(credentialKeys))
+	}
+}
+
+func TestCredentialStoreInvalidKeyLength(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	_, err := NewCredentialStore(factStore, []byte("short"))
+	if err == nil {
+		t.Fatal("expected error for short master key")
+	}
+}
+
+func TestCredentialSerializationRoundTrip(t *testing.T) {
+	original := &CloudCredential{
+		Provider:     "azure",
+		AccessKeyID:  "",
+		SecretKey:    "",
+		SessionToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test",
+		ExpiresAt:    time.Unix(1695200000, 0),
+	}
+
+	serialized := serializeCredential(original)
+	restored, err := deserializeCredential(serialized)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+
+	if restored.Provider != original.Provider {
+		t.Errorf("provider: got %q", restored.Provider)
+	}
+	if restored.SessionToken != original.SessionToken {
+		t.Errorf("session token mismatch")
+	}
+	if !restored.ExpiresAt.Equal(original.ExpiresAt) {
+		t.Errorf("expires mismatch")
+	}
+}
