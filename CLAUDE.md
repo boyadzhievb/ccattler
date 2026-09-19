@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M27 — Cloud Adapters (Phase 30). M1–M26 complete.
+**Active milestone:** M28 — Credential Broker (Phase 31). M1–M27 complete.
 
 ---
 
@@ -1340,10 +1340,10 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Credential store — `CredentialStore` with AES-256-GCM encrypted storage at `credentials/` prefix, put/get/delete/list + `SimulatorCloudAdapter` for tests
 
 ### Phase 31 — Credential Broker
-- [ ] Credential broker controller — watches identity bindings + running instances, issues and refreshes credentials
-- [ ] Credential broker proactive refresh — re-issue credentials before TTL expiry (configurable refresh_before window)
-- [ ] Credential broker garbage collection — revoke and delete credentials for stopped/deleted instances
-- [ ] Credential state facts — `observed/credential/{instance}/{identity}/state`, `/expires_at`, `/issued_at`, `/error`
+- [x] Credential broker controller — `CredentialBrokerController` watches cloud identities, service bindings, running instances; mints JWT via `WorkloadTokenIssuer`, exchanges via `CloudProviderAdapter`, writes state facts
+- [x] Credential broker proactive refresh — `needsRefresh()` checks expires_at against configurable `refreshBefore` window, re-issues when within window
+- [x] Credential broker garbage collection — deletes state/expires_at/issued_at/error facts for instances no longer running or no longer existing
+- [x] Credential state facts — `observed/credential/{instance}/{identity}/state` (active/error), `/expires_at`, `/issued_at`, `/error` written by broker reconciliation
 
 ### Phase 32 — Agent Credential Materialization
 - [ ] `CredentialProvider` interface in agent — `GetCredentialForInstance(ctx, service, instance, identity)`
