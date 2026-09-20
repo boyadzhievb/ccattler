@@ -15,9 +15,9 @@ func TestResolveEndpointsReturnsAllBackends(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "bbb"), []byte("10.100.1.3:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "ccc"), []byte("10.100.2.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "bbb", 8080), []byte("10.100.1.3:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "ccc", 8080), []byte("10.100.2.2:8080"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	resolvedEndpoints, err := storeBackedResolver.ResolveEndpoints(ctx, "web")
@@ -78,14 +78,14 @@ func TestResolveEndpointsReflectsChanges(t *testing.T) {
 	}
 
 	// Add an endpoint.
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
 	resolvedEndpoints, _ = storeBackedResolver.ResolveEndpoints(ctx, "web")
 	if len(resolvedEndpoints) != 1 {
 		t.Fatalf("expected 1 after add, got %d", len(resolvedEndpoints))
 	}
 
 	// Remove it.
-	factStore.Delete(ctx, types.KeyEndpoint("web", "aaa"))
+	factStore.Delete(ctx, types.KeyEndpoint("web", "aaa", 8080))
 	resolvedEndpoints, _ = storeBackedResolver.ResolveEndpoints(ctx, "web")
 	if len(resolvedEndpoints) != 0 {
 		t.Fatalf("expected 0 after delete, got %d", len(resolvedEndpoints))
@@ -132,8 +132,8 @@ func TestResolveEndpointsDoesNotCrossPollute(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("api", "bbb"), []byte("10.100.1.3:3000"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("api", "bbb", 3000), []byte("10.100.1.3:3000"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 

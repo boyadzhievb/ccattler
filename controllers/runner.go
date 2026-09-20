@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -101,7 +100,16 @@ func (controllerRunner *Runner) Run(ctx context.Context) error {
 	defer cancelChildren()
 
 	var waitGroup sync.WaitGroup
-	controllerErrors := make(chan error, len(controllerRunner.controllers))
+	controllerErrors := make(chan error, len(controllerRunner.controllers)+1)
+
+	if controllerRunner.eventLog != nil {
+		eventProjector := NewEventProjector(controllerRunner.store, controllerRunner.eventLog)
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			controllerErrors <- eventProjector.Run(childCtx)
+		}()
+	}
 
 	for _, controller := range controllerRunner.controllers {
 		waitGroup.Add(1)
@@ -363,75 +371,6 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	reconciliationChanges.Add(int64(len(changes)), controller.Name())
 
-	if controllerRunner.eventLog != nil {
-		controllerRunner.emitEventsForChanges(ctx, controller, changes)
-	}
-
 	return false, nil
 }
 
-// emitEventsForChanges inspects the change keys produced by a reconciliation
-// cycle and emits human-readable events for important state transitions like
-// instance creation, failure, placement, and node state changes.
-func (controllerRunner *Runner) emitEventsForChanges(ctx context.Context, controller Controller, changes []Change) {
-	controllerName := controller.Name()
-	for _, change := range changes {
-		eventKind, eventTarget, eventDetail := classifyChangeAsEvent(change)
-		if eventKind == "" {
-			continue
-		}
-		controllerRunner.eventLog.Emit(ctx, eventKind, eventTarget, eventDetail, controllerName)
-	}
-}
-
-// classifyChangeAsEvent examines a single store change and returns the event
-// kind, target, and detail if the change represents a noteworthy state
-// transition. Returns empty strings for changes that do not warrant an event.
-func classifyChangeAsEvent(change Change) (string, string, string) {
-	changeKey := change.Key
-	changeValue := string(change.Value)
-
-	// Instance state changes: /ccattler/observed/instance/{id}/state
-	observedInstancePrefix := types.PrefixObserved + "/instance/"
-	if strings.HasPrefix(changeKey, observedInstancePrefix) && strings.HasSuffix(changeKey, "/state") {
-		instanceID := strings.TrimPrefix(changeKey, observedInstancePrefix)
-		instanceID = strings.TrimSuffix(instanceID, "/state")
-		switch changeValue {
-		case string(types.InstanceRunning):
-			return "instance.running", "instance/" + instanceID, fmt.Sprintf("instance %s is now running", instanceID)
-		case string(types.InstanceFailed):
-			return "instance.failed", "instance/" + instanceID, fmt.Sprintf("instance %s has failed", instanceID)
-		case string(types.InstancePending):
-			return "instance.created", "instance/" + instanceID, fmt.Sprintf("instance %s created (pending)", instanceID)
-		case string(types.InstanceStarting):
-			return "instance.starting", "instance/" + instanceID, fmt.Sprintf("instance %s is starting", instanceID)
-		case string(types.InstanceStopped):
-			return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped", instanceID)
-		}
-	}
-
-	// Placement decisions: /ccattler/placement/instance/{id}
-	placementPrefix := types.PrefixPlacement + "/instance/"
-	if strings.HasPrefix(changeKey, placementPrefix) && change.Type == store.OpPut {
-		instanceID := strings.TrimPrefix(changeKey, placementPrefix)
-		return "instance.placed", "instance/" + instanceID, fmt.Sprintf("instance %s placed on node %s", instanceID, changeValue)
-	}
-
-	// Node state changes: /ccattler/observed/node/{id}/state
-	observedNodePrefix := types.PrefixObserved + "/node/"
-	if strings.HasPrefix(changeKey, observedNodePrefix) && strings.HasSuffix(changeKey, "/state") {
-		nodeID := strings.TrimPrefix(changeKey, observedNodePrefix)
-		nodeID = strings.TrimSuffix(nodeID, "/state")
-		return "node." + changeValue, "node/" + nodeID, fmt.Sprintf("node %s is now %s", nodeID, changeValue)
-	}
-
-	// Effective instance count changes: /ccattler/effective/service/{name}/instances
-	effectivePrefix := types.PrefixEffective + "/service/"
-	if strings.HasPrefix(changeKey, effectivePrefix) && strings.HasSuffix(changeKey, "/instances") {
-		serviceName := strings.TrimPrefix(changeKey, effectivePrefix)
-		serviceName = strings.TrimSuffix(serviceName, "/instances")
-		return "service.scaled", "service/" + serviceName, fmt.Sprintf("service %s scaled to %s instances", serviceName, changeValue)
-	}
-
-	return "", "", ""
-}

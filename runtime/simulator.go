@@ -19,6 +19,7 @@ type SimulatorRuntime struct {
 	mutex        sync.Mutex                    // mutex guards concurrent access to the workloads map.
 	workloads    map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
 	ExecFailures map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
+	ExecInitCalls []ExecInitCall               // ExecInitCalls records all ExecInit calls for test verification.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by
@@ -99,6 +100,21 @@ func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec E
 		return &StartError{ID: id, Reason: "exec probe failed (injected)"}
 	}
 	return nil
+}
+
+// ExecInit runs an initialization command against an image in the simulator.
+// The simulator records the call and succeeds.
+func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, execSpec ExecSpec) error {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command})
+	return nil
+}
+
+// ExecInitCall records a call to ExecInit for test verification.
+type ExecInitCall struct {
+	Image   string
+	Command string
 }
 
 // Logs returns an empty reader for simulated workloads.

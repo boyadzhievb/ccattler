@@ -108,7 +108,7 @@ func TestCloudLoadBalancerControllerCreatesLoadBalancer(testing *testing.T) {
 	facts := []store.Fact{
 		{Key: types.KeyDesiredServiceExpose("web", 80), Value: []byte("")},
 		{Key: types.KeyDesiredServiceExposeExternal("web", 80), Value: []byte("http")},
-		{Key: types.KeyEndpoint("web", "inst-1"), Value: []byte("10.0.1.5:80")},
+		{Key: types.KeyEndpoint("web", "inst-1", 80), Value: []byte("10.0.1.5:80")},
 		{Key: types.KeyObservedNodeAddress("node-1"), Value: []byte("192.168.1.10")},
 	}
 

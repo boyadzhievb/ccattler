@@ -304,6 +304,19 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 	return nil
 }
 
+// ExecInit runs an initialization command by creating a temporary container
+// from the given image, executing the command, and removing the container.
+func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
+	args := []string{"run", "--rm", image, "sh", "-c", execSpec.Command}
+	execCommand := exec.CommandContext(ctx, "nerdctl", args...)
+	var stderr bytes.Buffer
+	execCommand.Stderr = &stderr
+	if err := execCommand.Run(); err != nil {
+		return fmt.Errorf("nerdctl run --rm init: %v: %s", err, stderr.String())
+	}
+	return nil
+}
+
 // Logs returns the stdout/stderr output of a container via `nerdctl logs`.
 // When follow is true, the returned reader streams new output as it arrives.
 func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {

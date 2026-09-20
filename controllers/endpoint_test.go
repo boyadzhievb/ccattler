@@ -29,8 +29,8 @@ func TestEndpointCreatedForRunningInstance(t *testing.T) {
 	if changes[0].Type != store.OpPut {
 		t.Fatalf("expected OpPut, got %d", changes[0].Type)
 	}
-	if changes[0].Key != types.KeyEndpoint("web", "aaa") {
-		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa"))
+	if changes[0].Key != types.KeyEndpoint("web", "aaa", 8080) {
+		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa", 8080))
 	}
 	if string(changes[0].Value) != "10.0.1.4:8080" {
 		t.Errorf("value: got %s, want 10.0.1.4:8080", changes[0].Value)
@@ -100,7 +100,7 @@ func TestStaleEndpointRemoved(t *testing.T) {
 		kv(types.KeyObservedInstanceState("aaa"), "stopped"),
 		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
-		kv(types.KeyEndpoint("web", "aaa"), "10.0.1.4:8080"),
+		kv(types.KeyEndpoint("web", "aaa", 8080), "10.0.1.4:8080"),
 	)
 
 	changes, err := endpointController.Reconcile(context.Background(), facts)
@@ -113,8 +113,8 @@ func TestStaleEndpointRemoved(t *testing.T) {
 	if changes[0].Type != store.OpDelete {
 		t.Fatalf("expected OpDelete, got %d", changes[0].Type)
 	}
-	if changes[0].Key != types.KeyEndpoint("web", "aaa") {
-		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa"))
+	if changes[0].Key != types.KeyEndpoint("web", "aaa", 8080) {
+		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa", 8080))
 	}
 }
 
@@ -142,10 +142,10 @@ func TestEndpointMultipleInstances(t *testing.T) {
 	}
 
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
-	if changes[0].Key != types.KeyEndpoint("web", "aaa") {
+	if changes[0].Key != types.KeyEndpoint("web", "aaa", 8080) {
 		t.Errorf("first: got %s", changes[0].Key)
 	}
-	if changes[1].Key != types.KeyEndpoint("web", "bbb") {
+	if changes[1].Key != types.KeyEndpoint("web", "bbb", 8080) {
 		t.Errorf("second: got %s", changes[1].Key)
 	}
 }
@@ -158,7 +158,7 @@ func TestEndpointAlreadyExists(t *testing.T) {
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
 		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
 		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
-		kv(types.KeyEndpoint("web", "aaa"), "10.0.1.4:8080"),
+		kv(types.KeyEndpoint("web", "aaa", 8080), "10.0.1.4:8080"),
 	)
 
 	changes, err := endpointController.Reconcile(context.Background(), facts)
@@ -217,7 +217,7 @@ func TestEndpointControllerReadinessGating(t *testing.T) {
 	if changes[0].Type != store.OpPut {
 		t.Fatalf("expected OpPut, got %d", changes[0].Type)
 	}
-	expectedEndpointKey := types.KeyEndpoint("web", readyInstanceID)
+	expectedEndpointKey := types.KeyEndpoint("web", readyInstanceID, 8080)
 	if changes[0].Key != expectedEndpointKey {
 		t.Errorf("key: got %s, want %s", changes[0].Key, expectedEndpointKey)
 	}
@@ -263,8 +263,8 @@ func TestEndpointControllerNoReadinessProbe(t *testing.T) {
 
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
 
-	expectedFirstKey := types.KeyEndpoint("api", firstInstanceID)
-	expectedSecondKey := types.KeyEndpoint("api", secondInstanceID)
+	expectedFirstKey := types.KeyEndpoint("api", firstInstanceID, 3000)
+	expectedSecondKey := types.KeyEndpoint("api", secondInstanceID, 3000)
 	if changes[0].Key != expectedFirstKey {
 		t.Errorf("first endpoint key: got %s, want %s", changes[0].Key, expectedFirstKey)
 	}
@@ -415,7 +415,7 @@ func TestEndpointControllerReadinessBecomesReady(t *testing.T) {
 		t.Fatalf("expected 1 endpoint after readiness transition, got %d", len(changesAfterReadiness))
 	}
 
-	expectedEndpointKey := types.KeyEndpoint("web", transitioningInstanceID)
+	expectedEndpointKey := types.KeyEndpoint("web", transitioningInstanceID, 8080)
 	if changesAfterReadiness[0].Type != store.OpPut {
 		t.Fatalf("expected OpPut, got %d", changesAfterReadiness[0].Type)
 	}
@@ -425,5 +425,75 @@ func TestEndpointControllerReadinessBecomesReady(t *testing.T) {
 	expectedEndpointAddress := "10.0.5.50:8080"
 	if string(changesAfterReadiness[0].Value) != expectedEndpointAddress {
 		t.Errorf("value: got %s, want %s", changesAfterReadiness[0].Value, expectedEndpointAddress)
+	}
+}
+
+// TestEndpointMultiPortService verifies that a service exposing multiple ports
+// creates one endpoint per port per running instance.
+func TestEndpointMultiPortService(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+		kv(types.KeyDesiredServiceExpose("web", 8443), ""),
+	)
+
+	changes, reconcileError := endpointController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 endpoints (one per port), got %d", len(changes))
+	}
+
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+
+	expectedFirstKey := types.KeyEndpoint("web", "aaa", 8080)
+	expectedSecondKey := types.KeyEndpoint("web", "aaa", 8443)
+	if changes[0].Key != expectedFirstKey {
+		t.Errorf("first key: got %s, want %s", changes[0].Key, expectedFirstKey)
+	}
+	if changes[1].Key != expectedSecondKey {
+		t.Errorf("second key: got %s, want %s", changes[1].Key, expectedSecondKey)
+	}
+	if string(changes[0].Value) != "10.0.1.4:8080" {
+		t.Errorf("first value: got %s, want 10.0.1.4:8080", changes[0].Value)
+	}
+	if string(changes[1].Value) != "10.0.1.4:8443" {
+		t.Errorf("second value: got %s, want 10.0.1.4:8443", changes[1].Value)
+	}
+}
+
+// TestEndpointMultiPortStaleRemoval verifies that a stale endpoint for one
+// port is removed even if the other port's endpoint is still valid.
+func TestEndpointMultiPortStaleRemoval(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+		// Port 8443 no longer exposed, but stale endpoint exists.
+		kv(types.KeyEndpoint("web", "aaa", 8080), "10.0.1.4:8080"),
+		kv(types.KeyEndpoint("web", "aaa", 8443), "10.0.1.4:8443"),
+	)
+
+	changes, reconcileError := endpointController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change (delete stale port 8443), got %d", len(changes))
+	}
+	if changes[0].Type != store.OpDelete {
+		t.Fatalf("expected OpDelete, got %d", changes[0].Type)
+	}
+	if changes[0].Key != types.KeyEndpoint("web", "aaa", 8443) {
+		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa", 8443))
 	}
 }

@@ -54,6 +54,12 @@ type Runtime interface {
 	// or an error if the command fails.
 	Exec(ctx context.Context, id string, execSpec ExecSpec) error
 
+	// ExecInit runs an initialization command in the context of the given image
+	// before the main workload starts. For container runtimes, this creates a
+	// temporary container from the image, runs the command, and removes it.
+	// For process/simulator runtimes, this executes the command directly.
+	ExecInit(ctx context.Context, image string, execSpec ExecSpec) error
+
 	// Logs returns the stdout/stderr output of a workload. When follow is true,
 	// the returned reader streams new output as it is produced (blocking read).
 	// The caller must close the returned ReadCloser when done.

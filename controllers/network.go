@@ -115,10 +115,11 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 	// Create VIP + DNS for services that have endpoints and an exposed port
 	// but don't yet have a VIP.
 	for serviceName := range servicesWithEndpoints {
-		exposedPort := servicePorts[serviceName]
-		if exposedPort == 0 {
+		exposedPorts := servicePorts[serviceName]
+		if len(exposedPorts) == 0 {
 			continue
 		}
+		exposedPort := exposedPorts[0]
 
 		if _, hasVIP := existingVIPs[serviceName]; !hasVIP {
 			vipAddress := fmt.Sprintf("%d.%d.%d.%d",

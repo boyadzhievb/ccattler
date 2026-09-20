@@ -83,11 +83,12 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		existingEndpoints[relativePath] = true
 	}
 
-	// Determine desired endpoints: running instances with an IP, an exposed port,
+	// Determine desired endpoints: running instances with an IP, exposed ports,
 	// and passing readiness (if a readiness probe is configured for the service).
 	// When a node advertise address and host port are available, use those for
 	// cross-host reachability instead of the container-local IP.
-	desiredEndpoints := make(map[string]string) // "service/instance" -> "ip:port"
+	// Each instance gets one endpoint per exposed port.
+	desiredEndpoints := make(map[string]string) // "service/instance/port" -> "ip:port"
 	for instanceID, fields := range instanceFields {
 		if types.InstanceState(fields["state"]) != types.InstanceRunning {
 			continue
@@ -97,8 +98,8 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 			continue
 		}
 		serviceName := fields["service"]
-		exposedPort := servicePorts[serviceName]
-		if exposedPort == 0 {
+		exposedPorts := servicePorts[serviceName]
+		if len(exposedPorts) == 0 {
 			continue
 		}
 		if serviceHasReadinessProbe[serviceName] {
@@ -107,15 +108,18 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 				continue
 			}
 		}
-		endpointKey := fmt.Sprintf("%s/%s", serviceName, instanceID)
 
 		hostPort := fields["hostport"]
 		nodeID := fields["node"]
 		nodeAddress := nodeAddresses[nodeID]
-		if hostPort != "" && nodeAddress != "" {
-			desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, hostPort)
-		} else {
-			desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
+
+		for _, exposedPort := range exposedPorts {
+			endpointKey := fmt.Sprintf("%s/%s/%d", serviceName, instanceID, exposedPort)
+			if hostPort != "" && nodeAddress != "" {
+				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, hostPort)
+			} else {
+				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
+			}
 		}
 	}
 

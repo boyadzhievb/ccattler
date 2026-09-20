@@ -278,17 +278,18 @@ func WritePlacement(ctx context.Context, stateStore store.StateStore, placement 
 	return stateStore.Put(ctx, KeyPlacementInstance(placement.InstanceID), []byte(placement.NodeID))
 }
 
-// WriteEndpoint writes a derived endpoint fact for a running service instance.
-// The value is stored as "IP:port" at the endpoint key for the service/instance pair.
+// WriteEndpoint writes a derived endpoint fact for a running service instance
+// on a specific port. The value is stored as "IP:port" at the endpoint key.
 func WriteEndpoint(ctx context.Context, stateStore store.StateStore, endpoint Endpoint) (int64, error) {
 	val := fmt.Sprintf("%s:%d", endpoint.IP, endpoint.Port)
-	return stateStore.Put(ctx, KeyEndpoint(endpoint.Service, endpoint.InstanceID), []byte(val))
+	return stateStore.Put(ctx, KeyEndpoint(endpoint.Service, endpoint.InstanceID, endpoint.Port), []byte(val))
 }
 
-// DeleteEndpoint removes an endpoint fact for a service instance. This is
-// called when an instance stops running and should no longer receive traffic.
-func DeleteEndpoint(ctx context.Context, stateStore store.StateStore, serviceName, instanceID string) error {
-	return stateStore.Delete(ctx, KeyEndpoint(serviceName, instanceID))
+// DeleteEndpoint removes an endpoint fact for a service instance on a specific
+// port. This is called when an instance stops running and should no longer
+// receive traffic.
+func DeleteEndpoint(ctx context.Context, stateStore store.StateStore, serviceName, instanceID string, port int) error {
+	return stateStore.Delete(ctx, KeyEndpoint(serviceName, instanceID, port))
 }
 
 // WriteServiceVIP writes a service virtual IP assignment as flat key-value pairs

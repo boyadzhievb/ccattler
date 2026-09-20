@@ -256,7 +256,7 @@ func TestEndpointWriteAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	factEntry, err := stateStore.Get(ctx, KeyEndpoint("web", "a8f31"))
+	factEntry, err := stateStore.Get(ctx, KeyEndpoint("web", "a8f31", 8080))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,10 +264,10 @@ func TestEndpointWriteAndDelete(t *testing.T) {
 		t.Fatalf("expected 10.0.1.4:8080, got %s", factEntry.Value)
 	}
 
-	if err := DeleteEndpoint(ctx, stateStore, "web", "a8f31"); err != nil {
+	if err := DeleteEndpoint(ctx, stateStore, "web", "a8f31", 8080); err != nil {
 		t.Fatal(err)
 	}
-	_, err = stateStore.Get(ctx, KeyEndpoint("web", "a8f31"))
+	_, err = stateStore.Get(ctx, KeyEndpoint("web", "a8f31", 8080))
 	if err != store.ErrKeyNotFound {
 		t.Fatalf("expected ErrKeyNotFound after delete, got %v", err)
 	}
@@ -287,7 +287,7 @@ func TestKeyPaths(t *testing.T) {
 		{KeyObservedInstance("a8f31"), "observed/instance/a8f31"},
 		{KeyObservedInstanceState("a8f31"), "observed/instance/a8f31/state"},
 		{KeyPlacementInstance("a8f31"), "placement/instance/a8f31"},
-		{KeyEndpoint("web", "a8f31"), "endpoint/service/web/a8f31"},
+		{KeyEndpoint("web", "a8f31", 8080), "endpoint/service/web/a8f31/8080"},
 		{KeyLeaseNode("node-1"), "lease/node/node-1"},
 		{KeyNetworkNodeSubnet("node-1"), "network/node/node-1/subnet"},
 		{KeyNetworkAllocation("a8f31"), "network/allocation/a8f31"},

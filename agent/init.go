@@ -3,12 +3,12 @@ package agent
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
+	goruntime "github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -22,10 +22,11 @@ type initStepDefinition struct {
 }
 
 // executeInitializationSteps runs all init steps for an instance sequentially.
-// Each step is executed via the runtime's Exec method. Step results are reported
-// to the store as observed init step state facts. Returns true if all steps
-// succeeded, false if any step failed or the instance has no init steps.
-func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+// Each step is executed via the runtime's ExecInit method against the service
+// image. Step results are reported to the store as observed init step state
+// facts. Returns true if all steps succeeded, false if any step failed or the
+// instance has no init steps.
+func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instanceInfo placedInstanceInfo, image string) bool {
 	stepDefinitions := nodeAgent.loadInitStepDefinitions(ctx, instanceInfo.service)
 	if len(stepDefinitions) == 0 {
 		return true
@@ -48,7 +49,7 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), []byte("agent restarted during execution"))
 		}
 
-		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition)
+		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image)
 		if !succeeded {
 			return false
 		}
@@ -60,12 +61,12 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 // executeInitStep runs a single init step with retries and timeout. Reports step
 // state transitions (running → succeeded/failed) to the store. Returns true if
 // the step eventually succeeded.
-func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition) bool {
+func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string) bool {
 	maxAttempts := 1 + stepDefinition.retry
 	for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
 		nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning)))
 
-		execError := nodeAgent.runInitCommand(ctx, instanceInfo.id, stepDefinition)
+		execError := nodeAgent.runInitCommand(ctx, image, stepDefinition)
 
 		if execError == nil {
 			nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded)))
@@ -102,10 +103,10 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 	return false
 }
 
-// runInitCommand executes the init step's command as a standalone subprocess.
-// Init steps run before the main workload starts, so they execute directly on
-// the host rather than inside a container. Applies a timeout if configured.
-func (nodeAgent *Agent) runInitCommand(ctx context.Context, instanceID string, stepDefinition initStepDefinition) error {
+// runInitCommand executes the init step's command via the runtime's ExecInit
+// method. For container runtimes, this runs the command in a temporary container
+// from the service image. Applies a timeout if configured.
+func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDefinition initStepDefinition) error {
 	execCtx := ctx
 	var cancelFunc context.CancelFunc
 	if stepDefinition.timeout > 0 {
@@ -113,13 +114,11 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, instanceID string, s
 		defer cancelFunc()
 	}
 
-	commandParts := strings.Fields(stepDefinition.exec)
-	if len(commandParts) == 0 {
-		return fmt.Errorf("empty init exec command for instance %s step %d", instanceID, stepDefinition.index)
+	if strings.TrimSpace(stepDefinition.exec) == "" {
+		return fmt.Errorf("empty init exec command for step %d", stepDefinition.index)
 	}
 
-	command := exec.CommandContext(execCtx, commandParts[0], commandParts[1:]...)
-	return command.Run()
+	return nodeAgent.runtime.ExecInit(execCtx, image, goruntime.ExecSpec{Command: stepDefinition.exec})
 }
 
 // loadInitStepDefinitions reads the desired init step configuration for a service

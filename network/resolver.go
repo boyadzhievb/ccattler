@@ -50,7 +50,7 @@ func (storeBackedResolver *StoreBackedResolver) ResolveEndpoints(ctx context.Con
 	var resolvedEndpoints []types.Endpoint
 	for _, endpointFact := range endpointFacts {
 		relativePath := strings.TrimPrefix(endpointFact.Key, endpointPrefix)
-		instanceID := relativePath
+		instanceID := strings.SplitN(relativePath, "/", 2)[0]
 
 		addressAndPort := string(endpointFact.Value)
 		colonIndex := strings.LastIndex(addressAndPort, ":")
