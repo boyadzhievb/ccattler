@@ -316,6 +316,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
 	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
 	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
+	cpuMillicores, memoryBytes := nodeAgent.lookupServiceResourcesFromStore(ctx, instanceInfo.service)
 
 	allocatedIP := ""
 	if nodeAgent.networkProvider != nil {
@@ -335,6 +336,8 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		ConfigFiles: configFiles,
 		Ports:       exposedPorts,
 		IP:          allocatedIP,
+		CPUm:        cpuMillicores,
+		MemoryB:     memoryBytes,
 	}); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
 		if nodeAgent.secretProvider != nil {
