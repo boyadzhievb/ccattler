@@ -7,6 +7,7 @@ type File struct {
 	Tenants          []TenantDecl         // top-level tenant blocks in the source file
 	CloudIdentities  []CloudIdentityDecl  // top-level cloud_identity blocks in the source file
 	CredentialBroker *CredentialBrokerDecl // optional top-level credential_broker block
+	Cloud            *CloudDecl           // optional top-level cloud block for cloud provider config
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -33,6 +34,7 @@ type ServiceDecl struct {
 	Image        string            // container image reference (e.g. "nginx:1.27")
 	Instances    int               // desired number of running instances
 	Ports        []int             // exposed port numbers declared via "expose"
+	ExternalPorts []ExternalPortDecl // ports exposed externally via cloud load balancer
 	Resources    *ResourcesDecl    // optional CPU/memory resource constraints
 	Health       *HealthDecl       // optional health check configuration
 	Scale        *ScaleDecl        // optional autoscaling policy
@@ -227,5 +229,26 @@ type CredentialBrokerDecl struct {
 	OIDCIssuer    string // OIDC issuer URL (e.g. "https://ccattler.example.com")
 	CredentialTTL string // credential lifetime (e.g. "1h")
 	RefreshBefore string // refresh window before expiry (e.g. "15m")
+	Line          int    // source line number for error reporting
+}
+
+// ExternalPortDecl represents an "expose external" port declaration in a
+// service block. It marks a port for cloud load balancer exposure.
+type ExternalPortDecl struct {
+	Port     int    // port number to expose externally
+	Protocol string // protocol: "tcp" (default) or "http"
+}
+
+// CloudDecl represents the top-level "cloud" block configuring the cloud
+// provider for node lifecycle management, load balancers, and VPC routes.
+type CloudDecl struct {
+	Provider      string // cloud provider: "aws", "gcp", or "azure"
+	Region        string // cloud region (e.g. "us-east-1", "us-central1")
+	Credentials   string // cloud_identity name for provider authentication
+	InstanceType  string // default instance type for provisioned nodes
+	ProjectID     string // GCP project ID or Azure subscription ID
+	ResourceGroup string // Azure resource group name
+	VPCNetwork    string // VPC/VNet network name for route management
+	RouteTable    string // VPC route table ID (AWS)
 	Line          int    // source line number for error reporting
 }

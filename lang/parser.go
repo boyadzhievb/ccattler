@@ -86,6 +86,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.CredentialBroker = credentialBrokerDecl
+		case "cloud":
+			cloudDecl, err := parser.parseCloudDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Cloud = cloudDecl
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -126,10 +132,18 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 		case "instances":
 			serviceDecl.Instances, err = parser.expectInteger()
 		case "expose":
-			var port int
-			port, err = parser.expectInteger()
-			if err == nil {
-				serviceDecl.Ports = append(serviceDecl.Ports, port)
+			if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "external" {
+				var externalPort ExternalPortDecl
+				externalPort, err = parser.parseExposeExternal()
+				if err == nil {
+					serviceDecl.ExternalPorts = append(serviceDecl.ExternalPorts, externalPort)
+				}
+			} else {
+				var port int
+				port, err = parser.expectInteger()
+				if err == nil {
+					serviceDecl.Ports = append(serviceDecl.Ports, port)
+				}
 			}
 		case "resources":
 			serviceDecl.Resources, err = parser.parseResourcesBlock()
@@ -1301,6 +1315,80 @@ func (parser *Parser) parseCloudIdentityBindingInService() (CloudIdentityBinding
 		return CloudIdentityBindingDecl{}, err
 	}
 	return binding, nil
+}
+
+// parseExposeExternal parses "expose external <port> [<protocol>]" inside a
+// service block. The protocol defaults to "tcp" if not specified.
+func (parser *Parser) parseExposeExternal() (ExternalPortDecl, error) {
+	parser.advanceToken() // skip "external"
+
+	port, err := parser.expectInteger()
+	if err != nil {
+		return ExternalPortDecl{}, err
+	}
+
+	protocol := "tcp"
+	if parser.currentTokenIs(TokenIdent) {
+		protocolValue := parser.currentToken().Value
+		if protocolValue == "tcp" || protocolValue == "http" {
+			protocol = protocolValue
+			parser.advanceToken()
+		}
+	}
+
+	return ExternalPortDecl{Port: port, Protocol: protocol}, nil
+}
+
+// parseCloudDeclaration parses a top-level "cloud { ... }" block that configures
+// the cloud provider for node lifecycle, load balancers, and VPC routes.
+func (parser *Parser) parseCloudDeclaration() (*CloudDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "cloud"
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	cloudDecl := &CloudDecl{Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "provider":
+			cloudDecl.Provider, err = parser.expectIdentifier()
+		case "region":
+			cloudDecl.Region, err = parser.expectStringOrIdentifier()
+		case "credentials":
+			cloudDecl.Credentials, err = parser.expectIdentifier()
+		case "instance_type":
+			cloudDecl.InstanceType, err = parser.expectStringOrIdentifier()
+		case "project_id":
+			cloudDecl.ProjectID, err = parser.expectStringOrIdentifier()
+		case "resource_group":
+			cloudDecl.ResourceGroup, err = parser.expectStringOrIdentifier()
+		case "vpc_network":
+			cloudDecl.VPCNetwork, err = parser.expectStringOrIdentifier()
+		case "route_table":
+			cloudDecl.RouteTable, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown cloud field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return cloudDecl, nil
 }
 
 func (parser *Parser) parserErrorf(format string, args ...any) error {

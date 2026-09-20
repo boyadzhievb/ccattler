@@ -1237,3 +1237,134 @@ func KeyDerivedCredentialIssuedAt(instanceID string, identityName string) string
 func KeyDerivedCredentialError(instanceID string, identityName string) string {
 	return fmt.Sprintf("%s/credential/%s/%s/error", PrefixDerived, instanceID, identityName)
 }
+
+// ---------------------------------------------------------------------------
+// Cloud controller manager keys
+// Pattern: desired/cloud/{field}
+// Pattern: desired/service/{name}/expose/{port}/external
+// Pattern: observed/cloud/instance/{providerInstanceID}/{field}
+// Pattern: observed/cloud/loadbalancer/{serviceName}/{field}
+// Pattern: observed/cloud/route/{cidr}
+// Pattern: observed/node/{nodeID}/provider_instance_id
+// ---------------------------------------------------------------------------
+
+const (
+	// ScanDesiredCloud scans all desired cloud configuration facts.
+	ScanDesiredCloud = PrefixDesired + "/cloud/"
+
+	// ScanObservedCloudInstances scans all observed cloud instance facts.
+	ScanObservedCloudInstances = PrefixObserved + "/cloud/instance/"
+
+	// ScanObservedCloudLoadBalancers scans all observed cloud load balancer facts.
+	ScanObservedCloudLoadBalancers = PrefixObserved + "/cloud/loadbalancer/"
+
+	// ScanObservedCloudRoutes scans all observed cloud route facts.
+	ScanObservedCloudRoutes = PrefixObserved + "/cloud/route/"
+)
+
+// KeyDesiredCloudProvider returns the store path for the cloud provider name.
+// Path: desired/cloud/provider
+func KeyDesiredCloudProvider() string {
+	return PrefixDesired + "/cloud/provider"
+}
+
+// KeyDesiredCloudRegion returns the store path for the cloud region.
+// Path: desired/cloud/region
+func KeyDesiredCloudRegion() string {
+	return PrefixDesired + "/cloud/region"
+}
+
+// KeyDesiredCloudInstanceType returns the store path for the default instance
+// type to provision.
+// Path: desired/cloud/instance_type
+func KeyDesiredCloudInstanceType() string {
+	return PrefixDesired + "/cloud/instance_type"
+}
+
+// KeyDesiredCloudCredentials returns the store path for the cloud credentials
+// reference (a cloud_identity name).
+// Path: desired/cloud/credentials
+func KeyDesiredCloudCredentials() string {
+	return PrefixDesired + "/cloud/credentials"
+}
+
+// KeyDesiredCloudProjectID returns the store path for the cloud project ID
+// (GCP-specific, also used by Azure as subscription_id).
+// Path: desired/cloud/project_id
+func KeyDesiredCloudProjectID() string {
+	return PrefixDesired + "/cloud/project_id"
+}
+
+// KeyDesiredCloudResourceGroup returns the store path for the Azure resource group.
+// Path: desired/cloud/resource_group
+func KeyDesiredCloudResourceGroup() string {
+	return PrefixDesired + "/cloud/resource_group"
+}
+
+// KeyDesiredCloudVPCNetwork returns the store path for the VPC/VNet network name.
+// Path: desired/cloud/vpc_network
+func KeyDesiredCloudVPCNetwork() string {
+	return PrefixDesired + "/cloud/vpc_network"
+}
+
+// KeyDesiredCloudRouteTable returns the store path for the VPC route table ID.
+// Path: desired/cloud/route_table
+func KeyDesiredCloudRouteTable() string {
+	return PrefixDesired + "/cloud/route_table"
+}
+
+// KeyDesiredServiceExposeExternal returns the store path marking a service port
+// as externally exposed via a cloud load balancer. The value is the protocol
+// ("tcp" or "http").
+// Path: desired/service/{name}/expose/{port}/external
+func KeyDesiredServiceExposeExternal(serviceName string, port int) string {
+	return fmt.Sprintf("%s/service/%s/expose/%d/external", PrefixDesired, serviceName, port)
+}
+
+// ScanDesiredServiceExposeExternal returns the scan prefix for all externally
+// exposed ports of a service.
+func ScanDesiredServiceExposeExternal(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/expose/", PrefixDesired, serviceName)
+}
+
+// KeyObservedNodeProviderInstanceID returns the store path mapping a CCattler
+// node to its cloud provider instance ID.
+// Path: observed/node/{nodeID}/provider_instance_id
+func KeyObservedNodeProviderInstanceID(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/provider_instance_id", PrefixObserved, nodeID)
+}
+
+// KeyObservedCloudInstanceState returns the store path for a cloud instance's
+// lifecycle state as reported by the cloud provider.
+// Path: observed/cloud/instance/{providerInstanceID}/state
+func KeyObservedCloudInstanceState(providerInstanceID string) string {
+	return fmt.Sprintf("%s/cloud/instance/%s/state", PrefixObserved, providerInstanceID)
+}
+
+// KeyObservedCloudInstanceNodeID returns the store path mapping a cloud instance
+// to its CCattler node ID.
+// Path: observed/cloud/instance/{providerInstanceID}/node_id
+func KeyObservedCloudInstanceNodeID(providerInstanceID string) string {
+	return fmt.Sprintf("%s/cloud/instance/%s/node_id", PrefixObserved, providerInstanceID)
+}
+
+// KeyObservedCloudLoadBalancerAddress returns the store path for a cloud load
+// balancer's external address.
+// Path: observed/cloud/loadbalancer/{serviceName}/address
+func KeyObservedCloudLoadBalancerAddress(serviceName string) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/address", PrefixObserved, serviceName)
+}
+
+// KeyObservedCloudLoadBalancerState returns the store path for a cloud load
+// balancer's operational state.
+// Path: observed/cloud/loadbalancer/{serviceName}/state
+func KeyObservedCloudLoadBalancerState(serviceName string) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/state", PrefixObserved, serviceName)
+}
+
+// KeyObservedCloudRoute returns the store path for an observed cloud VPC route.
+// The value is the target node ID.
+// Path: observed/cloud/route/{destinationCIDR}
+func KeyObservedCloudRoute(destinationCIDR string) string {
+	return fmt.Sprintf("%s/cloud/route/%s", PrefixObserved, destinationCIDR)
+}

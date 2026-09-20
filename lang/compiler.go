@@ -63,6 +63,13 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, brokerFacts...)
 	}
+	if file.Cloud != nil {
+		cloudFacts, err := compileCloudDeclaration(*file.Cloud, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, cloudFacts...)
+	}
 	for _, serviceDecl := range file.Services {
 		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines)
 		if err != nil {
@@ -195,6 +202,21 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 		}
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredServiceExpose(serviceDecl.Name, port), Value: "",
+		})
+	}
+
+	for _, externalPort := range serviceDecl.ExternalPorts {
+		if externalPort.Port < 1 || externalPort.Port > 65535 {
+			return nil, &ParseError{
+				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q external port %d out of range (1-65535)", serviceDecl.Name, externalPort.Port),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
+		}
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceExpose(serviceDecl.Name, externalPort.Port), Value: "",
+		})
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceExposeExternal(serviceDecl.Name, externalPort.Port), Value: externalPort.Protocol,
 		})
 	}
 
@@ -591,6 +613,68 @@ func compileProbeDeclaration(serviceName string, probeType string, probeDecl *Pr
 		})
 	}
 	return facts
+}
+
+// compileCloudDeclaration converts a CloudDecl into its corresponding facts.
+func compileCloudDeclaration(cloudDecl CloudDecl, sourceLines []string) ([]Fact, error) {
+	if cloudDecl.Provider == "" {
+		return nil, &ParseError{
+			Line:       cloudDecl.Line,
+			Message:    "cloud block requires a provider (aws, gcp, or azure)",
+			SourceLine: sourceLineAt(sourceLines, cloudDecl.Line),
+		}
+	}
+
+	validProviders := map[string]bool{"aws": true, "gcp": true, "azure": true}
+	if !validProviders[cloudDecl.Provider] {
+		return nil, &ParseError{
+			Line:       cloudDecl.Line,
+			Message:    fmt.Sprintf("unknown cloud provider %q (expected aws, gcp, or azure)", cloudDecl.Provider),
+			SourceLine: sourceLineAt(sourceLines, cloudDecl.Line),
+		}
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredCloudProvider(), Value: cloudDecl.Provider},
+	}
+
+	if cloudDecl.Region != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudRegion(), Value: cloudDecl.Region,
+		})
+	}
+	if cloudDecl.InstanceType != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudInstanceType(), Value: cloudDecl.InstanceType,
+		})
+	}
+	if cloudDecl.Credentials != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudCredentials(), Value: cloudDecl.Credentials,
+		})
+	}
+	if cloudDecl.ProjectID != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudProjectID(), Value: cloudDecl.ProjectID,
+		})
+	}
+	if cloudDecl.ResourceGroup != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudResourceGroup(), Value: cloudDecl.ResourceGroup,
+		})
+	}
+	if cloudDecl.VPCNetwork != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudVPCNetwork(), Value: cloudDecl.VPCNetwork,
+		})
+	}
+	if cloudDecl.RouteTable != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCloudRouteTable(), Value: cloudDecl.RouteTable,
+		})
+	}
+
+	return facts, nil
 }
 
 // Apply parses a DSL string and writes all resulting facts to the store.

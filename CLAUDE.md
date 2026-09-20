@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M32 — Cloud Controller Manager (Phase 35). M1–M31a complete.
+**Active milestone:** M32 — Cloud Controller Manager (Phase 35). M1–M31a complete. M32 implementation complete.
 
 ---
 
@@ -1011,9 +1011,38 @@ Controller SDK: subscribe to fact prefixes, run reconciliation logic, write fact
 
 ```
 cca apply <file>              # deploy config (simulated, prints status and exits)
+## Cloud Provider Integration
+
+Cloud providers manage node lifecycle, load balancers, and VPC routes:
+
+```
+cloud {
+    provider aws
+    region "us-east-1"
+    instance_type "m5.large"
+    credentials infra_identity
+    route_table "rtb-abc123"
+}
+
+service web {
+    image nginx:1.27
+    instances 3
+    expose 8080
+    expose external 443 http
+}
+```
+
+The `cloud` block configures the provider. `expose external` marks a port for cloud load balancer creation. The cloud controller manager runs three sub-controllers:
+- **NodeLifecycleController** — detects terminated cloud instances, cordons and drains nodes
+- **CloudLoadBalancerController** — creates/updates/deletes cloud LBs for `expose external` services
+- **CloudRouteController** — programs VPC routes from node subnet assignments
+
+Enabled via: `cca server --cloud-provider aws --cloud-region us-east-1`
+
+
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
-cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>]  # control plane (--api-only for stateless replicas, --controllers-only for leader-elected controllers)
+cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]  # control plane (--cloud-provider enables cloud controllers)
 cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>]  # node agent (mTLS, VIP data plane)
 cca token create [--node-id <id>] [--ttl 15m]  # generate join token
 cca token list                # list active join tokens
@@ -1383,14 +1412,18 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] RBAC updated — `controller`, `credential-broker`, `node-agent` roles include `derived/` prefix permissions
 
 ### Phase 35 — Cloud Controller Manager
-- [ ] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
-- [ ] AWS cloud provider — EC2 instance management, ELB/NLB service load balancers, VPC route table entries
-- [ ] GCP cloud provider — GCE instance management, Cloud Load Balancing, VPC routes
-- [ ] Azure cloud provider — VM management, Azure Load Balancer, route tables
-- [ ] Node lifecycle controller — detect terminated cloud instances, cordon + drain, remove stale node facts
-- [ ] Cloud load balancer controller — watch services with `expose external`, create/update/delete cloud LBs
-- [ ] Cloud route controller — program cloud VPC routes for pod-to-pod cross-node networking
-- [ ] DSL `cloud` top-level block — provider, region, credentials reference, instance types
+- [x] `CloudProvider` interface — node lifecycle (add/remove cloud instances), cloud load balancers, cloud routes
+- [x] AWS cloud provider — EC2 instance management, ELB/NLB service load balancers, VPC route table entries (stub, requires AWS SDK)
+- [x] GCP cloud provider — GCE instance management, Cloud Load Balancing, VPC routes (stub, requires Google Cloud SDK)
+- [x] Azure cloud provider — VM management, Azure Load Balancer, route tables (stub, requires Azure SDK)
+- [x] Node lifecycle controller — detect terminated cloud instances, cordon + drain, remove stale node facts
+- [x] Cloud load balancer controller — watch services with `expose external`, create/update/delete cloud LBs
+- [x] Cloud route controller — program cloud VPC routes for pod-to-pod cross-node networking
+- [x] DSL `cloud` top-level block — provider, region, credentials reference, instance types
+- [x] DSL `expose external <port> [protocol]` in service block — marks ports for cloud load balancer exposure
+- [x] RBAC `cloud-controller` role — least-privilege permissions for cloud controllers
+- [x] SimulatorCloudProvider — in-memory cloud provider for testing with call tracking
+- [x] CLI `cca server --cloud-provider <name> --cloud-region <region>` — enables cloud controllers
 
 ### Milestones
 
@@ -1428,6 +1461,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M30 — Identity RBAC & CLI | 33 | `credential-broker` RBAC role, audit trail, `cca get/describe cloud-identities`, lifecycle + e2e tests |
 | M31 — API HA | 34 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
 | M31a — Correctness II | 35a | Transaction snapshot CAS, derived/ prefix, init dual authority resolved, etcd Put simplified |
-| M32 — Cloud Controller | 35 | Cloud provider manages node lifecycle, creates cloud load balancers for exposed services, programs VPC routes |
+| M32 — Cloud Controller | 35 | `cca server --cloud-provider aws` manages node lifecycle, `expose external 443 http` creates cloud LBs, VPC routes auto-programmed |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
