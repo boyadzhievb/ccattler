@@ -117,6 +117,27 @@ type ExecInitCall struct {
 	Command string
 }
 
+// Stats returns simulated resource usage for the workload. For running
+// workloads, it returns the spec's requested CPU and memory as usage (i.e.
+// simulated 100% utilization of requested resources). For stopped workloads,
+// zero values are returned.
+func (simulator *SimulatorRuntime) Stats(_ context.Context, id string) (ResourceStats, error) {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+
+	workload, exists := simulator.workloads[id]
+	if !exists {
+		return ResourceStats{}, ErrNotFound
+	}
+	if !workload.isRunning {
+		return ResourceStats{}, nil
+	}
+	return ResourceStats{
+		CPUMillicores: workload.workloadSpec.CPUm,
+		MemoryBytes:   workload.workloadSpec.MemoryB,
+	}, nil
+}
+
 // Logs returns an empty reader for simulated workloads.
 func (simulator *SimulatorRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {
 	simulator.mutex.Lock()

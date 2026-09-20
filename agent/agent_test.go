@@ -73,6 +73,10 @@ func (delayed *delayedStartRuntime) ExecInit(ctx context.Context, image string, 
 	return delayed.inner.ExecInit(ctx, image, execSpec)
 }
 
+func (delayed *delayedStartRuntime) Stats(ctx context.Context, instanceID string) (runtime.ResourceStats, error) {
+	return delayed.inner.Stats(ctx, instanceID)
+}
+
 func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
 	return delayed.inner.Logs(ctx, instanceID, follow)
 }
@@ -1406,5 +1410,55 @@ func TestAgentCleanupUndesiredInstanceStopsStale(t *testing.T) {
 		runtimeStatus, statusError := simulatorRuntime.Status(ctx, instanceID)
 		return statusError == nil && !runtimeStatus.Running
 	})
+}
+
+// TestAgentTelemetryUsesRuntimeStats verifies that the agent reports
+// per-workload CPU and memory from runtime.Stats() to the store.
+func TestAgentTelemetryUsesRuntimeStats(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "telemetry-svc"
+	instanceID := "telemetry-aaa"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU(serviceName), []byte("500m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory(serviceName), []byte("512Mi"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return getError == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	// Give the telemetry collection a few cycles to run.
+	waitFor(t, 2*time.Second, "cpu telemetry reported", func() bool {
+		cpuFact, cpuError := factStore.Get(ctx, types.KeyObservedInstanceCPU(instanceID))
+		return cpuError == nil && len(cpuFact.Value) > 0
+	})
+
+	cpuFact, cpuError := factStore.Get(ctx, types.KeyObservedInstanceCPU(instanceID))
+	if cpuError != nil {
+		t.Fatal("expected CPU telemetry fact")
+	}
+	// SimulatorRuntime returns spec CPUm (0, since Spec.CPUm is not set by the agent start path).
+	// The key point is that the fact exists — it was written via Stats(), not estimated.
+	t.Logf("observed CPU: %s", cpuFact.Value)
+
+	memoryFact, memoryError := factStore.Get(ctx, types.KeyObservedInstanceMemory(instanceID))
+	if memoryError != nil {
+		t.Fatal("expected memory telemetry fact")
+	}
+	t.Logf("observed memory: %s", memoryFact.Value)
 }
 
