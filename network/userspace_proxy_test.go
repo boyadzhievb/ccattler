@@ -174,6 +174,31 @@ func TestExtractServiceName(t *testing.T) {
 	}
 }
 
+func TestProxyRejectsPathTraversalHost(t *testing.T) {
+	resolver := &mockResolver{endpoints: map[string][]types.Endpoint{}}
+	proxy := NewUserSpaceProxy(resolver, ":0", nil)
+
+	maliciousHosts := []string{
+		"../admin",
+		"../../desired/service/web",
+		"web/../../etc/passwd",
+		"Web", // uppercase
+		"web service", // space
+	}
+
+	for _, hostValue := range maliciousHosts {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("GET", "/", nil)
+		request.Host = hostValue
+
+		proxy.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("Host %q: got %d, want 400", hostValue, recorder.Code)
+		}
+	}
+}
+
 func TestProxyWarmZeroColdActivation(t *testing.T) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.WriteHeader(http.StatusOK)

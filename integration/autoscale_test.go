@@ -469,6 +469,99 @@ service web {
 	})
 }
 
+func TestWarmZeroActivationLifecycle(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	registerTestNodes(ctx, factStore, 2)
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
+	warmZeroController := controllers.NewWarmZeroController()
+
+	runner := controllers.NewRunner(factStore,
+		instanceController, schedulerController, endpointController,
+		failureController, autoscaleController, intentResolverController,
+		warmZeroController,
+	)
+	runner.SetDebounce(10 * time.Millisecond)
+
+	startTestAgents(ctx, factStore, 2)
+	go runner.Run(ctx)
+
+	input := `
+service webhook {
+    image webhook:1.0
+    instances 0
+    expose 8080
+    scale {
+        horizontal {
+            min 0
+            max 5
+            idle_timeout 2s
+            activation_timeout 30s
+        }
+    }
+}
+`
+	if applyError := lang.Apply(ctx, factStore, input); applyError != nil {
+		t.Fatalf("apply failed: %v", applyError)
+	}
+
+	// Allow controllers to settle — service should have 0 running instances.
+	time.Sleep(500 * time.Millisecond)
+
+	runningCount := countRunningInstancesForService(ctx, factStore, "webhook")
+	if runningCount != 0 {
+		t.Fatalf("expected 0 running instances for min=0 service, got %d", runningCount)
+	}
+
+	// WarmZeroController should set initial state to "inactive".
+	waitFor(t, 3*time.Second, "activation state set to inactive", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyDerivedServiceActivationState("webhook"))
+		return getError == nil && stateFact != nil && string(stateFact.Value) == "inactive"
+	})
+
+	// Simulate proxy triggering activation (same as what UserSpaceProxy.writeActivatingState does).
+	factStore.Put(ctx, types.KeyDerivedServiceActivationState("webhook"), []byte("activating"))
+
+	// Autoscaler should see "activating" state and override recommendation to 1.
+	// Then intent resolver derives effective = max(0, 1) = 1.
+	// Instance controller creates 1 instance, agent starts it, endpoint controller creates endpoint.
+	waitFor(t, 10*time.Second, "1 running instance after activation", func() bool {
+		return countRunningInstancesForService(ctx, factStore, "webhook") >= 1
+	})
+
+	// Wait for endpoint to appear, which triggers WarmZeroController to transition to "active".
+	waitFor(t, 5*time.Second, "activation state transitions to active", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyDerivedServiceActivationState("webhook"))
+		return getError == nil && stateFact != nil && string(stateFact.Value) == "active"
+	})
+
+	// Write last_request_time in the past (beyond the 2s idle_timeout).
+	staleTimestamp := strconv.FormatInt(time.Now().Add(-5*time.Second).UnixMilli(), 10)
+	factStore.Put(ctx, types.KeyObservedServiceLastRequestTime("webhook"), []byte(staleTimestamp))
+
+	// WarmZeroController should transition to "inactive" after detecting idle timeout.
+	waitFor(t, 5*time.Second, "idle timeout triggers inactive", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyDerivedServiceActivationState("webhook"))
+		return getError == nil && stateFact != nil && string(stateFact.Value) == "inactive"
+	})
+
+	// With activation state "inactive" and min=0 with no metrics,
+	// autoscaler recommends 0. Instances should scale down.
+	waitFor(t, 10*time.Second, "scale to zero instances", func() bool {
+		return countRunningInstancesForService(ctx, factStore, "webhook") == 0
+	})
+}
+
 // registerTestNodes creates the specified number of alive nodes in the store.
 func registerTestNodes(ctx context.Context, factStore store.StateStore, count int) {
 	for nodeIndex := 1; nodeIndex <= count; nodeIndex++ {

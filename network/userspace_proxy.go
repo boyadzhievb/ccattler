@@ -13,8 +13,28 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
+)
+
+var (
+	activationTotal = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_activation_total",
+		"Total number of warm-zero activations by outcome",
+		"service", "outcome",
+	)
+	activationDuration = metrics.DefaultRegistry.RegisterHistogram(
+		"ccattler_activation_duration_seconds",
+		"Cold-start activation latency in seconds",
+		[]float64{0.5, 1, 2, 5, 10, 30, 60},
+		"service",
+	)
+	activationWaitingGauge = metrics.DefaultRegistry.RegisterGauge(
+		"ccattler_activation_waiting_requests",
+		"Number of requests currently waiting for cold activation",
+		"service",
+	)
 )
 
 // UserSpaceProxy is an HTTP reverse proxy that routes requests to service
@@ -48,9 +68,32 @@ type UserSpaceProxy struct {
 	lastRequestWriteTime map[string]time.Time
 	// lastRequestMutex protects lastRequestWriteTime.
 	lastRequestMutex sync.Mutex
+	// activationWaiters tracks how many goroutines are currently waiting for
+	// cold activation per service. Used to cap concurrent waits and prevent DoS.
+	activationWaiters map[string]*atomic.Int64
+	// waitersMutex protects the activationWaiters map.
+	waitersMutex sync.Mutex
+	// warmZeroCache caches per-service warm-zero enabled status to avoid
+	// hitting the store on every request. Entries expire after warmZeroCacheTTL.
+	warmZeroCache map[string]warmZeroCacheEntry
+	// warmZeroCacheMutex protects warmZeroCache.
+	warmZeroCacheMutex sync.RWMutex
 	// timeNow is injectable for testing.
 	timeNow func() time.Time
 }
+
+// warmZeroCacheEntry holds a cached warm-zero status with its expiration.
+type warmZeroCacheEntry struct {
+	enabled   bool
+	expiresAt time.Time
+}
+
+// warmZeroCacheTTL is how long warm-zero enabled status is cached per service.
+const warmZeroCacheTTL = 5 * time.Second
+
+// maxActivationWaiters is the maximum number of concurrent requests that can
+// wait for a single service's cold activation. Beyond this, requests get 503.
+const maxActivationWaiters = 100
 
 // NewUserSpaceProxy creates an HTTP reverse proxy that routes requests to
 // service backends resolved via the provided ServiceResolver. If factStore
@@ -63,6 +106,8 @@ func NewUserSpaceProxy(resolver ServiceResolver, listenAddress string, factStore
 		roundRobinCounters:   make(map[string]*atomic.Uint64),
 		activationChannels:   make(map[string]chan struct{}),
 		lastRequestWriteTime: make(map[string]time.Time),
+		activationWaiters:    make(map[string]*atomic.Int64),
+		warmZeroCache:        make(map[string]warmZeroCacheEntry),
 		timeNow:              time.Now,
 	}
 }
@@ -80,7 +125,9 @@ func (userSpaceProxy *UserSpaceProxy) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		httpServer.Close()
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancelShutdown()
+		httpServer.Shutdown(shutdownContext)
 	}()
 
 	if listenError := httpServer.ListenAndServe(); listenError != nil && listenError != http.ErrServerClosed {
@@ -98,6 +145,10 @@ func (userSpaceProxy *UserSpaceProxy) ServeHTTP(responseWriter http.ResponseWrit
 	serviceName := extractServiceName(incomingRequest.Host)
 	if serviceName == "" {
 		http.Error(responseWriter, "missing Host header", http.StatusBadRequest)
+		return
+	}
+	if types.ValidateResourceName(serviceName) != nil {
+		http.Error(responseWriter, "invalid service name in Host header", http.StatusBadRequest)
 		return
 	}
 
@@ -129,11 +180,28 @@ func (userSpaceProxy *UserSpaceProxy) isWarmZeroEnabled(ctx context.Context, ser
 	if userSpaceProxy.factStore == nil {
 		return false
 	}
-	idleTimeoutFact, getError := userSpaceProxy.factStore.Get(ctx, types.KeyDesiredServiceScaleIdleTimeout(serviceName))
-	if getError != nil || idleTimeoutFact == nil {
-		return false
+
+	currentTime := userSpaceProxy.timeNow()
+
+	userSpaceProxy.warmZeroCacheMutex.RLock()
+	cached, cacheHit := userSpaceProxy.warmZeroCache[serviceName]
+	userSpaceProxy.warmZeroCacheMutex.RUnlock()
+
+	if cacheHit && currentTime.Before(cached.expiresAt) {
+		return cached.enabled
 	}
-	return len(idleTimeoutFact.Value) > 0
+
+	idleTimeoutFact, getError := userSpaceProxy.factStore.Get(ctx, types.KeyDesiredServiceScaleIdleTimeout(serviceName))
+	enabled := getError == nil && idleTimeoutFact != nil && len(idleTimeoutFact.Value) > 0
+
+	userSpaceProxy.warmZeroCacheMutex.Lock()
+	userSpaceProxy.warmZeroCache[serviceName] = warmZeroCacheEntry{
+		enabled:   enabled,
+		expiresAt: currentTime.Add(warmZeroCacheTTL),
+	}
+	userSpaceProxy.warmZeroCacheMutex.Unlock()
+
+	return enabled
 }
 
 // handleColdActivation triggers activation for a scaled-to-zero service and
@@ -145,6 +213,24 @@ func (userSpaceProxy *UserSpaceProxy) handleColdActivation(
 	incomingRequest *http.Request,
 	serviceName string,
 ) {
+	waiterCount := userSpaceProxy.getOrCreateWaiterCounter(serviceName)
+	currentWaiters := waiterCount.Add(1)
+	defer waiterCount.Add(-1)
+
+	activationWaitingGauge.Inc(serviceName)
+	defer activationWaitingGauge.Dec(serviceName)
+
+	if currentWaiters > maxActivationWaiters {
+		activationTotal.Inc(serviceName, "overloaded")
+		http.Error(responseWriter,
+			fmt.Sprintf("service %q activation overloaded — %d requests waiting, max %d",
+				serviceName, currentWaiters, maxActivationWaiters),
+			http.StatusServiceUnavailable)
+		return
+	}
+
+	activationStartTime := userSpaceProxy.timeNow()
+
 	activationTimeout := userSpaceProxy.getActivationTimeout(incomingRequest.Context(), serviceName)
 
 	activationChannel := userSpaceProxy.getOrCreateActivationChannel(serviceName)
@@ -163,11 +249,14 @@ func (userSpaceProxy *UserSpaceProxy) handleColdActivation(
 			endpoints, resolveError := userSpaceProxy.resolver.ResolveEndpoints(
 				incomingRequest.Context(), serviceName)
 			if resolveError != nil || len(endpoints) == 0 {
+				activationTotal.Inc(serviceName, "error")
 				http.Error(responseWriter,
 					fmt.Sprintf("service %q activation completed but no endpoints found", serviceName),
 					http.StatusServiceUnavailable)
 				return
 			}
+			activationTotal.Inc(serviceName, "success")
+			activationDuration.ObserveSince(activationStartTime, serviceName)
 			userSpaceProxy.recordLastRequestTime(incomingRequest.Context(), serviceName)
 			userSpaceProxy.forwardToBackend(responseWriter, incomingRequest, serviceName, endpoints)
 			return
@@ -177,12 +266,16 @@ func (userSpaceProxy *UserSpaceProxy) handleColdActivation(
 				incomingRequest.Context(), serviceName)
 			if resolveError == nil && len(endpoints) > 0 {
 				userSpaceProxy.signalActivationReady(serviceName)
+				activationTotal.Inc(serviceName, "success")
+				activationDuration.ObserveSince(activationStartTime, serviceName)
 				userSpaceProxy.recordLastRequestTime(incomingRequest.Context(), serviceName)
 				userSpaceProxy.forwardToBackend(responseWriter, incomingRequest, serviceName, endpoints)
 				return
 			}
 
 		case <-timeoutTimer.C:
+			activationTotal.Inc(serviceName, "timeout")
+			activationDuration.ObserveSince(activationStartTime, serviceName)
 			http.Error(responseWriter,
 				fmt.Sprintf("service %q is activating — not ready within %s", serviceName, activationTimeout),
 				http.StatusServiceUnavailable)
@@ -212,26 +305,9 @@ func (userSpaceProxy *UserSpaceProxy) getActivationTimeout(ctx context.Context, 
 	return 30 * time.Second
 }
 
-// parseDurationSecondsFromString parses a duration string like "60s" or "5m"
-// into seconds. Returns 0 if the string is not a recognized format.
+// parseDurationSecondsFromString delegates to types.ParseDurationSeconds.
 func parseDurationSecondsFromString(durationValue string) int {
-	if strings.HasSuffix(durationValue, "s") {
-		parsedValue, parseError := strconv.Atoi(strings.TrimSuffix(durationValue, "s"))
-		if parseError == nil {
-			return parsedValue
-		}
-	}
-	if strings.HasSuffix(durationValue, "m") {
-		parsedValue, parseError := strconv.Atoi(strings.TrimSuffix(durationValue, "m"))
-		if parseError == nil {
-			return parsedValue * 60
-		}
-	}
-	plainValue, parseError := strconv.Atoi(durationValue)
-	if parseError == nil {
-		return plainValue
-	}
-	return 0
+	return types.ParseDurationSeconds(durationValue)
 }
 
 // writeActivatingState writes the activation state fact for a service if it's
@@ -271,6 +347,20 @@ func (userSpaceProxy *UserSpaceProxy) recordLastRequestTime(ctx context.Context,
 
 	timestampMillis := strconv.FormatInt(currentTime.UnixMilli(), 10)
 	userSpaceProxy.factStore.Put(ctx, types.KeyObservedServiceLastRequestTime(serviceName), []byte(timestampMillis))
+}
+
+// getOrCreateWaiterCounter returns the atomic counter tracking how many
+// goroutines are waiting for cold activation of the named service.
+func (userSpaceProxy *UserSpaceProxy) getOrCreateWaiterCounter(serviceName string) *atomic.Int64 {
+	userSpaceProxy.waitersMutex.Lock()
+	defer userSpaceProxy.waitersMutex.Unlock()
+
+	if counter, exists := userSpaceProxy.activationWaiters[serviceName]; exists {
+		return counter
+	}
+	counter := &atomic.Int64{}
+	userSpaceProxy.activationWaiters[serviceName] = counter
+	return counter
 }
 
 // getOrCreateActivationChannel returns the shared activation channel for a

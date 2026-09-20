@@ -114,12 +114,18 @@ func (admission *QuotaAdmission) UpdateUsageFacts(ctx context.Context, tenantNam
 	volumeCount := admission.countTenantVolumes(ctx, tenantName)
 	cpuUsage := admission.computeTenantCPUUsage(ctx, tenantName)
 
-	admission.factStore.Put(ctx, types.KeyObservedTenantUsageInstances(tenantName),
-		[]byte(strconv.Itoa(instanceCount)))
-	admission.factStore.Put(ctx, types.KeyObservedTenantUsageVolumes(tenantName),
-		[]byte(strconv.Itoa(volumeCount)))
-	admission.factStore.Put(ctx, types.KeyObservedTenantUsageCPU(tenantName),
-		[]byte(strconv.Itoa(cpuUsage)))
+	if _, putError := admission.factStore.Put(ctx, types.KeyObservedTenantUsageInstances(tenantName),
+		[]byte(strconv.Itoa(instanceCount))); putError != nil {
+		return fmt.Errorf("updating instance usage for tenant %s: %w", tenantName, putError)
+	}
+	if _, putError := admission.factStore.Put(ctx, types.KeyObservedTenantUsageVolumes(tenantName),
+		[]byte(strconv.Itoa(volumeCount))); putError != nil {
+		return fmt.Errorf("updating volume usage for tenant %s: %w", tenantName, putError)
+	}
+	if _, putError := admission.factStore.Put(ctx, types.KeyObservedTenantUsageCPU(tenantName),
+		[]byte(strconv.Itoa(cpuUsage))); putError != nil {
+		return fmt.Errorf("updating CPU usage for tenant %s: %w", tenantName, putError)
+	}
 
 	return nil
 }

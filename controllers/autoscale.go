@@ -88,7 +88,9 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 	var changes []Change
 
 	for serviceName, policy := range scalePolicies {
-		if len(policy.targets) == 0 && len(eventTargets[serviceName]) == 0 && scheduleRules[serviceName] == nil {
+		hasWarmZero := policy.min == 0
+		isActivating := activationStates[serviceName] == "activating"
+		if len(policy.targets) == 0 && len(eventTargets[serviceName]) == 0 && scheduleRules[serviceName] == nil && !isActivating && !hasWarmZero {
 			continue
 		}
 
@@ -301,18 +303,10 @@ func extractStabilizationWindows(facts []store.Fact) map[string]*stabilizationCo
 }
 
 // parseDurationSeconds converts a duration string like "60s" or "300s" to seconds.
+// parseDurationSeconds delegates to types.ParseDurationSeconds for backward
+// compatibility within the controllers package.
 func parseDurationSeconds(durationString string) int {
-	durationString = strings.TrimSpace(durationString)
-	if strings.HasSuffix(durationString, "s") {
-		seconds, _ := strconv.Atoi(strings.TrimSuffix(durationString, "s"))
-		return seconds
-	}
-	if strings.HasSuffix(durationString, "m") {
-		minutes, _ := strconv.Atoi(strings.TrimSuffix(durationString, "m"))
-		return minutes * 60
-	}
-	seconds, _ := strconv.Atoi(durationString)
-	return seconds
+	return types.ParseDurationSeconds(durationString)
 }
 
 // extractedScalePolicy holds the parsed fields of a horizontal scale policy

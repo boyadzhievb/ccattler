@@ -510,6 +510,11 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "service and non-negative instances required"})
 		return
 	}
+	if validateError := types.ValidateResourceName(body.Service); validateError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
+		return
+	}
 
 	instancesStr := strconv.Itoa(body.Instances)
 	apiServer.factStore.Put(requestContext, types.KeyDesiredServiceInstances(body.Service), []byte(instancesStr))
@@ -603,6 +608,11 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 	if resourceType == "" || resourceName == "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type and name query parameters required"})
+		return
+	}
+	if validateError := types.ValidateResourceName(resourceName); validateError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
 		return
 	}
 
@@ -835,6 +845,10 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 		http.Error(responseWriter, `{"error":"service, metric, and value required"}`, http.StatusBadRequest)
 		return
 	}
+	if validateError := types.ValidateResourceName(serviceName); validateError != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, validateError.Error()), http.StatusBadRequest)
+		return
+	}
 
 	requestContext := request.Context()
 	metricKey := types.KeyObservedMetric(serviceName, metricName)
@@ -861,6 +875,10 @@ func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, requ
 	serviceName := request.URL.Query().Get("service")
 	if serviceName == "" {
 		http.Error(responseWriter, `{"error":"service parameter required"}`, http.StatusBadRequest)
+		return
+	}
+	if validateError := types.ValidateResourceName(serviceName); validateError != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, validateError.Error()), http.StatusBadRequest)
 		return
 	}
 
