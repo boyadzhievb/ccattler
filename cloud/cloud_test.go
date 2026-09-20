@@ -222,3 +222,109 @@ func TestAzureProviderStubReturnsErrors(testing *testing.T) {
 		testing.Errorf("expected provider name azure, got %q", azureProvider.ProviderName())
 	}
 }
+
+func TestSimulatorTerminateNonexistentInstanceNoError(testing *testing.T) {
+	simulatorProvider := NewSimulatorCloudProvider()
+	terminateError := simulatorProvider.TerminateInstance(context.Background(), "nonexistent-id")
+	if terminateError != nil {
+		testing.Errorf("terminate nonexistent should not error (idempotent), got: %v", terminateError)
+	}
+	if len(simulatorProvider.TerminateCalls) != 1 {
+		testing.Errorf("expected 1 terminate call recorded, got %d", len(simulatorProvider.TerminateCalls))
+	}
+}
+
+func TestSimulatorLoadBalancerUpdatesBackends(testing *testing.T) {
+	simulatorProvider := NewSimulatorCloudProvider()
+	ctx := context.Background()
+
+	simulatorProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{
+		ServiceName: "api",
+		Port:        443,
+		Protocol:    "https",
+		Backends: []LoadBalancerBackend{
+			{NodeID: "node-1", Address: "10.0.1.5", Port: 9090},
+		},
+	})
+
+	simulatorProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{
+		ServiceName: "api",
+		Port:        443,
+		Protocol:    "https",
+		Backends: []LoadBalancerBackend{
+			{NodeID: "node-1", Address: "10.0.1.5", Port: 9090},
+			{NodeID: "node-2", Address: "10.0.2.5", Port: 9090},
+		},
+	})
+
+	loadBalancerList, _ := simulatorProvider.ListLoadBalancers(ctx)
+	if len(loadBalancerList) != 1 {
+		testing.Fatalf("expected 1 load balancer, got %d", len(loadBalancerList))
+	}
+}
+
+func TestSimulatorRouteIdempotency(testing *testing.T) {
+	simulatorProvider := NewSimulatorCloudProvider()
+	ctx := context.Background()
+
+	routeConfig := RouteConfig{
+		DestinationCIDR:  "10.244.2.0/24",
+		TargetNodeID:     "node-2",
+		TargetInstanceID: "i-def456",
+	}
+	simulatorProvider.EnsureRoute(ctx, routeConfig)
+	simulatorProvider.EnsureRoute(ctx, routeConfig)
+
+	routeList, _ := simulatorProvider.ListRoutes(ctx)
+	if len(routeList) != 1 {
+		testing.Errorf("expected 1 route after idempotent ensure, got %d", len(routeList))
+	}
+}
+
+func TestSimulatorDeleteNonexistentLoadBalancer(testing *testing.T) {
+	simulatorProvider := NewSimulatorCloudProvider()
+	deleteError := simulatorProvider.DeleteLoadBalancer(context.Background(), "nonexistent")
+	if deleteError != nil {
+		testing.Errorf("deleting nonexistent LB should not error, got: %v", deleteError)
+	}
+}
+
+func TestGCPProviderAllStubMethodsReturnErrors(testing *testing.T) {
+	gcpProvider := NewGCPCloudProvider("my-project", "us-central1")
+	ctx := context.Background()
+
+	_, listError := gcpProvider.ListInstances(ctx)
+	if listError == nil {
+		testing.Error("expected error from stub ListInstances")
+	}
+	_, createError := gcpProvider.CreateInstance(ctx, InstanceConfig{})
+	if createError == nil {
+		testing.Error("expected error from stub CreateInstance")
+	}
+	if terminateError := gcpProvider.TerminateInstance(ctx, "gce-123"); terminateError == nil {
+		testing.Error("expected error from stub TerminateInstance")
+	}
+	if _, ensureError := gcpProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{}); ensureError == nil {
+		testing.Error("expected error from stub EnsureLoadBalancer")
+	}
+}
+
+func TestAzureProviderAllStubMethodsReturnErrors(testing *testing.T) {
+	azureProvider := NewAzureCloudProvider("sub-123", "my-rg", "eastus")
+	ctx := context.Background()
+
+	_, listError := azureProvider.ListInstances(ctx)
+	if listError == nil {
+		testing.Error("expected error from stub ListInstances")
+	}
+	_, createError := azureProvider.CreateInstance(ctx, InstanceConfig{})
+	if createError == nil {
+		testing.Error("expected error from stub CreateInstance")
+	}
+	if terminateError := azureProvider.TerminateInstance(ctx, "vm-123"); terminateError == nil {
+		testing.Error("expected error from stub TerminateInstance")
+	}
+	if _, ensureError := azureProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{}); ensureError == nil {
+		testing.Error("expected error from stub EnsureLoadBalancer")
+	}
+}

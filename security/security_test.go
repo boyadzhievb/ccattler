@@ -1661,3 +1661,141 @@ func TestCredentialSerializationRoundTrip(t *testing.T) {
 		t.Errorf("expires mismatch")
 	}
 }
+
+func TestAuthorizedStoreDeleteDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
+
+	authorizedStore := NewAuthorizedStore(memoryStore, authorizer, nil)
+	setupContext := WithPrincipal(context.Background(), "node:n1")
+
+	err := authorizedStore.Delete(setupContext, types.KeyDesiredServiceImage("web"))
+	if err == nil {
+		t.Fatal("node agent should not be able to delete desired/ keys")
+	}
+}
+
+func TestAuthorizedStoreScanDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
+
+	authorizedStore := NewAuthorizedStore(memoryStore, authorizer, nil)
+	nodeContext := WithPrincipal(context.Background(), "node:n1")
+
+	_, scanError := authorizedStore.Scan(nodeContext, "desired/service/")
+	if scanError != nil {
+		t.Fatalf("node agent should be able to scan desired/service/ for reads: %v", scanError)
+	}
+}
+
+func TestAuthorizedStoreTransactionDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
+
+	authorizedStore := NewAuthorizedStore(memoryStore, authorizer, nil)
+	nodeContext := WithPrincipal(context.Background(), "node:n1")
+
+	_, transactionError := authorizedStore.Transaction(nodeContext,
+		nil,
+		[]store.Op{{Type: store.OpPut, Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx")}},
+		nil,
+	)
+	if transactionError == nil {
+		t.Fatal("node agent should not be able to write desired/ via transaction")
+	}
+}
+
+func TestAuditLogJSONSerialization(t *testing.T) {
+	auditLog := NewInMemoryAuditLog(10)
+	auditLog.Log(AuditEntry{
+		Principal: "user:alice",
+		Action:    "put",
+		Target:    "desired/service/web/image",
+		Decision:  "allow",
+	})
+
+	jsonBytes, marshalError := auditLog.MarshalJSON()
+	if marshalError != nil {
+		t.Fatalf("marshal: %v", marshalError)
+	}
+
+	var entries []AuditEntry
+	if parseError := json.Unmarshal(jsonBytes, &entries); parseError != nil {
+		t.Fatalf("unmarshal: %v", parseError)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Principal != "user:alice" {
+		t.Errorf("principal: got %q", entries[0].Principal)
+	}
+	if entries[0].Timestamp.IsZero() {
+		t.Error("timestamp should be set")
+	}
+}
+
+func TestABACRemovePolicy(t *testing.T) {
+	authorizer := NewABACAuthorizer()
+	authorizer.AddPolicy(ABACPolicy{
+		Name:               "team-write",
+		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
+		TargetKeyPrefix:    "desired/",
+		AllowedOperations:  []Permission{PermissionWrite},
+	})
+	authorizer.SetPrincipalAttributes("user:alice", []Attribute{{Key: "team", Value: "platform"}})
+
+	if err := authorizer.Authorize("user:alice", PermissionWrite, "desired/service/web"); err != nil {
+		t.Fatalf("should be allowed before removal: %v", err)
+	}
+
+	authorizer.RemovePolicy("team-write")
+
+	if err := authorizer.Authorize("user:alice", PermissionWrite, "desired/service/web"); err == nil {
+		t.Fatal("should be denied after policy removal")
+	}
+}
+
+func TestABACNoPrincipalAttributes(t *testing.T) {
+	authorizer := NewABACAuthorizer()
+	authorizer.AddPolicy(ABACPolicy{
+		Name:               "team-write",
+		RequiredAttributes: []Attribute{{Key: "team", Value: "platform"}},
+		TargetKeyPrefix:    "desired/",
+		AllowedOperations:  []Permission{PermissionWrite},
+	})
+
+	if err := authorizer.Authorize("user:unknown", PermissionWrite, "desired/service/web"); err == nil {
+		t.Fatal("principal with no attributes should be denied")
+	}
+}
+
+func TestAuthorizedStoreNoPrincipal(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	authorizer := NewRBACAuthorizer()
+	authorizedStore := NewAuthorizedStore(memoryStore, authorizer, nil)
+
+	_, getError := authorizedStore.Get(context.Background(), "observed/instance/i1/state")
+	if getError == nil {
+		t.Fatal("request without principal should be denied")
+	}
+}

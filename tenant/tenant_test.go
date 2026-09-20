@@ -1537,3 +1537,101 @@ func TestAuditViewIsolation(t *testing.T) {
 		t.Fatalf("expected 0 entries for unrelated tenant, got %d", len(entries))
 	}
 }
+
+func TestLifecycleCreateWithFullQuota(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	provisioned, createError := lifecycle.CreateTenant(context.Background(), "platform", &Quota{
+		CPU:       100,
+		Memory:    "256Gi",
+		Instances: 500,
+		Volumes:   50,
+		Storage:   "10Ti",
+	}, 5)
+	if createError != nil {
+		t.Fatalf("create: %v", createError)
+	}
+	if !provisioned.QuotaProvisioned {
+		t.Error("quota should be provisioned")
+	}
+	if !provisioned.NetworkBoundary {
+		t.Error("network boundary should be created")
+	}
+	if !provisioned.SecretSpace {
+		t.Error("secret space should be reserved")
+	}
+	if !provisioned.AuditStream {
+		t.Error("audit stream should be active")
+	}
+
+	cpuFact, _ := memoryStore.Get(context.Background(), types.KeyDesiredTenantQuotaCPU("platform"))
+	if cpuFact == nil || string(cpuFact.Value) != "100" {
+		t.Errorf("expected CPU quota 100, got %v", cpuFact)
+	}
+
+	weightFact, _ := memoryStore.Get(context.Background(), types.KeyDesiredTenantWeight("platform"))
+	if weightFact == nil || string(weightFact.Value) != "5" {
+		t.Errorf("expected weight 5, got %v", weightFact)
+	}
+}
+
+func TestLifecycleDeleteCleansUpResources(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+	lifecycle := NewTenantLifecycle(memoryStore, registry)
+
+	_, createError := lifecycle.CreateTenant(context.Background(), "staging", &Quota{Instances: 10}, 1)
+	if createError != nil {
+		t.Fatalf("create: %v", createError)
+	}
+
+	result, deleteError := lifecycle.DeleteTenant(context.Background(), "staging")
+	if deleteError != nil {
+		t.Fatalf("delete: %v", deleteError)
+	}
+	if result.TenantName != "staging" {
+		t.Errorf("expected tenant name staging, got %s", result.TenantName)
+	}
+
+	_, getError := memoryStore.Get(context.Background(), types.KeyDesiredTenant("staging"))
+	if getError == nil {
+		t.Error("tenant marker should be deleted after garbage collection")
+	}
+}
+
+func TestFairSchedulerNoTenants(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+	fairScheduler := NewFairScheduler(memoryStore, registry)
+
+	shares, computeError := fairScheduler.ComputeFairShares(context.Background(), 10000)
+	if computeError != nil {
+		t.Fatalf("compute: %v", computeError)
+	}
+	if len(shares) != 0 {
+		t.Fatalf("expected 0 shares with no tenants, got %d", len(shares))
+	}
+}
+
+func TestQuotaUpdateUsageWritesFacts(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	registry := NewTenantRegistry(memoryStore)
+	admissionController := NewQuotaAdmission(memoryStore, registry)
+
+	memoryStore.Put(context.Background(), types.KeyDesiredTenant("metrics"), []byte(""))
+	memoryStore.Put(context.Background(), types.KeyDesiredTenantQuotaInstances("metrics"), []byte("100"))
+
+	memoryStore.Put(context.Background(), types.KeyObservedInstanceService("inst-1"), []byte("metrics/web"))
+	memoryStore.Put(context.Background(), types.KeyObservedInstanceState("inst-1"), []byte("running"))
+
+	updateError := admissionController.UpdateUsageFacts(context.Background(), "metrics")
+	if updateError != nil {
+		t.Fatalf("update usage: %v", updateError)
+	}
+}
