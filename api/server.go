@@ -13,12 +13,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -76,6 +78,8 @@ type Server struct {
 	watchMultiplexer     *WatchMultiplexer
 	serverMode           ServerMode
 	mux                  *http.ServeMux
+	rateLimiter          *RateLimiter
+	statusCache          *ResponseCache
 	listener             net.Listener
 }
 
@@ -115,9 +119,11 @@ func (apiServer *Server) SetWatchMultiplexer(multiplexer *WatchMultiplexer) {
 // NewServer creates a new API server backed by the given fact store.
 func NewServer(factStore store.StateStore) *Server {
 	apiServer := &Server{
-		factStore:  factStore,
-		serverMode: ServerModeFull,
-		mux:        http.NewServeMux(),
+		factStore:   factStore,
+		serverMode:  ServerModeFull,
+		mux:         http.NewServeMux(),
+		rateLimiter: NewRateLimiter(),
+		statusCache: NewResponseCache(2 * time.Second),
 	}
 	apiServer.registerRoutes()
 	return apiServer
@@ -132,7 +138,7 @@ func (apiServer *Server) Start(listenAddress string) (string, error) {
 	}
 	apiServer.listener = listener
 	go func() {
-		if serveError := http.Serve(listener, apiServer.mux); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
+		if serveError := http.Serve(listener, apiServer.Handler()); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
 			logging.Default().Error("api server error", "error", serveError.Error())
 		}
 	}()
@@ -148,8 +154,9 @@ func (apiServer *Server) Close() error {
 }
 
 // Handler returns the HTTP handler for use in tests or custom servers.
+// The returned handler includes tracing and rate limiting middleware.
 func (apiServer *Server) Handler() http.Handler {
-	return apiServer.mux
+	return tracing.Middleware(apiServer.rateLimiter.Wrap(apiServer.mux))
 }
 
 // registerRoutes sets up all API endpoint handlers.
@@ -534,11 +541,23 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		return
 	}
 
-	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
 
+	if cached := apiServer.statusCache.Get("status"); cached != nil {
+		responseWriter.Write(cached)
+		return
+	}
+
+	requestContext := request.Context()
 	status := buildStatusFromStore(requestContext, apiServer.factStore)
-	json.NewEncoder(responseWriter).Encode(status)
+	encoded, encodeError := json.Marshal(status)
+	if encodeError != nil {
+		json.NewEncoder(responseWriter).Encode(status)
+		return
+	}
+
+	apiServer.statusCache.Set("status", encoded)
+	responseWriter.Write(encoded)
 }
 
 // handleLogs serves GET /api/logs to query the cluster event log. Supports

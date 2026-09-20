@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M36a — Phase 39 Audit (Scale-to-Zero hardening). M1–M36a complete. All architecture debt resolved.
+**Completed through:** M37 — Phase 40 System Design Patterns. M1–M37 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
