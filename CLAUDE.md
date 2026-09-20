@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M34 — Runtime Stats API (Phase 37). M1–M34 complete. All architecture debt resolved.
+**Completed through:** M35 — Project Hardening (Phase 38). M1–M35 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1452,6 +1452,17 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Agent telemetry uses Stats() — `reportWorkloadTelemetry` calls `runtime.Stats()` instead of estimating from desired-state resource requests
 - [x] Dead code removed — `estimateInstanceCPU`, `estimateInstanceMemory`, `parseMillicores`, `parseMemoryBytes` removed from telemetry
 
+### Phase 38 — Project Hardening (Audit Findings)
+- [x] Makefile — `build`, `test`, `test-race`, `lint`, `bench`, `fuzz` targets
+- [x] `.golangci.yml` — linter configuration (govet, staticcheck, errcheck, gosec, ineffassign, unused, gocritic, misspell, gofmt)
+- [x] CI test workflow — `.github/workflows/test.yml` runs `go test -race` and `golangci-lint` on push/PR
+- [x] Benchmark tests — store (Put/Get/Scan/Transaction/PutParallel), scheduler (10/100/1000 instances), parser (lex/parse/full config)
+- [x] Security package tests — authorized store Delete/Scan/Transaction denial, audit JSON serialization, ABAC removal/no-principal, no-principal store access
+- [x] Tenant package tests — lifecycle full quota, lifecycle delete cleanup, fair scheduler no-tenants, quota usage updates
+- [x] Cloud package tests — simulator terminate-nonexistent, LB backend updates, route idempotency, GCP/Azure full stub verification
+- [x] Fuzz testing — `FuzzParse` and `FuzzLexer` with seed corpus covering all DSL constructs
+- [x] Structured error types — `CCattlerError` with `ErrorCode` (not_found, already_exists, conflict, invalid_input, unauthorized, forbidden, quota_exceeded, internal, unavailable), `IsErrorCode()` helper
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1491,5 +1502,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M32 — Cloud Controller | 35 | `cca server --cloud-provider aws` manages node lifecycle, `expose external 443 http` creates cloud LBs, VPC routes auto-programmed |
 | M33 — Correctness III | 36 | etcd WithPrevKV, EventProjector from committed state, ExecInit runtime isolation, multi-port endpoints, agent sub-reconciler extraction |
 | M34 — Runtime Stats | 37 | `Runtime.Stats()` returns actual CPU/memory per workload, agent telemetry uses live stats instead of desired-state estimates |
+| M35 — Project Hardening | 38 | Makefile, golangci-lint, CI test workflow, benchmarks, security/tenant/cloud tests, fuzz tests, structured errors |
+| M36 — Scale-to-Zero | 39 | KEDA-like HTTP activation proxy, `min 0` autoscaling, request buffering during cold start, event-driven activation signals |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
