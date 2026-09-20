@@ -274,10 +274,7 @@ type stabilizationConfig struct {
 // extractStabilizationWindows parses stabilization window facts per service.
 func extractStabilizationWindows(facts []store.Fact) map[string]*stabilizationConfig {
 	windows := make(map[string]*stabilizationConfig)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -322,10 +319,7 @@ type extractedScalePolicy struct {
 func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 	policies := make(map[string]*extractedScalePolicy)
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 
 		parts := strings.SplitN(relativePath, "/", 2)
@@ -368,10 +362,7 @@ func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 // extractEventTargets parses event-driven scaling targets per service.
 func extractEventTargets(facts []store.Fact) map[string]map[string]int {
 	targets := make(map[string]map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -404,10 +395,7 @@ type extractedScheduleRule struct {
 // extractScheduleRules parses scheduled scaling rules per service.
 func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule {
 	rules := make(map[string]*extractedScheduleRule)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -478,10 +466,7 @@ type extractedVerticalPolicy struct {
 // extractVerticalPolicies parses vertical autoscaling policies per service.
 func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPolicy {
 	policies := make(map[string]*extractedVerticalPolicy)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -516,10 +501,7 @@ func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPo
 // extractCurrentResources extracts current resource values per service.
 func extractCurrentResources(facts []store.Fact, resourceType string) map[string]int {
 	resources := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -538,10 +520,7 @@ func extractCurrentResources(facts []store.Fact, resourceType string) map[string
 func extractObservedMetrics(facts []store.Fact) map[string]int {
 	metrics := make(map[string]int)
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedMetrics) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedMetrics) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedMetrics)
 		if !strings.HasPrefix(relativePath, "service/") {
 			continue
@@ -560,10 +539,7 @@ func extractActiveInstanceCounts(facts []store.Fact) map[string]int {
 	serviceByID := make(map[string]string)
 	stateByID := make(map[string]types.InstanceState)
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {

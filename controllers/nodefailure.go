@@ -57,10 +57,7 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 
 	// Parse lease timestamps: nodeID -> unix-millisecond timestamp of last heartbeat.
 	lastHeartbeatMillisByNode := make(map[string]int64)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanLeaseNodes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanLeaseNodes) {
 		nodeID := strings.TrimPrefix(factEntry.Key, types.ScanLeaseNodes)
 		if milliTimestamp, parseErr := strconv.ParseInt(string(factEntry.Value), 10, 64); parseErr == nil {
 			lastHeartbeatMillisByNode[nodeID] = milliTimestamp
@@ -69,10 +66,7 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 
 	// Parse current node states: nodeID -> state string (e.g. "alive", "unreachable").
 	currentNodeStates := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "state" {
@@ -113,20 +107,14 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 
 	// Parse placements: instanceID -> target nodeID.
 	instancePlacementNode := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanPlacements) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanPlacements) {
 		instanceID := strings.TrimPrefix(factEntry.Key, types.ScanPlacements)
 		instancePlacementNode[instanceID] = string(factEntry.Value)
 	}
 
 	// Parse instance states: instanceID -> current lifecycle state.
 	currentInstanceStates := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "state" {

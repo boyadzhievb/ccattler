@@ -49,10 +49,7 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 
 	// Track which services have a readiness probe configured.
 	serviceHasReadinessProbe := make(map[string]bool)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) == 4 && pathParts[1] == "probe" && pathParts[2] == "readiness" && pathParts[3] == "method" {
@@ -62,10 +59,7 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 
 	// Parse node advertise addresses: nodeID -> address.
 	nodeAddresses := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "address" {
@@ -75,10 +69,7 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 
 	// Parse existing endpoints: "service/instance" -> true.
 	existingEndpoints := make(map[string]bool)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanEndpoints) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
 		existingEndpoints[relativePath] = true
 	}

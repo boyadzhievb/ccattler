@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -42,6 +41,8 @@ type MemoryStore struct {
 	mutex sync.RWMutex
 	// facts holds all stored key-value facts, keyed by their path string.
 	facts map[string]*Fact
+	// keyIndex is a trie over fact keys for O(k) prefix scans.
+	keyIndex *prefixTrie
 	// currentRevision is the store-global monotonically increasing revision counter.
 	currentRevision int64
 	// activeWatchers is the list of currently registered watch subscriptions.
@@ -54,6 +55,7 @@ type MemoryStore struct {
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		facts:           make(map[string]*Fact),
+		keyIndex:        newPrefixTrie(),
 		currentRevision: 0,
 	}
 }
@@ -117,6 +119,7 @@ func (memStore *MemoryStore) Put(_ context.Context, key string, value []byte) (i
 		CreateRevision: createRevision,
 	}
 	memStore.facts[key] = newFact
+	memStore.keyIndex.Insert(key)
 
 	eventFact := *newFact
 	eventFact.Value = cloneBytes(newFact.Value)
@@ -151,6 +154,7 @@ func (memStore *MemoryStore) Delete(_ context.Context, key string) error {
 	previousFact := *existingFact
 	previousFact.Value = cloneBytes(existingFact.Value)
 	delete(memStore.facts, key)
+	memStore.keyIndex.Remove(key)
 
 	deletedFact := Fact{
 		Key:      key,
@@ -172,17 +176,14 @@ func (memStore *MemoryStore) Scan(_ context.Context, prefix string) ([]Fact, err
 		return nil, ErrStoreClosed
 	}
 
-	var matchingFacts []Fact
-	for factKey, factEntry := range memStore.facts {
-		if strings.HasPrefix(factKey, prefix) {
-			factCopy := *factEntry
-			factCopy.Value = cloneBytes(factEntry.Value)
-			matchingFacts = append(matchingFacts, factCopy)
-		}
+	matchingKeys := memStore.keyIndex.KeysWithPrefix(prefix)
+	matchingFacts := make([]Fact, 0, len(matchingKeys))
+	for _, factKey := range matchingKeys {
+		factEntry := memStore.facts[factKey]
+		factCopy := *factEntry
+		factCopy.Value = cloneBytes(factEntry.Value)
+		matchingFacts = append(matchingFacts, factCopy)
 	}
-	sort.Slice(matchingFacts, func(i, j int) bool {
-		return matchingFacts[i].Key < matchingFacts[j].Key
-	})
 	return matchingFacts, nil
 }
 
@@ -197,17 +198,14 @@ func (memStore *MemoryStore) ScanWithRevision(_ context.Context, prefix string) 
 		return nil, ErrStoreClosed
 	}
 
-	var matchingFacts []Fact
-	for factKey, factEntry := range memStore.facts {
-		if strings.HasPrefix(factKey, prefix) {
-			factCopy := *factEntry
-			factCopy.Value = cloneBytes(factEntry.Value)
-			matchingFacts = append(matchingFacts, factCopy)
-		}
+	matchingKeys := memStore.keyIndex.KeysWithPrefix(prefix)
+	matchingFacts := make([]Fact, 0, len(matchingKeys))
+	for _, factKey := range matchingKeys {
+		factEntry := memStore.facts[factKey]
+		factCopy := *factEntry
+		factCopy.Value = cloneBytes(factEntry.Value)
+		matchingFacts = append(matchingFacts, factCopy)
 	}
-	sort.Slice(matchingFacts, func(i, j int) bool {
-		return matchingFacts[i].Key < matchingFacts[j].Key
-	})
 	return &ScanResult{
 		Facts:    matchingFacts,
 		Revision: memStore.currentRevision,
@@ -343,6 +341,7 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 				CreateRevision: createRevision,
 			}
 			memStore.facts[operation.Key] = newFact
+			memStore.keyIndex.Insert(operation.Key)
 
 			eventFact := *newFact
 			eventFact.Value = cloneBytes(newFact.Value)
@@ -359,6 +358,7 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 				previousFact := *existingFact
 				previousFact.Value = cloneBytes(existingFact.Value)
 				delete(memStore.facts, operation.Key)
+				memStore.keyIndex.Remove(operation.Key)
 				deletedFact := Fact{Key: operation.Key, Revision: transactionRevision}
 				memStore.broadcastEventToWatchers(Event{Type: EventDelete, Fact: deletedFact, Prev: &previousFact})
 			}

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M37 — Phase 40 System Design Patterns. M1–M37 complete. All architecture debt resolved.
+**Completed through:** M38 — Phase 41 Algorithm Improvements. M1–M38 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

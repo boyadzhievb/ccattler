@@ -44,6 +44,7 @@ func helperReconcileNetworkController(ctx context.Context, factStore store.State
 		scannedFacts, _ := factStore.Scan(ctx, prefix)
 		allFacts = append(allFacts, scannedFacts...)
 	}
+	store.SortFacts(allFacts)
 	return networkController.Reconcile(ctx, allFacts)
 }
 

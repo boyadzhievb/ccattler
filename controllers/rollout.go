@@ -167,10 +167,7 @@ type rolloutInstanceInfo struct {
 // extractDesiredImages returns a map of service name to desired container image.
 func extractDesiredImages(facts []store.Fact) map[string]string {
 	images := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "image" {
@@ -189,10 +186,7 @@ type extractedUpdatePolicy struct {
 // extractUpdatePolicies returns update policies for each service.
 func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy {
 	policies := make(map[string]extractedUpdatePolicy)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -218,10 +212,7 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceInfo {
 	instanceMap := make(map[string]*rolloutInstanceInfo)
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {

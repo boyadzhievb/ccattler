@@ -28,6 +28,7 @@ func TestInitControllerNoInitSteps(t *testing.T) {
 		{Key: types.KeyObservedInstanceState("abc"), Value: []byte("running")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -53,6 +54,7 @@ func TestInitControllerAllStepsSucceeded(t *testing.T) {
 		{Key: types.KeyObservedInstanceInitStepState("inst-1", 1), Value: []byte("succeeded")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -84,6 +86,7 @@ func TestInitControllerStepFailed(t *testing.T) {
 		{Key: types.KeyObservedInstanceInitStepState("inst-1", 1), Value: []byte("failed")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -109,6 +112,7 @@ func TestInitControllerStepRunning(t *testing.T) {
 		{Key: types.KeyObservedInstanceInitStepState("inst-1", 0), Value: []byte("running")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -135,6 +139,7 @@ func TestInitControllerNoChangeWhenPhaseAlreadyCurrent(t *testing.T) {
 		{Key: types.KeyDerivedInstanceInitPhase("inst-1"), Value: []byte("complete")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -156,6 +161,7 @@ func TestInitControllerPendingWhenNoObservations(t *testing.T) {
 		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("api")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -183,6 +189,7 @@ func TestInitControllerMultipleInstances(t *testing.T) {
 		{Key: types.KeyObservedInstanceInitStepState("inst-2", 0), Value: []byte("failed")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := initController.Reconcile(testContext, facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)

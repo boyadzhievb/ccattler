@@ -57,6 +57,7 @@ func buildWarmZeroFacts(serviceName string, activationState string, runningInsta
 		})
 	}
 
+	store.SortFacts(facts)
 	return facts
 }
 
@@ -87,6 +88,7 @@ func TestWarmZeroIdleTimeoutTriggersInactive(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -106,6 +108,7 @@ func TestWarmZeroActivatingTransitionsToActive(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "activating", 1, 1, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -125,6 +128,7 @@ func TestWarmZeroActivatingNoEndpointsNoChange(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "activating", 1, 0, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -141,6 +145,7 @@ func TestWarmZeroActiveNoInstancesTransitionsToInactive(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "active", 0, 0, frozenTime.UnixMilli(), "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -160,6 +165,7 @@ func TestWarmZeroAlreadyInactiveNoChange(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "inactive", 0, 0, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -179,6 +185,7 @@ func TestWarmZeroIgnoresNonMinZeroService(t *testing.T) {
 		{Key: types.KeyDesiredServiceScaleIdleTimeout("web"), Value: []byte("5m")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -195,6 +202,7 @@ func TestWarmZeroInitialStateSetToInactive(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "", 0, 0, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -215,6 +223,7 @@ func TestWarmZeroActiveWithinIdleTimeoutNoChange(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -231,6 +240,7 @@ func TestWarmZeroInactiveToActiveWhenEndpointsAppear(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "inactive", 1, 1, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -254,6 +264,7 @@ func TestWarmZeroMultipleServicesIndependent(t *testing.T) {
 	facts = append(facts, buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "5m")...)
 	facts = append(facts, buildWarmZeroFacts("web", "activating", 1, 1, 0, "5m")...)
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -285,6 +296,7 @@ func TestWarmZeroUnknownStateNoChange(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "bogus-state", 1, 1, 0, "5m")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -302,6 +314,7 @@ func TestWarmZeroIdleTimeoutZeroMeansNoScaleDown(t *testing.T) {
 
 	facts := buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "invalid-value")
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)

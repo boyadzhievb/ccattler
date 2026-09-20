@@ -119,19 +119,18 @@ func countUnplacedPendingInstances(facts []store.Fact) int {
 	placedInstances := make(map[string]bool)
 	pendingInstances := make(map[string]bool)
 
-	for _, fact := range facts {
-		switch {
-		case strings.HasPrefix(fact.Key, types.ScanPlacements):
-			instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
-			if !strings.Contains(instanceID, "/") {
-				placedInstances[instanceID] = true
-			}
-		case strings.HasPrefix(fact.Key, types.ScanObservedInstances):
-			relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-			parts := strings.SplitN(relativePath, "/", 2)
-			if len(parts) == 2 && parts[1] == "state" && types.InstanceState(fact.Value) == types.InstancePending {
-				pendingInstances[parts[0]] = true
-			}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanPlacements) {
+		instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
+		if !strings.Contains(instanceID, "/") {
+			placedInstances[instanceID] = true
+		}
+	}
+
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) == 2 && parts[1] == "state" && types.InstanceState(fact.Value) == types.InstancePending {
+			pendingInstances[parts[0]] = true
 		}
 	}
 
@@ -147,10 +146,7 @@ func countUnplacedPendingInstances(facts []store.Fact) int {
 // extractClusterNodeStates returns a map of node ID to node state.
 func extractClusterNodeStates(facts []store.Fact) map[string]types.NodeState {
 	nodeStates := make(map[string]types.NodeState)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "state" {
@@ -163,10 +159,7 @@ func extractClusterNodeStates(facts []store.Fact) map[string]types.NodeState {
 // countInstancesPerNode counts the number of active placed instances per node.
 func countInstancesPerNode(facts []store.Fact) map[string]int {
 	instanceStates := make(map[string]types.InstanceState)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "state" {
@@ -175,10 +168,7 @@ func countInstancesPerNode(facts []store.Fact) map[string]int {
 	}
 
 	counts := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanPlacements) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanPlacements) {
 		instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
 		if strings.Contains(instanceID, "/") {
 			continue

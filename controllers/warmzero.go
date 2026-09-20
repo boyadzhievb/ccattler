@@ -120,31 +120,29 @@ func extractWarmZeroConfigs(facts []store.Fact) map[string]warmZeroConfig {
 	configs := make(map[string]warmZeroConfig)
 	minValues := make(map[string]int)
 
-	for _, fact := range facts {
-		if strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-			parts := strings.SplitN(relativePath, "/", 2)
-			if len(parts) < 2 {
-				continue
-			}
-			serviceName := parts[0]
-			suffix := parts[1]
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		serviceName := parts[0]
+		suffix := parts[1]
 
-			switch suffix {
-			case "scale/horizontal/min":
-				parsedValue, parseError := strconv.Atoi(string(fact.Value))
-				if parseError == nil {
-					minValues[serviceName] = parsedValue
-				}
-			case "scale/horizontal/idle_timeout":
-				config := configs[serviceName]
-				config.idleTimeoutSeconds = parseDurationSeconds(string(fact.Value))
-				configs[serviceName] = config
-			case "scale/horizontal/activation_timeout":
-				config := configs[serviceName]
-				config.activationTimeoutSeconds = parseDurationSeconds(string(fact.Value))
-				configs[serviceName] = config
+		switch suffix {
+		case "scale/horizontal/min":
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError == nil {
+				minValues[serviceName] = parsedValue
 			}
+		case "scale/horizontal/idle_timeout":
+			config := configs[serviceName]
+			config.idleTimeoutSeconds = parseDurationSeconds(string(fact.Value))
+			configs[serviceName] = config
+		case "scale/horizontal/activation_timeout":
+			config := configs[serviceName]
+			config.activationTimeoutSeconds = parseDurationSeconds(string(fact.Value))
+			configs[serviceName] = config
 		}
 	}
 
@@ -159,13 +157,11 @@ func extractWarmZeroConfigs(facts []store.Fact) map[string]warmZeroConfig {
 
 func extractActivationStates(facts []store.Fact) map[string]string {
 	states := make(map[string]string)
-	for _, fact := range facts {
-		if strings.HasPrefix(fact.Key, types.ScanDerivedServices) {
-			relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedServices)
-			parts := strings.SplitN(relativePath, "/", 2)
-			if len(parts) == 2 && parts[1] == "activation/state" {
-				states[parts[0]] = string(fact.Value)
-			}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) == 2 && parts[1] == "activation/state" {
+			states[parts[0]] = string(fact.Value)
 		}
 	}
 	return states
@@ -175,10 +171,7 @@ func countRunningInstancesPerService(facts []store.Fact) map[string]int {
 	serviceForInstance := make(map[string]string)
 	runningInstances := make(map[string]bool)
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) < 2 {
@@ -207,10 +200,7 @@ func countRunningInstancesPerService(facts []store.Fact) map[string]int {
 
 func countEndpointsPerService(facts []store.Fact) map[string]int {
 	counts := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanEndpoints) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) >= 1 {
@@ -222,10 +212,7 @@ func countEndpointsPerService(facts []store.Fact) map[string]int {
 
 func extractLastRequestTimes(facts []store.Fact) map[string]time.Time {
 	times := make(map[string]time.Time)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "last_request_time" {

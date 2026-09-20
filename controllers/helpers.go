@@ -18,22 +18,18 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
 	}
-	for _, fact := range facts {
-		for _, instancePrefix := range instancePrefixes {
-			if !strings.HasPrefix(fact.Key, instancePrefix) {
-				continue
-			}
+	for _, instancePrefix := range instancePrefixes {
+		for _, fact := range store.FactsWithPrefix(facts, instancePrefix) {
 			relativePath := strings.TrimPrefix(fact.Key, instancePrefix)
 			pathParts := strings.SplitN(relativePath, "/", 2)
 			if len(pathParts) != 2 {
-				break
+				continue
 			}
 			instanceID := pathParts[0]
 			if instanceFields[instanceID] == nil {
 				instanceFields[instanceID] = make(map[string]string)
 			}
 			instanceFields[instanceID][pathParts[1]] = string(fact.Value)
-			break
 		}
 	}
 	return instanceFields
@@ -44,10 +40,7 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 // declaration are omitted from the result.
 func extractServiceExposedPorts(facts []store.Fact) map[string][]int {
 	servicePorts := make(map[string][]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) >= 3 && pathParts[1] == "expose" {

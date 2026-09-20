@@ -112,10 +112,7 @@ type externalServiceConfig struct {
 // port configuration from desired facts.
 func extractExternalServicePorts(facts []store.Fact) map[string]externalServiceConfig {
 	externalServices := make(map[string]externalServiceConfig)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) >= 4 && pathParts[1] == "expose" && pathParts[3] == "external" {
@@ -150,10 +147,7 @@ func extractServiceEndpointBackends(facts []store.Fact) map[string][]endpointBac
 	serviceEndpoints := make(map[string][]endpointBackend)
 
 	instanceNodes := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "node" {
@@ -161,10 +155,7 @@ func extractServiceEndpointBackends(facts []store.Fact) map[string][]endpointBac
 		}
 	}
 
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanEndpoints) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanEndpoints)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) != 2 {
@@ -196,10 +187,7 @@ func extractServiceEndpointBackends(facts []store.Fact) map[string][]endpointBac
 // extractNodeAddressesFromFacts builds a map of node ID to advertised address.
 func extractNodeAddressesFromFacts(facts []store.Fact) map[string]string {
 	nodeAddresses := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "address" {
@@ -233,10 +221,7 @@ func buildLoadBalancerBackends(endpoints []endpointBackend, nodeAddresses map[st
 // address for all load balancers currently tracked in the store.
 func extractExistingLoadBalancers(facts []store.Fact) map[string]string {
 	loadBalancers := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedCloudLoadBalancers) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedCloudLoadBalancers) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedCloudLoadBalancers)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "address" {

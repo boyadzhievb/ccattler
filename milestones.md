@@ -469,8 +469,9 @@
 - [x] Runtime.Stats() live metrics (Phase 37)
 - [x] Benchmarks in CI (Phase 38)
 - [ ] Synthetic cluster load test (50 nodes / 1K workloads)
-- [ ] Scheduler algorithm optimization (min-heap, binary search — Phase 41)
-- [ ] Store prefix indexing / trie (Phase 41)
+- [x] Scheduler algorithm optimization (min-heap, binary search — Phase 41)
+- [x] Store prefix indexing / trie (Phase 41)
+- [x] Controller topological sort, BFS GC, cycle detection (Phase 41)
 - [ ] Controller algorithm complexity audit
 
 #### Gate G — Operations & Observability

@@ -304,6 +304,8 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		}
 	}
 
+	store.SortFacts(allFacts)
+
 	changes, reconcileError := controller.Reconcile(ctx, allFacts)
 	if reconcileError != nil {
 		return false, reconcileError

@@ -58,10 +58,7 @@ func (networkController *NetworkController) Watch() []string {
 func (networkController *NetworkController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	// Collect services that have at least one endpoint.
 	servicesWithEndpoints := make(map[string]bool)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanEndpoints) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) >= 1 {
@@ -74,10 +71,7 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 	// Collect existing VIPs: serviceName -> VIP address.
 	existingVIPs := make(map[string]string)
 	existingVIPPorts := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanNetworkVIPs) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkVIPs) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanNetworkVIPs)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) == 1 {
@@ -89,10 +83,7 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 
 	// Collect existing DNS mappings: serviceName -> VIP.
 	existingDNS := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanNetworkDNS) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkDNS) {
 		serviceName := strings.TrimPrefix(fact.Key, types.ScanNetworkDNS)
 		existingDNS[serviceName] = string(fact.Value)
 	}

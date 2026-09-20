@@ -23,6 +23,7 @@ func TestAutoscaleActivationOverrideRecommendationToOne(t *testing.T) {
 		{Key: types.KeyDerivedServiceActivationState("api"), Value: []byte("activating")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -57,6 +58,7 @@ func TestAutoscaleNoOverrideWhenNotActivating(t *testing.T) {
 		{Key: types.KeyDerivedServiceActivationState("api"), Value: []byte("active")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
@@ -88,6 +90,7 @@ func TestAutoscaleActivatingWithHighMetricsKeepsHighRecommendation(t *testing.T)
 		{Key: types.KeyObservedInstanceService("api-1"), Value: []byte("api")},
 	}
 
+	store.SortFacts(facts)
 	changes, reconcileError := controller.Reconcile(context.Background(), facts)
 	if reconcileError != nil {
 		t.Fatalf("unexpected error: %v", reconcileError)
