@@ -172,6 +172,18 @@ func BuiltinRoles() []Role {
 			},
 		},
 		{
+			Name: "cloud-controller",
+			Rules: []Rule{
+				{KeyPrefix: "desired/cloud/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "desired/service/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "observed/node/", Operations: []Permission{PermissionRead, PermissionWrite, PermissionWatch}},
+				{KeyPrefix: "observed/cloud/", Operations: []Permission{PermissionRead, PermissionWrite, PermissionDelete}},
+				{KeyPrefix: "observed/instance/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "endpoint/", Operations: []Permission{PermissionRead, PermissionWatch}},
+				{KeyPrefix: "network/node/", Operations: []Permission{PermissionRead, PermissionWatch}},
+			},
+		},
+		{
 			Name: "api-reader",
 			Rules: []Rule{
 				{KeyPrefix: "", Operations: []Permission{PermissionRead, PermissionWatch}},

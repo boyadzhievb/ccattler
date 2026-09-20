@@ -26,6 +26,7 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/chaos"
+	"github.com/boyadzhievb/ccattler/cloud"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/infra"
 	"github.com/boyadzhievb/ccattler/lang"
@@ -340,6 +341,11 @@ type serverCommandConfig struct {
 	controllersOnly bool
 	// nodeID identifies this control-plane replica for leader election (defaults to hostname).
 	nodeID string
+	// cloudProviderName selects the cloud provider for node lifecycle, load balancers,
+	// and routes. Empty means no cloud integration. Valid: "aws", "gcp", "azure", "simulator".
+	cloudProviderName string
+	// cloudRegion is the cloud region for the provider (e.g. "us-east-1").
+	cloudRegion string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -418,6 +424,16 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.nodeID = args[argIndex]
+			}
+		case "--cloud-provider":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.cloudProviderName = args[argIndex]
+			}
+		case "--cloud-region":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.cloudRegion = args[argIndex]
 			}
 		}
 	}
@@ -650,11 +666,28 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		initController := controllers.NewInitController()
 
 		metricsCollector := controllers.NewMetricsCollector()
-		haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
+
+		controllerList := []controllers.Controller{
 			instanceController, schedulerController, endpointController,
 			failureController, nodeFailureController, networkController,
 			autoscaleController, intentResolverController, rolloutController,
-			initController)
+			initController,
+		}
+
+		if parsedConfig.cloudProviderName != "" {
+			cloudProviderInstance := createCloudProvider(parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
+			if cloudProviderInstance != nil {
+				controllerList = append(controllerList,
+					controllers.NewNodeLifecycleController(cloudProviderInstance),
+					controllers.NewCloudLoadBalancerController(cloudProviderInstance),
+					controllers.NewCloudRouteController(cloudProviderInstance),
+				)
+				fmt.Printf("Cloud controllers enabled (provider: %s)\n", parsedConfig.cloudProviderName)
+			}
+		}
+
+		haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
+			controllerList...)
 
 		go func() {
 			if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {
@@ -727,6 +760,25 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 }
 
 // buildServerTLSConfig creates an ephemeral CA, issues a server certificate
+// createCloudProvider returns a CloudProvider for the given provider name, or
+// nil if the name is unrecognized. This is the factory used by `cca server`
+// to instantiate the right cloud adapter based on the --cloud-provider flag.
+func createCloudProvider(providerName string, region string) cloud.CloudProvider {
+	switch providerName {
+	case "aws":
+		return cloud.NewAWSCloudProvider(region)
+	case "gcp":
+		return cloud.NewGCPCloudProvider("", region)
+	case "azure":
+		return cloud.NewAzureCloudProvider("", "", region)
+	case "simulator":
+		return cloud.NewSimulatorCloudProvider()
+	default:
+		fmt.Fprintf(os.Stderr, "warning: unknown cloud provider %q, cloud controllers disabled\n", providerName)
+		return nil
+	}
+}
+
 // with auto-rotation, and returns a tls.Config plus the CA. The TLS config uses
 // VerifyClientCertIfGiven so the enrollment endpoint can accept unauthenticated
 // connections while all other endpoints enforce client certs via middleware. The

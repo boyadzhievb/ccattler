@@ -803,3 +803,143 @@ func TestParseCredentialBrokerUnknownField(t *testing.T) {
 		t.Fatal("expected error for unknown credential_broker field")
 	}
 }
+
+func TestParseCloudBlock(t *testing.T) {
+	file, err := Parse(`cloud {
+    provider aws
+    region "us-east-1"
+    instance_type "m5.large"
+    credentials infra_identity
+    route_table "rtb-abc123"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if file.Cloud == nil {
+		t.Fatal("expected cloud block to be parsed")
+	}
+	cloudDecl := file.Cloud
+	if cloudDecl.Provider != "aws" {
+		t.Errorf("provider: got %q, want aws", cloudDecl.Provider)
+	}
+	if cloudDecl.Region != "us-east-1" {
+		t.Errorf("region: got %q, want us-east-1", cloudDecl.Region)
+	}
+	if cloudDecl.InstanceType != "m5.large" {
+		t.Errorf("instance_type: got %q, want m5.large", cloudDecl.InstanceType)
+	}
+	if cloudDecl.Credentials != "infra_identity" {
+		t.Errorf("credentials: got %q, want infra_identity", cloudDecl.Credentials)
+	}
+	if cloudDecl.RouteTable != "rtb-abc123" {
+		t.Errorf("route_table: got %q, want rtb-abc123", cloudDecl.RouteTable)
+	}
+}
+
+func TestParseCloudBlockGCP(t *testing.T) {
+	file, err := Parse(`cloud {
+    provider gcp
+    region "us-central1"
+    project_id "my-project"
+    vpc_network "default"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	cloudDecl := file.Cloud
+	if cloudDecl.Provider != "gcp" {
+		t.Errorf("provider: got %q, want gcp", cloudDecl.Provider)
+	}
+	if cloudDecl.ProjectID != "my-project" {
+		t.Errorf("project_id: got %q, want my-project", cloudDecl.ProjectID)
+	}
+	if cloudDecl.VPCNetwork != "default" {
+		t.Errorf("vpc_network: got %q, want default", cloudDecl.VPCNetwork)
+	}
+}
+
+func TestParseCloudBlockAzure(t *testing.T) {
+	file, err := Parse(`cloud {
+    provider azure
+    region "eastus"
+    project_id "sub-123"
+    resource_group "my-rg"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	cloudDecl := file.Cloud
+	if cloudDecl.Provider != "azure" {
+		t.Errorf("provider: got %q, want azure", cloudDecl.Provider)
+	}
+	if cloudDecl.ResourceGroup != "my-rg" {
+		t.Errorf("resource_group: got %q, want my-rg", cloudDecl.ResourceGroup)
+	}
+}
+
+func TestParseCloudBlockUnknownField(t *testing.T) {
+	_, err := Parse(`cloud {
+    provider aws
+    unknown_field "value"
+}`)
+	if err == nil {
+		t.Fatal("expected error for unknown cloud field")
+	}
+}
+
+func TestParseExposeExternal(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.27
+    instances 3
+    expose external 443 http
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.ExternalPorts) != 1 {
+		t.Fatalf("expected 1 external port, got %d", len(serviceDecl.ExternalPorts))
+	}
+	if serviceDecl.ExternalPorts[0].Port != 443 {
+		t.Errorf("expected external port 443, got %d", serviceDecl.ExternalPorts[0].Port)
+	}
+	if serviceDecl.ExternalPorts[0].Protocol != "http" {
+		t.Errorf("expected protocol http, got %q", serviceDecl.ExternalPorts[0].Protocol)
+	}
+}
+
+func TestParseExposeExternalDefaultProtocol(t *testing.T) {
+	file, err := Parse(`service redis {
+    image redis:7
+    instances 1
+    expose external 6379
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if file.Services[0].ExternalPorts[0].Protocol != "tcp" {
+		t.Errorf("expected default protocol tcp, got %q", file.Services[0].ExternalPorts[0].Protocol)
+	}
+}
+
+func TestParseExposeAndExposeExternal(t *testing.T) {
+	file, err := Parse(`service api {
+    image api:1.0
+    instances 2
+    expose 8080
+    expose external 443 http
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Ports) != 1 || serviceDecl.Ports[0] != 8080 {
+		t.Errorf("expected internal port 8080, got %v", serviceDecl.Ports)
+	}
+	if len(serviceDecl.ExternalPorts) != 1 || serviceDecl.ExternalPorts[0].Port != 443 {
+		t.Errorf("expected external port 443, got %v", serviceDecl.ExternalPorts)
+	}
+}

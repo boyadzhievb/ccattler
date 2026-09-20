@@ -690,3 +690,99 @@ func TestDiffDetectsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileCloudBlockAWS(t *testing.T) {
+	file, err := Parse(`cloud {
+    provider aws
+    region "us-east-1"
+    instance_type "m5.large"
+    credentials infra_identity
+    route_table "rtb-abc123"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatalf("compile error: %v", compileError)
+	}
+
+	expectedFacts := map[string]string{
+		"desired/cloud/provider":      "aws",
+		"desired/cloud/region":        "us-east-1",
+		"desired/cloud/instance_type": "m5.large",
+		"desired/cloud/credentials":   "infra_identity",
+		"desired/cloud/route_table":   "rtb-abc123",
+	}
+	factMap := make(map[string]string)
+	for _, fact := range facts {
+		factMap[fact.Key] = fact.Value
+	}
+	for key, expectedValue := range expectedFacts {
+		if actualValue, exists := factMap[key]; !exists {
+			t.Errorf("missing fact %q", key)
+		} else if actualValue != expectedValue {
+			t.Errorf("fact %q: got %q, want %q", key, actualValue, expectedValue)
+		}
+	}
+}
+
+func TestCompileCloudBlockRequiresProvider(t *testing.T) {
+	file, err := Parse(`cloud {
+    region "us-east-1"
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, compileError := Compile(file)
+	if compileError == nil {
+		t.Fatal("expected compile error for cloud block without provider")
+	}
+}
+
+func TestCompileCloudBlockRejectsUnknownProvider(t *testing.T) {
+	file, err := Parse(`cloud {
+    provider digitalocean
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, compileError := Compile(file)
+	if compileError == nil {
+		t.Fatal("expected compile error for unknown cloud provider")
+	}
+}
+
+func TestCompileExposeExternal(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.27
+    instances 3
+    expose 8080
+    expose external 443 http
+}`)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatalf("compile error: %v", compileError)
+	}
+
+	factMap := make(map[string]string)
+	for _, fact := range facts {
+		factMap[fact.Key] = fact.Value
+	}
+
+	if _, exists := factMap["desired/service/web/expose/8080"]; !exists {
+		t.Error("missing internal expose port 8080 fact")
+	}
+	if _, exists := factMap["desired/service/web/expose/443"]; !exists {
+		t.Error("missing expose port 443 fact (external ports also create base expose fact)")
+	}
+	externalProtocol, exists := factMap["desired/service/web/expose/443/external"]
+	if !exists {
+		t.Error("missing external expose fact for port 443")
+	} else if externalProtocol != "http" {
+		t.Errorf("expected external protocol http, got %q", externalProtocol)
+	}
+}
