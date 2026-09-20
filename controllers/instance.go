@@ -48,47 +48,41 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	desiredCounts := make(map[string]int)              // service name -> desired instance count
 	observedEntries := make(map[string][]instanceEntry) // service name -> active instances
 
-	for _, fact := range facts {
-		switch {
-		case strings.HasPrefix(fact.Key, types.ScanEffectiveServices):
-			relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
-			// relativePath = "{name}/instances"
-			pathParts := strings.SplitN(relativePath, "/", 2)
-			if len(pathParts) == 2 && pathParts[1] == "instances" {
-				parsedCount, _ := strconv.Atoi(string(fact.Value))
-				desiredCounts[pathParts[0]] = parsedCount
-			}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) == 2 && pathParts[1] == "instances" {
+			parsedCount, _ := strconv.Atoi(string(fact.Value))
+			desiredCounts[pathParts[0]] = parsedCount
+		}
+	}
 
-		case strings.HasPrefix(fact.Key, types.ScanObservedInstances):
-			relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-			pathParts := strings.SplitN(relativePath, "/", 2)
-			if len(pathParts) != 2 {
-				continue
-			}
-			instanceID := pathParts[0]
-			fieldSuffix := pathParts[1]
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) != 2 {
+			continue
+		}
+		instanceID := pathParts[0]
+		fieldSuffix := pathParts[1]
 
-			switch fieldSuffix {
-			case "service":
-				serviceName := string(fact.Value)
-				entries := observedEntries[serviceName]
-				matchIndex := findOrAddInstanceEntry(&entries, instanceID)
-				entries[matchIndex].service = serviceName
-				observedEntries[serviceName] = entries
-			case "state":
-				// We need to associate state with the instance, but we don't
-				// know the service yet. Use a separate pass.
-			}
+		switch fieldSuffix {
+		case "service":
+			serviceName := string(fact.Value)
+			entries := observedEntries[serviceName]
+			matchIndex := findOrAddInstanceEntry(&entries, instanceID)
+			entries[matchIndex].service = serviceName
+			observedEntries[serviceName] = entries
+		case "state":
+			// We need to associate state with the instance, but we don't
+			// know the service yet. Use a separate pass.
 		}
 	}
 
 	// Second pass: collect instance states by ID, then filter.
 	stateByInstanceID := make(map[string]types.InstanceState)
 	serviceByInstanceID := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) != 2 {

@@ -101,10 +101,7 @@ func (cloudRouteController *CloudRouteController) Reconcile(ctx context.Context,
 // extractNodeSubnetsForRoutes builds a map from node ID to assigned subnet CIDR.
 func extractNodeSubnetsForRoutes(facts []store.Fact) map[string]string {
 	nodeSubnets := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanNetworkNodeSubnets) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanNetworkNodeSubnets) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanNetworkNodeSubnets)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "subnet" {
@@ -118,10 +115,7 @@ func extractNodeSubnetsForRoutes(facts []store.Fact) map[string]string {
 // node ID for all cloud routes currently tracked in the store.
 func extractObservedCloudRoutes(facts []store.Fact) map[string]string {
 	routes := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedCloudRoutes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedCloudRoutes) {
 		cidr := strings.TrimPrefix(factEntry.Key, types.ScanObservedCloudRoutes)
 		routes[cidr] = string(factEntry.Value)
 	}

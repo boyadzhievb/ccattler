@@ -25,6 +25,7 @@ func TestNodeFailureDetectsExpiredLease(t *testing.T) {
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 	}
 
+	store.SortFacts(inputFacts)
 	proposedChanges, err := failureController.Reconcile(context.Background(), inputFacts)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,7 @@ func TestNodeFailureIgnoresFreshLease(t *testing.T) {
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 	}
 
+	store.SortFacts(inputFacts)
 	proposedChanges, err := failureController.Reconcile(context.Background(), inputFacts)
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +83,7 @@ func TestNodeFailureMarksInstancesAsFailed(t *testing.T) {
 		{Key: types.KeyObservedInstanceState("ccc"), Value: []byte("running")},
 	}
 
+	store.SortFacts(inputFacts)
 	proposedChanges, err := failureController.Reconcile(context.Background(), inputFacts)
 	if err != nil {
 		t.Fatal(err)
@@ -114,6 +117,7 @@ func TestNodeFailureSkipsAlreadyUnreachable(t *testing.T) {
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("unreachable")},
 	}
 
+	store.SortFacts(inputFacts)
 	proposedChanges, err := failureController.Reconcile(context.Background(), inputFacts)
 	if err != nil {
 		t.Fatal(err)
@@ -138,6 +142,7 @@ func TestNodeFailureSkipsStoppedInstances(t *testing.T) {
 		{Key: types.KeyObservedInstanceState("aaa"), Value: []byte("stopped")},
 	}
 
+	store.SortFacts(inputFacts)
 	proposedChanges, err := failureController.Reconcile(context.Background(), inputFacts)
 	if err != nil {
 		t.Fatal(err)

@@ -105,10 +105,7 @@ func (nodeLifecycleController *NodeLifecycleController) Reconcile(ctx context.Co
 // provider instance ID from observed node facts.
 func extractNodeToProviderInstance(facts []store.Fact) map[string]string {
 	nodeToInstance := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "provider_instance_id" {
@@ -121,10 +118,7 @@ func extractNodeToProviderInstance(facts []store.Fact) map[string]string {
 // extractNodeStatesFromFacts builds a map from node ID to current state string.
 func extractNodeStatesFromFacts(facts []store.Fact) map[string]string {
 	nodeStates := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "state" {
@@ -138,10 +132,7 @@ func extractNodeStatesFromFacts(facts []store.Fact) map[string]string {
 // the last observed cloud state.
 func extractObservedCloudInstanceStates(facts []store.Fact) map[string]string {
 	cloudStates := make(map[string]string)
-	for _, factEntry := range facts {
-		if !strings.HasPrefix(factEntry.Key, types.ScanObservedCloudInstances) {
-			continue
-		}
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedCloudInstances) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedCloudInstances)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		if len(pathParts) == 2 && pathParts[1] == "state" {

@@ -24,6 +24,7 @@ func TestNodeLifecycleControllerDetectsTerminatedInstance(testing *testing.T) {
 		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, reconcileError := nodeLifecycleController.Reconcile(ctx, facts)
 	if reconcileError != nil {
 		testing.Fatalf("Reconcile failed: %v", reconcileError)
@@ -63,6 +64,7 @@ func TestNodeLifecycleControllerDrainingToUnreachable(testing *testing.T) {
 		{Key: types.KeyObservedCloudInstanceState(instanceID), Value: []byte(string(cloud.InstanceStateTerminated))},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, _ := nodeLifecycleController.Reconcile(ctx, facts)
 
 	foundUnreachableChange := false
@@ -90,6 +92,7 @@ func TestNodeLifecycleControllerIgnoresRunningInstances(testing *testing.T) {
 		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, _ := nodeLifecycleController.Reconcile(ctx, facts)
 
 	for _, change := range proposedChanges {
@@ -112,6 +115,7 @@ func TestCloudLoadBalancerControllerCreatesLoadBalancer(testing *testing.T) {
 		{Key: types.KeyObservedNodeAddress("node-1"), Value: []byte("192.168.1.10")},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, reconcileError := loadBalancerController.Reconcile(ctx, facts)
 	if reconcileError != nil {
 		testing.Fatalf("Reconcile failed: %v", reconcileError)
@@ -149,6 +153,7 @@ func TestCloudLoadBalancerControllerDeletesOrphanedLoadBalancer(testing *testing
 		{Key: types.KeyObservedCloudLoadBalancerAddress("old-service"), Value: []byte("203.0.113.1")},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, _ := loadBalancerController.Reconcile(ctx, facts)
 
 	if len(simulatorProvider.DeleteLoadBalancerCalls) != 1 {
@@ -181,6 +186,7 @@ func TestCloudRouteControllerCreatesRoutes(testing *testing.T) {
 		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, reconcileError := cloudRouteController.Reconcile(ctx, facts)
 	if reconcileError != nil {
 		testing.Fatalf("Reconcile failed: %v", reconcileError)
@@ -218,6 +224,7 @@ func TestCloudRouteControllerDeletesStaleRoutes(testing *testing.T) {
 		{Key: types.KeyObservedCloudRoute("10.244.99.0/24"), Value: []byte("dead-node")},
 	}
 
+	store.SortFacts(facts)
 	proposedChanges, _ := cloudRouteController.Reconcile(ctx, facts)
 
 	if len(simulatorProvider.DeleteRouteCalls) != 1 {
@@ -247,6 +254,7 @@ func TestCloudRouteControllerSkipsUnreachableNodes(testing *testing.T) {
 		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
 	}
 
+	store.SortFacts(facts)
 	cloudRouteController.Reconcile(ctx, facts)
 
 	if len(simulatorProvider.EnsureRouteCalls) != 0 {

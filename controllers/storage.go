@@ -55,10 +55,7 @@ func (storageController *StorageController) Watch() []string {
 func (storageController *StorageController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	// Collect desired volumes: volumeName -> {size, persistent}.
 	desiredVolumes := make(map[string]desiredVolumeInfo)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredVolumes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredVolumes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredVolumes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		volumeName := pathParts[0]
@@ -83,10 +80,7 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 
 	// Collect observed volumes: volumeName -> {state, node, instance}.
 	observedVolumes := make(map[string]observedVolumeInfo)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedVolumes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedVolumes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedVolumes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
 		volumeName := pathParts[0]
@@ -119,10 +113,7 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 
 	// Collect node states: nodeID -> state.
 	nodeStates := make(map[string]types.NodeState)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) == 2 && pathParts[1] == "state" {

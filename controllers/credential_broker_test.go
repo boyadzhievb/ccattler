@@ -48,6 +48,7 @@ func TestCredentialBrokerIssuesCredentialForRunningInstance(t *testing.T) {
 		{Key: "observed/instance/inst-1/state", Value: []byte("running")},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -83,6 +84,7 @@ func TestCredentialBrokerSkipsStoppedInstances(t *testing.T) {
 		{Key: "observed/instance/inst-1/state", Value: []byte("stopped")},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -110,6 +112,7 @@ func TestCredentialBrokerSkipsActiveNonExpiredCredential(t *testing.T) {
 		{Key: types.KeyDerivedCredentialIssuedAt("inst-1", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -137,6 +140,7 @@ func TestCredentialBrokerRefreshesNearExpiry(t *testing.T) {
 		{Key: types.KeyDerivedCredentialExpiresAt("inst-1", "payments_s3"), Value: []byte(nearExpiry)},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -160,6 +164,7 @@ func TestCredentialBrokerGarbageCollectsStoppedInstance(t *testing.T) {
 		{Key: types.KeyDerivedCredentialIssuedAt("inst-gone", "payments_s3"), Value: []byte(time.Now().Format(time.RFC3339))},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -191,6 +196,7 @@ func TestCredentialBrokerErrorOnMissingAdapter(t *testing.T) {
 		{Key: "observed/instance/inst-1/state", Value: []byte("running")},
 	}
 
+	store.SortFacts(facts)
 	changes, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -221,6 +227,7 @@ func TestCredentialBrokerReadsConfigFromFacts(t *testing.T) {
 		{Key: "observed/instance/inst-1/state", Value: []byte("running")},
 	}
 
+	store.SortFacts(facts)
 	_, err := brokerController.Reconcile(testContext, facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)

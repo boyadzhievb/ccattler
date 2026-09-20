@@ -140,6 +140,7 @@ func TestCustomControllerInterface(t *testing.T) {
 		{Key: "desired/service/api/image", Value: []byte("api:v2")},
 	}
 
+	store.SortFacts(facts)
 	changes, err := controller.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)

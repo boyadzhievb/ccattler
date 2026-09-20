@@ -196,25 +196,11 @@ type candidateNode struct {
 }
 
 // selectLeastLoadedNode picks the alive node with sufficient resources and the
-// lowest current instance count (load). It returns the node ID of the best
-// candidate, or an empty string if no node can satisfy the requirements.
+// lowest current instance count (load). Uses a min-heap for O(log n) selection
+// instead of linear scan.
 func selectLeastLoadedNode(alive []candidateNode, load map[string]int, reqCPU, reqMemory int64) string {
-	best := ""
-	bestLoad := math.MaxInt
-	for _, node := range alive {
-		if reqCPU > 0 && node.availCPU < reqCPU {
-			continue
-		}
-		if reqMemory > 0 && node.availMemory < reqMemory {
-			continue
-		}
-		nodeLoad := load[node.id]
-		if nodeLoad < bestLoad {
-			bestLoad = nodeLoad
-			best = node.id
-		}
-	}
-	return best
+	heapData, _ := buildNodeHeap(alive, load, reqCPU, reqMemory)
+	return selectFromHeap(&heapData)
 }
 
 // serviceResourceRequirements holds the CPU and memory resources that a
@@ -264,10 +250,7 @@ type schedulerNodeInfo struct {
 // service name and lifecycle state from the observed-instances key prefix.
 func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInstanceInfo {
 	instances := make(map[string]*schedulerInstanceInfo)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedInstances) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -292,10 +275,7 @@ func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInsta
 // available CPU/memory from the observed-nodes key prefix.
 func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 	nodes := make(map[string]schedulerNodeInfo)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanObservedNodes) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 0 {
@@ -341,10 +321,7 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 // placements key prefix.
 func extractPlacementsFromFacts(facts []store.Fact) map[string]string {
 	placements := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanPlacements) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanPlacements) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanPlacements)
 		if relativePath != "" && !strings.Contains(relativePath, "/") {
 			placements[relativePath] = string(fact.Value)
@@ -370,10 +347,7 @@ type servicePlacementConstraint struct {
 // extractPlacementConstraints parses placement constraint facts per service.
 func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacementConstraint {
 	constraints := make(map[string]*servicePlacementConstraint)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -570,10 +544,7 @@ func selectZoneSpreadCandidates(candidates []candidateNode, serviceName string, 
 // CPU and memory requirements from the desired-services key prefix.
 func extractServiceResourcesFromFacts(facts []store.Fact) map[string]serviceResourceRequirements {
 	resources := make(map[string]serviceResourceRequirements)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		// relativePath = "{name}/resources/cpu" or "{name}/resources/memory"
 		parts := strings.SplitN(relativePath, "/", 3)

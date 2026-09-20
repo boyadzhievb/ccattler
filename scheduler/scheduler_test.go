@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -13,6 +14,9 @@ func buildFacts(entries ...struct{ k, v string }) []store.Fact {
 	for index, entry := range entries {
 		facts[index] = store.Fact{Key: entry.k, Value: []byte(entry.v)}
 	}
+	sort.Slice(facts, func(i, j int) bool {
+		return facts[i].Key < facts[j].Key
+	})
 	return facts
 }
 

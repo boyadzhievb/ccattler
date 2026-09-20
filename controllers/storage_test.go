@@ -25,6 +25,7 @@ func helperCollectStorageControllerChanges(t *testing.T, stateStore store.StateS
 		}
 		allFacts = append(allFacts, facts...)
 	}
+	store.SortFacts(allFacts)
 
 	changes, err := storageController.Reconcile(ctx, allFacts)
 	if err != nil {
@@ -336,6 +337,7 @@ func TestStorageControllerSnapshotBeforeMigration(t *testing.T) {
 		}
 		allFacts = append(allFacts, facts...)
 	}
+	store.SortFacts(allFacts)
 
 	changes, err := storageController.Reconcile(ctx, allFacts)
 	if err != nil {
@@ -422,6 +424,7 @@ func TestStorageControllerResizesVolume(t *testing.T) {
 		}
 		allFacts = append(allFacts, facts...)
 	}
+	store.SortFacts(allFacts)
 
 	changes, err := storageController.Reconcile(ctx, allFacts)
 	if err != nil {

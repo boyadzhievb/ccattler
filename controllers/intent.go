@@ -167,10 +167,7 @@ type scalePolicyBounds struct {
 // policy min/max values.
 func extractPolicyBounds(facts []store.Fact) map[string]scalePolicyBounds {
 	bounds := make(map[string]scalePolicyBounds)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -196,10 +193,7 @@ func extractPolicyBounds(facts []store.Fact) map[string]scalePolicyBounds {
 // current effective instance count for each service.
 func extractEffectiveCounts(facts []store.Fact) map[string]int {
 	counts := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanEffectiveServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "instances" {
@@ -213,10 +207,7 @@ func extractEffectiveCounts(facts []store.Fact) map[string]int {
 // extractQuotaCeilings scans desired service facts for instance quota ceilings.
 func extractQuotaCeilings(facts []store.Fact) map[string]int {
 	quotas := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "quota/instances" {
@@ -237,10 +228,7 @@ type autoscalerResourceIntent struct {
 func extractAutoscalerResourceIntents(facts []store.Fact) map[string]autoscalerResourceIntent {
 	intents := make(map[string]autoscalerResourceIntent)
 	prefix := types.ScanIntentAutoscalerServices
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
 		relativePath := strings.TrimPrefix(fact.Key, prefix)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -262,10 +250,7 @@ func extractAutoscalerResourceIntents(facts []store.Fact) map[string]autoscalerR
 // extractEffectiveResources scans effective service facts for current resource values.
 func extractEffectiveResources(facts []store.Fact) map[string]string {
 	resources := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanEffectiveServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {
@@ -284,10 +269,7 @@ func extractEffectiveResources(facts []store.Fact) map[string]string {
 // extractUserResources scans desired service facts for user-declared resources.
 func extractUserResources(facts []store.Fact) map[string]string {
 	resources := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 {

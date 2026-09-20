@@ -219,10 +219,7 @@ type brokerConfigParsed struct {
 
 func parseCloudIdentities(facts []store.Fact) map[string]security.CloudIdentityConfig {
 	identities := make(map[string]security.CloudIdentityConfig)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredCloudIdentities) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredCloudIdentities) {
 		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredCloudIdentities)
 		parts := strings.SplitN(remainder, "/", 2)
 		identityName := parts[0]
@@ -305,10 +302,7 @@ func parseRunningInstances(facts []store.Fact) map[string]bool {
 
 func parseCredentialStates(facts []store.Fact) map[string]credentialState {
 	states := make(map[string]credentialState)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDerivedCredentials) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedCredentials) {
 		remainder := strings.TrimPrefix(fact.Key, types.ScanDerivedCredentials)
 		// format: {instance}/{identity}/{field}
 		parts := strings.SplitN(remainder, "/", 3)
@@ -334,10 +328,7 @@ func parseCredentialStates(facts []store.Fact) map[string]credentialState {
 
 func parseBrokerConfig(facts []store.Fact) brokerConfigParsed {
 	var config brokerConfigParsed
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.ScanDesiredCredentialBroker) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredCredentialBroker) {
 		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredCredentialBroker)
 		switch remainder {
 		case "credential_ttl":
