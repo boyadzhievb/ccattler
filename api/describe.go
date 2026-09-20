@@ -420,9 +420,9 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 		describe.ReadinessProbe = string(readinessFact.Value)
 	}
 
-	endpointKey := types.KeyEndpoint(instance.Service, instanceID)
-	if endpointFact, endpointErr := factStore.Get(ctx, endpointKey); endpointErr == nil {
-		describe.Endpoint = string(endpointFact.Value)
+	endpointPrefix := fmt.Sprintf("%s/service/%s/%s/", types.PrefixEndpoint, instance.Service, instanceID)
+	if endpointFacts, endpointErr := factStore.Scan(ctx, endpointPrefix); endpointErr == nil && len(endpointFacts) > 0 {
+		describe.Endpoint = string(endpointFacts[0].Value)
 	}
 
 	if eventLog != nil {

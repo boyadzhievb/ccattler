@@ -199,6 +199,17 @@ func (processRuntime *ProcessRuntime) Exec(ctx context.Context, id string, execS
 	return command.Run()
 }
 
+// ExecInit runs an initialization command directly on the host. For the process
+// runtime, init commands execute in the same environment as the workload.
+func (processRuntime *ProcessRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
+	commandParts := strings.Fields(execSpec.Command)
+	if len(commandParts) == 0 {
+		return fmt.Errorf("empty init exec command")
+	}
+	command := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...)
+	return command.Run()
+}
+
 // Logs returns a reader with a message indicating that log capture is not
 // available for the process runtime (output goes to parent stdout/stderr).
 func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {

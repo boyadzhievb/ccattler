@@ -15,9 +15,9 @@ func TestRoundRobinDistributesEvenly(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "bbb"), []byte("10.100.1.3:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "ccc"), []byte("10.100.2.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "bbb", 8080), []byte("10.100.1.3:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "ccc", 8080), []byte("10.100.2.2:8080"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)
@@ -50,7 +50,7 @@ func TestSingleBackendReceivesAllRequests(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("api", "aaa"), []byte("10.100.1.2:3000"))
+	factStore.Put(ctx, types.KeyEndpoint("api", "aaa", 3000), []byte("10.100.1.2:3000"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)
@@ -89,8 +89,8 @@ func TestBackendDisappearsIsHandled(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "bbb"), []byte("10.100.1.3:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "bbb", 8080), []byte("10.100.1.3:8080"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)
@@ -101,7 +101,7 @@ func TestBackendDisappearsIsHandled(t *testing.T) {
 	}
 
 	// Remove one backend.
-	factStore.Delete(ctx, types.KeyEndpoint("web", "bbb"))
+	factStore.Delete(ctx, types.KeyEndpoint("web", "bbb", 8080))
 
 	// Subsequent requests should only go to the remaining backend.
 	for requestIndex := 0; requestIndex < 3; requestIndex++ {
@@ -122,7 +122,7 @@ func TestNewBackendAppearsIsIncluded(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)
@@ -131,7 +131,7 @@ func TestNewBackendAppearsIsIncluded(t *testing.T) {
 	simulatorProxy.RouteRequest(ctx, "web")
 
 	// Add a second backend.
-	factStore.Put(ctx, types.KeyEndpoint("web", "bbb"), []byte("10.100.1.3:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "bbb", 8080), []byte("10.100.1.3:8080"))
 
 	// Route more requests — both backends should now receive traffic.
 	instanceHitCounts := make(map[string]int)
@@ -152,10 +152,10 @@ func TestMultipleServicesHaveIndependentCounters(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "w1"), []byte("10.100.1.2:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("web", "w2"), []byte("10.100.1.3:8080"))
-	factStore.Put(ctx, types.KeyEndpoint("api", "a1"), []byte("10.100.2.2:3000"))
-	factStore.Put(ctx, types.KeyEndpoint("api", "a2"), []byte("10.100.2.3:3000"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "w1", 8080), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "w2", 8080), []byte("10.100.1.3:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("api", "a1", 3000), []byte("10.100.2.2:3000"))
+	factStore.Put(ctx, types.KeyEndpoint("api", "a2", 3000), []byte("10.100.2.3:3000"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)
@@ -202,7 +202,7 @@ func TestRoutingDecisionsForServiceReturnsCopy(t *testing.T) {
 	defer factStore.Close()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
 
 	storeBackedResolver := NewStoreBackedResolver(factStore)
 	simulatorProxy := NewSimulatorProxy(storeBackedResolver)

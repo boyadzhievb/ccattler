@@ -249,6 +249,7 @@ func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOpt
 	if opts.Prefix {
 		watchOptions = append(watchOptions, clientv3.WithPrefix())
 	}
+	watchOptions = append(watchOptions, clientv3.WithPrevKV())
 
 	etcdWatchChannel := etcdStore.etcdClient.Watch(ctx, etcdStore.prefixedKey(key), watchOptions...)
 

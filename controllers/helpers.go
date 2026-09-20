@@ -40,21 +40,31 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 }
 
 // extractServiceExposedPorts scans desired service facts and returns a map from
-// service name to its first exposed port number. Services without an expose
+// service name to all exposed port numbers. Services without an expose
 // declaration are omitted from the result.
-func extractServiceExposedPorts(facts []store.Fact) map[string]int {
-	servicePorts := make(map[string]int)
+func extractServiceExposedPorts(facts []store.Fact) map[string][]int {
+	servicePorts := make(map[string][]int)
 	for _, fact := range facts {
 		if !strings.HasPrefix(fact.Key, types.ScanDesiredServices) {
 			continue
 		}
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		pathParts := strings.Split(relativePath, "/")
-		if len(pathParts) == 3 && pathParts[1] == "expose" {
+		if len(pathParts) >= 3 && pathParts[1] == "expose" {
+			if pathParts[len(pathParts)-1] == "external" {
+				continue
+			}
 			portNumber, _ := strconv.Atoi(pathParts[2])
 			if portNumber > 0 {
-				if _, alreadySet := servicePorts[pathParts[0]]; !alreadySet {
-					servicePorts[pathParts[0]] = portNumber
+				alreadyPresent := false
+				for _, existingPort := range servicePorts[pathParts[0]] {
+					if existingPort == portNumber {
+						alreadyPresent = true
+						break
+					}
+				}
+				if !alreadyPresent {
+					servicePorts[pathParts[0]] = append(servicePorts[pathParts[0]], portNumber)
 				}
 			}
 		}

@@ -99,7 +99,8 @@ func (nodeAgent *Agent) resolveServiceBackends(ctx context.Context, serviceName 
 
 	var backends []network.DataPlaneBackend
 	for _, endpointFact := range endpointFacts {
-		instanceID := strings.TrimPrefix(endpointFact.Key, endpointPrefix)
+		endpointSuffix := strings.TrimPrefix(endpointFact.Key, endpointPrefix)
+		instanceID := strings.SplitN(endpointSuffix, "/", 2)[0]
 		endpointValue := string(endpointFact.Value)
 
 		colonIndex := strings.LastIndex(endpointValue, ":")

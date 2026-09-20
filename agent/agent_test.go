@@ -69,6 +69,10 @@ func (delayed *delayedStartRuntime) Exec(ctx context.Context, instanceID string,
 	return delayed.inner.Exec(ctx, instanceID, execSpec)
 }
 
+func (delayed *delayedStartRuntime) ExecInit(ctx context.Context, image string, execSpec runtime.ExecSpec) error {
+	return delayed.inner.ExecInit(ctx, image, execSpec)
+}
+
 func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
 	return delayed.inner.Logs(ctx, instanceID, follow)
 }
@@ -1274,6 +1278,133 @@ func TestAgentObservationBasedStateForExistingInstances(t *testing.T) {
 	waitFor(t, 2*time.Second, "instance re-observed as running after restart", func() bool {
 		runtimeStatus, err := simulatorRuntime.Status(ctx, "obs-bbb")
 		return err == nil && runtimeStatus.Running
+	})
+}
+
+// TestAgentExecInitUsesRuntimeInterface verifies that init steps are executed
+// through the runtime's ExecInit method (not raw host exec), and that the
+// correct image and command are passed.
+func TestAgentExecInitUsesRuntimeInterface(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "exec-init-svc"
+	instanceID := "exec-init-aaa"
+	serviceImage := "myapp:2.0"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte(serviceImage))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 0), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 0), []byte("db-migrate --run"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 1), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 1), []byte("cache-warm"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "instance running after init", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return getError == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	if len(simulatorRuntime.ExecInitCalls) < 2 {
+		t.Fatalf("expected at least 2 ExecInit calls, got %d", len(simulatorRuntime.ExecInitCalls))
+	}
+
+	firstCall := simulatorRuntime.ExecInitCalls[0]
+	if firstCall.Image != serviceImage {
+		t.Errorf("first ExecInit image: got %q, want %q", firstCall.Image, serviceImage)
+	}
+	if firstCall.Command != "db-migrate --run" {
+		t.Errorf("first ExecInit command: got %q, want %q", firstCall.Command, "db-migrate --run")
+	}
+
+	secondCall := simulatorRuntime.ExecInitCalls[1]
+	if secondCall.Image != serviceImage {
+		t.Errorf("second ExecInit image: got %q, want %q", secondCall.Image, serviceImage)
+	}
+	if secondCall.Command != "cache-warm" {
+		t.Errorf("second ExecInit command: got %q, want %q", secondCall.Command, "cache-warm")
+	}
+}
+
+// TestAgentReconcileDesiredInstanceStartsMissing verifies that the extracted
+// reconcileDesiredInstance method brings up an instance that is not running.
+func TestAgentReconcileDesiredInstanceStartsMissing(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "reconcile-svc"
+	instanceID := "reconcile-aaa"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return getError == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	imageFact, imageError := factStore.Get(ctx, types.KeyObservedInstanceImage(instanceID))
+	if imageError != nil {
+		t.Fatal("expected observed image fact")
+	}
+	if string(imageFact.Value) != "nginx:1.27" {
+		t.Errorf("image: got %s, want nginx:1.27", imageFact.Value)
+	}
+}
+
+// TestAgentCleanupUndesiredInstanceStopsStale verifies that the extracted
+// cleanupUndesiredInstance method tears down an instance that is no longer
+// placed on this node.
+func TestAgentCleanupUndesiredInstanceStopsStale(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "cleanup-svc"
+	instanceID := "cleanup-aaa"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running before removal", func() bool {
+		runtimeStatus, statusError := simulatorRuntime.Status(ctx, instanceID)
+		return statusError == nil && runtimeStatus.Running
+	})
+
+	// Remove the placement — the instance should no longer be desired on node-1.
+	factStore.Delete(ctx, types.KeyPlacementInstance(instanceID))
+
+	waitFor(t, 2*time.Second, "instance stopped after placement removed", func() bool {
+		runtimeStatus, statusError := simulatorRuntime.Status(ctx, instanceID)
+		return statusError == nil && !runtimeStatus.Running
 	})
 }
 

@@ -302,11 +302,11 @@ func KeyPlacementInstance(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s", PrefixPlacement, instanceID)
 }
 
-// KeyEndpoint returns the store path for a service instance's network endpoint.
-// The value stored at this key is the IP:port pair.
-// Path: endpoint/service/{serviceName}/{instanceID}
-func KeyEndpoint(serviceName, instanceID string) string {
-	return fmt.Sprintf("%s/service/%s/%s", PrefixEndpoint, serviceName, instanceID)
+// KeyEndpoint returns the store path for a service instance's network endpoint
+// on a specific port. The value stored at this key is the IP:port pair.
+// Path: endpoint/service/{serviceName}/{instanceID}/{port}
+func KeyEndpoint(serviceName, instanceID string, port int) string {
+	return fmt.Sprintf("%s/service/%s/%s/%d", PrefixEndpoint, serviceName, instanceID, port)
 }
 
 // KeyIntentUserServiceInstances returns the store path for the user intent layer's

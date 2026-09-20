@@ -2,21 +2,16 @@
 
 ## Current Status
 
-**Active milestone:** M32 — Cloud Controller Manager (Phase 35). M1–M31a complete. M32 implementation complete.
+**Active milestone:** M33 — Correctness III (Phase 36). M1–M32 complete.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
-Items addressed by Phase 26 (P0 Correctness) and Phase 35a (Correctness II): runtime observation authoritative, 127.0.0.1 fallback removed, probe scheduling decoupled, init restart-safe, watch overflow resync, transaction snapshot CAS, derived/ prefix, etcd Put simplified, VIP allocation race fixed, init dual authority resolved.
+Items addressed by Phase 26 (P0 Correctness), Phase 35a (Correctness II), and Phase 36 (Correctness III): runtime observation authoritative, 127.0.0.1 fallback removed, probe scheduling decoupled, init restart-safe, watch overflow resync, transaction snapshot CAS, derived/ prefix, etcd Put simplified, VIP allocation race fixed, init dual authority resolved, etcd WithPrevKV, EventProjector from committed state, init runtime isolation via ExecInit, multi-port endpoint model, agent sub-reconciler extraction.
 
 **Remaining open items:**
 
 | Priority | Issue | Detail |
 |----------|-------|--------|
-| P1 | etcd watch `Prev` not populated | Watch needs `WithPrevKV()` option; MemoryStore and EtcdStore have inconsistent semantics |
-| P1 | Event generation from controller intent | Events should come from an EventProjector watching committed state transitions, not from `emitEventsForChanges()` in the runner |
-| P1 | Init execution not runtime-isolated | `runInitCommand()` uses host `exec.CommandContext`, not `runtime.Exec()` — init runs on the host, not inside the workload environment |
-| P1 | Agent is still a god-loop | agent.go handles node registration, heartbeat, runtime, init, storage, secrets, network, probes, telemetry, cleanup — should be split into composable sub-reconcilers with independent lifecycle |
-| P2 | Multi-port endpoint model incomplete | EndpointController uses `map[string]int` (one port per service) — needs `map[string][]int` or typed `ServicePort{Name, Port, Protocol}` |
 | P2 | Runtime `Stats()` API missing | Needed for native resource observations powering `cca top` |
 
 ### Performance Optimization Principle
@@ -1443,6 +1438,14 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] SimulatorCloudProvider — in-memory cloud provider for testing with call tracking
 - [x] CLI `cca server --cloud-provider <name> --cloud-region <region>` — enables cloud controllers
 
+### Phase 36 — P1 Correctness Pass (Architecture Review)
+- [x] etcd `WithPrevKV()` — watch options include `clientv3.WithPrevKV()` so watch events carry previous values for state-transition detection
+- [x] EventProjector from committed state — watches 4 store prefixes (observed/instance, observed/node, placement/instance, effective/service), classifies state transitions into semantic events using Prev field, replaces old `emitEventsForChanges` approach
+- [x] `mergeWatchChannels` — goroutine-per-channel fan-in pattern (no busy-poll), output channel closed when all inputs close
+- [x] Init runtime isolation — `Runtime.ExecInit(ctx, image, ExecSpec)` routes init commands through the runtime abstraction; container runtime uses `nerdctl run --rm`, process runtime uses host exec, simulator records calls
+- [x] Multi-port endpoint model — `extractServiceExposedPorts` returns `map[string][]int`, `KeyEndpoint` takes port parameter, endpoint key is `endpoint/service/{svc}/{instance}/{port}`, one endpoint per port per instance
+- [x] Agent sub-reconciler extraction — `executeReconciliationCycle` reduced from 70+ lines to orchestration-only loop; per-instance startup logic extracted to `reconcileDesiredInstance`, teardown to `cleanupUndesiredInstance`
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1480,5 +1483,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M31 — API HA | 34 | Multiple stateless API replicas behind load balancer, controllers leader-elected separately |
 | M31a — Correctness II | 35a | Transaction snapshot CAS, derived/ prefix, init dual authority resolved, etcd Put simplified |
 | M32 — Cloud Controller | 35 | `cca server --cloud-provider aws` manages node lifecycle, `expose external 443 http` creates cloud LBs, VPC routes auto-programmed |
+| M33 — Correctness III | 36 | etcd WithPrevKV, EventProjector from committed state, ExecInit runtime isolation, multi-port endpoints, agent sub-reconciler extraction |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

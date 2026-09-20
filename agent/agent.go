@@ -208,105 +208,26 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runningByID[runtimeStatus.ID] = runtimeStatus
 	}
 
-	// Start instances that should be running but aren't.
+	// Reconcile each desired instance: start missing, observe running.
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
-
 		if !exists || !runtimeStatus.Running {
-			// Run init steps before starting the main workload.
-			if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
-				initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo)
-				if !initSucceeded {
-					logging.Default().Warn("init failed, skipping workload start", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
-					delete(runningByID, instanceInfo.id)
-					continue
-				}
-			}
-
-			// Check volume readiness before starting.
-			if nodeAgent.storageProvider != nil {
-				volumesReady, attachErr := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)
-				if attachErr != nil {
-					logging.Default().Error("volume error", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", attachErr.Error())
-				}
-				if !volumesReady {
-					delete(runningByID, instanceInfo.id)
-					continue
-				}
-			}
-
-			image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
-			if image == "" {
-				continue
-			}
-			if nodeAgent.secretProvider != nil {
-				materialized := nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
-				nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
-			}
-			envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
-			configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
-			exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
-			allocatedIP := ""
-			if nodeAgent.networkProvider != nil {
-				ip, allocErr := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceInfo.id)
-				if allocErr != nil {
-					logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", allocErr.Error())
-				} else {
-					allocatedIP = ip
-				}
-			}
-			if err := nodeAgent.runtime.Start(ctx, runtime.Spec{
-				ID:          instanceInfo.id,
-				ServiceName: instanceInfo.service,
-				Image:       image,
-				Env:         envVars,
-				ConfigFiles: configFiles,
-				Ports:       exposedPorts,
-				IP:          allocatedIP,
-			}); err != nil {
-				logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", err.Error())
-				if nodeAgent.secretProvider != nil {
-					nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
-				}
-				nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
-				nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
-				continue
-			}
-			if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
-				hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
-				nodeAgent.publishInstanceHostPort(ctx, instanceInfo.id, hostPort)
-			}
-			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
-			nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
+			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
 		} else {
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 		}
-
 		delete(runningByID, instanceInfo.id)
 	}
 
-	// Refresh any materialized secrets (handles rotation without restart).
 	if nodeAgent.secretProvider != nil && len(nodeAgent.materializedSecrets) > 0 {
 		nodeAgent.refreshMaterializedSecrets(ctx)
 	}
 
-	// Stop processes that shouldn't be running (no longer placed here).
+	// Clean up stale instances no longer placed on this node.
 	for instanceID, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
-			if nodeAgent.secretProvider != nil {
-				nodeAgent.cleanupSecretsForInstance(instanceID)
-			}
-			if nodeAgent.storageProvider != nil {
-				nodeAgent.detachVolumesForInstance(ctx, instanceID)
-			}
-			nodeAgent.runtime.Stop(ctx, instanceID)
-			nodeAgent.cleanupProbeState(instanceID)
-			if nodeAgent.networkProvider != nil {
-				nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
-				types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)
-			}
+			nodeAgent.cleanupUndesiredInstance(ctx, instanceID)
 		}
 	}
 
@@ -356,6 +277,101 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 		})
 	}
 	return result, nil
+}
+
+// reconcileDesiredInstance brings up a single instance that should be running
+// but isn't. Handles init steps, volume attachment, secret materialization,
+// config/env resolution, network allocation, container start, host port
+// publishing, and state observation. If any prerequisite fails (image lookup,
+// init, volumes), the instance is skipped for this cycle.
+func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) {
+	image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
+	if image == "" {
+		return
+	}
+
+	if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
+		initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo, image)
+		if !initSucceeded {
+			logging.Default().Warn("init failed, skipping workload start", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
+			return
+		}
+	}
+
+	if nodeAgent.storageProvider != nil {
+		volumesReady, attachError := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)
+		if attachError != nil {
+			logging.Default().Error("volume error", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", attachError.Error())
+		}
+		if !volumesReady {
+			return
+		}
+	}
+
+	if nodeAgent.secretProvider != nil {
+		materialized := nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
+		nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
+	}
+
+	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
+	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
+	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
+
+	allocatedIP := ""
+	if nodeAgent.networkProvider != nil {
+		networkIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceInfo.id)
+		if allocateError != nil {
+			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", allocateError.Error())
+		} else {
+			allocatedIP = networkIP
+		}
+	}
+
+	if startError := nodeAgent.runtime.Start(ctx, runtime.Spec{
+		ID:          instanceInfo.id,
+		ServiceName: instanceInfo.service,
+		Image:       image,
+		Env:         envVars,
+		ConfigFiles: configFiles,
+		Ports:       exposedPorts,
+		IP:          allocatedIP,
+	}); startError != nil {
+		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
+		if nodeAgent.secretProvider != nil {
+			nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
+		}
+		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
+		nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
+		return
+	}
+
+	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
+		hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
+		nodeAgent.publishInstanceHostPort(ctx, instanceInfo.id, hostPort)
+	}
+
+	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
+	nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
+}
+
+// cleanupUndesiredInstance tears down an instance that is no longer placed on
+// this node. Cleans up secrets, detaches volumes, stops the runtime process,
+// removes probe state, releases the network IP, and deletes the network
+// allocation fact.
+func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID string) {
+	if nodeAgent.secretProvider != nil {
+		nodeAgent.cleanupSecretsForInstance(instanceID)
+	}
+	if nodeAgent.storageProvider != nil {
+		nodeAgent.detachVolumesForInstance(ctx, instanceID)
+	}
+	nodeAgent.runtime.Stop(ctx, instanceID)
+	nodeAgent.cleanupProbeState(instanceID)
+	if nodeAgent.networkProvider != nil {
+		nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
+		types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)
+	}
 }
 
 // lookupServiceImageFromStore retrieves the container image reference for the

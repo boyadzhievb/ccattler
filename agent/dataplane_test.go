@@ -26,10 +26,10 @@ func TestDataPlaneReconcilesBuildVIPConfigsFromStore(t *testing.T) {
 		Service: "web", VIP: "10.200.0.1", Port: 80,
 	})
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "instance-aaa"), []byte("10.100.1.2:80"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "instance-aaa", 80), []byte("10.100.1.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-aaa"), []byte("node-1"))
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "instance-bbb"), []byte("10.100.2.2:80"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "instance-bbb", 80), []byte("10.100.2.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-bbb"), []byte("node-2"))
 	factStore.Put(ctx, types.KeyObservedNodeAddress("node-2"), []byte("192.168.100.215"))
 	factStore.Put(ctx, types.KeyObservedInstanceHostPort("instance-bbb"), []byte("80"))
@@ -118,7 +118,7 @@ func TestDataPlaneRemoteBackendFallsBackToContainerIP(t *testing.T) {
 		Service: "web", VIP: "10.200.0.1", Port: 80,
 	})
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "instance-ccc"), []byte("10.100.3.2:80"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "instance-ccc", 80), []byte("10.100.3.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-ccc"), []byte("node-3"))
 
 	nodeAgent.reconcileDataPlane(ctx)
@@ -153,10 +153,10 @@ func TestDataPlaneMultipleServices(t *testing.T) {
 		Service: "redis", VIP: "10.200.0.2", Port: 6379,
 	})
 
-	factStore.Put(ctx, types.KeyEndpoint("web", "w1"), []byte("10.100.1.2:80"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "w1", 80), []byte("10.100.1.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("w1"), []byte("node-1"))
 
-	factStore.Put(ctx, types.KeyEndpoint("redis", "r1"), []byte("10.100.1.3:6379"))
+	factStore.Put(ctx, types.KeyEndpoint("redis", "r1", 6379), []byte("10.100.1.3:6379"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("r1"), []byte("node-1"))
 
 	nodeAgent.reconcileDataPlane(ctx)

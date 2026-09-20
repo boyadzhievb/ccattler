@@ -31,7 +31,7 @@ func helperSetupServiceWithEndpoints(ctx context.Context, factStore store.StateS
 	for endpointIndex := 0; endpointIndex < endpointCount; endpointIndex++ {
 		instanceID := serviceName + "-" + strconv.Itoa(endpointIndex)
 		ipAddress := "10.100.1." + strconv.Itoa(endpointIndex+2)
-		factStore.Put(ctx, types.KeyEndpoint(serviceName, instanceID),
+		factStore.Put(ctx, types.KeyEndpoint(serviceName, instanceID, port),
 			[]byte(ipAddress+":"+strconv.Itoa(port)))
 	}
 }
@@ -157,7 +157,7 @@ func TestNetworkControllerNoVIPWithoutExposedPort(t *testing.T) {
 	ctx := context.Background()
 
 	// Endpoint exists but service has no expose config.
-	factStore.Put(ctx, types.KeyEndpoint("web", "aaa"), []byte("10.100.1.2:8080"))
+	factStore.Put(ctx, types.KeyEndpoint("web", "aaa", 8080), []byte("10.100.1.2:8080"))
 
 	networkController := NewNetworkController()
 	changes, _ := helperReconcileNetworkController(ctx, factStore, networkController)
@@ -187,8 +187,8 @@ func TestNetworkControllerRemovesVIPWhenEndpointsDisappear(t *testing.T) {
 	}
 
 	// Remove all endpoints.
-	factStore.Delete(ctx, types.KeyEndpoint("web", "web-0"))
-	factStore.Delete(ctx, types.KeyEndpoint("web", "web-1"))
+	factStore.Delete(ctx, types.KeyEndpoint("web", "web-0", 8080))
+	factStore.Delete(ctx, types.KeyEndpoint("web", "web-1", 8080))
 
 	// Reconcile again — should produce delete changes.
 	changes, _ = helperReconcileNetworkController(ctx, factStore, networkController)
