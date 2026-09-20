@@ -55,47 +55,64 @@ func (lifecycle *TenantLifecycle) CreateTenant(ctx context.Context, tenantName s
 
 	result := &ProvisionedTenant{Name: tenantName, State: TenantActive}
 
-	// Core tenant marker.
-	lifecycle.factStore.Put(ctx, types.KeyDesiredTenant(tenantName), []byte(""))
-	lifecycle.factStore.Put(ctx, types.KeyDesiredTenantState(tenantName), []byte(string(TenantActive)))
+	if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenant(tenantName), []byte("")); putError != nil {
+		return nil, fmt.Errorf("creating tenant marker: %w", putError)
+	}
+	if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantState(tenantName), []byte(string(TenantActive))); putError != nil {
+		return nil, fmt.Errorf("setting tenant state: %w", putError)
+	}
 
-	// Quota boundaries.
 	if quota != nil {
 		if quota.CPU > 0 {
-			lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaCPU(tenantName), []byte(fmt.Sprintf("%d", quota.CPU)))
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaCPU(tenantName), []byte(fmt.Sprintf("%d", quota.CPU))); putError != nil {
+				return nil, fmt.Errorf("setting tenant CPU quota: %w", putError)
+			}
 		}
 		if quota.Memory != "" {
-			lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaMemory(tenantName), []byte(quota.Memory))
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaMemory(tenantName), []byte(quota.Memory)); putError != nil {
+				return nil, fmt.Errorf("setting tenant memory quota: %w", putError)
+			}
 		}
 		if quota.Instances > 0 {
-			lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaInstances(tenantName), []byte(fmt.Sprintf("%d", quota.Instances)))
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaInstances(tenantName), []byte(fmt.Sprintf("%d", quota.Instances))); putError != nil {
+				return nil, fmt.Errorf("setting tenant instances quota: %w", putError)
+			}
 		}
 		if quota.Volumes > 0 {
-			lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName), []byte(fmt.Sprintf("%d", quota.Volumes)))
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName), []byte(fmt.Sprintf("%d", quota.Volumes))); putError != nil {
+				return nil, fmt.Errorf("setting tenant volumes quota: %w", putError)
+			}
 		}
 		if quota.Storage != "" {
-			lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaStorage(tenantName), []byte(quota.Storage))
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaStorage(tenantName), []byte(quota.Storage)); putError != nil {
+				return nil, fmt.Errorf("setting tenant storage quota: %w", putError)
+			}
 		}
 		result.QuotaProvisioned = true
 	}
 
 	if weight > 0 {
-		lifecycle.factStore.Put(ctx, types.KeyDesiredTenantWeight(tenantName), []byte(fmt.Sprintf("%d", weight)))
+		if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantWeight(tenantName), []byte(fmt.Sprintf("%d", weight))); putError != nil {
+			return nil, fmt.Errorf("setting tenant weight: %w", putError)
+		}
 	}
 
-	// Network isolation boundary marker.
 	networkBoundaryKey := fmt.Sprintf("tenant/%s/network/boundary", tenantName)
-	lifecycle.factStore.Put(ctx, networkBoundaryKey, []byte("isolated"))
+	if _, putError := lifecycle.factStore.Put(ctx, networkBoundaryKey, []byte("isolated")); putError != nil {
+		return nil, fmt.Errorf("setting network boundary: %w", putError)
+	}
 	result.NetworkBoundary = true
 
-	// Secret namespace reservation.
 	secretSpaceKey := fmt.Sprintf("tenant/%s/secrets/namespace", tenantName)
-	lifecycle.factStore.Put(ctx, secretSpaceKey, []byte("reserved"))
+	if _, putError := lifecycle.factStore.Put(ctx, secretSpaceKey, []byte("reserved")); putError != nil {
+		return nil, fmt.Errorf("reserving secret space: %w", putError)
+	}
 	result.SecretSpace = true
 
-	// Audit stream marker.
 	auditStreamKey := fmt.Sprintf("tenant/%s/audit/stream", tenantName)
-	lifecycle.factStore.Put(ctx, auditStreamKey, []byte("active"))
+	if _, putError := lifecycle.factStore.Put(ctx, auditStreamKey, []byte("active")); putError != nil {
+		return nil, fmt.Errorf("creating audit stream: %w", putError)
+	}
 	result.AuditStream = true
 
 	return result, nil

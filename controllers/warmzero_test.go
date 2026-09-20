@@ -224,3 +224,90 @@ func TestWarmZeroActiveWithinIdleTimeoutNoChange(t *testing.T) {
 		t.Errorf("expected no changes when within idle timeout, got %d", len(changes))
 	}
 }
+
+func TestWarmZeroInactiveToActiveWhenEndpointsAppear(t *testing.T) {
+	frozenTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	controller := &WarmZeroController{timeNow: func() time.Time { return frozenTime }}
+
+	facts := buildWarmZeroFacts("api", "inactive", 1, 1, 0, "5m")
+
+	changes, reconcileError := controller.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "active" {
+		t.Errorf("expected state 'active', got %q", string(changes[0].Value))
+	}
+}
+
+func TestWarmZeroMultipleServicesIndependent(t *testing.T) {
+	frozenTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	lastRequestTime := frozenTime.Add(-10 * time.Minute)
+	controller := &WarmZeroController{timeNow: func() time.Time { return frozenTime }}
+
+	var facts []store.Fact
+
+	facts = append(facts, buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "5m")...)
+	facts = append(facts, buildWarmZeroFacts("web", "activating", 1, 1, 0, "5m")...)
+
+	changes, reconcileError := controller.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 changes (one per service), got %d", len(changes))
+	}
+
+	changeMap := make(map[string]string)
+	for _, change := range changes {
+		changeMap[change.Key] = string(change.Value)
+	}
+
+	apiState := changeMap[types.KeyDerivedServiceActivationState("api")]
+	if apiState != "inactive" {
+		t.Errorf("api should be 'inactive' (idle timeout), got %q", apiState)
+	}
+
+	webState := changeMap[types.KeyDerivedServiceActivationState("web")]
+	if webState != "active" {
+		t.Errorf("web should be 'active' (endpoints appeared), got %q", webState)
+	}
+}
+
+func TestWarmZeroUnknownStateNoChange(t *testing.T) {
+	frozenTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	controller := &WarmZeroController{timeNow: func() time.Time { return frozenTime }}
+
+	facts := buildWarmZeroFacts("api", "bogus-state", 1, 1, 0, "5m")
+
+	changes, reconcileError := controller.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(changes) != 0 {
+		t.Errorf("expected no changes for unknown state, got %d", len(changes))
+	}
+}
+
+func TestWarmZeroIdleTimeoutZeroMeansNoScaleDown(t *testing.T) {
+	frozenTime := time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+	lastRequestTime := frozenTime.Add(-1 * time.Hour)
+	controller := &WarmZeroController{timeNow: func() time.Time { return frozenTime }}
+
+	facts := buildWarmZeroFacts("api", "active", 2, 2, lastRequestTime.UnixMilli(), "invalid-value")
+
+	changes, reconcileError := controller.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(changes) != 0 {
+		t.Errorf("expected no changes when idle timeout is 0 (unparseable), got %d", len(changes))
+	}
+}

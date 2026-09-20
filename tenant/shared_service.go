@@ -57,9 +57,14 @@ func (manager *SharedServiceManager) ExportService(ctx context.Context, serviceN
 
 // UnexportService removes a shared service export and all its allow entries.
 func (manager *SharedServiceManager) UnexportService(ctx context.Context, serviceName string) error {
-	allowFacts, _ := manager.factStore.Scan(ctx, types.ScanExportServiceAllowTenants(serviceName))
+	allowFacts, scanError := manager.factStore.Scan(ctx, types.ScanExportServiceAllowTenants(serviceName))
+	if scanError != nil {
+		return fmt.Errorf("scanning allow entries for %s: %w", serviceName, scanError)
+	}
 	for _, fact := range allowFacts {
-		manager.factStore.Delete(ctx, fact.Key)
+		if deleteError := manager.factStore.Delete(ctx, fact.Key); deleteError != nil {
+			return fmt.Errorf("deleting allow entry %s: %w", fact.Key, deleteError)
+		}
 	}
 	return manager.factStore.Delete(ctx, types.KeyExportService(serviceName))
 }
