@@ -199,6 +199,9 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 					if watchEvent.Type == store.EventOverflow {
 						logging.Default().Warn("watch events dropped, triggering resync", "controller", controllerName)
 					}
+					if watchEvent.Type == store.EventCompacted {
+						logging.Default().Warn("watch revision compacted, triggering resync", "controller", controllerName)
+					}
 					select {
 					case reconcileTrigger <- struct{}{}:
 					default:

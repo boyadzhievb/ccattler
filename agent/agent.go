@@ -148,6 +148,9 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			if watchEvent.Type == store.EventOverflow {
 				logging.Default().Warn("watch events dropped, triggering full resync", "agent", nodeAgent.nodeID)
 			}
+			if watchEvent.Type == store.EventCompacted {
+				logging.Default().Warn("watch revision compacted, triggering full resync", "agent", nodeAgent.nodeID)
+			}
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
