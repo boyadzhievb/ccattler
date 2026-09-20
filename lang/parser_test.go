@@ -943,3 +943,48 @@ func TestParseExposeAndExposeExternal(t *testing.T) {
 		t.Errorf("expected external port 443, got %v", serviceDecl.ExternalPorts)
 	}
 }
+
+func TestParseWarmZeroDSL(t *testing.T) {
+	source := `
+service api {
+    image myapi:v3
+    expose 8080
+    scale {
+        horizontal {
+            min 0
+            max 10
+            target cpu = 60%
+            idle_timeout 5m
+            activation_timeout 60s
+        }
+    }
+}
+`
+	file, parseError := Parse(source)
+	if parseError != nil {
+		t.Fatalf("parse error: %v", parseError)
+	}
+
+	if len(file.Services) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(file.Services))
+	}
+
+	serviceDecl := file.Services[0]
+	if serviceDecl.Scale == nil || serviceDecl.Scale.Horizontal == nil {
+		t.Fatal("expected horizontal scale block")
+	}
+
+	horizontal := serviceDecl.Scale.Horizontal
+	if horizontal.Min != 0 {
+		t.Errorf("expected min=0, got %d", horizontal.Min)
+	}
+	if horizontal.Max != 10 {
+		t.Errorf("expected max=10, got %d", horizontal.Max)
+	}
+	if horizontal.IdleTimeout != "5m" {
+		t.Errorf("expected idle_timeout '5m', got %q", horizontal.IdleTimeout)
+	}
+	if horizontal.ActivationTimeout != "60s" {
+		t.Errorf("expected activation_timeout '60s', got %q", horizontal.ActivationTimeout)
+	}
+}

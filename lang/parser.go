@@ -469,6 +469,20 @@ func (parser *Parser) parseHorizontalScaleBlock() (*HorizontalScaleDecl, error) 
 			horizontalDecl.Schedule, err = parser.parseScheduleBlock()
 		case "stabilization":
 			horizontalDecl.Stabilization, err = parser.parseStabilizationBlock()
+		case "idle_timeout":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected duration for idle_timeout, got %s", token.Type)
+			}
+			horizontalDecl.IdleTimeout = token.Value
+			parser.advanceToken()
+		case "activation_timeout":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected duration for activation_timeout, got %s", token.Type)
+			}
+			horizontalDecl.ActivationTimeout = token.Value
+			parser.advanceToken()
 		default:
 			return nil, parser.parserErrorf("unknown horizontal scale field %q", key)
 		}

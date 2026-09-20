@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M35 — Project Hardening (Phase 38). M1–M35 complete. All architecture debt resolved.
+**Completed through:** M36 — Scale-to-Zero (Phase 39). M1–M36 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1462,6 +1462,19 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Cloud package tests — simulator terminate-nonexistent, LB backend updates, route idempotency, GCP/Azure full stub verification
 - [x] Fuzz testing — `FuzzParse` and `FuzzLexer` with seed corpus covering all DSL constructs
 - [x] Structured error types — `CCattlerError` with `ErrorCode` (not_found, already_exists, conflict, invalid_input, unauthorized, forbidden, quota_exceeded, internal, unavailable), `IsErrorCode()` helper
+
+### Phase 39 — Scale-to-Zero (Warm-Zero)
+- [x] DSL `idle_timeout` and `activation_timeout` keywords in horizontal scale block — parser, AST fields, compiler emits facts
+- [x] Fact keys — `KeyDesiredServiceScaleIdleTimeout`, `KeyDesiredServiceScaleActivationTimeout`, `KeyObservedServiceLastRequestTime`, `KeyDerivedServiceActivationState`
+- [x] `WarmZeroController` — watches desired/observed/derived services + instances + endpoints, manages activation state machine (inactive → activating → active → inactive)
+- [x] Idle timeout detection — controller transitions active → inactive when `now - last_request_time > idle_timeout`
+- [x] Autoscale activation override — `AutoscaleController` watches `ScanDerivedServices`, overrides recommendation to 1 when service is `activating` with recommendation=0
+- [x] Proxy cold activation — `UserSpaceProxy` detects warm-zero services (idle_timeout fact present), writes `activating` state, polls for endpoints with 500ms interval, forwards on ready
+- [x] Concurrent activation — per-service `activationChannel` (chan struct{}) shared across goroutines, closed once endpoints appear, all waiting requests unblock simultaneously
+- [x] Last request time tracking — proxy writes `observed/service/{name}/last_request_time` as Unix millis, throttled to 1 write/sec per service
+- [x] Activation timeout — configurable per service (default 30s), proxy returns 503 when exceeded
+- [x] Activation webhook — `POST /api/activate?service={name}` writes activation state for non-HTTP triggers (CI, cron, queue consumers)
+- [x] Controller wired into all runner creation sites (server, run, run-container)
 
 ### Milestones
 

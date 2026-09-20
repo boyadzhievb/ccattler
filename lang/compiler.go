@@ -302,6 +302,16 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 				})
 			}
 		}
+		if horizontal.IdleTimeout != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServiceScaleIdleTimeout(serviceDecl.Name), Value: horizontal.IdleTimeout,
+			})
+		}
+		if horizontal.ActivationTimeout != "" {
+			facts = append(facts, Fact{
+				Key: types.KeyDesiredServiceScaleActivationTimeout(serviceDecl.Name), Value: horizontal.ActivationTimeout,
+			})
+		}
 	}
 
 	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
