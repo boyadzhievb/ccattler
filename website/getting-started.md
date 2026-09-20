@@ -1,24 +1,24 @@
 # Getting Started
 
-This guide takes you from zero to running real containers in under five minutes.
+This guide takes you from zero to a running deployment in under five minutes.
 
 ## Three runtime modes
 
 CCattler has three ways to run workloads — understanding this upfront avoids confusion:
 
-| Command | Runtime | What happens |
-|---|---|---|
-| `cca apply` / `cca demo` | **Simulator** | Shows the reconciliation loop in action — no real processes or containers start. Useful for learning how CCattler works. |
-| `cca run` | **Process** | Starts real OS processes on your machine, managed by the reconciler. No containerd needed. |
-| `cca run-container` | **Container** | Pulls images and starts real OCI containers via nerdctl/containerd. This is what you use in production. |
+| Command | Runtime | What happens | Platform |
+|---|---|---|---|
+| `cca apply` / `cca demo` | **Simulator** | Shows the reconciliation loop in action — no real processes or containers start. | Linux, macOS |
+| `cca run` | **Process** | Starts real OS processes on your machine, managed by the reconciler. The `image` field is used as the command to execute. | Linux, macOS |
+| `cca run-container` | **Container** | Pulls images and starts real OCI containers via nerdctl/containerd. This is what you use in production. | Linux only |
 
-If you just want to see CCattler deploy real containers, skip to [Run real containers](#run-real-containers) after installing.
+**On macOS:** Start with `cca apply` (simulation) or `cca run` (local processes). Container mode requires Linux with nerdctl/containerd.
 
 ## Prerequisites
 
 - **Linux or macOS** (amd64 or arm64)
 - **Go 1.22+** (if building from source) or `curl` (if downloading binary)
-- **containerd + nerdctl** (for `cca run-container` — not needed for simulation or process mode). Docker Desktop includes containerd; standalone containerd + nerdctl also works.
+- **containerd + nerdctl** (Linux only, for `cca run-container` — not needed for simulation or process mode)
 
 ## Install
 
@@ -28,7 +28,7 @@ If you just want to see CCattler deploy real containers, skip to [Run real conta
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
 ```
 
-This downloads the `cca` binary to `/usr/local/bin`.
+This detects your OS and architecture, downloads the right binary, and installs it to `/usr/local/bin`. Works on Linux and macOS (Intel and Apple Silicon).
 
 ### Build from source
 
@@ -43,12 +43,11 @@ sudo mv cca /usr/local/bin/
 
 ```bash
 cca version
-# cca v0.38.0
 ```
 
 ## Run the built-in demo
 
-The fastest way to see CCattler in action — no cluster needed:
+The fastest way to see CCattler in action — no cluster needed, works on any platform:
 
 ```bash
 cca demo
@@ -74,9 +73,17 @@ service web {
 
 This declares a service named `web` running 3 instances of `nginx:1.28`, each consuming 500m CPU and 512Mi memory, with port 8080 exposed.
 
-## Run real containers
+### Simulate it
 
-This is the command you'll use in practice — it pulls the nginx image and starts real OCI containers via nerdctl/containerd:
+```bash
+cca apply web.ccattler
+```
+
+Runs the reconciliation loop and shows the resulting state — nothing actually starts. This works on any platform and is the quickest way to verify your config.
+
+## Run real containers (Linux)
+
+On Linux with nerdctl/containerd installed, this pulls the nginx image and starts real OCI containers:
 
 ```bash
 cca run-container web.ccattler
@@ -88,27 +95,33 @@ Add `--watch` for live status updates:
 cca run-container --watch web.ccattler
 ```
 
-::: tip
-`cca run-container` requires containerd and nerdctl (included with Docker Desktop, or installable standalone). If you don't have containerd, use `cca run` to start real OS processes instead, or `cca apply` for simulation mode.
+::: warning macOS
+`cca run-container` requires nerdctl and containerd, which are Linux-only. On macOS, use `cca apply` for simulation or `cca run` with a local executable.
 :::
 
-## Other runtime modes
+## Run local processes (any platform)
 
-### Simulation (no containers, no processes)
+`cca run` starts real OS processes — the `image` field is used as the command to execute, not as a container image. This is useful for development without containerd.
 
-```bash
-cca apply web.ccattler
+Create `server.ccattler`:
+
+```hcl
+service server {
+    image "python3 -m http.server 8080"
+    instances 2
+    expose 8080
+}
 ```
 
-Parses the config, runs the reconciliation loop, and shows the resulting state — nothing actually starts. Useful for understanding the state model.
-
-### OS processes (no containerd needed)
-
 ```bash
-cca run web.ccattler
+cca run server.ccattler
 ```
 
-Starts actual OS processes managed by the reconciler.
+This starts 2 instances of `python3 -m http.server 8080` as OS processes, managed by the reconciler.
+
+::: tip
+For `cca run`, the `image` field is the command that gets executed. Use a command available in your `$PATH`. If you accidentally use a container image name like `nginx:1.28`, cca will tell you to use `cca run-container` instead.
+:::
 
 ## Explore
 
