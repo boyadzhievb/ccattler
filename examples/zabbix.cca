@@ -3,7 +3,7 @@
 # Deploys the three core Zabbix components as real Docker containers
 # with DNS-based service discovery via Docker network aliases.
 #
-# Run with:  cca run-container examples/zabbix.ccattler
+# Run with:  cca run-container examples/zabbix.cca
 #
 # After startup, access Zabbix web UI at http://localhost:8080
 # Default credentials: Admin / zabbix

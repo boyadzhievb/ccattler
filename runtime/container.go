@@ -12,9 +12,9 @@ import (
 	"sync"
 )
 
-// ContainerRuntime runs workloads as OCI containers via the nerdctl CLI.
+// ContainerRuntime runs workloads as OCI containers via the nerdctl or docker CLI.
 // Spec.Image is the OCI image reference (e.g., "nginx:1.28"). Resource limits
-// (CPU millicores and memory bytes) are translated to nerdctl --cpus and --memory
+// (CPU millicores and memory bytes) are translated to --cpus and --memory
 // flags when provided. When a network name and subnet are configured via
 // SetNetwork, containers with an allocated IP are started on that network.
 // Config files specified in Spec.ConfigFiles are materialized to a temporary
@@ -22,17 +22,45 @@ import (
 type ContainerRuntime struct {
 	mutex                    sync.Mutex        // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
 	trackedContainers        map[string]bool   // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
-	containerNames           map[string]string // containerNames maps workload IDs to their nerdctl container names.
+	containerNames           map[string]string // containerNames maps workload IDs to their container names.
 	allocatedHostPorts       map[int]int       // allocatedHostPorts tracks the next host port offset per container port.
 	instanceHostPorts        map[string]int    // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
 	configFileTempDirectories map[string]string // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
-	networkName              string            // networkName is the nerdctl network to connect containers to for IP assignment.
-	networkCIDR              string            // networkCIDR is the subnet CIDR for the nerdctl network (e.g. "10.100.0.0/16").
-	networkReady             bool              // networkReady is true once the nerdctl network has been verified or created.
+	networkName              string            // networkName is the container network to connect containers to for IP assignment.
+	networkCIDR              string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
+	networkReady             bool              // networkReady is true once the container network has been verified or created.
+	containerCommand         string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
+}
+
+// detectContainerCommand returns the first available container CLI. Checks in
+// order: nerdctl (Linux), docker (Linux/macOS via Docker Desktop), lima (macOS
+// with Lima+nerdctl). Returns "docker" as default if none found (will fail at
+// runtime with a clear error).
+func detectContainerCommand() string {
+	if _, lookupError := exec.LookPath("nerdctl"); lookupError == nil {
+		return "nerdctl"
+	}
+	if _, lookupError := exec.LookPath("docker"); lookupError == nil {
+		return "docker"
+	}
+	if _, lookupError := exec.LookPath("lima"); lookupError == nil {
+		return "lima"
+	}
+	return "docker"
+}
+
+// buildExecCommand creates an exec.Cmd for the detected container CLI. When
+// the container command is "lima", it wraps the call as "lima nerdctl <args>".
+func (containerRuntime *ContainerRuntime) buildExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+	if containerRuntime.containerCommand == "lima" {
+		limaArgs := append([]string{"nerdctl"}, args...)
+		return exec.CommandContext(ctx, "lima", limaArgs...)
+	}
+	return exec.CommandContext(ctx, containerRuntime.containerCommand, args...)
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
-// registry, ready to manage nerdctl containers.
+// registry. Automatically detects whether to use nerdctl or docker.
 func NewContainerRuntime() *ContainerRuntime {
 	return &ContainerRuntime{
 		trackedContainers:         make(map[string]bool),
@@ -40,10 +68,11 @@ func NewContainerRuntime() *ContainerRuntime {
 		allocatedHostPorts:        make(map[int]int),
 		instanceHostPorts:         make(map[string]int),
 		configFileTempDirectories: make(map[string]string),
+		containerCommand:          detectContainerCommand(),
 	}
 }
 
-// SetNetwork configures the runtime to create and use a nerdctl network
+// SetNetwork configures the runtime to create and use a container network
 // with the given name and subnet CIDR. Containers started with a Spec.IP will
 // be connected to this network with the specified IP address.
 func (containerRuntime *ContainerRuntime) SetNetwork(networkName string, subnetCIDR string) {
@@ -59,14 +88,14 @@ func (containerRuntime *ContainerRuntime) ensureNetworkExists(ctx context.Contex
 		return nil
 	}
 
-	inspectCommand := exec.CommandContext(ctx, "nerdctl", "network", "inspect", containerRuntime.networkName)
+	inspectCommand := containerRuntime.buildExecCommand(ctx, "network", "inspect", containerRuntime.networkName)
 	if err := inspectCommand.Run(); err == nil {
 		containerRuntime.networkReady = true
 		return nil
 	}
 
 	var stderr bytes.Buffer
-	createCommand := exec.CommandContext(ctx, "nerdctl", "network", "create",
+	createCommand := containerRuntime.buildExecCommand(ctx, "network", "create",
 		"--driver", "bridge",
 		"--subnet", containerRuntime.networkCIDR,
 		containerRuntime.networkName)
@@ -184,7 +213,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 
 	args = append(args, spec.Image)
 
-	runCommand := exec.CommandContext(ctx, "nerdctl", args...)
+	runCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	runCommand.Stderr = &stderr
 	if err := runCommand.Run(); err != nil {
@@ -223,10 +252,10 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 	defer containerRuntime.mutex.Unlock()
 
 	containerName := containerRuntime.resolveContainerName(id)
-	stopCommand := exec.CommandContext(ctx, "nerdctl", "stop", "-t", "10", containerName)
+	stopCommand := containerRuntime.buildExecCommand(ctx, "stop", "-t", "10", containerName)
 	stopCommand.Run()
 
-	removeCommand := exec.CommandContext(ctx, "nerdctl", "rm", "-f", containerName)
+	removeCommand := containerRuntime.buildExecCommand(ctx, "rm", "-f", containerName)
 	removeCommand.Run()
 
 	if configTempDir, hasConfigFiles := containerRuntime.configFileTempDirectories[id]; hasConfigFiles {
@@ -247,7 +276,7 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	defer containerRuntime.mutex.Unlock()
 
 	containerName := containerRuntime.resolveContainerName(id)
-	inspectCommand := exec.CommandContext(ctx, "nerdctl", "inspect", "--format", "{{.State.Running}}", containerName)
+	inspectCommand := containerRuntime.buildExecCommand(ctx, "inspect", "--format", "{{.State.Running}}", containerName)
 	var inspectOutput bytes.Buffer
 	inspectCommand.Stdout = &inspectOutput
 	if err := inspectCommand.Run(); err != nil {
@@ -295,11 +324,11 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 	}
 
 	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
-	execCommand := exec.CommandContext(ctx, "nerdctl", args...)
+	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr
 	if err := execCommand.Run(); err != nil {
-		return fmt.Errorf("nerdctl exec in %s: %v: %s", id, err, stderr.String())
+		return fmt.Errorf("container exec in %s: %v: %s", id, err, stderr.String())
 	}
 	return nil
 }
@@ -308,11 +337,11 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 // from the given image, executing the command, and removing the container.
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
 	args := []string{"run", "--rm", image, "sh", "-c", execSpec.Command}
-	execCommand := exec.CommandContext(ctx, "nerdctl", args...)
+	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr
 	if err := execCommand.Run(); err != nil {
-		return fmt.Errorf("nerdctl run --rm init: %v: %s", err, stderr.String())
+		return fmt.Errorf("container run --rm init: %v: %s", err, stderr.String())
 	}
 	return nil
 }
@@ -330,8 +359,7 @@ func (containerRuntime *ContainerRuntime) Stats(ctx context.Context, id string) 
 		return ResourceStats{}, ErrNotFound
 	}
 
-	// nerdctl stats --no-stream --format '{{.CPUPerc}} {{.MemUsage}}' <name>
-	statsCommand := exec.CommandContext(ctx, "nerdctl", "stats", "--no-stream",
+	statsCommand := containerRuntime.buildExecCommand(ctx, "stats", "--no-stream",
 		"--format", "{{.CPUPerc}} {{.MemUsage}}", containerName)
 	var statsOutput bytes.Buffer
 	statsCommand.Stdout = &statsOutput
@@ -432,15 +460,15 @@ func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, f
 	}
 	logsArgs = append(logsArgs, containerName)
 
-	logsCommand := exec.CommandContext(ctx, "nerdctl", logsArgs...)
+	logsCommand := containerRuntime.buildExecCommand(ctx, logsArgs...)
 	stdoutPipe, pipeError := logsCommand.StdoutPipe()
 	if pipeError != nil {
-		return nil, fmt.Errorf("nerdctl logs pipe: %w", pipeError)
+		return nil, fmt.Errorf("container logs pipe: %w", pipeError)
 	}
 	logsCommand.Stderr = logsCommand.Stdout
 
 	if startError := logsCommand.Start(); startError != nil {
-		return nil, fmt.Errorf("nerdctl logs start: %w", startError)
+		return nil, fmt.Errorf("container logs start: %w", startError)
 	}
 
 	return &commandReadCloser{reader: stdoutPipe, command: logsCommand}, nil
@@ -486,7 +514,7 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 	containerRuntime.mutex.Unlock()
 
 	if containerRuntime.networkReady && containerRuntime.networkName != "" {
-		rmNetwork := exec.CommandContext(ctx, "nerdctl", "network", "rm", containerRuntime.networkName)
+		rmNetwork := containerRuntime.buildExecCommand(ctx, "network", "rm", containerRuntime.networkName)
 		rmNetwork.Run()
 	}
 }

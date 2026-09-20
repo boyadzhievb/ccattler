@@ -1,8 +1,8 @@
 # Basic service deployment.
 #
 # Demonstrates: single service, multiple instances, exposed port, resource constraints.
-# Run with:  cca apply examples/basic.ccattler
-#            cca run examples/basic.ccattler        (real OS processes)
+# Run with:  cca apply examples/basic.cca
+#            cca run examples/basic.cca        (real OS processes)
 #            cca demo                                (built-in simulated version)
 #
 # Expected: 3 instances of web running, each consuming 500m CPU and 512Mi memory.

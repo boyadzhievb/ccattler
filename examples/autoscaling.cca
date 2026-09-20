@@ -2,7 +2,7 @@
 #
 # Demonstrates: horizontal + event-driven scaling, scheduled minimums,
 #               stabilization windows, placement constraints, rolling updates.
-# Run with:  cca apply examples/autoscaling.ccattler
+# Run with:  cca apply examples/autoscaling.cca
 #
 # Expected: web scales 3–30 based on CPU, requests, and queue depth.
 #           Minimum 10 instances during weekday business hours.

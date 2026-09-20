@@ -181,7 +181,7 @@ func main() {
 // "run-container" commands, including the store backend selection, etcd
 // endpoint list, and key prefix for multi-cluster isolation.
 type runCommandConfig struct {
-	// configFilePath is the path to the .ccattler DSL file to apply.
+	// configFilePath is the path to the .cca DSL file to apply.
 	configFilePath string
 	// watchModeEnabled enables periodic status output when true.
 	watchModeEnabled bool
@@ -196,7 +196,7 @@ type runCommandConfig struct {
 // applyCommandConfig holds parsed flags for the "apply" command, which can
 // optionally connect to a remote store instead of running a local simulation.
 type applyCommandConfig struct {
-	// configFilePath is the path to the .ccattler DSL file to apply.
+	// configFilePath is the path to the .cca DSL file to apply.
 	configFilePath string
 	// storeBackend selects the state store implementation: "memory" or "etcd".
 	storeBackend string
@@ -3965,7 +3965,7 @@ func buildZshCompletionScript() string {
 	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
 	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
 	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
-	builder.WriteString("                '*:file:_files -g \"*.ccattler *.ccl\"'\n")
+	builder.WriteString("                '*:file:_files -g \"*.cca *.ccattler *.ccl\"'\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        run|run-container)\n")
 	builder.WriteString("            _arguments \\\n")
@@ -3973,7 +3973,7 @@ func buildZshCompletionScript() string {
 	builder.WriteString("                '--store[state store backend]:backend:(memory etcd)' \\\n")
 	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
 	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
-	builder.WriteString("                '*:file:_files -g \"*.ccattler *.ccl\"'\n")
+	builder.WriteString("                '*:file:_files -g \"*.cca *.ccattler *.ccl\"'\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        server)\n")
 	builder.WriteString("            _arguments \\\n")
