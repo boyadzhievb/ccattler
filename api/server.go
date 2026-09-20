@@ -164,6 +164,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/events/stream", apiServer.handleEventStream)
 	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
+	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
 	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
 }
@@ -845,6 +846,33 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 		"service": serviceName,
 		"metric":  metricName,
 		"value":   metricValue,
+	})
+}
+
+// handleActivate serves POST /api/activate?service={name} to manually trigger
+// activation for a warm-zero service. This enables non-HTTP activation signals
+// (webhooks, CI pipelines, cron jobs) to wake a scaled-to-zero service.
+func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	serviceName := request.URL.Query().Get("service")
+	if serviceName == "" {
+		http.Error(responseWriter, `{"error":"service parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	requestContext := request.Context()
+	activationKey := types.KeyDerivedServiceActivationState(serviceName)
+	apiServer.factStore.Put(requestContext, activationKey, []byte("activating"))
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(responseWriter).Encode(map[string]string{
+		"ok":      "true",
+		"service": serviceName,
+		"state":   "activating",
 	})
 }
 

@@ -54,6 +54,7 @@ func (autoscaleController *AutoscaleController) Watch() []string {
 		types.ScanObservedMetrics,
 		types.ScanObservedInstances,
 		types.ScanIntentAutoscalerServices,
+		types.ScanDerivedServices,
 	}
 }
 
@@ -81,6 +82,7 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 	verticalPolicies := extractVerticalPolicies(facts)
 	currentCPU := extractCurrentResources(facts, "cpu")
 	currentMemory := extractCurrentResources(facts, "memory")
+	activationStates := extractActivationStates(facts)
 
 	currentTime := autoscaleController.timeNow()
 	var changes []Change
@@ -139,6 +141,10 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 			serviceName, recommendation, activeInstanceCounts[serviceName],
 			stabilizationWindows[serviceName], currentTime,
 		)
+
+		if activationStates[serviceName] == "activating" && recommendation < 1 {
+			recommendation = 1
+		}
 
 		changes = append(changes, Change{
 			Type:  store.OpPut,

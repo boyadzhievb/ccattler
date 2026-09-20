@@ -87,12 +87,14 @@ type ScaleDecl struct {
 
 // HorizontalScaleDecl holds horizontal autoscaling bounds and target metrics.
 type HorizontalScaleDecl struct {
-	Min           int                // minimum instance count floor
-	Max           int                // maximum instance count ceiling
-	Targets       []ScaleTargetDecl  // metric thresholds that drive scaling decisions
-	Events        []EventScaleDecl   // event-driven scaling sources
-	Schedule      *ScheduleDecl      // optional time-based scaling minimum
-	Stabilization *StabilizationDecl // optional stabilization windows
+	Min               int                // minimum instance count floor (0 enables warm-zero)
+	Max               int                // maximum instance count ceiling
+	Targets           []ScaleTargetDecl  // metric thresholds that drive scaling decisions
+	Events            []EventScaleDecl   // event-driven scaling sources
+	Schedule          *ScheduleDecl      // optional time-based scaling minimum
+	Stabilization     *StabilizationDecl // optional stabilization windows
+	IdleTimeout       string             // warm-zero: idle duration before scale-to-zero (e.g. "5m")
+	ActivationTimeout string             // warm-zero: max cold-start wait for proxy (e.g. "60s")
 }
 
 // ScaleTargetDecl represents a single "target metric = value" entry in a

@@ -664,6 +664,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		intentResolverController := controllers.NewIntentResolverController()
 		rolloutController := controllers.NewRolloutController()
 		initController := controllers.NewInitController()
+		warmZeroController := controllers.NewWarmZeroController()
 
 		metricsCollector := controllers.NewMetricsCollector()
 
@@ -671,7 +672,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 			instanceController, schedulerController, endpointController,
 			failureController, nodeFailureController, networkController,
 			autoscaleController, intentResolverController, rolloutController,
-			initController,
+			initController, warmZeroController,
 		}
 
 		if parsedConfig.cloudProviderName != "" {
@@ -946,7 +947,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	if parsedConfig.proxyEnabled {
 		serviceResolver := network.NewStoreBackedResolver(factStore)
-		serviceProxy := network.NewUserSpaceProxy(serviceResolver, parsedConfig.proxyListenAddress)
+		serviceProxy := network.NewUserSpaceProxy(serviceResolver, parsedConfig.proxyListenAddress, factStore)
 		go func() {
 			if proxyStartError := serviceProxy.Start(ctx); proxyStartError != nil && ctx.Err() == nil {
 				fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
@@ -1449,10 +1450,11 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 	initController := controllers.NewInitController()
+	warmZeroController := controllers.NewWarmZeroController()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController, warmZeroController)
 	go controllerRunner.Run(ctx)
 
 	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
@@ -1509,11 +1511,12 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 	initController := controllers.NewInitController()
+	warmZeroController := controllers.NewWarmZeroController()
 
 	eventLog := types.NewEventLog(factStore, 1000)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, initController)
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, initController, warmZeroController)
 	controllerRunner.SetEventLog(eventLog)
 	go controllerRunner.Run(ctx)
 

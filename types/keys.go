@@ -400,6 +400,36 @@ func KeyDesiredServiceScaleStabilizationDown(name string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/stabilization/down", PrefixDesired, name)
 }
 
+// KeyDesiredServiceScaleIdleTimeout returns the store path for the warm-zero
+// idle timeout duration. When traffic is idle longer than this, the service
+// scales to zero instances.
+// Path: desired/service/{name}/scale/horizontal/idle_timeout
+func KeyDesiredServiceScaleIdleTimeout(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/idle_timeout", PrefixDesired, name)
+}
+
+// KeyDesiredServiceScaleActivationTimeout returns the store path for the
+// warm-zero activation timeout. This is the maximum time the proxy will wait
+// for a backend to become ready during cold activation.
+// Path: desired/service/{name}/scale/horizontal/activation_timeout
+func KeyDesiredServiceScaleActivationTimeout(name string) string {
+	return fmt.Sprintf("%s/service/%s/scale/horizontal/activation_timeout", PrefixDesired, name)
+}
+
+// KeyObservedServiceLastRequestTime returns the store path for the last time
+// the proxy forwarded a request to this service. Written as Unix milliseconds.
+// Path: observed/service/{name}/last_request_time
+func KeyObservedServiceLastRequestTime(name string) string {
+	return fmt.Sprintf("%s/service/%s/last_request_time", PrefixObserved, name)
+}
+
+// KeyDerivedServiceActivationState returns the store path for the warm-zero
+// activation state of a service: "inactive", "activating", or "active".
+// Path: derived/service/{name}/activation/state
+func KeyDerivedServiceActivationState(name string) string {
+	return fmt.Sprintf("%s/service/%s/activation/state", PrefixDerived, name)
+}
+
 // KeyDesiredServiceScaleVerticalCPUMin returns the store path for the minimum CPU
 // for vertical autoscaling.
 func KeyDesiredServiceScaleVerticalCPUMin(name string) string {
