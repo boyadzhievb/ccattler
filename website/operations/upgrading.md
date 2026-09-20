@@ -33,13 +33,13 @@ The agent re-registers with the control plane and resumes reporting observed sta
 
 ## Ansible upgrade
 
-If you deployed with Ansible, re-run the install script with the updated release:
+If you deployed with Ansible, re-run the deployment script with the updated release:
 
 ```bash
-curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+DEMO_MODE=inventory curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
 ```
 
-The Ansible playbook handles the upgrade across all nodes.
+This updates the local binary, downloads the latest playbooks, and re-deploys across all nodes in your inventory.
 
 ## Version compatibility
 

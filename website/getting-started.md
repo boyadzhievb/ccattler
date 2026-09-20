@@ -43,7 +43,7 @@ sudo mv cca /usr/local/bin/
 
 ```bash
 cca version
-# cca v0.20.1
+# cca v0.38.0
 ```
 
 ## Run the built-in demo

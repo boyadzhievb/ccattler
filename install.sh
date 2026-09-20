@@ -1,28 +1,58 @@
 #!/usr/bin/env bash
-# Deploy CCattler on existing hosts.
+# Install the CCattler CLI binary.
 #
 #   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
 #
-# Prerequisites: curl, tar, ansible
-# First run creates inventory.ini for you to edit. Second run deploys.
+# Detects OS and architecture, downloads the correct binary from GitHub
+# Releases, and installs it to /usr/local/bin/. That's it — no Ansible,
+# no deployment, no cluster setup.
+#
+# Environment variables:
+#   CCATTLER_VERSION   Pin a specific release (e.g. v0.38.0). Default: latest.
+#   INSTALL_PATH       Override install directory. Default: /usr/local/bin
 
 set -euo pipefail
 
 GITHUB_REPO="boyadzhievb/ccattler"
-INSTALL_DIR="${CCATTLER_HOME:-$HOME/.ccattler}"
-ANSIBLE_DIR="$INSTALL_DIR/ansible"
+INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin}"
 
 log_info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 log_ok()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 log_error() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; }
 
-for dependency in curl tar ansible-playbook; do
+# --- Detect OS ---
+detect_os() {
+    case "$(uname -s)" in
+        Linux*)  echo "linux" ;;
+        Darwin*) echo "darwin" ;;
+        *)
+            log_error "Unsupported OS: $(uname -s). CCattler supports Linux and macOS."
+            exit 1
+            ;;
+    esac
+}
+
+# --- Detect architecture ---
+detect_arch() {
+    case "$(uname -m)" in
+        x86_64|amd64)  echo "amd64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *)
+            log_error "Unsupported architecture: $(uname -m). CCattler supports amd64 and arm64."
+            exit 1
+            ;;
+    esac
+}
+
+# --- Check dependencies ---
+for dependency in curl tar; do
     if ! command -v "$dependency" >/dev/null; then
-        log_error "Missing: $dependency"
+        log_error "Missing required tool: $dependency"
         exit 1
     fi
 done
 
+# --- Resolve version ---
 if [ -n "${CCATTLER_VERSION:-}" ]; then
     version="$CCATTLER_VERSION"
 else
@@ -35,44 +65,29 @@ else
     fi
 fi
 
+operating_system=$(detect_os)
+architecture=$(detect_arch)
+
 release_url="https://github.com/${GITHUB_REPO}/releases/download/${version}"
-log_info "CCattler $version"
+archive_name="cca-${version}-${operating_system}-${architecture}.tar.gz"
 
-mkdir -p "$INSTALL_DIR"
-curl -fsSL "${release_url}/ccattler-deploy.tar.gz" -o /tmp/ccattler-deploy.tar.gz
-tar -xzf /tmp/ccattler-deploy.tar.gz -C "$INSTALL_DIR"
-rm -f /tmp/ccattler-deploy.tar.gz
+log_info "Installing CCattler $version (${operating_system}/${architecture})"
 
-curl -fsSL "${release_url}/cca-${version}-linux-amd64.tar.gz" -o /tmp/cca.tar.gz
-tar -xzf /tmp/cca.tar.gz -C "$ANSIBLE_DIR"
-mv "$ANSIBLE_DIR/cca" "$ANSIBLE_DIR/cca-linux-amd64"
-chmod +x "$ANSIBLE_DIR/cca-linux-amd64"
-rm -f /tmp/cca.tar.gz
+# --- Download and extract ---
+temp_dir=$(mktemp -d)
+trap 'rm -rf "$temp_dir"' EXIT
 
-log_ok "Downloaded to $INSTALL_DIR"
+curl -fsSL "${release_url}/${archive_name}" -o "${temp_dir}/${archive_name}"
+tar -xzf "${temp_dir}/${archive_name}" -C "$temp_dir"
 
-cd "$ANSIBLE_DIR"
-
-if [ ! -f inventory.ini ]; then
-    cp inventory.ini.template inventory.ini
-    log_info "Created $ANSIBLE_DIR/inventory.ini"
-    log_info "Edit it with your host details, then run this script again."
-    exit 0
+# --- Install binary ---
+if [ -w "$INSTALL_PATH" ]; then
+    mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
+else
+    log_info "Writing to ${INSTALL_PATH} requires elevated permissions."
+    sudo mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
 fi
+chmod +x "${INSTALL_PATH}/cca"
 
-log_info "Deploying CCattler..."
-python3 -c "
-import subprocess, sys, os
-proc = subprocess.Popen(
-    ['ansible-playbook', '-i', 'inventory.ini', 'site.yml'],
-    cwd='$ANSIBLE_DIR',
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.STDOUT
-)
-for line in proc.stdout:
-    sys.stdout.buffer.write(line)
-    sys.stdout.buffer.flush()
-sys.exit(proc.wait())
-"
-log_ok "CCattler deployed!"
+log_ok "Installed cca to ${INSTALL_PATH}/cca"
+log_info "Run 'cca version' to verify."

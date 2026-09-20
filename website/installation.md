@@ -6,31 +6,35 @@ CCattler can be installed as a single binary, built from source, or deployed acr
 
 | Requirement | Details |
 |---|---|
-| **OS** | Linux (Ubuntu 22.04+, Debian 12+) or macOS (for local dev) |
+| **OS** | Linux (Ubuntu 22.04+, Debian 12+) or macOS (Apple Silicon and Intel) |
 | **Architecture** | amd64 or arm64 |
 | **Go** | 1.22+ (only if building from source) |
 | **containerd + nerdctl** | Required for container runtime; optional for simulation mode. Docker Desktop includes both. |
 | **etcd** | Required for multi-node clusters (installed by Ansible) |
 
-## Binary download
+## Quick install
 
-Download the latest release:
+One command — detects your OS and architecture, downloads the right binary, installs to `/usr/local/bin/`:
 
 ```bash
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
 ```
 
-Or download manually from [GitHub Releases](https://github.com/boyadzhievb/ccattler/releases).
+Works on Linux (amd64/arm64) and macOS (Intel/Apple Silicon).
+
+Pin a specific version:
+
+```bash
+CCATTLER_VERSION=v0.38.0 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+```
 
 Verify:
 
 ```bash
 cca version
-# cca v0.20.1
-
-cca demo
-# Runs simulated deployment
 ```
+
+Or download manually from [GitHub Releases](https://github.com/boyadzhievb/ccattler/releases).
 
 ## Build from source
 
@@ -49,9 +53,13 @@ Spin up a full two-node cluster on local VMs with one command:
 curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
 ```
 
-**Requirements:** `ansible`, `vagrant`, and `libvirt` on the host machine.
+**What it does:**
+1. Installs the `cca` binary on your machine (via `install.sh`)
+2. Downloads Ansible playbooks and example configurations
+3. Creates 2 Vagrant VMs with libvirt
+4. Deploys CCattler (etcd + server + agents) and a Java test application
 
-This creates 2 VMs, deploys CCattler (etcd + server + agents), and runs a Java test application to validate the cluster.
+**Requirements:** `curl`, `tar`, `ansible`, `vagrant`, and `libvirt` on the host machine.
 
 ### Lima (macOS)
 
@@ -66,15 +74,15 @@ Creates a single Lima VM with an all-in-one CCattler deployment.
 
 ## Production deployment (Ansible)
 
-The recommended way to deploy CCattler on existing hosts.
+The recommended way to deploy CCattler on existing hosts. Uses `install-demo.sh` in inventory mode.
 
-### Step 1: Download and create inventory
+### Step 1: Download playbooks and create inventory
 
 ```bash
-curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+DEMO_MODE=inventory curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
 ```
 
-First run downloads the Ansible playbook and `cca` binary, then creates an inventory template at `~/.ccattler/ansible/inventory.ini`.
+First run installs the `cca` binary, downloads the Ansible playbook, and creates an inventory template at `~/.ccattler/ansible/inventory.ini`.
 
 ### Step 2: Edit the inventory
 
@@ -94,7 +102,7 @@ worker-2 ansible_host=192.168.1.12 ansible_user=ubuntu
 ### Step 3: Deploy
 
 ```bash
-curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+DEMO_MODE=inventory curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
 ```
 
 Second run detects the existing inventory and deploys CCattler across your hosts. The Ansible playbook handles:
