@@ -415,6 +415,81 @@
 - [x] Graceful proxy shutdown — `httpServer.Shutdown()` with 15s timeout replaces `httpServer.Close()` for in-flight request draining
 - [x] Autoscaler fix: min=0 services always participate in autoscaler loop (not skipped when no targets), enabling correct activation override and scale-back-to-zero
 
+### Phase 40 — System Design Patterns
+- [x] Circuit breaker for proxy backends — per-backend failure tracking, trip open after 5 consecutive failures, half-open probing, 503 when circuit-broken
+- [x] Rate limiter for API server — token-bucket per client IP, 429 with Retry-After header, /healthz and /metrics exempt
+- [x] Least-connections load balancing — min-heap selection replaces round-robin, tracks active connections per backend
+- [x] Bulkhead isolation for controllers — semaphore-based concurrency limiter per controller, prevents starvation
+- [x] Distributed tracing with W3C Trace Context — traceparent header propagation through proxy and API, context injection
+- [x] Read-path caching for API status — 2s TTL response cache for expensive status aggregation endpoint
+- [x] Dead letter queue for failed events — DLQ under dlq/ prefix with deduplication, retry counting, age-based cleanup
+- [x] Change data capture stream from fact store — CDC built on Watch infrastructure, multi-subscriber, prefix-filtered
+
+### Phase 41+ — Review Plan (from chat-plan20sep.md)
+
+#### Gate A — Store Correctness (mostly resolved: Phases 26, 35a)
+- [x] StateStore semantics documented
+- [x] etcd Put race fixed (Phase 35a)
+- [x] Transaction snapshot CAS (Phase 35a)
+- [x] MemoryStore/EtcdStore conformance tests
+- [ ] Watch loss-tolerance formal verification
+- [ ] Compaction/restart watch resync validation
+
+#### Gate B — Reconciliation Protocol (mostly resolved: Phases 26, 35a)
+- [x] ReconcilePlan with preconditions (Phase 35a)
+- [x] Snapshot coherence per reconcile
+- [x] Conflict retry with backoff
+- [ ] Deterministic plan verification (same snapshot → same plan)
+- [ ] Controller write domain enforcement at runtime
+
+#### Gate C — Truth Model (mostly resolved: Phases 35a, 36)
+- [x] Observed state from runtime observation only (Phase 26)
+- [x] derived/ prefix for controller state (Phase 35a)
+- [x] Event projection from committed state (Phase 36)
+- [ ] Key ownership matrix audit (formal document)
+
+#### Gate D — Agent & Health Model
+- [x] Probe scheduling independent from reconciliation (Phase 26)
+- [x] Init phase single authority (Phase 36)
+- [x] Agent sub-reconciler extraction (Phase 36)
+- [ ] Agent full decomposition (node reporter, runtime reconciler, probe scheduler, etc.)
+- [ ] Runtime conformance suite across all implementations
+- [ ] Failure matrix testing (start rejected, start then exit, runtime unavailable, etc.)
+
+#### Gate E — Security Audit
+- [x] mTLS, RBAC+ABAC, secrets (Phase 11)
+- [x] ValidateResourceName at API boundaries (Phase 39a)
+- [x] Host header sanitization (Phase 39a)
+- [ ] Formal threat model document
+- [ ] Command execution audit (os/exec, shell, nerdctl paths)
+- [ ] Secret leakage audit (logs, errors, CLI output)
+- [ ] etcd TLS and credential audit
+
+#### Gate F — Performance & Scalability
+- [x] Runtime.Stats() live metrics (Phase 37)
+- [x] Benchmarks in CI (Phase 38)
+- [ ] Synthetic cluster load test (50 nodes / 1K workloads)
+- [ ] Scheduler algorithm optimization (min-heap, binary search — Phase 41)
+- [ ] Store prefix indexing / trie (Phase 41)
+- [ ] Controller algorithm complexity audit
+
+#### Gate G — Operations & Observability
+- [x] Prometheus /metrics (Phase 25)
+- [x] Structured JSON logging (Phase 25)
+- [x] Event streaming (Phase 25)
+- [ ] Distributed tracing end-to-end (proxy → API → controller → agent)
+- [ ] Controller health/reconcile metrics
+- [ ] Recovery documentation
+
+#### Gate H — Release & QA
+- [x] Fuzz tests for parsers/codecs (Phase 38)
+- [x] Race detector passes (Phase 38)
+- [x] CI test workflow (Phase 38)
+- [ ] Chaos test matrix automation
+- [ ] Formal invariant tests
+- [ ] Documentation correctness cross-check
+- [ ] Dependency vulnerability scanning
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -457,5 +532,13 @@
 | M35 — Project Hardening | 38 | Makefile, golangci-lint, CI test workflow, benchmarks, security/tenant/cloud tests, fuzz tests, structured errors |
 | M36 — Scale-to-Zero | 39 | KEDA-like HTTP activation proxy, `min 0` autoscaling, request buffering during cold start, event-driven activation signals |
 | M36a — Audit & Hardening | 39a | Security validation, DoS protection, error handling, metrics, caching, graceful shutdown, integration test |
+| M37 — System Design Patterns | 40 | Circuit breaker, rate limiter, least-connections LB, bulkhead, tracing, response cache, DLQ, CDC stream |
+| M38 — Algorithms | 41 | Min-heap scheduler, binary search extraction, trie prefix scan, topological sort, cycle detection |
+| M39 — Store Correctness | Gate A | Watch loss-tolerance, compaction resync |
+| M40 — Truth & Reconciliation | Gate B+C | Deterministic plans, write domain enforcement, key ownership matrix |
+| M41 — Agent Decomposition | Gate D | Full agent split, runtime conformance suite, failure matrix |
+| M42 — Security Audit | Gate E | Threat model, command/secret/etcd audit |
+| M43 — Performance | Gate F | Load testing, algorithm optimization, complexity audit |
+| M44 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

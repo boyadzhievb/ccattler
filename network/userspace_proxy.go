@@ -15,6 +15,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -53,10 +54,6 @@ type UserSpaceProxy struct {
 	factStore store.StateStore
 	// listenAddress is the host:port the proxy listens on.
 	listenAddress string
-	// roundRobinCounters tracks the next endpoint index per service.
-	roundRobinCounters map[string]*atomic.Uint64
-	// countersMutex protects the roundRobinCounters map.
-	countersMutex sync.Mutex
 	// activationChannels holds per-service channels for coordinating concurrent
 	// cold-activation requests. The channel is closed when endpoints become
 	// available, unblocking all waiting goroutines simultaneously.
@@ -78,6 +75,10 @@ type UserSpaceProxy struct {
 	warmZeroCache map[string]warmZeroCacheEntry
 	// warmZeroCacheMutex protects warmZeroCache.
 	warmZeroCacheMutex sync.RWMutex
+	// circuitBreaker tracks per-backend health to avoid forwarding to failing backends.
+	circuitBreaker *CircuitBreaker
+	// loadBalancer selects backends using least-connections instead of round-robin.
+	loadBalancer *LeastConnectionsBalancer
 	// timeNow is injectable for testing.
 	timeNow func() time.Time
 }
@@ -103,11 +104,12 @@ func NewUserSpaceProxy(resolver ServiceResolver, listenAddress string, factStore
 		resolver:             resolver,
 		factStore:            factStore,
 		listenAddress:        listenAddress,
-		roundRobinCounters:   make(map[string]*atomic.Uint64),
 		activationChannels:   make(map[string]chan struct{}),
 		lastRequestWriteTime: make(map[string]time.Time),
 		activationWaiters:    make(map[string]*atomic.Int64),
 		warmZeroCache:        make(map[string]warmZeroCacheEntry),
+		circuitBreaker:       NewCircuitBreaker(),
+		loadBalancer:         NewLeastConnectionsBalancer(),
 		timeNow:              time.Now,
 	}
 }
@@ -411,31 +413,79 @@ func (userSpaceProxy *UserSpaceProxy) clearActivationChannel(serviceName string)
 	}
 }
 
-// forwardToBackend selects a backend via round-robin and proxies the request.
+// forwardToBackend selects a healthy backend using least-connections balancing
+// with circuit breaker filtering, then proxies the request. Returns 503 if
+// all backends are circuit-broken.
 func (userSpaceProxy *UserSpaceProxy) forwardToBackend(
 	responseWriter http.ResponseWriter,
 	incomingRequest *http.Request,
 	serviceName string,
 	availableEndpoints []types.Endpoint,
 ) {
-	roundRobinCounter := userSpaceProxy.getOrCreateCounter(serviceName)
-	currentIndex := roundRobinCounter.Add(1) - 1
-	selectedEndpoint := availableEndpoints[int(currentIndex)%len(availableEndpoints)]
+	healthyCandidates := make([]string, 0, len(availableEndpoints))
+	for _, endpoint := range availableEndpoints {
+		candidateAddress := fmt.Sprintf("%s:%d", endpoint.IP, endpoint.Port)
+		if userSpaceProxy.circuitBreaker.AllowRequest(candidateAddress) {
+			healthyCandidates = append(healthyCandidates, candidateAddress)
+		}
+	}
+
+	if len(healthyCandidates) == 0 {
+		http.Error(responseWriter,
+			fmt.Sprintf("all backends for service %q are circuit-broken", serviceName),
+			http.StatusServiceUnavailable)
+		return
+	}
+
+	backendAddress := userSpaceProxy.loadBalancer.SelectBackend(healthyCandidates)
+	defer userSpaceProxy.loadBalancer.ReleaseBackend(backendAddress)
 
 	backendURL := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("%s:%d", selectedEndpoint.IP, selectedEndpoint.Port),
+		Host:   backendAddress,
 	}
+
+	statusRecorder := &statusCapture{ResponseWriter: responseWriter}
+
+	incomingTrace := tracing.ExtractFromRequest(incomingRequest)
+	childSpan := incomingTrace.NewChildSpan()
 
 	reverseProxy := &httputil.ReverseProxy{
 		Director: func(proxyRequest *http.Request) {
 			proxyRequest.URL.Scheme = backendURL.Scheme
 			proxyRequest.URL.Host = backendURL.Host
 			proxyRequest.Host = incomingRequest.Host
+			childSpan.InjectHeaders(proxyRequest)
+		},
+		ErrorHandler: func(errorResponseWriter http.ResponseWriter, errorRequest *http.Request, transportError error) {
+			userSpaceProxy.circuitBreaker.RecordFailure(backendAddress)
+			http.Error(errorResponseWriter,
+				fmt.Sprintf("backend %s error: %v", backendAddress, transportError),
+				http.StatusBadGateway)
 		},
 	}
 
-	reverseProxy.ServeHTTP(responseWriter, incomingRequest)
+	reverseProxy.ServeHTTP(statusRecorder, incomingRequest)
+
+	if statusRecorder.statusCode >= 500 {
+		userSpaceProxy.circuitBreaker.RecordFailure(backendAddress)
+	} else if statusRecorder.wroteHeader {
+		userSpaceProxy.circuitBreaker.RecordSuccess(backendAddress)
+	}
+}
+
+// statusCapture wraps an http.ResponseWriter to capture the status code
+// written by the reverse proxy, without buffering the response body.
+type statusCapture struct {
+	http.ResponseWriter
+	statusCode  int
+	wroteHeader bool
+}
+
+func (capture *statusCapture) WriteHeader(code int) {
+	capture.statusCode = code
+	capture.wroteHeader = true
+	capture.ResponseWriter.WriteHeader(code)
 }
 
 // extractServiceName derives the service name from the Host header value.
@@ -449,16 +499,3 @@ func extractServiceName(hostHeader string) string {
 	return strings.TrimSpace(hostname)
 }
 
-// getOrCreateCounter returns the round-robin counter for the named service,
-// creating one if it doesn't exist yet.
-func (userSpaceProxy *UserSpaceProxy) getOrCreateCounter(serviceName string) *atomic.Uint64 {
-	userSpaceProxy.countersMutex.Lock()
-	defer userSpaceProxy.countersMutex.Unlock()
-
-	if counter, exists := userSpaceProxy.roundRobinCounters[serviceName]; exists {
-		return counter
-	}
-	newCounter := &atomic.Uint64{}
-	userSpaceProxy.roundRobinCounters[serviceName] = newCounter
-	return newCounter
-}
