@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,6 +101,17 @@ func TestProcessStartError(t *testing.T) {
 	err := processRuntime.Start(ctx, Spec{ID: "bad", Image: "/nonexistent/binary"})
 	if err == nil {
 		t.Fatal("expected error for nonexistent binary")
+	}
+}
+
+func TestProcessStartContainerImageHint(t *testing.T) {
+	processRuntime := NewProcessRuntime()
+	startError := processRuntime.Start(ctx, Spec{ID: "img", Image: "nginx:1.28"})
+	if startError == nil {
+		t.Fatal("expected error for container image name")
+	}
+	if !strings.Contains(startError.Error(), "run-container") {
+		t.Errorf("expected hint about run-container, got: %s", startError.Error())
 	}
 }
 

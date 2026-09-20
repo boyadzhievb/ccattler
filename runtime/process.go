@@ -65,6 +65,19 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 		return &StartError{ID: spec.ID, Reason: "empty command"}
 	}
 
+	if _, lookupError := exec.LookPath(args[0]); lookupError != nil {
+		if strings.Contains(args[0], ":") {
+			return &StartError{
+				ID:     spec.ID,
+				Reason: fmt.Sprintf("%q looks like a container image, not a local command — use 'cca run-container' instead", args[0]),
+			}
+		}
+		return &StartError{
+			ID:     spec.ID,
+			Reason: fmt.Sprintf("executable %q not found in $PATH", args[0]),
+		}
+	}
+
 	command := exec.Command(args[0], args[1:]...)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Stdout = os.Stdout
