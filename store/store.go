@@ -42,6 +42,11 @@ const (
 	// channel buffer was full. The consumer should treat this as a hint to
 	// perform a full resync.
 	EventOverflow
+	// EventCompacted indicates that the watch's start revision has been
+	// compacted by the store backend. The consumer must perform a full
+	// resync via Scan/ScanWithRevision and restart the watch from the new
+	// revision. After this event, the watch channel is closed.
+	EventCompacted
 )
 
 // Compare represents a precondition for a transactional operation.
@@ -79,6 +84,16 @@ type WatchOption struct {
 	// Prefix, when true, causes the watch to match all keys sharing the
 	// watched key as a prefix rather than requiring an exact key match.
 	Prefix bool
+	// StartRevision, when non-zero, causes the watch to replay all events
+	// from this revision onward before streaming live events. This closes
+	// the gap between a Scan (which returns a point-in-time snapshot at a
+	// known revision) and a Watch (which only delivers future events).
+	// Use ScanWithRevision to obtain the revision, then Watch with
+	// StartRevision = scanResult.Revision + 1 to guarantee no events are
+	// missed. If the requested revision has been compacted (etcd) or
+	// evicted from the history buffer (MemoryStore), an EventCompacted
+	// event is emitted and the channel is closed.
+	StartRevision int64
 }
 
 // ScanResult bundles the facts returned by a prefix scan with the store-global

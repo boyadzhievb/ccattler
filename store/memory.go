@@ -32,6 +32,79 @@ type factWatcher struct {
 	overflowDetected bool
 }
 
+// defaultEventHistoryCapacity is the number of events retained in the ring
+// buffer for revision-based watch replay. Sized to cover brief gaps between
+// Scan and Watch — not meant to hold the entire history.
+const defaultEventHistoryCapacity = 4096
+
+// eventHistoryEntry stores a single event with its store-global revision for
+// replay by revision-based watches.
+type eventHistoryEntry struct {
+	// revision is the store-global revision when this event was recorded.
+	revision int64
+	// event is the watch event that was broadcast.
+	event Event
+}
+
+// eventHistoryBuffer is a bounded ring buffer of recent watch events, enabling
+// revision-based watch replay. When full, the oldest entries are overwritten.
+type eventHistoryBuffer struct {
+	// entries is the fixed-size ring buffer of event history entries.
+	entries []eventHistoryEntry
+	// writeIndex is the next position to write in the ring buffer.
+	writeIndex int
+	// entryCount is the number of valid entries (capped at len(entries)).
+	entryCount int
+}
+
+// newEventHistoryBuffer creates a ring buffer with the given capacity.
+func newEventHistoryBuffer(capacity int) *eventHistoryBuffer {
+	return &eventHistoryBuffer{
+		entries: make([]eventHistoryEntry, capacity),
+	}
+}
+
+// append adds an event to the ring buffer, overwriting the oldest if full.
+func (historyBuffer *eventHistoryBuffer) append(revision int64, event Event) {
+	historyBuffer.entries[historyBuffer.writeIndex] = eventHistoryEntry{
+		revision: revision,
+		event:    event,
+	}
+	historyBuffer.writeIndex = (historyBuffer.writeIndex + 1) % len(historyBuffer.entries)
+	if historyBuffer.entryCount < len(historyBuffer.entries) {
+		historyBuffer.entryCount++
+	}
+}
+
+// eventsFromRevision returns all events with revision >= startRevision in order.
+// Returns nil, false if the requested revision has been evicted from the buffer.
+func (historyBuffer *eventHistoryBuffer) eventsFromRevision(startRevision int64) ([]Event, bool) {
+	if historyBuffer.entryCount == 0 {
+		return nil, true
+	}
+
+	// Find the oldest entry in the buffer.
+	oldestIndex := 0
+	if historyBuffer.entryCount == len(historyBuffer.entries) {
+		oldestIndex = historyBuffer.writeIndex
+	}
+	oldestRevision := historyBuffer.entries[oldestIndex].revision
+
+	if startRevision < oldestRevision {
+		return nil, false
+	}
+
+	var matchingEvents []Event
+	for iterationIndex := 0; iterationIndex < historyBuffer.entryCount; iterationIndex++ {
+		bufferIndex := (oldestIndex + iterationIndex) % len(historyBuffer.entries)
+		entry := historyBuffer.entries[bufferIndex]
+		if entry.revision >= startRevision {
+			matchingEvents = append(matchingEvents, entry.event)
+		}
+	}
+	return matchingEvents, true
+}
+
 // MemoryStore is an in-memory implementation of StateStore, used for tests and
 // local development. It maintains a map of facts, a monotonically increasing
 // revision counter, and a list of active watchers. All operations are protected
@@ -47,6 +120,9 @@ type MemoryStore struct {
 	currentRevision int64
 	// activeWatchers is the list of currently registered watch subscriptions.
 	activeWatchers []factWatcher
+	// eventHistory is a bounded ring buffer of recent events for revision-based
+	// watch replay, closing the gap between Scan and Watch.
+	eventHistory *eventHistoryBuffer
 	// isClosed tracks whether Close has been called, preventing double-close.
 	isClosed bool
 }
@@ -57,6 +133,7 @@ func NewMemoryStore() *MemoryStore {
 		facts:           make(map[string]*Fact),
 		keyIndex:        newPrefixTrie(),
 		currentRevision: 0,
+		eventHistory:    newEventHistoryBuffer(defaultEventHistoryCapacity),
 	}
 }
 
@@ -215,6 +292,10 @@ func (memStore *MemoryStore) ScanWithRevision(_ context.Context, prefix string) 
 // Watch creates a new watch subscription for changes to the specified key (or key
 // prefix if opts.Prefix is true). Returns a buffered channel that will receive events
 // for matching changes. The channel is closed when the store is closed via Close.
+// When opts.StartRevision is non-zero, events from that revision onward are replayed
+// from the history buffer before live events begin streaming. If the requested
+// revision has been evicted from the buffer, an EventCompacted event is sent and
+// the channel is closed immediately.
 func (memStore *MemoryStore) Watch(ctx context.Context, key string, opts WatchOption) (<-chan Event, error) {
 	memStore.mutex.Lock()
 	defer memStore.mutex.Unlock()
@@ -224,6 +305,26 @@ func (memStore *MemoryStore) Watch(ctx context.Context, key string, opts WatchOp
 	}
 
 	eventChannel := make(chan Event, 64)
+
+	if opts.StartRevision > 0 {
+		historicalEvents, historyAvailable := memStore.eventHistory.eventsFromRevision(opts.StartRevision)
+		if !historyAvailable {
+			go func() {
+				eventChannel <- Event{Type: EventCompacted}
+				close(eventChannel)
+			}()
+			return eventChannel, nil
+		}
+		for _, historicalEvent := range historicalEvents {
+			if matchesWatchPattern(historicalEvent, key, opts.Prefix) {
+				select {
+				case eventChannel <- historicalEvent:
+				default:
+				}
+			}
+		}
+	}
+
 	memStore.activeWatchers = append(memStore.activeWatchers, factWatcher{
 		keyPattern:    key,
 		matchByPrefix: opts.Prefix,
@@ -238,6 +339,14 @@ func (memStore *MemoryStore) Watch(ctx context.Context, key string, opts WatchOp
 	}
 
 	return eventChannel, nil
+}
+
+// matchesWatchPattern returns true if the event's key matches the watch pattern.
+func matchesWatchPattern(event Event, keyPattern string, matchByPrefix bool) bool {
+	if matchByPrefix {
+		return strings.HasPrefix(event.Fact.Key, keyPattern)
+	}
+	return event.Fact.Key == keyPattern
 }
 
 // removeWatcher unregisters the watcher with the given channel and closes it.
@@ -413,8 +522,11 @@ func cloneBytes(value []byte) []byte {
 // their pattern; exact watchers match only on key equality. When a watcher's
 // channel buffer is full, the event is dropped and an overflow flag is set.
 // On the next successful delivery, an EventOverflow marker is sent first so
-// the consumer knows events were missed. Must be called with mutex held.
+// the consumer knows events were missed. Also appends the event to the history
+// ring buffer for revision-based watch replay. Must be called with mutex held.
 func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
+	memStore.eventHistory.append(memStore.currentRevision, event)
+
 	for watcherIndex := range memStore.activeWatchers {
 		activeWatcher := &memStore.activeWatchers[watcherIndex]
 		if activeWatcher.matchByPrefix {

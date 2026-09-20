@@ -66,7 +66,7 @@ func (changeStream *ChangeStream) Start(ctx context.Context) error {
 			if !channelOpen {
 				return nil
 			}
-			if event.Type == EventOverflow {
+			if event.Type == EventOverflow || event.Type == EventCompacted {
 				continue
 			}
 			record := changeStream.eventToRecord(event)

@@ -238,6 +238,9 @@ func (etcdStore *EtcdStore) ScanWithRevision(ctx context.Context, prefix string)
 // (or key prefix, if opts.Prefix is true). Events from etcd's watch stream are
 // translated to CCattler Event types and forwarded to the returned channel. The
 // channel is closed when the context is cancelled or the store is closed.
+// When opts.StartRevision is non-zero, the watch starts from that revision,
+// delivering all events from that point onward. If the revision has been compacted,
+// an EventCompacted event is emitted and the channel is closed.
 func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOption) (<-chan Event, error) {
 	if closedError := etcdStore.checkClosed(); closedError != nil {
 		return nil, closedError
@@ -250,6 +253,9 @@ func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOpt
 		watchOptions = append(watchOptions, clientv3.WithPrefix())
 	}
 	watchOptions = append(watchOptions, clientv3.WithPrevKV())
+	if opts.StartRevision > 0 {
+		watchOptions = append(watchOptions, clientv3.WithRev(opts.StartRevision))
+	}
 
 	etcdWatchChannel := etcdStore.etcdClient.Watch(ctx, etcdStore.prefixedKey(key), watchOptions...)
 
@@ -261,12 +267,20 @@ func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOpt
 // forwardEtcdWatchEvents reads from the etcd watch channel and translates each event
 // into a CCattler Event, forwarding it to the output channel. The output channel is
 // closed when the etcd watch channel closes (e.g., on context cancellation or store close).
+// If etcd reports a compacted revision, an EventCompacted is emitted before closing.
 func (etcdStore *EtcdStore) forwardEtcdWatchEvents(etcdWatchChannel clientv3.WatchChan, outputChannel chan Event) {
 	defer close(outputChannel)
 	eventsDropped := false
 
 	for watchResponse := range etcdWatchChannel {
+		if watchResponse.CompactRevision > 0 {
+			outputChannel <- Event{Type: EventCompacted}
+			return
+		}
 		if watchResponse.Canceled {
+			if watchResponse.Err() != nil {
+				logging.Default().Warn("etcd watch cancelled with error", "error", watchResponse.Err().Error())
+			}
 			return
 		}
 

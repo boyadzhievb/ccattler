@@ -425,15 +425,27 @@
 - [x] Dead letter queue for failed events — DLQ under dlq/ prefix with deduplication, retry counting, age-based cleanup
 - [x] Change data capture stream from fact store — CDC built on Watch infrastructure, multi-subscriber, prefix-filtered
 
-### Phase 41+ — Review Plan (from chat-plan20sep.md)
+### Phase 42 — Store Correctness (M39, Gate A)
+- [x] WatchOption.StartRevision — resume watches from a known revision, closing the Scan-to-Watch gap
+- [x] EventCompacted event type — signals revision was compacted/evicted, consumer must resync
+- [x] MemoryStore event history ring buffer — bounded 4096-entry ring for revision-based replay
+- [x] MemoryStore Watch with StartRevision — replays matching events from history, emits EventCompacted on eviction
+- [x] EtcdStore Watch with StartRevision — passes WithRev() to etcd client
+- [x] EtcdStore compaction detection — CompactRevision > 0 emits EventCompacted and closes channel
+- [x] Agent EventCompacted handling — triggers full resync on compaction
+- [x] Controller runner EventCompacted handling — triggers reconciliation on compaction
+- [x] ChangeStream skips EventCompacted — no dispatch for meta-events
+- [x] 12 conformance tests: gap-free Scan+Watch, overflow→resync convergence, compaction detection, history wraparound, revision ordering, delete replay, prefix filtering, transaction replay, future revision handling
 
-#### Gate A — Store Correctness (mostly resolved: Phases 26, 35a)
+### Phase 42+ — Review Plan (from chat-plan20sep.md)
+
+#### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
 - [x] StateStore semantics documented
 - [x] etcd Put race fixed (Phase 35a)
 - [x] Transaction snapshot CAS (Phase 35a)
 - [x] MemoryStore/EtcdStore conformance tests
-- [ ] Watch loss-tolerance formal verification
-- [ ] Compaction/restart watch resync validation
+- [x] Watch loss-tolerance formal verification (Phase 42) — StartRevision on WatchOption, event history ring buffer, gap-free Scan+Watch pattern, 12 conformance tests
+- [x] Compaction/restart watch resync validation (Phase 42) — EventCompacted type, etcd CompactRevision handling, MemoryStore eviction detection, overflow→resync→resume convergence test
 
 #### Gate B — Reconciliation Protocol (mostly resolved: Phases 26, 35a)
 - [x] ReconcilePlan with preconditions (Phase 35a)
@@ -535,7 +547,7 @@
 | M36a — Audit & Hardening | 39a | Security validation, DoS protection, error handling, metrics, caching, graceful shutdown, integration test |
 | M37 — System Design Patterns | 40 | Circuit breaker, rate limiter, least-connections LB, bulkhead, tracing, response cache, DLQ, CDC stream |
 | M38 — Algorithms | 41 | Min-heap scheduler, binary search extraction, trie prefix scan, topological sort, cycle detection |
-| M39 — Store Correctness | Gate A | Watch loss-tolerance, compaction resync |
+| M39 — Store Correctness | 42 | StartRevision watch replay, EventCompacted, event history buffer, 12 conformance tests proving gap-free observation |
 | M40 — Truth & Reconciliation | Gate B+C | Deterministic plans, write domain enforcement, key ownership matrix |
 | M41 — Agent Decomposition | Gate D | Full agent split, runtime conformance suite, failure matrix |
 | M42 — Security Audit | Gate E | Threat model, command/secret/etcd audit |
