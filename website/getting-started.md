@@ -10,15 +10,15 @@ CCattler has three ways to run workloads — understanding this upfront avoids c
 |---|---|---|---|
 | `cca apply` / `cca demo` | **Simulator** | Shows the reconciliation loop in action — no real processes or containers start. | Linux, macOS |
 | `cca run` | **Process** | Starts real OS processes on your machine, managed by the reconciler. The `image` field is used as the command to execute. | Linux, macOS |
-| `cca run-container` | **Container** | Pulls images and starts real OCI containers via nerdctl/containerd. This is what you use in production. | Linux only |
+| `cca run-container` | **Container** | Pulls images and starts real OCI containers via docker, nerdctl, or lima. This is what you use in production. | Linux, macOS |
 
-**On macOS:** Start with `cca apply` (simulation) or `cca run` (local processes). Container mode requires Linux with nerdctl/containerd.
+**On macOS:** All three modes work. Container mode requires Docker Desktop or Lima (`brew install lima`).
 
 ## Prerequisites
 
 - **Linux or macOS** (amd64 or arm64)
 - **Go 1.22+** (if building from source) or `curl` (if downloading binary)
-- **containerd + nerdctl** (Linux only, for `cca run-container` — not needed for simulation or process mode)
+- **Container runtime** (for `cca run-container`): Docker Desktop (macOS/Linux), nerdctl+containerd (Linux), or Lima (macOS: `brew install lima`)
 
 ## Install
 
@@ -57,7 +57,7 @@ This runs a simulated deployment: 3 instances of a web service reconciled across
 
 ## Write your first config
 
-Create a file called `web.ccattler`:
+Create a file called `web.cca`:
 
 ```hcl
 service web {
@@ -76,34 +76,34 @@ This declares a service named `web` running 3 instances of `nginx:1.28`, each co
 ### Simulate it
 
 ```bash
-cca apply web.ccattler
+cca apply web.cca
 ```
 
 Runs the reconciliation loop and shows the resulting state — nothing actually starts. This works on any platform and is the quickest way to verify your config.
 
-## Run real containers (Linux)
+## Run real containers
 
-On Linux with nerdctl/containerd installed, this pulls the nginx image and starts real OCI containers:
+With a container runtime installed (Docker, nerdctl, or Lima), this pulls the nginx image and starts real OCI containers:
 
 ```bash
-cca run-container web.ccattler
+cca run-container web.cca
 ```
 
 Add `--watch` for live status updates:
 
 ```bash
-cca run-container --watch web.ccattler
+cca run-container --watch web.cca
 ```
 
-::: warning macOS
-`cca run-container` requires nerdctl and containerd, which are Linux-only. On macOS, use `cca apply` for simulation or `cca run` with a local executable.
+::: tip No container runtime?
+If you don't have Docker, nerdctl, or Lima installed, use `cca apply` for simulation or `cca run` with a local executable. The install script will tell you what's available.
 :::
 
 ## Run local processes (any platform)
 
 `cca run` starts real OS processes — the `image` field is used as the command to execute, not as a container image. This is useful for development without containerd.
 
-Create `server.ccattler`:
+Create `server.cca`:
 
 ```hcl
 service server {
@@ -114,7 +114,7 @@ service server {
 ```
 
 ```bash
-cca run server.ccattler
+cca run server.cca
 ```
 
 This starts 2 instances of `python3 -m http.server 8080` as OS processes, managed by the reconciler.

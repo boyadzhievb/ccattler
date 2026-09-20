@@ -2,7 +2,7 @@
 #
 # Demonstrates: instance spread across nodes, resource-aware scheduling,
 #               failure recovery when a node dies.
-# Run with:  cca apply examples/distributed.ccattler   (3 simulated nodes)
+# Run with:  cca apply examples/distributed.cca   (3 simulated nodes)
 #            cca demo-distributed                        (built-in with node kill)
 #
 # Expected: 6 instances spread evenly (2 per node on a 3-node cluster).

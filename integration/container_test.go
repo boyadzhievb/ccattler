@@ -22,17 +22,43 @@ import (
 // colliding with the "cca-net" network used by the live run-container command.
 const testNetworkName = "cca-test-net"
 
-// skipIfNerdctlUnavailable skips the test when the nerdctl CLI is not installed
-// or the container runtime is not responding.
-func skipIfNerdctlUnavailable(t *testing.T) {
+// detectTestContainerCommand returns the container CLI to use for tests,
+// checking nerdctl, docker, and lima in order. Returns empty string if none found.
+func detectTestContainerCommand() string {
+	if _, err := exec.LookPath("nerdctl"); err == nil {
+		return "nerdctl"
+	}
+	if _, err := exec.LookPath("docker"); err == nil {
+		return "docker"
+	}
+	if _, err := exec.LookPath("lima"); err == nil {
+		return "lima"
+	}
+	return ""
+}
+
+// buildTestContainerExecCommand builds an exec.Cmd for the detected container runtime.
+func buildTestContainerExecCommand(containerCommand string, args ...string) *exec.Cmd {
+	if containerCommand == "lima" {
+		limaArgs := append([]string{"nerdctl"}, args...)
+		return exec.Command("lima", limaArgs...)
+	}
+	return exec.Command(containerCommand, args...)
+}
+
+// skipIfContainerUnavailable skips the test when no container runtime (nerdctl,
+// docker, or lima) is installed or responding.
+func skipIfContainerUnavailable(t *testing.T) string {
 	t.Helper()
-	if _, err := exec.LookPath("nerdctl"); err != nil {
-		t.Skip("nerdctl not found in PATH, skipping container integration test")
+	containerCommand := detectTestContainerCommand()
+	if containerCommand == "" {
+		t.Skip("no container runtime found (nerdctl/docker/lima), skipping container integration test")
 	}
-	nerdctlInfoCommand := exec.Command("nerdctl", "info")
-	if err := nerdctlInfoCommand.Run(); err != nil {
-		t.Skip("nerdctl runtime not running, skipping container integration test")
+	infoCommand := buildTestContainerExecCommand(containerCommand, "info")
+	if err := infoCommand.Run(); err != nil {
+		t.Skipf("%s runtime not responding, skipping container integration test", containerCommand)
 	}
+	return containerCommand
 }
 
 // TestContainerGetsIPAndServesConfigFile is a full end-to-end integration test
@@ -42,7 +68,7 @@ func skipIfNerdctlUnavailable(t *testing.T) {
 // curl container on the same network. Requires nerdctl to be installed and
 // running; skipped automatically when nerdctl is unavailable.
 func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
-	skipIfNerdctlUnavailable(t)
+	containerCommand := skipIfContainerUnavailable(t)
 
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
@@ -119,10 +145,10 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Verify the custom page content by running a curl container on the same
-	// nerdctl network. This works on all platforms including macOS where
+	// container network. This works on all platforms including macOS where
 	// container IPs on bridge networks are not reachable from the host.
 	curlTargetURL := fmt.Sprintf("http://%s:80/", allocatedInstanceIP)
-	curlCommand := exec.CommandContext(ctx, "nerdctl", "run", "--rm",
+	curlCommand := buildTestContainerExecCommand(containerCommand, "run", "--rm",
 		"--network", testNetworkName,
 		"curlimages/curl:latest",
 		"-s", "-f", "--max-time", "5",

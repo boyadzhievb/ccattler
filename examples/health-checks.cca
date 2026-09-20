@@ -1,7 +1,7 @@
 # Health check probes.
 #
 # Demonstrates: HTTP health check with path and interval, TCP health check.
-# Run with:  cca run examples/health-checks.ccattler
+# Run with:  cca run examples/health-checks.cca
 #            (requires real processes that listen on the declared ports)
 #
 # Expected: web instances are probed at GET /health every 10s.

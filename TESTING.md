@@ -13,18 +13,20 @@ go run ./cmd/cca/ demo-storage         # live demo with volume migration
 
 ## Examples
 
-The `examples/` directory contains working `.ccattler` configs — one per feature area. Each can be applied with `cca apply`, and all are validated by `TestAllExamplesParseAndApply`.
+The `examples/` directory contains working `.cca` configs — one per feature area. Each can be applied with `cca apply`, and all are validated by `TestAllExamplesParseAndApply`.
 
 | File | Features Demonstrated |
 |------|----------------------|
-| `basic.ccattler` | Single service, 3 instances, exposed port, resources |
-| `multi-service.ccattler` | Two services, different instance counts and resources |
-| `health-checks.ccattler` | HTTP health probe with path, TCP health probe, intervals |
-| `distributed.ccattler` | 6 instances spread across 3 nodes, failure recovery |
-| `networking.ccattler` | VIPs, DNS, load balancing across 2 services |
-| `storage.ccattler` | Persistent volume, service-to-volume binding, migration |
-| `web.ccattler` | Process runtime (sleep command as image) |
-| `web-container.ccattler` | Container runtime (nginx Docker image) |
+| `basic.cca` | Single service, 3 instances, exposed port, resources |
+| `multi-service.cca` | Two services, different instance counts and resources |
+| `health-checks.cca` | HTTP health probe with path, TCP health probe, intervals |
+| `distributed.cca` | 6 instances spread across 3 nodes, failure recovery |
+| `networking.cca` | VIPs, DNS, load balancing across 2 services |
+| `storage.cca` | Persistent volume, service-to-volume binding, migration |
+| `web.cca` | Process runtime (sleep command as image) |
+| `web-container.cca` | Container runtime with SSI hostname display |
+| `autoscaling.cca` | Horizontal/vertical/event-driven scaling policies |
+| `zabbix.cca` | Monitoring integration with Zabbix |
 
 ## Test Coverage by Milestone
 
@@ -65,7 +67,7 @@ The `examples/` directory contains working `.ccattler` configs — one per featu
 | Should | TCP health probe works | Covered | `TestTCPHealthy`, `TestTCPConnectionRefused` |
 | Should | Simulator runtime tracks start/stop/list | Covered | `TestSimStart` through `TestSimInterfaceCompliance` |
 | Should | Process runtime starts real OS processes | Covered | `TestProcessStartAndStop` through `TestProcessInterfaceCompliance` |
-| Could | Container runtime (Docker CLI) | Manual | `cca run-container examples/web-container.ccattler` |
+| Could | Container runtime (docker/nerdctl/lima) | Manual | `cca run-container examples/web-container.cca` |
 
 ### M3 — Distributed (Phase 6)
 
@@ -171,5 +173,5 @@ Each milestone has a corresponding demo command that exercises its headline feat
 1. Fill in the **Must/Should/Could** table for the milestone before starting implementation.
 2. Write the **Must** tests as integration tests in `integration/`.
 3. Write **Should** tests as unit tests in the relevant package.
-4. Add an example `.ccattler` file to `examples/` — it is automatically validated by `TestAllExamplesParseAndApply`.
+4. Add an example `.cca` file to `examples/` — it is automatically validated by `TestAllExamplesParseAndApply`.
 5. After completing the milestone, review the **Known Gaps** section and promote any that became relevant.

@@ -18,6 +18,7 @@ INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin}"
 
 log_info()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 log_ok()    { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+log_warn()  { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
 log_error() { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; }
 
 # --- Detect OS ---
@@ -48,6 +49,18 @@ detect_arch() {
 for dependency in curl tar; do
     if ! command -v "$dependency" >/dev/null; then
         log_error "Missing required tool: $dependency"
+        case "$dependency" in
+            curl)
+                log_error "Install curl:"
+                log_error "  Ubuntu/Debian: sudo apt install curl"
+                log_error "  macOS:         brew install curl"
+                ;;
+            tar)
+                log_error "Install tar:"
+                log_error "  Ubuntu/Debian: sudo apt install tar"
+                log_error "  macOS: tar is included by default"
+                ;;
+        esac
         exit 1
     fi
 done
@@ -91,3 +104,27 @@ chmod +x "${INSTALL_PATH}/cca"
 
 log_ok "Installed cca to ${INSTALL_PATH}/cca"
 log_info "Run 'cca version' to verify."
+echo ""
+
+# --- Post-install: check container runtime ---
+log_info "Checking container runtime availability..."
+if command -v nerdctl >/dev/null 2>&1; then
+    log_ok "nerdctl found — 'cca run-container' will use nerdctl"
+elif command -v docker >/dev/null 2>&1; then
+    log_ok "docker found — 'cca run-container' will use docker"
+elif command -v lima >/dev/null 2>&1; then
+    log_ok "lima found — 'cca run-container' will use lima nerdctl"
+    log_info "Make sure a Lima VM is running: limactl start"
+else
+    log_warn "No container runtime found (nerdctl, docker, or lima)."
+    log_warn "'cca apply' (simulation) and 'cca run' (local processes) still work."
+    log_warn ""
+    log_warn "To run real containers, install one of:"
+    if [ "$operating_system" = "darwin" ]; then
+        log_warn "  Docker Desktop: https://www.docker.com/products/docker-desktop/"
+        log_warn "  Lima + nerdctl: brew install lima && limactl start"
+    else
+        log_warn "  Docker:   curl -fsSL https://get.docker.com | sh"
+        log_warn "  nerdctl:  https://github.com/containerd/nerdctl/releases"
+    fi
+fi

@@ -11,11 +11,11 @@ import (
 )
 
 // TestAllExamplesParseAndApply walks the examples/ directory and verifies that
-// every .ccattler file can be parsed, compiled, and applied to a fresh store
+// every .cca file can be parsed, compiled, and applied to a fresh store
 // without error. This ensures example configs stay valid as the DSL evolves.
 func TestAllExamplesParseAndApply(t *testing.T) {
 	examplesDirectory := filepath.Join("..", "examples")
-	exampleFiles, err := filepath.Glob(filepath.Join(examplesDirectory, "*.ccattler"))
+	exampleFiles, err := filepath.Glob(filepath.Join(examplesDirectory, "*.cca"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,11 +13,11 @@ curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/inst
 # See the reconciliation loop in action (simulated — no containers)
 cca demo
 
-# Run real OCI containers (requires containerd + nerdctl)
-cca run-container examples/basic.ccattler
+# Run real OCI containers (requires docker, nerdctl, or lima)
+cca run-container examples/basic.cca
 
-# Run real OS processes (no containerd needed)
-cca run examples/basic.ccattler
+# Run real OS processes (no container runtime needed)
+cca run examples/basic.cca
 ```
 
 CCattler has three runtime modes:
@@ -26,9 +26,9 @@ CCattler has three runtime modes:
 |---|---|---|
 | `cca apply` / `cca demo` | Simulator | Shows reconciliation output — no real processes or containers |
 | `cca run` | Process | Starts real OS processes managed by the reconciler |
-| `cca run-container` | Container (nerdctl/containerd) | Pulls images, starts real OCI containers |
+| `cca run-container` | Container (docker/nerdctl/lima) | Pulls images, starts real OCI containers |
 
-The container runtime uses **nerdctl** (the containerd CLI) to pull images and manage containers. Docker Desktop includes containerd, or you can install containerd + nerdctl standalone.
+The container runtime auto-detects **nerdctl**, **docker**, or **lima** (in that order) to pull images and manage containers.
 
 ## Why?
 

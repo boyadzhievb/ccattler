@@ -2,7 +2,7 @@
 #
 # Demonstrates: two independent services, different instance counts,
 #               different ports, different resource allocations.
-# Run with:  cca apply examples/multi-service.ccattler
+# Run with:  cca apply examples/multi-service.cca
 #
 # Expected: web gets 4 instances spread across nodes, api gets 2.
 #           Each service has its own resource footprint.
