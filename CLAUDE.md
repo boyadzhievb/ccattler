@@ -4,6 +4,25 @@
 
 **Active milestone:** M32 — Cloud Controller Manager (Phase 35). M1–M31a complete. M32 implementation complete.
 
+### Architecture Debt (from external reviews, Sep 19 2026)
+
+Items addressed by Phase 26 (P0 Correctness) and Phase 35a (Correctness II): runtime observation authoritative, 127.0.0.1 fallback removed, probe scheduling decoupled, init restart-safe, watch overflow resync, transaction snapshot CAS, derived/ prefix, etcd Put simplified, VIP allocation race fixed, init dual authority resolved.
+
+**Remaining open items:**
+
+| Priority | Issue | Detail |
+|----------|-------|--------|
+| P1 | etcd watch `Prev` not populated | Watch needs `WithPrevKV()` option; MemoryStore and EtcdStore have inconsistent semantics |
+| P1 | Event generation from controller intent | Events should come from an EventProjector watching committed state transitions, not from `emitEventsForChanges()` in the runner |
+| P1 | Init execution not runtime-isolated | `runInitCommand()` uses host `exec.CommandContext`, not `runtime.Exec()` — init runs on the host, not inside the workload environment |
+| P1 | Agent is still a god-loop | agent.go handles node registration, heartbeat, runtime, init, storage, secrets, network, probes, telemetry, cleanup — should be split into composable sub-reconcilers with independent lifecycle |
+| P2 | Multi-port endpoint model incomplete | EndpointController uses `map[string]int` (one port per service) — needs `map[string][]int` or typed `ServicePort{Name, Port, Protocol}` |
+| P2 | Runtime `Stats()` API missing | Needed for native resource observations powering `cca top` |
+
+### Performance Optimization Principle
+
+Optimize the architecture first, the algorithms second, Go code third, and assembly only for demonstrated hot paths. Go is the right language for the control plane. Networking data plane is the one area where eBPF/XDP could eventually matter. Establish benchmarks (`cca benchmark`) before optimizing: reconciliation/sec, scheduling/sec, state transactions/sec, controller latency, agent reconciliation latency, startup-to-ready latency.
+
 ---
 
 ## Code Style Rules
@@ -1007,10 +1026,6 @@ Extensibility = new facts + new constraints + new transformations.
 
 Controller SDK: subscribe to fact prefixes, run reconciliation logic, write facts back.
 
-## CLI
-
-```
-cca apply <file>              # deploy config (simulated, prints status and exits)
 ## Cloud Provider Integration
 
 Cloud providers manage node lifecycle, load balancers, and VPC routes:
@@ -1039,7 +1054,10 @@ The `cloud` block configures the provider. `expose external` marks a port for cl
 
 Enabled via: `cca server --cloud-provider aws --cloud-region us-east-1`
 
+## CLI
 
+```
+cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
 cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]  # control plane (--cloud-provider enables cloud controllers)
