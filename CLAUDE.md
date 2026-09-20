@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Active milestone:** M34 — Runtime Stats API (Phase 37). M1–M33 complete.
+**Completed through:** M34 — Runtime Stats API (Phase 37). M1–M34 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
