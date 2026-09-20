@@ -60,10 +60,22 @@ type Runtime interface {
 	// For process/simulator runtimes, this executes the command directly.
 	ExecInit(ctx context.Context, image string, execSpec ExecSpec) error
 
+	// Stats returns the current resource usage of the workload identified by id.
+	// Returns ErrNotFound if the workload has never been started. Returns zero
+	// values for metrics that are unavailable (e.g. stopped workloads).
+	Stats(ctx context.Context, id string) (ResourceStats, error)
+
 	// Logs returns the stdout/stderr output of a workload. When follow is true,
 	// the returned reader streams new output as it is produced (blocking read).
 	// The caller must close the returned ReadCloser when done.
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+}
+
+// ResourceStats describes the observed resource usage of a running workload.
+// A zero value for any field indicates the metric is unavailable.
+type ResourceStats struct {
+	CPUMillicores int64 // CPUMillicores is the current CPU usage in millicores (1000 = 1 core).
+	MemoryBytes   int64 // MemoryBytes is the current resident memory usage in bytes.
 }
 
 // ExecSpec describes a command to execute inside or alongside a workload.

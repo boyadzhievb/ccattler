@@ -87,3 +87,74 @@ func TestSimList(t *testing.T) {
 func TestSimInterfaceCompliance(t *testing.T) {
 	var _ Runtime = NewSimulatorRuntime()
 }
+
+// TestSimStatsRunningWorkload verifies that Stats returns the spec's CPU and
+// memory values for a running workload.
+func TestSimStatsRunningWorkload(t *testing.T) {
+	simulatorRuntime := NewSimulatorRuntime()
+	simulatorRuntime.Start(ctx, Spec{
+		ID:      "stats-aaa",
+		Image:   "app:1.0",
+		CPUm:    500,
+		MemoryB: 536870912,
+	})
+
+	resourceStats, statsError := simulatorRuntime.Stats(ctx, "stats-aaa")
+	if statsError != nil {
+		t.Fatal(statsError)
+	}
+	if resourceStats.CPUMillicores != 500 {
+		t.Errorf("cpu: got %d, want 500", resourceStats.CPUMillicores)
+	}
+	if resourceStats.MemoryBytes != 536870912 {
+		t.Errorf("memory: got %d, want 536870912", resourceStats.MemoryBytes)
+	}
+}
+
+// TestSimStatsStoppedWorkload verifies that Stats returns zero values for a
+// stopped workload.
+func TestSimStatsStoppedWorkload(t *testing.T) {
+	simulatorRuntime := NewSimulatorRuntime()
+	simulatorRuntime.Start(ctx, Spec{ID: "stats-bbb", Image: "app:1.0", CPUm: 1000, MemoryB: 1024})
+	simulatorRuntime.Stop(ctx, "stats-bbb")
+
+	resourceStats, statsError := simulatorRuntime.Stats(ctx, "stats-bbb")
+	if statsError != nil {
+		t.Fatal(statsError)
+	}
+	if resourceStats.CPUMillicores != 0 {
+		t.Errorf("stopped cpu: got %d, want 0", resourceStats.CPUMillicores)
+	}
+	if resourceStats.MemoryBytes != 0 {
+		t.Errorf("stopped memory: got %d, want 0", resourceStats.MemoryBytes)
+	}
+}
+
+// TestSimStatsUnknownWorkload verifies that Stats returns ErrNotFound for a
+// workload that was never started.
+func TestSimStatsUnknownWorkload(t *testing.T) {
+	simulatorRuntime := NewSimulatorRuntime()
+
+	_, statsError := simulatorRuntime.Stats(ctx, "nonexistent")
+	if statsError != ErrNotFound {
+		t.Errorf("expected ErrNotFound, got %v", statsError)
+	}
+}
+
+// TestSimStatsZeroResources verifies that Stats returns zero for a running
+// workload that has no resource requests in its spec.
+func TestSimStatsZeroResources(t *testing.T) {
+	simulatorRuntime := NewSimulatorRuntime()
+	simulatorRuntime.Start(ctx, Spec{ID: "stats-ccc", Image: "app:1.0"})
+
+	resourceStats, statsError := simulatorRuntime.Stats(ctx, "stats-ccc")
+	if statsError != nil {
+		t.Fatal(statsError)
+	}
+	if resourceStats.CPUMillicores != 0 {
+		t.Errorf("cpu: got %d, want 0", resourceStats.CPUMillicores)
+	}
+	if resourceStats.MemoryBytes != 0 {
+		t.Errorf("memory: got %d, want 0", resourceStats.MemoryBytes)
+	}
+}

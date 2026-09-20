@@ -2,17 +2,13 @@
 
 ## Current Status
 
-**Active milestone:** M33 — Correctness III (Phase 36). M1–M32 complete.
+**Active milestone:** M34 — Runtime Stats API (Phase 37). M1–M33 complete.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
-Items addressed by Phase 26 (P0 Correctness), Phase 35a (Correctness II), and Phase 36 (Correctness III): runtime observation authoritative, 127.0.0.1 fallback removed, probe scheduling decoupled, init restart-safe, watch overflow resync, transaction snapshot CAS, derived/ prefix, etcd Put simplified, VIP allocation race fixed, init dual authority resolved, etcd WithPrevKV, EventProjector from committed state, init runtime isolation via ExecInit, multi-port endpoint model, agent sub-reconciler extraction.
+Items addressed by Phase 26 (P0 Correctness), Phase 35a (Correctness II), Phase 36 (Correctness III), and Phase 37 (Runtime Stats): runtime observation authoritative, 127.0.0.1 fallback removed, probe scheduling decoupled, init restart-safe, watch overflow resync, transaction snapshot CAS, derived/ prefix, etcd Put simplified, VIP allocation race fixed, init dual authority resolved, etcd WithPrevKV, EventProjector from committed state, init runtime isolation via ExecInit, multi-port endpoint model, agent sub-reconciler extraction, Runtime Stats() API.
 
-**Remaining open items:**
-
-| Priority | Issue | Detail |
-|----------|-------|--------|
-| P2 | Runtime `Stats()` API missing | Needed for native resource observations powering `cca top` |
+**All architecture debt from external reviews resolved.**
 
 ### Performance Optimization Principle
 
@@ -1446,6 +1442,16 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 - [x] Multi-port endpoint model — `extractServiceExposedPorts` returns `map[string][]int`, `KeyEndpoint` takes port parameter, endpoint key is `endpoint/service/{svc}/{instance}/{port}`, one endpoint per port per instance
 - [x] Agent sub-reconciler extraction — `executeReconciliationCycle` reduced from 70+ lines to orchestration-only loop; per-instance startup logic extracted to `reconcileDesiredInstance`, teardown to `cleanupUndesiredInstance`
 
+### Phase 37 — Runtime Stats API
+- [x] `ResourceStats` type — `CPUMillicores` and `MemoryBytes` fields for observed resource usage
+- [x] `Runtime.Stats(ctx, id)` interface method — returns actual resource usage per workload
+- [x] SimulatorRuntime Stats — returns spec's requested CPU/memory as synthetic usage for running workloads
+- [x] ProcessRuntime Stats — reads /proc/{pid}/stat (CPU ticks) and /proc/{pid}/statm (RSS pages) on Linux
+- [x] ContainerRuntime Stats — queries `nerdctl stats --no-stream` and parses CPU percentage + memory usage
+- [x] `parseNerdctlStats` / `parseMemoryValue` — parse nerdctl stats output (CPU%, memory with MiB/GiB/KiB units)
+- [x] Agent telemetry uses Stats() — `reportWorkloadTelemetry` calls `runtime.Stats()` instead of estimating from desired-state resource requests
+- [x] Dead code removed — `estimateInstanceCPU`, `estimateInstanceMemory`, `parseMillicores`, `parseMemoryBytes` removed from telemetry
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1484,5 +1490,6 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 | M31a — Correctness II | 35a | Transaction snapshot CAS, derived/ prefix, init dual authority resolved, etcd Put simplified |
 | M32 — Cloud Controller | 35 | `cca server --cloud-provider aws` manages node lifecycle, `expose external 443 http` creates cloud LBs, VPC routes auto-programmed |
 | M33 — Correctness III | 36 | etcd WithPrevKV, EventProjector from committed state, ExecInit runtime isolation, multi-port endpoints, agent sub-reconciler extraction |
+| M34 — Runtime Stats | 37 | `Runtime.Stats()` returns actual CPU/memory per workload, agent telemetry uses live stats instead of desired-state estimates |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

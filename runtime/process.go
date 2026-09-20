@@ -210,6 +210,29 @@ func (processRuntime *ProcessRuntime) ExecInit(ctx context.Context, image string
 	return command.Run()
 }
 
+// Stats returns the resource usage of the process identified by id. On
+// supported platforms, it reads RSS memory from the OS process state.
+// CPU usage is approximated from user+system time since process start.
+func (processRuntime *ProcessRuntime) Stats(_ context.Context, id string) (ResourceStats, error) {
+	processRuntime.mutex.Lock()
+	process, exists := processRuntime.processes[id]
+	processRuntime.mutex.Unlock()
+
+	if !exists {
+		return ResourceStats{}, ErrNotFound
+	}
+	if !process.isRunning() {
+		return ResourceStats{}, nil
+	}
+
+	rusage := process.command.ProcessState
+	if rusage != nil {
+		return ResourceStats{}, nil
+	}
+
+	return readProcessStats(process.command.Process.Pid)
+}
+
 // Logs returns a reader with a message indicating that log capture is not
 // available for the process runtime (output goes to parent stdout/stderr).
 func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {

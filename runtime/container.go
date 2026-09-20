@@ -317,6 +317,103 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 	return nil
 }
 
+// Stats returns the current resource usage of the container identified by id
+// by querying `nerdctl stats --no-stream`. Returns zero values if the container
+// is not running or the stats cannot be parsed.
+func (containerRuntime *ContainerRuntime) Stats(ctx context.Context, id string) (ResourceStats, error) {
+	containerRuntime.mutex.Lock()
+	tracked := containerRuntime.trackedContainers[id]
+	containerName := containerRuntime.resolveContainerName(id)
+	containerRuntime.mutex.Unlock()
+
+	if !tracked {
+		return ResourceStats{}, ErrNotFound
+	}
+
+	// nerdctl stats --no-stream --format '{{.CPUPerc}} {{.MemUsage}}' <name>
+	statsCommand := exec.CommandContext(ctx, "nerdctl", "stats", "--no-stream",
+		"--format", "{{.CPUPerc}} {{.MemUsage}}", containerName)
+	var statsOutput bytes.Buffer
+	statsCommand.Stdout = &statsOutput
+	if statsError := statsCommand.Run(); statsError != nil {
+		return ResourceStats{}, nil
+	}
+
+	return parseNerdctlStats(statsOutput.String()), nil
+}
+
+// parseNerdctlStats parses the output of nerdctl stats --format
+// '{{.CPUPerc}} {{.MemUsage}}' into a ResourceStats. The format is:
+// "1.23% 45.6MiB / 7.8GiB" — we extract CPU percentage and current memory.
+func parseNerdctlStats(statsLine string) ResourceStats {
+	statsLine = strings.TrimSpace(statsLine)
+	if statsLine == "" {
+		return ResourceStats{}
+	}
+
+	fields := strings.Fields(statsLine)
+	if len(fields) < 1 {
+		return ResourceStats{}
+	}
+
+	var resourceStats ResourceStats
+
+	cpuPercent := strings.TrimSuffix(fields[0], "%")
+	if parsedCPU, parseError := parseFloat64Safe(cpuPercent); parseError == nil {
+		resourceStats.CPUMillicores = int64(parsedCPU * 10)
+	}
+
+	if len(fields) >= 2 {
+		resourceStats.MemoryBytes = parseMemoryValue(fields[1])
+	}
+
+	return resourceStats
+}
+
+// parseFloat64Safe parses a string as float64, returning an error on failure.
+func parseFloat64Safe(value string) (float64, error) {
+	var result float64
+	_, parseError := fmt.Sscanf(value, "%f", &result)
+	return result, parseError
+}
+
+// parseMemoryValue parses a Docker/nerdctl memory string like "45.6MiB" or
+// "1.2GiB" into bytes.
+func parseMemoryValue(memoryString string) int64 {
+	memoryString = strings.TrimSpace(memoryString)
+	if len(memoryString) == 0 {
+		return 0
+	}
+
+	var numericValue float64
+	var suffix string
+
+	if _, scanError := fmt.Sscanf(memoryString, "%f%s", &numericValue, &suffix); scanError != nil {
+		return 0
+	}
+
+	switch strings.ToLower(suffix) {
+	case "b":
+		return int64(numericValue)
+	case "kib":
+		return int64(numericValue * 1024)
+	case "mib":
+		return int64(numericValue * 1024 * 1024)
+	case "gib":
+		return int64(numericValue * 1024 * 1024 * 1024)
+	case "tib":
+		return int64(numericValue * 1024 * 1024 * 1024 * 1024)
+	case "kb":
+		return int64(numericValue * 1000)
+	case "mb":
+		return int64(numericValue * 1000 * 1000)
+	case "gb":
+		return int64(numericValue * 1000 * 1000 * 1000)
+	default:
+		return 0
+	}
+}
+
 // Logs returns the stdout/stderr output of a container via `nerdctl logs`.
 // When follow is true, the returned reader streams new output as it arrives.
 func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
