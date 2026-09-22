@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -79,8 +80,16 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 	// When a node advertise address and host port are available, use those for
 	// cross-host reachability instead of the container-local IP.
 	// Each instance gets one endpoint per exposed port.
+	// Sort instance IDs for deterministic output — map iteration order varies.
+	sortedInstanceIDs := make([]string, 0, len(instanceFields))
+	for instanceID := range instanceFields {
+		sortedInstanceIDs = append(sortedInstanceIDs, instanceID)
+	}
+	sort.Strings(sortedInstanceIDs)
+
 	desiredEndpoints := make(map[string]string) // "service/instance/port" -> "ip:port"
-	for instanceID, fields := range instanceFields {
+	for _, instanceID := range sortedInstanceIDs {
+		fields := instanceFields[instanceID]
 		if types.InstanceState(fields["state"]) != types.InstanceRunning {
 			continue
 		}
@@ -116,19 +125,32 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 
 	var changes []Change
 
+	// Sort keys for deterministic output — map iteration order varies.
+	sortedDesiredKeys := make([]string, 0, len(desiredEndpoints))
+	for endpointKey := range desiredEndpoints {
+		sortedDesiredKeys = append(sortedDesiredKeys, endpointKey)
+	}
+	sort.Strings(sortedDesiredKeys)
+
 	// Create missing endpoints.
-	for endpointKey, endpointAddress := range desiredEndpoints {
+	for _, endpointKey := range sortedDesiredKeys {
 		if !existingEndpoints[endpointKey] {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.PrefixEndpoint + "/service/" + endpointKey,
-				Value: []byte(endpointAddress),
+				Value: []byte(desiredEndpoints[endpointKey]),
 			})
 		}
 	}
 
 	// Remove stale endpoints.
+	sortedExistingKeys := make([]string, 0, len(existingEndpoints))
 	for endpointKey := range existingEndpoints {
+		sortedExistingKeys = append(sortedExistingKeys, endpointKey)
+	}
+	sort.Strings(sortedExistingKeys)
+
+	for _, endpointKey := range sortedExistingKeys {
 		if _, stillDesired := desiredEndpoints[endpointKey]; !stillDesired {
 			changes = append(changes, Change{
 				Type: store.OpDelete,

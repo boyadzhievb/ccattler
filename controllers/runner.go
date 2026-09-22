@@ -3,6 +3,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +34,11 @@ var (
 	reconciliationChanges = metrics.DefaultRegistry.RegisterCounter(
 		"ccattler_reconciliation_changes_total",
 		"Total number of fact changes committed by reconciliation",
+		"controller",
+	)
+	writeDomainViolations = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_write_domain_violations_total",
+		"Changes rejected because the key fell outside the controller's declared write domain",
 		"controller",
 	)
 )
@@ -317,6 +324,16 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		return false, nil
 	}
 
+	changes, domainError := enforceWriteDomain(controller.Name(), changes)
+	if domainError != nil {
+		return false, domainError
+	}
+	if len(changes) == 0 {
+		return false, nil
+	}
+
+	sortChangesByKey(changes)
+
 	scannedFactRevisions := make(map[string]int64, len(allFacts))
 	for _, scannedFact := range allFacts {
 		scannedFactRevisions[scannedFact.Key] = scannedFact.Revision
@@ -377,5 +394,53 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	reconciliationChanges.Add(int64(len(changes)), controller.Name())
 
 	return false, nil
+}
+
+// enforceWriteDomain validates that every proposed change falls within the
+// controller's declared output prefixes. Changes that violate the write domain
+// are dropped and logged. Returns an error only if the output prefixes map has
+// no entry for the controller (unknown controller).
+func enforceWriteDomain(controllerName string, changes []Change) ([]Change, error) {
+	allowedPrefixes, declared := controllerOutputPrefixes()[controllerName]
+	if !declared {
+		return changes, nil
+	}
+
+	validatedChanges := make([]Change, 0, len(changes))
+	for _, change := range changes {
+		if isKeyWithinWriteDomain(change.Key, allowedPrefixes) {
+			validatedChanges = append(validatedChanges, change)
+		} else {
+			writeDomainViolations.Inc(controllerName)
+			logging.Default().Error("write domain violation: change dropped",
+				"controller", controllerName,
+				"key", change.Key,
+				"allowed_prefixes", fmt.Sprintf("%v", allowedPrefixes))
+		}
+	}
+	return validatedChanges, nil
+}
+
+// isKeyWithinWriteDomain checks whether a key starts with any of the allowed
+// output prefixes for a controller.
+func isKeyWithinWriteDomain(key string, allowedPrefixes []string) bool {
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(key, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// sortChangesByKey sorts a slice of changes by key in lexicographic order.
+// This guarantees deterministic transaction commit order regardless of map
+// iteration ordering inside controller Reconcile methods.
+func sortChangesByKey(changes []Change) {
+	sort.Slice(changes, func(i, j int) bool {
+		if changes[i].Key != changes[j].Key {
+			return changes[i].Key < changes[j].Key
+		}
+		return changes[i].Type < changes[j].Type
+	})
 }
 

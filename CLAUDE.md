@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M39 — Phase 42 Store Correctness. M1–M39 complete. All architecture debt resolved.
+**Completed through:** M40 — Phase 43 Truth & Reconciliation. M1–M40 complete. All architecture debt resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
