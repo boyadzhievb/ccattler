@@ -5,6 +5,24 @@ import (
 	"io"
 )
 
+// isValidEnvVarName checks whether name is a valid POSIX environment variable
+// name: non-empty, starts with a letter or underscore, and contains only
+// alphanumeric characters and underscores.
+func isValidEnvVarName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for index, character := range name {
+		if index == 0 && character >= '0' && character <= '9' {
+			return false
+		}
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_') {
+			return false
+		}
+	}
+	return true
+}
+
 // Spec describes a workload to run. It carries all the information a runtime
 // backend needs to start a process or container: the command/image, environment
 // variables, and resource hints.

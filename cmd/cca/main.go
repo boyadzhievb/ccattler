@@ -327,6 +327,12 @@ type serverCommandConfig struct {
 	tlsKeyPath string
 	// tlsCACertPath is the path to a PEM-encoded CA certificate for verifying client certs.
 	tlsCACertPath string
+	// etcdCertPath is the path to a PEM-encoded client certificate for etcd mTLS.
+	etcdCertPath string
+	// etcdKeyPath is the path to a PEM-encoded client private key for etcd mTLS.
+	etcdKeyPath string
+	// etcdCACertPath is the path to a PEM-encoded CA certificate for verifying etcd server certs.
+	etcdCACertPath string
 	// dnsEnabled starts the built-in DNS server alongside the control plane.
 	dnsEnabled bool
 	// dnsListenAddress is the host:port the DNS server binds to (default ":15353").
@@ -397,6 +403,21 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.tlsCACertPath = args[argIndex]
+			}
+		case "--etcd-cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCertPath = args[argIndex]
+			}
+		case "--etcd-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdKeyPath = args[argIndex]
+			}
+		case "--etcd-ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCACertPath = args[argIndex]
 			}
 		case "--dns":
 			parsedConfig.dnsEnabled = true
@@ -475,15 +496,18 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
 // the node agent against a shared state store.
 type agentCommandConfig struct {
-	storeBackend     string
-	etcdEndpoints    string
-	storeKeyPrefix   string
-	nodeID           string
-	runtimeBackend   string
+	storeBackend       string
+	etcdEndpoints      string
+	storeKeyPrefix     string
+	nodeID             string
+	runtimeBackend     string
 	advertiseAddress   string
 	tlsCertPath        string
 	tlsKeyPath         string
 	tlsCACertPath      string
+	etcdCertPath       string
+	etcdKeyPath        string
+	etcdCACertPath     string
 	proxyEnabled       bool
 	proxyListenAddress string
 	logLevel           string
@@ -542,6 +566,21 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.tlsCACertPath = args[argIndex]
+			}
+		case "--etcd-cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCertPath = args[argIndex]
+			}
+		case "--etcd-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdKeyPath = args[argIndex]
+			}
+		case "--etcd-ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCACertPath = args[argIndex]
 			}
 		case "--advertise-address":
 			if argIndex+1 < len(args) {
@@ -615,14 +654,48 @@ func configureLogger(logLevel string, logFormat string) {
 }
 
 // createStateStoreFromServerConfig builds the appropriate StateStore for
-// the server or agent command configuration.
-func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefix string) (store.StateStore, error) {
+// the server or agent command configuration. When etcdCertPath, etcdKeyPath,
+// and etcdCACertPath are all provided, a TLS config is built for the etcd
+// client connection.
+func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefix, etcdCertPath, etcdKeyPath, etcdCACertPath string) (store.StateStore, error) {
 	if storeBackend == "etcd" {
 		endpointList := strings.Split(etcdEndpoints, ",")
+
+		var etcdTLSConfig *tls.Config
+		if etcdCertPath != "" && etcdKeyPath != "" && etcdCACertPath != "" {
+			clientCertificate, loadError := tls.LoadX509KeyPair(etcdCertPath, etcdKeyPath)
+			if loadError != nil {
+				return nil, fmt.Errorf("loading etcd client certificate: %w", loadError)
+			}
+
+			caCertPEM, readError := os.ReadFile(etcdCACertPath)
+			if readError != nil {
+				return nil, fmt.Errorf("reading etcd CA certificate: %w", readError)
+			}
+
+			caCertPool := x509.NewCertPool()
+			if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+				return nil, fmt.Errorf("etcd CA certificate file contains no valid certificates")
+			}
+
+			etcdTLSConfig = &tls.Config{
+				Certificates: []tls.Certificate{clientCertificate},
+				RootCAs:      caCertPool,
+				MinVersion:   tls.VersionTLS13,
+			}
+
+			for _, endpoint := range endpointList {
+				if strings.HasPrefix(endpoint, "http://") {
+					return nil, fmt.Errorf("etcd endpoint %q uses http:// but TLS is configured; use https:// or omit the scheme", endpoint)
+				}
+			}
+		}
+
 		return store.NewEtcdStore(store.EtcdStoreConfig{
 			Endpoints:   endpointList,
 			KeyPrefix:   storeKeyPrefix,
 			DialTimeout: 5 * time.Second,
+			TLSConfig:   etcdTLSConfig,
 		})
 	}
 	return store.NewMemoryStore(), nil
@@ -634,7 +707,8 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 func executeServerCommand(parsedConfig serverCommandConfig) {
 	configureLogger(parsedConfig.logLevel, parsedConfig.logFormat)
 	factStore, storeCreationError := createStateStoreFromServerConfig(
-		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+		parsedConfig.etcdCertPath, parsedConfig.etcdKeyPath, parsedConfig.etcdCACertPath)
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
@@ -883,7 +957,8 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 func executeAgentCommand(parsedConfig agentCommandConfig) {
 	configureLogger(parsedConfig.logLevel, parsedConfig.logFormat)
 	factStore, storeCreationError := createStateStoreFromServerConfig(
-		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+		parsedConfig.etcdCertPath, parsedConfig.etcdKeyPath, parsedConfig.etcdCACertPath)
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
@@ -1041,7 +1116,8 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 // generates a new join token, list shows active tokens, and revoke removes one.
 func executeTokenCommand(parsedConfig tokenCommandConfig) {
 	factStore, storeCreationError := createStateStoreFromServerConfig(
-		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+		"", "", "")
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
@@ -1251,7 +1327,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	keyPath := parsedConfig.dataDirectory + "/node-key.pem"
 	caCertPath := parsedConfig.dataDirectory + "/ca.pem"
 
-	if writeError := os.WriteFile(certPath, []byte(enrollmentResponse.CertificatePEM), 0644); writeError != nil {
+	if writeError := os.WriteFile(certPath, []byte(enrollmentResponse.CertificatePEM), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing certificate: %v\n", writeError)
 		os.Exit(1)
 	}
@@ -1410,7 +1486,8 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 
 	if parsedConfig.storeBackend == "etcd" {
 		factStore, storeCreationError := createStateStoreFromServerConfig(
-			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+			"", "", "")
 		if storeCreationError != nil {
 			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
 			os.Exit(1)
@@ -2280,7 +2357,8 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 
 	if parsedConfig.storeBackend == "etcd" {
 		factStore, storeCreationError := createStateStoreFromServerConfig(
-			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+			"", "", "")
 		if storeCreationError != nil {
 			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
 			os.Exit(1)

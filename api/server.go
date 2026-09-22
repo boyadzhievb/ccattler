@@ -308,6 +308,10 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	if singleKey := request.URL.Query().Get("key"); singleKey != "" {
+		if isSensitivePrefix(singleKey) {
+			http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+			return
+		}
 		fact, err := apiServer.factStore.Get(requestContext, singleKey)
 		if err != nil {
 			http.Error(responseWriter, fmt.Sprintf(`{"error":"key not found: %s"}`, singleKey), http.StatusNotFound)
@@ -322,6 +326,11 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
 		http.Error(responseWriter, `{"error":"prefix or key parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	if isSensitivePrefix(prefix) {
+		http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
 		return
 	}
 
@@ -424,6 +433,11 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
 		http.Error(responseWriter, "prefix parameter required", http.StatusBadRequest)
+		return
+	}
+
+	if isSensitivePrefix(prefix) {
+		http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
 		return
 	}
 
@@ -925,6 +939,18 @@ func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter,
 	discoveryDocument := apiServer.workloadTokenIssuer.OIDCDiscoveryDocument()
 	responseWriter.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(responseWriter).Encode(discoveryDocument)
+}
+
+// isSensitivePrefix returns true if the given prefix or key path refers to
+// a sensitive store area that should not be exposed through the public API.
+func isSensitivePrefix(prefix string) bool {
+	sensitiveKeyPrefixes := []string{"secrets/", "credentials/", "enrollment/token/", "bootstrap/"}
+	for _, sensitivePrefix := range sensitiveKeyPrefixes {
+		if strings.HasPrefix(prefix, sensitivePrefix) || prefix == sensitivePrefix {
+			return true
+		}
+	}
+	return false
 }
 
 // handleOIDCJWKS serves the JSON Web Key Set at /oidc/jwks containing the

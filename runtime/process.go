@@ -65,6 +65,16 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 		return &StartError{ID: spec.ID, Reason: "empty command"}
 	}
 
+	if strings.Contains(args[0], "..") {
+		return &StartError{ID: spec.ID, Reason: "command contains path traversal"}
+	}
+	shellMetacharacters := ";|&$`'\"\\><()"
+	for _, argument := range args {
+		if strings.ContainsAny(argument, shellMetacharacters) {
+			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("argument %q contains shell metacharacter", argument)}
+		}
+	}
+
 	if _, lookupError := exec.LookPath(args[0]); lookupError != nil {
 		if strings.Contains(args[0], ":") {
 			return &StartError{
@@ -84,6 +94,9 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 	command.Stderr = os.Stderr
 
 	for envKey, envValue := range spec.Env {
+		if !isValidEnvVarName(envKey) {
+			continue
+		}
 		command.Env = append(command.Env, envKey+"="+envValue)
 	}
 	if len(spec.Env) > 0 {

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M41 — Phase 44 Agent Decomposition. M1–M41 complete. Gate D resolved.
+**Completed through:** M42 — Phase 45 Security Audit. M1–M42 complete. Gate E resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
