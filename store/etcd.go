@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -38,6 +39,8 @@ type EtcdStoreConfig struct {
 	Username string
 	// Password is the optional etcd authentication password.
 	Password string
+	// TLSConfig is the optional TLS configuration for encrypted etcd connections.
+	TLSConfig *tls.Config
 }
 
 // NewEtcdStore creates a new EtcdStore connected to the specified etcd cluster. The
@@ -54,6 +57,7 @@ func NewEtcdStore(config EtcdStoreConfig) (*EtcdStore, error) {
 		DialTimeout: dialTimeout,
 		Username:    config.Username,
 		Password:    config.Password,
+		TLS:         config.TLSConfig,
 	})
 	if connectionError != nil {
 		return nil, connectionError

@@ -454,6 +454,12 @@
 - [x] Runtime conformance suite — 15 behavioral contract tests exercising Start/Stop/Status/List/Stats/Logs/Exec across SimulatorRuntime and ProcessRuntime via factory pattern
 - [x] Failure matrix tests — 7 edge-case tests (empty ID, exec on unknown, stats after stop, concurrent start/stop, env vars, follow logs, exec init) plus 4 implementation-specific tests (exec failure injection, start rejected, container image rejected, logs close)
 
+### Phase 45 — Security Audit (M42, Gate E)
+- [x] Formal threat model — `threat-model.md` covering 10 threat categories (etcd compromise, command injection, secret leakage, enrollment MITM, privilege escalation, DoS, API state exposure, enrollment key transport, config path traversal, container escape), trust boundaries, asset inventory, priority matrix
+- [x] Command execution audit — 16 `exec.Command`/`exec.CommandContext` call sites across 6 files; ProcessRuntime Start() rejects path traversal and shell metacharacters; ContainerRuntime validates OCI image reference regex; env var key validation (`isValidEnvVarName`) in both runtimes
+- [x] Secret leakage audit — API prefix denylist (`isSensitivePrefix`) blocks state/watch queries to `secrets/`, `credentials/`, `enrollment/token/`, `bootstrap/`; node cert permissions fixed (0644 → 0600); config file path traversal protection in `materializeConfigFilesToTempDirectory`
+- [x] etcd TLS audit — `EtcdStoreConfig.TLSConfig` field added, `--etcd-cert/--etcd-key/--etcd-ca` CLI flags for server and agent commands, endpoint scheme validation rejects `http://` when TLS configured, TLS 1.3 minimum enforced
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -485,14 +491,14 @@
 - [x] Runtime conformance suite (Phase 44) — 15 behavioral contract tests + 7 failure matrix tests running against SimulatorRuntime and ProcessRuntime; factory-based test pattern
 - [x] Failure matrix testing (Phase 44) — empty ID start, exec on unknown workload, stats after stop, concurrent start/stop, env vars, follow-mode logs, exec failure injection, start rejected, container image rejected
 
-#### Gate E — Security Audit
+#### Gate E — Security Audit (resolved: Phases 11, 39a, 45)
 - [x] mTLS, RBAC+ABAC, secrets (Phase 11)
 - [x] ValidateResourceName at API boundaries (Phase 39a)
 - [x] Host header sanitization (Phase 39a)
-- [ ] Formal threat model document
-- [ ] Command execution audit (os/exec, shell, nerdctl paths)
-- [ ] Secret leakage audit (logs, errors, CLI output)
-- [ ] etcd TLS and credential audit
+- [x] Formal threat model document (Phase 45) — `threat-model.md` with 10 threat categories, trust boundaries, asset inventory, priority fixes
+- [x] Command execution audit (Phase 45) — 16 exec call sites audited, image validation, shell metacharacter rejection, env key validation added
+- [x] Secret leakage audit (Phase 45) — API prefix denylist for secrets/credentials/enrollment/bootstrap, node cert permissions fixed
+- [x] etcd TLS and credential audit (Phase 45) — TLS config added to EtcdStoreConfig, `--etcd-cert/key/ca` CLI flags, endpoint scheme validation
 
 #### Gate F — Performance & Scalability
 - [x] Runtime.Stats() live metrics (Phase 37)
@@ -567,7 +573,7 @@
 | M39 — Store Correctness | 42 | StartRevision watch replay, EventCompacted, event history buffer, 12 conformance tests proving gap-free observation |
 | M40 — Truth & Reconciliation | 43 | Deterministic plans (sorted commits + sorted map iterations), write domain enforcement (enforceWriteDomain + Prometheus metric), key ownership matrix (16 controllers + 12 non-controller writers) |
 | M41 — Agent Decomposition | 44 | ProbeScheduler + NodeReporter + DataPlaneReconciler extracted from Agent, 15 runtime conformance tests + 7 failure matrix tests across Simulator and Process runtimes |
-| M42 — Security Audit | Gate E | Threat model, command/secret/etcd audit |
+| M42 — Security Audit | 45 | Formal threat model (10 categories), command exec audit (image validation, metachar rejection, env key validation), secret leakage audit (API prefix denylist, cert permissions), etcd TLS audit (TLSConfig, CLI flags, scheme validation) |
 | M43 — Performance | Gate F | Load testing, algorithm optimization, complexity audit |
 | M44 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
 

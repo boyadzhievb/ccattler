@@ -8,9 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 )
+
+var validImageReferencePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$`)
 
 // ContainerRuntime runs workloads as OCI containers via the nerdctl or docker CLI.
 // Spec.Image is the OCI image reference (e.g., "nginx:1.28"). Resource limits
@@ -127,6 +130,10 @@ func (containerRuntime *ContainerRuntime) materializeConfigFilesToTempDirectory(
 	var volumeMountArgs []string
 	for containerFilePath, fileContent := range configFiles {
 		hostFilePath := filepath.Join(configTempDirectory, containerFilePath)
+		hostFilePath = filepath.Clean(hostFilePath)
+		if !strings.HasPrefix(hostFilePath, configTempDirectory) {
+			return nil, "", fmt.Errorf("config file path traversal detected: %s", containerFilePath)
+		}
 		parentDirectory := filepath.Dir(hostFilePath)
 		if err := os.MkdirAll(parentDirectory, 0755); err != nil {
 			os.RemoveAll(configTempDirectory)
@@ -208,7 +215,14 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	args = append(args, volumeMountArgs...)
 
 	for envKey, envValue := range spec.Env {
+		if !isValidEnvVarName(envKey) {
+			continue
+		}
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
+	}
+
+	if !validImageReferencePattern.MatchString(spec.Image) {
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("invalid image reference: %q", spec.Image)}
 	}
 
 	args = append(args, spec.Image)
