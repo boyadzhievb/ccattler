@@ -19,23 +19,23 @@ import (
 
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
-// Three internal components:
-//   - Observer: reads runtime state to determine what is actually running
-//   - Reconciler: compares desired state (placements) with observed, calls runtime.Start/Stop
-//   - Reporter: publishes actual state back to the store
+// Delegates to three sub-components:
+//   - ProbeScheduler: health checks and probe execution on an independent timer
+//   - NodeReporter: telemetry collection, heartbeat, and node registration
+//   - DataPlaneReconciler: VIP DNAT rule programming via the data plane provider
 type Agent struct {
-	nodeID               string                        // nodeID is the unique identifier for the node this agent manages.
-	store                store.StateStore              // store is the fact store used to read desired state and write observed state.
-	runtime              runtime.Runtime               // runtime is the pluggable container/process runtime adapter.
-	networkProvider      network.NetworkProvider        // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
-	dataPlaneProvider    network.DataPlaneProvider      // dataPlaneProvider programs VIP DNAT rules; nil means no data plane.
-	storageProvider      storage.StorageProvider        // storageProvider manages volume attach/detach; nil means no volume support.
-	secretProvider       SecretProvider                 // secretProvider retrieves decrypted secrets; nil means no secret support.
-	materializedSecrets  []MaterializedSecret           // materializedSecrets tracks secrets written for running instances.
-	advertiseAddress     string                        // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
-	interval             time.Duration                 // interval is the period between periodic reconciliation cycles.
-	lastHealthCheck      map[string]time.Time          // lastHealthCheck tracks when each instance was last health-checked.
-	probeStates          map[string]*instanceProbeState // probeStates tracks probe execution state per instance ID.
+	nodeID               string                 // nodeID is the unique identifier for the node this agent manages.
+	store                store.StateStore       // store is the fact store used to read desired state and write observed state.
+	runtime              runtime.Runtime        // runtime is the pluggable container/process runtime adapter.
+	networkProvider      network.NetworkProvider // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	storageProvider      storage.StorageProvider // storageProvider manages volume attach/detach; nil means no volume support.
+	secretProvider       SecretProvider         // secretProvider retrieves decrypted secrets; nil means no secret support.
+	materializedSecrets  []MaterializedSecret   // materializedSecrets tracks secrets written for running instances.
+	advertiseAddress     string                 // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
+	interval             time.Duration          // interval is the period between periodic reconciliation cycles.
+	probeScheduler       *ProbeScheduler        // probeScheduler runs health checks and probes independently of reconciliation.
+	nodeReporter         *NodeReporter          // nodeReporter collects telemetry and publishes node state to the store.
+	dataPlaneReconciler  *DataPlaneReconciler   // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -43,12 +43,15 @@ type Agent struct {
 // network provider is nil by default, meaning instances get 127.0.0.1 as their
 // IP. Use SetNetworkProvider to enable real IP allocation.
 func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runtime) *Agent {
+	defaultInterval := 1 * time.Second
 	return &Agent{
-		nodeID:          nodeID,
-		store:           stateStore,
-		runtime:         runtimeAdapter,
-		interval:        1 * time.Second,
-		lastHealthCheck: make(map[string]time.Time),
+		nodeID:   nodeID,
+		store:    stateStore,
+		runtime:  runtimeAdapter,
+		interval: defaultInterval,
+		probeScheduler: NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultInterval),
+		nodeReporter:   NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
+		dataPlaneReconciler: NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
 	}
 }
 
@@ -78,7 +81,7 @@ func (nodeAgent *Agent) SetSecretProvider(secretProvider SecretProvider) {
 // endpoint facts from the store and calls the provider to ensure iptables
 // rules match the desired state.
 func (nodeAgent *Agent) SetDataPlaneProvider(dataPlaneProvider network.DataPlaneProvider) {
-	nodeAgent.dataPlaneProvider = dataPlaneProvider
+	nodeAgent.dataPlaneReconciler = NewDataPlaneReconciler(nodeAgent.nodeID, nodeAgent.store, dataPlaneProvider, nodeAgent.advertiseAddress)
 }
 
 // SetAdvertiseAddress configures the LAN-routable IP address for this node.
@@ -86,12 +89,14 @@ func (nodeAgent *Agent) SetDataPlaneProvider(dataPlaneProvider network.DataPlane
 // providers can build cross-host DNAT targets.
 func (nodeAgent *Agent) SetAdvertiseAddress(advertiseAddress string) {
 	nodeAgent.advertiseAddress = advertiseAddress
+	nodeAgent.nodeReporter.advertiseAddress = advertiseAddress
+	nodeAgent.dataPlaneReconciler.advertiseAddress = advertiseAddress
 }
 
 // DataPlaneProvider returns the configured data plane provider, or nil if
 // no data plane is configured. Used during shutdown for cleanup.
 func (nodeAgent *Agent) DataPlaneProvider() network.DataPlaneProvider {
-	return nodeAgent.dataPlaneProvider
+	return nodeAgent.dataPlaneReconciler.dataPlaneProvider
 }
 
 // SetInterval overrides the default periodic reconciliation interval.
@@ -107,10 +112,10 @@ func (nodeAgent *Agent) SetInterval(reconciliationInterval time.Duration) {
 // interval timer and on every placement-key change observed via the store watch.
 func (nodeAgent *Agent) Run(ctx context.Context) error {
 	// Register this node and write initial heartbeat.
-	nodeAgent.store.Put(ctx, types.KeyObservedNode(nodeAgent.nodeID), []byte(""))
-	nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
-	nodeAgent.writeHeartbeat(ctx)
-	nodeAgent.publishNodeAdvertiseAddress(ctx)
+	nodeAgent.nodeReporter.RegisterNode(ctx)
+	nodeAgent.nodeReporter.PublishAliveState(ctx)
+	nodeAgent.nodeReporter.WriteHeartbeat(ctx)
+	nodeAgent.nodeReporter.PublishAdvertiseAddress(ctx)
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
@@ -118,7 +123,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	}
 
 	// Start the independent probe scheduler goroutine.
-	go nodeAgent.runProbeScheduler(ctx)
+	go nodeAgent.probeScheduler.Run(ctx, nodeAgent.findInstancesPlacedOnThisNode)
 
 	// Watch for placement changes and reconcile periodically.
 	ticker := time.NewTicker(nodeAgent.interval)
@@ -134,13 +139,13 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			nodeAgent.store.Put(ctx, types.KeyObservedNodeState(nodeAgent.nodeID), []byte(string(types.NodeAlive)))
-			nodeAgent.writeHeartbeat(ctx)
+			nodeAgent.nodeReporter.PublishAliveState(ctx)
+			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
-			nodeAgent.collectAndReportNodeTelemetry(ctx)
-			nodeAgent.reconcileDataPlane(ctx)
+			nodeAgent.nodeReporter.CollectAndReportTelemetry(ctx)
+			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 		case watchEvent, ok := <-placementCh:
 			if !ok {
 				return nil
@@ -155,38 +160,6 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
 		}
-	}
-}
-
-// runProbeScheduler runs health checks and probes on their own timing, independent
-// of the reconciliation loop. This prevents slow reconciliation from delaying
-// liveness/readiness checks and allows probes to run at their configured intervals
-// regardless of reconciliation frequency.
-func (nodeAgent *Agent) runProbeScheduler(ctx context.Context) {
-	probeTicker := time.NewTicker(nodeAgent.interval)
-	defer probeTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-probeTicker.C:
-			nodeAgent.executeProbePass(ctx)
-		}
-	}
-}
-
-// executeProbePass runs health checks and probes for all instances placed on
-// this node. Called by the independent probe scheduler goroutine.
-func (nodeAgent *Agent) executeProbePass(ctx context.Context) {
-	desired, err := nodeAgent.findInstancesPlacedOnThisNode(ctx)
-	if err != nil {
-		return
-	}
-
-	for _, instanceInfo := range desired {
-		nodeAgent.performHealthCheckAndReportResult(ctx, instanceInfo)
-		nodeAgent.executeProbesForInstance(ctx, instanceInfo)
 	}
 }
 
@@ -319,7 +292,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
 	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
 	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
-	cpuMillicores, memoryBytes := nodeAgent.lookupServiceResourcesFromStore(ctx, instanceInfo.service)
+	cpuMillicores, memoryBytes := nodeAgent.nodeReporter.lookupServiceResourcesFromStore(ctx, instanceInfo.service)
 
 	allocatedIP := ""
 	if nodeAgent.networkProvider != nil {
@@ -353,7 +326,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
 		hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
-		nodeAgent.publishInstanceHostPort(ctx, instanceInfo.id, hostPort)
+		publishInstanceHostPort(ctx, nodeAgent.store, instanceInfo.id, hostPort)
 	}
 
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -373,7 +346,7 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 		nodeAgent.detachVolumesForInstance(ctx, instanceID)
 	}
 	nodeAgent.runtime.Stop(ctx, instanceID)
-	nodeAgent.cleanupProbeState(instanceID)
+	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	if nodeAgent.networkProvider != nil {
 		nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
 		types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)
@@ -409,105 +382,6 @@ func (nodeAgent *Agent) lookupServiceExposedPortsFromStore(ctx context.Context, 
 	return ports
 }
 
-// performHealthCheckAndReportResult looks up the health probe configuration for
-// the service that owns the given instance, executes the probe against the
-// instance's IP address, and writes the resulting health status (healthy or
-// unhealthy) back to the store. If no health probe is configured for the
-// service, this method is a no-op.
-func (nodeAgent *Agent) performHealthCheckAndReportResult(ctx context.Context, instanceInfo placedInstanceInfo) {
-	probe, ok := nodeAgent.buildHealthProbeFromServiceConfig(ctx, instanceInfo.service)
-	if !ok {
-		return
-	}
-
-	healthInterval := nodeAgent.lookupHealthIntervalFromStore(ctx, instanceInfo.service)
-	if lastCheck, exists := nodeAgent.lastHealthCheck[instanceInfo.id]; exists {
-		if time.Since(lastCheck) < healthInterval {
-			return
-		}
-	}
-
-	ipFact, ipError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceIP(instanceInfo.id))
-	if ipError != nil || len(ipFact.Value) == 0 {
-		return
-	}
-	instanceIP := string(ipFact.Value)
-
-	healthy := CheckHealth(ctx, probe, instanceIP)
-	status := types.HealthUnknown
-	if healthy {
-		status = types.HealthHealthy
-	} else {
-		status = types.HealthUnhealthy
-	}
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
-	nodeAgent.lastHealthCheck[instanceInfo.id] = time.Now()
-}
-
-// lookupHealthIntervalFromStore reads the configured health check interval
-// for the given service from the store. Returns 10s as default if not configured.
-func (nodeAgent *Agent) lookupHealthIntervalFromStore(ctx context.Context, serviceName string) time.Duration {
-	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthInterval(serviceName))
-	if err != nil {
-		return 10 * time.Second
-	}
-	parsed, err := time.ParseDuration(string(factEntry.Value))
-	if err != nil {
-		return 10 * time.Second
-	}
-	return parsed
-}
-
-// buildHealthProbeFromServiceConfig reads the health check configuration for
-// the named service from the store and assembles a HealthProbe. It returns
-// false if the service has no health method configured, if the method is
-// unrecognized, or if no exposed port can be derived.
-func (nodeAgent *Agent) buildHealthProbeFromServiceConfig(ctx context.Context, service string) (HealthProbe, bool) {
-	methodFact, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthMethod(service))
-	if err != nil {
-		return HealthProbe{}, false
-	}
-	method := string(methodFact.Value)
-
-	probe := HealthProbe{Timeout: 2 * time.Second}
-	switch method {
-	case "http":
-		probe.Type = ProbeHTTP
-		if factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceHealthPath(service)); err == nil {
-			probe.Path = string(factEntry.Value)
-		} else {
-			probe.Path = "/"
-		}
-	case "tcp":
-		probe.Type = ProbeTCP
-	default:
-		return HealthProbe{}, false
-	}
-
-	// Derive port from the first expose port on the service.
-	facts, err := nodeAgent.store.Scan(ctx, fmt.Sprintf("%s/service/%s/expose/", types.PrefixDesired, service))
-	if err == nil && len(facts) > 0 {
-		portStr := facts[0].Key[strings.LastIndex(facts[0].Key, "/")+1:]
-		if parsedPort, err := strconv.Atoi(portStr); err == nil {
-			probe.Port = parsedPort
-		}
-	}
-
-	if probe.Port == 0 {
-		return HealthProbe{}, false
-	}
-
-	return probe, true
-}
-
-// writeHeartbeat writes the current Unix-millisecond timestamp to the node's
-// lease key. Millisecond granularity avoids false lease expiry from second-level
-// truncation. The failure detector controller reads these timestamps to
-// determine whether a node is still alive.
-func (nodeAgent *Agent) writeHeartbeat(ctx context.Context) {
-	timestampMillis := fmt.Sprintf("%d", time.Now().UnixMilli())
-	nodeAgent.store.Put(ctx, types.KeyLeaseNode(nodeAgent.nodeID), []byte(timestampMillis))
-}
 
 // resolveServiceConfigEnvVars reads the desired config env vars for a service
 // from the store and returns them as a map for the runtime spec.

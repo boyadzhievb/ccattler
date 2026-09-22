@@ -446,6 +446,14 @@
 - [x] 10 deterministic plan tests — each controller verified: same snapshot → same plan across 5 iterations with fresh controller instances
 - [x] 6 write domain tests — enforcement, all-prefixes acceptance, wrong-prefix rejection, unknown controller passthrough, multi-prefix validation, completeness cross-check
 
+### Phase 44 — Agent Decomposition (M41, Gate D)
+- [x] ProbeScheduler struct — extracted from Agent, owns probe state tracking, health check execution, probe scheduling loop; Run() method with pluggable instance discovery; exported CleanupInstance and HasConfiguredProbes
+- [x] NodeReporter struct — extracted from Agent, owns telemetry collection, heartbeat writing, node registration, advertise address publishing; CollectAndReportTelemetry, WriteHeartbeat, PublishAliveState, PublishAdvertiseAddress, RegisterNode methods
+- [x] DataPlaneReconciler struct — extracted from Agent, owns VIP DNAT reconciliation, backend resolution, advertise address publishing; Reconcile method, package-level publishInstanceHostPort
+- [x] Agent composition — Agent struct delegates to ProbeScheduler, NodeReporter, DataPlaneReconciler; Run() wires sub-components; no probe/telemetry/dataplane methods remain on Agent
+- [x] Runtime conformance suite — 15 behavioral contract tests exercising Start/Stop/Status/List/Stats/Logs/Exec across SimulatorRuntime and ProcessRuntime via factory pattern
+- [x] Failure matrix tests — 7 edge-case tests (empty ID, exec on unknown, stats after stop, concurrent start/stop, env vars, follow logs, exec init) plus 4 implementation-specific tests (exec failure injection, start rejected, container image rejected, logs close)
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -469,13 +477,13 @@
 - [x] Event projection from committed state (Phase 36)
 - [x] Key ownership matrix audit (Phase 43) — formal document `key-ownership-matrix.md` mapping every prefix to its sole writer, shared overlaps documented
 
-#### Gate D — Agent & Health Model
+#### Gate D — Agent & Health Model (resolved: Phases 26, 36, 44)
 - [x] Probe scheduling independent from reconciliation (Phase 26)
 - [x] Init phase single authority (Phase 36)
 - [x] Agent sub-reconciler extraction (Phase 36)
-- [ ] Agent full decomposition (node reporter, runtime reconciler, probe scheduler, etc.)
-- [ ] Runtime conformance suite across all implementations
-- [ ] Failure matrix testing (start rejected, start then exit, runtime unavailable, etc.)
+- [x] Agent full decomposition (Phase 44) — ProbeScheduler, NodeReporter, DataPlaneReconciler structs extracted from monolithic Agent; Agent composes and delegates to sub-components
+- [x] Runtime conformance suite (Phase 44) — 15 behavioral contract tests + 7 failure matrix tests running against SimulatorRuntime and ProcessRuntime; factory-based test pattern
+- [x] Failure matrix testing (Phase 44) — empty ID start, exec on unknown workload, stats after stop, concurrent start/stop, env vars, follow-mode logs, exec failure injection, start rejected, container image rejected
 
 #### Gate E — Security Audit
 - [x] mTLS, RBAC+ABAC, secrets (Phase 11)
@@ -558,7 +566,7 @@
 | M38 — Algorithms | 41 | Min-heap scheduler, binary search extraction, trie prefix scan, topological sort, cycle detection |
 | M39 — Store Correctness | 42 | StartRevision watch replay, EventCompacted, event history buffer, 12 conformance tests proving gap-free observation |
 | M40 — Truth & Reconciliation | 43 | Deterministic plans (sorted commits + sorted map iterations), write domain enforcement (enforceWriteDomain + Prometheus metric), key ownership matrix (16 controllers + 12 non-controller writers) |
-| M41 — Agent Decomposition | Gate D | Full agent split, runtime conformance suite, failure matrix |
+| M41 — Agent Decomposition | 44 | ProbeScheduler + NodeReporter + DataPlaneReconciler extracted from Agent, 15 runtime conformance tests + 7 failure matrix tests across Simulator and Process runtimes |
 | M42 — Security Audit | Gate E | Threat model, command/secret/etcd audit |
 | M43 — Performance | Gate F | Load testing, algorithm optimization, complexity audit |
 | M44 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |

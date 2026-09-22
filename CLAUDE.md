@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M40 — Phase 43 Truth & Reconciliation. M1–M40 complete. All architecture debt resolved.
+**Completed through:** M41 — Phase 44 Agent Decomposition. M1–M41 complete. Gate D resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
