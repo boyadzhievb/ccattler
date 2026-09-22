@@ -193,6 +193,10 @@ func (processRuntime *ProcessRuntime) Exec(ctx context.Context, id string, execS
 	process, ok := processRuntime.processes[id]
 	processRuntime.mutex.Unlock()
 
+	if !ok {
+		return ErrNotFound
+	}
+
 	args := strings.Fields(execSpec.Command)
 	if len(args) == 0 {
 		return fmt.Errorf("empty exec command for workload %s", id)

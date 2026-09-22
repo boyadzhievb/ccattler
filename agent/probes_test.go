@@ -117,7 +117,7 @@ func TestLoadProbeConfigFromStore(t *testing.T) {
 
 	// Subtest: returns nil when no method fact is present.
 	t.Run("returns nil when no method fact exists", func(t *testing.T) {
-		loadedConfig := nodeAgent.loadProbeConfig(ctx, serviceName, "startup")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, "startup")
 		if loadedConfig != nil {
 			t.Error("expected nil config when no probe method fact is set")
 		}
@@ -135,7 +135,7 @@ func TestLoadProbeConfigFromStore(t *testing.T) {
 
 	// Subtest: all fields read correctly.
 	t.Run("reads all fields correctly", func(t *testing.T) {
-		loadedConfig := nodeAgent.loadProbeConfig(ctx, serviceName, "startup")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, "startup")
 		if loadedConfig == nil {
 			t.Fatal("expected non-nil config when method fact is set")
 		}
@@ -172,7 +172,7 @@ func TestLoadProbeConfigFromStore(t *testing.T) {
 		// Write an exposed port so deriveProbePortFromService can find one.
 		factStore.Put(ctx, types.KeyDesiredServiceExpose(otherService, 3000), []byte(""))
 
-		loadedConfig := nodeAgent.loadProbeConfig(ctx, otherService, "liveness")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, otherService, "liveness")
 		if loadedConfig == nil {
 			t.Fatal("expected non-nil config")
 		}
@@ -231,7 +231,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 	// server is healthy and success_threshold=1. But startup has not yet
 	// been recorded as succeeded before this first call, so liveness and
 	// readiness depend on startup returning true from this call.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	// After one successful call, startup should have written "succeeded".
 	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
@@ -244,7 +244,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 
 	// Now execute probes again. This time startup is already succeeded, so
 	// liveness and readiness should execute.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	// Verify liveness probe executed and wrote a state.
 	livenessStateFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
@@ -283,7 +283,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 
 	// Execute probes. Startup should fail, so liveness and readiness should
 	// not be executed at all.
-	nodeAgent.executeProbesForInstance(ctx, freshInstanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, freshInstanceInfo)
 
 	// Liveness and readiness should not have any state written.
 	_, livenessErrFresh := factStore.Get(ctx, types.KeyObservedInstanceProbeState(freshInstanceID, "liveness"))
@@ -319,7 +319,7 @@ func TestStartupProbeFailureThreshold(t *testing.T) {
 	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
 
 	// First probe execution: 1 consecutive failure. Should write "pending".
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	startupStateFact, _ := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
 	if string(startupStateFact.Value) != string(types.StartupProbePending) {
@@ -329,11 +329,11 @@ func TestStartupProbeFailureThreshold(t *testing.T) {
 	// Reset the tracker's lastCheckTime so the interval gate does not block
 	// the next execution. The interval defaults to 10s, but we need to run
 	// probes back-to-back in the test.
-	probeState := nodeAgent.getOrCreateProbeState(instanceID)
+	probeState := nodeAgent.probeScheduler.getOrCreateProbeState(instanceID)
 	probeState.startup.lastCheckTime = time.Time{}
 
 	// Second probe execution: 2 consecutive failures = threshold reached.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
 	if startupErr != nil {
@@ -369,7 +369,7 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
 
 	// First execution: 1 success, threshold is 2, so no state change yet.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	_, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
 	if readinessErr == nil {
@@ -383,11 +383,11 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	}
 
 	// Reset the lastCheckTime to allow immediate re-execution.
-	probeState := nodeAgent.getOrCreateProbeState(instanceID)
+	probeState := nodeAgent.probeScheduler.getOrCreateProbeState(instanceID)
 	probeState.readiness.lastCheckTime = time.Time{}
 
 	// Second execution: 2 consecutive successes = threshold reached.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	readinessStateFact, readinessStateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
 	if readinessStateErr != nil {
@@ -414,7 +414,7 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	probeState.readiness.consecutiveSuccesses = 0
 
 	// One failure should reach the failure_threshold=1.
-	nodeAgent.executeProbesForInstance(ctx, instanceInfo)
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	readinessStateFact, readinessStateErr = factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
 	if readinessStateErr != nil {
@@ -434,25 +434,25 @@ func TestCleanupProbeState(t *testing.T) {
 	instanceID := "cleanup-inst-001"
 
 	// Create probe state by calling getOrCreateProbeState.
-	probeState := nodeAgent.getOrCreateProbeState(instanceID)
+	probeState := nodeAgent.probeScheduler.getOrCreateProbeState(instanceID)
 	probeState.startup = &probeTracker{started: true, consecutiveSuccesses: 1}
 	probeState.liveness = &probeTracker{started: true}
 
 	// Verify the state exists.
-	if nodeAgent.probeStates[instanceID] == nil {
+	if nodeAgent.probeScheduler.probeStates[instanceID] == nil {
 		t.Fatal("probe state should exist before cleanup")
 	}
 
 	// Clean up.
-	nodeAgent.cleanupProbeState(instanceID)
+	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 
 	// Verify the state is gone.
-	if nodeAgent.probeStates[instanceID] != nil {
+	if nodeAgent.probeScheduler.probeStates[instanceID] != nil {
 		t.Error("probe state should be nil after cleanup")
 	}
 
 	// Verify that cleaning up a non-existent ID does not panic.
-	nodeAgent.cleanupProbeState("non-existent-instance")
+	nodeAgent.probeScheduler.CleanupInstance("non-existent-instance")
 }
 
 // TestExecProbeSuccess verifies that an exec probe passes when the runtime
@@ -470,7 +470,7 @@ func TestExecProbeSuccess(t *testing.T) {
 
 	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "test:latest"})
 
-	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
 
 	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
 	if stateErr != nil {
@@ -499,11 +499,11 @@ func TestExecProbeFailure(t *testing.T) {
 	simulatorRuntime.ExecFailures = map[string]bool{instanceID: true}
 
 	// First failure — not yet at threshold.
-	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
-	nodeAgent.probeStates[instanceID].liveness.lastCheckTime = time.Time{}
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+	nodeAgent.probeScheduler.probeStates[instanceID].liveness.lastCheckTime = time.Time{}
 
 	// Second failure — reaches threshold of 2.
-	nodeAgent.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
 
 	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
 	if stateErr != nil {

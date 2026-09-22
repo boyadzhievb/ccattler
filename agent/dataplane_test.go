@@ -34,7 +34,7 @@ func TestDataPlaneReconcilesBuildVIPConfigsFromStore(t *testing.T) {
 	factStore.Put(ctx, types.KeyObservedNodeAddress("node-2"), []byte("192.168.100.215"))
 	factStore.Put(ctx, types.KeyObservedInstanceHostPort("instance-bbb"), []byte("80"))
 
-	nodeAgent.reconcileDataPlane(ctx)
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 
 	lastReconciled := simulatorDataPlane.LastReconciled()
 	if len(lastReconciled) != 1 {
@@ -81,7 +81,7 @@ func TestDataPlaneNoProviderIsNoop(t *testing.T) {
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 
-	nodeAgent.reconcileDataPlane(ctx)
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 }
 
 func TestDataPlaneSkipsServicesWithNoPort(t *testing.T) {
@@ -96,7 +96,7 @@ func TestDataPlaneSkipsServicesWithNoPort(t *testing.T) {
 
 	factStore.Put(ctx, types.KeyNetworkVIPService("orphan"), []byte("10.200.0.5"))
 
-	nodeAgent.reconcileDataPlane(ctx)
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 
 	lastReconciled := simulatorDataPlane.LastReconciled()
 	if len(lastReconciled) != 0 {
@@ -121,7 +121,7 @@ func TestDataPlaneRemoteBackendFallsBackToContainerIP(t *testing.T) {
 	factStore.Put(ctx, types.KeyEndpoint("web", "instance-ccc", 80), []byte("10.100.3.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-ccc"), []byte("node-3"))
 
-	nodeAgent.reconcileDataPlane(ctx)
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 
 	lastReconciled := simulatorDataPlane.LastReconciled()
 	if len(lastReconciled) != 1 {
@@ -159,7 +159,7 @@ func TestDataPlaneMultipleServices(t *testing.T) {
 	factStore.Put(ctx, types.KeyEndpoint("redis", "r1", 6379), []byte("10.100.1.3:6379"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("r1"), []byte("node-1"))
 
-	nodeAgent.reconcileDataPlane(ctx)
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 
 	lastReconciled := simulatorDataPlane.LastReconciled()
 	if len(lastReconciled) != 2 {
@@ -184,7 +184,7 @@ func TestDataPlanePublishesNodeAdvertiseAddress(t *testing.T) {
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetAdvertiseAddress("192.168.100.43")
 
-	nodeAgent.publishNodeAdvertiseAddress(ctx)
+	nodeAgent.nodeReporter.PublishAdvertiseAddress(ctx)
 
 	addressFact, err := factStore.Get(ctx, types.KeyObservedNodeAddress("node-1"))
 	if err != nil {
