@@ -437,6 +437,15 @@
 - [x] ChangeStream skips EventCompacted — no dispatch for meta-events
 - [x] 12 conformance tests: gap-free Scan+Watch, overflow→resync convergence, compaction detection, history wraparound, revision ordering, delete replay, prefix filtering, transaction replay, future revision handling
 
+### Phase 43 — Truth & Reconciliation (M40, Gate B+C)
+- [x] Deterministic plan verification — `sortChangesByKey()` in runner guarantees deterministic commit order; instance controller sorts map iterations for deterministic scale-down selection; endpoint controller sorts map iterations for deterministic endpoint ordering
+- [x] Controller write domain enforcement — `enforceWriteDomain()` validates every Change key against `controllerOutputPrefixes()`, drops violations with error log and `ccattler_write_domain_violations_total` Prometheus counter
+- [x] `controllerOutputPrefixes()` audit — fixed 6 mismatches: failure (added `derived/instance/`), rollout (added `derived/service/`, `desired/service/`), cloud-node-lifecycle/cloud-loadbalancer/cloud-routes (added missing entries), cluster-autoscale (removed phantom declaration)
+- [x] Key ownership matrix — `key-ownership-matrix.md` formal document: 16 controller write domains, 12 non-controller writers, 5 shared prefix overlaps with justification, full key prefix taxonomy
+- [x] Non-determinism fixes — instance controller and endpoint controller map iterations sorted for reproducible output; runner-level `sortChangesByKey()` as safety net for all controllers
+- [x] 10 deterministic plan tests — each controller verified: same snapshot → same plan across 5 iterations with fresh controller instances
+- [x] 6 write domain tests — enforcement, all-prefixes acceptance, wrong-prefix rejection, unknown controller passthrough, multi-prefix validation, completeness cross-check
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -447,18 +456,18 @@
 - [x] Watch loss-tolerance formal verification (Phase 42) — StartRevision on WatchOption, event history ring buffer, gap-free Scan+Watch pattern, 12 conformance tests
 - [x] Compaction/restart watch resync validation (Phase 42) — EventCompacted type, etcd CompactRevision handling, MemoryStore eviction detection, overflow→resync→resume convergence test
 
-#### Gate B — Reconciliation Protocol (mostly resolved: Phases 26, 35a)
+#### Gate B — Reconciliation Protocol (resolved: Phases 26, 35a, 43)
 - [x] ReconcilePlan with preconditions (Phase 35a)
 - [x] Snapshot coherence per reconcile
 - [x] Conflict retry with backoff
-- [ ] Deterministic plan verification (same snapshot → same plan)
-- [ ] Controller write domain enforcement at runtime
+- [x] Deterministic plan verification (Phase 43) — runner sorts changes by key, instance/endpoint controllers sort map iterations, 10 controller determinism tests
+- [x] Controller write domain enforcement at runtime (Phase 43) — `enforceWriteDomain()` validates every Change against `controllerOutputPrefixes()`, violations dropped + logged + metered
 
-#### Gate C — Truth Model (mostly resolved: Phases 35a, 36)
+#### Gate C — Truth Model (resolved: Phases 35a, 36, 43)
 - [x] Observed state from runtime observation only (Phase 26)
 - [x] derived/ prefix for controller state (Phase 35a)
 - [x] Event projection from committed state (Phase 36)
-- [ ] Key ownership matrix audit (formal document)
+- [x] Key ownership matrix audit (Phase 43) — formal document `key-ownership-matrix.md` mapping every prefix to its sole writer, shared overlaps documented
 
 #### Gate D — Agent & Health Model
 - [x] Probe scheduling independent from reconciliation (Phase 26)
@@ -548,7 +557,7 @@
 | M37 — System Design Patterns | 40 | Circuit breaker, rate limiter, least-connections LB, bulkhead, tracing, response cache, DLQ, CDC stream |
 | M38 — Algorithms | 41 | Min-heap scheduler, binary search extraction, trie prefix scan, topological sort, cycle detection |
 | M39 — Store Correctness | 42 | StartRevision watch replay, EventCompacted, event history buffer, 12 conformance tests proving gap-free observation |
-| M40 — Truth & Reconciliation | Gate B+C | Deterministic plans, write domain enforcement, key ownership matrix |
+| M40 — Truth & Reconciliation | 43 | Deterministic plans (sorted commits + sorted map iterations), write domain enforcement (enforceWriteDomain + Prometheus metric), key ownership matrix (16 controllers + 12 non-controller writers) |
 | M41 — Agent Decomposition | Gate D | Full agent split, runtime conformance suite, failure matrix |
 | M42 — Security Audit | Gate E | Threat model, command/secret/etcd audit |
 | M43 — Performance | Gate F | Load testing, algorithm optimization, complexity audit |

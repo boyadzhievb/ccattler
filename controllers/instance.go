@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -98,9 +99,17 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	}
 
 	// Build active instance counts per service (pending + running count as active).
+	// Sort instance IDs for deterministic output — map iteration order varies.
+	sortedInstanceIDs := make([]string, 0, len(serviceByInstanceID))
+	for instanceID := range serviceByInstanceID {
+		sortedInstanceIDs = append(sortedInstanceIDs, instanceID)
+	}
+	sort.Strings(sortedInstanceIDs)
+
 	activeCount := make(map[string]int)
 	activeInstanceIDs := make(map[string][]string) // service name -> instance IDs
-	for instanceID, serviceName := range serviceByInstanceID {
+	for _, instanceID := range sortedInstanceIDs {
+		serviceName := serviceByInstanceID[instanceID]
 		state := stateByInstanceID[instanceID]
 		if state == types.InstanceStopped {
 			continue
@@ -111,7 +120,14 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 
 	var changes []Change
 
-	for serviceName, wantCount := range desiredCounts {
+	sortedServiceNames := make([]string, 0, len(desiredCounts))
+	for serviceName := range desiredCounts {
+		sortedServiceNames = append(sortedServiceNames, serviceName)
+	}
+	sort.Strings(sortedServiceNames)
+
+	for _, serviceName := range sortedServiceNames {
+		wantCount := desiredCounts[serviceName]
 		haveCount := activeCount[serviceName]
 		if haveCount < wantCount {
 			changes = append(changes, instanceController.createPendingInstances(serviceName, wantCount-haveCount)...)

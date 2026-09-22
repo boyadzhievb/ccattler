@@ -76,24 +76,28 @@ func topologicalSort(controllerNames []string, dependencyEdges map[string][]stri
 }
 
 // controllerOutputPrefixes returns the known output fact prefixes for
-// built-in controllers. This enables automatic dependency resolution:
-// if controller B watches a prefix that controller A writes, B depends on A.
+// built-in controllers. This is the authoritative write-domain declaration:
+// each controller may only write keys that fall under its declared prefixes.
+// The runner enforces this at commit time, and the dependency graph uses it
+// to order controllers (if B watches a prefix that A writes, B depends on A).
 func controllerOutputPrefixes() map[string][]string {
 	return map[string][]string{
-		"intent-resolver": {"effective/service/"},
-		"instance":        {"observed/instance/"},
-		"scheduler":       {"placement/"},
-		"endpoint":        {"endpoint/"},
-		"failure":         {"observed/instance/"},
-		"node-failure":    {"observed/node/", "observed/instance/"},
-		"network":         {"network/vip/", "network/dns/"},
-		"autoscale":       {"intent/autoscaler/"},
-		"rollout":         {"observed/instance/"},
-		"storage":         {"observed/volume/"},
-		"warm-zero":       {"derived/service/"},
-		"init":            {"derived/instance/"},
-		"cluster-autoscale": {"desired/cluster/"},
-		"credential-broker": {"derived/credential/"},
+		"intent-resolver":      {"effective/service/"},
+		"instance":             {"observed/instance/"},
+		"scheduler":            {"placement/"},
+		"endpoint":             {"endpoint/"},
+		"failure":              {"observed/instance/", "derived/instance/"},
+		"node-failure":         {"observed/node/", "observed/instance/"},
+		"network":              {"network/vip/", "network/dns/"},
+		"autoscale":            {"intent/autoscaler/"},
+		"rollout":              {"observed/instance/", "derived/service/", "desired/service/"},
+		"storage":              {"observed/volume/"},
+		"warm-zero":            {"derived/service/"},
+		"init":                 {"derived/instance/"},
+		"credential-broker":    {"derived/credential/"},
+		"cloud-node-lifecycle": {"observed/cloud/instance/", "observed/node/"},
+		"cloud-loadbalancer":   {"observed/cloud/loadbalancer/"},
+		"cloud-routes":         {"observed/cloud/route/"},
 	}
 }
 
