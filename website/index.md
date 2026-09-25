@@ -4,11 +4,14 @@ layout: home
 hero:
   name: CCattler
   text: Container orchestration, redesigned.
-  tagline: A declarative container management system built on facts, relations, desired state, and reconciliation — not objects and YAML.
+  tagline: "v1.0.0-beta — A declarative container management system built on facts, relations, desired state, and reconciliation — not objects and YAML."
   actions:
     - theme: brand
       text: Get Started
       link: /getting-started
+    - theme: alt
+      text: Changelog
+      link: /changelog
     - theme: alt
       text: GitHub
       link: https://github.com/boyadzhievb/ccattler
