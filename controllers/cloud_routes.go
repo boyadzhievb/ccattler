@@ -41,8 +41,7 @@ func (cloudRouteController *CloudRouteController) Watch() []string {
 // existing cloud VPC routes and creates, updates, or deletes them as needed.
 func (cloudRouteController *CloudRouteController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	nodeSubnets := extractNodeSubnetsForRoutes(facts)
-	nodeProviderInstances := extractNodeToProviderInstance(facts)
-	currentNodeStates := extractNodeStatesFromFacts(facts)
+	nodeProviderInstances, currentNodeStates := extractNodeProviderAndStates(facts)
 	existingRoutes := extractObservedCloudRoutes(facts)
 
 	desiredRoutes := make(map[string]cloud.RouteConfig)

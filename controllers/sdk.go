@@ -27,10 +27,7 @@ func NewFactMap(facts []store.Fact, prefix string) *FactMap {
 		rawFacts: facts,
 	}
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
 		relativePath := strings.TrimPrefix(fact.Key, prefix)
 		parts := strings.SplitN(relativePath, "/", 2)
 

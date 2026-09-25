@@ -53,8 +53,7 @@ func (nodeLifecycleController *NodeLifecycleController) Reconcile(ctx context.Co
 		cloudInstancesByProviderID[cloudInstance.ProviderInstanceID] = cloudInstance
 	}
 
-	nodeToProviderInstance := extractNodeToProviderInstance(facts)
-	currentNodeStates := extractNodeStatesFromFacts(facts)
+	nodeToProviderInstance, currentNodeStates := extractNodeProviderAndStates(facts)
 	observedCloudStates := extractObservedCloudInstanceStates(facts)
 
 	var proposedChanges []Change
@@ -101,31 +100,25 @@ func (nodeLifecycleController *NodeLifecycleController) Reconcile(ctx context.Co
 	return proposedChanges, nil
 }
 
-// extractNodeToProviderInstance builds a map from CCattler node ID to cloud
-// provider instance ID from observed node facts.
-func extractNodeToProviderInstance(facts []store.Fact) map[string]string {
-	nodeToInstance := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "provider_instance_id" {
-			nodeToInstance[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return nodeToInstance
-}
-
-// extractNodeStatesFromFacts builds a map from node ID to current state string.
-func extractNodeStatesFromFacts(facts []store.Fact) map[string]string {
+// extractNodeProviderAndStates walks observed node facts once and returns
+// both a node-to-provider-instance map and a node-to-state map.
+func extractNodeProviderAndStates(facts []store.Fact) (map[string]string, map[string]string) {
+	nodeToProviderInstance := make(map[string]string)
 	nodeStates := make(map[string]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
 		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
+		if len(pathParts) != 2 {
+			continue
+		}
+		switch pathParts[1] {
+		case "provider_instance_id":
+			nodeToProviderInstance[pathParts[0]] = string(factEntry.Value)
+		case "state":
 			nodeStates[pathParts[0]] = string(factEntry.Value)
 		}
 	}
-	return nodeStates
+	return nodeToProviderInstance, nodeStates
 }
 
 // extractObservedCloudInstanceStates builds a map from provider instance ID to
