@@ -472,6 +472,18 @@
 - [x] Cloud controllers — merged `extractNodeToProviderInstance` + `extractNodeStatesFromFacts` into single-pass `extractNodeProviderAndStates`, used by both `CloudNodeLifecycleController` and `CloudRouteController`
 - [x] Runner — early exit on input-key guard loop when etcd 128-operation transaction cap reached, avoiding oversized allocation + truncation
 
+### Phase 47 — Synthetic Cluster Load Test (M44, Gate F complete)
+- [x] 5-phase load test: deploy 1000 instances on 50 nodes → verify placement → kill 5 nodes → scale to 1500 → verify store facts
+- [x] SimulatedChaosCluster enhancements: configurable lease timeout, configurable max input-key guards, configurable max reconciliation attempts
+- [x] Controller runner: exponential backoff with jitter between retry attempts, configurable input-key guard limit (disable/cap/unlimited)
+- [x] Phase 1 — deploy 10 services × 100 instances, converges in ~24-54s depending on CPU load
+- [x] Phase 2 — placement distribution verification (min/max/stddev across 50 nodes)
+- [x] Phase 3 — kill 5 nodes, mark instances failed, recover with 95% convergence tolerance
+- [x] Phase 4 — restart killed nodes, scale to 1500 instances, 95% convergence tolerance
+- [x] Phase 5 — store fact count verification (~13K facts at scale)
+- [x] Near-convergence helper with configurable tolerance for long-tail convergence under contention
+- [x] Watch channel buffer size increased to 4096 for high-throughput load test
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -515,7 +527,7 @@
 #### Gate F — Performance & Scalability
 - [x] Runtime.Stats() live metrics (Phase 37)
 - [x] Benchmarks in CI (Phase 38)
-- [ ] Synthetic cluster load test (50 nodes / 1K workloads)
+- [x] Synthetic cluster load test (50 nodes / 1K workloads) — Phase 47
 - [x] Scheduler algorithm optimization (min-heap, binary search — Phase 41)
 - [x] Store prefix indexing / trie (Phase 41)
 - [x] Controller topological sort, BFS GC, cycle detection (Phase 41)
@@ -587,7 +599,7 @@
 | M41 — Agent Decomposition | 44 | ProbeScheduler + NodeReporter + DataPlaneReconciler extracted from Agent, 15 runtime conformance tests + 7 failure matrix tests across Simulator and Process runtimes |
 | M42 — Security Audit | 45 | Formal threat model (10 categories), command exec audit (image validation, metachar rejection, env key validation), secret leakage audit (API prefix denylist, cert permissions), etcd TLS audit (TLSConfig, CLI flags, scheme validation) |
 | M43 — Complexity Audit | 46 | Audited 17 controllers + runner; removed O(n²) dead code in InstanceController; replaced 11 full fact-store scans with FactsWithPrefix binary search across 6 controllers + SDK; merged redundant prefix scans in credential broker + cloud controllers; runner early-exit on txn cap |
-| M44 — Load Test | Gate F | Synthetic cluster load test (50 nodes / 1K workloads) |
+| M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
 | M45 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

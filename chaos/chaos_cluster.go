@@ -38,6 +38,12 @@ type SimulatedChaosCluster struct {
 	controllerDebounce time.Duration
 	// leaseTimeout is the NodeFailureController's lease timeout.
 	leaseTimeout time.Duration
+	// maxReconciliationAttempts overrides the runner's default retry count
+	// for optimistic concurrency. Zero uses the runner's default.
+	maxReconciliationAttempts int
+	// maxInputKeyGuards overrides the runner's input-key guard limit.
+	// Zero disables input guards; negative means unlimited (default).
+	maxInputKeyGuards int
 	// services tracks deployed service names and their current desired counts.
 	services map[string]int
 	// clusterContext is the parent context for everything in this cluster.
@@ -60,7 +66,44 @@ func NewSimulatedChaosCluster(factStore *store.MemoryStore, nodeIDs []string) *S
 		agentInterval:      50 * time.Millisecond,
 		controllerDebounce: 10 * time.Millisecond,
 		leaseTimeout:       300 * time.Millisecond,
+		maxInputKeyGuards:  -1,
 	}
+}
+
+// SetAgentInterval overrides the per-agent reconciliation interval.
+// Must be called before Start. Higher values reduce store contention at the
+// cost of slower convergence.
+func (simulatedCluster *SimulatedChaosCluster) SetAgentInterval(interval time.Duration) {
+	simulatedCluster.agentInterval = interval
+}
+
+// SetControllerDebounce overrides the controller runner debounce interval.
+// Must be called before Start. Higher values batch more events together,
+// reducing transaction conflicts under heavy write load.
+func (simulatedCluster *SimulatedChaosCluster) SetControllerDebounce(debounce time.Duration) {
+	simulatedCluster.controllerDebounce = debounce
+}
+
+// SetMaxReconciliationAttempts overrides the controller runner's retry count
+// for optimistic concurrency. Must be called before Start. Higher values
+// improve convergence under heavy write contention from many agents.
+func (simulatedCluster *SimulatedChaosCluster) SetMaxReconciliationAttempts(maxAttempts int) {
+	simulatedCluster.maxReconciliationAttempts = maxAttempts
+}
+
+// SetMaxInputKeyGuards overrides the controller runner's input-key guard
+// limit. Under high write contention, reducing or disabling input-key guards
+// (set to 0) dramatically reduces transaction conflicts. Must be called
+// before Start.
+func (simulatedCluster *SimulatedChaosCluster) SetMaxInputKeyGuards(maxGuards int) {
+	simulatedCluster.maxInputKeyGuards = maxGuards
+}
+
+// SetLeaseTimeout overrides the default node failure lease timeout. Must be
+// called before Start. Under high contention with many agents, a longer
+// timeout avoids spurious node failure detection from missed heartbeats.
+func (simulatedCluster *SimulatedChaosCluster) SetLeaseTimeout(timeout time.Duration) {
+	simulatedCluster.leaseTimeout = timeout
 }
 
 // Start initializes and starts all agents and the controller runner.
@@ -236,6 +279,10 @@ func (simulatedCluster *SimulatedChaosCluster) startControllers(ctx context.Cont
 	controllerRunner := controllers.NewRunner(simulatedCluster.factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController)
 	controllerRunner.SetDebounce(simulatedCluster.controllerDebounce)
+	if simulatedCluster.maxReconciliationAttempts > 0 {
+		controllerRunner.SetMaxReconciliationAttempts(simulatedCluster.maxReconciliationAttempts)
+	}
+	controllerRunner.SetMaxInputKeyGuards(simulatedCluster.maxInputKeyGuards)
 	go controllerRunner.Run(controllerContext)
 }
 

@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sort"
 	"strings"
 	"sync"
@@ -60,6 +61,17 @@ type Runner struct {
 	// independent of watch events. This catches missed events, watch gaps,
 	// and stale controller state. Zero disables periodic resync.
 	resyncInterval time.Duration
+	// maxReconciliationAttempts is the maximum number of optimistic concurrency
+	// retries per reconciliation cycle. Higher values improve convergence under
+	// heavy write contention (e.g. 50+ concurrent agents).
+	maxReconciliationAttempts int
+	// maxInputKeyGuards limits how many input-key (non-change-set) guards are
+	// added to the transaction. Under high write contention from many agents,
+	// guarding all scanned facts causes persistent conflicts. A lower value
+	// reduces the conflict surface at the cost of weaker stale-read detection.
+	// Zero disables input-key guards entirely; negative means unlimited (fill
+	// up to the 128-op etcd cap). Change-set guards are always included.
+	maxInputKeyGuards int
 	// eventLog is an optional event log for recording reconciliation events.
 	// When set, the runner emits events for key state changes (instance
 	// creation, failure, placement, etc.) after each reconciliation cycle.
@@ -76,10 +88,12 @@ func (controllerRunner *Runner) SetEventLog(eventLog *types.EventLog) {
 // sharing the same state store. The default debounce interval is 50ms.
 func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 	return &Runner{
-		store:          stateStore,
-		controllers:    controllers,
-		debounce:       50 * time.Millisecond,
-		resyncInterval: 30 * time.Second,
+		store:                    stateStore,
+		controllers:              controllers,
+		debounce:                 50 * time.Millisecond,
+		resyncInterval:           30 * time.Second,
+		maxReconciliationAttempts: defaultMaxReconciliationAttempts,
+		maxInputKeyGuards:        -1,
 	}
 }
 
@@ -88,6 +102,22 @@ func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 // a longer one batches more events together.
 func (controllerRunner *Runner) SetDebounce(debounceInterval time.Duration) {
 	controllerRunner.debounce = debounceInterval
+}
+
+// SetMaxReconciliationAttempts overrides the default number of optimistic
+// concurrency retries per reconciliation cycle.
+func (controllerRunner *Runner) SetMaxReconciliationAttempts(maxAttempts int) {
+	controllerRunner.maxReconciliationAttempts = maxAttempts
+}
+
+// SetMaxInputKeyGuards limits the number of input-key guards added to each
+// transaction. Under high write contention (many concurrent agents), the
+// default behavior of guarding all scanned facts causes persistent conflicts.
+// Set to 0 to disable input-key guards entirely (only change-set keys are
+// guarded). Set to a positive value to cap the count. Negative means unlimited
+// (the default: fill up to the 128-op etcd cap).
+func (controllerRunner *Runner) SetMaxInputKeyGuards(maxGuards int) {
+	controllerRunner.maxInputKeyGuards = maxGuards
 }
 
 // SetResyncInterval overrides the default periodic resync interval (30s).
@@ -259,9 +289,10 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 	}
 }
 
-// maxReconciliationAttempts is the maximum number of retries when a
+// defaultMaxReconciliationAttempts is the default number of retries when a
 // reconciliation cycle detects that the store changed between scan and commit.
-const maxReconciliationAttempts = 3
+// Higher values help under heavy write contention (many concurrent agents).
+const defaultMaxReconciliationAttempts = 5
 
 // executeReconciliationCycle performs a single reconciliation pass with
 // optimistic concurrency. It retries up to maxReconciliationAttempts times
@@ -270,7 +301,7 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 	startTime := metrics.Timer()
 	controllerName := controller.Name()
 
-	for attemptIndex := 0; attemptIndex < maxReconciliationAttempts; attemptIndex++ {
+	for attemptIndex := 0; attemptIndex < controllerRunner.maxReconciliationAttempts; attemptIndex++ {
 		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller)
 		if reconcileError != nil {
 			reconciliationTotal.Inc(controllerName, "error")
@@ -285,13 +316,25 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 		reconciliationConflicts.Inc(controllerName)
 		logging.Default().Warn("reconciliation conflict, retrying",
 			"controller", controllerName,
-			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, maxReconciliationAttempts))
+			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, controllerRunner.maxReconciliationAttempts))
+
+		baseDelayMs := 10 * (1 << attemptIndex)
+		if baseDelayMs > 500 {
+			baseDelayMs = 500
+		}
+		jitterMs := rand.Intn(baseDelayMs + 1)
+		retryDelay := time.Duration(baseDelayMs+jitterMs) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(retryDelay):
+		}
 	}
 	reconciliationTotal.Inc(controllerName, "abandoned")
 	reconciliationDuration.ObserveSince(startTime, controllerName)
 	logging.Default().Warn("reconciliation abandoned after conflict retries",
 		"controller", controllerName,
-		"retries", fmt.Sprintf("%d", maxReconciliationAttempts))
+		"retries", fmt.Sprintf("%d", controllerRunner.maxReconciliationAttempts))
 	return nil
 }
 
@@ -367,16 +410,28 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	// etcd enforces a maximum of 128 total operations per transaction (compares +
 	// success ops + failure ops). Change-set compares (added first) have priority
 	// over input-set compares, so cap the input-key loop early.
-	maxCompareCount := 128 - len(transactionOperations)
-	for _, scannedFact := range allFacts {
-		if len(transactionCompares) >= maxCompareCount {
-			break
+	// maxInputKeyGuards further limits the count: 0 disables input guards,
+	// positive caps them, negative means fill to the etcd limit.
+	if controllerRunner.maxInputKeyGuards != 0 {
+		etcdCapacity := 128 - len(transactionOperations)
+		inputKeyLimit := etcdCapacity
+		if controllerRunner.maxInputKeyGuards > 0 {
+			changeSetGuardCount := len(transactionCompares)
+			inputKeyLimit = changeSetGuardCount + controllerRunner.maxInputKeyGuards
+			if inputKeyLimit > etcdCapacity {
+				inputKeyLimit = etcdCapacity
+			}
 		}
-		if !changeKeySet[scannedFact.Key] {
-			transactionCompares = append(transactionCompares, store.Compare{
-				Key:      scannedFact.Key,
-				Revision: scannedFact.Revision,
-			})
+		for _, scannedFact := range allFacts {
+			if len(transactionCompares) >= inputKeyLimit {
+				break
+			}
+			if !changeKeySet[scannedFact.Key] {
+				transactionCompares = append(transactionCompares, store.Compare{
+					Key:      scannedFact.Key,
+					Revision: scannedFact.Revision,
+				})
+			}
 		}
 	}
 

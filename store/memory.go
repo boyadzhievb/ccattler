@@ -123,18 +123,33 @@ type MemoryStore struct {
 	// eventHistory is a bounded ring buffer of recent events for revision-based
 	// watch replay, closing the gap between Scan and Watch.
 	eventHistory *eventHistoryBuffer
+	// watchChannelBufferSize is the per-watcher event channel capacity. Larger
+	// values absorb write bursts (e.g. 50 agents writing simultaneously) at the
+	// cost of memory. Default is 256.
+	watchChannelBufferSize int
 	// isClosed tracks whether Close has been called, preventing double-close.
 	isClosed bool
 }
 
+// defaultWatchChannelBufferSize is the per-watcher event channel capacity.
+const defaultWatchChannelBufferSize = 256
+
 // NewMemoryStore creates and returns a new empty in-memory fact store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		facts:           make(map[string]*Fact),
-		keyIndex:        newPrefixTrie(),
-		currentRevision: 0,
-		eventHistory:    newEventHistoryBuffer(defaultEventHistoryCapacity),
+		facts:                  make(map[string]*Fact),
+		keyIndex:               newPrefixTrie(),
+		currentRevision:        0,
+		eventHistory:           newEventHistoryBuffer(defaultEventHistoryCapacity),
+		watchChannelBufferSize: defaultWatchChannelBufferSize,
 	}
+}
+
+// SetWatchChannelBufferSize overrides the per-watcher channel capacity.
+// Must be called before any Watch calls. Larger values handle more
+// concurrent writers without event drops.
+func (memStore *MemoryStore) SetWatchChannelBufferSize(bufferSize int) {
+	memStore.watchChannelBufferSize = bufferSize
 }
 
 // Get retrieves the fact stored at the given key. Returns a defensive copy of the
@@ -304,7 +319,7 @@ func (memStore *MemoryStore) Watch(ctx context.Context, key string, opts WatchOp
 		return nil, ErrStoreClosed
 	}
 
-	eventChannel := make(chan Event, 64)
+	eventChannel := make(chan Event, memStore.watchChannelBufferSize)
 
 	if opts.StartRevision > 0 {
 		historicalEvents, historyAvailable := memStore.eventHistory.eventsFromRevision(opts.StartRevision)
