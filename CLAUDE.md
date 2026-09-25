@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M43 — Phase 46 Controller Algorithm Complexity Audit. M1–M43 complete. Gate E resolved, Gate F partial (complexity audit done, load test remaining).
+**Completed through:** M44 — Phase 47 Synthetic Cluster Load Test. M1–M44 complete. Gate E resolved, Gate F complete (complexity audit + load test).
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
