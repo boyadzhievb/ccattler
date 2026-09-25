@@ -21,6 +21,7 @@ export default defineConfig({
       { text: 'Guides', link: '/guides/' },
       { text: 'Reference', link: '/reference/' },
       { text: 'Operations', link: '/operations/' },
+      { text: 'v1.0.0-beta', link: '/changelog' },
     ],
 
     sidebar: {
