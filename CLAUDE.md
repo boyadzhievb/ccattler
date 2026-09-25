@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M42 — Phase 45 Security Audit. M1–M42 complete. Gate E resolved.
+**Completed through:** M43 — Phase 46 Controller Algorithm Complexity Audit. M1–M43 complete. Gate E resolved, Gate F partial (complexity audit done, load test remaining).
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1074,5 +1074,5 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ## Implementation Phases & Milestones
 
-See [milestones.md](milestones.md) for the full phase checklist (Phases 0–39a) and milestone table (M1–M36a).
+See [milestones.md](milestones.md) for the full phase checklist (Phases 0–46) and milestone table (M1–M43).
 

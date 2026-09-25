@@ -244,12 +244,8 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 // extractRolloutState returns rollout tracking facts from the derived prefix.
 func extractRolloutState(facts []store.Fact) map[string]string {
 	state := make(map[string]string)
-	prefix := types.PrefixDerived + "/service/"
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) {
-			continue
-		}
-		relativePath := strings.TrimPrefix(fact.Key, prefix)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedServices)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) != 2 || !strings.HasPrefix(parts[1], "rollout/") {
 			continue

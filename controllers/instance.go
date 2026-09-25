@@ -46,8 +46,7 @@ func (instanceController *InstanceController) Watch() []string {
 // against active (non-stopped) observed instances and emits changes to
 // create or stop instances until the counts match.
 func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	desiredCounts := make(map[string]int)              // service name -> desired instance count
-	observedEntries := make(map[string][]instanceEntry) // service name -> active instances
+	desiredCounts := make(map[string]int) // service name -> desired instance count
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
@@ -58,29 +57,6 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 		}
 	}
 
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
-			continue
-		}
-		instanceID := pathParts[0]
-		fieldSuffix := pathParts[1]
-
-		switch fieldSuffix {
-		case "service":
-			serviceName := string(fact.Value)
-			entries := observedEntries[serviceName]
-			matchIndex := findOrAddInstanceEntry(&entries, instanceID)
-			entries[matchIndex].service = serviceName
-			observedEntries[serviceName] = entries
-		case "state":
-			// We need to associate state with the instance, but we don't
-			// know the service yet. Use a separate pass.
-		}
-	}
-
-	// Second pass: collect instance states by ID, then filter.
 	stateByInstanceID := make(map[string]types.InstanceState)
 	serviceByInstanceID := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
@@ -200,25 +176,3 @@ func selectInstancesForRemoval(pendingIDs, runningIDs []string, count int) []str
 	return result
 }
 
-// instanceEntry holds the parsed identity of an observed instance during
-// the first pass of fact scanning. It associates an instance ID with the
-// service it belongs to.
-type instanceEntry struct {
-	// id is the unique instance identifier (e.g. "inst-001").
-	id string
-	// service is the name of the service this instance belongs to (e.g. "web").
-	service string
-}
-
-// findOrAddInstanceEntry searches the entries slice for an instanceEntry with
-// the given id. If found, it returns the index; otherwise it appends a new
-// entry and returns its index. The slice pointer is updated in place.
-func findOrAddInstanceEntry(entries *[]instanceEntry, id string) int {
-	for i, existing := range *entries {
-		if existing.id == id {
-			return i
-		}
-	}
-	*entries = append(*entries, instanceEntry{id: id})
-	return len(*entries) - 1
-}

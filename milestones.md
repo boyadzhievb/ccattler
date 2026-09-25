@@ -460,6 +460,18 @@
 - [x] Secret leakage audit — API prefix denylist (`isSensitivePrefix`) blocks state/watch queries to `secrets/`, `credentials/`, `enrollment/token/`, `bootstrap/`; node cert permissions fixed (0644 → 0600); config file path traversal protection in `materializeConfigFilesToTempDirectory`
 - [x] etcd TLS audit — `EtcdStoreConfig.TLSConfig` field added, `--etcd-cert/--etcd-key/--etcd-ca` CLI flags for server and agent commands, endpoint scheme validation rejects `http://` when TLS configured, TLS 1.3 minimum enforced
 
+### Phase 46 — Controller Algorithm Complexity Audit (M43, Gate F partial)
+- [x] Audited all 17 controllers + runner for O(n²) or worse patterns
+- [x] InstanceController — removed dead O(n²) code: `observedEntries` first pass, `findOrAddInstanceEntry` linear search, `instanceEntry` type (unused since second pass was added)
+- [x] CredentialBrokerController — replaced 3 full fact-store scans with `FactsWithPrefix` binary search; merged `parseInstanceServices` + `parseRunningInstances` into single-pass `parseInstanceServiceAndRunState`
+- [x] InitController — replaced 4 full fact-store scans (`countDesiredInitSteps`, `mapInstancesToServices`, `collectObservedInitStepStates`, `collectCurrentInitPhases`) with `FactsWithPrefix` binary search
+- [x] IntentResolverController — replaced 2 full fact-store scans in `extractIntentCounts` with `FactsWithPrefix` binary search
+- [x] RolloutController — replaced full fact-store scan in `extractRolloutState` with `FactsWithPrefix` using `ScanDerivedServices`
+- [x] ClusterAutoscaleController — replaced full fact-store scan in `extractClusterAutoscaleConfig` with `FactsWithPrefix` using targeted prefix
+- [x] SDK `NewFactMap` — replaced linear scan with `FactsWithPrefix` binary search for custom controller fact extraction
+- [x] Cloud controllers — merged `extractNodeToProviderInstance` + `extractNodeStatesFromFacts` into single-pass `extractNodeProviderAndStates`, used by both `CloudNodeLifecycleController` and `CloudRouteController`
+- [x] Runner — early exit on input-key guard loop when etcd 128-operation transaction cap reached, avoiding oversized allocation + truncation
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -507,7 +519,7 @@
 - [x] Scheduler algorithm optimization (min-heap, binary search — Phase 41)
 - [x] Store prefix indexing / trie (Phase 41)
 - [x] Controller topological sort, BFS GC, cycle detection (Phase 41)
-- [ ] Controller algorithm complexity audit
+- [x] Controller algorithm complexity audit (Phase 46)
 
 #### Gate G — Operations & Observability
 - [x] Prometheus /metrics (Phase 25)
@@ -574,7 +586,8 @@
 | M40 — Truth & Reconciliation | 43 | Deterministic plans (sorted commits + sorted map iterations), write domain enforcement (enforceWriteDomain + Prometheus metric), key ownership matrix (16 controllers + 12 non-controller writers) |
 | M41 — Agent Decomposition | 44 | ProbeScheduler + NodeReporter + DataPlaneReconciler extracted from Agent, 15 runtime conformance tests + 7 failure matrix tests across Simulator and Process runtimes |
 | M42 — Security Audit | 45 | Formal threat model (10 categories), command exec audit (image validation, metachar rejection, env key validation), secret leakage audit (API prefix denylist, cert permissions), etcd TLS audit (TLSConfig, CLI flags, scheme validation) |
-| M43 — Performance | Gate F | Load testing, algorithm optimization, complexity audit |
-| M44 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
+| M43 — Complexity Audit | 46 | Audited 17 controllers + runner; removed O(n²) dead code in InstanceController; replaced 11 full fact-store scans with FactsWithPrefix binary search across 6 controllers + SDK; merged redundant prefix scans in credential broker + cloud controllers; runner early-exit on txn cap |
+| M44 — Load Test | Gate F | Synthetic cluster load test (50 nodes / 1K workloads) |
+| M45 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

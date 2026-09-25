@@ -69,8 +69,7 @@ func (brokerController *CredentialBrokerController) Watch() []string {
 func (brokerController *CredentialBrokerController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	cloudIdentities := parseCloudIdentities(facts)
 	serviceBindings := parseServiceCloudBindings(facts)
-	instanceServices := parseInstanceServices(facts)
-	runningInstances := parseRunningInstances(facts)
+	instanceServices, runningInstances := parseInstanceServiceAndRunState(facts)
 	credentialStates := parseCredentialStates(facts)
 	brokerConfig := parseBrokerConfig(facts)
 
@@ -253,12 +252,8 @@ func parseCloudIdentities(facts []store.Fact) map[string]security.CloudIdentityC
 
 func parseServiceCloudBindings(facts []store.Fact) map[string][]string {
 	bindings := make(map[string][]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, "desired/service/") {
-			continue
-		}
-		remainder := strings.TrimPrefix(fact.Key, "desired/service/")
-		// format: {service}/cloud_identity/{identity}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		if cloudIdentityIndex := strings.Index(remainder, "/cloud_identity/"); cloudIdentityIndex > 0 {
 			serviceName := remainder[:cloudIdentityIndex]
 			identityPart := remainder[cloudIdentityIndex+len("/cloud_identity/"):]
@@ -270,34 +265,27 @@ func parseServiceCloudBindings(facts []store.Fact) map[string][]string {
 	return bindings
 }
 
-func parseInstanceServices(facts []store.Fact) map[string]string {
+// parseInstanceServiceAndRunState scans observed instance facts once and
+// returns both a service-by-instance map and a running-instance set.
+func parseInstanceServiceAndRunState(facts []store.Fact) (map[string]string, map[string]bool) {
 	instanceServices := make(map[string]string)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, "observed/instance/") {
+	runningInstances := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
+		remainder := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+		parts := strings.SplitN(remainder, "/", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		remainder := strings.TrimPrefix(fact.Key, "observed/instance/")
-		parts := strings.SplitN(remainder, "/", 2)
-		if len(parts) == 2 && parts[1] == "service" {
+		switch parts[1] {
+		case "service":
 			instanceServices[parts[0]] = string(fact.Value)
+		case "state":
+			if string(fact.Value) == string(types.InstanceRunning) {
+				runningInstances[parts[0]] = true
+			}
 		}
 	}
-	return instanceServices
-}
-
-func parseRunningInstances(facts []store.Fact) map[string]bool {
-	running := make(map[string]bool)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, "observed/instance/") {
-			continue
-		}
-		remainder := strings.TrimPrefix(fact.Key, "observed/instance/")
-		parts := strings.SplitN(remainder, "/", 2)
-		if len(parts) == 2 && parts[1] == "state" && string(fact.Value) == string(types.InstanceRunning) {
-			running[parts[0]] = true
-		}
-	}
-	return running
+	return instanceServices, runningInstances
 }
 
 func parseCredentialStates(facts []store.Fact) map[string]credentialState {

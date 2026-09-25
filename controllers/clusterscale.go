@@ -103,7 +103,8 @@ type clusterAutoscaleConfig struct {
 // extractClusterAutoscaleConfig reads cluster autoscale configuration from facts.
 func extractClusterAutoscaleConfig(facts []store.Fact) clusterAutoscaleConfig {
 	config := clusterAutoscaleConfig{}
-	for _, fact := range facts {
+	clusterAutoscalePrefix := types.PrefixDesired + "/cluster/autoscale/"
+	for _, fact := range store.FactsWithPrefix(facts, clusterAutoscalePrefix) {
 		switch fact.Key {
 		case types.KeyDesiredClusterAutoscaleMinNodes():
 			config.minNodes, _ = strconv.Atoi(string(fact.Value))

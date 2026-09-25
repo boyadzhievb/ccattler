@@ -75,10 +75,7 @@ func (initController *InitController) countDesiredInitSteps(facts []store.Fact) 
 	serviceStepCounts := make(map[string]int)
 	initPrefix := "/init/"
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.PrefixDesired+"/service/") {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		initIndex := strings.Index(fact.Key, initPrefix)
 		if initIndex < 0 {
 			continue
@@ -89,7 +86,7 @@ func (initController *InitController) countDesiredInitSteps(facts []store.Fact) 
 			continue
 		}
 
-		servicePart := fact.Key[len(types.PrefixDesired+"/service/"):initIndex]
+		servicePart := fact.Key[len(types.ScanDesiredServices):initIndex]
 		serviceStepCounts[servicePart]++
 	}
 
@@ -99,14 +96,13 @@ func (initController *InitController) countDesiredInitSteps(facts []store.Fact) 
 // mapInstancesToServices builds a map from instance ID to service name.
 func (initController *InitController) mapInstancesToServices(facts []store.Fact) map[string]string {
 	instanceServices := make(map[string]string)
-	servicePrefix := types.PrefixObserved + "/instance/"
 	serviceSuffix := "/service"
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, servicePrefix) || !strings.HasSuffix(fact.Key, serviceSuffix) {
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
+		if !strings.HasSuffix(fact.Key, serviceSuffix) {
 			continue
 		}
-		instanceID := fact.Key[len(servicePrefix) : len(fact.Key)-len(serviceSuffix)]
+		instanceID := fact.Key[len(types.ScanObservedInstances) : len(fact.Key)-len(serviceSuffix)]
 		instanceServices[instanceID] = string(fact.Value)
 	}
 
@@ -120,16 +116,13 @@ func (initController *InitController) collectObservedInitStepStates(facts []stor
 	stepPrefix := "/init/step/"
 	stateSuffix := "/state"
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, types.PrefixObserved+"/instance/") {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
 		stepIndex := strings.Index(fact.Key, stepPrefix)
 		if stepIndex < 0 || !strings.HasSuffix(fact.Key, stateSuffix) {
 			continue
 		}
 
-		instanceID := fact.Key[len(types.PrefixObserved+"/instance/"):stepIndex]
+		instanceID := fact.Key[len(types.ScanObservedInstances):stepIndex]
 		stepPart := fact.Key[stepIndex+len(stepPrefix) : len(fact.Key)-len(stateSuffix)]
 		compositeKey := fmt.Sprintf("%s/%s", instanceID, stepPart)
 		stepStates[compositeKey] = string(fact.Value)
@@ -143,13 +136,12 @@ func (initController *InitController) collectObservedInitStepStates(facts []stor
 func (initController *InitController) collectCurrentInitPhases(facts []store.Fact) map[string]string {
 	phases := make(map[string]string)
 	phaseSuffix := "/init/phase"
-	derivedInstancePrefix := types.PrefixDerived + "/instance/"
 
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, derivedInstancePrefix) || !strings.HasSuffix(fact.Key, phaseSuffix) {
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedInstances) {
+		if !strings.HasSuffix(fact.Key, phaseSuffix) {
 			continue
 		}
-		instanceID := fact.Key[len(derivedInstancePrefix) : len(fact.Key)-len(phaseSuffix)]
+		instanceID := fact.Key[len(types.ScanDerivedInstances) : len(fact.Key)-len(phaseSuffix)]
 		phases[instanceID] = string(fact.Value)
 	}
 

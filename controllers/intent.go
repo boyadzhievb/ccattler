@@ -142,10 +142,7 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 // a map of service name to desired instance count for that intent layer.
 func extractIntentCounts(facts []store.Fact, prefix string) map[string]int {
 	counts := make(map[string]int)
-	for _, fact := range facts {
-		if !strings.HasPrefix(fact.Key, prefix) {
-			continue
-		}
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
 		relativePath := strings.TrimPrefix(fact.Key, prefix)
 		parts := strings.SplitN(relativePath, "/", 2)
 		if len(parts) == 2 && parts[1] == "instances" {
