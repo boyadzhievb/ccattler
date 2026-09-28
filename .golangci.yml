@@ -1,6 +1,7 @@
+version: "2"
+
 run:
   timeout: 5m
-  go: "1.26"
 
 linters:
   enable:
@@ -14,23 +15,23 @@ linters:
     - misspell
     - gofmt
 
-linters-settings:
-  errcheck:
-    check-type-assertions: true
-  govet:
-    enable-all: true
-    disable:
-      - fieldalignment
-  gosec:
-    excludes:
-      - G104
-      - G304
-  gocritic:
-    enabled-checks:
-      - dupImport
-      - ifElseChain
-      - nestingReduce
-      - truncateCmp
+  settings:
+    errcheck:
+      check-type-assertions: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+    gosec:
+      excludes:
+        - G104
+        - G304
+    gocritic:
+      enabled-checks:
+        - dupImport
+        - ifElseChain
+        - nestingReduce
+        - truncateCmp
 
 issues:
   exclude-dirs:
