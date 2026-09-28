@@ -1950,7 +1950,176 @@ Run all stable fuzz targets for a bounded duration.
 
 ---
 
-# 34. Required deliverables
+# 34. Phase 33 — Helm chart and Kubernetes deployment audit
+
+Helm is a **deployment mechanism** for CCattler, not a compatibility layer that makes CCattler operate as a native Kubernetes workload. This boundary must stay clean:
+
+```
+Helm/Kubernetes
+       │
+       │ deploys
+       ▼
+   CCattler
+       │
+       ├── API
+       ├── controllers
+       ├── agents
+       ├── runtime
+       └── state store
+```
+
+Helm must not leak Kubernetes' Pod/ReplicaSet/Deployment ontology into CCattler's user-facing model.
+
+## 34.1 Chart structure
+
+Audit:
+
+- Chart.yaml,
+- values.yaml,
+- templates,
+- helpers (_helpers.tpl),
+- CRDs if any,
+- NOTES.txt,
+- chart dependencies,
+- chart version vs CCattler version alignment.
+
+## 34.2 Installation correctness
+
+Test:
+
+```bash
+helm lint ./charts/ccattler
+helm template ./charts/ccattler
+helm install --dry-run --generate-name ./charts/ccattler
+helm install ccattler ./charts/ccattler
+helm upgrade ccattler ./charts/ccattler
+helm rollback ccattler
+helm uninstall ccattler
+```
+
+Test both fresh installation and upgrade from previous versions.
+
+## 34.3 Configuration via values.yaml
+
+Every important server/agent setting must be configurable without editing templates:
+
+- etcd endpoints,
+- API address/ports,
+- node/agent configuration,
+- runtime configuration,
+- resource requests/limits,
+- affinity/anti-affinity,
+- tolerations,
+- node selectors,
+- security context,
+- persistence,
+- TLS certificates,
+- secrets,
+- service configuration,
+- observability,
+- network configuration.
+
+Do not embed environment-specific assumptions in the chart.
+
+## 34.4 Security
+
+This deserves particular attention because a Helm chart can accidentally undo security architecture elsewhere:
+
+- runAsNonRoot,
+- readOnlyRootFilesystem,
+- dropped Linux capabilities,
+- seccomp profiles,
+- privileged containers only where genuinely required,
+- host networking/host PID/host mounts,
+- containerd/nerdctl socket access,
+- ServiceAccount permissions,
+- RBAC least privilege,
+- Secret handling,
+- NetworkPolicies,
+- Pod Security Standards compatibility,
+- TLS configuration,
+- image provenance and digest pinning.
+
+## 34.5 HA behavior
+
+Test the full lifecycle:
+
+```
+helm install
+    ↓
+server replicas
+    ↓
+agent replicas
+    ↓
+etcd
+    ↓
+restart one component
+    ↓
+upgrade
+    ↓
+rollback
+```
+
+Verify that Helm/Kubernetes lifecycle operations do not violate CCattler's reconciliation model.
+
+## 34.6 Upgrade safety
+
+Explicitly test:
+
+- N → N+1 upgrade,
+- configuration changes,
+- image changes,
+- schema/state changes,
+- controller restart during upgrade,
+- agent restart during upgrade,
+- rollback,
+- partially failed upgrade.
+
+The important question is not merely "does Helm upgrade succeed?" but:
+
+> Does the cluster converge correctly after an interrupted or partially completed upgrade?
+
+## 34.7 Resource behavior
+
+Add chart-level defaults for:
+
+- CPU/memory requests,
+- CPU/memory limits,
+- probes (startup/liveness/readiness),
+- termination grace periods,
+- priority classes where appropriate,
+- pod disruption budgets where appropriate.
+
+Only add Kubernetes concepts where they map to actual CCattler semantics. Do not blindly add every Kubernetes construct.
+
+## 34.8 Chart testing
+
+Add automated CI for:
+
+- helm lint,
+- helm template,
+- helm unittest or equivalent,
+- helm install,
+- helm upgrade,
+- helm rollback.
+
+Ideally run integration tests against a disposable Kubernetes cluster (kind/k3d) when CI permits.
+
+## 34.9 OCI images, registry, and provenance
+
+Audit:
+
+- Dockerfile correctness and minimal base image,
+- OCI image build reproducibility,
+- container registry configuration,
+- image signing/provenance (cosign/Sigstore),
+- SBOM generation and attachment,
+- digest pinning in chart defaults,
+- multi-architecture image support where needed.
+
+---
+
+# 35. Required deliverables
 
 The executing model should create/update:
 
@@ -1984,7 +2153,7 @@ Result
 
 ---
 
-# 35. Recommended execution order
+# 36. Recommended execution order
 
 Do NOT work feature-first.
 
@@ -2068,9 +2237,21 @@ Do NOT work feature-first.
 6. documentation
 7. release validation
 
+## Gate I — Helm and Kubernetes deployment
+
+1. chart structure and lint
+2. installation correctness (install/upgrade/rollback/uninstall)
+3. values.yaml covers all server/agent settings
+4. security hardening (PSS, RBAC, seccomp, digest pinning)
+5. HA behavior verified
+6. upgrade safety (N→N+1, interrupted upgrade, convergence)
+7. resource defaults (probes, limits, PDB, grace periods)
+8. chart CI (lint, template, unittest, kind/k3d integration)
+9. OCI images, SBOM, provenance, signing
+
 ---
 
-# 36. P0 backlog to start immediately
+# 37. P0 backlog to start immediately
 
 These are the first implementation tasks.
 
@@ -2106,7 +2287,7 @@ Run `go test -race ./...` and fix all races before proceeding.
 
 ---
 
-# 37. Definition of done
+# 38. Definition of done
 
 CCattler should not be considered hardened until all of the following are true:
 
@@ -2145,10 +2326,14 @@ CCattler should not be considered hardened until all of the following are true:
 - [ ] CI runs correctness/security/static checks.
 - [ ] Release artifacts are integrity-verifiable.
 - [ ] Documentation matches actual behavior.
+- [ ] Helm chart lints, installs, upgrades, and rolls back cleanly.
+- [ ] Chart security hardening passes Pod Security Standards.
+- [ ] Helm lifecycle operations do not violate reconciliation model.
+- [ ] OCI images are signed with provenance and SBOM attached.
 
 ---
 
-# 38. Final instruction to the executing model
+# 39. Final instruction to the executing model
 
 Treat this as an **engineering investigation**, not a checklist to mark green.
 
