@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // ProcessRuntime runs workloads as OS processes on the local machine.
@@ -88,7 +90,7 @@ func (processRuntime *ProcessRuntime) Start(_ context.Context, spec Spec) error 
 		}
 	}
 
-	command := exec.Command(args[0], args[1:]...)
+	command := exec.Command(args[0], args[1:]...) //nolint:gosec // process runtime executes user-specified commands
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -135,13 +137,13 @@ func (processRuntime *ProcessRuntime) Stop(_ context.Context, id string) error {
 	}
 
 	// SIGTERM → grace period → SIGKILL
-	process.command.Process.Signal(syscall.SIGTERM)
+	_ = process.command.Process.Signal(syscall.SIGTERM)
 
 	select {
 	case <-process.completionSignal:
 		return nil
 	case <-time.After(processRuntime.gracePeriod):
-		process.command.Process.Signal(syscall.SIGKILL)
+		_ = process.command.Process.Signal(syscall.SIGKILL)
 		<-process.completionSignal
 		return nil
 	}
@@ -213,7 +215,7 @@ func (processRuntime *ProcessRuntime) Exec(ctx context.Context, id string, execS
 		return fmt.Errorf("empty exec command for workload %s", id)
 	}
 
-	command := exec.CommandContext(ctx, args[0], args[1:]...)
+	command := exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // process runtime executes user-specified commands
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 
@@ -234,7 +236,7 @@ func (processRuntime *ProcessRuntime) ExecInit(ctx context.Context, image string
 	if len(commandParts) == 0 {
 		return fmt.Errorf("empty init exec command")
 	}
-	command := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...)
+	command := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...) //nolint:gosec // process runtime executes user-specified commands
 	return command.Run()
 }
 
@@ -284,7 +286,9 @@ func (processRuntime *ProcessRuntime) StopAll(ctx context.Context) {
 	processRuntime.mutex.Unlock()
 
 	for _, id := range ids {
-		processRuntime.Stop(ctx, id)
+		if stopError := processRuntime.Stop(ctx, id); stopError != nil {
+			logging.Default().Error("failed to stop process", "process", id, "error", stopError.Error())
+		}
 	}
 }
 

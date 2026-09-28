@@ -145,7 +145,7 @@ func generateSpanID() string {
 
 func isHex(value string) bool {
 	for _, character := range value {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
 		}
 	}

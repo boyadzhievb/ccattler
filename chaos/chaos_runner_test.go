@@ -48,7 +48,7 @@ func TestChaosRunnerSingleNodeKill(t *testing.T) {
 		InjectionInterval:  1 * time.Second,
 		ConvergenceTimeout: 10 * time.Second,
 		EnabledScenarios:   []FailureScenario{ScenarioNodeKill},
-		RandSource:         rand.New(rand.NewSource(42)),
+		RandSource:         rand.New(rand.NewSource(42)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
 	ctx := context.Background()
@@ -79,7 +79,7 @@ func TestChaosRunnerPartitionAndHeal(t *testing.T) {
 		InjectionInterval:  1 * time.Second,
 		ConvergenceTimeout: 10 * time.Second,
 		EnabledScenarios:   []FailureScenario{ScenarioNodePartition},
-		RandSource:         rand.New(rand.NewSource(42)),
+		RandSource:         rand.New(rand.NewSource(42)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
 	ctx := context.Background()
@@ -107,7 +107,7 @@ func TestChaosRunnerControllerRestart(t *testing.T) {
 		InjectionInterval:  1 * time.Second,
 		ConvergenceTimeout: 10 * time.Second,
 		EnabledScenarios:   []FailureScenario{ScenarioControllerRestart},
-		RandSource:         rand.New(rand.NewSource(42)),
+		RandSource:         rand.New(rand.NewSource(42)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
 	ctx := context.Background()
@@ -135,7 +135,7 @@ func TestChaosRunnerScaleChange(t *testing.T) {
 		InjectionInterval:  1 * time.Second,
 		ConvergenceTimeout: 10 * time.Second,
 		EnabledScenarios:   []FailureScenario{ScenarioScaleChange},
-		RandSource:         rand.New(rand.NewSource(42)),
+		RandSource:         rand.New(rand.NewSource(42)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
 	ctx := context.Background()
@@ -206,7 +206,7 @@ func TestChaosRunnerFullChaosConverges(t *testing.T) {
 			ScenarioControllerRestart,
 			ScenarioScaleChange,
 		},
-		RandSource: rand.New(rand.NewSource(123)),
+		RandSource: rand.New(rand.NewSource(123)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
 	ctx := context.Background()

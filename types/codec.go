@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -327,9 +328,15 @@ func ReadServiceVIP(ctx context.Context, stateStore store.StateStore, serviceNam
 // DeleteServiceVIP removes all VIP-related facts for a service (the VIP
 // address, port, and DNS mapping).
 func DeleteServiceVIP(ctx context.Context, stateStore store.StateStore, serviceName string) error {
-	stateStore.Delete(ctx, KeyNetworkVIPService(serviceName))
-	stateStore.Delete(ctx, KeyNetworkVIPServicePort(serviceName))
-	stateStore.Delete(ctx, KeyNetworkDNS(serviceName))
+	if deleteError := stateStore.Delete(ctx, KeyNetworkVIPService(serviceName)); deleteError != nil {
+		logging.Default().Error("failed to delete service VIP", "service", serviceName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyNetworkVIPServicePort(serviceName)); deleteError != nil {
+		logging.Default().Error("failed to delete service VIP port", "service", serviceName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyNetworkDNS(serviceName)); deleteError != nil {
+		logging.Default().Error("failed to delete service DNS", "service", serviceName, "error", deleteError.Error())
+	}
 	return nil
 }
 
@@ -548,11 +555,23 @@ func ReadScalePolicy(ctx context.Context, stateStore store.StateStore, serviceNa
 
 // DeleteObservedVolume removes all observed-state facts for a volume.
 func DeleteObservedVolume(ctx context.Context, stateStore store.StateStore, volumeName string) error {
-	stateStore.Delete(ctx, KeyObservedVolume(volumeName))
-	stateStore.Delete(ctx, KeyObservedVolumeState(volumeName))
-	stateStore.Delete(ctx, KeyObservedVolumeSize(volumeName))
-	stateStore.Delete(ctx, KeyObservedVolumeNode(volumeName))
-	stateStore.Delete(ctx, KeyObservedVolumeInstance(volumeName))
-	stateStore.Delete(ctx, KeyObservedVolumeMountPath(volumeName))
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolume(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume", "volume", volumeName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolumeState(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume state", "volume", volumeName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolumeSize(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume size", "volume", volumeName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolumeNode(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume node", "volume", volumeName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolumeInstance(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume instance", "volume", volumeName, "error", deleteError.Error())
+	}
+	if deleteError := stateStore.Delete(ctx, KeyObservedVolumeMountPath(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volume mount path", "volume", volumeName, "error", deleteError.Error())
+	}
 	return nil
 }

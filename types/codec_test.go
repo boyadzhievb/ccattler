@@ -264,8 +264,8 @@ func TestEndpointWriteAndDelete(t *testing.T) {
 		t.Fatalf("expected 10.0.1.4:8080, got %s", factEntry.Value)
 	}
 
-	if err := DeleteEndpoint(ctx, stateStore, "web", "a8f31", 8080); err != nil {
-		t.Fatal(err)
+	if deleteErr := DeleteEndpoint(ctx, stateStore, "web", "a8f31", 8080); deleteErr != nil {
+		t.Fatal(deleteErr)
 	}
 	_, err = stateStore.Get(ctx, KeyEndpoint("web", "a8f31", 8080))
 	if err != store.ErrKeyNotFound {
@@ -377,8 +377,8 @@ func TestNetworkAllocationWriteAndDelete(t *testing.T) {
 		t.Errorf("allocation: got %s, want 10.100.1.2", factEntry.Value)
 	}
 
-	if err := DeleteNetworkAllocation(ctx, stateStore, "instance-aaa"); err != nil {
-		t.Fatal(err)
+	if deleteErr := DeleteNetworkAllocation(ctx, stateStore, "instance-aaa"); deleteErr != nil {
+		t.Fatal(deleteErr)
 	}
 	_, err = stateStore.Get(ctx, KeyNetworkAllocation("instance-aaa"))
 	if err != store.ErrKeyNotFound {

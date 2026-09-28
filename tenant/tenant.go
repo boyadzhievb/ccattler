@@ -103,22 +103,22 @@ func (registry *TenantRegistry) GetTenant(ctx context.Context, tenantName string
 	tenant := &Tenant{Name: tenantName}
 
 	if cpuFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaCPU(tenantName)); err == nil {
-		fmt.Sscanf(string(cpuFact.Value), "%d", &tenant.Quota.CPU)
+		_, _ = fmt.Sscanf(string(cpuFact.Value), "%d", &tenant.Quota.CPU)
 	}
 	if memFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaMemory(tenantName)); err == nil {
 		tenant.Quota.Memory = string(memFact.Value)
 	}
 	if instFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaInstances(tenantName)); err == nil {
-		fmt.Sscanf(string(instFact.Value), "%d", &tenant.Quota.Instances)
+		_, _ = fmt.Sscanf(string(instFact.Value), "%d", &tenant.Quota.Instances)
 	}
 	if volFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName)); err == nil {
-		fmt.Sscanf(string(volFact.Value), "%d", &tenant.Quota.Volumes)
+		_, _ = fmt.Sscanf(string(volFact.Value), "%d", &tenant.Quota.Volumes)
 	}
 	if storageFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaStorage(tenantName)); err == nil {
 		tenant.Quota.Storage = string(storageFact.Value)
 	}
 	if weightFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantWeight(tenantName)); err == nil {
-		fmt.Sscanf(string(weightFact.Value), "%d", &tenant.Weight)
+		_, _ = fmt.Sscanf(string(weightFact.Value), "%d", &tenant.Weight)
 	}
 
 	return tenant, nil

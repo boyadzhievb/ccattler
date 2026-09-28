@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // CertificateRotator automatically renews a certificate before it expires.
@@ -96,7 +98,9 @@ func (rotator *CertificateRotator) renewalLoop(ctx context.Context) {
 		case <-rotator.stopChannel:
 			return
 		case <-time.After(sleepDuration):
-			rotator.renewCertificate()
+			if renewError := rotator.renewCertificate(); renewError != nil {
+				logging.Default().Error("certificate renewal failed", "error", renewError.Error())
+			}
 		}
 	}
 }

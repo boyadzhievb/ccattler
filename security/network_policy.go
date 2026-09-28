@@ -119,7 +119,7 @@ func parseNetworkPolicyRule(name, value string) (NetworkPolicyRule, error) {
 	}
 
 	port := 0
-	fmt.Sscanf(parts[2], "%d", &port)
+	_, _ = fmt.Sscanf(parts[2], "%d", &port)
 
 	return NetworkPolicyRule{
 		Name:          name,

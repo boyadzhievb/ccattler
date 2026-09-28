@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -70,7 +71,9 @@ func (eventProjector *EventProjector) projectEvent(ctx context.Context, watchEve
 	if eventKind == "" {
 		return
 	}
-	eventProjector.eventLog.Emit(ctx, eventKind, eventTarget, eventDetail, "event-projector")
+	if _, emitError := eventProjector.eventLog.Emit(ctx, eventKind, eventTarget, eventDetail, "event-projector"); emitError != nil {
+		logging.Default().Error("failed to emit event", "error", emitError.Error())
+	}
 }
 
 // classifyWatchEventAsSemanticEvent examines a committed store watch event and

@@ -61,7 +61,7 @@ func performHTTPHealthCheck(ctx context.Context, host string, port int, path str
 	if err != nil {
 		return false
 	}
-	resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode >= 200 && resp.StatusCode < 400
 }
 
@@ -74,6 +74,6 @@ func performTCPHealthCheck(host string, port int, timeout time.Duration) bool {
 	if err != nil {
 		return false
 	}
-	conn.Close()
+	defer func() { _ = conn.Close() }()
 	return true
 }

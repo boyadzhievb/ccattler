@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -189,6 +190,8 @@ func (eventLog *EventLog) trimOldEvents(ctx context.Context) {
 	}
 
 	for i := 0; i < excess; i++ {
-		eventLog.factStore.Delete(ctx, allFacts[i].Key)
+		if deleteError := eventLog.factStore.Delete(ctx, allFacts[i].Key); deleteError != nil {
+			logging.Default().Error("failed to trim old event", "key", allFacts[i].Key, "error", deleteError.Error())
+		}
 	}
 }

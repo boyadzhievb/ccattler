@@ -36,7 +36,7 @@ func (heapSlice nodeSelectionHeap) Swap(indexA, indexB int) {
 }
 
 func (heapSlice *nodeSelectionHeap) Push(element interface{}) {
-	entry := element.(*nodeHeapEntry)
+	entry, _ := element.(*nodeHeapEntry)
 	entry.heapIndex = len(*heapSlice)
 	*heapSlice = append(*heapSlice, entry)
 }

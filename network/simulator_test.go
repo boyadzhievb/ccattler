@@ -175,7 +175,7 @@ func TestConcurrentAllocationsDoNotCollide(t *testing.T) {
 	for allocationIndex := 0; allocationIndex < concurrentAllocations; allocationIndex++ {
 		go func(index int) {
 			defer waitGroup.Done()
-			instanceID := "instance-" + string(rune('a'+index%26)) + string(rune('a'+index/26))
+			instanceID := "instance-" + string(rune('a'+index%26)) + string(rune('a'+index/26)) //nolint:gosec // test uses small values
 			allocatedIP, err := simulatorNetworkProvider.AllocateIP(ctx, "node-1", instanceID)
 			if err != nil {
 				t.Errorf("concurrent allocation %d failed: %v", index, err)

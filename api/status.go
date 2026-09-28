@@ -213,7 +213,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 			vipByService[pathParts[0]] = string(vipFact.Value)
 		} else if len(pathParts) == 2 && pathParts[1] == "port" {
 			portValue := 0
-			fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			_, _ = fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}

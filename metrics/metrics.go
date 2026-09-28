@@ -278,7 +278,7 @@ func (registry *Registry) Handler() http.Handler {
 			}
 		}
 
-		responseWriter.Write([]byte(builder.String()))
+		_, _ = responseWriter.Write([]byte(builder.String()))
 	})
 }
 

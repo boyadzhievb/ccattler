@@ -26,7 +26,7 @@ func TestAllExamplesParseAndApply(t *testing.T) {
 	for _, exampleFilePath := range exampleFiles {
 		exampleName := filepath.Base(exampleFilePath)
 		t.Run(exampleName, func(t *testing.T) {
-			fileContents, err := os.ReadFile(exampleFilePath)
+			fileContents, err := os.ReadFile(exampleFilePath) //nolint:gosec // test reads generated file
 			if err != nil {
 				t.Fatalf("reading %s: %v", exampleName, err)
 			}

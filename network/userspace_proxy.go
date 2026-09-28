@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/tracing"
@@ -118,18 +119,19 @@ func NewUserSpaceProxy(resolver ServiceResolver, listenAddress string, factStore
 // backends. It blocks until the context is cancelled.
 func (userSpaceProxy *UserSpaceProxy) Start(ctx context.Context) error {
 	httpServer := &http.Server{
-		Addr:    userSpaceProxy.listenAddress,
-		Handler: userSpaceProxy,
+		Addr:              userSpaceProxy.listenAddress,
+		Handler:           userSpaceProxy,
+		ReadHeaderTimeout: 10 * time.Second,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
 	}
 
-	go func() {
+	go func() { //nolint:gosec // parent context is already cancelled; fresh context needed for shutdown timeout
 		<-ctx.Done()
 		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancelShutdown()
-		httpServer.Shutdown(shutdownContext)
+		_ = httpServer.Shutdown(shutdownContext)
 	}()
 
 	if listenError := httpServer.ListenAndServe(); listenError != nil && listenError != http.ErrServerClosed {
@@ -325,7 +327,9 @@ func (userSpaceProxy *UserSpaceProxy) writeActivatingState(ctx context.Context, 
 			return
 		}
 	}
-	userSpaceProxy.factStore.Put(ctx, types.KeyDerivedServiceActivationState(serviceName), []byte("activating"))
+	if _, putError := userSpaceProxy.factStore.Put(ctx, types.KeyDerivedServiceActivationState(serviceName), []byte("activating")); putError != nil {
+		logging.Default().Error("failed to write activation state", "service", serviceName, "error", putError.Error())
+	}
 }
 
 // recordLastRequestTime writes the current timestamp to the last_request_time
@@ -348,7 +352,9 @@ func (userSpaceProxy *UserSpaceProxy) recordLastRequestTime(ctx context.Context,
 	userSpaceProxy.lastRequestMutex.Unlock()
 
 	timestampMillis := strconv.FormatInt(currentTime.UnixMilli(), 10)
-	userSpaceProxy.factStore.Put(ctx, types.KeyObservedServiceLastRequestTime(serviceName), []byte(timestampMillis))
+	if _, putError := userSpaceProxy.factStore.Put(ctx, types.KeyObservedServiceLastRequestTime(serviceName), []byte(timestampMillis)); putError != nil {
+		logging.Default().Error("failed to write last request time", "service", serviceName, "error", putError.Error())
+	}
 }
 
 // getOrCreateWaiterCounter returns the atomic counter tracking how many
@@ -451,11 +457,10 @@ func (userSpaceProxy *UserSpaceProxy) forwardToBackend(
 	childSpan := incomingTrace.NewChildSpan()
 
 	reverseProxy := &httputil.ReverseProxy{
-		Director: func(proxyRequest *http.Request) {
-			proxyRequest.URL.Scheme = backendURL.Scheme
-			proxyRequest.URL.Host = backendURL.Host
-			proxyRequest.Host = incomingRequest.Host
-			childSpan.InjectHeaders(proxyRequest)
+		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
+			proxyRequest.SetURL(backendURL)
+			proxyRequest.Out.Host = incomingRequest.Host
+			childSpan.InjectHeaders(proxyRequest.Out)
 		},
 		ErrorHandler: func(errorResponseWriter http.ResponseWriter, errorRequest *http.Request, transportError error) {
 			userSpaceProxy.circuitBreaker.RecordFailure(backendAddress)

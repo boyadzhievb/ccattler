@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/infra"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -60,7 +61,9 @@ func (clusterAutoscaleController *ClusterAutoscaleController) Reconcile(ctx cont
 			nodesToAdd = clusterConfig.maxNodes - currentNodeCount
 		}
 		for range nodesToAdd {
-			clusterAutoscaleController.infraProvider.RequestNode(ctx)
+			if _, requestError := clusterAutoscaleController.infraProvider.RequestNode(ctx); requestError != nil {
+				logging.Default().Error("failed to request node from infrastructure provider", "error", requestError.Error())
+			}
 		}
 	}
 
@@ -86,7 +89,9 @@ func (clusterAutoscaleController *ClusterAutoscaleController) Reconcile(ctx cont
 			if !strings.HasPrefix(nodeID, "auto-node-") {
 				continue
 			}
-			clusterAutoscaleController.infraProvider.RemoveNode(ctx, nodeID)
+			if removeError := clusterAutoscaleController.infraProvider.RemoveNode(ctx, nodeID); removeError != nil {
+				logging.Default().Error("failed to remove node from infrastructure provider", "node", nodeID, "error", removeError.Error())
+			}
 			aliveCount--
 		}
 	}

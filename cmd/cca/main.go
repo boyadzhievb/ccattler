@@ -668,7 +668,7 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 				return nil, fmt.Errorf("loading etcd client certificate: %w", loadError)
 			}
 
-			caCertPEM, readError := os.ReadFile(etcdCACertPath)
+			caCertPEM, readError := os.ReadFile(etcdCACertPath) //nolint:gosec // reads user-specified config file
 			if readError != nil {
 				return nil, fmt.Errorf("reading etcd CA certificate: %w", readError)
 			}
@@ -713,7 +713,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
 	}
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	if parsedConfig.storeBackend == "etcd" {
 		fmt.Printf("CCattler server connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
@@ -905,7 +905,7 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Confi
 	}
 
 	caCertPath := dataDirectory + "/ca.pem"
-	if writeError := os.WriteFile(caCertPath, certificateAuthority.CACertificatePEM(), 0644); writeError != nil {
+	if writeError := os.WriteFile(caCertPath, certificateAuthority.CACertificatePEM(), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
 		os.Exit(1)
 	}
@@ -929,7 +929,7 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 		os.Exit(1)
 	}
 
-	caCertPEM, err := os.ReadFile(caCertPath)
+	caCertPEM, err := os.ReadFile(caCertPath) //nolint:gosec // reads user-specified config file
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", err)
 		os.Exit(1)
@@ -963,7 +963,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
 	}
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	if parsedConfig.storeBackend == "etcd" {
 		fmt.Printf("CCattler agent %s connected to etcd at %s (prefix: %s)\n",
@@ -989,11 +989,13 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	types.WriteNode(ctx, factStore, types.Node{
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
 		ID: parsedConfig.nodeID, State: types.NodeAlive,
 		CapacityCPU: 4000, CapacityMemory: 8192,
 		AvailableCPU: 4000, AvailableMemory: 8192,
-	})
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", parsedConfig.nodeID, "error", writeError.Error())
+	}
 
 	var runtimeAdapter runtime.Runtime
 	if parsedConfig.runtimeBackend == "container" {
@@ -1018,7 +1020,11 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
 	}
 
-	go nodeAgent.Run(ctx)
+	go func() {
+		if runError := nodeAgent.Run(ctx); runError != nil {
+			logging.Default().Error("node agent exited with error", "node", parsedConfig.nodeID, "error", runError.Error())
+		}
+	}()
 
 	if parsedConfig.proxyEnabled {
 		serviceResolver := network.NewStoreBackedResolver(factStore)
@@ -1038,7 +1044,9 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	<-ctx.Done()
 	fmt.Printf("\nAgent %s shutting down...\n", parsedConfig.nodeID)
 	if nodeAgent.DataPlaneProvider() != nil {
-		nodeAgent.DataPlaneProvider().Cleanup(context.Background())
+		if cleanupError := nodeAgent.DataPlaneProvider().Cleanup(context.Background()); cleanupError != nil {
+			logging.Default().Error("data plane cleanup failed", "error", cleanupError.Error())
+		}
 	}
 	if processRuntime, ok := runtimeAdapter.(*runtime.ProcessRuntime); ok {
 		processRuntime.StopAll(context.Background())
@@ -1122,7 +1130,7 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
 	}
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	enrollmentService := security.NewEnrollmentService(factStore, nil, nil, 0)
 
@@ -1231,9 +1239,10 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 				parsedConfig.dataDirectory = args[argIndex]
 			}
 		default:
-			if positionalIndex == 0 {
+			switch positionalIndex {
+			case 0:
 				parsedConfig.serverAddress = currentArg
-			} else if positionalIndex == 1 {
+			case 1:
 				parsedConfig.joinToken = currentArg
 			}
 			positionalIndex++
@@ -1267,7 +1276,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		}
 	} else {
 		transportTLSConfig = &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: true, //nolint:gosec // TLS verification disabled during node bootstrap when no CA cert provided
 			MinVersion:         tls.VersionTLS13,
 		}
 		fmt.Println("WARNING: no --ca-cert provided, server certificate will not be verified")
@@ -1297,7 +1306,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error contacting server: %v\n", requestError)
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 
@@ -1335,7 +1344,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error writing private key: %v\n", writeError)
 		os.Exit(1)
 	}
-	if writeError := os.WriteFile(caCertPath, []byte(enrollmentResponse.CACertPEM), 0644); writeError != nil {
+	if writeError := os.WriteFile(caCertPath, []byte(enrollmentResponse.CACertPEM), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
 		os.Exit(1)
 	}
@@ -1492,7 +1501,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
 			os.Exit(1)
 		}
-		defer factStore.Close()
+		defer func() { _ = factStore.Close() }()
 
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
@@ -1505,16 +1514,18 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	}
 
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	// Register 3 simulated nodes with equal capacity.
 	for _, simulatedNodeID := range []string{"node-1", "node-2", "node-3"} {
-		types.WriteNode(ctx, factStore, types.Node{
+		if writeError := types.WriteNode(ctx, factStore, types.Node{
 			ID: simulatedNodeID, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
 			Architecture: "amd64",
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write node", "node", simulatedNodeID, "error", writeError.Error())
+		}
 	}
 	fmt.Println("Registered 3 simulated nodes")
 
@@ -1532,7 +1543,11 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController, warmZeroController)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
 	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
@@ -1561,7 +1576,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
 		os.Exit(1)
 	}
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	if parsedRunConfig.storeBackend == "etcd" {
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
@@ -1572,11 +1587,13 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 
 	// This machine is the single node in single-machine mode.
 	localNodeID := "local"
-	types.WriteNode(ctx, factStore, types.Node{
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
 		ID: localNodeID, State: types.NodeAlive,
 		CapacityCPU: 4000, CapacityMemory: 8192,
 		AvailableCPU: 4000, AvailableMemory: 8192,
-	})
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
+	}
 
 	// Create and start reconciliation controllers. No cluster autoscaler in
 	// single-machine mode — there is no infrastructure provider to add real nodes.
@@ -1595,12 +1612,20 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, initController, warmZeroController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Start node agent with process runtime for real OS process execution.
 	processRuntime := runtime.NewProcessRuntime()
 	nodeAgent := agent.New(localNodeID, factStore, processRuntime)
-	go nodeAgent.Run(ctx)
+	go func() {
+		if runError := nodeAgent.Run(ctx); runError != nil {
+			logging.Default().Error("node agent exited with error", "node", localNodeID, "error", runError.Error())
+		}
+	}()
 
 	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
@@ -1663,7 +1688,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
 		os.Exit(1)
 	}
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	if parsedRunConfig.storeBackend == "etcd" {
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
@@ -1673,11 +1698,13 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	defer cancel()
 
 	localNodeID := "local"
-	types.WriteNode(ctx, factStore, types.Node{
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
 		ID: localNodeID, State: types.NodeAlive,
 		CapacityCPU: 4000, CapacityMemory: 8192,
 		AvailableCPU: 4000, AvailableMemory: 8192,
-	})
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
+	}
 
 	// Create and start reconciliation controllers including network controller.
 	// No cluster autoscaler in single-machine mode — there is no infrastructure
@@ -1698,7 +1725,11 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		endpointController, failureController, networkController,
 		autoscaleController, intentResolverController, rolloutController, initController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Start node agent with container runtime for real nerdctl container execution.
 	containerRuntime := runtime.NewContainerRuntime()
@@ -1707,7 +1738,11 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
-	go nodeAgent.Run(ctx)
+	go func() {
+		if runError := nodeAgent.Run(ctx); runError != nil {
+			logging.Default().Error("node agent exited with error", "node", localNodeID, "error", runError.Error())
+		}
+	}()
 
 	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
@@ -1752,17 +1787,19 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 // without real processes or containers.
 func executeDemoCommand() {
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	localNodeID := "local"
-	types.WriteNode(ctx, factStore, types.Node{
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
 		ID: localNodeID, State: types.NodeAlive,
 		CapacityCPU: 4000, CapacityMemory: 8192,
 		AvailableCPU: 4000, AvailableMemory: 8192,
-	})
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
+	}
 
 	// Create and start all reconciliation controllers.
 	instanceController := controllers.NewInstanceController()
@@ -1780,12 +1817,20 @@ func executeDemoCommand() {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New(localNodeID, factStore, simulatorRuntime)
-	go nodeAgent.Run(ctx)
+	go func() {
+		if runError := nodeAgent.Run(ctx); runError != nil {
+			logging.Default().Error("node agent exited with error", "node", localNodeID, "error", runError.Error())
+		}
+	}()
 
 	builtinDemoConfig := `service web {
     image nginx:1.28
@@ -1818,7 +1863,7 @@ func executeDemoCommand() {
 // node-1 to demonstrate failure detection, instance rescheduling, and recovery.
 func executeDistributedDemoCommand() {
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -1826,11 +1871,13 @@ func executeDistributedDemoCommand() {
 	// Register 3 simulated nodes with equal capacity.
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
 	for _, nodeID := range nodeIDs {
-		types.WriteNode(ctx, factStore, types.Node{
+		if writeError := types.WriteNode(ctx, factStore, types.Node{
 			ID: nodeID, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
+		}
 	}
 	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
 
@@ -1852,7 +1899,11 @@ func executeDistributedDemoCommand() {
 		endpointController, failureController, nodeFailureController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Start 3 agents, each with its own simulator runtime.
 	// node-1 gets a separate cancel context so we can kill it later.
@@ -1862,9 +1913,17 @@ func executeDistributedDemoCommand() {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		if nodeID == "node-1" {
-			go nodeAgent.Run(node1Context)
+			go func() {
+				if runError := nodeAgent.Run(node1Context); runError != nil {
+					logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
+				}
+			}()
 		} else {
-			go nodeAgent.Run(ctx)
+			go func() {
+				if runError := nodeAgent.Run(ctx); runError != nil {
+					logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
+				}
+			}()
 		}
 	}
 
@@ -1927,7 +1986,7 @@ func executeDistributedDemoCommand() {
 // networking state including per-instance IPs, service VIPs, and DNS records.
 func executeNetworkDemoCommand() {
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -1937,13 +1996,16 @@ func executeNetworkDemoCommand() {
 	// Register 3 simulated nodes with equal capacity.
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
 	for _, nodeID := range nodeIDs {
-		types.WriteNode(ctx, factStore, types.Node{
+		if writeError := types.WriteNode(ctx, factStore, types.Node{
 			ID: nodeID, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
-		})
-		factStore.Put(ctx, types.KeyNetworkNodeSubnet(nodeID),
-			[]byte(simulatorNetworkProvider.NodeSubnet(nodeID)))
+		}); writeError != nil {
+			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
+		}
+		if _, putError := factStore.Put(ctx, types.KeyNetworkNodeSubnet(nodeID), []byte(simulatorNetworkProvider.NodeSubnet(nodeID))); putError != nil {
+			logging.Default().Error("failed to write node subnet", "node", nodeID, "error", putError.Error())
+		}
 	}
 	fmt.Println("Registered 3 simulated nodes with networking:")
 	for _, nodeID := range nodeIDs {
@@ -1969,14 +2031,22 @@ func executeNetworkDemoCommand() {
 		endpointController, failureController, nodeFailureController, networkController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
 	for _, nodeID := range nodeIDs {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
-		go nodeAgent.Run(ctx)
+		go func() {
+			if runError := nodeAgent.Run(ctx); runError != nil {
+				logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
+			}
+		}()
 	}
 
 	networkDemoConfig := `service web {
@@ -2055,21 +2125,25 @@ service api {
 // volume migrates to the replacement node.
 func executeStorageDemoCommand() {
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
 	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
-	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024)
+	if createVolumeError := simulatorStorageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024); createVolumeError != nil {
+		logging.Default().Error("failed to create volume", "volume", "pgdata", "error", createVolumeError.Error())
+	}
 
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
 	for _, nodeID := range nodeIDs {
-		types.WriteNode(ctx, factStore, types.Node{
+		if writeError := types.WriteNode(ctx, factStore, types.Node{
 			ID: nodeID, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
+		}
 	}
 	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
 
@@ -2091,7 +2165,11 @@ func executeStorageDemoCommand() {
 		endpointController, failureController, nodeFailureController, storageController,
 		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 
 	// Track which context each node's agent uses so we can kill one later.
 	nodeAgentContexts := make(map[string]context.CancelFunc)
@@ -2102,7 +2180,11 @@ func executeStorageDemoCommand() {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetStorageProvider(simulatorStorageProvider)
-		go nodeAgent.Run(nodeContext)
+		go func() {
+			if runError := nodeAgent.Run(nodeContext); runError != nil {
+				logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
+			}
+		}()
 	}
 
 	storageDemoConfig := `volume pgdata {
@@ -2162,7 +2244,9 @@ service web {
 	if killFunc, exists := nodeAgentContexts[postgresNodeID]; exists {
 		killFunc()
 	}
-	simulatorStorageProvider.ForceDetach(ctx, "pgdata")
+	if forceDetachError := simulatorStorageProvider.ForceDetach(ctx, "pgdata"); forceDetachError != nil {
+		logging.Default().Error("failed to force-detach volume", "volume", "pgdata", "error", forceDetachError.Error())
+	}
 	fmt.Printf("%s agent killed. Waiting for failure detection, volume force-detach, and rescheduling...\n\n", postgresNodeID)
 
 	statusPrintTicker := time.NewTicker(2 * time.Second)
@@ -2185,7 +2269,7 @@ service web {
 // controller restarts, and scale changes — printing live convergence results.
 func executeChaosCommand() {
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
+	defer func() { _ = factStore.Close() }()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -2226,7 +2310,7 @@ func executeChaosCommand() {
 			chaos.ScenarioControllerRestart,
 			chaos.ScenarioScaleChange,
 		},
-		RandSource: rand.New(rand.NewSource(time.Now().UnixNano())),
+		RandSource: rand.New(rand.NewSource(time.Now().UnixNano())), //nolint:gosec // math/rand for jitter
 	}
 
 	chaosRunner := chaos.NewChaosRunner(chaosConfig, chaosCluster)
@@ -2363,7 +2447,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
 			os.Exit(1)
 		}
-		defer factStore.Close()
+		defer func() { _ = factStore.Close() }()
 
 		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
 		if diffError != nil {
@@ -2378,7 +2462,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 	httpResponse, diffErr := http.Post(apiURL, "text/plain", strings.NewReader(string(fileData)))
 	if diffErr != nil {
 		factStore := store.NewMemoryStore()
-		defer factStore.Close()
+		defer func() { _ = factStore.Close() }()
 
 		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
 		if diffError != nil {
@@ -2388,7 +2472,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		printDiffChanges(changes)
 		return
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	if httpResponse.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(httpResponse.Body)
@@ -2474,7 +2558,7 @@ func executeEventsCommand(parsedConfig eventsCommandConfig) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	var events []struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -2513,7 +2597,7 @@ func executeEventsFollowMode(serviceFilter string) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	if httpResponse.Header.Get("Content-Type") != "text/event-stream" {
 		responseBody, _ := io.ReadAll(httpResponse.Body)
@@ -2592,7 +2676,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run', 'server', or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	var facts []struct {
 		Key   string `json:"key"`
@@ -2686,7 +2770,7 @@ func executeStatusCommand() {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 	fmt.Print(string(responseBody))
 }
@@ -2696,12 +2780,12 @@ func executeStatusCommand() {
 func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 	requestURL := fmt.Sprintf("http://%s/metric?service=%s&metric=%s&value=%s",
 		statusAPIListenAddress, serviceName, metricName, metricValue)
-	httpResponse, err := http.Post(requestURL, "", nil)
+	httpResponse, err := http.Post(requestURL, "", nil) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 	fmt.Print(string(responseBody))
 }
@@ -2715,7 +2799,7 @@ func executeTopCommand(resourceType string) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	var clusterStatus api.ClusterStatus
 	if err := json.NewDecoder(httpResponse.Body).Decode(&clusterStatus); err != nil {
@@ -2810,16 +2894,16 @@ func executeDescribeCommand(resourceType, resourceName string) {
 
 	apiURL := fmt.Sprintf("http://%s/api/describe?type=%s&name=%s",
 		statusAPIListenAddress, normalizedType, resourceName)
-	httpResponse, err := http.Get(apiURL)
+	httpResponse, err := http.Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	if httpResponse.StatusCode == http.StatusNotFound {
 		var errorBody map[string]string
-		json.NewDecoder(httpResponse.Body).Decode(&errorBody)
+		_ = json.NewDecoder(httpResponse.Body).Decode(&errorBody)
 		fmt.Fprintf(os.Stderr, "%s\n", errorBody["error"])
 		os.Exit(1)
 	}
@@ -3187,7 +3271,7 @@ func executeGetCommand(resourceType string) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	var status api.ClusterStatus
 	if err := json.NewDecoder(httpResponse.Body).Decode(&status); err != nil {
@@ -3452,7 +3536,7 @@ func executeScaleCommand(serviceName, countStr string) {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 	if httpResponse.StatusCode != 200 {
@@ -3466,12 +3550,12 @@ func executeScaleCommand(serviceName, countStr string) {
 // fact store changes as they occur.
 func executeWatchCommand(prefix string) {
 	apiURL := fmt.Sprintf("http://%s/api/watch?prefix=%s", statusAPIListenAddress, prefix)
-	httpResponse, err := http.Get(apiURL)
+	httpResponse, err := http.Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
 		os.Exit(1)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	fmt.Printf("watching %s ...\n", prefix)
 	buffer := make([]byte, 4096)
@@ -3589,11 +3673,11 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 		acceptHeader := request.Header.Get("Accept")
 		if strings.Contains(acceptHeader, "application/json") {
 			responseWriter.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(responseWriter).Encode(buildClusterStatusJSON(requestContext, factStore))
+			_ = json.NewEncoder(responseWriter).Encode(buildClusterStatusJSON(requestContext, factStore))
 			return
 		}
 		responseWriter.Header().Set("Content-Type", "text/plain")
-		responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
+		_, _ = responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
 	})
 
 	// Legacy metric endpoint for backward compatibility with 'cca metric set'.
@@ -3611,8 +3695,10 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 		}
 		requestContext := request.Context()
 		metricKey := types.KeyObservedMetric(serviceName, metricName)
-		factStore.Put(requestContext, metricKey, []byte(metricValue))
-		fmt.Fprintf(responseWriter, "set %s.%s = %s\n", serviceName, metricName, metricValue)
+		if _, putError := factStore.Put(requestContext, metricKey, []byte(metricValue)); putError != nil {
+			logging.Default().Error("failed to write metric", "key", metricKey, "error", putError.Error())
+		}
+		_, _ = fmt.Fprintf(responseWriter, "set %s.%s = %s\n", serviceName, metricName, metricValue) //nolint:gosec // internal CLI metric endpoint, not user-facing
 	})
 
 	listener, err := net.Listen("tcp", listenAddress)
@@ -3628,8 +3714,12 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 		serverHandler = requireClientCertMiddleware(httpMux)
 	}
 
+	statusHTTPServer := &http.Server{
+		Handler:           serverHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
-		if serveError := http.Serve(listener, serverHandler); serveError != nil {
+		if serveError := statusHTTPServer.Serve(listener); serveError != nil {
 			fmt.Fprintf(os.Stderr, "status api server: %v\n", serveError)
 		}
 	}()
@@ -3717,7 +3807,7 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 			vipByService[pathParts[0]] = string(vipFact.Value)
 		} else if len(pathParts) == 2 && pathParts[1] == "port" {
 			portValue := 0
-			fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			_, _ = fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}

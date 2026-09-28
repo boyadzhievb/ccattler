@@ -131,7 +131,7 @@ func (iptablesDataPlane *IptablesDataPlane) ensureGlobalChainAndJumpRules() erro
 		return nil
 	}
 
-	runIptables("-t", "nat", "-N", iptablesMainChain)
+	_ = runIptables("-t", "nat", "-N", iptablesMainChain)
 
 	if err := ensureJumpToChain("PREROUTING", iptablesMainChain); err != nil {
 		return err
@@ -168,7 +168,7 @@ func (iptablesDataPlane *IptablesDataPlane) ensureVIPAddress(virtualIP string) e
 // with round-robin DNAT rules for the given backends. The chain is flushed
 // and rebuilt on every call to ensure convergence.
 func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig ServiceVIPConfig, chainName string) error {
-	runIptables("-t", "nat", "-N", chainName)
+	_ = runIptables("-t", "nat", "-N", chainName)
 
 	if err := runIptablesStrict("-t", "nat", "-F", chainName); err != nil {
 		return fmt.Errorf("flushing chain %s: %w", chainName, err)
@@ -248,7 +248,7 @@ func ensureMasqueradeForDNAT() error {
 // removeMasqueradeForDNAT removes the POSTROUTING MASQUERADE rule added
 // by ensureMasqueradeForDNAT.
 func removeMasqueradeForDNAT() {
-	runIptables("-t", "nat", "-D", "POSTROUTING",
+	_ = runIptables("-t", "nat", "-D", "POSTROUTING",
 		"!", "-o", "lo", "-m", "conntrack", "--ctstate", "DNAT",
 		"-j", "MASQUERADE")
 }
@@ -294,7 +294,7 @@ func removeJumpRuleFromMainChain(serviceChain string) {
 			}
 			ruleSpec := strings.TrimPrefix(line, "-A "+iptablesMainChain+" ")
 			deleteArgs := append([]string{"-t", "nat", "-D", iptablesMainChain}, strings.Fields(ruleSpec)...)
-			runIptables(deleteArgs...)
+			_ = runIptables(deleteArgs...)
 			found = true
 			break
 		}
@@ -306,13 +306,13 @@ func removeJumpRuleFromMainChain(serviceChain string) {
 
 // removeJumpFromBuiltinChain removes a jump rule from a builtin chain.
 func removeJumpFromBuiltinChain(builtinChain string, targetChain string) {
-	runIptables("-t", "nat", "-D", builtinChain, "-j", targetChain)
+	_ = runIptables("-t", "nat", "-D", builtinChain, "-j", targetChain)
 }
 
 // flushAndDeleteChain flushes and deletes an iptables chain from the nat table.
 func flushAndDeleteChain(chainName string) {
-	runIptables("-t", "nat", "-F", chainName)
-	runIptables("-t", "nat", "-X", chainName)
+	_ = runIptables("-t", "nat", "-F", chainName)
+	_ = runIptables("-t", "nat", "-X", chainName)
 }
 
 // removeVIPAddressFromInterface removes a /32 VIP address from the dummy interface.
@@ -347,14 +347,14 @@ func sanitizeChainName(serviceName string) string {
 // idempotent operations like -N on an existing chain). Returns the error
 // for callers that need to check existence via -C.
 func runIptables(arguments ...string) error {
-	return exec.Command("iptables", arguments...).Run()
+	return exec.Command("iptables", arguments...).Run() //nolint:gosec // iptables commands with validated arguments
 }
 
 // runIptablesStrict executes an iptables command and returns any error.
 // Used for operations that must succeed (like adding a rule to an
 // existing chain).
 func runIptablesStrict(arguments ...string) error {
-	output, err := exec.Command("iptables", arguments...).CombinedOutput()
+	output, err := exec.Command("iptables", arguments...).CombinedOutput() //nolint:gosec // iptables commands with validated arguments
 	if err != nil {
 		return fmt.Errorf("iptables %s: %s: %w", strings.Join(arguments, " "), string(output), err)
 	}
@@ -364,12 +364,12 @@ func runIptablesStrict(arguments ...string) error {
 // runCommand executes a system command, ignoring errors (used for
 // idempotent operations like creating an interface that may already exist).
 func runCommand(name string, arguments ...string) {
-	exec.Command(name, arguments...).Run()
+	_ = exec.Command(name, arguments...).Run() //nolint:gosec // iptables commands with validated arguments
 }
 
 // runCommandStrict executes a system command and returns any error.
 func runCommandStrict(name string, arguments ...string) error {
-	output, err := exec.Command(name, arguments...).CombinedOutput()
+	output, err := exec.Command(name, arguments...).CombinedOutput() //nolint:gosec // iptables commands with validated arguments
 	if err != nil {
 		return fmt.Errorf("%s %s: %s: %w", name, strings.Join(arguments, " "), string(output), err)
 	}

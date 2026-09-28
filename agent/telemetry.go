@@ -39,13 +39,17 @@ func NewNodeReporter(nodeID string, factStore store.StateStore, runtimeAdapter r
 // the node as unreachable.
 func (nodeReporter *NodeReporter) WriteHeartbeat(ctx context.Context) {
 	timestampMillis := fmt.Sprintf("%d", time.Now().UnixMilli())
-	nodeReporter.factStore.Put(ctx, types.KeyLeaseNode(nodeReporter.nodeID), []byte(timestampMillis))
+	if _, putError := nodeReporter.factStore.Put(ctx, types.KeyLeaseNode(nodeReporter.nodeID), []byte(timestampMillis)); putError != nil {
+		logging.Default().Error("failed to write heartbeat", "node", nodeReporter.nodeID, "error", putError.Error())
+	}
 }
 
 // PublishAliveState writes the NodeAlive state to the store, indicating that
 // this node is healthy and ready to accept workloads.
 func (nodeReporter *NodeReporter) PublishAliveState(ctx context.Context) {
-	nodeReporter.factStore.Put(ctx, types.KeyObservedNodeState(nodeReporter.nodeID), []byte(string(types.NodeAlive)))
+	if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedNodeState(nodeReporter.nodeID), []byte(string(types.NodeAlive))); putError != nil {
+		logging.Default().Error("failed to publish alive state", "node", nodeReporter.nodeID, "error", putError.Error())
+	}
 }
 
 // PublishAdvertiseAddress writes this node's advertise address to the store if
@@ -53,14 +57,18 @@ func (nodeReporter *NodeReporter) PublishAliveState(ctx context.Context) {
 // communication.
 func (nodeReporter *NodeReporter) PublishAdvertiseAddress(ctx context.Context) {
 	if nodeReporter.advertiseAddress != "" {
-		nodeReporter.factStore.Put(ctx, types.KeyObservedNodeAddress(nodeReporter.nodeID), []byte(nodeReporter.advertiseAddress))
+		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedNodeAddress(nodeReporter.nodeID), []byte(nodeReporter.advertiseAddress)); putError != nil {
+			logging.Default().Error("failed to publish advertise address", "node", nodeReporter.nodeID, "error", putError.Error())
+		}
 	}
 }
 
 // RegisterNode writes the initial node registration fact to the store, making
 // the node visible to the control plane's scheduling and controller logic.
 func (nodeReporter *NodeReporter) RegisterNode(ctx context.Context) {
-	nodeReporter.factStore.Put(ctx, types.KeyObservedNode(nodeReporter.nodeID), []byte(""))
+	if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedNode(nodeReporter.nodeID), []byte("")); putError != nil {
+		logging.Default().Error("failed to register node", "node", nodeReporter.nodeID, "error", putError.Error())
+	}
 }
 
 // CollectAndReportTelemetry gathers resource utilization data for the node
@@ -81,7 +89,9 @@ func (nodeReporter *NodeReporter) CollectAndReportTelemetry(ctx context.Context)
 		}
 	}
 
-	nodeReporter.factStore.Put(ctx, types.KeyObservedNodeWorkloadCount(nodeReporter.nodeID), []byte(strconv.Itoa(runningCount)))
+	if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedNodeWorkloadCount(nodeReporter.nodeID), []byte(strconv.Itoa(runningCount))); putError != nil {
+		logging.Default().Error("failed to write workload count", "node", nodeReporter.nodeID, "error", putError.Error())
+	}
 
 	nodeReporter.reportWorkloadTelemetry(ctx, workloads)
 }
@@ -101,10 +111,14 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 			continue
 		}
 
-		nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceCPU(workloadStatus.ID),
-			[]byte(fmt.Sprintf("%d", resourceStats.CPUMillicores)))
-		nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceMemory(workloadStatus.ID),
-			[]byte(fmt.Sprintf("%d", resourceStats.MemoryBytes)))
+		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceCPU(workloadStatus.ID),
+			[]byte(fmt.Sprintf("%d", resourceStats.CPUMillicores))); putError != nil {
+			logging.Default().Error("failed to write instance CPU telemetry", "instance", workloadStatus.ID, "error", putError.Error())
+		}
+		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceMemory(workloadStatus.ID),
+			[]byte(fmt.Sprintf("%d", resourceStats.MemoryBytes))); putError != nil {
+			logging.Default().Error("failed to write instance memory telemetry", "instance", workloadStatus.ID, "error", putError.Error())
+		}
 	}
 }
 

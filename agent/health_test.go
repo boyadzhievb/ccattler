@@ -16,7 +16,7 @@ func TestHTTPHealthy(t *testing.T) {
 	})
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := ln.Addr().(*net.TCPAddr).Port
-	go http.Serve(ln, mux)
+	go http.Serve(ln, mux) //nolint:gosec // test HTTP server
 	defer ln.Close()
 
 	ok := CheckHealth(context.Background(), HealthProbe{
@@ -34,7 +34,7 @@ func TestHTTPUnhealthy(t *testing.T) {
 	})
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := ln.Addr().(*net.TCPAddr).Port
-	go http.Serve(ln, mux)
+	go http.Serve(ln, mux) //nolint:gosec // test HTTP server
 	defer ln.Close()
 
 	ok := CheckHealth(context.Background(), HealthProbe{
@@ -83,7 +83,7 @@ func TestHTTPPortFromString(t *testing.T) {
 	})
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	port := ln.Addr().(*net.TCPAddr).Port
-	go http.Serve(ln, mux)
+	go http.Serve(ln, mux) //nolint:gosec // test HTTP server
 	defer ln.Close()
 
 	portStr := strconv.Itoa(port)

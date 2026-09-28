@@ -107,7 +107,7 @@ func TestMutualTLSHandshake(t *testing.T) {
 	mux.HandleFunc("/ping", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Write([]byte("pong"))
 	})
-	go http.Serve(listener, mux)
+	go http.Serve(listener, mux) //nolint:gosec // test HTTP server
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: clientTLSConfig},
@@ -151,12 +151,12 @@ func TestMTLSRejectsUnauthenticatedClient(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	defer listener.Close()
-	go http.Serve(listener, http.NewServeMux())
+	go http.Serve(listener, http.NewServeMux()) //nolint:gosec // test HTTP server
 
 	// Client with no certificate should be rejected.
 	httpClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: true, //nolint:gosec // test TLS client skips verification
 		}},
 	}
 
@@ -249,7 +249,7 @@ func TestRotatorBasedMTLSServer(t *testing.T) {
 	mux.HandleFunc("/health", func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.Write([]byte("ok"))
 	})
-	go http.Serve(listener, mux)
+	go http.Serve(listener, mux) //nolint:gosec // test HTTP server
 
 	clientCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
 		CommonName: "agent-node-1",
@@ -279,7 +279,7 @@ func TestRotatorBasedMTLSServer(t *testing.T) {
 
 	unauthenticatedClient := &http.Client{
 		Transport: &http.Transport{TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
+			InsecureSkipVerify: true, //nolint:gosec // test TLS client skips verification
 		}},
 	}
 	_, err = unauthenticatedClient.Get("https://" + listener.Addr().String() + "/health")
@@ -502,8 +502,8 @@ func TestSecretStorePutAndGet(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := secretStore.PutSecret(ctx, "db-password", []byte("hunter2")); err != nil {
-		t.Fatalf("put secret: %v", err)
+	if putErr := secretStore.PutSecret(ctx, "db-password", []byte("hunter2")); putErr != nil {
+		t.Fatalf("put secret: %v", putErr)
 	}
 
 	plaintext, err := secretStore.GetSecret(ctx, "db-password")
@@ -946,8 +946,8 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 	}
 
 	// RBAC binding should exist.
-	if err := rbacAuthorizer.Authorize("node:node-1", PermissionWrite, "observed/instance/i1/state"); err != nil {
-		t.Fatalf("node-1 should have node-agent role: %v", err)
+	if authErr := rbacAuthorizer.Authorize("node:node-1", PermissionWrite, "observed/instance/i1/state"); authErr != nil {
+		t.Fatalf("node-1 should have node-agent role: %v", authErr)
 	}
 
 	// Token should be consumed — can't reuse.
@@ -1431,18 +1431,18 @@ func TestRBACNodeAgentCredentialAccess(t *testing.T) {
 }
 
 func reconstructECPublicKey(xBytes, yBytes []byte) *ecdsa.PublicKey {
-	return &ecdsa.PublicKey{
+	return &ecdsa.PublicKey{ //nolint:staticcheck // test constructs key from raw coordinates
 		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+		X:     new(big.Int).SetBytes(xBytes), //nolint:staticcheck // test constructs key from raw coordinates
+		Y:     new(big.Int).SetBytes(yBytes), //nolint:staticcheck // test constructs key from raw coordinates
 	}
 }
 
 func TestSimulatorCloudAdapterExchangeToken(t *testing.T) {
-	expectedCredential := &CloudCredential{
+	expectedCredential := &CloudCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "aws",
-		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",
-		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",                     //nolint:gosec // test fixture credentials
+		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", //nolint:gosec // test fixture credentials
 		SessionToken: "FwoGZXIvYXdzEBYaDH...",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 	}
@@ -1460,7 +1460,7 @@ func TestSimulatorCloudAdapterExchangeToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
-	if credential.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" {
+	if credential.AccessKeyID != "AKIAIOSFODNN7EXAMPLE" { //nolint:gosec // test fixture credentials
 		t.Errorf("access key: got %q", credential.AccessKeyID)
 	}
 	if simulatorAdapter.ExchangeCount() != 1 {
@@ -1534,7 +1534,7 @@ func TestCredentialStoreRoundTrip(t *testing.T) {
 		t.Fatalf("create store: %v", err)
 	}
 
-	originalCredential := &CloudCredential{
+	originalCredential := &CloudCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "aws",
 		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",
 		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
@@ -1543,8 +1543,8 @@ func TestCredentialStoreRoundTrip(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if err := credentialStore.PutCredential(ctx, "instance-1", "payments_s3", originalCredential); err != nil {
-		t.Fatalf("put: %v", err)
+	if putErr := credentialStore.PutCredential(ctx, "instance-1", "payments_s3", originalCredential); putErr != nil {
+		t.Fatalf("put: %v", putErr)
 	}
 
 	retrieved, err := credentialStore.GetCredential(ctx, "instance-1", "payments_s3")
@@ -1589,8 +1589,8 @@ func TestCredentialStoreDelete(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	})
 
-	if err := credentialStore.DeleteCredential(ctx, "instance-1", "test_id"); err != nil {
-		t.Fatalf("delete: %v", err)
+	if deleteErr := credentialStore.DeleteCredential(ctx, "instance-1", "test_id"); deleteErr != nil {
+		t.Fatalf("delete: %v", deleteErr)
 	}
 
 	_, err = credentialStore.GetCredential(ctx, "instance-1", "test_id")
@@ -1637,11 +1637,11 @@ func TestCredentialStoreInvalidKeyLength(t *testing.T) {
 }
 
 func TestCredentialSerializationRoundTrip(t *testing.T) {
-	original := &CloudCredential{
+	original := &CloudCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "azure",
 		AccessKeyID:  "",
 		SecretKey:    "",
-		SessionToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test",
+		SessionToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test", //nolint:gosec // test fixture credentials
 		ExpiresAt:    time.Unix(1695200000, 0),
 	}
 

@@ -62,7 +62,7 @@ func (dnsServer *DNSServer) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		udpConnection.Close()
+		_ = udpConnection.Close()
 	}()
 
 	packetBuffer := make([]byte, 512)
@@ -86,7 +86,8 @@ func (dnsServer *DNSServer) ListenPort() int {
 	if dnsServer.udpConnection == nil {
 		return 0
 	}
-	return dnsServer.udpConnection.LocalAddr().(*net.UDPAddr).Port
+	localAddress, _ := dnsServer.udpConnection.LocalAddr().(*net.UDPAddr)
+	return localAddress.Port
 }
 
 // handleDNSQuery processes a single DNS query packet. It extracts the query
@@ -125,7 +126,7 @@ func (dnsServer *DNSServer) handleDNSQuery(ctx context.Context, connection *net.
 	}
 
 	responsePacket := buildDNSARecordResponse(transactionID, queryPacket[12:queryNameEndOffset+4], parsedIP)
-	connection.WriteToUDP(responsePacket, remoteAddress)
+	_, _ = connection.WriteToUDP(responsePacket, remoteAddress)
 }
 
 // sendNXDomainResponse sends a DNS NXDOMAIN (name not found) response.
@@ -137,8 +138,8 @@ func (dnsServer *DNSServer) sendNXDomainResponse(connection *net.UDPConn, remote
 	binary.BigEndian.PutUint16(responseHeader[4:6], 1) // QDCOUNT = 1
 	binary.BigEndian.PutUint16(responseHeader[6:8], 0) // ANCOUNT = 0
 
-	responsePacket := append(responseHeader, questionSection...)
-	connection.WriteToUDP(responsePacket, remoteAddress)
+	responseHeader = append(responseHeader, questionSection...)
+	_, _ = connection.WriteToUDP(responseHeader, remoteAddress)
 }
 
 // parseDNSQuestionName extracts the domain name from a DNS question section
@@ -185,7 +186,7 @@ func buildDNSARecordResponse(transactionID uint16, questionSection []byte, ipv4A
 	binary.BigEndian.PutUint16(answerRecord[10:12], 4)    // RDLENGTH = 4
 	copy(answerRecord[12:16], ipv4Address)                // RDATA = IPv4 address
 
-	responsePacket := append(responseHeader, questionSection...)
-	responsePacket = append(responsePacket, answerRecord...)
-	return responsePacket
+	responseHeader = append(responseHeader, questionSection...)
+	responseHeader = append(responseHeader, answerRecord...)
+	return responseHeader
 }

@@ -324,7 +324,9 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 			nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
 		}
 		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
-		nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
+			logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
+		}
 		return
 	}
 
@@ -335,7 +337,9 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image))
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
+		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
+	}
 }
 
 // cleanupUndesiredInstance tears down an instance that is no longer placed on
@@ -349,11 +353,17 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 	if nodeAgent.storageProvider != nil {
 		nodeAgent.detachVolumesForInstance(ctx, instanceID)
 	}
-	nodeAgent.runtime.Stop(ctx, instanceID)
+	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
+		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
+	}
 	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	if nodeAgent.networkProvider != nil {
-		nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID)
-		types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID)
+		if releaseError := nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID); releaseError != nil {
+			logging.Default().Error("failed to release IP for instance", "instance", instanceID, "error", releaseError.Error())
+		}
+		if deleteError := types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID); deleteError != nil {
+			logging.Default().Error("failed to delete network allocation", "instance", instanceID, "error", deleteError.Error())
+		}
 	}
 }
 
@@ -501,7 +511,9 @@ func (nodeAgent *Agent) refreshMaterializedSecrets(ctx context.Context) {
 
 		existingContent, readErr := os.ReadFile(materializedSecret.MountPath)
 		if readErr != nil || string(existingContent) != string(plaintext) {
-			os.WriteFile(materializedSecret.MountPath, plaintext, 0600)
+			if writeError := os.WriteFile(materializedSecret.MountPath, plaintext, 0600); writeError != nil {
+				logging.Default().Error("failed to rotate secret file", "path", materializedSecret.MountPath, "error", writeError.Error())
+			}
 			logging.Default().Info("rotated secret", "agent", nodeAgent.nodeID, "secret", materializedSecret.SecretName, "instance", materializedSecret.InstanceID)
 		}
 	}
@@ -546,8 +558,8 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 		volumeState := types.VolumeState(volumeStateFact.Value)
 
 		if volumeState == types.VolumeAttached {
-			nodeFact, err := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
-			if err == nil && string(nodeFact.Value) == nodeAgent.nodeID {
+			nodeFact, nodeErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
+			if nodeErr == nil && string(nodeFact.Value) == nodeAgent.nodeID {
 				continue
 			}
 			return false, nil
@@ -571,7 +583,7 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 		var usedBytes, capacityBytes int64
 		usedBytes, capacityBytes, _ = nodeAgent.storageProvider.VolumeUsage(ctx, volumeName)
 
-		types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
+		if writeError := types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
 			Name:          volumeName,
 			Size:          sizeValue,
 			State:         types.VolumeAttached,
@@ -580,9 +592,13 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			MountPath:     mountPath,
 			UsedBytes:     usedBytes,
 			CapacityBytes: capacityBytes,
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write observed volume", "volume", volumeName, "error", writeError.Error())
+		}
 
-		nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName))
+		if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName)); deleteError != nil {
+			logging.Default().Error("failed to delete volume migration source", "volume", volumeName, "error", deleteError.Error())
+		}
 	}
 
 	return true, nil
@@ -599,7 +615,9 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 
 	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, serviceName)
 	for volumeName := range volumeMounts {
-		nodeAgent.storageProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID)
+		if detachError := nodeAgent.storageProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
+			logging.Default().Error("failed to detach volume", "volume", volumeName, "node", nodeAgent.nodeID, "error", detachError.Error())
+		}
 
 		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
 		sizeValue := ""
@@ -607,11 +625,13 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 			sizeValue = string(sizeFact.Value)
 		}
 
-		types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
+		if writeError := types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
 			Name:  volumeName,
 			Size:  sizeValue,
 			State: types.VolumeAvailable,
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write observed volume after detach", "volume", volumeName, "error", writeError.Error())
+		}
 	}
 }
 
@@ -639,18 +659,30 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 // an IP is allocated from the node's subnet. Without a provider, no IP is
 // assigned — consumers must check for the IP fact before using it.
 func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
-	nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte(""))
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service))
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state)))
-	nodeAgent.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(nodeAgent.nodeID))
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte("")); putError != nil {
+		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(service)); putError != nil {
+		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(state))); putError != nil {
+		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte(nodeAgent.nodeID)); putError != nil {
+		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
+	}
 
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
 		if allocateError != nil {
 			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceID, "error", allocateError.Error())
 		} else {
-			nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(allocatedIP))
-			types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP)
+			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(allocatedIP)); putError != nil {
+				logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
+			}
+			if _, writeError := types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP); writeError != nil {
+				logging.Default().Error("failed to write network allocation", "instance", instanceID, "error", writeError.Error())
+			}
 		}
 	}
 }

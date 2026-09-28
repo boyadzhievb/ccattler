@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -128,7 +129,9 @@ func (lifecycle *TenantLifecycle) DeleteTenant(ctx context.Context, tenantName s
 	}
 
 	// Mark as deleting.
-	lifecycle.factStore.Put(ctx, types.KeyDesiredTenantState(tenantName), []byte(string(TenantDeleting)))
+	if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantState(tenantName), []byte(string(TenantDeleting))); putError != nil {
+		logging.Default().Error("failed to mark tenant as deleting", "tenant", tenantName, "error", putError.Error())
+	}
 
 	result := &DeletionResult{TenantName: tenantName}
 
@@ -199,14 +202,22 @@ func (lifecycle *TenantLifecycle) deleteOwnedServices(ctx context.Context, tenan
 
 	count := len(serviceNames)
 	for _, key := range keysToDelete {
-		lifecycle.factStore.Delete(ctx, key)
+		if deleteError := lifecycle.factStore.Delete(ctx, key); deleteError != nil {
+			logging.Default().Error("failed to delete service fact", "key", key, "error", deleteError.Error())
+		}
 	}
 
 	// Clean up effective and intent facts.
 	for serviceName := range serviceNames {
-		lifecycle.factStore.Delete(ctx, types.KeyEffectiveServiceInstances(serviceName))
-		lifecycle.factStore.Delete(ctx, types.KeyIntentUserServiceInstances(serviceName))
-		lifecycle.factStore.Delete(ctx, types.KeyIntentAutoscalerServiceInstances(serviceName))
+		if deleteError := lifecycle.factStore.Delete(ctx, types.KeyEffectiveServiceInstances(serviceName)); deleteError != nil {
+			logging.Default().Error("failed to delete effective service instances", "service", serviceName, "error", deleteError.Error())
+		}
+		if deleteError := lifecycle.factStore.Delete(ctx, types.KeyIntentUserServiceInstances(serviceName)); deleteError != nil {
+			logging.Default().Error("failed to delete user intent service instances", "service", serviceName, "error", deleteError.Error())
+		}
+		if deleteError := lifecycle.factStore.Delete(ctx, types.KeyIntentAutoscalerServiceInstances(serviceName)); deleteError != nil {
+			logging.Default().Error("failed to delete autoscaler intent service instances", "service", serviceName, "error", deleteError.Error())
+		}
 	}
 
 	return count
@@ -239,7 +250,9 @@ func (lifecycle *TenantLifecycle) deleteOwnedVolumes(ctx context.Context, tenant
 	}
 
 	for _, key := range keysToDelete {
-		lifecycle.factStore.Delete(ctx, key)
+		if deleteError := lifecycle.factStore.Delete(ctx, key); deleteError != nil {
+			logging.Default().Error("failed to delete volume fact", "key", key, "error", deleteError.Error())
+		}
 	}
 
 	return len(volumeNames)
@@ -262,7 +275,9 @@ func (lifecycle *TenantLifecycle) deleteExports(ctx context.Context, tenantName 
 		serviceName := strings.SplitN(relativePath, "/allow/", 2)[0]
 		owner := ExtractTenantFromName(serviceName)
 		if owner == tenantName {
-			lifecycle.factStore.Delete(ctx, fact.Key)
+			if deleteError := lifecycle.factStore.Delete(ctx, fact.Key); deleteError != nil {
+				logging.Default().Error("failed to delete export fact", "key", fact.Key, "error", deleteError.Error())
+			}
 		}
 	}
 
@@ -278,7 +293,9 @@ func (lifecycle *TenantLifecycle) deleteTenantInfraFacts(ctx context.Context, te
 		return
 	}
 	for _, fact := range infraFacts {
-		lifecycle.factStore.Delete(ctx, fact.Key)
+		if deleteError := lifecycle.factStore.Delete(ctx, fact.Key); deleteError != nil {
+			logging.Default().Error("failed to delete tenant infrastructure fact", "key", fact.Key, "error", deleteError.Error())
+		}
 	}
 }
 
@@ -290,17 +307,29 @@ func (lifecycle *TenantLifecycle) deleteTenantDesiredFacts(ctx context.Context, 
 		return
 	}
 	for _, fact := range tenantFacts {
-		lifecycle.factStore.Delete(ctx, fact.Key)
+		if deleteError := lifecycle.factStore.Delete(ctx, fact.Key); deleteError != nil {
+			logging.Default().Error("failed to delete tenant desired fact", "key", fact.Key, "error", deleteError.Error())
+		}
 	}
-	lifecycle.factStore.Delete(ctx, types.KeyDesiredTenant(tenantName))
+	if deleteError := lifecycle.factStore.Delete(ctx, types.KeyDesiredTenant(tenantName)); deleteError != nil {
+		logging.Default().Error("failed to delete tenant marker", "tenant", tenantName, "error", deleteError.Error())
+	}
 }
 
 // deleteObservedUsageFacts removes observed tenant usage metrics.
 func (lifecycle *TenantLifecycle) deleteObservedUsageFacts(ctx context.Context, tenantName string) {
-	lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageCPU(tenantName))
-	lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageMemory(tenantName))
-	lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageInstances(tenantName))
-	lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageVolumes(tenantName))
+	if deleteError := lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageCPU(tenantName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed CPU usage", "tenant", tenantName, "error", deleteError.Error())
+	}
+	if deleteError := lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageMemory(tenantName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed memory usage", "tenant", tenantName, "error", deleteError.Error())
+	}
+	if deleteError := lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageInstances(tenantName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed instances usage", "tenant", tenantName, "error", deleteError.Error())
+	}
+	if deleteError := lifecycle.factStore.Delete(ctx, types.KeyObservedTenantUsageVolumes(tenantName)); deleteError != nil {
+		logging.Default().Error("failed to delete observed volumes usage", "tenant", tenantName, "error", deleteError.Error())
+	}
 }
 
 // extractServiceNameAndField is imported from fair_scheduler.go (same package).

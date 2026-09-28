@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -118,7 +119,9 @@ func (deadLetterQueue *DeadLetterQueue) CleanupOld(ctx context.Context) (int, er
 			continue
 		}
 		if currentTime.Sub(entry.LastFailure) > deadLetterQueue.maxAge {
-			deadLetterQueue.factStore.Delete(ctx, fact.Key)
+			if deleteError := deadLetterQueue.factStore.Delete(ctx, fact.Key); deleteError != nil {
+				logging.Default().Error("failed to delete expired DLQ entry", "key", fact.Key, "error", deleteError.Error())
+			}
 			removedCount++
 		}
 	}

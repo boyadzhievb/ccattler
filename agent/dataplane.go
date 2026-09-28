@@ -198,7 +198,9 @@ func (dataPlaneReconciler *DataPlaneReconciler) PublishAdvertiseAddress(ctx cont
 	if dataPlaneReconciler.advertiseAddress == "" {
 		return
 	}
-	dataPlaneReconciler.factStore.Put(ctx, types.KeyObservedNodeAddress(dataPlaneReconciler.nodeID), []byte(dataPlaneReconciler.advertiseAddress))
+	if _, putError := dataPlaneReconciler.factStore.Put(ctx, types.KeyObservedNodeAddress(dataPlaneReconciler.nodeID), []byte(dataPlaneReconciler.advertiseAddress)); putError != nil {
+		logging.Default().Error("failed to publish advertise address", "node", dataPlaneReconciler.nodeID, "error", putError.Error())
+	}
 }
 
 // publishInstanceHostPort writes the host port mapping for an instance to
@@ -210,5 +212,7 @@ func publishInstanceHostPort(ctx context.Context, factStore store.StateStore, in
 	if hostPort <= 0 {
 		return
 	}
-	factStore.Put(ctx, types.KeyObservedInstanceHostPort(instanceID), []byte(strconv.Itoa(hostPort)))
+	if _, putError := factStore.Put(ctx, types.KeyObservedInstanceHostPort(instanceID), []byte(strconv.Itoa(hostPort))); putError != nil {
+		logging.Default().Error("failed to publish instance host port", "instance", instanceID, "error", putError.Error())
+	}
 }

@@ -331,7 +331,7 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 		if baseDelayMs > 500 {
 			baseDelayMs = 500
 		}
-		jitterMs := rand.Intn(baseDelayMs + 1)
+		jitterMs := rand.Intn(baseDelayMs + 1) //nolint:gosec // math/rand for reconciliation jitter
 		retryDelay := time.Duration(baseDelayMs+jitterMs) * time.Millisecond
 		select {
 		case <-ctx.Done():

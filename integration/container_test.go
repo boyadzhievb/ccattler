@@ -41,9 +41,9 @@ func detectTestContainerCommand() string {
 func buildTestContainerExecCommand(containerCommand string, args ...string) *exec.Cmd {
 	if containerCommand == "lima" {
 		limaArgs := append([]string{"nerdctl"}, args...)
-		return exec.Command("lima", limaArgs...)
+		return exec.Command("lima", limaArgs...) //nolint:gosec // test runs container commands
 	}
-	return exec.Command(containerCommand, args...)
+	return exec.Command(containerCommand, args...) //nolint:gosec // test runs container commands
 }
 
 // skipIfContainerUnavailable skips the test when no container runtime (nerdctl,

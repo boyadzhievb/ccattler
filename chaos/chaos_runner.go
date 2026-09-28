@@ -90,7 +90,7 @@ type ChaosRunner struct {
 // NewChaosRunner creates a ChaosRunner with the given config and cluster.
 func NewChaosRunner(config ChaosConfig, cluster ChaosCluster) *ChaosRunner {
 	if config.RandSource == nil {
-		config.RandSource = rand.New(rand.NewSource(time.Now().UnixNano()))
+		config.RandSource = rand.New(rand.NewSource(time.Now().UnixNano())) //nolint:gosec // math/rand for chaos injection timing
 	}
 	return &ChaosRunner{
 		config:  config,

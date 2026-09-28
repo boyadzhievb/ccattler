@@ -23,7 +23,7 @@ func buildDNSARecordQuery(transactionID uint16, domainName string) []byte {
 	// Question: labels + null + QTYPE(A=1) + QCLASS(IN=1)
 	var questionSection []byte
 	for _, label := range splitDomainIntoLabels(domainName) {
-		questionSection = append(questionSection, byte(len(label)))
+		questionSection = append(questionSection, byte(len(label))) //nolint:gosec // test uses small values
 		questionSection = append(questionSection, []byte(label)...)
 	}
 	questionSection = append(questionSection, 0) // null terminator

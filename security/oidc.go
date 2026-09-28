@@ -73,8 +73,8 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 		Algorithm string `json:"alg"`
 		Type      string `json:"typ"`
 	}
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return nil, fmt.Errorf("oidc: parse header: %w", err)
+	if unmarshalErr := json.Unmarshal(headerJSON, &header); unmarshalErr != nil {
+		return nil, fmt.Errorf("oidc: parse header: %w", unmarshalErr)
 	}
 
 	if header.Algorithm != "ES256" {

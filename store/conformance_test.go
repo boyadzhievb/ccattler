@@ -272,9 +272,10 @@ doneDraining:
 		state[fact.Key] = string(fact.Value)
 	}
 	for _, event := range postResyncEvents {
-		if event.Type == EventPut {
+		switch event.Type {
+		case EventPut:
 			state[event.Fact.Key] = string(event.Fact.Value)
-		} else if event.Type == EventDelete {
+		case EventDelete:
 			delete(state, event.Fact.Key)
 		}
 	}
@@ -539,9 +540,10 @@ func TestScanThenWatchNoGap(t *testing.T) {
 		reconstructed[fact.Key] = string(fact.Value)
 	}
 	for _, event := range allEvents {
-		if event.Type == EventPut {
+		switch event.Type {
+		case EventPut:
 			reconstructed[event.Fact.Key] = string(event.Fact.Value)
-		} else if event.Type == EventDelete {
+		case EventDelete:
 			delete(reconstructed, event.Fact.Key)
 		}
 	}

@@ -63,7 +63,7 @@ func (simulatorProxy *SimulatorProxy) RouteRequest(ctx context.Context, serviceN
 
 	roundRobinCounter := simulatorProxy.getOrCreateCounter(serviceName)
 	currentIndex := roundRobinCounter.Add(1) - 1
-	selectedEndpoint := availableEndpoints[int(currentIndex)%len(availableEndpoints)]
+	selectedEndpoint := availableEndpoints[currentIndex%uint64(len(availableEndpoints))] //nolint:gosec // endpoint count is small
 
 	simulatorProxy.decisionsMutex.Lock()
 	simulatorProxy.routingDecisions[serviceName] = append(

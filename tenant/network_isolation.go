@@ -136,8 +136,8 @@ func (isolation *TenantNetworkIsolation) DeriveFirewallRules(ctx context.Context
 
 	// Within each tenant, allow all traffic by default.
 	for _, tenant := range tenants {
-		services, err := isolation.registry.ListServicesForTenant(ctx, tenant.Name)
-		if err != nil {
+		services, listErr := isolation.registry.ListServicesForTenant(ctx, tenant.Name)
+		if listErr != nil {
 			continue
 		}
 		for _, source := range services {

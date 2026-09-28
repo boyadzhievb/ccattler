@@ -31,7 +31,7 @@ func readProcessStats(pid int) (ResourceStats, error) {
 // The second field is RSS in pages. Returns 0 on non-Linux or any read error.
 func readProcessMemoryFromProc(pid int) (int64, error) {
 	statmPath := fmt.Sprintf("/proc/%d/statm", pid)
-	statmContent, readError := os.ReadFile(statmPath)
+	statmContent, readError := os.ReadFile(statmPath) //nolint:gosec // reads /proc stats for process monitoring
 	if readError != nil {
 		return 0, readError
 	}
@@ -56,7 +56,7 @@ func readProcessMemoryFromProc(pid int) (int64, error) {
 // in clock ticks. Returns 0 on non-Linux or any read error.
 func readProcessCPUFromProc(pid int) (int64, error) {
 	statPath := fmt.Sprintf("/proc/%d/stat", pid)
-	statContent, readError := os.ReadFile(statPath)
+	statContent, readError := os.ReadFile(statPath) //nolint:gosec // reads /proc stats for process monitoring
 	if readError != nil {
 		return 0, readError
 	}

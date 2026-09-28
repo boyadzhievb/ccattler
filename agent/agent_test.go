@@ -264,7 +264,7 @@ func TestAgentReportsHealthy(t *testing.T) {
 		t.Fatal(err)
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	go http.Serve(ln, mux)
+	go http.Serve(ln, mux) //nolint:gosec // test HTTP server
 	defer ln.Close()
 
 	factStore := store.NewMemoryStore()
@@ -881,7 +881,7 @@ func TestAgentMaterializesSecretsBeforeStart(t *testing.T) {
 	})
 
 	// Verify the secret file was written.
-	fileContent, err := os.ReadFile(secretMountPath)
+	fileContent, err := os.ReadFile(secretMountPath) //nolint:gosec // test reads generated file
 	if err != nil {
 		t.Fatalf("secret file not written: %v", err)
 	}
@@ -969,7 +969,7 @@ func TestAgentRotatesSecretWithoutRestart(t *testing.T) {
 	})
 
 	// Verify original secret.
-	content, _ := os.ReadFile(secretMountPath)
+	content, _ := os.ReadFile(secretMountPath) //nolint:gosec // test reads generated file
 	if string(content) != "original-password" {
 		t.Fatalf("expected original-password, got %s", string(content))
 	}
@@ -981,7 +981,7 @@ func TestAgentRotatesSecretWithoutRestart(t *testing.T) {
 
 	// Wait for agent to detect and update the file.
 	waitFor(t, 2*time.Second, "secret rotated on disk", func() bool {
-		newContent, err := os.ReadFile(secretMountPath)
+		newContent, err := os.ReadFile(secretMountPath) //nolint:gosec // test reads generated file
 		return err == nil && string(newContent) == "rotated-password"
 	})
 

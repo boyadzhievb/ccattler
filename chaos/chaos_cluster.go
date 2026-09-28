@@ -9,6 +9,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
@@ -111,11 +112,13 @@ func (simulatedCluster *SimulatedChaosCluster) Start(ctx context.Context) {
 	simulatedCluster.clusterContext = ctx
 
 	for _, nodeID := range simulatedCluster.nodeIDs {
-		types.WriteNode(ctx, simulatedCluster.factStore, types.Node{
+		if writeError := types.WriteNode(ctx, simulatedCluster.factStore, types.Node{
 			ID: nodeID, State: types.NodeAlive,
 			CapacityCPU: 4000, CapacityMemory: 8192,
 			AvailableCPU: 4000, AvailableMemory: 8192,
-		})
+		}); writeError != nil {
+			logging.Default().Error("failed to write node state", "node", nodeID, "error", writeError.Error())
+		}
 	}
 
 	simulatedCluster.startControllers(ctx)
@@ -137,8 +140,12 @@ func (simulatedCluster *SimulatedChaosCluster) DeployService(ctx context.Context
 	simulatedCluster.services[serviceName] = desiredInstances
 	simulatedCluster.mutex.Unlock()
 
-	simulatedCluster.factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte(image))
-	simulatedCluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances(serviceName), []byte(strconv.Itoa(desiredInstances)))
+	if _, putError := simulatedCluster.factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte(image)); putError != nil {
+		logging.Default().Error("failed to write service image", "service", serviceName, "error", putError.Error())
+	}
+	if _, putError := simulatedCluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances(serviceName), []byte(strconv.Itoa(desiredInstances))); putError != nil {
+		logging.Default().Error("failed to write service instance count", "service", serviceName, "error", putError.Error())
+	}
 }
 
 // NodeIDs returns all node identifiers in the cluster.
@@ -208,7 +215,9 @@ func (simulatedCluster *SimulatedChaosCluster) SetServiceScale(ctx context.Conte
 	simulatedCluster.services[serviceName] = instanceCount
 	simulatedCluster.mutex.Unlock()
 
-	simulatedCluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances(serviceName), []byte(strconv.Itoa(instanceCount)))
+	if _, putError := simulatedCluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances(serviceName), []byte(strconv.Itoa(instanceCount))); putError != nil {
+		logging.Default().Error("failed to write service scale", "service", serviceName, "error", putError.Error())
+	}
 }
 
 // ServiceNames returns all deployed service names.
@@ -283,7 +292,11 @@ func (simulatedCluster *SimulatedChaosCluster) startControllers(ctx context.Cont
 		controllerRunner.SetMaxReconciliationAttempts(simulatedCluster.maxReconciliationAttempts)
 	}
 	controllerRunner.SetMaxInputKeyGuards(simulatedCluster.maxInputKeyGuards)
-	go controllerRunner.Run(controllerContext)
+	go func() {
+		if runError := controllerRunner.Run(controllerContext); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
 }
 
 // startAgent creates and starts a new agent for the given node.
@@ -297,5 +310,9 @@ func (simulatedCluster *SimulatedChaosCluster) startAgent(ctx context.Context, n
 
 	nodeAgent := agent.New(nodeID, simulatedCluster.partitionedStores[nodeID], simulatedCluster.agentRuntimes[nodeID])
 	nodeAgent.SetInterval(simulatedCluster.agentInterval)
-	go nodeAgent.Run(nodeContext)
+	go func() {
+		if runError := nodeAgent.Run(nodeContext); runError != nil {
+			logging.Default().Error("node agent exited with error", "error", runError.Error())
+		}
+	}()
 }

@@ -150,8 +150,8 @@ func (issuer *WorkloadTokenIssuer) JWKSDocument() JWKSResponse {
 				Algorithm: "ES256",
 				KeyID:     issuer.keyID,
 				Curve:     "P-256",
-				X:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.X, 32)),
-				Y:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.Y, 32)),
+				X:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.X, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
+				Y:         base64.RawURLEncoding.EncodeToString(padKeyBytes(publicKey.Y, 32)), //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
 			},
 		},
 	}
@@ -176,9 +176,9 @@ type JWKEntry struct {
 // computeKeyID derives a stable key ID from the public key by hashing its
 // coordinates. This ensures the kid is deterministic for the same key pair.
 func computeKeyID(publicKey *ecdsa.PublicKey) string {
-	xBytes := publicKey.X.Bytes()
-	yBytes := publicKey.Y.Bytes()
-	combined := append(xBytes, yBytes...)
+	xBytes := publicKey.X.Bytes()         //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
+	yBytes := publicKey.Y.Bytes()         //nolint:staticcheck // TODO: migrate to ECDH PublicKey.Bytes() when all dependencies support it
+	combined := append(xBytes, yBytes...) //nolint:gocritic // separate slices intentionally concatenated
 	hash := sha256.Sum256(combined)
 	return base64.RawURLEncoding.EncodeToString(hash[:8])
 }

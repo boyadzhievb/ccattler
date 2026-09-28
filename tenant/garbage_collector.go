@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -94,7 +95,9 @@ func (garbageCollector *GarbageCollector) DeleteTenantResources(ctx context.Cont
 	for levelIndex := len(resourceLevels) - 1; levelIndex >= 0; levelIndex-- {
 		for _, resource := range resourceLevels[levelIndex] {
 			for _, factKey := range resource.factKeys {
-				garbageCollector.factStore.Delete(ctx, factKey)
+				if deleteError := garbageCollector.factStore.Delete(ctx, factKey); deleteError != nil {
+					logging.Default().Error("failed to delete tenant resource", "key", factKey, "error", deleteError.Error())
+				}
 				result.TotalKeysDeleted++
 			}
 		}

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -32,7 +33,7 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 	nodeNumber := simulatorInfraProvider.nodeCounter.Add(1)
 	nodeID := fmt.Sprintf("auto-node-%d", nodeNumber)
 
-	types.WriteNode(ctx, simulatorInfraProvider.factStore, types.Node{
+	if writeError := types.WriteNode(ctx, simulatorInfraProvider.factStore, types.Node{
 		ID:              nodeID,
 		State:           types.NodeAlive,
 		CapacityCPU:     4000,
@@ -40,7 +41,9 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 		AvailableCPU:    4000,
 		AvailableMemory: 8192,
 		Architecture:    "amd64",
-	})
+	}); writeError != nil {
+		logging.Default().Error("failed to write simulated node", "node", nodeID, "error", writeError.Error())
+	}
 
 	simulatorInfraProvider.providerMutex.Lock()
 	simulatorInfraProvider.managedNodes[nodeID] = true
@@ -51,7 +54,9 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 
 // RemoveNode marks a simulated node as unreachable and removes it from tracking.
 func (simulatorInfraProvider *SimulatorInfraProvider) RemoveNode(ctx context.Context, nodeID string) error {
-	simulatorInfraProvider.factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeUnreachable)))
+	if _, putError := simulatorInfraProvider.factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeUnreachable))); putError != nil {
+		logging.Default().Error("failed to mark node unreachable", "node", nodeID, "error", putError.Error())
+	}
 
 	simulatorInfraProvider.providerMutex.Lock()
 	delete(simulatorInfraProvider.managedNodes, nodeID)

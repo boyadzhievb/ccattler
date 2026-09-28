@@ -394,7 +394,7 @@ func handleDeploy(arguments map[string]any) (string, error) {
 	stopOutput, stopError := stopAllComponents()
 	deployOutput.WriteString(stopOutput)
 	if stopError != nil {
-		deployOutput.WriteString(fmt.Sprintf("warning: stop had errors: %v\n", stopError))
+		fmt.Fprintf(&deployOutput, "warning: stop had errors: %v\n", stopError)
 	}
 	deployOutput.WriteByte('\n')
 
@@ -466,7 +466,7 @@ func stopAllComponents() (string, error) {
 		singleOutput, singleError := stopSingleComponent(componentName)
 		outputBuilder.WriteString(singleOutput)
 		if singleError != nil {
-			outputBuilder.WriteString(fmt.Sprintf("  warning: %v\n", singleError))
+			fmt.Fprintf(&outputBuilder, "  warning: %v\n", singleError)
 		}
 	}
 	return outputBuilder.String(), nil
@@ -515,23 +515,23 @@ func startSingleComponent(componentName string) (string, error) {
 		return "", fmt.Errorf("no start command defined for %s", componentName)
 	}
 
-	logFile, logOpenError := os.OpenFile(componentDef.logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, logOpenError := os.OpenFile(componentDef.logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if logOpenError != nil {
 		return "", fmt.Errorf("cannot open log file %s: %w", componentDef.logFile, logOpenError)
 	}
 
-	backgroundCommand := exec.Command(commandArgs[0], commandArgs[1:]...)
+	backgroundCommand := exec.Command(commandArgs[0], commandArgs[1:]...) //nolint:gosec // MCP tool executes user-requested command
 	backgroundCommand.Dir = serverConfig.repoPath
 	backgroundCommand.Stdout = logFile
 	backgroundCommand.Stderr = logFile
 	backgroundCommand.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if startError := backgroundCommand.Start(); startError != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		return "", fmt.Errorf("failed to start %s: %w", componentDef.displayName, startError)
 	}
 
-	logFile.Close()
+	_ = logFile.Close()
 	diagnosticLogger.Printf("started %s (pid %d)\n", componentDef.displayName, backgroundCommand.Process.Pid)
 	return fmt.Sprintf("started %s (pid %d, log: %s)\n",
 		componentDef.displayName, backgroundCommand.Process.Pid, componentDef.logFile), nil
@@ -583,7 +583,7 @@ func runCommandWithTimeout(timeout time.Duration, commandName string, commandArg
 	commandContext, cancelFunc := context.WithTimeout(context.Background(), timeout)
 	defer cancelFunc()
 
-	execCommand := exec.CommandContext(commandContext, commandName, commandArgs...)
+	execCommand := exec.CommandContext(commandContext, commandName, commandArgs...) //nolint:gosec // MCP tool executes user-requested command
 	var combinedOutput bytes.Buffer
 	execCommand.Stdout = &combinedOutput
 	execCommand.Stderr = &combinedOutput
@@ -602,7 +602,7 @@ func runCommandInDir(timeout time.Duration, workingDirectory string, commandName
 	commandContext, cancelFunc := context.WithTimeout(context.Background(), timeout)
 	defer cancelFunc()
 
-	execCommand := exec.CommandContext(commandContext, commandName, commandArgs...)
+	execCommand := exec.CommandContext(commandContext, commandName, commandArgs...) //nolint:gosec // MCP tool executes user-requested command
 	execCommand.Dir = workingDirectory
 	var combinedOutput bytes.Buffer
 	execCommand.Stdout = &combinedOutput

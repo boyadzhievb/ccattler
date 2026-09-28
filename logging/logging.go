@@ -169,7 +169,7 @@ func (logger *Logger) writeJSON(timestamp time.Time, level Level, message string
 		return
 	}
 	encoded = append(encoded, '\n')
-	logger.output.Write(encoded)
+	_, _ = logger.output.Write(encoded)
 }
 
 func (logger *Logger) writeHuman(timestamp time.Time, level Level, message string, keyValues []string) {
@@ -187,5 +187,5 @@ func (logger *Logger) writeHuman(timestamp time.Time, level Level, message strin
 	}
 
 	line += "\n"
-	fmt.Fprint(logger.output, line)
+	_, _ = fmt.Fprint(logger.output, line)
 }

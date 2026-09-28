@@ -137,8 +137,12 @@ func (apiServer *Server) Start(listenAddress string) (string, error) {
 		return "", fmt.Errorf("listen %s: %w", listenAddress, err)
 	}
 	apiServer.listener = listener
+	httpServer := &http.Server{
+		Handler:           apiServer.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	go func() {
-		if serveError := http.Serve(listener, apiServer.Handler()); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
+		if serveError := httpServer.Serve(listener); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
 			logging.Default().Error("api server error", "error", serveError.Error())
 		}
 	}()
@@ -261,7 +265,7 @@ func (apiServer *Server) handleHealthz(responseWriter http.ResponseWriter, reque
 	} else {
 		result.Status = "unhealthy"
 	}
-	json.NewEncoder(responseWriter).Encode(result)
+	_ = json.NewEncoder(responseWriter).Encode(result)
 }
 
 // instrumentedHandler wraps an HTTP handler to record request count and duration
@@ -317,7 +321,7 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 			http.Error(responseWriter, fmt.Sprintf(`{"error":"key not found: %s"}`, singleKey), http.StatusNotFound)
 			return
 		}
-		json.NewEncoder(responseWriter).Encode(factResponse{
+		_ = json.NewEncoder(responseWriter).Encode(factResponse{
 			Key: fact.Key, Value: string(fact.Value), Revision: fact.Revision,
 		})
 		return
@@ -346,7 +350,7 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 			Key: fact.Key, Value: string(fact.Value), Revision: fact.Revision,
 		})
 	}
-	json.NewEncoder(responseWriter).Encode(result)
+	_ = json.NewEncoder(responseWriter).Encode(result)
 }
 
 // applyRequest is the JSON body for POST /api/apply.
@@ -379,47 +383,47 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 	if strings.Contains(contentType, "application/json") {
 		var body applyRequest
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			json.NewEncoder(responseWriter).Encode(applyResponse{Error: "invalid JSON: " + err.Error()})
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "invalid JSON: " + err.Error()})
 			return
 		}
 		dslInput = body.Config
 	} else {
 		rawBody, err := io.ReadAll(request.Body)
 		if err != nil {
-			json.NewEncoder(responseWriter).Encode(applyResponse{Error: "read body: " + err.Error()})
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "read body: " + err.Error()})
 			return
 		}
 		dslInput = string(rawBody)
 	}
 
 	if dslInput == "" {
-		json.NewEncoder(responseWriter).Encode(applyResponse{Error: "empty config"})
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "empty config"})
 		return
 	}
 
 	file, err := lang.Parse(dslInput)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(applyResponse{Error: "parse: " + err.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "parse: " + err.Error()})
 		return
 	}
 
 	facts, err := lang.Compile(file)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})
 		return
 	}
 
 	for _, fact := range facts {
 		if _, err := apiServer.factStore.Put(requestContext, fact.Key, []byte(fact.Value)); err != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + err.Error()})
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + err.Error()})
 			return
 		}
 	}
 
-	json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
+	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
 }
 
 // handleWatch serves GET /api/watch?prefix=... as a Server-Sent Events stream.
@@ -495,7 +499,7 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 				Revision: event.Fact.Revision,
 			}
 			eventBytes, _ := json.Marshal(watchEvent)
-			fmt.Fprintf(responseWriter, "data: %s\n\n", eventBytes)
+			_, _ = fmt.Fprintf(responseWriter, "data: %s\n\n", eventBytes)
 			flusher.Flush()
 		}
 	}
@@ -522,26 +526,30 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 	var body scaleRequest
 	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
 		return
 	}
 
 	if body.Service == "" || body.Instances < 0 {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "service and non-negative instances required"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "service and non-negative instances required"})
 		return
 	}
 	if validateError := types.ValidateResourceName(body.Service); validateError != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
 		return
 	}
 
 	instancesStr := strconv.Itoa(body.Instances)
-	apiServer.factStore.Put(requestContext, types.KeyDesiredServiceInstances(body.Service), []byte(instancesStr))
-	apiServer.factStore.Put(requestContext, types.KeyIntentUserServiceInstances(body.Service), []byte(instancesStr))
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyDesiredServiceInstances(body.Service), []byte(instancesStr)); putError != nil {
+		logging.Default().Error("failed to store fact", "key", types.KeyDesiredServiceInstances(body.Service), "error", putError.Error())
+	}
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyIntentUserServiceInstances(body.Service), []byte(instancesStr)); putError != nil {
+		logging.Default().Error("failed to store fact", "key", types.KeyIntentUserServiceInstances(body.Service), "error", putError.Error())
+	}
 
-	json.NewEncoder(responseWriter).Encode(map[string]any{
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{
 		"ok":        true,
 		"service":   body.Service,
 		"instances": body.Instances,
@@ -558,7 +566,7 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	if cached := apiServer.statusCache.Get("status"); cached != nil {
-		responseWriter.Write(cached)
+		_, _ = responseWriter.Write(cached)
 		return
 	}
 
@@ -566,12 +574,12 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 	status := buildStatusFromStore(requestContext, apiServer.factStore)
 	encoded, encodeError := json.Marshal(status)
 	if encodeError != nil {
-		json.NewEncoder(responseWriter).Encode(status)
+		_ = json.NewEncoder(responseWriter).Encode(status)
 		return
 	}
 
 	apiServer.statusCache.Set("status", encoded)
-	responseWriter.Write(encoded)
+	_, _ = responseWriter.Write(encoded)
 }
 
 // handleLogs serves GET /api/logs to query the cluster event log. Supports
@@ -586,7 +594,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	if apiServer.eventLog == nil {
-		json.NewEncoder(responseWriter).Encode([]types.SystemEvent{})
+		_ = json.NewEncoder(responseWriter).Encode([]types.SystemEvent{})
 		return
 	}
 
@@ -622,7 +630,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	if events == nil {
 		events = []types.SystemEvent{}
 	}
-	json.NewEncoder(responseWriter).Encode(events)
+	_ = json.NewEncoder(responseWriter).Encode(events)
 }
 
 // handleDescribe serves GET /api/describe returning a detailed single-resource
@@ -641,12 +649,12 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 	resourceName := request.URL.Query().Get("name")
 	if resourceType == "" || resourceName == "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type and name query parameters required"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type and name query parameters required"})
 		return
 	}
 	if validateError := types.ValidateResourceName(resourceName); validateError != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": validateError.Error()})
 		return
 	}
 
@@ -662,17 +670,17 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 		result, describeError = buildInstanceDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
 	default:
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type must be service, node, or instance"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type must be service, node, or instance"})
 		return
 	}
 
 	if describeError != nil {
 		responseWriter.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": describeError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": describeError.Error()})
 		return
 	}
 
-	json.NewEncoder(responseWriter).Encode(result)
+	_ = json.NewEncoder(responseWriter).Encode(result)
 }
 
 // handleEventStream serves GET /api/events/stream as a Server-Sent Events
@@ -737,7 +745,7 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 				continue
 			}
 			eventBytes, _ := json.Marshal(systemEvent)
-			fmt.Fprintf(responseWriter, "data: %s\n\n", eventBytes)
+			_, _ = fmt.Fprintf(responseWriter, "data: %s\n\n", eventBytes)
 			flusher.Flush()
 		}
 	}
@@ -763,7 +771,7 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 		}
 		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 			responseWriter.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+			_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
 			return
 		}
 		dslContent = requestBody.Config
@@ -771,7 +779,7 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 		rawBody, err := io.ReadAll(request.Body)
 		if err != nil {
 			responseWriter.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(responseWriter).Encode(map[string]string{"error": "read body: " + err.Error()})
+			_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "read body: " + err.Error()})
 			return
 		}
 		dslContent = string(rawBody)
@@ -779,18 +787,18 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 
 	if dslContent == "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": "empty config"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "empty config"})
 		return
 	}
 
 	changes, diffError := lang.Diff(requestContext, apiServer.factStore, dslContent)
 	if diffError != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(map[string]string{"error": diffError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": diffError.Error()})
 		return
 	}
 
-	json.NewEncoder(responseWriter).Encode(changes)
+	_ = json.NewEncoder(responseWriter).Encode(changes)
 }
 
 // enrollmentRequestBody is the JSON body for POST /api/enroll.
@@ -822,20 +830,20 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 
 	if apiServer.enrollmentService == nil {
 		responseWriter.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "enrollment not available"})
+		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "enrollment not available"})
 		return
 	}
 
 	var requestBody enrollmentRequestBody
 	if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "invalid JSON"})
+		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "invalid JSON"})
 		return
 	}
 
 	if requestBody.Token == "" || requestBody.NodeID == "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "token and node_id required"})
+		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: "token and node_id required"})
 		return
 	}
 
@@ -853,11 +861,11 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 	})
 	if enrollmentError != nil {
 		responseWriter.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: enrollmentError.Error()})
+		_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{Error: enrollmentError.Error()})
 		return
 	}
 
-	json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{
+	_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{
 		CertificatePEM: string(enrollmentResponse.CertificatePEM),
 		PrivateKeyPEM:  string(enrollmentResponse.PrivateKeyPEM),
 		CACertPEM:      string(enrollmentResponse.CACertPEM),
@@ -886,10 +894,12 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 
 	requestContext := request.Context()
 	metricKey := types.KeyObservedMetric(serviceName, metricName)
-	apiServer.factStore.Put(requestContext, metricKey, []byte(metricValue))
+	if _, putError := apiServer.factStore.Put(requestContext, metricKey, []byte(metricValue)); putError != nil {
+		logging.Default().Error("failed to store fact", "key", metricKey, "error", putError.Error())
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(responseWriter).Encode(map[string]string{
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
 		"ok":      "true",
 		"service": serviceName,
 		"metric":  metricName,
@@ -918,10 +928,12 @@ func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, requ
 
 	requestContext := request.Context()
 	activationKey := types.KeyDerivedServiceActivationState(serviceName)
-	apiServer.factStore.Put(requestContext, activationKey, []byte("activating"))
+	if _, putError := apiServer.factStore.Put(requestContext, activationKey, []byte("activating")); putError != nil {
+		logging.Default().Error("failed to store fact", "key", activationKey, "error", putError.Error())
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(responseWriter).Encode(map[string]string{
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
 		"ok":      "true",
 		"service": serviceName,
 		"state":   "activating",
@@ -939,7 +951,7 @@ func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter,
 
 	discoveryDocument := apiServer.workloadTokenIssuer.OIDCDiscoveryDocument()
 	responseWriter.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(responseWriter).Encode(discoveryDocument)
+	_ = json.NewEncoder(responseWriter).Encode(discoveryDocument)
 }
 
 // isSensitivePrefix returns true if the given prefix or key path refers to
@@ -965,5 +977,5 @@ func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, requ
 
 	jwksDocument := apiServer.workloadTokenIssuer.JWKSDocument()
 	responseWriter.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(responseWriter).Encode(jwksDocument)
+	_ = json.NewEncoder(responseWriter).Encode(jwksDocument)
 }

@@ -174,7 +174,9 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeSucceeded)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeSucceeded))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 			logging.Default().Info("startup probe succeeded", "agent", probeScheduler.nodeID, "instance", instanceInfo.id)
 			return true
 		}
@@ -182,14 +184,18 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeFailed)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbeFailed))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 			logging.Default().Warn("startup probe failed", "agent", probeScheduler.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
 			return false
 		}
 	}
 
 	if currentState != string(types.StartupProbePending) {
-		probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbePending)))
+		if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "startup"), []byte(string(types.StartupProbePending))); putError != nil {
+			logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+		}
 	}
 	return false
 }
@@ -214,13 +220,17 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "liveness"), []byte(string(types.LivenessProbeHealthy)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "liveness"), []byte(string(types.LivenessProbeHealthy))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 		}
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "liveness"), []byte(string(types.LivenessProbeUnhealthy)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "liveness"), []byte(string(types.LivenessProbeUnhealthy))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 			logging.Default().Warn("liveness probe unhealthy", "agent", probeScheduler.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
 		}
 	}
@@ -246,13 +256,17 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
 		if tracker.consecutiveSuccesses >= config.successThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "readiness"), []byte(string(types.ReadinessProbeReady)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "readiness"), []byte(string(types.ReadinessProbeReady))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 		}
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
 		if tracker.consecutiveFailures >= config.failureThreshold {
-			probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "readiness"), []byte(string(types.ReadinessProbeNotReady)))
+			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, "readiness"), []byte(string(types.ReadinessProbeNotReady))); putError != nil {
+				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+			}
 		}
 	}
 }
@@ -424,7 +438,9 @@ func (probeScheduler *ProbeScheduler) performHealthCheckAndReportResult(ctx cont
 	if healthy {
 		status = types.HealthHealthy
 	}
-	probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
+	if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status))); putError != nil {
+		logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
+	}
 	probeScheduler.lastHealthCheck[instanceInfo.id] = time.Now()
 }
 
@@ -457,7 +473,7 @@ func (probeScheduler *ProbeScheduler) buildHealthProbeFromServiceConfig(ctx cont
 	switch method {
 	case "http":
 		probe.Type = ProbeHTTP
-		if factEntry, err := probeScheduler.factStore.Get(ctx, types.KeyDesiredServiceHealthPath(service)); err == nil {
+		if factEntry, pathErr := probeScheduler.factStore.Get(ctx, types.KeyDesiredServiceHealthPath(service)); pathErr == nil {
 			probe.Path = string(factEntry.Value)
 		} else {
 			probe.Path = "/"

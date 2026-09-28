@@ -505,8 +505,8 @@ func (parser *Parser) parseEventScaleEntry() (*EventScaleDecl, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := parser.expectToken(TokenEquals); err != nil {
-		return nil, err
+	if tokenErr := parser.expectToken(TokenEquals); tokenErr != nil {
+		return nil, tokenErr
 	}
 	targetValue, err := parser.expectInteger()
 	if err != nil {
@@ -584,9 +584,6 @@ func (parser *Parser) parseStabilizationBlock() (*StabilizationDecl, error) {
 			parser.advanceToken()
 		default:
 			return nil, parser.parserErrorf("unknown stabilization field %q", key)
-		}
-		if err != nil {
-			return nil, err
 		}
 		parser.skipNewlineTokens()
 	}
@@ -833,9 +830,6 @@ func (parser *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
 			volumeDecl.Persistent = persistentValue == "true"
 		default:
 			return nil, parser.parserErrorf("unknown volume field %q", key)
-		}
-		if err != nil {
-			return nil, err
 		}
 
 		parser.skipNewlineTokens()

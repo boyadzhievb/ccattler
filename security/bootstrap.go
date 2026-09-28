@@ -8,6 +8,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -85,9 +86,15 @@ func ValidateBootstrapToken(ctx context.Context, factStore store.StateStore, tok
 	}
 
 	// Mark as used and destroy the token.
-	factStore.Put(ctx, BootstrapUsedKey, []byte("true"))
-	factStore.Delete(ctx, BootstrapTokenKey)
-	factStore.Delete(ctx, BootstrapExpiryKey)
+	if _, putError := factStore.Put(ctx, BootstrapUsedKey, []byte("true")); putError != nil {
+		logging.Default().Error("failed to mark bootstrap as used", "error", putError.Error())
+	}
+	if deleteError := factStore.Delete(ctx, BootstrapTokenKey); deleteError != nil {
+		logging.Default().Error("failed to delete bootstrap token", "error", deleteError.Error())
+	}
+	if deleteError := factStore.Delete(ctx, BootstrapExpiryKey); deleteError != nil {
+		logging.Default().Error("failed to delete bootstrap expiry", "error", deleteError.Error())
+	}
 
 	return "admin", nil
 }

@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 var validImageReferencePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$`)
@@ -57,9 +59,9 @@ func detectContainerCommand() string {
 func (containerRuntime *ContainerRuntime) buildExecCommand(ctx context.Context, args ...string) *exec.Cmd {
 	if containerRuntime.containerCommand == "lima" {
 		limaArgs := append([]string{"nerdctl"}, args...)
-		return exec.CommandContext(ctx, "lima", limaArgs...)
+		return exec.CommandContext(ctx, "lima", limaArgs...) //nolint:gosec // container runtime executes docker commands
 	}
-	return exec.CommandContext(ctx, containerRuntime.containerCommand, args...)
+	return exec.CommandContext(ctx, containerRuntime.containerCommand, args...) //nolint:gosec // container runtime executes docker commands
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
@@ -135,12 +137,12 @@ func (containerRuntime *ContainerRuntime) materializeConfigFilesToTempDirectory(
 			return nil, "", fmt.Errorf("config file path traversal detected: %s", containerFilePath)
 		}
 		parentDirectory := filepath.Dir(hostFilePath)
-		if err := os.MkdirAll(parentDirectory, 0755); err != nil {
-			os.RemoveAll(configTempDirectory)
+		if err := os.MkdirAll(parentDirectory, 0750); err != nil {
+			_ = os.RemoveAll(configTempDirectory)
 			return nil, "", fmt.Errorf("creating parent directory for config file %s: %w", containerFilePath, err)
 		}
-		if err := os.WriteFile(hostFilePath, []byte(fileContent), 0644); err != nil {
-			os.RemoveAll(configTempDirectory)
+		if err := os.WriteFile(hostFilePath, []byte(fileContent), 0600); err != nil {
+			_ = os.RemoveAll(configTempDirectory)
 			return nil, "", fmt.Errorf("writing config file %s: %w", containerFilePath, err)
 		}
 		volumeMountArgs = append(volumeMountArgs, "-v", fmt.Sprintf("%s:%s:ro", hostFilePath, containerFilePath))
@@ -180,7 +182,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 
 	if containerRuntime.trackedContainers[spec.ID] {
 		if configTempDirectoryPath != "" {
-			os.RemoveAll(configTempDirectoryPath)
+			_ = os.RemoveAll(configTempDirectoryPath)
 		}
 		return nil
 	}
@@ -232,7 +234,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	runCommand.Stderr = &stderr
 	if err := runCommand.Run(); err != nil {
 		if configTempDirectoryPath != "" {
-			os.RemoveAll(configTempDirectoryPath)
+			_ = os.RemoveAll(configTempDirectoryPath)
 		}
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("%v: %s", err, stderr.String())}
 	}
@@ -267,13 +269,13 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 
 	containerName := containerRuntime.resolveContainerName(id)
 	stopCommand := containerRuntime.buildExecCommand(ctx, "stop", "-t", "10", containerName)
-	stopCommand.Run()
+	_ = stopCommand.Run()
 
 	removeCommand := containerRuntime.buildExecCommand(ctx, "rm", "-f", containerName)
-	removeCommand.Run()
+	_ = removeCommand.Run()
 
 	if configTempDir, hasConfigFiles := containerRuntime.configFileTempDirectories[id]; hasConfigFiles {
-		os.RemoveAll(configTempDir)
+		_ = os.RemoveAll(configTempDir)
 		delete(containerRuntime.configFileTempDirectories, id)
 	}
 
@@ -499,7 +501,7 @@ func (commandReader *commandReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (commandReader *commandReadCloser) Close() error {
-	commandReader.reader.Close()
+	_ = commandReader.reader.Close()
 	return commandReader.command.Wait()
 }
 
@@ -517,19 +519,21 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 	containerRuntime.mutex.Unlock()
 
 	for _, id := range ids {
-		containerRuntime.Stop(ctx, id)
+		if stopError := containerRuntime.Stop(ctx, id); stopError != nil {
+			logging.Default().Error("failed to stop container", "container", id, "error", stopError.Error())
+		}
 	}
 
 	containerRuntime.mutex.Lock()
 	for workloadID, configTempDir := range containerRuntime.configFileTempDirectories {
-		os.RemoveAll(configTempDir)
+		_ = os.RemoveAll(configTempDir)
 		delete(containerRuntime.configFileTempDirectories, workloadID)
 	}
 	containerRuntime.mutex.Unlock()
 
 	if containerRuntime.networkReady && containerRuntime.networkName != "" {
 		rmNetwork := containerRuntime.buildExecCommand(ctx, "network", "rm", containerRuntime.networkName)
-		rmNetwork.Run()
+		_ = rmNetwork.Run()
 	}
 }
 

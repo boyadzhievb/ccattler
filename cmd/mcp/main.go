@@ -181,21 +181,21 @@ func main() {
 		auditLogPath:  *auditLogFlag,
 	}
 
-	logFile, logOpenError := os.OpenFile(serverConfig.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, logOpenError := os.OpenFile(serverConfig.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if logOpenError != nil {
 		fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", logOpenError)
 		os.Exit(1)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 	diagnosticLogger = log.New(logFile, "mcp: ", log.LstdFlags)
 
 	if serverConfig.auditLogPath != "" {
-		auditFile, auditOpenError := os.OpenFile(serverConfig.auditLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		auditFile, auditOpenError := os.OpenFile(serverConfig.auditLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if auditOpenError != nil {
 			fmt.Fprintf(os.Stderr, "failed to open audit log: %v\n", auditOpenError)
 			os.Exit(1)
 		}
-		defer auditFile.Close()
+		defer func() { _ = auditFile.Close() }()
 		auditLogger = log.New(auditFile, "", 0)
 	}
 
@@ -254,9 +254,9 @@ func runProtocolLoop(inputReader io.Reader, outputWriter io.Writer) {
 			continue
 		}
 
-		bufferedWriter.Write(responseBytes)
-		bufferedWriter.WriteByte('\n')
-		bufferedWriter.Flush()
+		_, _ = bufferedWriter.Write(responseBytes)
+		_ = bufferedWriter.WriteByte('\n')
+		_ = bufferedWriter.Flush()
 	}
 }
 
@@ -300,7 +300,7 @@ func handleInitialize(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 	if serverConfig.authToken != "" && !clientAuthenticated {
 		var initParams mcpInitializeParams
 		if incomingRequest.Params != nil {
-			json.Unmarshal(incomingRequest.Params, &initParams)
+			_ = json.Unmarshal(incomingRequest.Params, &initParams)
 		}
 
 		tokenMatch := subtle.ConstantTimeCompare(

@@ -96,6 +96,6 @@ func (changeStream *ChangeStream) dispatchToSubscribers(record ChangeRecord) {
 	defer changeStream.mutex.RUnlock()
 
 	for _, subscriber := range changeStream.subscribers {
-		subscriber(record)
+		_ = subscriber(record)
 	}
 }

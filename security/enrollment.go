@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -122,12 +123,14 @@ func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, requ
 	}
 
 	var joinToken JoinToken
-	if err := json.Unmarshal(tokenFact.Value, &joinToken); err != nil {
+	if unmarshalErr := json.Unmarshal(tokenFact.Value, &joinToken); unmarshalErr != nil {
 		return nil, fmt.Errorf("corrupt join token")
 	}
 
 	if time.Now().After(joinToken.ExpiresAt) {
-		enrollmentService.factStore.Delete(ctx, tokenKey)
+		if deleteError := enrollmentService.factStore.Delete(ctx, tokenKey); deleteError != nil {
+			logging.Default().Error("failed to delete expired join token", "key", tokenKey, "error", deleteError.Error())
+		}
 		return nil, fmt.Errorf("join token expired")
 	}
 
@@ -166,10 +169,14 @@ func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, requ
 		CertExpiry: issuedCertificate.NotAfter,
 	}
 	enrolledJSON, _ := json.Marshal(enrolledNode)
-	enrollmentService.factStore.Put(ctx, EnrolledNodePrefix+request.NodeID, enrolledJSON)
+	if _, putError := enrollmentService.factStore.Put(ctx, EnrolledNodePrefix+request.NodeID, enrolledJSON); putError != nil {
+		logging.Default().Error("failed to store enrolled node", "nodeID", request.NodeID, "error", putError.Error())
+	}
 
 	// Destroy the join token (one-time use).
-	enrollmentService.factStore.Delete(ctx, tokenKey)
+	if deleteError := enrollmentService.factStore.Delete(ctx, tokenKey); deleteError != nil {
+		logging.Default().Error("failed to delete used join token", "key", tokenKey, "error", deleteError.Error())
+	}
 
 	return &EnrollmentResponse{
 		CertificatePEM: issuedCertificate.CertificatePEM,

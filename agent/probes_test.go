@@ -60,7 +60,7 @@ func startTestHTTPServer(t *testing.T, statusCode int) (net.Listener, int) {
 	if listenErr != nil {
 		t.Fatalf("failed to start test HTTP server: %v", listenErr)
 	}
-	go http.Serve(listener, mux)
+	go http.Serve(listener, mux) //nolint:gosec // test HTTP server
 	return listener, listener.Addr().(*net.TCPAddr).Port
 }
 

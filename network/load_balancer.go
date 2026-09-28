@@ -28,7 +28,7 @@ func (backendHeapSlice backendHeap) Swap(indexA, indexB int) {
 }
 
 func (backendHeapSlice *backendHeap) Push(element interface{}) {
-	entry := element.(*backendLoad)
+	entry, _ := element.(*backendLoad)
 	entry.heapIndex = len(*backendHeapSlice)
 	*backendHeapSlice = append(*backendHeapSlice, entry)
 }

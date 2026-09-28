@@ -58,7 +58,7 @@ func NewHARunner(factStore store.StateStore, nodeID string, metrics *MetricsColl
 // leadership (or shuts down), controllers are stopped.
 func (haRunner *HARunner) Run(ctx context.Context) error {
 	haRunner.mutex.Lock()
-	haRunner.mutex.Unlock()
+	haRunner.mutex.Unlock() //nolint:staticcheck // acquires lock to wait for ongoing operation to complete
 
 	return haRunner.election.Run(ctx)
 }

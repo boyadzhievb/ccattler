@@ -7,10 +7,10 @@ import (
 )
 
 func TestAWSCredentialFileFormat(t *testing.T) {
-	credential := &MaterializedCredential{
+	credential := &MaterializedCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "aws",
-		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",
-		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		AccessKeyID:  "AKIAIOSFODNN7EXAMPLE",                     //nolint:gosec // test fixture credentials
+		SecretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", //nolint:gosec // test fixture credentials
 		SessionToken: "FwoGZXIvYXdzEBYaDH...",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 		DeliverMode:  "credentials",
@@ -63,9 +63,9 @@ func TestGCPCredentialFileFormat(t *testing.T) {
 }
 
 func TestAzureCredentialFileFormat(t *testing.T) {
-	credential := &MaterializedCredential{
+	credential := &MaterializedCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "azure",
-		SessionToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test",
+		SessionToken: "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test", //nolint:gosec // test fixture credentials
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 		DeliverMode:  "credentials",
 		MountPath:    "/var/run/cloud-creds",
@@ -78,16 +78,16 @@ func TestAzureCredentialFileFormat(t *testing.T) {
 	if filename != "azure-token" {
 		t.Errorf("filename: got %q, want azure-token", filename)
 	}
-	if content != "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test" {
+	if content != "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.test" { //nolint:gosec // test fixture credentials
 		t.Errorf("expected raw token content")
 	}
 }
 
 func TestTokenProjectionMode(t *testing.T) {
-	credential := &MaterializedCredential{
+	credential := &MaterializedCredential{ //nolint:gosec // test fixture credentials
 		Provider:     "aws",
-		AccessKeyID:  "AKIATEST",
-		SecretKey:    "secret",
+		AccessKeyID:  "AKIATEST", //nolint:gosec // test fixture credentials
+		SecretKey:    "secret",   //nolint:gosec // test fixture credentials
 		SessionToken: "raw-jwt-token-here",
 		ExpiresAt:    time.Now().Add(1 * time.Hour),
 		DeliverMode:  "token",

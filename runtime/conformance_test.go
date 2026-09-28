@@ -544,7 +544,7 @@ func TestProcessRuntimeLogsClose(t *testing.T) {
 		t.Fatalf("Logs failed: %v", err)
 	}
 
-	var _ io.ReadCloser = reader
+	var _ io.ReadCloser = reader //nolint:staticcheck // compile-time interface assertion
 	reader.Close()
 
 	processRuntime.Stop(testCtx, "workload-1")

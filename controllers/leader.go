@@ -119,7 +119,9 @@ func (election *LeaderElection) tryAcquireOrRenew(ctx context.Context) {
 
 	if election.isLeader {
 		// Renew: update the lease timestamp.
-		election.factStore.Put(ctx, leaderLeaseKey, []byte(nowStr))
+		if _, putError := election.factStore.Put(ctx, leaderLeaseKey, []byte(nowStr)); putError != nil {
+			logging.Default().Error("failed to renew leader lease", "error", putError.Error())
+		}
 		return
 	}
 
@@ -188,8 +190,12 @@ func (election *LeaderElection) release(ctx context.Context) {
 		return
 	}
 
-	election.factStore.Delete(ctx, leaderLeaseKey)
-	election.factStore.Delete(ctx, leaderLeaseHolderKey)
+	if deleteError := election.factStore.Delete(ctx, leaderLeaseKey); deleteError != nil {
+		logging.Default().Error("failed to delete leader lease key", "error", deleteError.Error())
+	}
+	if deleteError := election.factStore.Delete(ctx, leaderLeaseHolderKey); deleteError != nil {
+		logging.Default().Error("failed to delete leader holder key", "error", deleteError.Error())
+	}
 	election.isLeader = false
 	logging.Default().Info("released leadership", "node", election.nodeID)
 	if election.onLost != nil {
@@ -200,6 +206,6 @@ func (election *LeaderElection) release(ctx context.Context) {
 // parseLeaseTimestamp parses a millisecond Unix timestamp string.
 func parseLeaseTimestamp(value string) time.Time {
 	var millis int64
-	fmt.Sscanf(value, "%d", &millis)
+	_, _ = fmt.Sscanf(value, "%d", &millis)
 	return time.UnixMilli(millis)
 }
