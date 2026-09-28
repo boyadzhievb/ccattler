@@ -13,7 +13,6 @@ linters:
     - gosec
     - gocritic
     - misspell
-    - gofmt
 
   settings:
     errcheck:
@@ -23,7 +22,7 @@ linters:
       disable:
         - fieldalignment
     gosec:
-      excludes:
+      exclude:
         - G104
         - G304
     gocritic:
@@ -33,8 +32,14 @@ linters:
         - nestingReduce
         - truncateCmp
 
+  exclusions:
+    paths:
+      - vendor
+
+formatters:
+  enable:
+    - gofmt
+
 issues:
-  exclude-dirs:
-    - vendor
   max-issues-per-linter: 50
   max-same-issues: 10
