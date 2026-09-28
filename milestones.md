@@ -501,6 +501,9 @@
 - [x] Reproducible builds: -trimpath added to release.yml go build
 - [x] Release smoke test: ./cca version after linux-amd64 build in release.yml
 - [x] golangci-lint cleanup: 340 issues fixed across 61 files (Phase 49a)
+- [x] Chaos matrix: TestChaosMatrixAllScenarioCombinations — 6 subtests (chaos/chaos_runner_test.go)
+- [x] Invariant tests: 5 formal invariants (integration/invariant_test.go)
+- [x] Doc cross-check: 5 verification tests (integration/doc_crosscheck_test.go)
 
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
@@ -567,9 +570,9 @@
 - [x] Dependency vulnerability scanning — govulncheck + go mod verify in CI (Phase 49)
 - [x] Reproducible builds — -trimpath in release workflow (Phase 49)
 - [x] Release smoke test — ./cca version after linux-amd64 build (Phase 49)
-- [ ] Chaos test matrix automation
-- [ ] Formal invariant tests
-- [ ] Documentation correctness cross-check
+- [x] Chaos test matrix automation — all 6 two-scenario combinations as subtests (Phase 49)
+- [x] Formal invariant tests — 5 system invariants verified after reconciliation (Phase 49)
+- [x] Documentation correctness cross-check — CLI commands, interfaces, prefixes, runtimes (Phase 49)
 
 ### Milestones
 
@@ -622,6 +625,6 @@
 | M43 — Complexity Audit | 46 | Audited 17 controllers + runner; removed O(n²) dead code in InstanceController; replaced 11 full fact-store scans with FactsWithPrefix binary search across 6 controllers + SDK; merged redundant prefix scans in credential broker + cloud controllers; runner early-exit on txn cap |
 | M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
 | M45 — Operations | 48 | Gate G complete: trace propagation in controller/agent/store, disaster recovery runbook, all ops items resolved |
-| M46 — Release Hardening | 49 | Gate H progress: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds (-trimpath), release smoke test |
+| M46 — Release Hardening | 49 | Gate H complete: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds, release smoke test, chaos matrix, formal invariants, doc cross-check |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

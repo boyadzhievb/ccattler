@@ -229,3 +229,62 @@ func TestChaosRunnerFullChaosConverges(t *testing.T) {
 			convergenceRate*100, convergedCount, len(events))
 	}
 }
+
+// TestChaosMatrixAllScenarioCombinations runs every 2-scenario combination
+// from the 4 FailureScenario values as subtests. There are C(4,2)=6
+// combinations. Each subtest creates a fresh cluster, runs both scenarios
+// concurrently for 4 seconds, and asserts convergence rate >= 80%.
+func TestChaosMatrixAllScenarioCombinations(t *testing.T) {
+	allScenarios := []FailureScenario{
+		ScenarioNodeKill,
+		ScenarioNodePartition,
+		ScenarioControllerRestart,
+		ScenarioScaleChange,
+	}
+
+	combinationIndex := 0
+	for outerIndex := 0; outerIndex < len(allScenarios); outerIndex++ {
+		for innerIndex := outerIndex + 1; innerIndex < len(allScenarios); innerIndex++ {
+			firstScenario := allScenarios[outerIndex]
+			secondScenario := allScenarios[innerIndex]
+			currentSeed := int64(combinationIndex)
+			subtestName := string(firstScenario) + "+" + string(secondScenario)
+
+			t.Run(subtestName, func(t *testing.T) {
+				cluster, cancelFunc, factStore := helperSetupChaosCluster(t)
+				defer cancelFunc()
+				defer factStore.Close()
+
+				chaosRunner := NewChaosRunner(ChaosConfig{
+					Duration:           4 * time.Second,
+					InjectionInterval:  1 * time.Second,
+					ConvergenceTimeout: 10 * time.Second,
+					EnabledScenarios:   []FailureScenario{firstScenario, secondScenario},
+					RandSource:         rand.New(rand.NewSource(currentSeed)), //nolint:gosec // test uses deterministic random seed
+				}, cluster)
+
+				runContext := context.Background()
+				chaosEvents := chaosRunner.Run(runContext)
+
+				if len(chaosEvents) == 0 {
+					t.Fatal("expected at least one chaos event")
+				}
+
+				convergedCount := 0
+				for _, event := range chaosEvents {
+					if event.Converged {
+						convergedCount++
+					}
+				}
+
+				convergenceRate := float64(convergedCount) / float64(len(chaosEvents))
+				if convergenceRate < 0.8 {
+					t.Errorf("convergence rate %.0f%% (%d/%d) is below 80%% threshold for %s",
+						convergenceRate*100, convergedCount, len(chaosEvents), subtestName)
+				}
+			})
+
+			combinationIndex++
+		}
+	}
+}

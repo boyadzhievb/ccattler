@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M46 — Phase 49 Gate H Release Hardening. M1–M46 complete. Gates A–G resolved. Gate H partially resolved (fuzz, audit, reproducibility, smoke test done; chaos matrix, invariant tests, doc cross-check remain). Gate I (Helm) remains.
+**Completed through:** M46 — Phase 49 Gate H Release Hardening. M1–M46 complete. Gates A–H resolved. Gate I (Helm) remains.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
