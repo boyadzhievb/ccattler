@@ -40,7 +40,7 @@ type ReconciliationMetrics struct {
 func NewMetricsCollector() *MetricsCollector {
 	return &MetricsCollector{
 		reconciliationMetrics: make(map[string]*ReconciliationMetrics),
-		instanceTransitions:  make(map[string]*atomic.Int64),
+		instanceTransitions:   make(map[string]*atomic.Int64),
 	}
 }
 

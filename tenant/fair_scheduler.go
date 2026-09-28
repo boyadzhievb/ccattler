@@ -29,13 +29,13 @@ func NewFairScheduler(factStore store.StateStore, registry *TenantRegistry) *Fai
 
 // TenantShare describes a tenant's resource allocation and current usage.
 type TenantShare struct {
-	TenantName     string  // tenant identifier
-	Weight         int     // scheduling weight (higher = more resources)
-	GuaranteedCPU  int     // guaranteed CPU in millicores based on weight proportion
-	CurrentCPU     int     // currently consumed CPU in millicores
-	InstanceCount  int     // current number of active instances
-	ShareFraction  float64 // fraction of total weight this tenant holds
-	Borrowing      int     // CPU borrowed above guarantee (0 if at or below guarantee)
+	TenantName    string  // tenant identifier
+	Weight        int     // scheduling weight (higher = more resources)
+	GuaranteedCPU int     // guaranteed CPU in millicores based on weight proportion
+	CurrentCPU    int     // currently consumed CPU in millicores
+	InstanceCount int     // current number of active instances
+	ShareFraction float64 // fraction of total weight this tenant holds
+	Borrowing     int     // CPU borrowed above guarantee (0 if at or below guarantee)
 }
 
 // ComputeFairShares calculates the guaranteed resource share for each tenant

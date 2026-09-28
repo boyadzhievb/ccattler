@@ -23,16 +23,16 @@ var validImageReferencePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/@
 // Config files specified in Spec.ConfigFiles are materialized to a temporary
 // directory on the host and bind-mounted read-only into the container.
 type ContainerRuntime struct {
-	mutex                    sync.Mutex        // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
-	trackedContainers        map[string]bool   // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
-	containerNames           map[string]string // containerNames maps workload IDs to their container names.
-	allocatedHostPorts       map[int]int       // allocatedHostPorts tracks the next host port offset per container port.
-	instanceHostPorts        map[string]int    // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
+	mutex                     sync.Mutex        // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
+	trackedContainers         map[string]bool   // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
+	containerNames            map[string]string // containerNames maps workload IDs to their container names.
+	allocatedHostPorts        map[int]int       // allocatedHostPorts tracks the next host port offset per container port.
+	instanceHostPorts         map[string]int    // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
 	configFileTempDirectories map[string]string // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
-	networkName              string            // networkName is the container network to connect containers to for IP assignment.
-	networkCIDR              string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
-	networkReady             bool              // networkReady is true once the container network has been verified or created.
-	containerCommand         string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
+	networkName               string            // networkName is the container network to connect containers to for IP assignment.
+	networkCIDR               string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
+	networkReady              bool              // networkReady is true once the container network has been verified or created.
+	containerCommand          string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
 }
 
 // detectContainerCommand returns the first available container CLI. Checks in

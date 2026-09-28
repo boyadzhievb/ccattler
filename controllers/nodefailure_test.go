@@ -21,7 +21,7 @@ func TestNodeFailureDetectsExpiredLease(t *testing.T) {
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)},  // 10s ago — expired
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)}, // 10s ago — expired
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 	}
 
@@ -48,7 +48,7 @@ func TestNodeFailureIgnoresFreshLease(t *testing.T) {
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(998)},  // 2s ago — fresh
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(998)}, // 2s ago — fresh
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 	}
 

@@ -467,9 +467,9 @@ func filterByRestrictions(candidates []candidateNode, acceptLabels map[string]bo
 // constraint — non-matching nodes remain eligible, they just rank lower.
 func rankByPreferences(candidates []candidateNode, preferLabels map[string]string, loadPerNode map[string]int, reqCPU, reqMemory int64) []candidateNode {
 	type scoredCandidate struct {
-		candidate      candidateNode
-		preferScore    int
-		originalIndex  int
+		candidate     candidateNode
+		preferScore   int
+		originalIndex int
 	}
 
 	scored := make([]scoredCandidate, len(candidates))

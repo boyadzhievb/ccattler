@@ -16,8 +16,8 @@ import (
 
 // OIDCConfig holds the configuration for OIDC/OAuth2 authentication.
 type OIDCConfig struct {
-	Issuer       string   // expected token issuer (e.g. "https://accounts.google.com")
-	Audience     string   // expected audience claim
+	Issuer       string       // expected token issuer (e.g. "https://accounts.google.com")
+	Audience     string       // expected audience claim
 	ClaimMapping ClaimMapping // maps JWT claims to CCattler attributes
 }
 

@@ -203,9 +203,3 @@ func (nodeAgent *Agent) hasInitSteps(ctx context.Context, serviceName string) bo
 	}
 	return false
 }
-
-// initPhaseDescription returns a human-readable description of an init step
-// failure for logging purposes.
-func initPhaseDescription(stepIndex int, exec string, reason string) string {
-	return fmt.Sprintf("init step %d (%s): %s", stepIndex, exec, reason)
-}

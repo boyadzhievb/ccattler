@@ -2,12 +2,12 @@ package lang
 
 // File is the root of the AST — a list of top-level declarations.
 type File struct {
-	Services         []ServiceDecl        // top-level service blocks in the source file
-	Volumes          []VolumeDecl         // top-level volume blocks in the source file
-	Tenants          []TenantDecl         // top-level tenant blocks in the source file
-	CloudIdentities  []CloudIdentityDecl  // top-level cloud_identity blocks in the source file
+	Services         []ServiceDecl         // top-level service blocks in the source file
+	Volumes          []VolumeDecl          // top-level volume blocks in the source file
+	Tenants          []TenantDecl          // top-level tenant blocks in the source file
+	CloudIdentities  []CloudIdentityDecl   // top-level cloud_identity blocks in the source file
 	CredentialBroker *CredentialBrokerDecl // optional top-level credential_broker block
-	Cloud            *CloudDecl           // optional top-level cloud block for cloud provider config
+	Cloud            *CloudDecl            // optional top-level cloud block for cloud provider config
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -29,26 +29,26 @@ type QuotaDecl struct {
 
 // ServiceDecl represents a parsed "service" block in the DSL.
 type ServiceDecl struct {
-	Name         string            // unique service identifier from the block header
-	Owner        string            // owning tenant (empty = derived from hierarchical name)
-	Image        string            // container image reference (e.g. "nginx:1.27")
-	Instances    int               // desired number of running instances
-	Ports        []int             // exposed port numbers declared via "expose"
-	ExternalPorts []ExternalPortDecl // ports exposed externally via cloud load balancer
-	Resources    *ResourcesDecl    // optional CPU/memory resource constraints
-	Health       *HealthDecl       // optional health check configuration
-	Scale        *ScaleDecl        // optional autoscaling policy
-	Placement    *PlacementDecl    // optional placement constraints
-	Update       *UpdateDecl       // optional rolling update strategy
-	Config       *ConfigDecl       // optional config block (env vars, config files)
-	Secrets      []SecretDecl      // optional secret mount declarations
-	VolumeMounts       []VolumeMountDecl          // optional volume mount bindings
-	CloudIdentities    []CloudIdentityBindingDecl // optional cloud identity bindings
-	InitSteps          []InitStepDecl             // optional ordered initialization steps
-	Startup      *ProbeDecl        // optional startup probe (gates liveness/readiness)
-	Liveness     *ProbeDecl        // optional liveness probe (triggers restart on failure)
-	Readiness    *ProbeDecl        // optional readiness probe (controls endpoint membership)
-	Line         int               // source line number for error reporting
+	Name            string                     // unique service identifier from the block header
+	Owner           string                     // owning tenant (empty = derived from hierarchical name)
+	Image           string                     // container image reference (e.g. "nginx:1.27")
+	Instances       int                        // desired number of running instances
+	Ports           []int                      // exposed port numbers declared via "expose"
+	ExternalPorts   []ExternalPortDecl         // ports exposed externally via cloud load balancer
+	Resources       *ResourcesDecl             // optional CPU/memory resource constraints
+	Health          *HealthDecl                // optional health check configuration
+	Scale           *ScaleDecl                 // optional autoscaling policy
+	Placement       *PlacementDecl             // optional placement constraints
+	Update          *UpdateDecl                // optional rolling update strategy
+	Config          *ConfigDecl                // optional config block (env vars, config files)
+	Secrets         []SecretDecl               // optional secret mount declarations
+	VolumeMounts    []VolumeMountDecl          // optional volume mount bindings
+	CloudIdentities []CloudIdentityBindingDecl // optional cloud identity bindings
+	InitSteps       []InitStepDecl             // optional ordered initialization steps
+	Startup         *ProbeDecl                 // optional startup probe (gates liveness/readiness)
+	Liveness        *ProbeDecl                 // optional liveness probe (triggers restart on failure)
+	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
+	Line            int                        // source line number for error reporting
 }
 
 // VolumeDecl represents a parsed top-level "volume" block in the DSL.

@@ -37,11 +37,11 @@ func defaultCircuitBreakerConfig() circuitBreakerConfig {
 
 // backendCircuit tracks the circuit breaker state for a single backend endpoint.
 type backendCircuit struct {
-	state              CircuitState
-	consecutiveFailures int
+	state                CircuitState
+	consecutiveFailures  int
 	consecutiveSuccesses int
-	lastFailureTime    time.Time
-	halfOpenInFlight   int
+	lastFailureTime      time.Time
+	halfOpenInFlight     int
 }
 
 // CircuitBreaker tracks per-backend health and prevents forwarding requests

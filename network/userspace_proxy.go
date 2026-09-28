@@ -498,4 +498,3 @@ func extractServiceName(hostHeader string) string {
 	hostname = strings.TrimSuffix(hostname, "."+DefaultDNSDomain)
 	return strings.TrimSpace(hostname)
 }
-

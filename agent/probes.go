@@ -18,12 +18,12 @@ import (
 // main reconciliation loop so that slow reconciliation does not delay
 // liveness/readiness checks.
 type ProbeScheduler struct {
-	nodeID          string                        // nodeID is the unique identifier for the node this scheduler runs on.
-	factStore       store.StateStore              // factStore is the fact store used to read probe config and write probe results.
-	runtimeAdapter  runtime.Runtime               // runtimeAdapter is the runtime used for exec-type probes.
+	nodeID          string                         // nodeID is the unique identifier for the node this scheduler runs on.
+	factStore       store.StateStore               // factStore is the fact store used to read probe config and write probe results.
+	runtimeAdapter  runtime.Runtime                // runtimeAdapter is the runtime used for exec-type probes.
 	probeStates     map[string]*instanceProbeState // probeStates tracks probe execution state per instance ID.
-	lastHealthCheck map[string]time.Time          // lastHealthCheck tracks when each instance was last health-checked.
-	interval        time.Duration                 // interval is the period between probe scheduling passes.
+	lastHealthCheck map[string]time.Time           // lastHealthCheck tracks when each instance was last health-checked.
+	interval        time.Duration                  // interval is the period between probe scheduling passes.
 }
 
 // NewProbeScheduler creates a new ProbeScheduler wired to the given store and
@@ -55,11 +55,11 @@ type probeConfig struct {
 
 // probeTracker holds the runtime state for a single probe on a single instance.
 type probeTracker struct {
-	lastCheckTime       time.Time // when the probe was last executed
-	consecutiveFailures int       // current streak of consecutive failures
-	consecutiveSuccesses int      // current streak of consecutive successes
-	started             bool      // true after the initial delay has passed
-	startTime           time.Time // when the instance was first observed for this probe
+	lastCheckTime        time.Time // when the probe was last executed
+	consecutiveFailures  int       // current streak of consecutive failures
+	consecutiveSuccesses int       // current streak of consecutive successes
+	started              bool      // true after the initial delay has passed
+	startTime            time.Time // when the instance was first observed for this probe
 }
 
 // instanceProbeState holds the probe tracking state for all three probe types
@@ -420,11 +420,9 @@ func (probeScheduler *ProbeScheduler) performHealthCheckAndReportResult(ctx cont
 	instanceIP := string(ipFact.Value)
 
 	healthy := CheckHealth(ctx, probe, instanceIP)
-	status := types.HealthUnknown
+	status := types.HealthUnhealthy
 	if healthy {
 		status = types.HealthHealthy
-	} else {
-		status = types.HealthUnhealthy
 	}
 	probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceInfo.id), []byte(string(status)))
 	probeScheduler.lastHealthCheck[instanceInfo.id] = time.Now()

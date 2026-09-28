@@ -29,10 +29,10 @@ type JoinToken struct {
 
 // EnrolledNode records a node that has successfully joined the cluster.
 type EnrolledNode struct {
-	NodeID       string    // unique node identifier
-	Principal    string    // security principal (e.g. "node:node-1")
-	EnrolledAt   time.Time // when the node joined
-	CertExpiry   time.Time // when the node's certificate expires
+	NodeID     string    // unique node identifier
+	Principal  string    // security principal (e.g. "node:node-1")
+	EnrolledAt time.Time // when the node joined
+	CertExpiry time.Time // when the node's certificate expires
 }
 
 // EnrollmentService manages the node enrollment lifecycle: token generation,

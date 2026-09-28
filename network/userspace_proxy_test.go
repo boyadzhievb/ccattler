@@ -182,7 +182,7 @@ func TestProxyRejectsPathTraversalHost(t *testing.T) {
 		"../admin",
 		"../../desired/service/web",
 		"web/../../etc/passwd",
-		"Web", // uppercase
+		"Web",         // uppercase
 		"web service", // space
 	}
 

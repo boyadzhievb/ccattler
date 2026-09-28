@@ -7,11 +7,11 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
-	"crypto/tls"
-	"crypto/x509"
 	"net"
 	"net/http"
 	"os"
@@ -2747,7 +2747,7 @@ func executeTopCommand(resourceType string) {
 			if cpuDisplay == "" {
 				cpuDisplay = "-"
 			} else {
-				cpuDisplay = cpuDisplay + "m"
+				cpuDisplay += "m"
 			}
 			memDisplay := instanceStatus.MemoryBytes
 			if memDisplay == "" {
@@ -3498,11 +3498,11 @@ type clusterStatusResponse struct {
 
 // serviceStatusEntry represents one service in the cluster status output.
 type serviceStatusEntry struct {
-	Name            string `json:"name"`           // service name from the DSL config
-	Image           string `json:"image"`          // container image or process command
-	DesiredCount    int    `json:"desired"`         // how many instances should be running
-	RunningCount    int    `json:"running"`         // how many instances are currently running
-	ExposedPorts    []int  `json:"ports,omitempty"` // ports exposed by this service
+	Name         string `json:"name"`            // service name from the DSL config
+	Image        string `json:"image"`           // container image or process command
+	DesiredCount int    `json:"desired"`         // how many instances should be running
+	RunningCount int    `json:"running"`         // how many instances are currently running
+	ExposedPorts []int  `json:"ports,omitempty"` // ports exposed by this service
 }
 
 // instanceStatusEntry represents one instance in the cluster status output.
@@ -3526,21 +3526,21 @@ type networkStatusEntry struct {
 // nodeStatusEntry represents one node in the cluster status output.
 type nodeStatusEntry struct {
 	ID              string `json:"id"`               // unique node identifier
-	State           string `json:"state"`             // node state: alive, unreachable, draining
-	PlacedInstances int    `json:"instances"`         // number of active instances on this node
-	AvailableCPU    int64  `json:"available_cpu"`     // remaining CPU capacity in millicores
-	CapacityCPU     int64  `json:"capacity_cpu"`      // total CPU capacity in millicores
-	AvailableMemory int64  `json:"available_memory"`  // remaining memory capacity in MiB
-	CapacityMemory  int64  `json:"capacity_memory"`   // total memory capacity in MiB
+	State           string `json:"state"`            // node state: alive, unreachable, draining
+	PlacedInstances int    `json:"instances"`        // number of active instances on this node
+	AvailableCPU    int64  `json:"available_cpu"`    // remaining CPU capacity in millicores
+	CapacityCPU     int64  `json:"capacity_cpu"`     // total CPU capacity in millicores
+	AvailableMemory int64  `json:"available_memory"` // remaining memory capacity in MiB
+	CapacityMemory  int64  `json:"capacity_memory"`  // total memory capacity in MiB
 }
 
 // volumeStatusEntry represents one persistent volume in the cluster status output.
 type volumeStatusEntry struct {
-	Name      string `json:"name"`                // volume name from the DSL config
-	Size      string `json:"size"`                // declared size (e.g. "50Gi")
-	State     string `json:"state"`               // current state: available, attached
-	Node      string `json:"node,omitempty"`      // node the volume is attached to
-	Instance  string `json:"instance,omitempty"`  // instance the volume is mounted into
+	Name      string `json:"name"`                 // volume name from the DSL config
+	Size      string `json:"size"`                 // declared size (e.g. "50Gi")
+	State     string `json:"state"`                // current state: available, attached
+	Node      string `json:"node,omitempty"`       // node the volume is attached to
+	Instance  string `json:"instance,omitempty"`   // instance the volume is mounted into
 	MountPath string `json:"mount_path,omitempty"` // filesystem mount path
 }
 

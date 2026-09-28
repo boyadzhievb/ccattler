@@ -15,10 +15,10 @@ import (
 // instances, issues and refreshes cloud credentials, and garbage-collects
 // credentials for stopped instances.
 type CredentialBrokerController struct {
-	tokenIssuer    *security.WorkloadTokenIssuer
-	adapters       map[string]security.CloudProviderAdapter
-	credentialTTL  time.Duration
-	refreshBefore  time.Duration
+	tokenIssuer   *security.WorkloadTokenIssuer
+	adapters      map[string]security.CloudProviderAdapter
+	credentialTTL time.Duration
+	refreshBefore time.Duration
 }
 
 // NewCredentialBrokerController creates a credential broker with the given

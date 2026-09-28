@@ -175,4 +175,3 @@ func selectInstancesForRemoval(pendingIDs, runningIDs []string, count int) []str
 	}
 	return result
 }
-

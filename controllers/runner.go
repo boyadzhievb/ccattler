@@ -89,12 +89,12 @@ func (controllerRunner *Runner) SetEventLog(eventLog *types.EventLog) {
 // sharing the same state store. The default debounce interval is 50ms.
 func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 	return &Runner{
-		store:                    stateStore,
-		controllers:              controllers,
-		debounce:                 50 * time.Millisecond,
-		resyncInterval:           30 * time.Second,
+		store:                     stateStore,
+		controllers:               controllers,
+		debounce:                  50 * time.Millisecond,
+		resyncInterval:            30 * time.Second,
 		maxReconciliationAttempts: defaultMaxReconciliationAttempts,
-		maxInputKeyGuards:        -1,
+		maxInputKeyGuards:         -1,
 	}
 }
 
@@ -507,4 +507,3 @@ func sortChangesByKey(changes []Change) {
 		return changes[i].Type < changes[j].Type
 	})
 }
-

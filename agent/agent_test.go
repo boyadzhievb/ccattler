@@ -1461,4 +1461,3 @@ func TestAgentTelemetryUsesRuntimeStats(t *testing.T) {
 	}
 	t.Logf("observed memory: %s", memoryFact.Value)
 }
-

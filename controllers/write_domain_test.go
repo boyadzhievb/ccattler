@@ -250,9 +250,9 @@ func TestDeterministicPlanVerification(t *testing.T) {
 	const reconcileIterations = 5
 
 	testCases := []struct {
-		controllerName     string
-		controllerFactory  func() Controller
-		inputFacts         []store.Fact
+		controllerName    string
+		controllerFactory func() Controller
+		inputFacts        []store.Fact
 	}{
 		{
 			controllerName: "instance",

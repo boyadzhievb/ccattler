@@ -197,8 +197,8 @@ func TestChaosRunnerFullChaosConverges(t *testing.T) {
 	defer factStore.Close()
 
 	chaosRunner := NewChaosRunner(ChaosConfig{
-		Duration:          8 * time.Second,
-		InjectionInterval: 2 * time.Second,
+		Duration:           8 * time.Second,
+		InjectionInterval:  2 * time.Second,
 		ConvergenceTimeout: 10 * time.Second,
 		EnabledScenarios: []FailureScenario{
 			ScenarioNodeKill,

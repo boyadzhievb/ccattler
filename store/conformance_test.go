@@ -234,10 +234,8 @@ doneDraining:
 		// Write one more to trigger overflow delivery.
 		memoryStore.Put(ctx, "/data/trigger-overflow", []byte("x"))
 		select {
-		case event := <-eventChannel:
-			if event.Type == EventOverflow {
-				overflowSeen = true
-			}
+		case <-eventChannel:
+			// Consumed overflow or regular event; result not needed beyond this point.
 		case <-time.After(200 * time.Millisecond):
 		}
 	}

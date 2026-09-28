@@ -18,7 +18,7 @@ func buildDNSARecordQuery(transactionID uint16, domainName string) []byte {
 	header := make([]byte, 12)
 	binary.BigEndian.PutUint16(header[0:2], transactionID)
 	binary.BigEndian.PutUint16(header[2:4], 0x0100) // standard query, recursion desired
-	binary.BigEndian.PutUint16(header[4:6], 1)       // QDCOUNT = 1
+	binary.BigEndian.PutUint16(header[4:6], 1)      // QDCOUNT = 1
 
 	// Question: labels + null + QTYPE(A=1) + QCLASS(IN=1)
 	var questionSection []byte

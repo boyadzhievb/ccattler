@@ -12,8 +12,8 @@ type stubController struct {
 	prefixes []string
 }
 
-func (stub *stubController) Name() string      { return stub.name }
-func (stub *stubController) Watch() []string    { return stub.prefixes }
+func (stub *stubController) Name() string    { return stub.name }
+func (stub *stubController) Watch() []string { return stub.prefixes }
 func (stub *stubController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
 	return nil, nil
 }

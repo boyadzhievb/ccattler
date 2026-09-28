@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -223,19 +222,4 @@ func extractLastRequestTimes(facts []store.Fact) map[string]time.Time {
 		}
 	}
 	return times
-}
-
-// formatActivationTimeout returns the activation timeout for a service as a
-// Go duration. Returns the default 30s if not configured.
-func formatActivationTimeout(facts []store.Fact, serviceName string) time.Duration {
-	for _, fact := range facts {
-		expectedKey := fmt.Sprintf("%s/service/%s/scale/horizontal/activation_timeout", types.PrefixDesired, serviceName)
-		if fact.Key == expectedKey {
-			seconds := parseDurationSeconds(string(fact.Value))
-			if seconds > 0 {
-				return time.Duration(seconds) * time.Second
-			}
-		}
-	}
-	return 30 * time.Second
 }

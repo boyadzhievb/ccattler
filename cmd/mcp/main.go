@@ -94,10 +94,10 @@ type mcpInitializeParams struct {
 
 // mcpInitializeResult is the server's response to an initialize request.
 type mcpInitializeResult struct {
-	ProtocolVersion string            `json:"protocolVersion"`
-	Capabilities    mcpCapabilities   `json:"capabilities"`
-	ServerInfo      mcpServerInfo     `json:"serverInfo"`
-	Instructions    string            `json:"instructions"`
+	ProtocolVersion string          `json:"protocolVersion"`
+	Capabilities    mcpCapabilities `json:"capabilities"`
+	ServerInfo      mcpServerInfo   `json:"serverInfo"`
+	Instructions    string          `json:"instructions"`
 }
 
 // mcpCapabilities describes what the server supports.
@@ -428,35 +428,36 @@ func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 
 	registeredTools := buildToolRegistry()
 	for _, registeredTool := range registeredTools {
-		if registeredTool.name == callParams.Name {
-			toolOutput, toolError := registeredTool.handler(callParams.Arguments)
-			callDuration := time.Since(callStartTime).Milliseconds()
+		if registeredTool.name != callParams.Name {
+			continue
+		}
+		toolOutput, toolError := registeredTool.handler(callParams.Arguments)
+		callDuration := time.Since(callStartTime).Milliseconds()
 
-			if toolError != nil {
-				diagnosticLogger.Printf("tool %s error: %v\n", callParams.Name, toolError)
-				writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, false, toolError.Error())
-				errorText := fmt.Sprintf("error: %v", toolError)
-				if toolOutput != "" {
-					errorText = toolOutput + "\n" + errorText
-				}
-				return &jsonRPCResponse{
-					JSONRPC: "2.0",
-					ID:      incomingRequest.ID,
-					Result: mcpToolCallResult{
-						Content: []mcpContent{{Type: "text", Text: errorText}},
-						IsError: true,
-					},
-				}
+		if toolError != nil {
+			diagnosticLogger.Printf("tool %s error: %v\n", callParams.Name, toolError)
+			writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, false, toolError.Error())
+			errorText := fmt.Sprintf("error: %v", toolError)
+			if toolOutput != "" {
+				errorText = toolOutput + "\n" + errorText
 			}
-
-			writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, true, "")
 			return &jsonRPCResponse{
 				JSONRPC: "2.0",
 				ID:      incomingRequest.ID,
 				Result: mcpToolCallResult{
-					Content: []mcpContent{{Type: "text", Text: toolOutput}},
+					Content: []mcpContent{{Type: "text", Text: errorText}},
+					IsError: true,
 				},
 			}
+		}
+
+		writeAuditEntry(callParams.Name, callParams.Arguments, callDuration, true, "")
+		return &jsonRPCResponse{
+			JSONRPC: "2.0",
+			ID:      incomingRequest.ID,
+			Result: mcpToolCallResult{
+				Content: []mcpContent{{Type: "text", Text: toolOutput}},
+			},
 		}
 	}
 

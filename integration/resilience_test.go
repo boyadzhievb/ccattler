@@ -125,21 +125,6 @@ func helperCountRunningInstances(ctx context.Context, factStore store.StateStore
 	return runningCount
 }
 
-// helperCountTotalRunning counts all running instances across all services.
-func helperCountTotalRunning(ctx context.Context, factStore store.StateStore) int {
-	allInstances, err := types.ListInstances(ctx, factStore)
-	if err != nil {
-		return 0
-	}
-	runningCount := 0
-	for _, instance := range allInstances {
-		if instance.State == types.InstanceRunning {
-			runningCount++
-		}
-	}
-	return runningCount
-}
-
 // restartAgentForNode starts a new agent for the given nodeID on the cluster,
 // updating the killNode map with the new cancel function.
 func (cluster *resilienceCluster) restartAgentForNode(nodeID string) {

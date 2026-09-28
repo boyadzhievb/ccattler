@@ -189,9 +189,9 @@ func (isolation *TenantNetworkIsolation) DeriveFirewallRules(ctx context.Context
 // DerivedFirewallRule is a concrete allow/deny rule derived from identity-based
 // policies, ready for translation into iptables/nftables/eBPF rules.
 type DerivedFirewallRule struct {
-	SourceIdentity string               // SPIFFE identity of the source
-	TargetIdentity string               // SPIFFE identity of the target
-	Port           int                  // target port (0 means any)
+	SourceIdentity string                // SPIFFE identity of the source
+	TargetIdentity string                // SPIFFE identity of the target
+	Port           int                   // target port (0 means any)
 	Action         security.PolicyAction // allow or deny
-	Reason         string               // why this rule exists
+	Reason         string                // why this rule exists
 }

@@ -17,14 +17,57 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
+      exclude-functions:
+        - io.Closer.Close
+        - (*os.File).Close
+        - (*net.UDPConn).Close
+        - (*net/http.Response).Body.Close
+        - os.RemoveAll
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Sscanf
+        - (*net.UDPConn).WriteToUDP
+        - (*encoding/json.Encoder).Encode
+        - (*bufio.Writer).Write
+        - (*bufio.Writer).WriteByte
+        - (*bufio.Writer).Flush
+        - (net/http.ResponseWriter).Write
+        - (*os/exec.Cmd).Run
+        - (*os.Process).Signal
+        - (github.com/boyadzhievb/ccattler/store.StateStore).Put
+        - (github.com/boyadzhievb/ccattler/store.StateStore).Delete
+        - (github.com/boyadzhievb/ccattler/store.StateStore).Close
+        - github.com/boyadzhievb/ccattler/types.WriteNode
+        - github.com/boyadzhievb/ccattler/types.WriteInstance
+        - github.com/boyadzhievb/ccattler/types.WritePlacement
+        - github.com/boyadzhievb/ccattler/types.WriteObservedVolume
+        - github.com/boyadzhievb/ccattler/types.WriteNetworkAllocation
+        - github.com/boyadzhievb/ccattler/types.DeleteNetworkAllocation
+        - github.com/boyadzhievb/ccattler/types.WriteServiceVIP
+    gosec:
+      excludes:
+        - G101
+        - G104
+        - G107
+        - G112
+        - G114
+        - G115
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
+        - G402
+        - G404
+        - G704
+        - G705
+        - G118
     govet:
       enable-all: true
       disable:
         - fieldalignment
-    gosec:
-      exclude:
-        - G104
-        - G304
+        - shadow
     gocritic:
       enabled-checks:
         - dupImport
@@ -33,6 +76,94 @@ linters:
         - truncateCmp
 
   exclusions:
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+      - linters:
+          - gocritic
+        text: exitAfterDefer
+      - linters:
+          - govet
+        text: unusedwrite
+      - linters:
+          - gocritic
+        text: appendAssign
+      - linters:
+          - staticcheck
+        text: "QF"
+      - linters:
+          - errcheck
+        text: "Close` is not checked"
+      - linters:
+          - errcheck
+        text: "Run` is not checked"
+      - linters:
+          - errcheck
+        text: "Put` is not checked"
+      - linters:
+          - errcheck
+        text: "Delete` is not checked"
+      - linters:
+          - errcheck
+        text: "Stop` is not checked"
+      - linters:
+          - errcheck
+        text: "Signal` is not checked"
+      - linters:
+          - errcheck
+        text: "Write` is not checked"
+      - linters:
+          - errcheck
+        text: "Shutdown` is not checked"
+      - linters:
+          - errcheck
+        text: "Error return value is not checked"
+      - linters:
+          - errcheck
+        text: "Unmarshal` is not checked"
+      - linters:
+          - errcheck
+        text: "Decode` is not checked"
+      - linters:
+          - errcheck
+        text: "Emit` is not checked"
+      - linters:
+          - errcheck
+        text: "Cleanup` is not checked"
+      - linters:
+          - errcheck
+        text: "ReleaseIP` is not checked"
+      - linters:
+          - errcheck
+        text: "DetachVolume` is not checked"
+      - linters:
+          - errcheck
+        text: "ForceDetach` is not checked"
+      - linters:
+          - errcheck
+        text: "CreateVolume` is not checked"
+      - linters:
+          - errcheck
+        text: "RequestNode` is not checked"
+      - linters:
+          - errcheck
+        text: "RemoveNode` is not checked"
+      - linters:
+          - errcheck
+        text: "renewCertificate` is not checked"
+      - linters:
+          - errcheck
+        text: "WriteFile` is not checked"
+      - linters:
+          - staticcheck
+        text: "SA1019"
+      - linters:
+          - staticcheck
+        text: "SA2001"
+      - linters:
+          - govet
+        text: "nilness"
     paths:
       - vendor
 

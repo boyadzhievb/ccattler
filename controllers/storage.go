@@ -222,16 +222,16 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 					Value: []byte(observedInfo.node),
 				})
 				changes = append(changes, Change{
-					Type:  store.OpDelete,
-					Key:   types.KeyObservedVolumeNode(volumeName),
+					Type: store.OpDelete,
+					Key:  types.KeyObservedVolumeNode(volumeName),
 				})
 				changes = append(changes, Change{
-					Type:  store.OpDelete,
-					Key:   types.KeyObservedVolumeInstance(volumeName),
+					Type: store.OpDelete,
+					Key:  types.KeyObservedVolumeInstance(volumeName),
 				})
 				changes = append(changes, Change{
-					Type:  store.OpDelete,
-					Key:   types.KeyObservedVolumeMountPath(volumeName),
+					Type: store.OpDelete,
+					Key:  types.KeyObservedVolumeMountPath(volumeName),
 				})
 			}
 		}
@@ -239,56 +239,57 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 
 	// Clean up observed volumes that are no longer desired.
 	for volumeName := range observedVolumes {
-		if _, stillDesired := desiredVolumes[volumeName]; !stillDesired {
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolume(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeState(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeSize(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeNode(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeInstance(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeMountPath(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeMigrationSource(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeLastSnapshot(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeUsedBytes(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeCapacityBytes(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeReplicaCount(volumeName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedVolumeReplicaState(volumeName),
-			})
+		if _, stillDesired := desiredVolumes[volumeName]; stillDesired {
+			continue
 		}
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolume(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeState(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeSize(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeNode(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeInstance(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeMountPath(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeMigrationSource(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeLastSnapshot(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeUsedBytes(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeCapacityBytes(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeReplicaCount(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeReplicaState(volumeName),
+		})
 	}
 
 	return changes, nil
@@ -303,13 +304,13 @@ type desiredVolumeInfo struct {
 
 // observedVolumeInfo holds parsed fields from observed volume facts.
 type observedVolumeInfo struct {
-	state           types.VolumeState   // state is the current lifecycle state (available, attached, migrating).
-	node            string              // node is the ID of the node this volume is attached to.
-	instance        string              // instance is the ID of the instance this volume is mounted into.
-	size            string              // size is the volume's size.
-	migrationSource string              // migrationSource is the node the volume was force-detached from.
-	replicaCount    int                 // replicaCount is the current number of synchronized replicas.
-	replicaState    types.ReplicaState  // replicaState is the replication sync state.
+	state           types.VolumeState  // state is the current lifecycle state (available, attached, migrating).
+	node            string             // node is the ID of the node this volume is attached to.
+	instance        string             // instance is the ID of the instance this volume is mounted into.
+	size            string             // size is the volume's size.
+	migrationSource string             // migrationSource is the node the volume was force-detached from.
+	replicaCount    int                // replicaCount is the current number of synchronized replicas.
+	replicaState    types.ReplicaState // replicaState is the replication sync state.
 }
 
 // parseSizeToBytes converts a human-readable size string like "100Gi" or "10Mi"
@@ -321,13 +322,14 @@ func parseSizeToBytes(sizeString string) int64 {
 	}
 
 	multiplier := int64(1)
-	if strings.HasSuffix(sizeString, "Gi") {
+	switch {
+	case strings.HasSuffix(sizeString, "Gi"):
 		multiplier = 1024 * 1024 * 1024
 		sizeString = strings.TrimSuffix(sizeString, "Gi")
-	} else if strings.HasSuffix(sizeString, "Mi") {
+	case strings.HasSuffix(sizeString, "Mi"):
 		multiplier = 1024 * 1024
 		sizeString = strings.TrimSuffix(sizeString, "Mi")
-	} else if strings.HasSuffix(sizeString, "Ki") {
+	case strings.HasSuffix(sizeString, "Ki"):
 		multiplier = 1024
 		sizeString = strings.TrimSuffix(sizeString, "Ki")
 	}

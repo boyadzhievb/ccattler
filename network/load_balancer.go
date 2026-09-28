@@ -7,9 +7,9 @@ import (
 
 // backendLoad tracks the number of active (in-flight) connections for a backend.
 type backendLoad struct {
-	address          string
+	address           string
 	activeConnections int64
-	heapIndex        int
+	heapIndex         int
 }
 
 // backendHeap implements heap.Interface for least-connections selection.

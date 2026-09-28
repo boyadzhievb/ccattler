@@ -43,10 +43,10 @@ func NewPolicyGate(
 
 // GateResult contains the outcome of a policy gate evaluation.
 type GateResult struct {
-	Allowed  bool         // whether the change passed all gates
-	Stage    string       // the gate stage that produced this result
-	Reason   string       // human-readable explanation
-	Facts    []lang.Fact  // compiled facts ready for commit (if allowed)
+	Allowed  bool          // whether the change passed all gates
+	Stage    string        // the gate stage that produced this result
+	Reason   string        // human-readable explanation
+	Facts    []lang.Fact   // compiled facts ready for commit (if allowed)
 	Duration time.Duration // total pipeline evaluation time
 }
 

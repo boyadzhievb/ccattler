@@ -17,18 +17,18 @@ import (
 // (e.g. "python3 -m http.server 8080"), which is split on whitespace
 // and executed directly (no shell involved).
 type ProcessRuntime struct {
-	mutex       sync.Mutex                       // mutex guards concurrent access to the processes map.
-	processes   map[string]*managedProcess       // processes maps workload IDs to their managed process state.
-	gracePeriod time.Duration                    // gracePeriod is the time to wait between SIGTERM and SIGKILL during shutdown.
+	mutex       sync.Mutex                 // mutex guards concurrent access to the processes map.
+	processes   map[string]*managedProcess // processes maps workload IDs to their managed process state.
+	gracePeriod time.Duration              // gracePeriod is the time to wait between SIGTERM and SIGKILL during shutdown.
 }
 
 // managedProcess tracks a single OS process launched by the ProcessRuntime,
 // including its specification, exec handle, and completion state.
 type managedProcess struct {
-	workloadSpec    Spec         // workloadSpec is the specification that was used to start this process.
-	command         *exec.Cmd   // command is the exec handle for the running OS process.
+	workloadSpec     Spec          // workloadSpec is the specification that was used to start this process.
+	command          *exec.Cmd     // command is the exec handle for the running OS process.
 	completionSignal chan struct{} // completionSignal is closed when the process exits, signaling waiters.
-	exitError       error        // exitError holds the error returned by cmd.Wait, or nil if the process exited cleanly.
+	exitError        error         // exitError holds the error returned by cmd.Wait, or nil if the process exited cleanly.
 }
 
 // NewProcessRuntime creates a ProcessRuntime with an empty process registry
@@ -189,10 +189,8 @@ func (processRuntime *ProcessRuntime) List(_ context.Context) ([]Status, error) 
 		processStatus := Status{ID: id, PID: process.command.Process.Pid}
 		if process.isRunning() {
 			processStatus.Running = true
-		} else {
-			if process.command.ProcessState != nil {
-				processStatus.ExitCode = process.command.ProcessState.ExitCode()
-			}
+		} else if process.command.ProcessState != nil {
+			processStatus.ExitCode = process.command.ProcessState.ExitCode()
 		}
 		result = append(result, processStatus)
 	}

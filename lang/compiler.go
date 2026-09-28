@@ -731,20 +731,21 @@ func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]Fac
 	var changes []FactChange
 	for _, fact := range facts {
 		existing, getError := stateStore.Get(ctx, fact.Key)
-		if getError != nil {
+		switch {
+		case getError != nil:
 			changes = append(changes, FactChange{
 				Key:      fact.Key,
 				NewValue: fact.Value,
 				Type:     "add",
 			})
-		} else if string(existing.Value) != fact.Value {
+		case string(existing.Value) != fact.Value:
 			changes = append(changes, FactChange{
 				Key:      fact.Key,
 				OldValue: string(existing.Value),
 				NewValue: fact.Value,
 				Type:     "modify",
 			})
-		} else {
+		default:
 			changes = append(changes, FactChange{
 				Key:      fact.Key,
 				NewValue: fact.Value,

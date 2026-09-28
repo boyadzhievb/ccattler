@@ -16,10 +16,10 @@ import (
 
 // Registry holds all registered metrics and serves them via HTTP.
 type Registry struct {
-	mutex           sync.RWMutex
-	counters        map[string]*Counter
-	gauges          map[string]*Gauge
-	histograms      map[string]*Histogram
+	mutex             sync.RWMutex
+	counters          map[string]*Counter
+	gauges            map[string]*Gauge
+	histograms        map[string]*Histogram
 	registrationOrder []string
 }
 
@@ -37,11 +37,11 @@ var DefaultRegistry = NewRegistry()
 
 // Counter is a monotonically increasing metric.
 type Counter struct {
-	name        string
-	help        string
-	labelNames  []string
-	mutex       sync.RWMutex
-	values      map[string]*atomic.Int64
+	name       string
+	help       string
+	labelNames []string
+	mutex      sync.RWMutex
+	values     map[string]*atomic.Int64
 }
 
 // Gauge is a metric that can go up and down.

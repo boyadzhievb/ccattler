@@ -148,8 +148,8 @@ func TestRunnerMultipleControllers(t *testing.T) {
 
 type noopController struct{}
 
-func (n *noopController) Name() string       { return "noop" }
-func (n *noopController) Watch() []string     { return []string{types.ScanObservedInstances} }
+func (n *noopController) Name() string    { return "noop" }
+func (n *noopController) Watch() []string { return []string{types.ScanObservedInstances} }
 func (n *noopController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
 	return nil, nil
 }
@@ -160,7 +160,7 @@ type traceCapturingController struct {
 	reconcileCount   atomic.Int64
 }
 
-func (controller *traceCapturingController) Name() string   { return "trace-capture" }
+func (controller *traceCapturingController) Name() string    { return "trace-capture" }
 func (controller *traceCapturingController) Watch() []string { return []string{"desired/"} }
 func (controller *traceCapturingController) Reconcile(ctx context.Context, _ []store.Fact) ([]Change, error) {
 	traceContext := tracing.TraceFromContext(ctx)

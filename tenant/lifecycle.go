@@ -37,8 +37,8 @@ func NewTenantLifecycle(factStore store.StateStore, registry *TenantRegistry) *T
 
 // ProvisionedTenant describes what was created when a tenant was provisioned.
 type ProvisionedTenant struct {
-	Name           string // tenant identifier
-	State          TenantState
+	Name             string // tenant identifier
+	State            TenantState
 	QuotaProvisioned bool // whether quota facts were written
 	NetworkBoundary  bool // whether network isolation boundary was created
 	SecretSpace      bool // whether secret namespace was reserved
@@ -224,13 +224,12 @@ func (lifecycle *TenantLifecycle) deleteOwnedVolumes(ctx context.Context, tenant
 	volumeNames := make(map[string]bool)
 	for _, fact := range volumeFacts {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredVolumes)
-		volumeName := strings.SplitN(relativePath, "/", 2)[0]
 		// For hierarchical volume names, check if the first segment is the tenant.
 		if idx := strings.Index(relativePath, "/"); idx > 0 {
 			possibleTenant := relativePath[:idx]
 			if possibleTenant == tenantName {
 				keysToDelete = append(keysToDelete, fact.Key)
-				volumeName = relativePath
+				volumeName := relativePath
 				if fieldIdx := strings.Index(relativePath[idx+1:], "/"); fieldIdx >= 0 {
 					volumeName = relativePath[:idx+1+fieldIdx]
 				}

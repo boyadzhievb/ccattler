@@ -119,10 +119,10 @@ func (issuer *WorkloadTokenIssuer) KeyID() string {
 // for this issuer. Cloud providers fetch this to discover the JWKS endpoint.
 func (issuer *WorkloadTokenIssuer) OIDCDiscoveryDocument() OIDCDiscoveryResponse {
 	return OIDCDiscoveryResponse{
-		Issuer:                issuer.issuerURL,
-		JWKSURI:               issuer.issuerURL + "/oidc/jwks",
-		ResponseTypesSupported: []string{"id_token"},
-		SubjectTypesSupported:  []string{"public"},
+		Issuer:                  issuer.issuerURL,
+		JWKSURI:                 issuer.issuerURL + "/oidc/jwks",
+		ResponseTypesSupported:  []string{"id_token"},
+		SubjectTypesSupported:   []string{"public"},
 		IDTokenSigningAlgValues: []string{"ES256"},
 	}
 }

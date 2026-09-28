@@ -178,12 +178,12 @@ func buildDNSARecordResponse(transactionID uint16, questionSection []byte, ipv4A
 	// Answer section: pointer to name in question (0xC00C), type A (1),
 	// class IN (1), TTL 30s, data length 4, IPv4 address.
 	answerRecord := make([]byte, 16)
-	binary.BigEndian.PutUint16(answerRecord[0:2], 0xC00C)  // name pointer to offset 12
-	binary.BigEndian.PutUint16(answerRecord[2:4], 1)        // type A
-	binary.BigEndian.PutUint16(answerRecord[4:6], 1)        // class IN
-	binary.BigEndian.PutUint32(answerRecord[6:10], 30)      // TTL 30 seconds
-	binary.BigEndian.PutUint16(answerRecord[10:12], 4)      // RDLENGTH = 4
-	copy(answerRecord[12:16], ipv4Address)                   // RDATA = IPv4 address
+	binary.BigEndian.PutUint16(answerRecord[0:2], 0xC00C) // name pointer to offset 12
+	binary.BigEndian.PutUint16(answerRecord[2:4], 1)      // type A
+	binary.BigEndian.PutUint16(answerRecord[4:6], 1)      // class IN
+	binary.BigEndian.PutUint32(answerRecord[6:10], 30)    // TTL 30 seconds
+	binary.BigEndian.PutUint16(answerRecord[10:12], 4)    // RDLENGTH = 4
+	copy(answerRecord[12:16], ipv4Address)                // RDATA = IPv4 address
 
 	responsePacket := append(responseHeader, questionSection...)
 	responsePacket = append(responsePacket, answerRecord...)

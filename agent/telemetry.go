@@ -16,10 +16,10 @@ import (
 // It collects resource utilization data for the node and its workloads, publishes
 // heartbeats and alive state, and writes observed facts back to the store.
 type NodeReporter struct {
-	nodeID           string             // nodeID is the unique identifier for the node this reporter manages.
-	factStore        store.StateStore   // factStore is the fact store used to write observed telemetry and state facts.
-	runtimeAdapter   runtime.Runtime    // runtimeAdapter is the pluggable container/process runtime adapter for querying workload stats.
-	advertiseAddress string             // advertiseAddress is this node's LAN-routable IP published for cross-host communication.
+	nodeID           string           // nodeID is the unique identifier for the node this reporter manages.
+	factStore        store.StateStore // factStore is the fact store used to write observed telemetry and state facts.
+	runtimeAdapter   runtime.Runtime  // runtimeAdapter is the pluggable container/process runtime adapter for querying workload stats.
+	advertiseAddress string           // advertiseAddress is this node's LAN-routable IP published for cross-host communication.
 }
 
 // NewNodeReporter creates a new NodeReporter wired to the provided state store

@@ -715,9 +715,9 @@ service web {
 	}
 
 	expectedFacts := map[string]string{
-		types.KeyDesiredServiceScaleHorizontalMin("web"):              "2",
-		types.KeyDesiredServiceScaleHorizontalMax("web"):              "30",
-		types.KeyDesiredServiceScaleHorizontalTarget("web", "cpu"):    "60",
+		types.KeyDesiredServiceScaleHorizontalMin("web"):                       "2",
+		types.KeyDesiredServiceScaleHorizontalMax("web"):                       "30",
+		types.KeyDesiredServiceScaleHorizontalTarget("web", "cpu"):             "60",
 		types.KeyDesiredServiceScaleHorizontalEvent("web", "payments.pending"): "20",
 		types.KeyDesiredServiceScaleScheduleDays("web"):                        "weekdays",
 		types.KeyDesiredServiceScaleScheduleStart("web"):                       "08:00",

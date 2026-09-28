@@ -44,9 +44,9 @@ type RoleBinding struct {
 // RBACAuthorizer evaluates access control decisions based on role bindings
 // and fact-prefix permissions.
 type RBACAuthorizer struct {
-	roles        map[string]*Role
-	bindings     map[string][]string // principal → list of role names
-	mutex        sync.RWMutex
+	roles    map[string]*Role
+	bindings map[string][]string // principal → list of role names
+	mutex    sync.RWMutex
 }
 
 // NewRBACAuthorizer creates an empty RBAC authorizer. Add roles and bindings

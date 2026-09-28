@@ -16,10 +16,10 @@ import (
 // VIP and endpoint facts from the store and programming DNAT rules via the
 // data plane provider. Extracted from Agent to isolate the data plane concern.
 type DataPlaneReconciler struct {
-	nodeID            string                   // nodeID is the unique identifier for the node this reconciler manages.
-	factStore         store.StateStore         // factStore is the fact store used to read VIP, endpoint, and node facts.
+	nodeID            string                    // nodeID is the unique identifier for the node this reconciler manages.
+	factStore         store.StateStore          // factStore is the fact store used to read VIP, endpoint, and node facts.
 	dataPlaneProvider network.DataPlaneProvider // dataPlaneProvider programs VIP DNAT rules on the host.
-	advertiseAddress  string                   // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
+	advertiseAddress  string                    // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
 }
 
 // NewDataPlaneReconciler creates a DataPlaneReconciler wired to the given

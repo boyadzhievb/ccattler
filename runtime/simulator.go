@@ -16,10 +16,10 @@ var ErrNotFound = errors.New("workload not found")
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
 type SimulatorRuntime struct {
-	mutex        sync.Mutex                    // mutex guards concurrent access to the workloads map.
-	workloads    map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
-	ExecFailures map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
-	ExecInitCalls []ExecInitCall               // ExecInitCalls records all ExecInit calls for test verification.
+	mutex         sync.Mutex                    // mutex guards concurrent access to the workloads map.
+	workloads     map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
+	ExecFailures  map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
+	ExecInitCalls []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by

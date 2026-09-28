@@ -14,19 +14,19 @@ type Attribute struct {
 
 // ABACPolicy is a single attribute-based access control policy rule.
 type ABACPolicy struct {
-	Name                 string       // unique policy name
-	RequiredAttributes   []Attribute  // all must match the principal's attributes
-	TargetKeyPrefix      string       // fact store key prefix this policy applies to
-	AllowedOperations    []Permission // operations allowed when the policy matches
+	Name               string       // unique policy name
+	RequiredAttributes []Attribute  // all must match the principal's attributes
+	TargetKeyPrefix    string       // fact store key prefix this policy applies to
+	AllowedOperations  []Permission // operations allowed when the policy matches
 }
 
 // ABACAuthorizer evaluates attribute-based access control policies. It works
 // alongside RBACAuthorizer — RBAC checks role-based permissions while ABAC
 // adds attribute-based constraints (team isolation, production gates).
 type ABACAuthorizer struct {
-	policies             map[string]*ABACPolicy
-	principalAttributes  map[string][]Attribute // principal → list of attributes
-	mutex                sync.RWMutex
+	policies            map[string]*ABACPolicy
+	principalAttributes map[string][]Attribute // principal → list of attributes
+	mutex               sync.RWMutex
 }
 
 // NewABACAuthorizer creates an empty attribute-based authorizer.

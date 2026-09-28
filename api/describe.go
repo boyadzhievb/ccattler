@@ -23,7 +23,7 @@ type ServiceDescribe struct {
 	ExposedPorts     []int                     `json:"ports,omitempty"`
 	Resources        *DescribeResources        `json:"resources,omitempty"`
 	Placement        *DescribePlacement        `json:"placement,omitempty"`
-	Health           *DescribeHealthConfig      `json:"health,omitempty"`
+	Health           *DescribeHealthConfig     `json:"health,omitempty"`
 	Probes           []DescribeProbe           `json:"probes,omitempty"`
 	InitSteps        []DescribeInitStep        `json:"init_steps,omitempty"`
 	Autoscaling      *DescribeAutoscaling      `json:"autoscaling,omitempty"`
@@ -64,23 +64,23 @@ type NodeDescribe struct {
 // related facts: service, node, state, health, probes, init phase, resources,
 // networking, and recent events.
 type InstanceDescribe struct {
-	ID            string          `json:"id"`
-	ServiceName   string          `json:"service"`
-	NodeID        string          `json:"node"`
-	State         string          `json:"state"`
-	Image         string          `json:"image,omitempty"`
-	IPAddress     string          `json:"ip,omitempty"`
-	HostPort      string          `json:"host_port,omitempty"`
-	HealthState   string          `json:"health,omitempty"`
-	CPUMillis     string          `json:"cpu,omitempty"`
-	MemoryBytes   string          `json:"memory,omitempty"`
-	InitPhase     string          `json:"init_phase,omitempty"`
-	Restarts      string          `json:"restarts,omitempty"`
-	StartupProbe  string          `json:"startup,omitempty"`
-	LivenessProbe string          `json:"liveness,omitempty"`
-	ReadinessProbe string         `json:"readiness,omitempty"`
-	Endpoint      string          `json:"endpoint,omitempty"`
-	Events        []DescribeEvent `json:"events,omitempty"`
+	ID             string          `json:"id"`
+	ServiceName    string          `json:"service"`
+	NodeID         string          `json:"node"`
+	State          string          `json:"state"`
+	Image          string          `json:"image,omitempty"`
+	IPAddress      string          `json:"ip,omitempty"`
+	HostPort       string          `json:"host_port,omitempty"`
+	HealthState    string          `json:"health,omitempty"`
+	CPUMillis      string          `json:"cpu,omitempty"`
+	MemoryBytes    string          `json:"memory,omitempty"`
+	InitPhase      string          `json:"init_phase,omitempty"`
+	Restarts       string          `json:"restarts,omitempty"`
+	StartupProbe   string          `json:"startup,omitempty"`
+	LivenessProbe  string          `json:"liveness,omitempty"`
+	ReadinessProbe string          `json:"readiness,omitempty"`
+	Endpoint       string          `json:"endpoint,omitempty"`
+	Events         []DescribeEvent `json:"events,omitempty"`
 }
 
 // DescribeResources shows a service's CPU and memory resource requirements.
@@ -128,9 +128,9 @@ type DescribeInitStep struct {
 
 // DescribeAutoscaling shows a service's autoscaling configuration.
 type DescribeAutoscaling struct {
-	Min     int                    `json:"min"`
-	Max     int                    `json:"max"`
-	Targets []DescribeScaleTarget  `json:"targets,omitempty"`
+	Min     int                   `json:"min"`
+	Max     int                   `json:"max"`
+	Targets []DescribeScaleTarget `json:"targets,omitempty"`
 }
 
 // DescribeScaleTarget shows one autoscaling metric target.

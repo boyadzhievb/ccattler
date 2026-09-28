@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -186,25 +185,4 @@ func (initController *InitController) deriveInitPhase(instanceID string, desired
 	}
 
 	return types.InitPhasePending
-}
-
-// initStepCountForService counts the number of init step marker keys for a
-// service by scanning the store directly. Used by the agent to determine how
-// many init steps to execute.
-func initStepCountForService(ctx context.Context, stateStore store.StateStore, serviceName string) int {
-	scanPrefix := types.ScanDesiredServiceInitSteps(serviceName)
-	facts, scanError := stateStore.Scan(ctx, scanPrefix)
-	if scanError != nil || len(facts) == 0 {
-		return 0
-	}
-
-	stepCount := 0
-	for _, fact := range facts {
-		afterPrefix := strings.TrimPrefix(fact.Key, scanPrefix)
-		if _, parseError := strconv.Atoi(afterPrefix); parseError == nil {
-			stepCount++
-		}
-	}
-
-	return stepCount
 }

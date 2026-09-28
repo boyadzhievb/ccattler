@@ -289,13 +289,14 @@ func removeJumpRuleFromMainChain(serviceChain string) {
 		}
 		found := false
 		for _, line := range strings.Split(string(output), "\n") {
-			if strings.Contains(line, serviceChain) {
-				ruleSpec := strings.TrimPrefix(line, "-A "+iptablesMainChain+" ")
-				deleteArgs := append([]string{"-t", "nat", "-D", iptablesMainChain}, strings.Fields(ruleSpec)...)
-				runIptables(deleteArgs...)
-				found = true
-				break
+			if !strings.Contains(line, serviceChain) {
+				continue
 			}
+			ruleSpec := strings.TrimPrefix(line, "-A "+iptablesMainChain+" ")
+			deleteArgs := append([]string{"-t", "nat", "-D", iptablesMainChain}, strings.Fields(ruleSpec)...)
+			runIptables(deleteArgs...)
+			found = true
+			break
 		}
 		if !found {
 			return

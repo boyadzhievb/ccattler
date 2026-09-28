@@ -29,20 +29,6 @@ func buildNodeIDs(count int) []string {
 	return nodeIDs
 }
 
-func waitForConvergence(ctx context.Context, cluster *chaos.SimulatedChaosCluster, timeout time.Duration) (time.Duration, bool, string) {
-	startTime := time.Now()
-	deadline := startTime.Add(timeout)
-	for time.Now().Before(deadline) {
-		converged, status := cluster.CheckConvergence(ctx)
-		if converged {
-			return time.Since(startTime), true, status
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	_, status := cluster.CheckConvergence(ctx)
-	return time.Since(startTime), false, status
-}
-
 func waitForConvergenceWithProgress(testHandle *testing.T, ctx context.Context, cluster *chaos.SimulatedChaosCluster, factStore store.StateStore, timeout time.Duration) (time.Duration, bool, string) {
 	startTime := time.Now()
 	deadline := startTime.Add(timeout)

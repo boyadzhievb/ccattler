@@ -11,11 +11,11 @@ import (
 // instances, load balancers, and routes without making real cloud API calls.
 // All operations are recorded and can be inspected in tests.
 type SimulatorCloudProvider struct {
-	instanceCounter  atomic.Int64
-	instances        map[string]*CloudInstance
-	loadBalancers    map[string]*LoadBalancerStatus
-	routes           map[string]*RouteEntry
-	providerMutex    sync.Mutex
+	instanceCounter atomic.Int64
+	instances       map[string]*CloudInstance
+	loadBalancers   map[string]*LoadBalancerStatus
+	routes          map[string]*RouteEntry
+	providerMutex   sync.Mutex
 
 	// CreateInstanceCalls records each CreateInstance invocation for test assertions.
 	CreateInstanceCalls []InstanceConfig

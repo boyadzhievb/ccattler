@@ -112,14 +112,6 @@ func (lexer *Lexer) advanceCursor() {
 	lexer.position++
 }
 
-// peekCurrentChar returns the current rune without advancing, or 0 if at end of input.
-func (lexer *Lexer) peekCurrentChar() rune {
-	if lexer.position >= len(lexer.input) {
-		return 0
-	}
-	return lexer.input[lexer.position]
-}
-
 // skipWhitespaceExceptNewlines advances past spaces, tabs, and carriage returns, but stops at newlines.
 func (lexer *Lexer) skipWhitespaceExceptNewlines() {
 	for lexer.position < len(lexer.input) && (lexer.input[lexer.position] == ' ' || lexer.input[lexer.position] == '\t' || lexer.input[lexer.position] == '\r') {

@@ -71,16 +71,16 @@ const (
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
-	factStore            store.StateStore
-	eventLog             *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
-	enrollmentService    *security.EnrollmentService
-	workloadTokenIssuer  *security.WorkloadTokenIssuer
-	watchMultiplexer     *WatchMultiplexer
-	serverMode           ServerMode
-	mux                  *http.ServeMux
-	rateLimiter          *RateLimiter
-	statusCache          *ResponseCache
-	listener             net.Listener
+	factStore           store.StateStore
+	eventLog            *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	enrollmentService   *security.EnrollmentService
+	workloadTokenIssuer *security.WorkloadTokenIssuer
+	watchMultiplexer    *WatchMultiplexer
+	serverMode          ServerMode
+	mux                 *http.ServeMux
+	rateLimiter         *RateLimiter
+	statusCache         *ResponseCache
+	listener            net.Listener
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
@@ -605,11 +605,12 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	var events []types.SystemEvent
 	var queryError error
 
-	if targetFilter != "" {
+	switch {
+	case targetFilter != "":
 		events, queryError = apiServer.eventLog.ForTarget(requestContext, targetFilter, eventLimit)
-	} else if kindFilter != "" {
+	case kindFilter != "":
 		events, queryError = apiServer.eventLog.Query(requestContext, kindFilter, eventLimit)
-	} else {
+	default:
 		events, queryError = apiServer.eventLog.Query(requestContext, "", eventLimit)
 	}
 

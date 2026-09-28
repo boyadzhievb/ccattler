@@ -14,14 +14,14 @@ import (
 
 // ClusterStatus is the structured representation of the full cluster state.
 type ClusterStatus struct {
-	Services        []ServiceStatus        `json:"services"`
-	Instances       []InstanceStatus       `json:"instances"`
-	Nodes           []NodeStatus           `json:"nodes"`
-	Networking      []NetworkStatus        `json:"networking,omitempty"`
-	Volumes         []VolumeStatus         `json:"volumes,omitempty"`
-	Secrets         []SecretStatus         `json:"secrets,omitempty"`
-	Config          []ConfigStatus         `json:"config,omitempty"`
-	CloudIdentities []CloudIdentityStatus  `json:"cloud_identities,omitempty"`
+	Services        []ServiceStatus       `json:"services"`
+	Instances       []InstanceStatus      `json:"instances"`
+	Nodes           []NodeStatus          `json:"nodes"`
+	Networking      []NetworkStatus       `json:"networking,omitempty"`
+	Volumes         []VolumeStatus        `json:"volumes,omitempty"`
+	Secrets         []SecretStatus        `json:"secrets,omitempty"`
+	Config          []ConfigStatus        `json:"config,omitempty"`
+	CloudIdentities []CloudIdentityStatus `json:"cloud_identities,omitempty"`
 }
 
 // ServiceStatus represents one service in the cluster status.
