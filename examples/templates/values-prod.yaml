@@ -1,0 +1,5 @@
+image: myapp:v2.1.0
+instances: 10
+cpu: 2000m
+memory: 4Gi
+healthInterval: 5s

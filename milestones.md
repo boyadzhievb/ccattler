@@ -505,6 +505,35 @@
 - [x] Invariant tests: 5 formal invariants (integration/invariant_test.go)
 - [x] Doc cross-check: 5 verification tests (integration/doc_crosscheck_test.go)
 
+### Phase 50 — DSL Templating Engine (M47) — Gate I
+
+#### 50a — Template rendering core
+- [ ] Template engine: text/template + Sprig function library
+- [ ] Values file loader: YAML → map[string]any
+- [ ] Values file layering: multiple --values flags, later overrides earlier (deep merge)
+- [ ] --set key=value CLI override (dot-path notation: web.instances=10)
+- [ ] --set-from-env KEY reads value from environment variable (CI secret injection)
+- [ ] Render pipeline: load values → merge layers → apply --set overrides → render template → parse DSL → compile facts
+
+#### 50b — CLI integration
+- [ ] cca apply --values base.yaml --values prod.yaml template.ccattler — render + apply
+- [ ] cca apply --dry-run --values ... — render + validate without writing to store
+- [ ] cca diff --values ... — show fact changes that would result from applying
+- [ ] cca render --values ... — output rendered DSL to stdout (debug/inspect)
+- [ ] Directory support: cca apply --values prod.yaml templates/ processes all .ccattler files
+
+#### 50c — Validation & safety
+- [ ] Template syntax validation before rendering (catch {{ .missing }} early)
+- [ ] Required values enforcement: {{ required "image is required" .image }}
+- [ ] Rendered DSL validation: parse + compile after render, report errors with template line numbers
+- [ ] Unused values warning (values provided but never referenced in templates)
+
+#### 50d — Testing & docs
+- [ ] Unit tests: template rendering, values merge, --set parsing, --set-from-env
+- [ ] Integration test: multi-environment render + apply round-trip
+- [ ] Fuzz test: FuzzTemplateRender with arbitrary values/templates
+- [ ] Example templates in examples/templates/ (service + values per environment)
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -626,5 +655,6 @@
 | M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
 | M45 — Operations | 48 | Gate G complete: trace propagation in controller/agent/store, disaster recovery runbook, all ops items resolved |
 | M46 — Release Hardening | 49 | Gate H complete: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds, release smoke test, chaos matrix, formal invariants, doc cross-check |
+| M47 — DSL Templating | 50 | Gate I complete: text/template + Sprig rendering, values file layering, --set/--set-from-env, --dry-run, cca render/diff, validation, examples |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

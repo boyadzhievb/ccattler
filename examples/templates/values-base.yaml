@@ -1,0 +1,8 @@
+name: api
+image: myapp:latest
+instances: 1
+port: 8080
+cpu: 500m
+memory: 512Mi
+healthPath: /health
+healthInterval: 10s

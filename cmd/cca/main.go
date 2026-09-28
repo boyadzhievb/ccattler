@@ -125,6 +125,13 @@ func main() {
 	case "logs":
 		parsedLogsConfig := parseLogsCommandArgs(os.Args[2:])
 		executeLogsCommand(parsedLogsConfig)
+	case "render":
+		parsedRenderConfig := parseRenderCommandArgs(os.Args[2:])
+		if parsedRenderConfig.configFilePath == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca render --values <file> [--set key=value] [--set-from-env KEY] <template>")
+			os.Exit(1)
+		}
+		executeRenderCommand(parsedRenderConfig)
 	case "diff":
 		parsedDiffConfig := parseDiffCommandArgs(os.Args[2:])
 		if parsedDiffConfig.configFilePath == "" {
@@ -204,6 +211,14 @@ type applyCommandConfig struct {
 	etcdEndpoints string
 	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
 	storeKeyPrefix string
+	// valuesFilePaths holds paths to values files for template rendering (--values).
+	valuesFilePaths []string
+	// setOverrides holds key=value pairs for template overrides (--set).
+	setOverrides []string
+	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
+	setFromEnvOverrides []string
+	// dryRunEnabled skips writing to the store when true (--dry-run).
+	dryRunEnabled bool
 }
 
 // parseApplyCommandArgs extracts the config file path and optional store flags
@@ -233,6 +248,23 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--values", "-f":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.valuesFilePaths = append(parsedConfig.valuesFilePaths, args[argIndex])
+			}
+		case "--set":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setOverrides = append(parsedConfig.setOverrides, args[argIndex])
+			}
+		case "--set-from-env":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
+			}
+		case "--dry-run":
+			parsedConfig.dryRunEnabled = true
 		default:
 			if parsedConfig.configFilePath == "" {
 				parsedConfig.configFilePath = currentArg
@@ -1430,6 +1462,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
 	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
+	fmt.Fprintln(os.Stderr, "  render [flags] <template>     render a template with values to stdout")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
 	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>]  container stdout/stderr")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
@@ -1441,6 +1474,12 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: memory)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "template flags (apply / diff / render):")
+	fmt.Fprintln(os.Stderr, "  --values, -f <file>          values file for template rendering (repeatable)")
+	fmt.Fprintln(os.Stderr, "  --set key=value              override a template value (repeatable)")
+	fmt.Fprintln(os.Stderr, "  --set-from-env KEY           read template value from environment variable")
+	fmt.Fprintln(os.Stderr, "  --dry-run                    render + validate without applying (apply only)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for server:")
 	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 0.0.0.0:9770)")
@@ -1490,6 +1529,22 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		os.Exit(1)
 	}
 
+	dslContent := string(fileData)
+	if len(parsedConfig.valuesFilePaths) > 0 || len(parsedConfig.setOverrides) > 0 || len(parsedConfig.setFromEnvOverrides) > 0 {
+		renderedContent, renderError := lang.RenderWithValuesFiles(
+			dslContent, parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+		if renderError != nil {
+			fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
+			os.Exit(1)
+		}
+		dslContent = renderedContent
+	}
+
+	if parsedConfig.dryRunEnabled {
+		fmt.Println(dslContent)
+		return
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -1505,7 +1560,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
-		if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+		if err := lang.Apply(ctx, factStore, dslContent); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
 			os.Exit(1)
 		}
@@ -1550,7 +1605,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	}()
 
 	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
-	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+	if err := lang.Apply(ctx, factStore, dslContent); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
 		os.Exit(1)
 	}
@@ -2389,6 +2444,12 @@ type diffCommandConfig struct {
 	etcdEndpoints string
 	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
 	storeKeyPrefix string
+	// valuesFilePaths holds paths to values files for template rendering (--values).
+	valuesFilePaths []string
+	// setOverrides holds key=value pairs for template overrides (--set).
+	setOverrides []string
+	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
+	setFromEnvOverrides []string
 }
 
 // parseDiffCommandArgs extracts the config file path and optional store flags
@@ -2417,6 +2478,21 @@ func parseDiffCommandArgs(args []string) diffCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--values", "-f":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.valuesFilePaths = append(parsedConfig.valuesFilePaths, args[argIndex])
+			}
+		case "--set":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setOverrides = append(parsedConfig.setOverrides, args[argIndex])
+			}
+		case "--set-from-env":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
+			}
 		default:
 			if !strings.HasPrefix(currentArg, "-") {
 				parsedConfig.configFilePath = currentArg
@@ -2436,6 +2512,17 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		os.Exit(1)
 	}
 
+	dslContent := string(fileData)
+	if len(parsedConfig.valuesFilePaths) > 0 || len(parsedConfig.setOverrides) > 0 || len(parsedConfig.setFromEnvOverrides) > 0 {
+		renderedContent, renderError := lang.RenderWithValuesFiles(
+			dslContent, parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+		if renderError != nil {
+			fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
+			os.Exit(1)
+		}
+		dslContent = renderedContent
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -2449,7 +2536,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		}
 		defer func() { _ = factStore.Close() }()
 
-		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
+		changes, diffError := lang.Diff(ctx, factStore, dslContent)
 		if diffError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)
@@ -2459,12 +2546,12 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 	}
 
 	apiURL := "http://" + statusAPIListenAddress + "/api/diff"
-	httpResponse, diffErr := http.Post(apiURL, "text/plain", strings.NewReader(string(fileData)))
+	httpResponse, diffErr := http.Post(apiURL, "text/plain", strings.NewReader(dslContent))
 	if diffErr != nil {
 		factStore := store.NewMemoryStore()
 		defer func() { _ = factStore.Close() }()
 
-		changes, diffError := lang.Diff(ctx, factStore, string(fileData))
+		changes, diffError := lang.Diff(ctx, factStore, dslContent)
 		if diffError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)
@@ -2486,6 +2573,69 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		os.Exit(1)
 	}
 	printDiffChanges(changes)
+}
+
+// renderCommandConfig holds parsed flags for the "render" command.
+type renderCommandConfig struct {
+	// configFilePath is the path to the .ccattler template file to render.
+	configFilePath string
+	// valuesFilePaths holds paths to values files for template rendering (--values).
+	valuesFilePaths []string
+	// setOverrides holds key=value pairs for template overrides (--set).
+	setOverrides []string
+	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
+	setFromEnvOverrides []string
+}
+
+// parseRenderCommandArgs extracts the template file path and template flags
+// from the arguments following "render".
+func parseRenderCommandArgs(args []string) renderCommandConfig {
+	parsedConfig := renderCommandConfig{}
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--values", "-f":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.valuesFilePaths = append(parsedConfig.valuesFilePaths, args[argIndex])
+			}
+		case "--set":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setOverrides = append(parsedConfig.setOverrides, args[argIndex])
+			}
+		case "--set-from-env":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
+			}
+		default:
+			if !strings.HasPrefix(currentArg, "-") && parsedConfig.configFilePath == "" {
+				parsedConfig.configFilePath = currentArg
+			}
+		}
+	}
+	return parsedConfig
+}
+
+// executeRenderCommand renders a .ccattler template file with the provided
+// values and prints the resulting DSL to stdout. This is useful for debugging
+// templates and verifying rendered output before applying.
+func executeRenderCommand(parsedConfig renderCommandConfig) {
+	fileData, readError := os.ReadFile(parsedConfig.configFilePath)
+	if readError != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, readError)
+		os.Exit(1)
+	}
+
+	renderedContent, renderError := lang.RenderWithValuesFiles(
+		string(fileData), parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+	if renderError != nil {
+		fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
+		os.Exit(1)
+	}
+
+	fmt.Print(renderedContent)
 }
 
 // printDiffChanges renders fact changes as human-readable diff output.

@@ -1,0 +1,15 @@
+service {{ .name }} {
+    image {{ .image }}
+    instances {{ .instances }}
+    expose {{ .port }}
+
+    resources {
+        cpu {{ .cpu }}
+        memory {{ .memory }}
+    }
+
+    health {
+        http {{ .healthPath }}
+        every {{ .healthInterval }}
+    }
+}
