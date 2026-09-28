@@ -493,6 +493,15 @@
 - [x] Disaster recovery runbook — 7 scenarios: control plane failure, etcd data loss (with/without snapshot), split-brain, leader failover, mass node failure, certificate expiry/CA loss, post-incident verification checklist
 - [x] Operations index updated with disaster recovery link
 
+### Phase 49 — Gate H Release Hardening (M46)
+- [x] Fuzz tests: FuzzStoreTransaction, FuzzStorePutGet (store/fuzz_test.go)
+- [x] Fuzz tests: FuzzSchedulerReconcile (scheduler/fuzz_test.go)
+- [x] Fuzz tests: FuzzCompiler (lang/fuzz_compiler_test.go)
+- [x] CI dependency audit: govulncheck + go mod verify in test.yml
+- [x] Reproducible builds: -trimpath added to release.yml go build
+- [x] Release smoke test: ./cca version after linux-amd64 build in release.yml
+- [x] golangci-lint cleanup: 340 issues fixed across 61 files (Phase 49a)
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -554,10 +563,13 @@
 - [x] Fuzz tests for parsers/codecs (Phase 38)
 - [x] Race detector passes (Phase 38)
 - [x] CI test workflow (Phase 38)
+- [x] Fuzz tests for store transactions, scheduler placement, DSL compiler (Phase 49)
+- [x] Dependency vulnerability scanning — govulncheck + go mod verify in CI (Phase 49)
+- [x] Reproducible builds — -trimpath in release workflow (Phase 49)
+- [x] Release smoke test — ./cca version after linux-amd64 build (Phase 49)
 - [ ] Chaos test matrix automation
 - [ ] Formal invariant tests
 - [ ] Documentation correctness cross-check
-- [ ] Dependency vulnerability scanning
 
 ### Milestones
 
@@ -610,5 +622,6 @@
 | M43 — Complexity Audit | 46 | Audited 17 controllers + runner; removed O(n²) dead code in InstanceController; replaced 11 full fact-store scans with FactsWithPrefix binary search across 6 controllers + SDK; merged redundant prefix scans in credential broker + cloud controllers; runner early-exit on txn cap |
 | M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
 | M45 — Operations | 48 | Gate G complete: trace propagation in controller/agent/store, disaster recovery runbook, all ops items resolved |
+| M46 — Release Hardening | 49 | Gate H progress: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds (-trimpath), release smoke test |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
