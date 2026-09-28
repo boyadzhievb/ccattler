@@ -505,9 +505,62 @@
 - [x] Invariant tests: 5 formal invariants (integration/invariant_test.go)
 - [x] Doc cross-check: 5 verification tests (integration/doc_crosscheck_test.go)
 
-### Phase 50 — DSL Templating Engine (M47) — Gate I
+### Phase 50 — Anti-Pattern Remediation (M48)
 
-#### 50a — Template rendering core
+#### 50a — God Object split (HIGH priority)
+cmd/cca/main.go is 4,347 lines with 70+ functions covering apply, run, server, agent, status, chaos, benchmark, diff, render, and more. Split into per-command files under cmd/cca/:
+- [ ] Extract apply command → cmd/cca/command_apply.go
+- [ ] Extract run/run-container commands → cmd/cca/command_run.go
+- [ ] Extract server command → cmd/cca/command_server.go
+- [ ] Extract agent command → cmd/cca/command_agent.go
+- [ ] Extract status/watch/top/logs commands → cmd/cca/command_status.go
+- [ ] Extract chaos/benchmark commands → cmd/cca/command_chaos.go
+- [ ] Extract diff/render/scale/token commands → cmd/cca/command_misc.go
+- [ ] main.go retains only main(), usage(), arg dispatch switch
+- [ ] All tests still pass after split
+
+#### 50b — Dead Code / Boat Anchor cleanup (MEDIUM priority)
+Six subsystems are compiled but never wired into any controller or CLI path. Remove or wire them:
+- [ ] Audit: DLQ (Dead Letter Queue) — evaluate if needed, remove if not wired
+- [ ] Audit: SchemaRegistry — evaluate if needed, remove if not wired
+- [ ] Audit: ABAC engine — evaluate if policy gates use it, remove if dead
+- [ ] Audit: NetworkPolicy controller — evaluate if network controller uses it, remove if dead
+- [ ] Audit: TopologicalSort — evaluate if scheduler uses it, remove if dead
+- [ ] Audit: WorkloadToken issuer — evaluate if identity flow uses it, remove if dead
+- [ ] For each: git log to confirm no callers, then remove or integrate
+
+#### 50c — Magic Numbers → named constants (MEDIUM priority)
+11+ hardcoded timeouts and capacity literals scattered across controllers and runner:
+- [ ] Extract timeout literals into package-level constants (e.g., defaultReconcileInterval, defaultLeaseTimeout)
+- [ ] Extract capacity/threshold literals into constants (e.g., maxConcurrentReconciles, defaultHealthCheckInterval)
+- [ ] Extract retry/backoff values into constants
+- [ ] Verify all bare numeric literals in controller/runner code have named constants
+- [ ] Tests use the named constants instead of duplicating magic values
+
+#### 50d — Spaghetti Code extraction (MEDIUM priority)
+42 functions exceed 100 lines. Worst offenders in compiler.go, storage controller, and status builder:
+- [ ] compiler.go: break compileService (200+ lines) into sub-functions per DSL block
+- [ ] storage controller: extract volume migration logic into helper functions
+- [ ] status builder: extract per-section builders (node status, instance status, service status)
+- [ ] runner.go: extract reconciliation sub-steps from the main loop body
+- [ ] Target: no function exceeds 80 lines (excluding test functions)
+
+#### 50e — Copy-Paste deduplication (LOW priority)
+Duplicated patterns across the codebase:
+- [ ] Extract shared status-watch loop into a reusable helper (4 duplicated loops)
+- [ ] Extract shared etcd store creation into a factory function (2 duplicated blocks)
+- [ ] Verify no remaining near-duplicate blocks over 10 lines
+
+#### 50f — Golden Hammer: typed enums (LOW priority)
+Raw string comparisons used where typed enums would catch bugs at compile time:
+- [ ] Define typed string constants for instance states (running, stopped, failed, pending)
+- [ ] Define typed string constants for node states (alive, unreachable, dead)
+- [ ] Define typed string constants for probe types (startup, liveness, readiness)
+- [ ] Replace raw string comparisons with typed constants across controllers
+
+### Phase 51 — DSL Templating Engine (M47) — Gate I
+
+#### 51a — Template rendering core
 - [ ] Template engine: text/template + Sprig function library
 - [ ] Values file loader: YAML → map[string]any
 - [ ] Values file layering: multiple --values flags, later overrides earlier (deep merge)
@@ -515,20 +568,20 @@
 - [ ] --set-from-env KEY reads value from environment variable (CI secret injection)
 - [ ] Render pipeline: load values → merge layers → apply --set overrides → render template → parse DSL → compile facts
 
-#### 50b — CLI integration
+#### 51b — CLI integration
 - [ ] cca apply --values base.yaml --values prod.yaml template.ccattler — render + apply
 - [ ] cca apply --dry-run --values ... — render + validate without writing to store
 - [ ] cca diff --values ... — show fact changes that would result from applying
 - [ ] cca render --values ... — output rendered DSL to stdout (debug/inspect)
 - [ ] Directory support: cca apply --values prod.yaml templates/ processes all .ccattler files
 
-#### 50c — Validation & safety
+#### 51c — Validation & safety
 - [ ] Template syntax validation before rendering (catch {{ .missing }} early)
 - [ ] Required values enforcement: {{ required "image is required" .image }}
 - [ ] Rendered DSL validation: parse + compile after render, report errors with template line numbers
 - [ ] Unused values warning (values provided but never referenced in templates)
 
-#### 50d — Testing & docs
+#### 51d — Testing & docs
 - [ ] Unit tests: template rendering, values merge, --set parsing, --set-from-env
 - [ ] Integration test: multi-environment render + apply round-trip
 - [ ] Fuzz test: FuzzTemplateRender with arbitrary values/templates
@@ -655,6 +708,7 @@
 | M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
 | M45 — Operations | 48 | Gate G complete: trace propagation in controller/agent/store, disaster recovery runbook, all ops items resolved |
 | M46 — Release Hardening | 49 | Gate H complete: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds, release smoke test, chaos matrix, formal invariants, doc cross-check |
-| M47 — DSL Templating | 50 | Gate I complete: text/template + Sprig rendering, values file layering, --set/--set-from-env, --dry-run, cca render/diff, validation, examples |
+| M47 — DSL Templating | 51 | Gate I complete: text/template + Sprig rendering, values file layering, --set/--set-from-env, --dry-run, cca render/diff, validation, examples |
+| M48 — Anti-Pattern Remediation | 50 | God Object split (main.go → per-command files), dead code audit, magic numbers → constants, spaghetti extraction, deduplication, typed enums |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

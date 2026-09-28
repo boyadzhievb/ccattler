@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M46 — Phase 49 Gate H Release Hardening. M1–M46 complete. Gates A–H resolved. Gate I (Helm) remains.
+**Completed through:** M47 — Phase 49 Gate H + DSL Templating Engine. M1–M47 complete. Gates A–I resolved. Next: M48 — Phase 50 Anti-Pattern Remediation.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
