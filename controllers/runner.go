@@ -12,6 +12,7 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -301,11 +302,18 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 	startTime := metrics.Timer()
 	controllerName := controller.Name()
 
+	reconcileTrace := tracing.NewTraceContext()
+	ctx = tracing.ContextWithTrace(ctx, reconcileTrace)
+
 	for attemptIndex := 0; attemptIndex < controllerRunner.maxReconciliationAttempts; attemptIndex++ {
 		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller)
 		if reconcileError != nil {
 			reconciliationTotal.Inc(controllerName, "error")
 			reconciliationDuration.ObserveSince(startTime, controllerName)
+			logging.Default().Error("reconciliation failed",
+				"controller", controllerName,
+				"trace_id", reconcileTrace.TraceID,
+				"error", reconcileError.Error())
 			return reconcileError
 		}
 		if !conflictDetected {
@@ -316,6 +324,7 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 		reconciliationConflicts.Inc(controllerName)
 		logging.Default().Warn("reconciliation conflict, retrying",
 			"controller", controllerName,
+			"trace_id", reconcileTrace.TraceID,
 			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, controllerRunner.maxReconciliationAttempts))
 
 		baseDelayMs := 10 * (1 << attemptIndex)
@@ -334,6 +343,7 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 	reconciliationDuration.ObserveSince(startTime, controllerName)
 	logging.Default().Warn("reconciliation abandoned after conflict retries",
 		"controller", controllerName,
+		"trace_id", reconcileTrace.TraceID,
 		"retries", fmt.Sprintf("%d", controllerRunner.maxReconciliationAttempts))
 	return nil
 }

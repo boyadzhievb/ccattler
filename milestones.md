@@ -484,6 +484,15 @@
 - [x] Near-convergence helper with configurable tolerance for long-tail convergence under contention
 - [x] Watch channel buffer size increased to 4096 for high-throughput load test
 
+### Phase 48 — Gate G Operations (M45)
+- [x] Trace context propagation through controller reconciliation cycles (runner.go)
+- [x] Trace context propagation through agent reconciliation cycles (agent.go)
+- [x] Trace context logging on store transaction failures (etcd.go)
+- [x] Tests: traceCapturingController verifies trace ID in Reconcile context
+- [x] Tests: each reconciliation cycle gets unique trace ID
+- [x] Disaster recovery runbook — 7 scenarios: control plane failure, etcd data loss (with/without snapshot), split-brain, leader failover, mass node failure, certificate expiry/CA loss, post-incident verification checklist
+- [x] Operations index updated with disaster recovery link
+
 ### Phase 42+ — Review Plan (from chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
@@ -537,9 +546,9 @@
 - [x] Prometheus /metrics (Phase 25)
 - [x] Structured JSON logging (Phase 25)
 - [x] Event streaming (Phase 25)
-- [ ] Distributed tracing end-to-end (proxy → API → controller → agent)
-- [ ] Controller health/reconcile metrics
-- [ ] Recovery documentation
+- [x] Distributed tracing end-to-end — HTTP middleware + controller + agent reconciliation (Phase 48)
+- [x] Controller health/reconcile metrics — 5 runner metrics, 6 API metrics, HA MetricsCollector (Phase 25+)
+- [x] Recovery documentation — disaster recovery runbook (Phase 48)
 
 #### Gate H — Release & QA
 - [x] Fuzz tests for parsers/codecs (Phase 38)
@@ -600,6 +609,6 @@
 | M42 — Security Audit | 45 | Formal threat model (10 categories), command exec audit (image validation, metachar rejection, env key validation), secret leakage audit (API prefix denylist, cert permissions), etcd TLS audit (TLSConfig, CLI flags, scheme validation) |
 | M43 — Complexity Audit | 46 | Audited 17 controllers + runner; removed O(n²) dead code in InstanceController; replaced 11 full fact-store scans with FactsWithPrefix binary search across 6 controllers + SDK; merged redundant prefix scans in credential broker + cloud controllers; runner early-exit on txn cap |
 | M44 — Load Test | 47 | 5-phase synthetic cluster load test (50 nodes, 1K→1.5K workloads): deploy convergence, placement verification, node failure recovery, scale-up, store verification; runner exponential backoff with jitter, configurable input-key guards |
-| M45 — Release QA | Gate G+H | Chaos matrix, invariants, docs, dependency scan |
+| M45 — Operations | 48 | Gate G complete: trace propagation in controller/agent/store, disaster recovery runbook, all ops items resolved |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

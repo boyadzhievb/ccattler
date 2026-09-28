@@ -3,10 +3,12 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -150,4 +152,89 @@ func (n *noopController) Name() string       { return "noop" }
 func (n *noopController) Watch() []string     { return []string{types.ScanObservedInstances} }
 func (n *noopController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
 	return nil, nil
+}
+
+// traceCapturingController records the trace context seen during Reconcile.
+type traceCapturingController struct {
+	capturedTraceIDs atomic.Value
+	reconcileCount   atomic.Int64
+}
+
+func (controller *traceCapturingController) Name() string   { return "trace-capture" }
+func (controller *traceCapturingController) Watch() []string { return []string{"desired/"} }
+func (controller *traceCapturingController) Reconcile(ctx context.Context, _ []store.Fact) ([]Change, error) {
+	traceContext := tracing.TraceFromContext(ctx)
+	if traceContext.TraceID != "" {
+		controller.capturedTraceIDs.Store(traceContext.TraceID)
+	}
+	controller.reconcileCount.Add(1)
+	return nil, nil
+}
+
+func TestReconciliationCyclePropagatesToController(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	captureController := &traceCapturingController{}
+	runner := NewRunner(factStore, captureController)
+	runner.SetDebounce(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go runner.Run(ctx)
+
+	// Trigger a reconciliation by writing a fact.
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if captureController.reconcileCount.Load() > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if captureController.reconcileCount.Load() == 0 {
+		t.Fatal("controller was never reconciled")
+	}
+
+	capturedID, ok := captureController.capturedTraceIDs.Load().(string)
+	if !ok || capturedID == "" {
+		t.Fatal("expected trace context to be propagated to controller Reconcile, got empty trace ID")
+	}
+	if len(capturedID) != 32 {
+		t.Errorf("expected 32-char trace ID, got %d chars: %s", len(capturedID), capturedID)
+	}
+}
+
+func TestEachReconciliationCycleGetsUniqueTraceID(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	captureController := &traceCapturingController{}
+	runner := NewRunner(factStore, captureController)
+	runner.SetDebounce(5 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go runner.Run(ctx)
+
+	// Trigger first reconciliation.
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+	time.Sleep(100 * time.Millisecond)
+	firstTraceID, _ := captureController.capturedTraceIDs.Load().(string)
+
+	// Trigger second reconciliation.
+	factStore.Put(ctx, "desired/service/web/instances", []byte("2"))
+	time.Sleep(100 * time.Millisecond)
+	secondTraceID, _ := captureController.capturedTraceIDs.Load().(string)
+
+	if firstTraceID == "" || secondTraceID == "" {
+		t.Fatal("expected both reconciliation cycles to have trace IDs")
+	}
+	if firstTraceID == secondTraceID {
+		t.Errorf("expected different trace IDs per reconciliation cycle, both were %s", firstTraceID)
+	}
 }

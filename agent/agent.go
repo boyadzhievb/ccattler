@@ -14,6 +14,7 @@ import (
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -168,6 +169,9 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 // reports as actually running, starts missing instances, stops stale ones,
 // and reports health for every desired instance that has a health probe.
 func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
+	reconcileTrace := tracing.NewTraceContext()
+	ctx = tracing.ContextWithTrace(ctx, reconcileTrace)
+
 	// Find instances placed on this node.
 	desired, err := nodeAgent.findInstancesPlacedOnThisNode(ctx)
 	if err != nil {

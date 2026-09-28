@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"fmt"
 	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
+	"github.com/boyadzhievb/ccattler/tracing"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
@@ -373,6 +375,14 @@ func (etcdStore *EtcdStore) Transaction(ctx context.Context, compares []Compare,
 		Commit()
 
 	if transactionError != nil {
+		traceContext := tracing.TraceFromContext(ctx)
+		if traceContext.TraceID != "" {
+			logging.Default().Error("etcd transaction failed",
+				"trace_id", traceContext.TraceID,
+				"compares", fmt.Sprintf("%d", len(compares)),
+				"ops", fmt.Sprintf("%d", len(onSuccess)),
+				"error", transactionError.Error())
+		}
 		return false, transactionError
 	}
 
