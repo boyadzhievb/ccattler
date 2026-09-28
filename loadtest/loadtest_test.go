@@ -124,6 +124,9 @@ func countInstancesPerNode(ctx context.Context, factStore store.StateStore) (map
 // measures deploy-to-convergence time, placement distribution quality,
 // node failure recovery time, and scale-up convergence.
 func TestSyntheticCluster50Nodes1000Workloads(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping load test in short mode")
+	}
 	nodeIDs := buildNodeIDs(loadTestNodeCount)
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
