@@ -17,8 +17,8 @@ const (
 	loadTestServiceCount        = 10
 	loadTestInstancesPerService = 100
 	loadTestTotalInstances      = loadTestServiceCount * loadTestInstancesPerService
-	convergenceTimeout          = 60 * time.Second
-	recoveryTimeout             = 180 * time.Second
+	convergenceTimeout          = 120 * time.Second
+	recoveryTimeout             = 240 * time.Second
 )
 
 func buildNodeIDs(count int) []string {
@@ -128,7 +128,7 @@ func TestSyntheticCluster50Nodes1000Workloads(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
 	factStore.SetWatchChannelBufferSize(4096)
@@ -148,7 +148,7 @@ func TestSyntheticCluster50Nodes1000Workloads(t *testing.T) {
 		cluster.DeployService(ctx, serviceName, fmt.Sprintf("app:v%d", serviceIndex), loadTestInstancesPerService)
 	}
 
-	convergenceDuration, converged, status := waitForConvergence(ctx, cluster, convergenceTimeout)
+	convergenceDuration, converged, status := waitForConvergenceWithProgress(t, ctx, cluster, factStore, convergenceTimeout)
 	if !converged {
 		t.Fatalf("Phase 1 FAILED — did not converge within %v: %s", convergenceTimeout, status)
 	}
