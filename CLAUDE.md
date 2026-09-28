@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M47 — Phase 49 Gate H + DSL Templating Engine. M1–M47 complete. Gates A–I resolved. Next: M48 — Phase 50 Anti-Pattern Remediation.
+**Completed through:** M49 — Phase 49b CI Fix + Dependency Security. M1–M49 complete. Gates A–I resolved. Next: M48 — Phase 50 Anti-Pattern Remediation.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

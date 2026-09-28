@@ -505,6 +505,14 @@
 - [x] Invariant tests: 5 formal invariants (integration/invariant_test.go)
 - [x] Doc cross-check: 5 verification tests (integration/doc_crosscheck_test.go)
 
+### Phase 49b — CI Fix: Test Skip + Dependency Security (M49)
+
+- [x] Skip container integration test in `-short` mode (TestContainerGetsIPAndServesConfigFile)
+- [x] Bump Go 1.26.5 → 1.26.6 (resolves 6 stdlib CVEs: GO-2026-6218, GO-2026-6091, GO-2026-6090, GO-2026-6089, GO-2026-5972, GO-2026-5026)
+- [x] Bump grpc v1.82.1 → v1.83.1 (resolves GO-2026-6348: heap OOM via HTTP/2 DATA frame fragmentation)
+- [x] Fix data race in ProcessRuntime.Stats() — use completion signal instead of racy ProcessState read
+- [x] `go mod tidy` + verify all tests pass
+
 ### Phase 50 — Anti-Pattern Remediation (M48)
 
 #### 50a — God Object split (HIGH priority)
@@ -710,5 +718,6 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M46 — Release Hardening | 49 | Gate H complete: fuzz tests (store/scheduler/compiler), govulncheck CI, reproducible builds, release smoke test, chaos matrix, formal invariants, doc cross-check |
 | M47 — DSL Templating | 51 | Gate I complete: text/template + Sprig rendering, values file layering, --set/--set-from-env, --dry-run, cca render/diff, validation, examples |
 | M48 — Anti-Pattern Remediation | 50 | God Object split (main.go → per-command files), dead code audit, magic numbers → constants, spaghetti extraction, deduplication, typed enums |
+| M49 — CI Fix | 49b | Skip container integration test in -short mode, bump Go 1.26.6 + grpc v1.83.1 to resolve 7 govulncheck findings |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

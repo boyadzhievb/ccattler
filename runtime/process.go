@@ -255,9 +255,12 @@ func (processRuntime *ProcessRuntime) Stats(_ context.Context, id string) (Resou
 		return ResourceStats{}, nil
 	}
 
-	rusage := process.command.ProcessState
-	if rusage != nil {
+	// Check whether the process has exited via the completion signal rather
+	// than reading command.ProcessState directly, which races with Wait().
+	select {
+	case <-process.completionSignal:
 		return ResourceStats{}, nil
+	default:
 	}
 
 	return readProcessStats(process.command.Process.Pid)

@@ -68,6 +68,9 @@ func skipIfContainerUnavailable(t *testing.T) string {
 // curl container on the same network. Requires nerdctl to be installed and
 // running; skipped automatically when nerdctl is unavailable.
 func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping container integration test in short mode")
+	}
 	containerCommand := skipIfContainerUnavailable(t)
 
 	factStore := store.NewMemoryStore()
