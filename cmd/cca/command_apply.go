@@ -1,0 +1,196 @@
+// command_apply.go contains the apply command configuration, argument parsing,
+// and execution logic extracted from main.go.
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/signal"
+	"time"
+
+	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/infra"
+	"github.com/boyadzhievb/ccattler/lang"
+	"github.com/boyadzhievb/ccattler/logging"
+	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
+)
+
+// applyCommandConfig holds parsed flags for the "apply" command, which can
+// optionally connect to a remote store instead of running a local simulation.
+type applyCommandConfig struct {
+	// configFilePath is the path to the .cca DSL file to apply.
+	configFilePath string
+	// storeBackend selects the state store implementation: "memory" or "etcd".
+	storeBackend string
+	// etcdEndpoints is the comma-separated list of etcd server addresses.
+	etcdEndpoints string
+	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
+	storeKeyPrefix string
+	// valuesFilePaths holds paths to values files for template rendering (--values).
+	valuesFilePaths []string
+	// setOverrides holds key=value pairs for template overrides (--set).
+	setOverrides []string
+	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
+	setFromEnvOverrides []string
+	// dryRunEnabled skips writing to the store when true (--dry-run).
+	dryRunEnabled bool
+}
+
+// parseApplyCommandArgs extracts the config file path and optional store flags
+// from the arguments following "apply".
+func parseApplyCommandArgs(args []string) applyCommandConfig {
+	parsedConfig := applyCommandConfig{
+		storeBackend:   "memory",
+		etcdEndpoints:  "localhost:2379",
+		storeKeyPrefix: "/ccattler/",
+	}
+
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		currentArg := args[argIndex]
+		switch currentArg {
+		case "--store":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeBackend = args[argIndex]
+			}
+		case "--endpoints":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdEndpoints = args[argIndex]
+			}
+		case "--store-prefix":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storeKeyPrefix = args[argIndex]
+			}
+		case "--values", "-f":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.valuesFilePaths = append(parsedConfig.valuesFilePaths, args[argIndex])
+			}
+		case "--set":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setOverrides = append(parsedConfig.setOverrides, args[argIndex])
+			}
+		case "--set-from-env":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
+			}
+		case "--dry-run":
+			parsedConfig.dryRunEnabled = true
+		default:
+			if parsedConfig.configFilePath == "" {
+				parsedConfig.configFilePath = currentArg
+			}
+		}
+	}
+
+	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
+		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	return parsedConfig
+}
+
+// executeApplyCommand parses a .ccattler file and writes facts to the state store.
+// In remote mode (--store etcd), it connects to the shared store, writes facts,
+// and exits — controllers running in "cca server" handle reconciliation.
+// In local mode (default), it runs a local simulation with 3 simulated nodes.
+func executeApplyCommand(parsedConfig applyCommandConfig) {
+	fileData, err := os.ReadFile(parsedConfig.configFilePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, err)
+		os.Exit(1)
+	}
+
+	dslContent := string(fileData)
+	if len(parsedConfig.valuesFilePaths) > 0 || len(parsedConfig.setOverrides) > 0 || len(parsedConfig.setFromEnvOverrides) > 0 {
+		renderedContent, renderError := lang.RenderWithValuesFiles(
+			dslContent, parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+		if renderError != nil {
+			fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
+			os.Exit(1)
+		}
+		dslContent = renderedContent
+	}
+
+	if parsedConfig.dryRunEnabled {
+		fmt.Println(dslContent)
+		return
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	if parsedConfig.storeBackend == "etcd" {
+		factStore, storeCreationError := createStateStoreFromServerConfig(
+			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+			"", "", "")
+		if storeCreationError != nil {
+			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
+			os.Exit(1)
+		}
+		defer func() { _ = factStore.Close() }()
+
+		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
+		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
+		if err := lang.Apply(ctx, factStore, dslContent); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
+			os.Exit(1)
+		}
+		fmt.Println("Facts written to store. Controllers will reconcile.")
+		return
+	}
+
+	factStore := store.NewMemoryStore()
+	defer func() { _ = factStore.Close() }()
+
+	// Register 3 simulated nodes with equal capacity.
+	for _, simulatedNodeID := range []string{"node-1", "node-2", "node-3"} {
+		if writeError := types.WriteNode(ctx, factStore, types.Node{
+			ID: simulatedNodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+			Architecture: "amd64",
+		}); writeError != nil {
+			logging.Default().Error("failed to write node", "node", simulatedNodeID, "error", writeError.Error())
+		}
+	}
+	fmt.Println("Registered 3 simulated nodes")
+
+	// Create and start all reconciliation controllers.
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	autoscaleController := controllers.NewAutoscaleController()
+	intentResolverController := controllers.NewIntentResolverController()
+	rolloutController := controllers.NewRolloutController()
+	initController := controllers.NewInitController()
+	warmZeroController := controllers.NewWarmZeroController()
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController, warmZeroController)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
+
+	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
+	if err := lang.Apply(ctx, factStore, dslContent); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
+		os.Exit(1)
+	}
+
+	// Wait for reconciliation to settle before printing status.
+	time.Sleep(500 * time.Millisecond)
+	fmt.Print(buildStatusTextOutput(ctx, factStore))
+}

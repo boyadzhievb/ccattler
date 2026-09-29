@@ -516,16 +516,18 @@
 ### Phase 50 — Anti-Pattern Remediation (M48)
 
 #### 50a — God Object split (HIGH priority)
-cmd/cca/main.go is 4,347 lines with 70+ functions covering apply, run, server, agent, status, chaos, benchmark, diff, render, and more. Split into per-command files under cmd/cca/:
-- [ ] Extract apply command → cmd/cca/command_apply.go
-- [ ] Extract run/run-container commands → cmd/cca/command_run.go
-- [ ] Extract server command → cmd/cca/command_server.go
-- [ ] Extract agent command → cmd/cca/command_agent.go
-- [ ] Extract status/watch/top/logs commands → cmd/cca/command_status.go
-- [ ] Extract chaos/benchmark commands → cmd/cca/command_chaos.go
-- [ ] Extract diff/render/scale/token commands → cmd/cca/command_misc.go
-- [ ] main.go retains only main(), usage(), arg dispatch switch
-- [ ] All tests still pass after split
+cmd/cca/main.go was 4,347 lines with 70+ functions covering apply, run, server, agent, status, chaos, benchmark, diff, render, and more. Split into per-command files under cmd/cca/:
+- [x] Extract apply command → cmd/cca/command_apply.go
+- [x] Extract run/run-container commands → cmd/cca/command_run.go
+- [x] Extract server command → cmd/cca/command_server.go
+- [x] Extract agent command → cmd/cca/command_agent.go
+- [x] Extract status/watch/top/logs commands → cmd/cca/command_status.go
+- [x] Extract chaos/benchmark commands → cmd/cca/command_chaos.go
+- [x] Extract diff/render/scale/token commands → cmd/cca/command_misc.go
+- [x] Shared utilities → cmd/cca/helpers.go (statusAPIListenAddress, configureLogger, createStateStoreFromServerConfig, fileExists, detectLocalIPAddresses, annotateErrorWithFileName)
+- [x] main.go retains only main(), printUsage(), arg dispatch switch (239 lines)
+- [x] All tests still pass after split
+- [x] golangci-lint clean
 
 #### 50b — Dead Code / Boat Anchor cleanup (MEDIUM priority)
 Six subsystems are compiled but never wired into any controller or CLI path. Remove or wire them:
