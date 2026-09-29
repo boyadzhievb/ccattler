@@ -7,9 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
-	"net/http"
 	"os"
-	"os/user"
 	"strings"
 	"time"
 
@@ -198,36 +196,5 @@ func runDemoStatusLoop(ctx context.Context, factStore store.StateStore, interval
 			fmt.Println()
 			fmt.Print(buildStatusTextOutput(ctx, factStore))
 		}
-	}
-}
-
-// localUserRoundTripper wraps an http.RoundTripper to inject the X-CCattler-User
-// header on every request. Used by CLI commands connecting to a non-TLS server
-// so that the local user authenticator can identify the caller.
-type localUserRoundTripper struct {
-	inner    http.RoundTripper // underlying transport
-	username string            // OS username to send
-}
-
-// RoundTrip adds the X-CCattler-User header and delegates to the inner transport.
-func (transport *localUserRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	request = request.Clone(request.Context())
-	request.Header.Set("X-CCattler-User", transport.username)
-	return transport.inner.RoundTrip(request)
-}
-
-// buildLocalUserHTTPClient creates an HTTP client that attaches the current OS
-// username via the X-CCattler-User header on every request. Use this when
-// connecting to a non-TLS CCattler server.
-func buildLocalUserHTTPClient() *http.Client {
-	username := "unknown"
-	if currentUser, lookupError := user.Current(); lookupError == nil {
-		username = currentUser.Username
-	}
-	return &http.Client{
-		Transport: &localUserRoundTripper{
-			inner:    http.DefaultTransport,
-			username: username,
-		},
 	}
 }

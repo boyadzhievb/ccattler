@@ -17,11 +17,11 @@ import (
 //	APPLY → syntax validation → schema validation → RBAC/ABAC →
 //	quota check → security policy → mutation → commit
 type PolicyGate struct {
-	factStore  store.StateStore
-	registry   *TenantRegistry
+	factStore      store.StateStore
+	registry       *TenantRegistry
 	quotaAdmission *QuotaAdmission
-	authorizer security.Authorizer
-	auditLog   security.AuditLogger
+	authorizer     security.Authorizer
+	auditLog       security.AuditLogger
 }
 
 // NewPolicyGate creates a policy gate backed by the given components.
@@ -33,11 +33,11 @@ func NewPolicyGate(
 	auditLog security.AuditLogger,
 ) *PolicyGate {
 	return &PolicyGate{
-		factStore:  factStore,
-		registry:   registry,
+		factStore:      factStore,
+		registry:       registry,
 		quotaAdmission: quotaAdmission,
-		authorizer: authorizer,
-		auditLog:   auditLog,
+		authorizer:     authorizer,
+		auditLog:       auditLog,
 	}
 }
 

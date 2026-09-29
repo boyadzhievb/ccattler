@@ -158,7 +158,7 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 		Principal:     principal,
 		PrincipalKind: PrincipalKindUser,
 		Attributes:    attributes,
-		ExpiresAt:  expiresAt,
+		ExpiresAt:     expiresAt,
 	}, nil
 }
 

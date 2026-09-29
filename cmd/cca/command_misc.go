@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -516,7 +517,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 func buildEnrollmentHTTPClient(caCertPath string) *http.Client {
 	var transportTLSConfig *tls.Config
 	if caCertPath != "" {
-		caCertPEM, readError := os.ReadFile(caCertPath)
+		caCertPEM, readError := os.ReadFile(filepath.Clean(caCertPath))
 		if readError != nil {
 			fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
 			os.Exit(1)

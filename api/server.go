@@ -81,9 +81,9 @@ type Server struct {
 	enrollmentService   *security.EnrollmentService
 	workloadTokenIssuer *security.WorkloadTokenIssuer
 	watchMultiplexer    *WatchMultiplexer
-	policyGate          *tenant.PolicyGate // policyGate is the optional admission pipeline for /api/apply.
+	policyGate          *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
 	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
-	apiAuthorizer       *security.APIAuthorizer // apiAuthorizer checks capability-based API permissions.
+	apiAuthorizer       *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
 	serverMode          ServerMode
 	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux
