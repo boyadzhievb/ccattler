@@ -26,7 +26,7 @@ func setupProbeTestAgent(nodeID string) (*store.MemoryStore, *runtime.SimulatorR
 // writeHTTPProbeConfig writes the probe configuration facts for an HTTP probe
 // into the store for the given service and probe type. Only the fields that
 // are non-zero/non-empty are written, so callers can omit optional fields.
-func writeHTTPProbeConfig(ctx context.Context, factStore *store.MemoryStore, serviceName string, probeType string, port int, path string, interval time.Duration, failureThreshold int, successThreshold int) {
+func writeHTTPProbeConfig(ctx context.Context, factStore *store.MemoryStore, serviceName string, probeType types.ProbeType, port int, path string, interval time.Duration, failureThreshold int, successThreshold int) {
 	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, probeType), []byte("http"))
 	if path != "" {
 		factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, probeType), []byte(path))
@@ -79,7 +79,7 @@ func getUnusedPort(t *testing.T) int {
 
 // writeExecProbeConfig writes the probe configuration facts for an exec probe
 // into the store for the given service and probe type.
-func writeExecProbeConfig(ctx context.Context, factStore *store.MemoryStore, serviceName string, probeType string, command string, failureThreshold int, successThreshold int) {
+func writeExecProbeConfig(ctx context.Context, factStore *store.MemoryStore, serviceName string, probeType types.ProbeType, command string, failureThreshold int, successThreshold int) {
 	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, probeType), []byte("exec"))
 	factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, probeType), []byte(command))
 	if failureThreshold > 0 {
@@ -117,25 +117,25 @@ func TestLoadProbeConfigFromStore(t *testing.T) {
 
 	// Subtest: returns nil when no method fact is present.
 	t.Run("returns nil when no method fact exists", func(t *testing.T) {
-		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, "startup")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, types.ProbeStartup)
 		if loadedConfig != nil {
 			t.Error("expected nil config when no probe method fact is set")
 		}
 	})
 
 	// Write a full probe configuration into the store.
-	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, "startup"), []byte("http"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, "startup"), []byte("/healthz"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, "startup"), []byte("9090"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeInterval(serviceName, "startup"), []byte("5s"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, "startup"), []byte("3s"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, "startup"), []byte("4"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, "startup"), []byte("2"))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeInitialDelay(serviceName, "startup"), []byte("10s"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, types.ProbeStartup), []byte("http"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, types.ProbeStartup), []byte("/healthz"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, types.ProbeStartup), []byte("9090"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeInterval(serviceName, types.ProbeStartup), []byte("5s"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeStartup), []byte("3s"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, types.ProbeStartup), []byte("4"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, types.ProbeStartup), []byte("2"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeInitialDelay(serviceName, types.ProbeStartup), []byte("10s"))
 
 	// Subtest: all fields read correctly.
 	t.Run("reads all fields correctly", func(t *testing.T) {
-		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, "startup")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, serviceName, types.ProbeStartup)
 		if loadedConfig == nil {
 			t.Fatal("expected non-nil config when method fact is set")
 		}
@@ -168,11 +168,11 @@ func TestLoadProbeConfigFromStore(t *testing.T) {
 	// Subtest: defaults are applied when optional fields are missing.
 	t.Run("uses defaults for missing optional fields", func(t *testing.T) {
 		otherService := "minimal-svc"
-		factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(otherService, "liveness"), []byte("tcp"))
+		factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(otherService, types.ProbeLiveness), []byte("tcp"))
 		// Write an exposed port so deriveProbePortFromService can find one.
 		factStore.Put(ctx, types.KeyDesiredServiceExpose(otherService, 3000), []byte(""))
 
-		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, otherService, "liveness")
+		loadedConfig := nodeAgent.probeScheduler.loadProbeConfig(ctx, otherService, types.ProbeLiveness)
 		if loadedConfig == nil {
 			t.Fatal("expected non-nil config")
 		}
@@ -221,9 +221,9 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 
 	// Configure all three probes pointing at the healthy server.
 	// Startup needs 1 success, liveness needs 1 success, readiness needs 1 success.
-	writeHTTPProbeConfig(ctx, factStore, serviceName, "startup", healthyPort, "/", 0, 3, 1)
-	writeHTTPProbeConfig(ctx, factStore, serviceName, "liveness", healthyPort, "/", 0, 3, 1)
-	writeHTTPProbeConfig(ctx, factStore, serviceName, "readiness", healthyPort, "/", 0, 3, 1)
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeStartup, healthyPort, "/", 0, 3, 1)
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeLiveness, healthyPort, "/", 0, 3, 1)
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeReadiness, healthyPort, "/", 0, 3, 1)
 
 	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
 
@@ -234,7 +234,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	// After one successful call, startup should have written "succeeded".
-	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
+	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeStartup))
 	if startupErr != nil {
 		t.Fatalf("startup probe state not written: %v", startupErr)
 	}
@@ -247,7 +247,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
 	// Verify liveness probe executed and wrote a state.
-	livenessStateFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
+	livenessStateFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeLiveness))
 	if livenessErr != nil {
 		t.Fatalf("liveness probe state not written after startup succeeded: %v", livenessErr)
 	}
@@ -256,7 +256,7 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 	}
 
 	// Verify readiness probe executed and wrote a state.
-	readinessStateFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
+	readinessStateFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
 	if readinessErr != nil {
 		t.Fatalf("readiness probe state not written after startup succeeded: %v", readinessErr)
 	}
@@ -275,9 +275,9 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 
 	// Configure startup to require 3 successes (will never reach it since the
 	// port is closed), and configure liveness and readiness too.
-	writeHTTPProbeConfig(ctx, factStore, freshServiceName, "startup", failingPort, "/", 0, 10, 3)
-	writeHTTPProbeConfig(ctx, factStore, freshServiceName, "liveness", healthyPort, "/", 0, 3, 1)
-	writeHTTPProbeConfig(ctx, factStore, freshServiceName, "readiness", healthyPort, "/", 0, 3, 1)
+	writeHTTPProbeConfig(ctx, factStore, freshServiceName, types.ProbeStartup, failingPort, "/", 0, 10, 3)
+	writeHTTPProbeConfig(ctx, factStore, freshServiceName, types.ProbeLiveness, healthyPort, "/", 0, 3, 1)
+	writeHTTPProbeConfig(ctx, factStore, freshServiceName, types.ProbeReadiness, healthyPort, "/", 0, 3, 1)
 
 	freshInstanceInfo := placedInstanceInfo{id: freshInstanceID, service: freshServiceName}
 
@@ -286,11 +286,11 @@ func TestStartupProbeGatesLivenessAndReadiness(t *testing.T) {
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, freshInstanceInfo)
 
 	// Liveness and readiness should not have any state written.
-	_, livenessErrFresh := factStore.Get(ctx, types.KeyObservedInstanceProbeState(freshInstanceID, "liveness"))
+	_, livenessErrFresh := factStore.Get(ctx, types.KeyObservedInstanceProbeState(freshInstanceID, types.ProbeLiveness))
 	if livenessErrFresh == nil {
 		t.Error("liveness probe should not execute while startup is pending")
 	}
-	_, readinessErrFresh := factStore.Get(ctx, types.KeyObservedInstanceProbeState(freshInstanceID, "readiness"))
+	_, readinessErrFresh := factStore.Get(ctx, types.KeyObservedInstanceProbeState(freshInstanceID, types.ProbeReadiness))
 	if readinessErrFresh == nil {
 		t.Error("readiness probe should not execute while startup is pending")
 	}
@@ -313,15 +313,15 @@ func TestStartupProbeFailureThreshold(t *testing.T) {
 	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
 
 	// Configure startup probe with failure_threshold=2 and a short timeout.
-	writeHTTPProbeConfig(ctx, factStore, serviceName, "startup", failingPort, "/health", 0, 2, 1)
-	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, "startup"), []byte("100ms"))
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeStartup, failingPort, "/health", 0, 2, 1)
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeStartup), []byte("100ms"))
 
 	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
 
 	// First probe execution: 1 consecutive failure. Should write "pending".
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
-	startupStateFact, _ := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
+	startupStateFact, _ := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeStartup))
 	if string(startupStateFact.Value) != string(types.StartupProbePending) {
 		t.Errorf("after 1 failure: state = %q, want %q", startupStateFact.Value, types.StartupProbePending)
 	}
@@ -335,7 +335,7 @@ func TestStartupProbeFailureThreshold(t *testing.T) {
 	// Second probe execution: 2 consecutive failures = threshold reached.
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
-	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup"))
+	startupStateFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeStartup))
 	if startupErr != nil {
 		t.Fatalf("startup probe state not found after reaching failure threshold: %v", startupErr)
 	}
@@ -363,20 +363,20 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 
 	// Configure readiness with success_threshold=2 and failure_threshold=1
 	// (no startup probe, so readiness can run immediately).
-	writeHTTPProbeConfig(ctx, factStore, serviceName, "readiness", healthyPort, "/", 0, 1, 2)
-	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, "readiness"), []byte("1s"))
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeReadiness, healthyPort, "/", 0, 1, 2)
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeReadiness), []byte("1s"))
 
 	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
 
 	// First execution: 1 success, threshold is 2, so no state change yet.
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
-	_, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
+	_, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
 	if readinessErr == nil {
 		// The probe should not have written "ready" yet because we need 2
 		// consecutive successes. It might have written nothing, or it might be
 		// "unknown". Either way, it should NOT be "ready" yet.
-		readinessFact, _ := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
+		readinessFact, _ := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
 		if string(readinessFact.Value) == string(types.ReadinessProbeReady) {
 			t.Error("readiness should not be 'ready' after only 1 success (threshold=2)")
 		}
@@ -389,7 +389,7 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	// Second execution: 2 consecutive successes = threshold reached.
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
-	readinessStateFact, readinessStateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
+	readinessStateFact, readinessStateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
 	if readinessStateErr != nil {
 		t.Fatalf("readiness probe state not written after 2 successes: %v", readinessStateErr)
 	}
@@ -405,8 +405,8 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	// Reconfigure probes to point at the failing port. We need to update
 	// the port fact in the store and also recreate the probe state tracker
 	// to clear the success counter.
-	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, "readiness"), []byte(fmt.Sprintf("%d", failingPort)))
-	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, "readiness"), []byte("100ms"))
+	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, types.ProbeReadiness), []byte(fmt.Sprintf("%d", failingPort)))
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeReadiness), []byte("100ms"))
 
 	// Reset the lastCheckTime and the consecutive success counter to allow
 	// failures to accumulate fresh.
@@ -416,7 +416,7 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	// One failure should reach the failure_threshold=1.
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
 
-	readinessStateFact, readinessStateErr = factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness"))
+	readinessStateFact, readinessStateErr = factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness))
 	if readinessStateErr != nil {
 		t.Fatalf("readiness probe state not updated after failure: %v", readinessStateErr)
 	}
@@ -466,13 +466,13 @@ func TestExecProbeSuccess(t *testing.T) {
 	instanceID := "exec-pass-001"
 
 	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
-	writeExecProbeConfig(ctx, factStore, serviceName, "liveness", "healthcheck --liveness", 3, 1)
+	writeExecProbeConfig(ctx, factStore, serviceName, types.ProbeLiveness, "healthcheck --liveness", 3, 1)
 
 	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "test:latest"})
 
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
 
-	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
+	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeLiveness))
 	if stateErr != nil {
 		t.Fatalf("expected liveness probe state to be written, got error: %v", stateErr)
 	}
@@ -493,7 +493,7 @@ func TestExecProbeFailure(t *testing.T) {
 	instanceID := "exec-fail-001"
 
 	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
-	writeExecProbeConfig(ctx, factStore, serviceName, "liveness", "healthcheck --liveness", 2, 1)
+	writeExecProbeConfig(ctx, factStore, serviceName, types.ProbeLiveness, "healthcheck --liveness", 2, 1)
 
 	simulatorRuntime.Start(ctx, runtime.Spec{ID: instanceID, ServiceName: serviceName, Image: "test:latest"})
 	simulatorRuntime.ExecFailures = map[string]bool{instanceID: true}
@@ -505,7 +505,7 @@ func TestExecProbeFailure(t *testing.T) {
 	// Second failure — reaches threshold of 2.
 	nodeAgent.probeScheduler.executeProbesForInstance(ctx, placedInstanceInfo{id: instanceID, service: serviceName})
 
-	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness"))
+	stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeLiveness))
 	if stateErr != nil {
 		t.Fatalf("expected liveness probe state to be written, got error: %v", stateErr)
 	}

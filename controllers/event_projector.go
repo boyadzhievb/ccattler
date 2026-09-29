@@ -10,6 +10,11 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// defaultMergedEventBuffer is the channel buffer size for the merged watch
+// channel used by the event projector. Large enough to absorb burst events
+// without blocking individual watch goroutines.
+const defaultMergedEventBuffer = 64
+
 // EventProjector watches committed state transitions in the store and emits
 // semantic events to the event log. Unlike the previous approach of deriving
 // events from controller-proposed changes, the projector observes actual
@@ -142,7 +147,7 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 // channel. One goroutine per input channel forwards events to the merged
 // output. The output channel is closed when all input channels are closed.
 func mergeWatchChannels(ctx context.Context, channels []<-chan store.Event) <-chan store.Event {
-	mergedOutput := make(chan store.Event, 64)
+	mergedOutput := make(chan store.Event, defaultMergedEventBuffer)
 	pendingCount := make(chan struct{}, len(channels))
 
 	for _, inputChannel := range channels {

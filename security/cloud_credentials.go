@@ -9,6 +9,10 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
+// defaultCloudCredentialExpiry is the placeholder expiry for cloud credentials
+// returned by the stub STS/token exchange adapters.
+const defaultCloudCredentialExpiry = 1 * time.Hour
+
 // CloudCredential holds the result of a successful token exchange with a cloud
 // provider. The format and contents of the credential data depend on the
 // provider (AWS temporary credentials, GCP access token, Azure token).
@@ -76,7 +80,7 @@ func (adapter *AWSSTSAdapter) ExchangeToken(ctx context.Context, jwtToken string
 	// without real AWS credentials.
 	return &CloudCredential{
 		Provider:  "aws",
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+		ExpiresAt: time.Now().Add(defaultCloudCredentialExpiry),
 	}, fmt.Errorf("aws: STS exchange not yet connected (role=%s)", identityConfig.Role)
 }
 
@@ -111,7 +115,7 @@ func (adapter *GCPSTSAdapter) ExchangeToken(ctx context.Context, jwtToken string
 
 	return &CloudCredential{
 		Provider:  "gcp",
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+		ExpiresAt: time.Now().Add(defaultCloudCredentialExpiry),
 	}, fmt.Errorf("gcp: STS exchange not yet connected (sa=%s, pool=%s)", identityConfig.ServiceAccount, identityConfig.Pool)
 }
 
@@ -146,7 +150,7 @@ func (adapter *AzureADAdapter) ExchangeToken(ctx context.Context, jwtToken strin
 
 	return &CloudCredential{
 		Provider:  "azure",
-		ExpiresAt: time.Now().Add(1 * time.Hour),
+		ExpiresAt: time.Now().Add(defaultCloudCredentialExpiry),
 	}, fmt.Errorf("azure: AD exchange not yet connected (client=%s, tenant=%s)", identityConfig.ClientID, identityConfig.TenantID)
 }
 

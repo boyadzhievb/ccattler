@@ -14,6 +14,30 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// chaosInitialConvergenceDeadline is the time allowed for the initial
+	// deployment to converge before chaos injection starts.
+	chaosInitialConvergenceDeadline = 15 * time.Second
+
+	// chaosConvergencePollInterval is the polling interval when checking
+	// whether the cluster has converged during the initial deployment phase.
+	chaosConvergencePollInterval = 100 * time.Millisecond
+
+	// chaosInjectionDuration is the total time chaos events are injected.
+	chaosInjectionDuration = 30 * time.Second
+
+	// chaosInjectionInterval is the time between consecutive chaos injections.
+	chaosInjectionInterval = 3 * time.Second
+
+	// chaosConvergenceTimeout is the time allowed for the cluster to recover
+	// after each chaos injection.
+	chaosConvergenceTimeout = 10 * time.Second
+
+	// chaosConvergencePassRate is the minimum percentage of injections that
+	// must converge for the chaos test to pass.
+	chaosConvergencePassRate = 80
+)
+
 // executeChaosCommand runs a 30-second chaos test on a 3-node simulated cluster.
 // It deploys two services, then randomly injects node kills, network partitions,
 // controller restarts, and scale changes — printing live convergence results.
@@ -36,14 +60,14 @@ func executeChaosCommand() {
 	chaosCluster.DeployService(ctx, "web", "nginx:1.28", 6)
 	chaosCluster.DeployService(ctx, "api", "myapp:latest", 3)
 
-	convergenceDeadline := time.Now().Add(15 * time.Second)
+	convergenceDeadline := time.Now().Add(chaosInitialConvergenceDeadline)
 	for time.Now().Before(convergenceDeadline) {
 		converged, statusDescription := chaosCluster.CheckConvergence(ctx)
 		if converged {
 			fmt.Printf("Initial deployment converged: %s\n", statusDescription)
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(chaosConvergencePollInterval)
 	}
 
 	fmt.Println()
@@ -51,9 +75,9 @@ func executeChaosCommand() {
 	fmt.Println()
 
 	chaosConfig := chaos.ChaosConfig{
-		Duration:           30 * time.Second,
-		InjectionInterval:  3 * time.Second,
-		ConvergenceTimeout: 10 * time.Second,
+		Duration:           chaosInjectionDuration,
+		InjectionInterval:  chaosInjectionInterval,
+		ConvergenceTimeout: chaosConvergenceTimeout,
 		EnabledScenarios: []chaos.FailureScenario{
 			chaos.ScenarioNodeKill,
 			chaos.ScenarioNodePartition,
@@ -77,7 +101,12 @@ func executeChaosCommand() {
 	})
 
 	chaosEvents := chaosRunner.Run(ctx)
+	printChaosSummary(ctx, chaosCluster, chaosEvents)
+}
 
+// printChaosSummary prints the chaos test results: injection count, convergence
+// rate, max recovery time, final cluster state, and pass/fail verdict.
+func printChaosSummary(ctx context.Context, chaosCluster *chaos.SimulatedChaosCluster, chaosEvents []chaos.ChaosEvent) {
 	fmt.Println()
 	fmt.Println("=== Chaos Summary ===")
 
@@ -104,10 +133,10 @@ func executeChaosCommand() {
 	_, finalStatus := chaosCluster.CheckConvergence(ctx)
 	fmt.Printf("Final state:     %s\n", finalStatus)
 
-	if convergenceRate >= 80 {
+	if convergenceRate >= chaosConvergencePassRate {
 		fmt.Println("\nResult: PASS — cluster resilient under chaos")
 	} else {
-		fmt.Println("\nResult: FAIL — convergence rate below 80%")
+		fmt.Printf("\nResult: FAIL — convergence rate below %d%%\n", chaosConvergencePassRate)
 	}
 }
 

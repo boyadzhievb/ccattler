@@ -158,7 +158,7 @@ func (admission *QuotaAdmission) countTenantInstances(ctx context.Context, tenan
 
 	count := 0
 	for instanceID, serviceName := range instanceServices {
-		if instanceStates[instanceID] == "stopped" {
+		if instanceStates[instanceID] == string(types.InstanceStopped) {
 			continue
 		}
 		owner, err := admission.registry.ResolveTenantForService(ctx, serviceName)

@@ -76,6 +76,8 @@ var validPackagePattern = regexp.MustCompile(`^\./[a-zA-Z0-9_/\.]+$`)
 
 // buildToolRegistry returns the complete list of tools exposed by this MCP server.
 // Each tool has a fixed implementation — there is no arbitrary command execution.
+// NOTE: This function exceeds 80 lines because it is a flat declarative list of
+// tool registrations with no meaningful sub-structure to extract into helpers.
 func buildToolRegistry() []toolRegistryEntry {
 	componentNames := make([]string, 0, len(allowedComponents))
 	for componentName := range allowedComponents {

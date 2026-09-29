@@ -12,7 +12,7 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/types"
+	"github.com/boyadzhievb/ccattler/store"
 )
 
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
@@ -37,7 +37,9 @@ type agentCommandConfig struct {
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
-// following "agent".
+// following "agent". This function exceeds 80 lines because it is a flat
+// flag-to-field switch statement — each case is a simple one-liner assignment.
+// Extracting sub-groups would add indirection without improving clarity.
 func parseAgentCommandArgs(args []string) agentCommandConfig {
 	parsedConfig := agentCommandConfig{
 		storeBackend:   "etcd",
@@ -181,46 +183,14 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			parsedConfig.nodeID, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	}
 
-	if parsedConfig.tlsCertPath == "" {
-		discoveredCertPath := ".ccattler/node.pem"
-		discoveredKeyPath := ".ccattler/node-key.pem"
-		discoveredCACertPath := ".ccattler/ca.pem"
-		if fileExists(discoveredCertPath) && fileExists(discoveredKeyPath) && fileExists(discoveredCACertPath) {
-			parsedConfig.tlsCertPath = discoveredCertPath
-			parsedConfig.tlsKeyPath = discoveredKeyPath
-			parsedConfig.tlsCACertPath = discoveredCACertPath
-			fmt.Printf("Agent %s auto-discovered credentials from .ccattler/\n", parsedConfig.nodeID)
-		}
-	}
-	if parsedConfig.tlsCertPath != "" {
-		_ = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
-		fmt.Printf("Agent %s TLS credentials loaded\n", parsedConfig.nodeID)
-	}
+	loadAgentTLSCredentialsIfPresent(parsedConfig.nodeID, parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if writeError := types.WriteNode(ctx, factStore, types.Node{
-		ID: parsedConfig.nodeID, State: types.NodeAlive,
-		CapacityCPU: 4000, CapacityMemory: 8192,
-		AvailableCPU: 4000, AvailableMemory: 8192,
-	}); writeError != nil {
-		logging.Default().Error("failed to write node", "node", parsedConfig.nodeID, "error", writeError.Error())
-	}
+	registerLocalNode(ctx, factStore, parsedConfig.nodeID)
 
-	var runtimeAdapter runtime.Runtime
-	if parsedConfig.runtimeBackend == "container" {
-		if _, err := exec.LookPath("nerdctl"); err != nil {
-			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
-			os.Exit(1)
-		}
-		containerRuntime := runtime.NewContainerRuntime()
-		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
-		runtimeAdapter = containerRuntime
-	} else {
-		runtimeAdapter = runtime.NewProcessRuntime()
-	}
-
+	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend)
 	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
 
 	if parsedConfig.advertiseAddress != "" {
@@ -238,15 +208,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}()
 
 	if parsedConfig.proxyEnabled {
-		serviceResolver := network.NewStoreBackedResolver(factStore)
-		serviceProxy := network.NewUserSpaceProxy(serviceResolver, parsedConfig.proxyListenAddress, factStore)
-		go func() {
-			if proxyStartError := serviceProxy.Start(ctx); proxyStartError != nil && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
-			}
-		}()
-		fmt.Printf("Agent %s: HTTP proxy listening on %s (Host header routing)\n",
-			parsedConfig.nodeID, parsedConfig.proxyListenAddress)
+		startAgentHTTPProxy(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyListenAddress)
 	}
 
 	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
@@ -254,15 +216,72 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	<-ctx.Done()
 	fmt.Printf("\nAgent %s shutting down...\n", parsedConfig.nodeID)
+	performAgentShutdownCleanup(nodeAgent, runtimeAdapter)
+}
+
+// loadAgentTLSCredentialsIfPresent discovers TLS credentials in the default data
+// directory if no explicit paths were provided, and loads them if found. Prints
+// status messages about credential discovery and loading.
+func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACertPath string) {
+	if tlsCertPath == "" {
+		discoveredCertPath := ".ccattler/node.pem"
+		discoveredKeyPath := ".ccattler/node-key.pem"
+		discoveredCACertPath := ".ccattler/ca.pem"
+		if fileExists(discoveredCertPath) && fileExists(discoveredKeyPath) && fileExists(discoveredCACertPath) {
+			tlsCertPath = discoveredCertPath
+			tlsKeyPath = discoveredKeyPath
+			tlsCACertPath = discoveredCACertPath
+			fmt.Printf("Agent %s auto-discovered credentials from .ccattler/\n", nodeID)
+		}
+	}
+	if tlsCertPath != "" {
+		_ = loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath)
+		fmt.Printf("Agent %s TLS credentials loaded\n", nodeID)
+	}
+}
+
+// createAgentRuntimeAdapter creates the appropriate runtime adapter based on
+// the configured backend. For "container" it creates a ContainerRuntime with
+// the cluster network configured; for "process" it creates a ProcessRuntime.
+func createAgentRuntimeAdapter(runtimeBackend string) runtime.Runtime {
+	if runtimeBackend == "container" {
+		if _, lookupError := exec.LookPath("nerdctl"); lookupError != nil {
+			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
+			os.Exit(1)
+		}
+		containerRuntime := runtime.NewContainerRuntime()
+		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+		return containerRuntime
+	}
+	return runtime.NewProcessRuntime()
+}
+
+// startAgentHTTPProxy starts the userspace HTTP proxy that routes requests to
+// backend service instances based on the Host header.
+func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID, proxyListenAddress string) {
+	serviceResolver := network.NewStoreBackedResolver(factStore)
+	serviceProxy := network.NewUserSpaceProxy(serviceResolver, proxyListenAddress, factStore)
+	go func() {
+		if proxyStartError := serviceProxy.Start(ctx); proxyStartError != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
+		}
+	}()
+	fmt.Printf("Agent %s: HTTP proxy listening on %s (Host header routing)\n",
+		nodeID, proxyListenAddress)
+}
+
+// performAgentShutdownCleanup cleans up the data plane provider and stops all
+// running workloads when the agent is shutting down.
+func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.Runtime) {
 	if nodeAgent.DataPlaneProvider() != nil {
 		if cleanupError := nodeAgent.DataPlaneProvider().Cleanup(context.Background()); cleanupError != nil {
 			logging.Default().Error("data plane cleanup failed", "error", cleanupError.Error())
 		}
 	}
-	if processRuntime, ok := runtimeAdapter.(*runtime.ProcessRuntime); ok {
+	if processRuntime, isProcessRuntime := runtimeAdapter.(*runtime.ProcessRuntime); isProcessRuntime {
 		processRuntime.StopAll(context.Background())
 	}
-	if containerRuntime, ok := runtimeAdapter.(*runtime.ContainerRuntime); ok {
+	if containerRuntime, isContainerRuntime := runtimeAdapter.(*runtime.ContainerRuntime); isContainerRuntime {
 		containerRuntime.StopAll(context.Background())
 	}
 }

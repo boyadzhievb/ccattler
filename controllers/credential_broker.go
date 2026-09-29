@@ -11,6 +11,15 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// defaultCredentialTTL is the default lifetime for issued cloud credentials.
+	defaultCredentialTTL = 1 * time.Hour
+
+	// defaultCredentialRefreshBefore is the default window before credential
+	// expiry at which the broker proactively refreshes the credential.
+	defaultCredentialRefreshBefore = 15 * time.Minute
+)
+
 // CredentialBrokerController watches cloud identity bindings and running
 // instances, issues and refreshes cloud credentials, and garbage-collects
 // credentials for stopped instances.
@@ -27,8 +36,8 @@ func NewCredentialBrokerController(tokenIssuer *security.WorkloadTokenIssuer) *C
 	return &CredentialBrokerController{
 		tokenIssuer:   tokenIssuer,
 		adapters:      make(map[string]security.CloudProviderAdapter),
-		credentialTTL: 1 * time.Hour,
-		refreshBefore: 15 * time.Minute,
+		credentialTTL: defaultCredentialTTL,
+		refreshBefore: defaultCredentialRefreshBefore,
 	}
 }
 
@@ -86,86 +95,105 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 		if !runningInstances[instanceID] {
 			continue
 		}
-
 		bindings := serviceBindings[serviceName]
 		for _, bindingIdentity := range bindings {
 			identityConfig, exists := cloudIdentities[bindingIdentity]
 			if !exists {
 				continue
 			}
-
 			credentialKey := instanceID + "/" + bindingIdentity
 			existingState := credentialStates[credentialKey]
-
 			if existingState.state == "active" && !brokerController.needsRefresh(existingState.expiresAt) {
 				continue
 			}
-
-			adapter, adapterExists := brokerController.adapters[identityConfig.Provider]
-			if !adapterExists {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
-					Value: []byte("error"),
-				})
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
-					Value: []byte(fmt.Sprintf("no adapter for provider %q", identityConfig.Provider)),
-				})
-				continue
-			}
-
-			spiffeID := fmt.Sprintf("spiffe://ccattler/%s/%s", serviceName, instanceID)
-			jwtToken, mintError := brokerController.tokenIssuer.MintWorkloadToken(spiffeID, identityConfig.Provider, brokerController.credentialTTL)
-			if mintError != nil {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
-					Value: []byte("error"),
-				})
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
-					Value: []byte(mintError.Error()),
-				})
-				continue
-			}
-
-			credential, exchangeError := adapter.ExchangeToken(ctx, jwtToken, identityConfig)
-			if exchangeError != nil {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialState(instanceID, bindingIdentity),
-					Value: []byte("error"),
-				})
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyDerivedCredentialError(instanceID, bindingIdentity),
-					Value: []byte(exchangeError.Error()),
-				})
-				continue
-			}
-
-			issuedAt := time.Now()
-			changes = append(changes,
-				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialState(instanceID, bindingIdentity), Value: []byte("active")},
-				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialIssuedAt(instanceID, bindingIdentity), Value: []byte(issuedAt.Format(time.RFC3339))},
-				Change{Type: store.OpPut, Key: types.KeyDerivedCredentialExpiresAt(instanceID, bindingIdentity), Value: []byte(credential.ExpiresAt.Format(time.RFC3339))},
+			bindingChanges := brokerController.issueCredentialForBinding(
+				ctx, instanceID, serviceName, bindingIdentity, identityConfig, existingState,
 			)
-
-			if existingState.errorMessage != "" {
-				changes = append(changes, Change{
-					Type: store.OpDelete,
-					Key:  types.KeyDerivedCredentialError(instanceID, bindingIdentity),
-				})
-			}
+			changes = append(changes, bindingChanges...)
 		}
 	}
 
-	// Garbage collection: delete credentials for instances that no longer exist
-	// or are no longer running.
-	for credentialKey, credentialState := range credentialStates {
+	garbageChanges := buildCredentialGarbageCollectionChanges(credentialStates, instanceServices, runningInstances)
+	changes = append(changes, garbageChanges...)
+
+	return changes, nil
+}
+
+// issueCredentialForBinding attempts to mint a workload JWT token and exchange
+// it with the cloud provider adapter for a short-lived credential. On success
+// it returns changes that mark the credential as active with issuance and expiry
+// timestamps. On failure it returns changes that record the error state.
+func (brokerController *CredentialBrokerController) issueCredentialForBinding(
+	ctx context.Context,
+	instanceID string,
+	serviceName string,
+	bindingIdentity string,
+	identityConfig security.CloudIdentityConfig,
+	existingState credentialState,
+) []Change {
+	adapter, adapterExists := brokerController.adapters[identityConfig.Provider]
+	if !adapterExists {
+		return buildCredentialErrorChanges(
+			instanceID, bindingIdentity,
+			fmt.Sprintf("no adapter for provider %q", identityConfig.Provider),
+		)
+	}
+
+	spiffeID := fmt.Sprintf("spiffe://ccattler/%s/%s", serviceName, instanceID)
+	jwtToken, mintError := brokerController.tokenIssuer.MintWorkloadToken(
+		spiffeID, identityConfig.Provider, brokerController.credentialTTL,
+	)
+	if mintError != nil {
+		return buildCredentialErrorChanges(instanceID, bindingIdentity, mintError.Error())
+	}
+
+	credential, exchangeError := adapter.ExchangeToken(ctx, jwtToken, identityConfig)
+	if exchangeError != nil {
+		return buildCredentialErrorChanges(instanceID, bindingIdentity, exchangeError.Error())
+	}
+
+	issuedAt := time.Now()
+	changes := []Change{
+		{Type: store.OpPut, Key: types.KeyDerivedCredentialState(instanceID, bindingIdentity), Value: []byte("active")},
+		{Type: store.OpPut, Key: types.KeyDerivedCredentialIssuedAt(instanceID, bindingIdentity), Value: []byte(issuedAt.Format(time.RFC3339))},
+		{Type: store.OpPut, Key: types.KeyDerivedCredentialExpiresAt(instanceID, bindingIdentity), Value: []byte(credential.ExpiresAt.Format(time.RFC3339))},
+	}
+	if existingState.errorMessage != "" {
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyDerivedCredentialError(instanceID, bindingIdentity),
+		})
+	}
+	return changes
+}
+
+// buildCredentialErrorChanges returns two changes that set a credential's state
+// to "error" and record the error message in the derived credential prefix.
+func buildCredentialErrorChanges(instanceID string, identityName string, errorMessage string) []Change {
+	return []Change{
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedCredentialState(instanceID, identityName),
+			Value: []byte("error"),
+		},
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedCredentialError(instanceID, identityName),
+			Value: []byte(errorMessage),
+		},
+	}
+}
+
+// buildCredentialGarbageCollectionChanges produces delete changes for credentials
+// whose instances no longer exist or are no longer running. Each field of a stale
+// credential (state, expires_at, issued_at, error) is deleted individually.
+func buildCredentialGarbageCollectionChanges(
+	credentialStates map[string]credentialState,
+	instanceServices map[string]string,
+	runningInstances map[string]bool,
+) []Change {
+	var changes []Change
+	for credentialKey, credState := range credentialStates {
 		parts := strings.SplitN(credentialKey, "/", 2)
 		if len(parts) != 2 {
 			continue
@@ -174,22 +202,21 @@ func (brokerController *CredentialBrokerController) Reconcile(ctx context.Contex
 		identityName := parts[1]
 
 		if _, instanceExists := instanceServices[instanceID]; !instanceExists || !runningInstances[instanceID] {
-			if credentialState.state != "" {
+			if credState.state != "" {
 				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialState(instanceID, identityName)})
 			}
-			if credentialState.expiresAt != "" {
+			if credState.expiresAt != "" {
 				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialExpiresAt(instanceID, identityName)})
 			}
-			if credentialState.issuedAt != "" {
+			if credState.issuedAt != "" {
 				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialIssuedAt(instanceID, identityName)})
 			}
-			if credentialState.errorMessage != "" {
+			if credState.errorMessage != "" {
 				changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCredentialError(instanceID, identityName)})
 			}
 		}
 	}
-
-	return changes, nil
+	return changes
 }
 
 // needsRefresh returns true if a credential's expiry is within the refresh window.

@@ -189,3 +189,27 @@ const (
 	// ReadinessProbeUnknown means no readiness result is available yet.
 	ReadinessProbeUnknown ReadinessProbeState = "unknown"
 )
+
+// ProbeType identifies the kind of health probe configured for a service.
+// Each probe type has different semantics: startup gates readiness/liveness,
+// liveness triggers restarts, readiness controls endpoint membership.
+type ProbeType string
+
+// Probe type identifiers used in store key paths and probe configuration.
+const (
+	// ProbeStartup is evaluated once after instance creation. It must pass
+	// before liveness and readiness probes begin.
+	ProbeStartup ProbeType = "startup"
+
+	// ProbeLiveness is evaluated periodically after startup succeeds. Repeated
+	// failures trigger an instance restart by the failure controller.
+	ProbeLiveness ProbeType = "liveness"
+
+	// ProbeReadiness is evaluated periodically after startup succeeds. Failures
+	// remove the instance from endpoint sets without restarting it.
+	ProbeReadiness ProbeType = "readiness"
+)
+
+// AllProbeTypes lists every probe type for iteration in probe scheduling and
+// cleanup loops.
+var AllProbeTypes = []ProbeType{ProbeStartup, ProbeLiveness, ProbeReadiness}

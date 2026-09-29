@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+const (
+	// defaultRequestsPerSecond is the sustained request rate allowed per client IP.
+	defaultRequestsPerSecond = 50.0
+	// defaultBurstSize is the maximum burst of requests a client can make before
+	// being rate-limited.
+	defaultBurstSize = 100
+	// defaultStaleCleanupInterval is how long a client must be idle before its
+	// token bucket is eligible for garbage collection.
+	defaultStaleCleanupInterval = 60 * time.Second
+)
+
 // rateLimiterConfig holds the token-bucket parameters for rate limiting.
 type rateLimiterConfig struct {
 	requestsPerSecond float64
@@ -19,9 +30,9 @@ type rateLimiterConfig struct {
 // defaultRateLimiterConfig returns sensible defaults for the control plane API.
 func defaultRateLimiterConfig() rateLimiterConfig {
 	return rateLimiterConfig{
-		requestsPerSecond: 50,
-		burstSize:         100,
-		cleanupInterval:   60 * time.Second,
+		requestsPerSecond: defaultRequestsPerSecond,
+		burstSize:         defaultBurstSize,
+		cleanupInterval:   defaultStaleCleanupInterval,
 	}
 }
 

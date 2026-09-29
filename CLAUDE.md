@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M49 — Phase 49b CI Fix + Dependency Security. M1–M49 complete. Gates A–I resolved. Next: M48 — Phase 50 Anti-Pattern Remediation.
+**Completed through:** M52 — Phase 54 Capabilities & Scopes. M1–M52 complete. Gates A–I resolved. Next: Phase 55 — Auth DSL.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -23,6 +23,36 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 - **Document variables.** Struct fields must have inline comments explaining their purpose. Named constants and map variables should have comments when their role isn't obvious from the name alone.
 - **Descriptive function names.** Prefer `executeReconciliationCycle` over `reconcileOnce`, `buildClusterStatusJSON` over `buildStatusJSON`, `findInstancesPlacedOnThisNode` over `desiredInstances`.
 - **Receiver names match the type.** Use `nodeFailureController` not `ctrl`, `memStore` not `m`, `containerRuntime` not `c`.
+
+### Anti-Pattern Rules (enforced from Phase 50)
+
+- **No dead code.** Every exported type, function, and constant must have at least one production caller (non-test). Code that only exists in tests is a test helper, not library code — move it to `_test.go` or remove it. Do not add code "for later" without wiring it into a real path.
+- **No magic numbers.** Timeouts, capacities, thresholds, retry counts, and interval durations must be package-level named constants (e.g., `defaultReconcileInterval`, `maxConcurrentReconciles`, `defaultLeaseTimeout`). Tests should reference the named constants, not duplicate the raw values.
+- **Function length limit: 80 lines.** No function (excluding test functions) may exceed 80 lines. Break long functions into sub-functions with clear responsibilities. Compiler/builder functions should delegate per-block or per-section.
+- **No copy-paste duplication.** If the same pattern appears in 3+ places, extract it into a shared helper. Near-duplicate blocks over 10 lines must be refactored.
+- **Typed enums over raw strings.** Instance states, node states, probe types, and similar finite sets must use typed string constants (e.g., `type InstanceState string`). Use these typed constants in comparisons, not raw string literals. This catches typos at compile time.
+- **Every exported type must be wired.** If you add a new exported type or interface, show where it gets instantiated in production (in `cmd/`, `api/`, or a controller). Interfaces need at least one production call site, not just test implementations.
+
+### Data Structures & Algorithms
+
+- **Maps for O(1) lookups.** Use `map[string]T` for key-based lookups (instances by ID, nodes by ID, services by name). Never do linear scans on slices when the lookup key is known.
+- **Slices for ordered iteration.** Use slices when order matters (reconciliation plans, init steps, admission pipeline stages). Sort slices deterministically by key before iterating when the source is a map.
+- **Deterministic iteration.** Controllers must produce the same output given the same input. When iterating maps, collect keys into a slice and sort before processing. This is already enforced (Phase 43) — never regress.
+- **Prefix trees / sorted scan for fact store queries.** The fact store uses prefix-based key layout (`desired/service/`, `observed/node/`). Design keys so that related facts share a prefix, enabling efficient `Scan(prefix)` instead of full-store iteration + filter.
+- **Optimistic concurrency for transactions.** Compare-and-swap via store transactions, never lock-and-hold. Read the current revision, compute changes, attempt transaction with revision guard. Retry on conflict with backoff.
+- **Time-windowed averaging for autoscaling.** Never scale from instantaneous metrics. Use sliding window averages with asymmetric stabilization (fast scale-up, slow scale-down).
+- **Topological sort for dependency ordering.** When execution order depends on dependencies (init steps, controller startup), use topological sort. Detect cycles and fail explicitly rather than deadlocking.
+- **Consistent hashing / spread algorithms for placement.** Scheduler distributes instances across nodes/zones using spread-aware bin packing. Zone spread is a constraint, not a random assignment.
+
+### Authorization Architecture (from design review, Sep 29 2026)
+
+- **Principal model**: `User`, `ServiceIdentity` (includes `NodeIdentity`). Groups are authentication-provided attributes, not authorization objects.
+- **Permission vocabulary**: Capability-based (`workload.read`, `secret.use`, `placement.write`), not Kubernetes API verbs (`get`, `list`, `watch`).
+- **Scopes**: Hierarchical paths (`cluster`, `team/payments`, `node/node01`). Parent scope includes children.
+- **Two-layer authorization**: Store-layer prefix RBAC for internal components, API-layer capability-based auth for users.
+- **Deny-by-default, fail-closed**: Authentication failure, authorization failure, policy engine unavailable, incomplete identity → all DENY.
+- **Authorization always enforced**: Even without `--tls`, a local-user authenticator derives principal from OS user. No bypass path.
+- **Do NOT implement**: Kubernetes Role/ClusterRole/RoleBinding/ClusterRoleBinding pattern. Use `group + permission + scope + condition` instead.
 
 ---
 

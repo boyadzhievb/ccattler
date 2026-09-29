@@ -19,7 +19,7 @@ type ChangeRecord struct {
 
 // ChangeStreamSubscriber is a callback that processes change records.
 // Return an error to signal that processing failed (the record may be retried
-// or sent to a DLQ depending on the caller's policy).
+// or dropped depending on the caller's policy).
 type ChangeStreamSubscriber func(record ChangeRecord) error
 
 // ChangeStream provides a CDC (Change Data Capture) interface over the fact

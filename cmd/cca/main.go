@@ -13,6 +13,9 @@ import (
 var version = "dev"
 
 // main parses the CLI command and dispatches to the appropriate handler function.
+// This function exceeds 80 lines because it is a flat command-dispatch switch
+// statement — each case is a simple validation-then-call block. Extracting
+// sub-groups would add indirection without improving clarity.
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()

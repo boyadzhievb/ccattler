@@ -17,11 +17,11 @@ import (
 //	APPLY → syntax validation → schema validation → RBAC/ABAC →
 //	quota check → security policy → mutation → commit
 type PolicyGate struct {
-	factStore      store.StateStore
-	registry       *TenantRegistry
+	factStore  store.StateStore
+	registry   *TenantRegistry
 	quotaAdmission *QuotaAdmission
-	rbacAuthorizer *security.RBACAuthorizer
-	auditLog       security.AuditLogger
+	authorizer security.Authorizer
+	auditLog   security.AuditLogger
 }
 
 // NewPolicyGate creates a policy gate backed by the given components.
@@ -29,15 +29,15 @@ func NewPolicyGate(
 	factStore store.StateStore,
 	registry *TenantRegistry,
 	quotaAdmission *QuotaAdmission,
-	rbacAuthorizer *security.RBACAuthorizer,
+	authorizer security.Authorizer,
 	auditLog security.AuditLogger,
 ) *PolicyGate {
 	return &PolicyGate{
-		factStore:      factStore,
-		registry:       registry,
+		factStore:  factStore,
+		registry:   registry,
 		quotaAdmission: quotaAdmission,
-		rbacAuthorizer: rbacAuthorizer,
-		auditLog:       auditLog,
+		authorizer: authorizer,
+		auditLog:   auditLog,
 	}
 }
 
@@ -79,10 +79,10 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 		}, nil
 	}
 
-	// Stage 3: Authorization (RBAC check on each fact key).
-	if gate.rbacAuthorizer != nil {
+	// Stage 3: Authorization (RBAC/ABAC check on each fact key).
+	if gate.authorizer != nil {
 		for _, fact := range facts {
-			if err := gate.rbacAuthorizer.Authorize(principal, security.PermissionWrite, fact.Key); err != nil {
+			if err := gate.authorizer.Authorize(principal, security.PermissionWrite, fact.Key); err != nil {
 				gate.logAudit(principal, "apply", fact.Key, "DENY", "authorization")
 				return &GateResult{
 					Allowed:  false,

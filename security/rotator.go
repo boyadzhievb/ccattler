@@ -10,6 +10,10 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 )
 
+// minimumCertRenewalSleep is the floor for the sleep interval in the certificate
+// renewal loop, preventing tight-loop spinning when the computed delay is tiny.
+const minimumCertRenewalSleep = 10 * time.Second
+
 // CertificateRotator automatically renews a certificate before it expires.
 // It holds the current certificate and atomically swaps it when renewal occurs.
 type CertificateRotator struct {
@@ -88,8 +92,8 @@ func (rotator *CertificateRotator) renewalLoop(ctx context.Context) {
 		totalLifetime := time.Until(currentNotAfter) + rotator.request.TTL
 		renewalDelay := time.Duration(float64(totalLifetime) * rotator.renewalThreshold)
 		sleepDuration := time.Until(currentNotAfter) - (rotator.request.TTL - renewalDelay)
-		if sleepDuration < 10*time.Second {
-			sleepDuration = 10 * time.Second
+		if sleepDuration < minimumCertRenewalSleep {
+			sleepDuration = minimumCertRenewalSleep
 		}
 
 		select {

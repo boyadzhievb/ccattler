@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/agent"
@@ -18,10 +17,20 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
+)
+
+const (
+	// runInitialSettleTime is the delay after starting controllers before
+	// printing the first status snapshot. Shorter than the watch-mode settle
+	// because the user is watching and wants quick feedback.
+	runInitialSettleTime = 1 * time.Second
+
+	// networkDemoStatusInterval is the status print interval for the network
+	// demo command, which runs longer and benefits from less frequent updates.
+	networkDemoStatusInterval = 5 * time.Second
 )
 
 // runCommandConfig holds all parsed flags and arguments for the "run" and
@@ -85,19 +94,13 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 	return parsedConfig
 }
 
-// createStateStoreFromConfig builds the appropriate StateStore implementation based
-// on the parsed run-command configuration. For "memory" it returns an in-memory store.
-// For "etcd" it connects to the specified endpoints with the given key prefix.
-func createStateStoreFromConfig(parsedConfig runCommandConfig) (store.StateStore, error) {
-	if parsedConfig.storeBackend == "etcd" {
-		endpointList := strings.Split(parsedConfig.etcdEndpoints, ",")
-		return store.NewEtcdStore(store.EtcdStoreConfig{
-			Endpoints:   endpointList,
-			KeyPrefix:   parsedConfig.storeKeyPrefix,
-			DialTimeout: 5 * time.Second,
-		})
-	}
-	return store.NewMemoryStore(), nil
+// createStateStoreFromRunConfig builds the appropriate StateStore for the run
+// command configuration. Delegates to createStateStoreFromServerConfig with
+// empty TLS paths since run commands don't support etcd TLS.
+func createStateStoreFromRunConfig(parsedConfig runCommandConfig) (store.StateStore, error) {
+	return createStateStoreFromServerConfig(
+		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
+		"", "", "")
 }
 
 // executeLiveProcessCommand parses a .ccattler file and starts real OS processes
@@ -111,7 +114,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 		os.Exit(1)
 	}
 
-	factStore, storeCreationError := createStateStoreFromConfig(parsedRunConfig)
+	factStore, storeCreationError := createStateStoreFromRunConfig(parsedRunConfig)
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
 		os.Exit(1)
@@ -127,36 +130,11 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 
 	// This machine is the single node in single-machine mode.
 	localNodeID := "local"
-	if writeError := types.WriteNode(ctx, factStore, types.Node{
-		ID: localNodeID, State: types.NodeAlive,
-		CapacityCPU: 4000, CapacityMemory: 8192,
-		AvailableCPU: 4000, AvailableMemory: 8192,
-	}); writeError != nil {
-		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
-	}
+	registerLocalNode(ctx, factStore, localNodeID)
 
-	// Create and start reconciliation controllers. No cluster autoscaler in
-	// single-machine mode — there is no infrastructure provider to add real nodes.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	warmZeroController := controllers.NewWarmZeroController()
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, initController, warmZeroController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	// No cluster autoscaler in single-machine mode — no infra provider to add nodes.
+	controllerList := append(coreControllers(), controllers.NewWarmZeroController())
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start node agent with process runtime for real OS process execution.
 	processRuntime := runtime.NewProcessRuntime()
@@ -177,32 +155,8 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	}
 
 	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
-
-	// Initial status after reconciliation settles.
-	time.Sleep(1 * time.Second)
-	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
-	fmt.Print(buildStatusTextOutput(ctx, factStore))
-
-	if parsedRunConfig.watchModeEnabled {
-		statusPrintTicker := time.NewTicker(2 * time.Second)
-		defer statusPrintTicker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				fmt.Println("\nShutting down...")
-				processRuntime.StopAll(context.Background())
-				return
-			case <-statusPrintTicker.C:
-				fmt.Printf("\n[%s]\n", time.Now().Format("15:04:05"))
-				fmt.Print(buildStatusTextOutput(ctx, factStore))
-			}
-		}
-	}
-
-	// Default: block until Ctrl+C without repeating status.
-	<-ctx.Done()
-	fmt.Println("\nShutting down...")
-	processRuntime.StopAll(context.Background())
+	runSingleNodeStatusLoop(ctx, factStore, parsedRunConfig.watchModeEnabled, "Shutting down...",
+		func() { processRuntime.StopAll(context.Background()) })
 }
 
 // executeLiveContainerCommand parses a .ccattler file and starts real OCI containers
@@ -223,7 +177,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		os.Exit(1)
 	}
 
-	factStore, storeCreationError := createStateStoreFromConfig(parsedRunConfig)
+	factStore, storeCreationError := createStateStoreFromRunConfig(parsedRunConfig)
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
 		os.Exit(1)
@@ -238,38 +192,10 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	defer cancel()
 
 	localNodeID := "local"
-	if writeError := types.WriteNode(ctx, factStore, types.Node{
-		ID: localNodeID, State: types.NodeAlive,
-		CapacityCPU: 4000, CapacityMemory: 8192,
-		AvailableCPU: 4000, AvailableMemory: 8192,
-	}); writeError != nil {
-		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
-	}
+	registerLocalNode(ctx, factStore, localNodeID)
 
-	// Create and start reconciliation controllers including network controller.
-	// No cluster autoscaler in single-machine mode — there is no infrastructure
-	// provider to add real nodes.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	networkController := controllers.NewNetworkController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, networkController,
-		autoscaleController, intentResolverController, rolloutController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	controllerList := append(coreControllers(), controllers.NewNetworkController())
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start node agent with container runtime for real nerdctl container execution.
 	containerRuntime := runtime.NewContainerRuntime()
@@ -294,20 +220,26 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	}
 
 	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
+	runSingleNodeStatusLoop(ctx, factStore, parsedRunConfig.watchModeEnabled, "Shutting down containers...",
+		func() { containerRuntime.StopAll(context.Background()) })
+}
 
-	// Initial status after reconciliation settles.
-	time.Sleep(1 * time.Second)
+// runSingleNodeStatusLoop prints the initial status after reconciliation settles,
+// then either enters a periodic watch loop or blocks until interrupted. The
+// shutdownMessage is printed on exit, and cleanupFunc is called to stop the runtime.
+func runSingleNodeStatusLoop(ctx context.Context, factStore store.StateStore, watchModeEnabled bool, shutdownMessage string, cleanupFunc func()) {
+	time.Sleep(runInitialSettleTime)
 	fmt.Printf("[%s]\n", time.Now().Format("15:04:05"))
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	if parsedRunConfig.watchModeEnabled {
-		statusPrintTicker := time.NewTicker(2 * time.Second)
+	if watchModeEnabled {
+		statusPrintTicker := time.NewTicker(types.DefaultStatusPrintInterval)
 		defer statusPrintTicker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
-				fmt.Println("\nShutting down containers...")
-				containerRuntime.StopAll(context.Background())
+				fmt.Printf("\n%s\n", shutdownMessage)
+				cleanupFunc()
 				return
 			case <-statusPrintTicker.C:
 				fmt.Printf("\n[%s]\n", time.Now().Format("15:04:05"))
@@ -318,8 +250,8 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 
 	// Default: block until Ctrl+C without repeating status.
 	<-ctx.Done()
-	fmt.Println("\nShutting down containers...")
-	containerRuntime.StopAll(context.Background())
+	fmt.Printf("\n%s\n", shutdownMessage)
+	cleanupFunc()
 }
 
 // executeDemoCommand runs a built-in demo with a hardcoded service config
@@ -333,35 +265,11 @@ func executeDemoCommand() {
 	defer cancel()
 
 	localNodeID := "local"
-	if writeError := types.WriteNode(ctx, factStore, types.Node{
-		ID: localNodeID, State: types.NodeAlive,
-		CapacityCPU: 4000, CapacityMemory: 8192,
-		AvailableCPU: 4000, AvailableMemory: 8192,
-	}); writeError != nil {
-		logging.Default().Error("failed to write node", "node", localNodeID, "error", writeError.Error())
-	}
+	registerLocalNode(ctx, factStore, localNodeID)
 
-	// Create and start all reconciliation controllers.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	controllerList := append(coreControllers(),
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -393,7 +301,7 @@ func executeDemoCommand() {
 	}
 
 	// Wait for reconciliation to settle before printing status.
-	time.Sleep(1 * time.Second)
+	time.Sleep(runInitialSettleTime)
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 }
@@ -408,42 +316,14 @@ func executeDistributedDemoCommand() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// Register 3 simulated nodes with equal capacity.
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
-	for _, nodeID := range nodeIDs {
-		if writeError := types.WriteNode(ctx, factStore, types.Node{
-			ID: nodeID, State: types.NodeAlive,
-			CapacityCPU: 4000, CapacityMemory: 8192,
-			AvailableCPU: 4000, AvailableMemory: 8192,
-		}); writeError != nil {
-			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
-		}
-	}
+	registerSimulatedNodes(ctx, factStore, nodeIDs)
 	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
 
-	// Create and start all controllers including the node failure detector.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	nodeFailureController := controllers.NewNodeFailureController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	controllerList := append(coreControllers(),
+		controllers.NewNodeFailureController(),
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start 3 agents, each with its own simulator runtime.
 	// node-1 gets a separate cancel context so we can kill it later.
@@ -488,7 +368,7 @@ func executeDistributedDemoCommand() {
 	}
 
 	// Wait for initial reconciliation to settle.
-	time.Sleep(2 * time.Second)
+	time.Sleep(types.DefaultPostStartupSettleTime)
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
@@ -496,7 +376,7 @@ func executeDistributedDemoCommand() {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(5 * time.Second):
+	case <-time.After(types.DefaultEtcdDialTimeout):
 	}
 
 	// Kill node-1's agent — it stops writing heartbeats.
@@ -504,20 +384,7 @@ func executeDistributedDemoCommand() {
 	fmt.Println("node-1 agent killed. Waiting for failure detection and rescheduling...")
 	fmt.Println()
 
-	// Print status periodically to show the recovery in progress.
-	statusPrintTicker := time.NewTicker(2 * time.Second)
-	defer statusPrintTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nShutting down...")
-			return
-		case <-statusPrintTicker.C:
-			fmt.Print(buildStatusTextOutput(ctx, factStore))
-			fmt.Println()
-		}
-	}
+	runDemoStatusLoop(ctx, factStore, types.DefaultStatusPrintInterval)
 }
 
 // executeNetworkDemoCommand runs a multi-node demo with networking enabled:
@@ -533,16 +400,9 @@ func executeNetworkDemoCommand() {
 
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 
-	// Register 3 simulated nodes with equal capacity.
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
+	registerSimulatedNodes(ctx, factStore, nodeIDs)
 	for _, nodeID := range nodeIDs {
-		if writeError := types.WriteNode(ctx, factStore, types.Node{
-			ID: nodeID, State: types.NodeAlive,
-			CapacityCPU: 4000, CapacityMemory: 8192,
-			AvailableCPU: 4000, AvailableMemory: 8192,
-		}); writeError != nil {
-			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
-		}
 		if _, putError := factStore.Put(ctx, types.KeyNetworkNodeSubnet(nodeID), []byte(simulatorNetworkProvider.NodeSubnet(nodeID))); putError != nil {
 			logging.Default().Error("failed to write node subnet", "node", nodeID, "error", putError.Error())
 		}
@@ -552,30 +412,11 @@ func executeNetworkDemoCommand() {
 		fmt.Printf("  %s  subnet=%s\n", nodeID, simulatorNetworkProvider.NodeSubnet(nodeID))
 	}
 
-	// Create all controllers including the network controller.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	nodeFailureController := controllers.NewNodeFailureController()
-	networkController := controllers.NewNetworkController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController, networkController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	controllerList := append(coreControllers(),
+		controllers.NewNodeFailureController(),
+		controllers.NewNetworkController(),
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
 	for _, nodeID := range nodeIDs {
@@ -620,7 +461,7 @@ service api {
 	}
 
 	// Wait for reconciliation to settle.
-	time.Sleep(2 * time.Second)
+	time.Sleep(types.DefaultPostStartupSettleTime)
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
@@ -643,20 +484,7 @@ service api {
 	}
 
 	fmt.Printf("\nRunning. Status API on %s. Press Ctrl+C to stop.\n", statusAPIListenAddress)
-
-	statusPrintTicker := time.NewTicker(5 * time.Second)
-	defer statusPrintTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nShutting down...")
-			return
-		case <-statusPrintTicker.C:
-			fmt.Println()
-			fmt.Print(buildStatusTextOutput(ctx, factStore))
-		}
-	}
+	runDemoStatusLoop(ctx, factStore, networkDemoStatusInterval)
 }
 
 // executeStorageDemoCommand runs a multi-node demo with persistent volumes.
@@ -676,40 +504,14 @@ func executeStorageDemoCommand() {
 	}
 
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
-	for _, nodeID := range nodeIDs {
-		if writeError := types.WriteNode(ctx, factStore, types.Node{
-			ID: nodeID, State: types.NodeAlive,
-			CapacityCPU: 4000, CapacityMemory: 8192,
-			AvailableCPU: 4000, AvailableMemory: 8192,
-		}); writeError != nil {
-			logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
-		}
-	}
+	registerSimulatedNodes(ctx, factStore, nodeIDs)
 	fmt.Println("Registered 3 simulated nodes: node-1, node-2, node-3")
 
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	nodeFailureController := controllers.NewNodeFailureController()
-	storageController := controllers.NewStorageController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
-
-	eventLog := types.NewEventLog(factStore, 1000)
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, nodeFailureController, storageController,
-		autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController)
-	controllerRunner.SetEventLog(eventLog)
-	go func() {
-		if runError := controllerRunner.Run(ctx); runError != nil {
-			logging.Default().Error("controller runner exited with error", "error", runError.Error())
-		}
-	}()
+	controllerList := append(coreControllers(),
+		controllers.NewNodeFailureController(),
+		controllers.NewStorageController(),
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Track which context each node's agent uses so we can kill one later.
 	nodeAgentContexts := make(map[string]context.CancelFunc)
@@ -763,7 +565,7 @@ service web {
 		os.Exit(1)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(types.DefaultPostStartupSettleTime)
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
@@ -778,7 +580,7 @@ service web {
 	select {
 	case <-ctx.Done():
 		return
-	case <-time.After(5 * time.Second):
+	case <-time.After(types.DefaultEtcdDialTimeout):
 	}
 
 	if killFunc, exists := nodeAgentContexts[postgresNodeID]; exists {
@@ -789,17 +591,5 @@ service web {
 	}
 	fmt.Printf("%s agent killed. Waiting for failure detection, volume force-detach, and rescheduling...\n\n", postgresNodeID)
 
-	statusPrintTicker := time.NewTicker(2 * time.Second)
-	defer statusPrintTicker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			fmt.Println("\nShutting down...")
-			return
-		case <-statusPrintTicker.C:
-			fmt.Print(buildStatusTextOutput(ctx, factStore))
-			fmt.Println()
-		}
-	}
+	runDemoStatusLoop(ctx, factStore, types.DefaultStatusPrintInterval)
 }

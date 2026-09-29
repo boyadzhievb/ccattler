@@ -14,6 +14,7 @@ import (
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tenant"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -1338,4 +1339,227 @@ func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
 			t.Errorf("POST %s: got %d, want 405", endpoint, response.StatusCode)
 		}
 	}
+}
+
+// TestRequirePrincipalRejects401 verifies that API endpoints return 401 when
+// requirePrincipal is enabled and no principal is in the request context.
+func TestRequirePrincipalRejects401(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	apiServer.SetRequirePrincipal(true)
+	address, err := apiServer.Start(":0")
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer apiServer.Close()
+	baseURL := "http://" + address
+
+	// Protected endpoints should return 401 without a principal.
+	protectedEndpoints := []string{"/api/state?key=x", "/api/status", "/api/describe?type=services"}
+	for _, endpoint := range protectedEndpoints {
+		response, requestError := http.Get(baseURL + endpoint)
+		if requestError != nil {
+			t.Fatalf("GET %s: %v", endpoint, requestError)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s without principal: got %d, want 401", endpoint, response.StatusCode)
+		}
+	}
+
+	// Exempt endpoints should still be reachable.
+	exemptEndpoints := []string{"/healthz", "/metrics"}
+	for _, endpoint := range exemptEndpoints {
+		response, requestError := http.Get(baseURL + endpoint)
+		if requestError != nil {
+			t.Fatalf("GET %s: %v", endpoint, requestError)
+		}
+		response.Body.Close()
+		if response.StatusCode == http.StatusUnauthorized {
+			t.Errorf("GET %s (exempt): got 401, should be allowed", endpoint)
+		}
+	}
+}
+
+// TestRequirePrincipalAllowsAuthenticated verifies that API endpoints succeed
+// when requirePrincipal is enabled and a principal is present in context.
+func TestRequirePrincipalAllowsAuthenticated(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiServer := NewServer(factStore)
+	apiServer.SetRequirePrincipal(true)
+
+	handler := apiServer.Handler()
+
+	// Create a request with a principal in context.
+	request, _ := http.NewRequest("GET", "/api/status", nil)
+	enrichedContext := security.WithPrincipal(request.Context(), "node:test-node")
+	request = request.WithContext(enrichedContext)
+
+	recorder := &httpResponseRecorder{statusCode: 200, header: make(http.Header)}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.statusCode == http.StatusUnauthorized {
+		t.Error("request with principal should not get 401")
+	}
+}
+
+// TestAuthorizedStoreEnforcesRBAC verifies that an enrolled node with the
+// node-agent role can write to observed/ but is denied writes to desired/.
+func TestAuthorizedStoreEnforcesRBAC(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	rbacAuthorizer := security.NewRBACAuthorizer()
+	for _, builtinRole := range security.BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+
+	rbacAuthorizer.BindRole(security.RoleBinding{
+		Principal: "node:node-1",
+		RoleName:  "node-agent",
+	})
+
+	auditLog := security.NewInMemoryAuditLog(100)
+	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+
+	ctx := context.Background()
+
+	// Node agent should be able to write observed/ keys.
+	nodeContext := security.WithPrincipal(ctx, "node:node-1")
+	_, putError := authorizedStore.Put(nodeContext, "observed/node/node-1/state", []byte("alive"))
+	if putError != nil {
+		t.Fatalf("node-agent writing observed/: unexpected error: %v", putError)
+	}
+
+	// Node agent should be denied writing desired/ keys.
+	_, putError = authorizedStore.Put(nodeContext, "desired/service/web/instances", []byte("5"))
+	if putError == nil {
+		t.Fatal("node-agent writing desired/: expected authorization error, got nil")
+	}
+}
+
+// TestPolicyGateBlocksUnauthorizedApply verifies that /api/apply returns 403
+// when the policy gate denies the request (e.g., principal lacks write permission).
+func TestPolicyGateBlocksUnauthorizedApply(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	rbacAuthorizer := security.NewRBACAuthorizer()
+	for _, builtinRole := range security.BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	// Bind a read-only role — principal can read but not write.
+	rbacAuthorizer.AddRole(security.Role{
+		Name: "reader-only",
+		Rules: []security.Rule{
+			{KeyPrefix: "", Operations: []security.Permission{security.PermissionRead}},
+		},
+	})
+	rbacAuthorizer.BindRole(security.RoleBinding{
+		Principal: "user:alice",
+		RoleName:  "reader-only",
+	})
+
+	auditLog := security.NewInMemoryAuditLog(100)
+	tenantRegistry := tenant.NewTenantRegistry(factStore)
+	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
+	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
+
+	apiServer := NewServer(factStore)
+	apiServer.SetPolicyGate(policyGate)
+	apiServer.SetRequirePrincipal(true)
+
+	handler := apiServer.Handler()
+
+	dslConfig := `service web { image nginx:1.28  instances 1  expose 8080 }`
+	request, _ := http.NewRequest("POST", "/api/apply", strings.NewReader(dslConfig))
+	request.Header.Set("Content-Type", "text/plain")
+	enrichedContext := security.WithPrincipal(request.Context(), "user:alice")
+	request = request.WithContext(enrichedContext)
+
+	recorder := &httpResponseRecorder{statusCode: 200, header: make(http.Header)}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.statusCode != http.StatusForbidden {
+		t.Errorf("unauthorized apply: got %d, want 403", recorder.statusCode)
+	}
+}
+
+// TestAPIAuthorizerReaderDeniedOnApply verifies that an api-reader principal
+// gets 403 when trying to POST /api/apply (requires workload.create capability).
+func TestAPIAuthorizerReaderDeniedOnApply(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:reader", "api-reader")
+
+	apiServer := NewServer(factStore)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+	handler := apiServer.Handler()
+
+	dslConfig := `service web { image nginx:1.28  instances 1  expose 8080 }`
+	request, _ := http.NewRequest("POST", "/api/apply", strings.NewReader(dslConfig))
+	request.Header.Set("Content-Type", "text/plain")
+	readerPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "reader"}
+	enrichedContext := security.WithPrincipalStruct(request.Context(), readerPrincipal)
+	enrichedContext = security.WithPrincipal(enrichedContext, "user:reader")
+	request = request.WithContext(enrichedContext)
+
+	recorder := &httpResponseRecorder{statusCode: 200, header: make(http.Header)}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.statusCode != http.StatusForbidden {
+		t.Errorf("api-reader on POST /api/apply: got %d, want 403", recorder.statusCode)
+	}
+}
+
+// TestAPIAuthorizerReaderAllowedOnState verifies that an api-reader principal
+// can GET /api/state (requires workload.read capability).
+func TestAPIAuthorizerReaderAllowedOnState(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:reader", "api-reader")
+
+	apiServer := NewServer(factStore)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+	handler := apiServer.Handler()
+
+	request, _ := http.NewRequest("GET", "/api/state?prefix=desired/", nil)
+	readerPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "reader"}
+	enrichedContext := security.WithPrincipalStruct(request.Context(), readerPrincipal)
+	enrichedContext = security.WithPrincipal(enrichedContext, "user:reader")
+	request = request.WithContext(enrichedContext)
+
+	recorder := &httpResponseRecorder{statusCode: 200, header: make(http.Header)}
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.statusCode == http.StatusForbidden {
+		t.Error("api-reader on GET /api/state: should not get 403")
+	}
+}
+
+// httpResponseRecorder is a minimal http.ResponseWriter for handler unit tests.
+type httpResponseRecorder struct {
+	statusCode int
+	body       strings.Builder
+	header     http.Header
+}
+
+func (recorder *httpResponseRecorder) Header() http.Header {
+	return recorder.header
+}
+
+func (recorder *httpResponseRecorder) Write(data []byte) (int, error) {
+	return recorder.body.Write(data)
+}
+
+func (recorder *httpResponseRecorder) WriteHeader(statusCode int) {
+	recorder.statusCode = statusCode
 }

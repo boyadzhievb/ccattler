@@ -13,6 +13,17 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
+// defaultEtcdDialTimeout is the timeout for establishing a connection to an
+// etcd server when no explicit timeout is configured. Mirrors
+// types.DefaultEtcdDialTimeout but defined locally to avoid an import cycle
+// (types imports store).
+const defaultEtcdDialTimeout = 5 * time.Second
+
+// defaultEtcdWatchBuffer is the channel buffer size for etcd watch event
+// delivery. Must be large enough to absorb event bursts without blocking the
+// etcd gRPC stream, but small enough to bound memory per watch.
+const defaultEtcdWatchBuffer = 64
+
 // EtcdStore is a distributed implementation of StateStore backed by an etcd cluster.
 // It provides strongly consistent reads, prefix-based watches, optimistic-concurrency
 // transactions, and global revision tracking — all mapped from the StateStore interface
@@ -51,7 +62,7 @@ type EtcdStoreConfig struct {
 func NewEtcdStore(config EtcdStoreConfig) (*EtcdStore, error) {
 	dialTimeout := config.DialTimeout
 	if dialTimeout == 0 {
-		dialTimeout = 5 * time.Second
+		dialTimeout = defaultEtcdDialTimeout
 	}
 
 	etcdClient, connectionError := clientv3.New(clientv3.Config{
@@ -252,7 +263,7 @@ func (etcdStore *EtcdStore) Watch(ctx context.Context, key string, opts WatchOpt
 		return nil, closedError
 	}
 
-	eventChannel := make(chan Event, 64)
+	eventChannel := make(chan Event, defaultEtcdWatchBuffer)
 
 	var watchOptions []clientv3.OpOption
 	if opts.Prefix {

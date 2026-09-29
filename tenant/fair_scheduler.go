@@ -10,6 +10,18 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// underGuaranteePriorityBoost is added to a tenant's priority score when it
+	// is running below its guaranteed resource share, ensuring it gets scheduled
+	// before tenants that are borrowing.
+	underGuaranteePriorityBoost = 1000
+
+	// borrowingBasePriority is the starting priority for tenants that are above
+	// their guarantee and borrowing from others. Lower borrowing values yield
+	// higher priority within this band.
+	borrowingBasePriority = 500
+)
+
 // FairScheduler advises the placement scheduler on tenant-weighted priorities.
 // When cluster resources are scarce, tenants with higher weights receive
 // proportionally more capacity. Unused guarantees become borrowable — a tenant
@@ -112,9 +124,9 @@ func (fairScheduler *FairScheduler) PrioritizeTenant(ctx context.Context, tenant
 		if share.TenantName == tenantName {
 			deficit := share.GuaranteedCPU - share.CurrentCPU
 			if deficit > 0 {
-				return 1000 + deficit
+				return underGuaranteePriorityBoost + deficit
 			}
-			return 500 - share.Borrowing
+			return borrowingBasePriority - share.Borrowing
 		}
 	}
 	return 0
@@ -230,7 +242,7 @@ func (fairScheduler *FairScheduler) countTenantInstances(ctx context.Context, te
 
 	count := 0
 	for instanceID, serviceName := range instanceServices {
-		if instanceStates[instanceID] == "stopped" {
+		if instanceStates[instanceID] == string(types.InstanceStopped) {
 			continue
 		}
 		owner, err := fairScheduler.registry.ResolveTenantForService(ctx, serviceName)

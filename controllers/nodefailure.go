@@ -10,6 +10,10 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// defaultNodeFailureLeaseTimeout is the duration since the last heartbeat
+// before a node is considered unreachable by the failure controller.
+const defaultNodeFailureLeaseTimeout = 5 * time.Second
+
 // NodeFailureController watches node heartbeat leases and marks nodes as
 // unreachable when their lease expires. It also marks all instances placed
 // on unreachable nodes as failed, so the failure controller can reschedule them.
@@ -27,7 +31,7 @@ type NodeFailureController struct {
 // default lease timeout and time.Now as the clock source.
 func NewNodeFailureController() *NodeFailureController {
 	return &NodeFailureController{
-		LeaseTimeout: 5 * time.Second,
+		LeaseTimeout: defaultNodeFailureLeaseTimeout,
 		Now:          time.Now,
 	}
 }

@@ -213,59 +213,14 @@ func buildServiceDescribe(ctx context.Context, factStore store.StateStore, event
 	describe.Config = buildServiceConfig(ctx, factStore, serviceName)
 	describe.Secrets = buildServiceSecrets(ctx, factStore, serviceName)
 
-	allInstances, _ := types.ListInstances(ctx, factStore)
-	for _, instance := range allInstances {
-		if instance.Service != serviceName || instance.State == types.InstanceStopped {
-			continue
-		}
-		if instance.State == types.InstanceRunning {
-			describe.RunningInstances++
-		}
-		placedNode := ""
-		if placementFact, placementErr := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); placementErr == nil {
-			placedNode = string(placementFact.Value)
-		}
-		healthDisplay := string(instance.Health)
-		if healthDisplay == "" {
-			healthDisplay = "-"
-		}
-		restartCount := ""
-		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
-			restartCount = string(restartFact.Value)
-		}
-		ipDisplay := instance.IP
-		if ipDisplay == "" {
-			ipDisplay = "-"
-		}
-		describe.Instances = append(describe.Instances, DescribeInstanceSummary{
-			ID:        instance.ID,
-			State:     string(instance.State),
-			NodeID:    placedNode,
-			IPAddress: ipDisplay,
-			Health:    healthDisplay,
-			Restarts:  restartCount,
-		})
-	}
-	sort.Slice(describe.Instances, func(i, j int) bool {
-		return describe.Instances[i].ID < describe.Instances[j].ID
-	})
+	describe.Instances, describe.RunningInstances = collectInstanceSummariesForService(ctx, factStore, serviceName)
 
 	endpointFacts, _ := factStore.Scan(ctx, fmt.Sprintf("%s/service/%s/", types.PrefixEndpoint, serviceName))
 	for _, endpointFact := range endpointFacts {
 		describe.Endpoints = append(describe.Endpoints, string(endpointFact.Value))
 	}
 
-	if eventLog != nil {
-		recentEvents, _ := eventLog.ForTarget(ctx, serviceName, 10)
-		for _, event := range recentEvents {
-			describe.Events = append(describe.Events, DescribeEvent{
-				Timestamp: event.Timestamp.Format("2006-01-02 15:04:05"),
-				Kind:      event.Kind,
-				Detail:    event.Detail,
-				Source:    event.Source,
-			})
-		}
-	}
+	describe.Events = collectRecentEventsForDescribe(ctx, eventLog, serviceName, 10)
 
 	return describe, nil
 }
@@ -288,87 +243,11 @@ func buildNodeDescribe(ctx context.Context, factStore store.StateStore, eventLog
 		AvailableMemory: node.AvailableMemory,
 	}
 
-	if addressFact, addressErr := factStore.Get(ctx, types.KeyObservedNodeAddress(nodeID)); addressErr == nil {
-		describe.Address = string(addressFact.Value)
-	}
-	if cpuUtilFact, cpuErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationCPU(nodeID)); cpuErr == nil {
-		describe.UtilizationCPU = string(cpuUtilFact.Value)
-	}
-	if memUtilFact, memErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationMemory(nodeID)); memErr == nil {
-		describe.UtilizationMemory = string(memUtilFact.Value)
-	}
-	if workloadFact, workloadErr := factStore.Get(ctx, types.KeyObservedNodeWorkloadCount(nodeID)); workloadErr == nil {
-		describe.WorkloadCount = string(workloadFact.Value)
-	}
-	if subnetFact, subnetErr := factStore.Get(ctx, types.KeyNetworkNodeSubnet(nodeID)); subnetErr == nil {
-		describe.Subnet = string(subnetFact.Value)
-	}
-
-	labelPrefix := fmt.Sprintf("%s/node/%s/label/", types.PrefixObserved, nodeID)
-	labelFacts, _ := factStore.Scan(ctx, labelPrefix)
-	if len(labelFacts) > 0 {
-		describe.Labels = make(map[string]string)
-		for _, labelFact := range labelFacts {
-			labelName := strings.TrimPrefix(labelFact.Key, labelPrefix)
-			describe.Labels[labelName] = string(labelFact.Value)
-		}
-	}
-
-	restrictPrefix := fmt.Sprintf("%s/node/%s/restrict/", types.PrefixObserved, nodeID)
-	restrictFacts, _ := factStore.Scan(ctx, restrictPrefix)
-	for _, restrictFact := range restrictFacts {
-		restrictLabel := strings.TrimPrefix(restrictFact.Key, restrictPrefix)
-		describe.Restrictions = append(describe.Restrictions, restrictLabel)
-	}
-
-	allInstances, _ := types.ListInstances(ctx, factStore)
-	for _, instance := range allInstances {
-		if instance.State == types.InstanceStopped {
-			continue
-		}
-		placedNode := ""
-		if placementFact, placementErr := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); placementErr == nil {
-			placedNode = string(placementFact.Value)
-		}
-		if placedNode != nodeID {
-			continue
-		}
-		healthDisplay := string(instance.Health)
-		if healthDisplay == "" {
-			healthDisplay = "-"
-		}
-		restartCount := ""
-		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
-			restartCount = string(restartFact.Value)
-		}
-		ipDisplay := instance.IP
-		if ipDisplay == "" {
-			ipDisplay = "-"
-		}
-		describe.Instances = append(describe.Instances, DescribeInstanceSummary{
-			ID:        instance.ID,
-			State:     string(instance.State),
-			Service:   instance.Service,
-			IPAddress: ipDisplay,
-			Health:    healthDisplay,
-			Restarts:  restartCount,
-		})
-	}
-	sort.Slice(describe.Instances, func(i, j int) bool {
-		return describe.Instances[i].ID < describe.Instances[j].ID
-	})
-
-	if eventLog != nil {
-		recentEvents, _ := eventLog.ForTarget(ctx, nodeID, 10)
-		for _, event := range recentEvents {
-			describe.Events = append(describe.Events, DescribeEvent{
-				Timestamp: event.Timestamp.Format("2006-01-02 15:04:05"),
-				Kind:      event.Kind,
-				Detail:    event.Detail,
-				Source:    event.Source,
-			})
-		}
-	}
+	populateNodeObservedTelemetry(ctx, factStore, describe)
+	describe.Labels = collectNodeLabelsFromStore(ctx, factStore, nodeID)
+	describe.Restrictions = collectNodeRestrictionsFromStore(ctx, factStore, nodeID)
+	describe.Instances = collectInstancesPlacedOnNode(ctx, factStore, nodeID)
+	describe.Events = collectRecentEventsForDescribe(ctx, eventLog, nodeID, 10)
 
 	return describe, nil
 }
@@ -410,13 +289,13 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 	if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instanceID)); restartErr == nil {
 		describe.Restarts = string(restartFact.Value)
 	}
-	if startupFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "startup")); startupErr == nil {
+	if startupFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeStartup)); startupErr == nil {
 		describe.StartupProbe = string(startupFact.Value)
 	}
-	if livenessFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "liveness")); livenessErr == nil {
+	if livenessFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeLiveness)); livenessErr == nil {
 		describe.LivenessProbe = string(livenessFact.Value)
 	}
-	if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, "readiness")); readinessErr == nil {
+	if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness)); readinessErr == nil {
 		describe.ReadinessProbe = string(readinessFact.Value)
 	}
 
@@ -425,17 +304,7 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 		describe.Endpoint = string(endpointFacts[0].Value)
 	}
 
-	if eventLog != nil {
-		recentEvents, _ := eventLog.ForTarget(ctx, instanceID, 10)
-		for _, event := range recentEvents {
-			describe.Events = append(describe.Events, DescribeEvent{
-				Timestamp: event.Timestamp.Format("2006-01-02 15:04:05"),
-				Kind:      event.Kind,
-				Detail:    event.Detail,
-				Source:    event.Source,
-			})
-		}
-	}
+	describe.Events = collectRecentEventsForDescribe(ctx, eventLog, instanceID, 10)
 
 	return describe, nil
 }
@@ -509,12 +378,12 @@ func buildServiceHealth(ctx context.Context, factStore store.StateStore, service
 // buildServiceProbes reads startup, liveness, and readiness probe configurations.
 func buildServiceProbes(ctx context.Context, factStore store.StateStore, serviceName string) []DescribeProbe {
 	var probes []DescribeProbe
-	for _, probeType := range []string{"startup", "liveness", "readiness"} {
+	for _, probeType := range types.AllProbeTypes {
 		probeFacts, _ := factStore.Scan(ctx, types.ScanDesiredServiceProbe(serviceName, probeType))
 		if len(probeFacts) == 0 {
 			continue
 		}
-		probe := DescribeProbe{Type: probeType}
+		probe := DescribeProbe{Type: string(probeType)}
 		for _, fact := range probeFacts {
 			field := strings.TrimPrefix(fact.Key, types.ScanDesiredServiceProbe(serviceName, probeType))
 			value := string(fact.Value)
@@ -689,4 +558,169 @@ func buildServiceSecrets(ctx context.Context, factStore store.StateStore, servic
 		})
 	}
 	return grants
+}
+
+// collectInstanceSummariesForService finds all non-stopped instances for the
+// given service and returns sorted instance summaries along with a count of
+// running instances.
+func collectInstanceSummariesForService(ctx context.Context, factStore store.StateStore, serviceName string) ([]DescribeInstanceSummary, int) {
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	var summaries []DescribeInstanceSummary
+	runningCount := 0
+	for _, instance := range allInstances {
+		if instance.Service != serviceName || instance.State == types.InstanceStopped {
+			continue
+		}
+		if instance.State == types.InstanceRunning {
+			runningCount++
+		}
+		placedNode := ""
+		if placementFact, placementErr := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); placementErr == nil {
+			placedNode = string(placementFact.Value)
+		}
+		healthDisplay := string(instance.Health)
+		if healthDisplay == "" {
+			healthDisplay = "-"
+		}
+		restartCount := ""
+		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
+			restartCount = string(restartFact.Value)
+		}
+		ipDisplay := instance.IP
+		if ipDisplay == "" {
+			ipDisplay = "-"
+		}
+		summaries = append(summaries, DescribeInstanceSummary{
+			ID:        instance.ID,
+			State:     string(instance.State),
+			NodeID:    placedNode,
+			IPAddress: ipDisplay,
+			Health:    healthDisplay,
+			Restarts:  restartCount,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ID < summaries[j].ID
+	})
+	return summaries, runningCount
+}
+
+// collectInstancesPlacedOnNode finds all non-stopped instances placed on the
+// given node and returns sorted instance summaries including health and
+// restart count.
+func collectInstancesPlacedOnNode(ctx context.Context, factStore store.StateStore, nodeID string) []DescribeInstanceSummary {
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	var summaries []DescribeInstanceSummary
+	for _, instance := range allInstances {
+		if instance.State == types.InstanceStopped {
+			continue
+		}
+		placedNode := ""
+		if placementFact, placementErr := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); placementErr == nil {
+			placedNode = string(placementFact.Value)
+		}
+		if placedNode != nodeID {
+			continue
+		}
+		healthDisplay := string(instance.Health)
+		if healthDisplay == "" {
+			healthDisplay = "-"
+		}
+		restartCount := ""
+		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
+			restartCount = string(restartFact.Value)
+		}
+		ipDisplay := instance.IP
+		if ipDisplay == "" {
+			ipDisplay = "-"
+		}
+		summaries = append(summaries, DescribeInstanceSummary{
+			ID:        instance.ID,
+			State:     string(instance.State),
+			Service:   instance.Service,
+			IPAddress: ipDisplay,
+			Health:    healthDisplay,
+			Restarts:  restartCount,
+		})
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].ID < summaries[j].ID
+	})
+	return summaries
+}
+
+// populateNodeObservedTelemetry reads observed utilization, address, and subnet
+// facts for a node and populates the corresponding NodeDescribe fields.
+func populateNodeObservedTelemetry(ctx context.Context, factStore store.StateStore, nodeDescribe *NodeDescribe) {
+	nodeID := nodeDescribe.ID
+	if addressFact, addressErr := factStore.Get(ctx, types.KeyObservedNodeAddress(nodeID)); addressErr == nil {
+		nodeDescribe.Address = string(addressFact.Value)
+	}
+	if cpuUtilFact, cpuErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationCPU(nodeID)); cpuErr == nil {
+		nodeDescribe.UtilizationCPU = string(cpuUtilFact.Value)
+	}
+	if memUtilFact, memErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationMemory(nodeID)); memErr == nil {
+		nodeDescribe.UtilizationMemory = string(memUtilFact.Value)
+	}
+	if workloadFact, workloadErr := factStore.Get(ctx, types.KeyObservedNodeWorkloadCount(nodeID)); workloadErr == nil {
+		nodeDescribe.WorkloadCount = string(workloadFact.Value)
+	}
+	if subnetFact, subnetErr := factStore.Get(ctx, types.KeyNetworkNodeSubnet(nodeID)); subnetErr == nil {
+		nodeDescribe.Subnet = string(subnetFact.Value)
+	}
+}
+
+// collectNodeLabelsFromStore reads all label facts for a node and returns them
+// as a map. Returns nil if no labels exist.
+func collectNodeLabelsFromStore(ctx context.Context, factStore store.StateStore, nodeID string) map[string]string {
+	labelPrefix := fmt.Sprintf("%s/node/%s/label/", types.PrefixObserved, nodeID)
+	labelFacts, _ := factStore.Scan(ctx, labelPrefix)
+	if len(labelFacts) == 0 {
+		return nil
+	}
+	labels := make(map[string]string, len(labelFacts))
+	for _, labelFact := range labelFacts {
+		labelName := strings.TrimPrefix(labelFact.Key, labelPrefix)
+		labels[labelName] = string(labelFact.Value)
+	}
+	return labels
+}
+
+// collectNodeRestrictionsFromStore reads all restriction facts for a node and
+// returns them as a string slice. Returns nil if no restrictions exist.
+func collectNodeRestrictionsFromStore(ctx context.Context, factStore store.StateStore, nodeID string) []string {
+	restrictPrefix := fmt.Sprintf("%s/node/%s/restrict/", types.PrefixObserved, nodeID)
+	restrictFacts, _ := factStore.Scan(ctx, restrictPrefix)
+	if len(restrictFacts) == 0 {
+		return nil
+	}
+	restrictions := make([]string, 0, len(restrictFacts))
+	for _, restrictFact := range restrictFacts {
+		restrictLabel := strings.TrimPrefix(restrictFact.Key, restrictPrefix)
+		restrictions = append(restrictions, restrictLabel)
+	}
+	return restrictions
+}
+
+// collectRecentEventsForDescribe reads up to maxEvents recent events for the
+// given target from the event log and converts them to DescribeEvent format.
+// Returns nil if the event log is nil or no events exist.
+func collectRecentEventsForDescribe(ctx context.Context, eventLog *types.EventLog, targetID string, maxEvents int) []DescribeEvent {
+	if eventLog == nil {
+		return nil
+	}
+	recentEvents, _ := eventLog.ForTarget(ctx, targetID, maxEvents)
+	if len(recentEvents) == 0 {
+		return nil
+	}
+	describeEvents := make([]DescribeEvent, 0, len(recentEvents))
+	for _, event := range recentEvents {
+		describeEvents = append(describeEvents, DescribeEvent{
+			Timestamp: event.Timestamp.Format("2006-01-02 15:04:05"),
+			Kind:      event.Kind,
+			Detail:    event.Detail,
+			Source:    event.Source,
+		})
+	}
+	return describeEvents
 }

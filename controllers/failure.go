@@ -126,7 +126,7 @@ func (failureController *FailureController) beginDrain(instanceID string, now ti
 	return []Change{
 		{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceProbeState(instanceID, "readiness"),
+			Key:   types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness),
 			Value: []byte(string(types.ReadinessProbeNotReady)),
 		},
 		{

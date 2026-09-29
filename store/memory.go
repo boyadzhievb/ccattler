@@ -391,44 +391,14 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 		return false, ErrStoreClosed
 	}
 
-	allPreconditionsMet := true
-	for _, comparison := range compares {
-		existingFact, factExists := memStore.facts[comparison.Key]
-		if comparison.Revision == 0 {
-			if factExists {
-				allPreconditionsMet = false
-				break
-			}
-		} else {
-			if !factExists || existingFact.Revision != comparison.Revision {
-				allPreconditionsMet = false
-				break
-			}
-		}
-	}
+	allPreconditionsMet := memStore.evaluateTransactionPreconditions(compares)
 
 	operationsToExecute := onSuccess
 	if !allPreconditionsMet {
 		operationsToExecute = onFailure
 	}
 
-	// Determine if any operation will actually mutate state.
-	hasMutation := false
-	for _, operation := range operationsToExecute {
-		switch operation.Type {
-		case OpPut:
-			if existingFact, factExists := memStore.facts[operation.Key]; !factExists || !bytes.Equal(existingFact.Value, operation.Value) {
-				hasMutation = true
-			}
-		case OpDelete:
-			if _, factExists := memStore.facts[operation.Key]; factExists {
-				hasMutation = true
-			}
-		}
-		if hasMutation {
-			break
-		}
-	}
+	hasMutation := memStore.transactionWouldMutateState(operationsToExecute)
 
 	// All operations in a transaction share a single revision.
 	var transactionRevision int64
@@ -437,7 +407,55 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 		transactionRevision = memStore.currentRevision
 	}
 
-	for _, operation := range operationsToExecute {
+	memStore.executeTransactionOperations(operationsToExecute, transactionRevision)
+
+	return allPreconditionsMet, nil
+}
+
+// evaluateTransactionPreconditions checks whether all compare preconditions
+// are satisfied against the current store state. A compare with Revision == 0
+// asserts the key must not exist; any other revision asserts the key must exist
+// at exactly that revision. Must be called with mutex held.
+func (memStore *MemoryStore) evaluateTransactionPreconditions(compares []Compare) bool {
+	for _, comparison := range compares {
+		existingFact, factExists := memStore.facts[comparison.Key]
+		if comparison.Revision == 0 {
+			if factExists {
+				return false
+			}
+		} else {
+			if !factExists || existingFact.Revision != comparison.Revision {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// transactionWouldMutateState determines whether any operation in the list
+// would actually change the store state. Puts that write an identical value
+// and deletes of non-existent keys are no-ops. Must be called with mutex held.
+func (memStore *MemoryStore) transactionWouldMutateState(operations []Op) bool {
+	for _, operation := range operations {
+		switch operation.Type {
+		case OpPut:
+			if existingFact, factExists := memStore.facts[operation.Key]; !factExists || !bytes.Equal(existingFact.Value, operation.Value) {
+				return true
+			}
+		case OpDelete:
+			if _, factExists := memStore.facts[operation.Key]; factExists {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// executeTransactionOperations applies a batch of put and delete operations at
+// a single transaction revision, broadcasting watch events for each mutation.
+// Must be called with mutex held.
+func (memStore *MemoryStore) executeTransactionOperations(operations []Op, transactionRevision int64) {
+	for _, operation := range operations {
 		switch operation.Type {
 		case OpPut:
 			if existingFact, factExists := memStore.facts[operation.Key]; factExists && bytes.Equal(existingFact.Value, operation.Value) {
@@ -488,8 +506,6 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 			}
 		}
 	}
-
-	return allPreconditionsMet, nil
 }
 
 // Revision returns the current store-global revision counter, which increases

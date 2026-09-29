@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/api"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // eventsCommandConfig holds parsed flags for the "events" command.
@@ -234,7 +235,7 @@ func findInstanceIDsForService(facts []struct {
 
 	var instanceIDs []string
 	for instanceID := range serviceMap {
-		if stateMap[instanceID] == "running" {
+		if stateMap[instanceID] == string(types.InstanceRunning) {
 			instanceIDs = append(instanceIDs, instanceID)
 		}
 	}
@@ -442,8 +443,22 @@ func executeDescribeCommand(resourceType, resourceName string) {
 	}
 }
 
-// printServiceDescribe renders a ServiceDescribe as human-readable text output.
+// printServiceDescribe renders a ServiceDescribe as human-readable text output,
+// delegating to per-section printer functions for each detail category.
 func printServiceDescribe(serviceDetail api.ServiceDescribe) {
+	printServiceDescribeBasicInfo(serviceDetail)
+	printServiceDescribePlacement(serviceDetail)
+	printServiceDescribeHealthAndProbes(serviceDetail)
+	printServiceDescribeInitSteps(serviceDetail)
+	printServiceDescribeScalingAndRollout(serviceDetail)
+	printServiceDescribeNetworkingAndConfig(serviceDetail)
+	printServiceDescribeInstances(serviceDetail)
+	printDescribeEvents(serviceDetail.Events)
+}
+
+// printServiceDescribeBasicInfo prints the name, image, instance counts, ports,
+// and resource requirements for a service describe output.
+func printServiceDescribeBasicInfo(serviceDetail api.ServiceDescribe) {
 	fmt.Printf("Name:       %s\n", serviceDetail.Name)
 	fmt.Printf("Image:      %s\n", serviceDetail.Image)
 	fmt.Printf("Instances:  %d desired, %d running\n", serviceDetail.DesiredInstances, serviceDetail.RunningInstances)
@@ -465,27 +480,36 @@ func printServiceDescribe(serviceDetail api.ServiceDescribe) {
 			fmt.Printf("  Memory:   %s\n", serviceDetail.Resources.Memory)
 		}
 	}
+}
 
-	if serviceDetail.Placement != nil {
-		fmt.Println()
-		fmt.Println("Placement:")
-		if serviceDetail.Placement.Architecture != "" {
-			fmt.Printf("  Architecture:  %s\n", serviceDetail.Placement.Architecture)
-		}
-		if serviceDetail.Placement.ZonePolicy != "" {
-			fmt.Printf("  Zone policy:   %s\n", serviceDetail.Placement.ZonePolicy)
-		}
-		for label, value := range serviceDetail.Placement.Require {
-			fmt.Printf("  Require:       %s = %s\n", label, value)
-		}
-		for label, value := range serviceDetail.Placement.Prefer {
-			fmt.Printf("  Prefer:        %s = %s\n", label, value)
-		}
-		for _, label := range serviceDetail.Placement.Accept {
-			fmt.Printf("  Accept:        %s\n", label)
-		}
+// printServiceDescribePlacement prints the placement constraints section
+// including architecture, zone policy, require, prefer, and accept labels.
+func printServiceDescribePlacement(serviceDetail api.ServiceDescribe) {
+	if serviceDetail.Placement == nil {
+		return
 	}
+	fmt.Println()
+	fmt.Println("Placement:")
+	if serviceDetail.Placement.Architecture != "" {
+		fmt.Printf("  Architecture:  %s\n", serviceDetail.Placement.Architecture)
+	}
+	if serviceDetail.Placement.ZonePolicy != "" {
+		fmt.Printf("  Zone policy:   %s\n", serviceDetail.Placement.ZonePolicy)
+	}
+	for label, value := range serviceDetail.Placement.Require {
+		fmt.Printf("  Require:       %s = %s\n", label, value)
+	}
+	for label, value := range serviceDetail.Placement.Prefer {
+		fmt.Printf("  Prefer:        %s = %s\n", label, value)
+	}
+	for _, label := range serviceDetail.Placement.Accept {
+		fmt.Printf("  Accept:        %s\n", label)
+	}
+}
 
+// printServiceDescribeHealthAndProbes prints the health check configuration
+// and probe definitions (startup, liveness, readiness) for a service.
+func printServiceDescribeHealthAndProbes(serviceDetail api.ServiceDescribe) {
 	if serviceDetail.Health != nil {
 		fmt.Println()
 		fmt.Println("Health Check:")
@@ -518,22 +542,31 @@ func printServiceDescribe(serviceDetail api.ServiceDescribe) {
 			}
 		}
 	}
+}
 
-	if len(serviceDetail.InitSteps) > 0 {
-		fmt.Println()
-		fmt.Println("Init Steps:")
-		for _, step := range serviceDetail.InitSteps {
-			fmt.Printf("  [%d] exec %q", step.Index, step.Exec)
-			if step.Timeout != "" {
-				fmt.Printf("  timeout=%s", step.Timeout)
-			}
-			if step.Retry != "" {
-				fmt.Printf("  retry=%s", step.Retry)
-			}
-			fmt.Println()
-		}
+// printServiceDescribeInitSteps prints the ordered initialization steps that
+// run before the main workload starts.
+func printServiceDescribeInitSteps(serviceDetail api.ServiceDescribe) {
+	if len(serviceDetail.InitSteps) == 0 {
+		return
 	}
+	fmt.Println()
+	fmt.Println("Init Steps:")
+	for _, step := range serviceDetail.InitSteps {
+		fmt.Printf("  [%d] exec %q", step.Index, step.Exec)
+		if step.Timeout != "" {
+			fmt.Printf("  timeout=%s", step.Timeout)
+		}
+		if step.Retry != "" {
+			fmt.Printf("  retry=%s", step.Retry)
+		}
+		fmt.Println()
+	}
+}
 
+// printServiceDescribeScalingAndRollout prints autoscaling targets, update
+// strategy constraints, and active rollout state for a service.
+func printServiceDescribeScalingAndRollout(serviceDetail api.ServiceDescribe) {
 	if serviceDetail.Autoscaling != nil {
 		fmt.Println()
 		fmt.Println("Autoscaling:")
@@ -565,7 +598,11 @@ func printServiceDescribe(serviceDetail api.ServiceDescribe) {
 			fmt.Printf("  Failures:        %s\n", serviceDetail.Rollout.Failures)
 		}
 	}
+}
 
+// printServiceDescribeNetworkingAndConfig prints the networking configuration
+// (VIP, port, DNS), config entries, secrets, and endpoints for a service.
+func printServiceDescribeNetworkingAndConfig(serviceDetail api.ServiceDescribe) {
 	if serviceDetail.Networking != nil {
 		fmt.Println()
 		fmt.Println("Networking:")
@@ -603,24 +640,27 @@ func printServiceDescribe(serviceDetail api.ServiceDescribe) {
 			fmt.Printf("  %s\n", endpoint)
 		}
 	}
+}
 
-	if len(serviceDetail.Instances) > 0 {
-		fmt.Println()
-		fmt.Println("Instances:")
-		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
-			"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS")
-		for _, instanceSummary := range serviceDetail.Instances {
-			restartDisplay := instanceSummary.Restarts
-			if restartDisplay == "" {
-				restartDisplay = "0"
-			}
-			fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
-				instanceSummary.ID, instanceSummary.State, instanceSummary.NodeID,
-				instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
-		}
+// printServiceDescribeInstances prints the instance table showing ID, state,
+// node, IP, health, and restart count for each instance of the service.
+func printServiceDescribeInstances(serviceDetail api.ServiceDescribe) {
+	if len(serviceDetail.Instances) == 0 {
+		return
 	}
-
-	printDescribeEvents(serviceDetail.Events)
+	fmt.Println()
+	fmt.Println("Instances:")
+	fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
+		"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS")
+	for _, instanceSummary := range serviceDetail.Instances {
+		restartDisplay := instanceSummary.Restarts
+		if restartDisplay == "" {
+			restartDisplay = "0"
+		}
+		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
+			instanceSummary.ID, instanceSummary.State, instanceSummary.NodeID,
+			instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
+	}
 }
 
 // printNodeDescribe renders a NodeDescribe as human-readable text output.

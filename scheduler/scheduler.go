@@ -50,71 +50,19 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	serviceResources := extractServiceResourcesFromFacts(facts)
 	placementConstraints := extractPlacementConstraints(facts)
 
-	// Find pending instances that have no placement.
-	var unplaced []string
-	for instanceID, instanceInfo := range instances {
-		if instanceInfo.state == types.InstancePending && placements[instanceID] == "" {
-			unplaced = append(unplaced, instanceID)
-		}
-	}
+	unplaced := findUnplacedPendingInstances(instances, placements)
 	if len(unplaced) == 0 {
 		return nil, nil
 	}
-	sort.Strings(unplaced)
 
-	// Count existing placements per node and track consumed resources.
-	loadPerNode := make(map[string]int)
-	usedCPU := make(map[string]int64)
-	usedMemory := make(map[string]int64)
-	for instanceID, nodeID := range placements {
-		loadPerNode[nodeID]++
-		if instanceInfo := instances[instanceID]; instanceInfo != nil {
-			if resource, ok := serviceResources[instanceInfo.service]; ok {
-				usedCPU[nodeID] += resource.cpu
-				usedMemory[nodeID] += resource.memory
-			}
-		}
-	}
+	loadPerNode, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
 
-	// Build alive node list with available resources.
-	var alive []candidateNode
-	for _, node := range nodes {
-		if node.state != types.NodeAlive {
-			continue
-		}
-		alive = append(alive, candidateNode{
-			id:           node.id,
-			availCPU:     node.availCPU - usedCPU[node.id],
-			availMemory:  node.availMemory - usedMemory[node.id],
-			architecture: node.architecture,
-			zone:         node.zone,
-			labels:       node.labels,
-			restrictions: node.restrictions,
-		})
-	}
+	alive := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
 	if len(alive) == 0 {
 		return nil, nil
 	}
-	sort.Slice(alive, func(i, j int) bool {
-		return alive[i].id < alive[j].id
-	})
 
-	// Track zone placements per service for zone-spread.
-	serviceZoneCounts := make(map[string]map[string]int)
-	for instanceID, nodeID := range placements {
-		instanceInfo := instances[instanceID]
-		if instanceInfo == nil || instanceInfo.state == types.InstanceStopped {
-			continue
-		}
-		for _, node := range alive {
-			if node.id == nodeID && node.zone != "" {
-				if serviceZoneCounts[instanceInfo.service] == nil {
-					serviceZoneCounts[instanceInfo.service] = make(map[string]int)
-				}
-				serviceZoneCounts[instanceInfo.service][node.zone]++
-			}
-		}
-	}
+	serviceZoneCounts := computeServiceZonePlacements(placements, instances, alive)
 
 	var changes []controllers.Change
 	for _, instanceID := range unplaced {
@@ -153,24 +101,124 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 			Value: []byte(best),
 		})
 		loadPerNode[best]++
-		// Update available resources for subsequent placements in this cycle.
-		for i := range alive {
-			if alive[i].id == best {
-				alive[i].availCPU -= reqCPU
-				alive[i].availMemory -= reqMemory
-				// Track zone placement for subsequent spread decisions.
-				if alive[i].zone != "" && serviceName != "" {
-					if serviceZoneCounts[serviceName] == nil {
-						serviceZoneCounts[serviceName] = make(map[string]int)
-					}
-					serviceZoneCounts[serviceName][alive[i].zone]++
-				}
-				break
-			}
-		}
+		updateNodeResourcesAfterPlacement(alive, best, reqCPU, reqMemory, serviceName, serviceZoneCounts)
 	}
 
 	return changes, nil
+}
+
+// findUnplacedPendingInstances returns the sorted list of instance IDs that are
+// in the pending state and have no existing placement assignment.
+func findUnplacedPendingInstances(instances map[string]*schedulerInstanceInfo, placements map[string]string) []string {
+	var unplaced []string
+	for instanceID, instanceInfo := range instances {
+		if instanceInfo.state == types.InstancePending && placements[instanceID] == "" {
+			unplaced = append(unplaced, instanceID)
+		}
+	}
+	sort.Strings(unplaced)
+	return unplaced
+}
+
+// computeNodeLoadAndResourceUsage iterates over existing placements and computes
+// the instance count, consumed CPU, and consumed memory per node. These totals
+// are used to determine remaining capacity on each node during scheduling.
+func computeNodeLoadAndResourceUsage(
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	serviceResources map[string]serviceResourceRequirements,
+) (map[string]int, map[string]int64, map[string]int64) {
+	loadPerNode := make(map[string]int)
+	usedCPU := make(map[string]int64)
+	usedMemory := make(map[string]int64)
+	for instanceID, nodeID := range placements {
+		loadPerNode[nodeID]++
+		if instanceInfo := instances[instanceID]; instanceInfo != nil {
+			if resource, ok := serviceResources[instanceInfo.service]; ok {
+				usedCPU[nodeID] += resource.cpu
+				usedMemory[nodeID] += resource.memory
+			}
+		}
+	}
+	return loadPerNode, usedCPU, usedMemory
+}
+
+// buildAliveCandidateNodes filters the node map to only alive nodes and computes
+// each node's remaining CPU and memory after subtracting already-consumed
+// resources. The result is sorted by node ID for deterministic scheduling.
+func buildAliveCandidateNodes(nodes map[string]schedulerNodeInfo, usedCPU map[string]int64, usedMemory map[string]int64) []candidateNode {
+	var alive []candidateNode
+	for _, node := range nodes {
+		if node.state != types.NodeAlive {
+			continue
+		}
+		alive = append(alive, candidateNode{
+			id:           node.id,
+			availCPU:     node.availCPU - usedCPU[node.id],
+			availMemory:  node.availMemory - usedMemory[node.id],
+			architecture: node.architecture,
+			zone:         node.zone,
+			labels:       node.labels,
+			restrictions: node.restrictions,
+		})
+	}
+	sort.Slice(alive, func(i, j int) bool {
+		return alive[i].id < alive[j].id
+	})
+	return alive
+}
+
+// computeServiceZonePlacements counts the number of existing placements per
+// zone for each service. This information is used by the zone-spread placement
+// strategy to prefer zones with fewer instances.
+func computeServiceZonePlacements(
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	aliveNodes []candidateNode,
+) map[string]map[string]int {
+	serviceZoneCounts := make(map[string]map[string]int)
+	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil || instanceInfo.state == types.InstanceStopped {
+			continue
+		}
+		for _, node := range aliveNodes {
+			if node.id == nodeID && node.zone != "" {
+				if serviceZoneCounts[instanceInfo.service] == nil {
+					serviceZoneCounts[instanceInfo.service] = make(map[string]int)
+				}
+				serviceZoneCounts[instanceInfo.service][node.zone]++
+			}
+		}
+	}
+	return serviceZoneCounts
+}
+
+// updateNodeResourcesAfterPlacement adjusts the available resources of the
+// selected node after a placement decision, and increments the zone count for
+// the placed service. This keeps subsequent placement decisions in the same
+// reconciliation cycle aware of resources already committed.
+func updateNodeResourcesAfterPlacement(
+	aliveNodes []candidateNode,
+	selectedNodeID string,
+	requiredCPU int64,
+	requiredMemory int64,
+	serviceName string,
+	serviceZoneCounts map[string]map[string]int,
+) {
+	for i := range aliveNodes {
+		if aliveNodes[i].id == selectedNodeID {
+			aliveNodes[i].availCPU -= requiredCPU
+			aliveNodes[i].availMemory -= requiredMemory
+			if aliveNodes[i].zone != "" && serviceName != "" {
+				if serviceZoneCounts[serviceName] == nil {
+					serviceZoneCounts[serviceName] = make(map[string]int)
+				}
+				serviceZoneCounts[serviceName][aliveNodes[i].zone]++
+			}
+			break
+		}
+	}
 }
 
 // candidateNode represents a node that is eligible for instance placement,

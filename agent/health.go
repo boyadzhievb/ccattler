@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// defaultHealthProbeTimeout is the maximum duration to wait for a health probe
+// response when no explicit timeout is configured on the probe.
+const defaultHealthProbeTimeout = 2 * time.Second
+
 // ProbeType represents the protocol used by a health probe.
 type ProbeType string
 
@@ -33,7 +37,7 @@ type HealthProbe struct {
 // If the probe timeout is zero, a default of 2 seconds is used.
 func CheckHealth(ctx context.Context, probe HealthProbe, host string) bool {
 	if probe.Timeout == 0 {
-		probe.Timeout = 2 * time.Second
+		probe.Timeout = defaultHealthProbeTimeout
 	}
 
 	switch probe.Type {

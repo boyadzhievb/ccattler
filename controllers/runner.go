@@ -16,6 +16,40 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// defaultControllerDebounceInterval is the minimum quiet period between
+	// consecutive reconciliation cycles for a single controller.
+	defaultControllerDebounceInterval = 50 * time.Millisecond
+
+	// defaultControllerResyncInterval is the period between forced full
+	// reconciliation cycles independent of watch events.
+	defaultControllerResyncInterval = 30 * time.Second
+
+	// reconcileRetryBaseDelayMs is the base delay in milliseconds for the
+	// exponential backoff between optimistic concurrency retries.
+	reconcileRetryBaseDelayMs = 10
+
+	// reconcileRetryMaxDelayMs is the maximum delay in milliseconds for the
+	// exponential backoff between optimistic concurrency retries.
+	reconcileRetryMaxDelayMs = 500
+
+	// etcdTransactionOperationLimit is the maximum number of operations
+	// (compares + success ops + failure ops) in a single etcd transaction.
+	etcdTransactionOperationLimit = 128
+)
+
+// controllerRestartBackoffDelays is the sequence of delays used when a
+// controller fails during setup and needs to be restarted. Each successive
+// failure uses the next delay until the final value, which repeats.
+var controllerRestartBackoffDelays = []time.Duration{
+	100 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+	2 * time.Second,
+	5 * time.Second,
+	30 * time.Second,
+}
+
 var (
 	reconciliationDuration = metrics.DefaultRegistry.RegisterHistogram(
 		"ccattler_reconciliation_duration_seconds",
@@ -91,8 +125,8 @@ func NewRunner(stateStore store.StateStore, controllers ...Controller) *Runner {
 	return &Runner{
 		store:                     stateStore,
 		controllers:               controllers,
-		debounce:                  50 * time.Millisecond,
-		resyncInterval:            30 * time.Second,
+		debounce:                  defaultControllerDebounceInterval,
+		resyncInterval:            defaultControllerResyncInterval,
 		maxReconciliationAttempts: defaultMaxReconciliationAttempts,
 		maxInputKeyGuards:         -1,
 	}
@@ -176,14 +210,6 @@ func (controllerRunner *Runner) Run(ctx context.Context) error {
 // running, individual reconciliation errors are logged but do not restart
 // the controller.
 func (controllerRunner *Runner) runSingleController(ctx context.Context, controller Controller) error {
-	backoffDelays := []time.Duration{
-		100 * time.Millisecond,
-		500 * time.Millisecond,
-		1 * time.Second,
-		2 * time.Second,
-		5 * time.Second,
-		30 * time.Second,
-	}
 	attemptIndex := 0
 
 	for {
@@ -195,8 +221,8 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 			return nil
 		}
 
-		delay := backoffDelays[attemptIndex]
-		if attemptIndex < len(backoffDelays)-1 {
+		delay := controllerRestartBackoffDelays[attemptIndex]
+		if attemptIndex < len(controllerRestartBackoffDelays)-1 {
 			attemptIndex++
 		}
 		logging.Default().Warn("controller failed, retrying",
@@ -327,9 +353,9 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 			"trace_id", reconcileTrace.TraceID,
 			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, controllerRunner.maxReconciliationAttempts))
 
-		baseDelayMs := 10 * (1 << attemptIndex)
-		if baseDelayMs > 500 {
-			baseDelayMs = 500
+		baseDelayMs := reconcileRetryBaseDelayMs * (1 << attemptIndex)
+		if baseDelayMs > reconcileRetryMaxDelayMs {
+			baseDelayMs = reconcileRetryMaxDelayMs
 		}
 		jitterMs := rand.Intn(baseDelayMs + 1) //nolint:gosec // math/rand for reconciliation jitter
 		retryDelay := time.Duration(baseDelayMs+jitterMs) * time.Millisecond
@@ -353,18 +379,9 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 // revision, computes changes, checks for revision drift, and applies changes
 // via a transaction with per-key revision guards.
 func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context, controller Controller) (conflictDetected bool, reconcileError error) {
-	var allFacts []store.Fact
-	var snapshotRevision int64
-
-	for _, prefix := range controller.Watch() {
-		scanResult, scanError := controllerRunner.store.ScanWithRevision(ctx, prefix)
-		if scanError != nil {
-			return false, scanError
-		}
-		allFacts = append(allFacts, scanResult.Facts...)
-		if scanResult.Revision > snapshotRevision {
-			snapshotRevision = scanResult.Revision
-		}
+	allFacts, scanError := controllerRunner.scanFactsForController(ctx, controller)
+	if scanError != nil {
+		return false, scanError
 	}
 
 	store.SortFacts(allFacts)
@@ -387,6 +404,43 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	sortChangesByKey(changes)
 
+	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(changes, allFacts)
+
+	transactionSucceeded, transactionError := controllerRunner.store.Transaction(
+		ctx, transactionCompares, transactionOperations, nil,
+	)
+	if transactionError != nil {
+		return false, transactionError
+	}
+	if !transactionSucceeded {
+		return true, nil
+	}
+
+	reconciliationChanges.Add(int64(len(changes)), controller.Name())
+
+	return false, nil
+}
+
+// scanFactsForController scans all fact prefixes declared in the controller's
+// Watch list and returns the combined facts.
+func (controllerRunner *Runner) scanFactsForController(ctx context.Context, controller Controller) ([]store.Fact, error) {
+	var allFacts []store.Fact
+	for _, prefix := range controller.Watch() {
+		scanResult, scanError := controllerRunner.store.ScanWithRevision(ctx, prefix)
+		if scanError != nil {
+			return nil, scanError
+		}
+		allFacts = append(allFacts, scanResult.Facts...)
+	}
+	return allFacts, nil
+}
+
+// buildReconciliationTransaction converts proposed changes and the scanned
+// input facts into transaction compare guards and operations. Each changed key
+// gets a revision guard (or a create-only guard for new keys). Input keys that
+// were read but not written are also guarded up to the etcd transaction
+// operation limit and the configured maxInputKeyGuards cap.
+func (controllerRunner *Runner) buildReconciliationTransaction(changes []Change, allFacts []store.Fact) ([]store.Compare, []store.Op) {
 	scannedFactRevisions := make(map[string]int64, len(allFacts))
 	for _, scannedFact := range allFacts {
 		scannedFactRevisions[scannedFact.Key] = scannedFact.Revision
@@ -415,49 +469,41 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		}
 	}
 
-	// Guard input keys: if any fact the controller read has changed since the scan,
-	// the plan was derived from stale state and must not be committed.
-	// etcd enforces a maximum of 128 total operations per transaction (compares +
-	// success ops + failure ops). Change-set compares (added first) have priority
-	// over input-set compares, so cap the input-key loop early.
-	// maxInputKeyGuards further limits the count: 0 disables input guards,
-	// positive caps them, negative means fill to the etcd limit.
-	if controllerRunner.maxInputKeyGuards != 0 {
-		etcdCapacity := 128 - len(transactionOperations)
-		inputKeyLimit := etcdCapacity
-		if controllerRunner.maxInputKeyGuards > 0 {
-			changeSetGuardCount := len(transactionCompares)
-			inputKeyLimit = changeSetGuardCount + controllerRunner.maxInputKeyGuards
-			if inputKeyLimit > etcdCapacity {
-				inputKeyLimit = etcdCapacity
-			}
-		}
-		for _, scannedFact := range allFacts {
-			if len(transactionCompares) >= inputKeyLimit {
-				break
-			}
-			if !changeKeySet[scannedFact.Key] {
-				transactionCompares = append(transactionCompares, store.Compare{
-					Key:      scannedFact.Key,
-					Revision: scannedFact.Revision,
-				})
-			}
+	controllerRunner.appendInputKeyGuards(&transactionCompares, transactionOperations, changeKeySet, allFacts)
+
+	return transactionCompares, transactionOperations
+}
+
+// appendInputKeyGuards adds revision guards for input keys that the controller
+// read but did not write. If any such fact changed since the scan, the
+// transaction will fail, preventing commits based on stale state. The number
+// of guards is capped by the etcd 128-operation transaction limit and the
+// configured maxInputKeyGuards setting.
+func (controllerRunner *Runner) appendInputKeyGuards(transactionCompares *[]store.Compare, transactionOperations []store.Op, changeKeySet map[string]bool, allFacts []store.Fact) {
+	if controllerRunner.maxInputKeyGuards == 0 {
+		return
+	}
+
+	etcdCapacity := etcdTransactionOperationLimit - len(transactionOperations)
+	inputKeyLimit := etcdCapacity
+	if controllerRunner.maxInputKeyGuards > 0 {
+		changeSetGuardCount := len(*transactionCompares)
+		inputKeyLimit = changeSetGuardCount + controllerRunner.maxInputKeyGuards
+		if inputKeyLimit > etcdCapacity {
+			inputKeyLimit = etcdCapacity
 		}
 	}
-
-	transactionSucceeded, transactionError := controllerRunner.store.Transaction(
-		ctx, transactionCompares, transactionOperations, nil,
-	)
-	if transactionError != nil {
-		return false, transactionError
+	for _, scannedFact := range allFacts {
+		if len(*transactionCompares) >= inputKeyLimit {
+			break
+		}
+		if !changeKeySet[scannedFact.Key] {
+			*transactionCompares = append(*transactionCompares, store.Compare{
+				Key:      scannedFact.Key,
+				Revision: scannedFact.Revision,
+			})
+		}
 	}
-	if !transactionSucceeded {
-		return true, nil
-	}
-
-	reconciliationChanges.Add(int64(len(changes)), controller.Name())
-
-	return false, nil
 }
 
 // enforceWriteDomain validates that every proposed change falls within the

@@ -56,50 +56,11 @@ func (networkController *NetworkController) Watch() []string {
 // DNS records for services with endpoints, and remove stale VIPs and DNS
 // records for services that no longer have any endpoints.
 func (networkController *NetworkController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	// Collect services that have at least one endpoint.
-	servicesWithEndpoints := make(map[string]bool)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) >= 1 {
-			servicesWithEndpoints[pathParts[0]] = true
-		}
-	}
-
+	servicesWithEndpoints := collectServicesWithEndpointsFromFacts(facts)
 	servicePorts := extractServiceExposedPorts(facts)
-
-	// Collect existing VIPs: serviceName -> VIP address.
-	existingVIPs := make(map[string]string)
-	existingVIPPorts := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkVIPs) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanNetworkVIPs)
-		pathParts := strings.Split(relativePath, "/")
-		if len(pathParts) == 1 {
-			existingVIPs[pathParts[0]] = string(fact.Value)
-		} else if len(pathParts) == 2 && pathParts[1] == "port" {
-			existingVIPPorts[pathParts[0]] = string(fact.Value)
-		}
-	}
-
-	// Collect existing DNS mappings: serviceName -> VIP.
-	existingDNS := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkDNS) {
-		serviceName := strings.TrimPrefix(fact.Key, types.ScanNetworkDNS)
-		existingDNS[serviceName] = string(fact.Value)
-	}
-
-	// Determine the next VIP address to allocate by finding the highest
-	// fourth-octet value among existing VIPs and incrementing.
-	nextVIPFourthOctet := 1
-	for _, vipAddress := range existingVIPs {
-		vipParts := strings.Split(vipAddress, ".")
-		if len(vipParts) == 4 {
-			fourthOctet, _ := strconv.Atoi(vipParts[3])
-			if fourthOctet >= nextVIPFourthOctet {
-				nextVIPFourthOctet = fourthOctet + 1
-			}
-		}
-	}
+	existingVIPs, _ := collectExistingVIPAllocations(facts)
+	existingDNS := collectExistingDNSMappings(facts)
+	nextVIPFourthOctet := determineNextVIPFourthOctet(existingVIPs)
 
 	var changes []Change
 
@@ -139,7 +100,74 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 		}
 	}
 
-	// Remove VIPs and DNS records for services that no longer have any endpoints.
+	staleRemovalChanges := buildStaleVIPAndDNSRemovalChanges(existingVIPs, existingDNS, servicesWithEndpoints)
+	changes = append(changes, staleRemovalChanges...)
+
+	return changes, nil
+}
+
+// collectServicesWithEndpointsFromFacts scans endpoint facts and returns a set
+// of service names that have at least one endpoint.
+func collectServicesWithEndpointsFromFacts(facts []store.Fact) map[string]bool {
+	servicesWithEndpoints := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) >= 1 {
+			servicesWithEndpoints[pathParts[0]] = true
+		}
+	}
+	return servicesWithEndpoints
+}
+
+// collectExistingVIPAllocations scans VIP facts and returns maps of service
+// names to their allocated VIP addresses and their exposed ports.
+func collectExistingVIPAllocations(facts []store.Fact) (existingVIPs map[string]string, existingVIPPorts map[string]string) {
+	existingVIPs = make(map[string]string)
+	existingVIPPorts = make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkVIPs) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanNetworkVIPs)
+		pathParts := strings.Split(relativePath, "/")
+		if len(pathParts) == 1 {
+			existingVIPs[pathParts[0]] = string(fact.Value)
+		} else if len(pathParts) == 2 && pathParts[1] == "port" {
+			existingVIPPorts[pathParts[0]] = string(fact.Value)
+		}
+	}
+	return existingVIPs, existingVIPPorts
+}
+
+// collectExistingDNSMappings scans DNS facts and returns a map of service
+// names to their DNS-resolved VIP addresses.
+func collectExistingDNSMappings(facts []store.Fact) map[string]string {
+	existingDNS := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkDNS) {
+		serviceName := strings.TrimPrefix(fact.Key, types.ScanNetworkDNS)
+		existingDNS[serviceName] = string(fact.Value)
+	}
+	return existingDNS
+}
+
+// determineNextVIPFourthOctet finds the highest fourth-octet value among
+// existing VIPs and returns the next available value for allocation.
+func determineNextVIPFourthOctet(existingVIPs map[string]string) int {
+	nextVIPFourthOctet := 1
+	for _, vipAddress := range existingVIPs {
+		vipParts := strings.Split(vipAddress, ".")
+		if len(vipParts) == 4 {
+			fourthOctet, _ := strconv.Atoi(vipParts[3])
+			if fourthOctet >= nextVIPFourthOctet {
+				nextVIPFourthOctet = fourthOctet + 1
+			}
+		}
+	}
+	return nextVIPFourthOctet
+}
+
+// buildStaleVIPAndDNSRemovalChanges generates Delete changes for VIPs and DNS
+// records belonging to services that no longer have any endpoints.
+func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingDNS map[string]string, servicesWithEndpoints map[string]bool) []Change {
+	var changes []Change
 	for serviceName := range existingVIPs {
 		if !servicesWithEndpoints[serviceName] {
 			changes = append(changes, Change{
@@ -160,6 +188,5 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 			})
 		}
 	}
-
-	return changes, nil
+	return changes
 }

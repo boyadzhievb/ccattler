@@ -14,6 +14,10 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 )
 
+// defaultSIGTERMGracePeriod is the time the process runtime waits after sending
+// SIGTERM before escalating to SIGKILL during graceful shutdown.
+const defaultSIGTERMGracePeriod = 10 * time.Second
+
 // ProcessRuntime runs workloads as OS processes on the local machine.
 // The Spec.Image field is interpreted as a shell command string
 // (e.g. "python3 -m http.server 8080"), which is split on whitespace
@@ -38,7 +42,7 @@ type managedProcess struct {
 func NewProcessRuntime() *ProcessRuntime {
 	return &ProcessRuntime{
 		processes:   make(map[string]*managedProcess),
-		gracePeriod: 10 * time.Second,
+		gracePeriod: defaultSIGTERMGracePeriod,
 	}
 }
 

@@ -85,6 +85,34 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 	activationStates := extractActivationStates(facts)
 
 	currentTime := autoscaleController.timeNow()
+
+	horizontalChanges := autoscaleController.buildHorizontalScalingChanges(
+		scalePolicies, observedMetrics, activeInstanceCounts,
+		eventTargets, scheduleRules, stabilizationWindows,
+		activationStates, currentTime,
+	)
+	verticalChanges := buildVerticalScalingChanges(
+		verticalPolicies, currentCPU, currentMemory, observedMetrics,
+	)
+
+	return append(horizontalChanges, verticalChanges...), nil
+}
+
+// buildHorizontalScalingChanges iterates over all services with horizontal scale
+// policies and computes the recommended instance count for each. It evaluates
+// metric targets, event-driven targets, and schedule-based minimums, clamps the
+// result to the policy bounds, applies stabilization windows, and returns the
+// changes that write the recommendation to the autoscaler intent layer.
+func (autoscaleController *AutoscaleController) buildHorizontalScalingChanges(
+	scalePolicies map[string]*extractedScalePolicy,
+	observedMetrics map[string]int,
+	activeInstanceCounts map[string]int,
+	eventTargets map[string]map[string]int,
+	scheduleRules map[string]*extractedScheduleRule,
+	stabilizationWindows map[string]*stabilizationConfig,
+	activationStates map[string]string,
+	currentTime time.Time,
+) []Change {
 	var changes []Change
 
 	for serviceName, policy := range scalePolicies {
@@ -99,38 +127,11 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 			currentInstanceCount = 1
 		}
 
-		recommendation := policy.min
-
-		for metricName, targetValue := range policy.targets {
-			currentMetricValue, hasMetric := observedMetrics[serviceName+"/"+metricName]
-			if !hasMetric {
-				continue
-			}
-			metricRecommendation := int(math.Ceil(
-				float64(currentInstanceCount) * float64(currentMetricValue) / float64(targetValue),
-			))
-			if metricRecommendation > recommendation {
-				recommendation = metricRecommendation
-			}
-		}
-
-		for source, targetPerInstance := range eventTargets[serviceName] {
-			eventMetricKey := serviceName + "/event." + source
-			currentEventValue, hasEvent := observedMetrics[eventMetricKey]
-			if !hasEvent {
-				continue
-			}
-			eventRecommendation := int(math.Ceil(float64(currentEventValue) / float64(targetPerInstance)))
-			if eventRecommendation > recommendation {
-				recommendation = eventRecommendation
-			}
-		}
-
-		if schedule := scheduleRules[serviceName]; schedule != nil {
-			if isWithinScheduleWindow(currentTime, schedule) && schedule.minimum > recommendation {
-				recommendation = schedule.minimum
-			}
-		}
+		recommendation := computeRawHorizontalRecommendation(
+			serviceName, policy, currentInstanceCount,
+			observedMetrics, eventTargets[serviceName], scheduleRules[serviceName],
+			currentTime,
+		)
 
 		if recommendation < policy.min {
 			recommendation = policy.min
@@ -144,7 +145,7 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 			stabilizationWindows[serviceName], currentTime,
 		)
 
-		if activationStates[serviceName] == "activating" && recommendation < 1 {
+		if isActivating && recommendation < 1 {
 			recommendation = 1
 		}
 
@@ -154,6 +155,70 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 			Value: []byte(strconv.Itoa(recommendation)),
 		})
 	}
+
+	return changes
+}
+
+// computeRawHorizontalRecommendation calculates the unclamped instance count
+// recommendation for a single service by evaluating all metric targets,
+// event-driven targets, and the schedule-based minimum, then returning the
+// maximum recommendation across all sources.
+func computeRawHorizontalRecommendation(
+	serviceName string,
+	policy *extractedScalePolicy,
+	currentInstanceCount int,
+	observedMetrics map[string]int,
+	serviceEventTargets map[string]int,
+	schedule *extractedScheduleRule,
+	currentTime time.Time,
+) int {
+	recommendation := policy.min
+
+	for metricName, targetValue := range policy.targets {
+		currentMetricValue, hasMetric := observedMetrics[serviceName+"/"+metricName]
+		if !hasMetric {
+			continue
+		}
+		metricRecommendation := int(math.Ceil(
+			float64(currentInstanceCount) * float64(currentMetricValue) / float64(targetValue),
+		))
+		if metricRecommendation > recommendation {
+			recommendation = metricRecommendation
+		}
+	}
+
+	for source, targetPerInstance := range serviceEventTargets {
+		eventMetricKey := serviceName + "/event." + source
+		currentEventValue, hasEvent := observedMetrics[eventMetricKey]
+		if !hasEvent {
+			continue
+		}
+		eventRecommendation := int(math.Ceil(float64(currentEventValue) / float64(targetPerInstance)))
+		if eventRecommendation > recommendation {
+			recommendation = eventRecommendation
+		}
+	}
+
+	if schedule != nil {
+		if isWithinScheduleWindow(currentTime, schedule) && schedule.minimum > recommendation {
+			recommendation = schedule.minimum
+		}
+	}
+
+	return recommendation
+}
+
+// buildVerticalScalingChanges evaluates vertical autoscaling policies for each
+// service and produces changes that recommend CPU and memory resource levels
+// based on observed utilization. Recommendations are clamped to the configured
+// minimum and maximum bounds.
+func buildVerticalScalingChanges(
+	verticalPolicies map[string]*extractedVerticalPolicy,
+	currentCPU map[string]int,
+	currentMemory map[string]int,
+	observedMetrics map[string]int,
+) []Change {
+	var changes []Change
 
 	for serviceName, verticalPolicy := range verticalPolicies {
 		currentServiceCPU := currentCPU[serviceName]
@@ -192,7 +257,7 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 		}
 	}
 
-	return changes, nil
+	return changes
 }
 
 // applyStabilizationWindow applies asymmetric stabilization to prevent scaling

@@ -12,6 +12,10 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// initStepBackoffBaseDelay is the base delay for exponential backoff between
+// init step retry attempts. Each subsequent attempt doubles this value.
+const initStepBackoffBaseDelay = 1 * time.Second
+
 // initStepDefinition holds the parsed configuration for a single init step
 // read from the desired-state section of the fact store.
 type initStepDefinition struct {
@@ -95,7 +99,7 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 			"error", execError.Error())
 
 		if attemptIndex < maxAttempts-1 {
-			backoffDuration := time.Duration(1<<uint(attemptIndex)) * time.Second
+			backoffDuration := initStepBackoffBaseDelay * time.Duration(1<<uint(attemptIndex))
 			select {
 			case <-ctx.Done():
 				if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {

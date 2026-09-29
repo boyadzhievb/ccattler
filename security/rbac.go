@@ -79,6 +79,25 @@ func (authorizer *RBACAuthorizer) RemoveBinding(principal string) {
 	delete(authorizer.bindings, principal)
 }
 
+// resolveRoleNames collects all role names bound to a principal. It checks
+// exact matches first, then wildcard bindings (principal ending in "*").
+// For example, a binding for "user:*" matches any principal starting with "user:".
+func (authorizer *RBACAuthorizer) resolveRoleNames(principal string) []string {
+	var roleNames []string
+	if exactRoles, hasExact := authorizer.bindings[principal]; hasExact {
+		roleNames = append(roleNames, exactRoles...)
+	}
+	for boundPrincipal, boundRoles := range authorizer.bindings {
+		if strings.HasSuffix(boundPrincipal, "*") {
+			wildcardPrefix := strings.TrimSuffix(boundPrincipal, "*")
+			if strings.HasPrefix(principal, wildcardPrefix) {
+				roleNames = append(roleNames, boundRoles...)
+			}
+		}
+	}
+	return roleNames
+}
+
 // Authorize checks whether a principal is allowed to perform the given
 // operation on the given key. It returns nil if allowed, or an error describing
 // why the request was denied.
@@ -86,8 +105,8 @@ func (authorizer *RBACAuthorizer) Authorize(principal string, operation Permissi
 	authorizer.mutex.RLock()
 	defer authorizer.mutex.RUnlock()
 
-	roleNames, hasPrincipal := authorizer.bindings[principal]
-	if !hasPrincipal {
+	roleNames := authorizer.resolveRoleNames(principal)
+	if len(roleNames) == 0 {
 		return fmt.Errorf("rbac: principal %q has no role bindings", principal)
 	}
 

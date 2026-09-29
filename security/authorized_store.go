@@ -22,17 +22,17 @@ func PrincipalFromContext(ctx context.Context) string {
 	return principal
 }
 
-// AuthorizedStore wraps a StateStore and enforces RBAC authorization on every
+// AuthorizedStore wraps a StateStore and enforces authorization on every
 // operation. The principal is extracted from the context via WithPrincipal.
 type AuthorizedStore struct {
 	inner      store.StateStore
-	authorizer *RBACAuthorizer
+	authorizer Authorizer
 	auditLog   AuditLogger
 }
 
 // NewAuthorizedStore creates a store wrapper that checks authorization before
 // delegating to the inner store. If auditLog is nil, no audit entries are written.
-func NewAuthorizedStore(inner store.StateStore, authorizer *RBACAuthorizer, auditLog AuditLogger) *AuthorizedStore {
+func NewAuthorizedStore(inner store.StateStore, authorizer Authorizer, auditLog AuditLogger) *AuthorizedStore {
 	return &AuthorizedStore{
 		inner:      inner,
 		authorizer: authorizer,

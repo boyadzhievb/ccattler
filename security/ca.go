@@ -18,6 +18,10 @@ import (
 	"time"
 )
 
+// certificateNotBeforeClockSkew is the negative offset applied to the NotBefore
+// field of issued certificates to tolerate minor clock skew between nodes.
+const certificateNotBeforeClockSkew = -1 * time.Minute
+
 // CertificateAuthority is the cluster's internal CA that issues short-lived
 // certificates for nodes, controllers, and the API server.
 type CertificateAuthority struct {
@@ -47,7 +51,7 @@ func NewCertificateAuthority(validityDuration time.Duration) (*CertificateAuthor
 			Organization: []string{"CCattler"},
 			CommonName:   "CCattler Root CA",
 		},
-		NotBefore:             time.Now().Add(-1 * time.Minute),
+		NotBefore:             time.Now().Add(certificateNotBeforeClockSkew),
 		NotAfter:              time.Now().Add(validityDuration),
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
@@ -125,7 +129,7 @@ func (certificateAuthority *CertificateAuthority) IssueCertificate(request Issue
 		},
 		DNSNames:    request.DNSNames,
 		IPAddresses: request.IPAddresses,
-		NotBefore:   time.Now().Add(-1 * time.Minute),
+		NotBefore:   time.Now().Add(certificateNotBeforeClockSkew),
 		NotAfter:    notAfter,
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},

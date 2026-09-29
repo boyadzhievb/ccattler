@@ -45,20 +45,36 @@ func (endpointController *EndpointController) Watch() []string {
 // an instance is running, has an IP, and its service exposes a port.
 func (endpointController *EndpointController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	instanceFields := parseInstanceFieldsFromFacts(facts)
-
 	servicePorts := extractServiceExposedPorts(facts)
+	serviceHasReadinessProbe := detectServicesWithReadinessProbe(facts)
+	nodeAddresses := parseNodeAdvertiseAddresses(facts)
+	existingEndpoints := parseExistingEndpoints(facts)
 
-	// Track which services have a readiness probe configured.
+	desiredEndpoints := buildDesiredEndpoints(
+		instanceFields, servicePorts, serviceHasReadinessProbe, nodeAddresses,
+	)
+
+	return computeEndpointDiffChanges(desiredEndpoints, existingEndpoints), nil
+}
+
+// detectServicesWithReadinessProbe scans desired service facts and returns a
+// set of service names that have a readiness probe method configured. This
+// is used to gate endpoint creation on the readiness probe passing.
+func detectServicesWithReadinessProbe(facts []store.Fact) map[string]bool {
 	serviceHasReadinessProbe := make(map[string]bool)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		pathParts := strings.Split(relativePath, "/")
-		if len(pathParts) == 4 && pathParts[1] == "probe" && pathParts[2] == "readiness" && pathParts[3] == "method" {
+		if len(pathParts) == 4 && pathParts[1] == "probe" && pathParts[2] == string(types.ProbeReadiness) && pathParts[3] == "method" {
 			serviceHasReadinessProbe[pathParts[0]] = true
 		}
 	}
+	return serviceHasReadinessProbe
+}
 
-	// Parse node advertise addresses: nodeID -> address.
+// parseNodeAdvertiseAddresses scans observed node facts and returns a map from
+// node ID to the advertise address reported by that node agent.
+func parseNodeAdvertiseAddresses(facts []store.Fact) map[string]string {
 	nodeAddresses := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
@@ -67,27 +83,38 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 			nodeAddresses[pathParts[0]] = string(fact.Value)
 		}
 	}
+	return nodeAddresses
+}
 
-	// Parse existing endpoints: "service/instance" -> true.
+// parseExistingEndpoints scans endpoint facts and returns a set of existing
+// endpoint keys (in the format "service/instance/port") for staleness detection.
+func parseExistingEndpoints(facts []store.Fact) map[string]bool {
 	existingEndpoints := make(map[string]bool)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
 		existingEndpoints[relativePath] = true
 	}
+	return existingEndpoints
+}
 
-	// Determine desired endpoints: running instances with an IP, exposed ports,
-	// and passing readiness (if a readiness probe is configured for the service).
-	// When a node advertise address and host port are available, use those for
-	// cross-host reachability instead of the container-local IP.
-	// Each instance gets one endpoint per exposed port.
-	// Sort instance IDs for deterministic output — map iteration order varies.
+// buildDesiredEndpoints determines which endpoints should exist based on running
+// instances, exposed ports, readiness probe state, and network addresses. For
+// each running instance with an IP and an exposed port, it produces an endpoint
+// entry. When a node advertise address and host port are available, those are
+// used for cross-host reachability instead of the container-local IP.
+func buildDesiredEndpoints(
+	instanceFields map[string]map[string]string,
+	servicePorts map[string][]int,
+	serviceHasReadinessProbe map[string]bool,
+	nodeAddresses map[string]string,
+) map[string]string {
 	sortedInstanceIDs := make([]string, 0, len(instanceFields))
 	for instanceID := range instanceFields {
 		sortedInstanceIDs = append(sortedInstanceIDs, instanceID)
 	}
 	sort.Strings(sortedInstanceIDs)
 
-	desiredEndpoints := make(map[string]string) // "service/instance/port" -> "ip:port"
+	desiredEndpoints := make(map[string]string)
 	for _, instanceID := range sortedInstanceIDs {
 		fields := instanceFields[instanceID]
 		if types.InstanceState(fields["state"]) != types.InstanceRunning {
@@ -122,17 +149,21 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 			}
 		}
 	}
+	return desiredEndpoints
+}
 
+// computeEndpointDiffChanges compares the desired endpoint set against the
+// existing endpoint set and returns changes to create missing endpoints and
+// delete stale ones. Output is sorted for deterministic reconciliation.
+func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndpoints map[string]bool) []Change {
 	var changes []Change
 
-	// Sort keys for deterministic output — map iteration order varies.
 	sortedDesiredKeys := make([]string, 0, len(desiredEndpoints))
 	for endpointKey := range desiredEndpoints {
 		sortedDesiredKeys = append(sortedDesiredKeys, endpointKey)
 	}
 	sort.Strings(sortedDesiredKeys)
 
-	// Create missing endpoints.
 	for _, endpointKey := range sortedDesiredKeys {
 		if !existingEndpoints[endpointKey] {
 			changes = append(changes, Change{
@@ -143,7 +174,6 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		}
 	}
 
-	// Remove stale endpoints.
 	sortedExistingKeys := make([]string, 0, len(existingEndpoints))
 	for endpointKey := range existingEndpoints {
 		sortedExistingKeys = append(sortedExistingKeys, endpointKey)
@@ -159,5 +189,5 @@ func (endpointController *EndpointController) Reconcile(_ context.Context, facts
 		}
 	}
 
-	return changes, nil
+	return changes
 }

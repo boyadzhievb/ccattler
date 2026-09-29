@@ -11,6 +11,10 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// defaultMaxClusterNodes is the maximum number of nodes the cluster autoscaler
+// will provision when no explicit max_nodes configuration is set.
+const defaultMaxClusterNodes = 100
+
 // ClusterAutoscaleController watches for unsatisfied scheduling demand and
 // provisions or decommissions nodes via an InfrastructureProvider. When pending
 // instances cannot be placed because no node has sufficient capacity, it
@@ -46,7 +50,7 @@ func (clusterAutoscaleController *ClusterAutoscaleController) Watch() []string {
 func (clusterAutoscaleController *ClusterAutoscaleController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	clusterConfig := extractClusterAutoscaleConfig(facts)
 	if clusterConfig.maxNodes == 0 {
-		clusterConfig.maxNodes = 100
+		clusterConfig.maxNodes = defaultMaxClusterNodes
 	}
 
 	unplacedPending := countUnplacedPendingInstances(facts)

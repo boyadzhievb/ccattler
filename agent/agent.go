@@ -18,6 +18,10 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// defaultAgentReconcileInterval is the period between periodic reconciliation
+// cycles when no explicit interval is set via SetInterval.
+const defaultAgentReconcileInterval = 1 * time.Second
+
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
 // Delegates to three sub-components:
@@ -44,13 +48,12 @@ type Agent struct {
 // network provider is nil by default, meaning instances get 127.0.0.1 as their
 // IP. Use SetNetworkProvider to enable real IP allocation.
 func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runtime) *Agent {
-	defaultInterval := 1 * time.Second
 	return &Agent{
 		nodeID:              nodeID,
 		store:               stateStore,
 		runtime:             runtimeAdapter,
-		interval:            defaultInterval,
-		probeScheduler:      NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultInterval),
+		interval:            defaultAgentReconcileInterval,
+		probeScheduler:      NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
 		nodeReporter:        NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
 		dataPlaneReconciler: NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
 	}

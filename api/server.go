@@ -20,6 +20,7 @@ import (
 	"github.com/boyadzhievb/ccattler/metrics"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tenant"
 	"github.com/boyadzhievb/ccattler/tracing"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -55,6 +56,10 @@ var (
 	)
 )
 
+// defaultStatusCacheTTL is how long the /api/status JSON response is cached
+// before being recomputed from the fact store.
+const defaultStatusCacheTTL = 2 * time.Second
+
 // ServerMode controls which components the API server expects to be available,
 // affecting health checks and operational behavior.
 type ServerMode string
@@ -76,7 +81,11 @@ type Server struct {
 	enrollmentService   *security.EnrollmentService
 	workloadTokenIssuer *security.WorkloadTokenIssuer
 	watchMultiplexer    *WatchMultiplexer
+	policyGate          *tenant.PolicyGate // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
+	apiAuthorizer       *security.APIAuthorizer // apiAuthorizer checks capability-based API permissions.
 	serverMode          ServerMode
+	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux
 	rateLimiter         *RateLimiter
 	statusCache         *ResponseCache
@@ -116,6 +125,35 @@ func (apiServer *Server) SetWatchMultiplexer(multiplexer *WatchMultiplexer) {
 	apiServer.watchMultiplexer = multiplexer
 }
 
+// SetRequirePrincipal enables principal enforcement. When enabled, API requests
+// (except /healthz, /metrics, /api/enroll) that lack a principal in context are
+// rejected with 401. Used by the server command; local run/demo modes leave it off.
+func (apiServer *Server) SetRequirePrincipal(enabled bool) {
+	apiServer.requirePrincipal = enabled
+}
+
+// SetPolicyGate attaches the admission pipeline to the server. When set,
+// /api/apply routes through syntax validation, schema validation, authorization,
+// and quota checks before committing facts to the store.
+func (apiServer *Server) SetPolicyGate(policyGate *tenant.PolicyGate) {
+	apiServer.policyGate = policyGate
+}
+
+// SetAuthenticatorChain attaches the authentication chain to the server. When
+// set, the authentication middleware extracts credentials from each request via
+// the chain and injects the resulting principal into the request context. This
+// replaces the earlier approach of requiring an external middleware to set the
+// principal before the request reaches the API server.
+func (apiServer *Server) SetAuthenticatorChain(chain *security.AuthenticatorChain) {
+	apiServer.authenticatorChain = chain
+}
+
+// SetAPIAuthorizer attaches the capability-based authorizer to the server.
+// When set, each handler checks the caller's capabilities before proceeding.
+func (apiServer *Server) SetAPIAuthorizer(apiAuthorizer *security.APIAuthorizer) {
+	apiServer.apiAuthorizer = apiAuthorizer
+}
+
 // NewServer creates a new API server backed by the given fact store.
 func NewServer(factStore store.StateStore) *Server {
 	apiServer := &Server{
@@ -123,7 +161,7 @@ func NewServer(factStore store.StateStore) *Server {
 		serverMode:  ServerModeFull,
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(),
-		statusCache: NewResponseCache(2 * time.Second),
+		statusCache: NewResponseCache(defaultStatusCacheTTL),
 	}
 	apiServer.registerRoutes()
 	return apiServer
@@ -139,7 +177,7 @@ func (apiServer *Server) Start(listenAddress string) (string, error) {
 	apiServer.listener = listener
 	httpServer := &http.Server{
 		Handler:           apiServer.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: types.DefaultReadHeaderTimeout,
 	}
 	go func() {
 		if serveError := httpServer.Serve(listener); serveError != nil && !errors.Is(serveError, net.ErrClosed) {
@@ -158,9 +196,85 @@ func (apiServer *Server) Close() error {
 }
 
 // Handler returns the HTTP handler for use in tests or custom servers.
-// The returned handler includes tracing and rate limiting middleware.
+// The returned handler includes tracing, rate limiting, optional authentication
+// via the authenticator chain, and optional principal enforcement middleware.
 func (apiServer *Server) Handler() http.Handler {
-	return tracing.Middleware(apiServer.rateLimiter.Wrap(apiServer.mux))
+	var handler http.Handler = apiServer.mux
+	if apiServer.requirePrincipal {
+		handler = requirePrincipalMiddleware(handler)
+	}
+	if apiServer.authenticatorChain != nil {
+		handler = authenticationMiddleware(apiServer.authenticatorChain, handler)
+	}
+	return tracing.Middleware(apiServer.rateLimiter.Wrap(handler))
+}
+
+// requirePrincipalMiddleware rejects requests that lack a principal in context
+// with 401 Unauthorized. Exempt paths (/healthz, /metrics, /api/enroll) are
+// passed through without checking.
+func requirePrincipalMiddleware(wrappedHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/healthz", "/metrics", "/api/enroll":
+			wrappedHandler.ServeHTTP(responseWriter, request)
+			return
+		}
+		principal := security.PrincipalFromContext(request.Context())
+		if principal == "" {
+			http.Error(responseWriter, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		wrappedHandler.ServeHTTP(responseWriter, request)
+	})
+}
+
+// authenticationMiddleware runs the authenticator chain on each request and
+// injects the resulting principal into the context. Exempt paths (/healthz,
+// /metrics, /api/enroll) are passed through without authentication. If the
+// chain returns nil (no credentials recognised), the request proceeds without
+// a principal — the downstream requirePrincipalMiddleware will reject it if
+// enforcement is enabled.
+func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/healthz", "/metrics", "/api/enroll":
+			wrappedHandler.ServeHTTP(responseWriter, request)
+			return
+		}
+		result, authError := chain.Authenticate(request)
+		if authError != nil {
+			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			return
+		}
+		if result != nil {
+			enrichedContext := security.WithPrincipal(request.Context(), result.Principal)
+			principalStruct := security.Principal{
+				Kind:       result.PrincipalKind,
+				Name:       security.PrincipalFromKindAndName(result.Principal).Name,
+				Groups:     result.Groups,
+				Attributes: result.Attributes,
+			}
+			enrichedContext = security.WithPrincipalStruct(enrichedContext, principalStruct)
+			request = request.WithContext(enrichedContext)
+		}
+		wrappedHandler.ServeHTTP(responseWriter, request)
+	})
+}
+
+// requireCapability checks whether the request's principal has the given
+// capability at the given scope. Returns true if the check passes (caller may
+// proceed). Returns false and writes a 403 response if the caller lacks the
+// capability. When no APIAuthorizer is configured, all requests pass through.
+func (apiServer *Server) requireCapability(responseWriter http.ResponseWriter, request *http.Request, capability security.Capability, scope security.Scope) bool {
+	if apiServer.apiAuthorizer == nil {
+		return true
+	}
+	principal := security.PrincipalStructFromContext(request.Context())
+	if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, capability, scope); authError != nil {
+		http.Error(responseWriter, "forbidden: "+authError.Error(), http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // registerRoutes sets up all API endpoint handlers.
@@ -187,10 +301,10 @@ func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, reque
 	ctx := request.Context()
 	status := buildStatusFromStore(ctx, apiServer.factStore)
 
-	instancesByState.Set(0, "pending")
-	instancesByState.Set(0, "running")
-	instancesByState.Set(0, "failed")
-	instancesByState.Set(0, "stopped")
+	instancesByState.Set(0, string(types.InstancePending))
+	instancesByState.Set(0, string(types.InstanceRunning))
+	instancesByState.Set(0, string(types.InstanceFailed))
+	instancesByState.Set(0, string(types.InstanceStopped))
 	for _, instance := range status.Instances {
 		instancesByState.Inc(instance.State)
 	}
@@ -307,6 +421,9 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+		return
+	}
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -373,6 +490,9 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadCreate, security.ScopeCluster) {
+		return
+	}
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -398,6 +518,26 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 
 	if dslInput == "" {
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "empty config"})
+		return
+	}
+
+	// When a policy gate is configured, route through the full admission pipeline
+	// (syntax → schema → authorization → quota → commit). Otherwise fall through
+	// to the direct parse-compile-put path for local/demo modes.
+	if apiServer.policyGate != nil {
+		principal := security.PrincipalFromContext(requestContext)
+		result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, dslInput)
+		if evaluateError != nil {
+			responseWriter.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "policy: " + evaluateError.Error()})
+			return
+		}
+		if !result.Allowed {
+			responseWriter.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: result.Stage + ": " + result.Reason})
+			return
+		}
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts)})
 		return
 	}
 
@@ -431,6 +571,9 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
 
@@ -519,6 +662,9 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityScalingWrite, security.ScopeCluster) {
+		return
+	}
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -562,6 +708,9 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
@@ -588,6 +737,9 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
 
@@ -641,6 +793,9 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	requestContext := request.Context()
@@ -690,6 +845,9 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
 
@@ -757,6 +915,9 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
 
@@ -879,6 +1040,9 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
+		return
+	}
 
 	serviceName := request.URL.Query().Get("service")
 	metricName := request.URL.Query().Get("metric")
@@ -913,6 +1077,9 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
 		return
 	}
 

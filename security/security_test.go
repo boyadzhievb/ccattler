@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -1797,5 +1798,394 @@ func TestAuthorizedStoreNoPrincipal(t *testing.T) {
 	_, getError := authorizedStore.Get(context.Background(), "observed/instance/i1/state")
 	if getError == nil {
 		t.Fatal("request without principal should be denied")
+	}
+}
+
+// TestMTLSAuthenticatorExtractsCN verifies that the mTLS authenticator extracts
+// the CommonName from the peer certificate and returns a "node:<CN>" principal.
+func TestMTLSAuthenticatorExtractsCN(t *testing.T) {
+	authenticator := NewMTLSAuthenticator()
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+	request.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{
+			{Subject: pkix.Name{CommonName: "node-42"}},
+		},
+	}
+
+	result, authError := authenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for request with client cert")
+	}
+	if result.Principal != "node:node-42" {
+		t.Errorf("principal = %q, want %q", result.Principal, "node:node-42")
+	}
+}
+
+// TestMTLSAuthenticatorSkipsNoCert verifies that the mTLS authenticator returns
+// nil (skip) when no client certificate is present.
+func TestMTLSAuthenticatorSkipsNoCert(t *testing.T) {
+	authenticator := NewMTLSAuthenticator()
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+
+	result, authError := authenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result != nil {
+		t.Fatal("expected nil result for request without TLS")
+	}
+}
+
+// TestBearerTokenAuthenticatorValidToken verifies that a valid JWT in the
+// Authorization header produces the correct principal.
+func TestBearerTokenAuthenticatorValidToken(t *testing.T) {
+	privateKey, keyError := GenerateOIDCKeyPair()
+	if keyError != nil {
+		t.Fatalf("generate key: %v", keyError)
+	}
+
+	oidcConfig := OIDCConfig{
+		Issuer:   "https://test-issuer",
+		Audience: "ccattler",
+		ClaimMapping: ClaimMapping{
+			PrincipalClaim: "sub",
+			TeamClaim:      "team",
+		},
+	}
+	oidcAuthenticator := NewOIDCAuthenticator(oidcConfig, &privateKey.PublicKey)
+	bearerAuthenticator := NewBearerTokenAuthenticator(oidcAuthenticator)
+
+	tokenClaims := map[string]interface{}{
+		"sub":  "alice@example.com",
+		"iss":  "https://test-issuer",
+		"aud":  "ccattler",
+		"team": "payments",
+		"exp":  float64(time.Now().Add(1 * time.Hour).Unix()),
+	}
+	tokenString, tokenError := CreateTestJWT(privateKey, tokenClaims)
+	if tokenError != nil {
+		t.Fatalf("create JWT: %v", tokenError)
+	}
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+	request.Header.Set("Authorization", "Bearer "+tokenString)
+
+	result, authError := bearerAuthenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for valid bearer token")
+	}
+	if result.Principal != "user:alice@example.com" {
+		t.Errorf("principal = %q, want %q", result.Principal, "user:alice@example.com")
+	}
+}
+
+// TestBearerTokenAuthenticatorSkipsNoHeader verifies that the bearer
+// authenticator returns nil (skip) when no Authorization header is present.
+func TestBearerTokenAuthenticatorSkipsNoHeader(t *testing.T) {
+	oidcConfig := OIDCConfig{Issuer: "https://test-issuer"}
+	privateKey, _ := GenerateOIDCKeyPair()
+	oidcAuthenticator := NewOIDCAuthenticator(oidcConfig, &privateKey.PublicKey)
+	bearerAuthenticator := NewBearerTokenAuthenticator(oidcAuthenticator)
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+
+	result, authError := bearerAuthenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result != nil {
+		t.Fatal("expected nil result for request without Authorization header")
+	}
+}
+
+// TestLocalUserAuthenticatorReadsHeader verifies that the local user
+// authenticator extracts the username from the X-CCattler-User header.
+func TestLocalUserAuthenticatorReadsHeader(t *testing.T) {
+	authenticator := NewLocalUserAuthenticator()
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+	request.Header.Set("X-CCattler-User", "alice")
+
+	result, authError := authenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for request with X-CCattler-User header")
+	}
+	if result.Principal != "user:alice" {
+		t.Errorf("principal = %q, want %q", result.Principal, "user:alice")
+	}
+}
+
+// TestLocalUserAuthenticatorSkipsNoHeader verifies that the local user
+// authenticator returns nil (skip) when the header is absent.
+func TestLocalUserAuthenticatorSkipsNoHeader(t *testing.T) {
+	authenticator := NewLocalUserAuthenticator()
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+
+	result, authError := authenticator.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result != nil {
+		t.Fatal("expected nil result for request without X-CCattler-User header")
+	}
+}
+
+// TestAuthenticatorChainFirstMatchWins verifies that the chain returns the
+// result from the first authenticator that succeeds — mTLS beats bearer
+// when both credentials are present.
+func TestAuthenticatorChainFirstMatchWins(t *testing.T) {
+	chain := NewAuthenticatorChain(
+		NewMTLSAuthenticator(),
+		NewLocalUserAuthenticator(),
+	)
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+	request.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{
+			{Subject: pkix.Name{CommonName: "node-1"}},
+		},
+	}
+	request.Header.Set("X-CCattler-User", "alice")
+
+	result, authError := chain.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result.Principal != "node:node-1" {
+		t.Errorf("principal = %q, want %q (mTLS should win)", result.Principal, "node:node-1")
+	}
+}
+
+// TestAuthenticatorChainNoMatch verifies that the chain returns an error when
+// no authenticator recognises the credentials.
+func TestAuthenticatorChainNoMatch(t *testing.T) {
+	chain := NewAuthenticatorChain(
+		NewMTLSAuthenticator(),
+		NewLocalUserAuthenticator(),
+	)
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+
+	result, authError := chain.Authenticate(request)
+	if authError == nil {
+		t.Fatal("expected error when no authenticator matches")
+	}
+	if result != nil {
+		t.Fatal("expected nil result when no authenticator matches")
+	}
+}
+
+// TestRBACWildcardBinding verifies that a "user:*" wildcard binding matches
+// any principal starting with "user:".
+func TestRBACWildcardBinding(t *testing.T) {
+	authorizer := NewRBACAuthorizer()
+	for _, builtinRole := range BuiltinRoles() {
+		authorizer.AddRole(builtinRole)
+	}
+	authorizer.BindRole(RoleBinding{
+		Principal: "user:*",
+		RoleName:  "cluster-admin",
+	})
+
+	if err := authorizer.Authorize("user:alice", PermissionWrite, "desired/service/web/image"); err != nil {
+		t.Errorf("user:alice should match user:* wildcard: %v", err)
+	}
+	if err := authorizer.Authorize("user:bob", PermissionRead, "observed/node/n1/state"); err != nil {
+		t.Errorf("user:bob should match user:* wildcard: %v", err)
+	}
+	if err := authorizer.Authorize("node:node-1", PermissionWrite, "desired/service/web/image"); err == nil {
+		t.Error("node:node-1 should NOT match user:* wildcard")
+	}
+}
+
+// TestPrincipalStringRoundTrip verifies that a Principal's String() method
+// produces the canonical "kind:name" form and PrincipalFromKindAndName reverses it.
+func TestPrincipalStringRoundTrip(t *testing.T) {
+	testCases := []struct {
+		principal Principal
+		expected  string
+	}{
+		{Principal{Kind: PrincipalKindUser, Name: "alice"}, "user:alice"},
+		{Principal{Kind: PrincipalKindNode, Name: "node-1"}, "node:node-1"},
+		{Principal{Kind: PrincipalKindService, Name: "web"}, "service:web"},
+		{Principal{Kind: PrincipalKindSystem, Name: "scheduler"}, "system:scheduler"},
+	}
+	for _, testCase := range testCases {
+		result := testCase.principal.String()
+		if result != testCase.expected {
+			t.Errorf("String() = %q, want %q", result, testCase.expected)
+		}
+		parsed := PrincipalFromKindAndName(result)
+		if parsed.Kind != testCase.principal.Kind || parsed.Name != testCase.principal.Name {
+			t.Errorf("PrincipalFromKindAndName(%q) = %v, want kind=%q name=%q",
+				result, parsed, testCase.principal.Kind, testCase.principal.Name)
+		}
+	}
+}
+
+// TestPrincipalStructContextRoundTrip verifies that WithPrincipalStruct and
+// PrincipalStructFromContext preserve the full principal through context.
+func TestPrincipalStructContextRoundTrip(t *testing.T) {
+	original := Principal{
+		Kind:       PrincipalKindUser,
+		Name:       "alice@example.com",
+		Groups:     []string{"developers", "payments"},
+		Attributes: []Attribute{{Key: "team", Value: "payments"}},
+	}
+	ctx := WithPrincipalStruct(context.Background(), original)
+	recovered := PrincipalStructFromContext(ctx)
+
+	if recovered.Kind != original.Kind || recovered.Name != original.Name {
+		t.Errorf("kind/name mismatch: got %s:%s, want %s:%s",
+			recovered.Kind, recovered.Name, original.Kind, original.Name)
+	}
+	if len(recovered.Groups) != 2 || recovered.Groups[0] != "developers" {
+		t.Errorf("groups mismatch: got %v, want %v", recovered.Groups, original.Groups)
+	}
+	if !recovered.HasGroup("payments") {
+		t.Error("HasGroup(payments) should be true")
+	}
+	if recovered.HasGroup("admins") {
+		t.Error("HasGroup(admins) should be false")
+	}
+}
+
+// TestScopeContainsHierarchy verifies that scope containment follows the
+// hierarchical path model (cluster > team > service).
+func TestScopeContainsHierarchy(t *testing.T) {
+	clusterScope := ScopeCluster
+	teamScope := TeamScope("payments")
+	serviceScope := ServiceScope("checkout")
+	nodeScope := NodeScope("node-01")
+
+	// Cluster contains everything.
+	if !clusterScope.Contains(teamScope) {
+		t.Error("cluster should contain team/payments")
+	}
+	if !clusterScope.Contains(serviceScope) {
+		t.Error("cluster should contain service/checkout")
+	}
+	if !clusterScope.Contains(nodeScope) {
+		t.Error("cluster should contain node/node-01")
+	}
+
+	// Scope contains itself.
+	if !teamScope.Contains(teamScope) {
+		t.Error("team/payments should contain itself")
+	}
+
+	// Team does NOT contain unrelated scopes.
+	if teamScope.Contains(nodeScope) {
+		t.Error("team/payments should NOT contain node/node-01")
+	}
+
+	// Parent contains child paths.
+	paymentsChild := Scope("team/payments/database")
+	if !teamScope.Contains(paymentsChild) {
+		t.Error("team/payments should contain team/payments/database")
+	}
+
+	// Sibling team is not contained.
+	frontendScope := TeamScope("frontend")
+	if teamScope.Contains(frontendScope) {
+		t.Error("team/payments should NOT contain team/frontend")
+	}
+}
+
+// TestAPIAuthorizerCapabilityGrant verifies that the API authorizer checks
+// capability grants at various scopes.
+func TestAPIAuthorizerCapabilityGrant(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:alice", CapabilityWorkloadRead, ScopeCluster)
+	apiAuthorizer.Grant("user:alice", CapabilityWorkloadCreate, TeamScope("payments"))
+
+	alice := Principal{Kind: PrincipalKindUser, Name: "alice"}
+
+	// Alice can read workloads at cluster scope.
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err != nil {
+		t.Errorf("alice should have workload.read at cluster: %v", err)
+	}
+
+	// Alice can create workloads in team/payments.
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("payments")); err != nil {
+		t.Errorf("alice should have workload.create at team/payments: %v", err)
+	}
+
+	// Alice cannot create workloads at cluster scope (only granted at team/payments).
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+		t.Error("alice should NOT have workload.create at cluster scope")
+	}
+
+	// Alice cannot create workloads in team/frontend (different team).
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("frontend")); err == nil {
+		t.Error("alice should NOT have workload.create at team/frontend")
+	}
+}
+
+// TestAPIAuthorizerClusterAdminGrantsAll verifies that cluster.admin capability
+// at cluster scope implicitly grants all other capabilities.
+func TestAPIAuthorizerClusterAdminGrantsAll(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:admin", "cluster-admin")
+
+	admin := Principal{Kind: PrincipalKindUser, Name: "admin"}
+
+	for _, capability := range AllCapabilities {
+		if err := apiAuthorizer.AuthorizeAPI(admin, capability, ScopeCluster); err != nil {
+			t.Errorf("cluster-admin should have %q at cluster: %v", capability, err)
+		}
+	}
+}
+
+// TestAPIAuthorizerReaderCannotWrite verifies that api-reader role only grants
+// read capabilities, not write.
+func TestAPIAuthorizerReaderCannotWrite(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:reader", "api-reader")
+
+	reader := Principal{Kind: PrincipalKindUser, Name: "reader"}
+
+	// Can read.
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadRead, ScopeCluster); err != nil {
+		t.Errorf("api-reader should have workload.read: %v", err)
+	}
+
+	// Cannot create.
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+		t.Error("api-reader should NOT have workload.create")
+	}
+
+	// Cannot scale.
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityScalingWrite, ScopeCluster); err == nil {
+		t.Error("api-reader should NOT have scaling.write")
+	}
+}
+
+// TestAPIAuthorizerWildcardGrant verifies that wildcard principal grants
+// (e.g. "user:*") work with the API authorizer.
+func TestAPIAuthorizerWildcardGrant(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:*", "cluster-admin")
+
+	anyUser := Principal{Kind: PrincipalKindUser, Name: "whoever"}
+	if err := apiAuthorizer.AuthorizeAPI(anyUser, CapabilityWorkloadCreate, ScopeCluster); err != nil {
+		t.Errorf("user:* wildcard should grant cluster-admin: %v", err)
+	}
+
+	node := Principal{Kind: PrincipalKindNode, Name: "node-1"}
+	if err := apiAuthorizer.AuthorizeAPI(node, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+		t.Error("node:node-1 should NOT match user:* wildcard")
 	}
 }

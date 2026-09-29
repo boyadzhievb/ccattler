@@ -14,6 +14,10 @@ import (
 	"time"
 )
 
+// defaultOIDCTokenExpiration is the fallback expiry applied to an OIDC token
+// when the JWT does not contain an "exp" claim.
+const defaultOIDCTokenExpiration = 1 * time.Hour
+
 // OIDCConfig holds the configuration for OIDC/OAuth2 authentication.
 type OIDCConfig struct {
 	Issuer       string       // expected token issuer (e.g. "https://accounts.google.com")
@@ -48,11 +52,16 @@ func NewOIDCAuthenticator(config OIDCConfig, verifyingKey crypto.PublicKey) *OID
 	}
 }
 
-// AuthenticationResult contains the identity extracted from a validated JWT.
+// AuthenticationResult contains the identity extracted from a validated JWT or
+// other credential. The Principal string is the canonical "kind:name" form;
+// PrincipalKind, Groups, and Attributes carry additional identity metadata for
+// capability-based authorization.
 type AuthenticationResult struct {
-	Principal  string      // principal identity (e.g. "user:alice@example.com")
-	Attributes []Attribute // extracted attributes for ABAC
-	ExpiresAt  time.Time   // token expiry
+	Principal     string        // canonical identity (e.g. "user:alice@example.com", "node:node-1")
+	PrincipalKind PrincipalKind // kind of entity (user, node, service, system)
+	Groups        []string      // group memberships from the identity provider
+	Attributes    []Attribute   // extracted attributes for ABAC
+	ExpiresAt     time.Time     // token expiry
 }
 
 // Authenticate validates a JWT token and returns the extracted identity. The
@@ -118,7 +127,7 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 		}
 	}
 
-	expiresAt := time.Now().Add(1 * time.Hour)
+	expiresAt := time.Now().Add(defaultOIDCTokenExpiration)
 	if expFloat, ok := claims["exp"].(float64); ok {
 		expiresAt = time.Unix(int64(expFloat), 0)
 		if time.Now().After(expiresAt) {
@@ -146,8 +155,9 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 	}
 
 	return &AuthenticationResult{
-		Principal:  principal,
-		Attributes: attributes,
+		Principal:     principal,
+		PrincipalKind: PrincipalKindUser,
+		Attributes:    attributes,
 		ExpiresAt:  expiresAt,
 	}, nil
 }

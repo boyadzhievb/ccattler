@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// linuxDefaultClockTicksPerSecond is the default value of CLK_TCK (clock ticks
+// per second) on Linux. Nearly all Linux kernels use 100 Hz as the default
+// USER_HZ, which is the unit for utime/stime in /proc/{pid}/stat.
+const linuxDefaultClockTicksPerSecond = 100
+
 // readProcessStats reads CPU and memory usage for the given PID. On Linux,
 // this reads /proc/{pid}/stat and /proc/{pid}/statm. On other platforms,
 // it returns zero values (metrics unavailable).
@@ -84,9 +89,7 @@ func readProcessCPUFromProc(pid int) (int64, error) {
 
 	totalTicks := userTicks + systemTicks
 	// Convert ticks to millicores: (ticks / CLK_TCK) * 1000.
-	// CLK_TCK is typically 100 on Linux, so millicores = totalTicks * 10.
-	clockTicksPerSecond := int64(100)
-	cpuMillicores := (totalTicks * 1000) / clockTicksPerSecond
+	cpuMillicores := (totalTicks * 1000) / linuxDefaultClockTicksPerSecond
 
 	return cpuMillicores, nil
 }

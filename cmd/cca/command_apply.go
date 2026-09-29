@@ -13,9 +13,13 @@ import (
 	"github.com/boyadzhievb/ccattler/infra"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/logging"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
-	"github.com/boyadzhievb/ccattler/types"
+)
+
+const (
+	// applyConvergenceSettleTime is the delay after applying DSL config to let
+	// the reconciliation loop converge before printing status.
+	applyConvergenceSettleTime = 500 * time.Millisecond
 )
 
 // applyCommandConfig holds parsed flags for the "apply" command, which can
@@ -151,33 +155,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	factStore := store.NewMemoryStore()
 	defer func() { _ = factStore.Close() }()
 
-	// Register 3 simulated nodes with equal capacity.
-	for _, simulatedNodeID := range []string{"node-1", "node-2", "node-3"} {
-		if writeError := types.WriteNode(ctx, factStore, types.Node{
-			ID: simulatedNodeID, State: types.NodeAlive,
-			CapacityCPU: 4000, CapacityMemory: 8192,
-			AvailableCPU: 4000, AvailableMemory: 8192,
-			Architecture: "amd64",
-		}); writeError != nil {
-			logging.Default().Error("failed to write node", "node", simulatedNodeID, "error", writeError.Error())
-		}
-	}
-	fmt.Println("Registered 3 simulated nodes")
-
-	// Create and start all reconciliation controllers.
-	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
-	endpointController := controllers.NewEndpointController()
-	failureController := controllers.NewFailureController()
-	autoscaleController := controllers.NewAutoscaleController()
-	intentResolverController := controllers.NewIntentResolverController()
-	rolloutController := controllers.NewRolloutController()
-	initController := controllers.NewInitController()
-	warmZeroController := controllers.NewWarmZeroController()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore))
-
-	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
-		endpointController, failureController, autoscaleController, intentResolverController, rolloutController, clusterAutoscaleController, initController, warmZeroController)
+	controllerRunner := setupLocalSimulationEnvironment(ctx, factStore)
 	go func() {
 		if runError := controllerRunner.Run(ctx); runError != nil {
 			logging.Default().Error("controller runner exited with error", "error", runError.Error())
@@ -191,6 +169,20 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	}
 
 	// Wait for reconciliation to settle before printing status.
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(applyConvergenceSettleTime)
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
+}
+
+// setupLocalSimulationEnvironment registers 3 simulated nodes and creates all
+// reconciliation controllers for a local (in-memory) simulation. Returns a
+// controller runner ready to be started.
+func setupLocalSimulationEnvironment(ctx context.Context, factStore store.StateStore) *controllers.Runner {
+	registerSimulatedNodes(ctx, factStore, []string{"node-1", "node-2", "node-3"})
+	fmt.Println("Registered 3 simulated nodes")
+
+	controllerList := append(coreControllers(),
+		controllers.NewWarmZeroController(),
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+
+	return controllers.NewRunner(factStore, controllerList...)
 }

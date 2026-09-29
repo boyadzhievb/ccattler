@@ -17,6 +17,18 @@ const (
 	CircuitHalfOpen
 )
 
+const (
+	// defaultFailureThreshold is the number of consecutive failures before the
+	// circuit opens and the backend is considered unhealthy.
+	defaultFailureThreshold = 5
+	// defaultSuccessThreshold is the number of consecutive successes in
+	// half-open state needed to close the circuit and resume normal traffic.
+	defaultSuccessThreshold = 2
+	// defaultHalfOpenMaxInflight is the maximum number of probe requests
+	// allowed through when the circuit is in half-open state.
+	defaultHalfOpenMaxInflight = 1
+)
+
 // circuitBreakerConfig holds the thresholds for a circuit breaker.
 type circuitBreakerConfig struct {
 	failureThreshold    int
@@ -28,10 +40,10 @@ type circuitBreakerConfig struct {
 // defaultCircuitBreakerConfig returns sensible defaults for proxy backends.
 func defaultCircuitBreakerConfig() circuitBreakerConfig {
 	return circuitBreakerConfig{
-		failureThreshold:    5,
-		successThreshold:    2,
+		failureThreshold:    defaultFailureThreshold,
+		successThreshold:    defaultSuccessThreshold,
 		openDuration:        10 * time.Second,
-		halfOpenMaxRequests: 1,
+		halfOpenMaxRequests: defaultHalfOpenMaxInflight,
 	}
 }
 

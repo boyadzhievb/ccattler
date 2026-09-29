@@ -997,57 +997,57 @@ func KeyObservedVolumeReplicaState(volumeName string) string {
 
 // KeyDesiredServiceProbeMethod returns the store path for a probe's check method.
 // Path: desired/service/{name}/probe/{probeType}/method
-func KeyDesiredServiceProbeMethod(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeMethod(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/method", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbePath returns the store path for a probe's check path.
 // Path: desired/service/{name}/probe/{probeType}/path
-func KeyDesiredServiceProbePath(serviceName string, probeType string) string {
+func KeyDesiredServiceProbePath(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/path", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbePort returns the store path for a probe's check port.
 // Path: desired/service/{name}/probe/{probeType}/port
-func KeyDesiredServiceProbePort(serviceName string, probeType string) string {
+func KeyDesiredServiceProbePort(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/port", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeInterval returns the store path for a probe's check interval.
 // Path: desired/service/{name}/probe/{probeType}/interval
-func KeyDesiredServiceProbeInterval(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeInterval(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/interval", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeTimeout returns the store path for a probe's check timeout.
 // Path: desired/service/{name}/probe/{probeType}/timeout
-func KeyDesiredServiceProbeTimeout(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeTimeout(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/timeout", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeFailureThreshold returns the store path for a probe's failure threshold.
 // Path: desired/service/{name}/probe/{probeType}/failure_threshold
-func KeyDesiredServiceProbeFailureThreshold(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeFailureThreshold(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/failure_threshold", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeSuccessThreshold returns the store path for a probe's success threshold.
 // Path: desired/service/{name}/probe/{probeType}/success_threshold
-func KeyDesiredServiceProbeSuccessThreshold(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeSuccessThreshold(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/success_threshold", PrefixDesired, serviceName, probeType)
 }
 
 // KeyDesiredServiceProbeInitialDelay returns the store path for a probe's initial delay
 // before the first check runs.
 // Path: desired/service/{name}/probe/{probeType}/initial_delay
-func KeyDesiredServiceProbeInitialDelay(serviceName string, probeType string) string {
+func KeyDesiredServiceProbeInitialDelay(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/initial_delay", PrefixDesired, serviceName, probeType)
 }
 
 // ScanDesiredServiceProbe returns the scan prefix for all config fields of a
 // specific probe type on a service.
 // Path: desired/service/{name}/probe/{probeType}/
-func ScanDesiredServiceProbe(serviceName string, probeType string) string {
+func ScanDesiredServiceProbe(serviceName string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/service/%s/probe/%s/", PrefixDesired, serviceName, probeType)
 }
 
@@ -1059,7 +1059,7 @@ func ScanDesiredServiceProbe(serviceName string, probeType string) string {
 // KeyObservedInstanceProbeState returns the store path for an observed probe
 // result on a specific instance and probe type (startup, liveness, readiness).
 // Path: observed/instance/{instanceID}/probe/{probeType}
-func KeyObservedInstanceProbeState(instanceID string, probeType string) string {
+func KeyObservedInstanceProbeState(instanceID string, probeType ProbeType) string {
 	return fmt.Sprintf("%s/instance/%s/probe/%s", PrefixObserved, instanceID, probeType)
 }
 

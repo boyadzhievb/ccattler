@@ -36,10 +36,10 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 	if writeError := types.WriteNode(ctx, simulatorInfraProvider.factStore, types.Node{
 		ID:              nodeID,
 		State:           types.NodeAlive,
-		CapacityCPU:     4000,
-		CapacityMemory:  8192,
-		AvailableCPU:    4000,
-		AvailableMemory: 8192,
+		CapacityCPU:     types.DefaultSimulatedNodeCPU,
+		CapacityMemory:  types.DefaultSimulatedNodeMemory,
+		AvailableCPU:    types.DefaultSimulatedNodeCPU,
+		AvailableMemory: types.DefaultSimulatedNodeMemory,
 		Architecture:    "amd64",
 	}); writeError != nil {
 		logging.Default().Error("failed to write simulated node", "node", nodeID, "error", writeError.Error())

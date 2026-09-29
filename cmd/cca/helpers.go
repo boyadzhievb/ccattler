@@ -2,17 +2,23 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
+	"os/user"
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/logging"
+	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // statusAPIListenAddress is the address the HTTP status API binds to when running
@@ -73,7 +79,7 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 		return store.NewEtcdStore(store.EtcdStoreConfig{
 			Endpoints:   endpointList,
 			KeyPrefix:   storeKeyPrefix,
-			DialTimeout: 5 * time.Second,
+			DialTimeout: types.DefaultEtcdDialTimeout,
 			TLSConfig:   etcdTLSConfig,
 		})
 	}
@@ -124,4 +130,104 @@ func annotateErrorWithFileName(originalError error, fileName string) error {
 		parseError.File = fileName
 	}
 	return originalError
+}
+
+// registerLocalNode registers a single node with default simulated capacity.
+// Used by single-machine modes (run, run-container, demo) and the agent command.
+func registerLocalNode(ctx context.Context, factStore store.StateStore, nodeID string) {
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
+		ID: nodeID, State: types.NodeAlive,
+		CapacityCPU: types.DefaultSimulatedNodeCPU, CapacityMemory: types.DefaultSimulatedNodeMemory,
+		AvailableCPU: types.DefaultSimulatedNodeCPU, AvailableMemory: types.DefaultSimulatedNodeMemory,
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
+	}
+}
+
+// registerSimulatedNodes registers multiple simulated nodes with default capacity.
+// Used by multi-node demos and local simulation mode.
+func registerSimulatedNodes(ctx context.Context, factStore store.StateStore, nodeIDs []string) {
+	for _, nodeID := range nodeIDs {
+		registerLocalNode(ctx, factStore, nodeID)
+	}
+}
+
+// coreControllers creates the 8 reconciliation controllers present in every mode:
+// instance, scheduler, endpoint, failure, autoscale, intent resolver, rollout, init.
+// Commands append mode-specific controllers (nodeFailure, network, storage, warmZero,
+// clusterAutoscale) before passing the slice to startControllerRunner or NewRunner.
+func coreControllers() []controllers.Controller {
+	return []controllers.Controller{
+		controllers.NewInstanceController(),
+		scheduler.NewScheduler(),
+		controllers.NewEndpointController(),
+		controllers.NewFailureController(),
+		controllers.NewAutoscaleController(),
+		controllers.NewIntentResolverController(),
+		controllers.NewRolloutController(),
+		controllers.NewInitController(),
+	}
+}
+
+// startControllerRunner creates an event log, wraps the given controllers in a
+// Runner, sets the event log, and starts reconciliation in a background goroutine.
+// Returns the event log for API server integration.
+func startControllerRunner(ctx context.Context, factStore store.StateStore, controllerList []controllers.Controller) *types.EventLog {
+	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
+	controllerRunner := controllers.NewRunner(factStore, controllerList...)
+	controllerRunner.SetEventLog(eventLog)
+	go func() {
+		if runError := controllerRunner.Run(ctx); runError != nil {
+			logging.Default().Error("controller runner exited with error", "error", runError.Error())
+		}
+	}()
+	return eventLog
+}
+
+// runDemoStatusLoop prints cluster status at the given interval until the context
+// is cancelled. Used by demo commands that loop after their initial setup phase.
+func runDemoStatusLoop(ctx context.Context, factStore store.StateStore, interval time.Duration) {
+	statusPrintTicker := time.NewTicker(interval)
+	defer statusPrintTicker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down...")
+			return
+		case <-statusPrintTicker.C:
+			fmt.Println()
+			fmt.Print(buildStatusTextOutput(ctx, factStore))
+		}
+	}
+}
+
+// localUserRoundTripper wraps an http.RoundTripper to inject the X-CCattler-User
+// header on every request. Used by CLI commands connecting to a non-TLS server
+// so that the local user authenticator can identify the caller.
+type localUserRoundTripper struct {
+	inner    http.RoundTripper // underlying transport
+	username string            // OS username to send
+}
+
+// RoundTrip adds the X-CCattler-User header and delegates to the inner transport.
+func (transport *localUserRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	request = request.Clone(request.Context())
+	request.Header.Set("X-CCattler-User", transport.username)
+	return transport.inner.RoundTrip(request)
+}
+
+// buildLocalUserHTTPClient creates an HTTP client that attaches the current OS
+// username via the X-CCattler-User header on every request. Use this when
+// connecting to a non-TLS CCattler server.
+func buildLocalUserHTTPClient() *http.Client {
+	username := "unknown"
+	if currentUser, lookupError := user.Current(); lookupError == nil {
+		username = currentUser.Username
+	}
+	return &http.Client{
+		Transport: &localUserRoundTripper{
+			inner:    http.DefaultTransport,
+			username: username,
+		},
+	}
 }

@@ -15,6 +15,11 @@ import (
 // "<service>.ccattler.local" are resolved to the service's VIP.
 const DefaultDNSDomain = "ccattler.local"
 
+// dnsReadBufferSize is the byte size of the UDP read buffer for incoming DNS
+// queries. 512 bytes is the standard maximum size for DNS messages over UDP
+// (RFC 1035 Section 2.3.4).
+const dnsReadBufferSize = 512
+
 // DNSServer is a lightweight UDP DNS server that resolves service names to
 // their virtual IP addresses by reading VIP facts from the state store via
 // a ServiceResolver. It handles only A-record queries for the
@@ -65,7 +70,7 @@ func (dnsServer *DNSServer) Start(ctx context.Context) error {
 		_ = udpConnection.Close()
 	}()
 
-	packetBuffer := make([]byte, 512)
+	packetBuffer := make([]byte, dnsReadBufferSize)
 	for {
 		bytesRead, remoteAddress, err := udpConnection.ReadFromUDP(packetBuffer)
 		if err != nil {

@@ -10,6 +10,11 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
+// defaultWatchSubscriberBuffer is the channel buffer size for each watch
+// subscriber. Events are dropped when the buffer is full, so this should be
+// large enough to absorb short bursts without losing events.
+const defaultWatchSubscriberBuffer = 64
+
 // WatchMultiplexer shares store watch connections across multiple API
 // subscribers watching the same prefix. Instead of each SSE client opening
 // its own store.Watch (which maps 1:1 to an etcd watch), the multiplexer
@@ -50,7 +55,7 @@ func (multiplexer *WatchMultiplexer) Subscribe(ctx context.Context, prefix strin
 		multiplexer.sharedWatchers[prefix] = shared
 	}
 
-	subscriberChannel := make(chan store.Event, 64)
+	subscriberChannel := make(chan store.Event, defaultWatchSubscriberBuffer)
 	subscriptionID := shared.addSubscriber(subscriberChannel)
 	multiplexer.mutex.Unlock()
 

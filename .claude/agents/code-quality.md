@@ -21,6 +21,23 @@ These are mandatory — violations must be reported:
 4. **Descriptive function names.** Prefer `executeReconciliationCycle` over `reconcileOnce`.
 5. **Receiver names match the type.** Use `nodeFailureController` not `ctrl`, `memStore` not `m`.
 
+## Anti-Pattern Rules (from Phase 50)
+
+These are mandatory — violations must be reported:
+
+6. **No dead code.** Every exported type/function/constant must have at least one production caller (non-test). Code only used in tests belongs in `_test.go`.
+7. **No magic numbers.** Timeouts, capacities, thresholds, retry counts must be package-level named constants. Tests reference the constants, not raw values.
+8. **Function length limit: 80 lines.** No function (excluding tests) may exceed 80 lines.
+9. **No copy-paste duplication.** Same pattern in 3+ places → extract a helper. Near-duplicate blocks over 10 lines must be refactored.
+10. **Typed enums over raw strings.** Instance states, node states, probe types use typed string constants, not raw string comparisons.
+
+## Data Structures & Algorithms Rules
+
+11. **Maps for O(1) lookups.** Use `map[string]T` for key-based lookups. Never linear scan slices when lookup key is known.
+12. **Deterministic iteration.** When iterating maps, collect keys into a slice and sort before processing. Controllers must produce same output given same input.
+13. **Optimistic concurrency.** Compare-and-swap via store transactions, never lock-and-hold.
+14. **Prefix-based scan.** Use `Scan(prefix)` for fact store queries, not full-store iteration + filter.
+
 ## What to Check
 
 ### Step 1 — Determine scope

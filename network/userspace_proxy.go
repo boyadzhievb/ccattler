@@ -97,6 +97,18 @@ const warmZeroCacheTTL = 5 * time.Second
 // wait for a single service's cold activation. Beyond this, requests get 503.
 const maxActivationWaiters = 100
 
+// defaultProxyShutdownTimeout is the maximum time the proxy waits for in-flight
+// requests to complete during a graceful shutdown.
+const defaultProxyShutdownTimeout = 15 * time.Second
+
+// warmZeroActivationPollInterval is how often the proxy polls for newly
+// available endpoints while waiting for a scaled-to-zero service to activate.
+const warmZeroActivationPollInterval = 500 * time.Millisecond
+
+// defaultActivationTimeout is the maximum time the proxy waits for a
+// scaled-to-zero service to produce healthy endpoints before returning 503.
+const defaultActivationTimeout = 30 * time.Second
+
 // NewUserSpaceProxy creates an HTTP reverse proxy that routes requests to
 // service backends resolved via the provided ServiceResolver. If factStore
 // is non-nil, warm-zero activation support is enabled.
@@ -121,7 +133,7 @@ func (userSpaceProxy *UserSpaceProxy) Start(ctx context.Context) error {
 	httpServer := &http.Server{
 		Addr:              userSpaceProxy.listenAddress,
 		Handler:           userSpaceProxy,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: types.DefaultReadHeaderTimeout,
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
@@ -129,7 +141,7 @@ func (userSpaceProxy *UserSpaceProxy) Start(ctx context.Context) error {
 
 	go func() { //nolint:gosec // parent context is already cancelled; fresh context needed for shutdown timeout
 		<-ctx.Done()
-		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 15*time.Second)
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), defaultProxyShutdownTimeout)
 		defer cancelShutdown()
 		_ = httpServer.Shutdown(shutdownContext)
 	}()
@@ -241,7 +253,7 @@ func (userSpaceProxy *UserSpaceProxy) handleColdActivation(
 
 	userSpaceProxy.writeActivatingState(incomingRequest.Context(), serviceName)
 
-	pollTicker := time.NewTicker(500 * time.Millisecond)
+	pollTicker := time.NewTicker(warmZeroActivationPollInterval)
 	defer pollTicker.Stop()
 
 	timeoutTimer := time.NewTimer(activationTimeout)
@@ -296,17 +308,17 @@ func (userSpaceProxy *UserSpaceProxy) handleColdActivation(
 // returns it as a time.Duration. Defaults to 30 seconds if not configured.
 func (userSpaceProxy *UserSpaceProxy) getActivationTimeout(ctx context.Context, serviceName string) time.Duration {
 	if userSpaceProxy.factStore == nil {
-		return 30 * time.Second
+		return defaultActivationTimeout
 	}
 	timeoutFact, getError := userSpaceProxy.factStore.Get(ctx, types.KeyDesiredServiceScaleActivationTimeout(serviceName))
 	if getError != nil || timeoutFact == nil {
-		return 30 * time.Second
+		return defaultActivationTimeout
 	}
 	seconds := parseDurationSecondsFromString(string(timeoutFact.Value))
 	if seconds > 0 {
 		return time.Duration(seconds) * time.Second
 	}
-	return 30 * time.Second
+	return defaultActivationTimeout
 }
 
 // parseDurationSecondsFromString delegates to types.ParseDurationSeconds.

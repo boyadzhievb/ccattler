@@ -376,6 +376,12 @@ func TestInvariantIdempotentReconciliation(t *testing.T) {
 	// after VIP and DNS creation.
 	time.Sleep(300 * time.Millisecond)
 
+	// Stop the controller runner and agents to prevent background writes
+	// during the idempotency check. Without this, background reconciliation
+	// cycles can advance the store revision and cause a false failure.
+	cluster.clusterCancel()
+	time.Sleep(100 * time.Millisecond)
+
 	// Record the store revision at this point.
 	currentRevision, revisionError := cluster.factStore.Revision(backgroundContext)
 	if revisionError != nil {

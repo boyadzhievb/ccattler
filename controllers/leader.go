@@ -46,21 +46,32 @@ type LeaderElectionConfig struct {
 	OnLost func()
 }
 
-// leaderLeaseKey is the fact store key used for the leader lease.
-const leaderLeaseKey = "leader/controlplane"
+const (
+	// leaderLeaseKey is the fact store key used for the leader lease.
+	leaderLeaseKey = "leader/controlplane"
 
-// leaderLeaseHolderKey stores the identity of the current leader.
-const leaderLeaseHolderKey = "leader/controlplane/holder"
+	// leaderLeaseHolderKey stores the identity of the current leader.
+	leaderLeaseHolderKey = "leader/controlplane/holder"
+
+	// defaultLeaderLeaseDuration is how long a leader lease is valid before
+	// it must be renewed. If the leader fails to renew within this window,
+	// another node may acquire leadership.
+	defaultLeaderLeaseDuration = 15 * time.Second
+
+	// defaultLeaderLeaseRenewInterval is how often the current leader
+	// refreshes its lease timestamp in the fact store.
+	defaultLeaderLeaseRenewInterval = 5 * time.Second
+)
 
 // NewLeaderElection creates a leader election instance for the given node.
 func NewLeaderElection(factStore store.StateStore, config LeaderElectionConfig) *LeaderElection {
 	leaseDuration := config.LeaseDuration
 	if leaseDuration == 0 {
-		leaseDuration = 15 * time.Second
+		leaseDuration = defaultLeaderLeaseDuration
 	}
 	renewInterval := config.RenewInterval
 	if renewInterval == 0 {
-		renewInterval = 5 * time.Second
+		renewInterval = defaultLeaderLeaseRenewInterval
 	}
 
 	return &LeaderElection{

@@ -114,8 +114,8 @@ func (simulatedCluster *SimulatedChaosCluster) Start(ctx context.Context) {
 	for _, nodeID := range simulatedCluster.nodeIDs {
 		if writeError := types.WriteNode(ctx, simulatedCluster.factStore, types.Node{
 			ID: nodeID, State: types.NodeAlive,
-			CapacityCPU: 4000, CapacityMemory: 8192,
-			AvailableCPU: 4000, AvailableMemory: 8192,
+			CapacityCPU: types.DefaultSimulatedNodeCPU, CapacityMemory: types.DefaultSimulatedNodeMemory,
+			AvailableCPU: types.DefaultSimulatedNodeCPU, AvailableMemory: types.DefaultSimulatedNodeMemory,
 		}); writeError != nil {
 			logging.Default().Error("failed to write node state", "node", nodeID, "error", writeError.Error())
 		}

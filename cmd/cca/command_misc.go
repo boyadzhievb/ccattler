@@ -20,6 +20,12 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
+const (
+	// enrollmentHTTPTimeout is the timeout for HTTP requests made during
+	// node enrollment (cca join).
+	enrollmentHTTPTimeout = 30 * time.Second
+)
+
 // diffCommandConfig holds parsed flags for the "diff" command.
 type diffCommandConfig struct {
 	// configFilePath is the path to the .ccattler DSL file to diff.
@@ -451,34 +457,7 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 func executeJoinCommand(parsedConfig joinCommandConfig) {
 	fmt.Printf("Enrolling node %s with %s...\n", parsedConfig.nodeID, parsedConfig.serverAddress)
 
-	var transportTLSConfig *tls.Config
-	if parsedConfig.caCertPath != "" {
-		caCertPEM, readError := os.ReadFile(parsedConfig.caCertPath)
-		if readError != nil {
-			fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
-			os.Exit(1)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-			fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
-			os.Exit(1)
-		}
-		transportTLSConfig = &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS13,
-		}
-	} else {
-		transportTLSConfig = &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // TLS verification disabled during node bootstrap when no CA cert provided
-			MinVersion:         tls.VersionTLS13,
-		}
-		fmt.Println("WARNING: no --ca-cert provided, server certificate will not be verified")
-	}
-
-	httpClient := &http.Client{
-		Transport: &http.Transport{TLSClientConfig: transportTLSConfig},
-		Timeout:   30 * time.Second,
-	}
+	enrollmentHTTPClient := buildEnrollmentHTTPClient(parsedConfig.caCertPath)
 
 	localIPAddresses := detectLocalIPAddresses()
 	ipStrings := make([]string, len(localIPAddresses))
@@ -493,7 +472,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	})
 
 	enrollmentURL := parsedConfig.serverAddress + "/api/enroll"
-	httpResponse, requestError := httpClient.Post(enrollmentURL, "application/json",
+	httpResponse, requestError := enrollmentHTTPClient.Post(enrollmentURL, "application/json",
 		strings.NewReader(string(enrollmentRequestBody)))
 	if requestError != nil {
 		fmt.Fprintf(os.Stderr, "error contacting server: %v\n", requestError)
@@ -520,37 +499,81 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		os.Exit(1)
 	}
 
-	if mkdirError := os.MkdirAll(parsedConfig.dataDirectory, 0700); mkdirError != nil {
+	writeEnrollmentCredentials(parsedConfig.dataDirectory,
+		enrollmentResponse.CertificatePEM, enrollmentResponse.PrivateKeyPEM, enrollmentResponse.CACertPEM)
+
+	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
+	fmt.Println()
+	fmt.Println("Start the agent with:")
+	fmt.Printf("  cca agent --node-id %s --cert %s/node.pem --key %s/node-key.pem --ca %s/ca.pem\n",
+		parsedConfig.nodeID, parsedConfig.dataDirectory, parsedConfig.dataDirectory, parsedConfig.dataDirectory)
+}
+
+// buildEnrollmentHTTPClient creates an HTTP client configured for the node
+// enrollment request. If caCertPath is provided, the client verifies the server
+// certificate against that CA. Otherwise it skips verification with a warning,
+// since the node does not yet have cluster credentials during bootstrap.
+func buildEnrollmentHTTPClient(caCertPath string) *http.Client {
+	var transportTLSConfig *tls.Config
+	if caCertPath != "" {
+		caCertPEM, readError := os.ReadFile(caCertPath)
+		if readError != nil {
+			fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
+			os.Exit(1)
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
+			os.Exit(1)
+		}
+		transportTLSConfig = &tls.Config{
+			RootCAs:    caCertPool,
+			MinVersion: tls.VersionTLS13,
+		}
+	} else {
+		transportTLSConfig = &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec // TLS verification disabled during node bootstrap when no CA cert provided
+			MinVersion:         tls.VersionTLS13,
+		}
+		fmt.Println("WARNING: no --ca-cert provided, server certificate will not be verified")
+	}
+
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: transportTLSConfig},
+		Timeout:   enrollmentHTTPTimeout,
+	}
+}
+
+// writeEnrollmentCredentials saves the certificate, private key, and CA
+// certificate received during enrollment to the specified data directory.
+// Creates the directory if it does not exist and prints the file paths.
+func writeEnrollmentCredentials(dataDirectory, certificatePEM, privateKeyPEM, caCertPEM string) {
+	if mkdirError := os.MkdirAll(dataDirectory, 0700); mkdirError != nil {
 		fmt.Fprintf(os.Stderr, "error creating data directory: %v\n", mkdirError)
 		os.Exit(1)
 	}
 
-	certPath := parsedConfig.dataDirectory + "/node.pem"
-	keyPath := parsedConfig.dataDirectory + "/node-key.pem"
-	caCertPath := parsedConfig.dataDirectory + "/ca.pem"
+	certPath := dataDirectory + "/node.pem"
+	keyPath := dataDirectory + "/node-key.pem"
+	caOutputPath := dataDirectory + "/ca.pem"
 
-	if writeError := os.WriteFile(certPath, []byte(enrollmentResponse.CertificatePEM), 0600); writeError != nil {
+	if writeError := os.WriteFile(certPath, []byte(certificatePEM), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing certificate: %v\n", writeError)
 		os.Exit(1)
 	}
-	if writeError := os.WriteFile(keyPath, []byte(enrollmentResponse.PrivateKeyPEM), 0600); writeError != nil {
+	if writeError := os.WriteFile(keyPath, []byte(privateKeyPEM), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing private key: %v\n", writeError)
 		os.Exit(1)
 	}
-	if writeError := os.WriteFile(caCertPath, []byte(enrollmentResponse.CACertPEM), 0600); writeError != nil {
+	if writeError := os.WriteFile(caOutputPath, []byte(caCertPEM), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
 		os.Exit(1)
 	}
 
 	fmt.Println()
-	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
 	fmt.Printf("  Certificate: %s\n", certPath)
 	fmt.Printf("  Private key: %s\n", keyPath)
-	fmt.Printf("  CA cert:     %s\n", caCertPath)
-	fmt.Println()
-	fmt.Println("Start the agent with:")
-	fmt.Printf("  cca agent --node-id %s --cert %s --key %s --ca %s\n",
-		parsedConfig.nodeID, certPath, keyPath, caCertPath)
+	fmt.Printf("  CA cert:     %s\n", caOutputPath)
 }
 
 const bashCompletionScript = `# cca bash completion — source this or add to .bashrc:
@@ -664,6 +687,9 @@ func executeCompletionCommand(shellName string) {
 // buildZshCompletionScript generates the zsh completion script as a string.
 // Built with a string builder because the script contains backticks that
 // cannot appear inside a Go raw string literal.
+// NOTE: This function exceeds 80 lines because it is predominantly shell
+// template text assembled via WriteString calls with no meaningful logic
+// boundaries to extract into helpers.
 func buildZshCompletionScript() string {
 	var builder strings.Builder
 	builder.WriteString("#compdef cca\n")

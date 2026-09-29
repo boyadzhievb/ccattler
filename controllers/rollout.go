@@ -52,21 +52,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 			continue
 		}
 
-		var oldImageInstances, newImageInstances []rolloutInstanceInfo
-		var newImageFailed int
-		for _, instanceInfo := range instances {
-			if instanceInfo.state == types.InstanceStopped {
-				continue
-			}
-			if instanceInfo.image == "" || instanceInfo.image == desiredImage {
-				newImageInstances = append(newImageInstances, instanceInfo)
-				if instanceInfo.state == types.InstanceFailed {
-					newImageFailed++
-				}
-			} else {
-				oldImageInstances = append(oldImageInstances, instanceInfo)
-			}
-		}
+		oldImageInstances, newImageInstances, newImageFailedCount := classifyInstancesByImage(instances, desiredImage)
 
 		if len(oldImageInstances) == 0 {
 			if rolloutState[serviceName] == "rolling" {
@@ -80,80 +66,150 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 		}
 
 		previousImage := rolloutState[serviceName+"/previous_image"]
-		if previousImage == "" {
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyDerivedServiceRolloutImage(serviceName),
-				Value: []byte(oldImageInstances[0].image),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyDerivedServiceRolloutState(serviceName),
-				Value: []byte("rolling"),
-			})
-		}
+		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage)
+		changes = append(changes, trackingChanges...)
 
-		rollbackThreshold := 3
-		if newImageFailed >= rollbackThreshold && previousImage != "" {
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyDesiredServiceImage(serviceName),
-				Value: []byte(previousImage),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyDerivedServiceRolloutState(serviceName),
-				Value: []byte("rollback"),
-			})
+		if shouldTriggerRollback(newImageFailedCount, previousImage) {
+			rollbackChanges := buildRollbackChanges(serviceName, previousImage)
+			changes = append(changes, rollbackChanges...)
 			continue
 		}
 
-		policy := updatePolicies[serviceName]
-		maxUnavailable := policy.maxUnavailable
-		if maxUnavailable == 0 {
-			maxUnavailable = 1
-		}
-
-		var healthyNewCount int
-		for _, instanceInfo := range newImageInstances {
-			if instanceInfo.state == types.InstanceRunning {
-				healthyNewCount++
-			}
-		}
-
-		currentUnavailable := 0
-		for _, instanceInfo := range oldImageInstances {
-			if instanceInfo.state == types.InstanceFailed {
-				currentUnavailable++
-			}
-		}
-
-		canStop := maxUnavailable - currentUnavailable
-		if canStop <= 0 {
-			continue
-		}
-
-		if healthyNewCount == 0 && len(newImageInstances) > 0 {
-			continue
-		}
-
-		stopped := 0
-		for _, instanceInfo := range oldImageInstances {
-			if stopped >= canStop {
-				break
-			}
-			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending || instanceInfo.state == types.InstanceStarting {
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyObservedInstanceState(instanceInfo.id),
-					Value: []byte(string(types.InstanceStopped)),
-				})
-				stopped++
-			}
-		}
+		stopChanges := buildOldInstanceStopChanges(
+			oldImageInstances, newImageInstances, updatePolicies[serviceName],
+		)
+		changes = append(changes, stopChanges...)
 	}
 
 	return changes, nil
+}
+
+// classifyInstancesByImage partitions a service's instances into those running
+// the old image and those running the new (desired) image, skipping stopped
+// instances. It also returns the count of new-image instances in the failed
+// state, which is used for rollback threshold checks.
+func classifyInstancesByImage(
+	instances []rolloutInstanceInfo,
+	desiredImage string,
+) ([]rolloutInstanceInfo, []rolloutInstanceInfo, int) {
+	var oldImageInstances, newImageInstances []rolloutInstanceInfo
+	var newImageFailedCount int
+	for _, instanceInfo := range instances {
+		if instanceInfo.state == types.InstanceStopped {
+			continue
+		}
+		if instanceInfo.image == "" || instanceInfo.image == desiredImage {
+			newImageInstances = append(newImageInstances, instanceInfo)
+			if instanceInfo.state == types.InstanceFailed {
+				newImageFailedCount++
+			}
+		} else {
+			oldImageInstances = append(oldImageInstances, instanceInfo)
+		}
+	}
+	return oldImageInstances, newImageInstances, newImageFailedCount
+}
+
+// buildRolloutTrackingChanges returns changes that record the previous image
+// and set the rollout state to "rolling" when a rollout is first detected
+// (i.e. when no previous image has been recorded yet).
+func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string) []Change {
+	if previousImage != "" {
+		return nil
+	}
+	return []Change{
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutImage(serviceName),
+			Value: []byte(oldImageInstances[0].image),
+		},
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutState(serviceName),
+			Value: []byte("rolling"),
+		},
+	}
+}
+
+// shouldTriggerRollback returns true when the number of failed new-image
+// instances meets or exceeds the rollback threshold (3) and a previous image
+// is available to revert to.
+func shouldTriggerRollback(newImageFailedCount int, previousImage string) bool {
+	const rollbackThreshold = 3
+	return newImageFailedCount >= rollbackThreshold && previousImage != ""
+}
+
+// buildRollbackChanges returns changes that revert the desired service image
+// to the previous image and set the rollout state to "rollback".
+func buildRollbackChanges(serviceName string, previousImage string) []Change {
+	return []Change{
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDesiredServiceImage(serviceName),
+			Value: []byte(previousImage),
+		},
+		{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutState(serviceName),
+			Value: []byte("rollback"),
+		},
+	}
+}
+
+// buildOldInstanceStopChanges determines how many old-image instances can be
+// stopped in this reconciliation cycle based on the update policy's
+// max_unavailable setting, the number of already-failed old instances, and
+// whether any healthy new-image instances exist. It returns stop changes for
+// up to canStop old instances.
+func buildOldInstanceStopChanges(
+	oldImageInstances []rolloutInstanceInfo,
+	newImageInstances []rolloutInstanceInfo,
+	policy extractedUpdatePolicy,
+) []Change {
+	maxUnavailable := policy.maxUnavailable
+	if maxUnavailable == 0 {
+		maxUnavailable = 1
+	}
+
+	var healthyNewCount int
+	for _, instanceInfo := range newImageInstances {
+		if instanceInfo.state == types.InstanceRunning {
+			healthyNewCount++
+		}
+	}
+
+	currentUnavailable := 0
+	for _, instanceInfo := range oldImageInstances {
+		if instanceInfo.state == types.InstanceFailed {
+			currentUnavailable++
+		}
+	}
+
+	canStop := maxUnavailable - currentUnavailable
+	if canStop <= 0 {
+		return nil
+	}
+
+	if healthyNewCount == 0 && len(newImageInstances) > 0 {
+		return nil
+	}
+
+	var changes []Change
+	stopped := 0
+	for _, instanceInfo := range oldImageInstances {
+		if stopped >= canStop {
+			break
+		}
+		if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending || instanceInfo.state == types.InstanceStarting {
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyObservedInstanceState(instanceInfo.id),
+				Value: []byte(string(types.InstanceStopped)),
+			})
+			stopped++
+		}
+	}
+	return changes
 }
 
 // rolloutInstanceInfo holds instance details needed for rolling update decisions.

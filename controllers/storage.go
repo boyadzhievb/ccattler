@@ -50,10 +50,39 @@ func (storageController *StorageController) Watch() []string {
 }
 
 // Reconcile examines desired volumes, observed volumes, and node state, then
-// emits changes to create missing volumes, force-detach volumes from
-// unreachable nodes, and clean up volumes that are no longer desired.
+// delegates to sub-reconcilers that create missing volumes, resize volumes,
+// update replication, force-detach volumes from unreachable nodes, and clean
+// up volumes that are no longer desired. Each sub-reconciler returns proposed
+// changes which this coordinator collects into a single slice.
 func (storageController *StorageController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
-	// Collect desired volumes: volumeName -> {size, persistent}.
+	desiredVolumes := collectDesiredVolumes(facts)
+	observedVolumes := collectObservedVolumes(facts)
+	nodeStates := collectNodeStates(facts)
+
+	var allChanges []Change
+
+	creationChanges := reconcileVolumeCreation(desiredVolumes, observedVolumes)
+	allChanges = append(allChanges, creationChanges...)
+
+	resizeChanges := storageController.reconcileVolumeResize(ctx, desiredVolumes, observedVolumes)
+	allChanges = append(allChanges, resizeChanges...)
+
+	replicationChanges := reconcileVolumeReplication(desiredVolumes, observedVolumes)
+	allChanges = append(allChanges, replicationChanges...)
+
+	migrationChanges := storageController.reconcileVolumeMigration(ctx, observedVolumes, nodeStates)
+	allChanges = append(allChanges, migrationChanges...)
+
+	cleanupChanges := reconcileVolumeCleanup(desiredVolumes, observedVolumes)
+	allChanges = append(allChanges, cleanupChanges...)
+
+	return allChanges, nil
+}
+
+// collectDesiredVolumes parses facts under the desired-volumes prefix and
+// returns a map from volume name to its desired configuration (size,
+// persistent flag, replica count).
+func collectDesiredVolumes(facts []store.Fact) map[string]desiredVolumeInfo {
 	desiredVolumes := make(map[string]desiredVolumeInfo)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredVolumes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredVolumes)
@@ -77,8 +106,13 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			desiredVolumes[volumeName] = info
 		}
 	}
+	return desiredVolumes
+}
 
-	// Collect observed volumes: volumeName -> {state, node, instance}.
+// collectObservedVolumes parses facts under the observed-volumes prefix and
+// returns a map from volume name to its observed state (lifecycle state, node,
+// instance, size, migration source, replication info).
+func collectObservedVolumes(facts []store.Fact) map[string]observedVolumeInfo {
 	observedVolumes := make(map[string]observedVolumeInfo)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedVolumes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedVolumes)
@@ -110,8 +144,12 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			observedVolumes[volumeName] = info
 		}
 	}
+	return observedVolumes
+}
 
-	// Collect node states: nodeID -> state.
+// collectNodeStates parses facts under the observed-nodes prefix and returns
+// a map from node ID to its current state (ready, unreachable, etc.).
+func collectNodeStates(facts []store.Fact) map[string]types.NodeState {
 	nodeStates := make(map[string]types.NodeState)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
@@ -120,10 +158,15 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			nodeStates[pathParts[0]] = types.NodeState(fact.Value)
 		}
 	}
+	return nodeStates
+}
 
+// reconcileVolumeCreation returns changes that create observed volume entries
+// for every desired volume that does not yet have a corresponding observed
+// entry. Each new volume is initialized to VolumeAvailable state with its
+// desired size.
+func reconcileVolumeCreation(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
 	var changes []Change
-
-	// Create observed volumes for desired volumes that don't exist yet.
 	for volumeName, desiredInfo := range desiredVolumes {
 		if _, alreadyObserved := observedVolumes[volumeName]; !alreadyObserved {
 			changes = append(changes, Change{
@@ -143,8 +186,15 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			})
 		}
 	}
+	return changes
+}
 
-	// Resize volumes where desired size differs from observed.
+// reconcileVolumeResize returns changes that update the observed size of
+// volumes whose desired size differs from the currently observed size. When
+// a storage provider is configured, the resize is performed through the
+// provider before emitting the state change.
+func (storageController *StorageController) reconcileVolumeResize(ctx context.Context, desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
+	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
 		observedInfo, exists := observedVolumes[volumeName]
 		if !exists || observedInfo.size == desiredInfo.size || desiredInfo.size == "" {
@@ -163,9 +213,15 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			Value: []byte(desiredInfo.size),
 		})
 	}
+	return changes
+}
 
-	// Reconcile volume replication: when desired replicas > 1 and observed
-	// replication state is missing or replica count differs, update state.
+// reconcileVolumeReplication returns changes that bring observed replica count
+// and replication state into alignment with the desired replica count. Volumes
+// with replicas <= 1 or volumes that are already synced at the correct count
+// are skipped.
+func reconcileVolumeReplication(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
+	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
 		if desiredInfo.replicas <= 1 {
 			continue
@@ -190,54 +246,71 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			})
 		}
 	}
+	return changes
+}
 
-	// Force-detach volumes attached to unreachable nodes. Transition through
-	// VolumeMigrating so the agent can observe the migration and reattach.
+// reconcileVolumeMigration returns changes that force-detach volumes currently
+// attached to unreachable nodes. The volume transitions to VolumeMigrating
+// state, records the original node as migration source, and clears node,
+// instance, and mount-path bindings. When a storage provider is available, a
+// pre-migration snapshot is taken first.
+func (storageController *StorageController) reconcileVolumeMigration(ctx context.Context, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
+	var changes []Change
 	for volumeName, observedInfo := range observedVolumes {
-		if observedInfo.state == types.VolumeAttached && observedInfo.node != "" {
-			nodeState, nodeExists := nodeStates[observedInfo.node]
-			if !nodeExists || nodeState == types.NodeUnreachable {
-				if storageController.storageProvider != nil {
-					snapshotName := fmt.Sprintf("%s-pre-migration-%d", volumeName, time.Now().UnixMilli())
-					snapshotErr := storageController.storageProvider.SnapshotVolume(ctx, volumeName, snapshotName)
-					if snapshotErr != nil {
-						logging.Default().Error("pre-migration snapshot failed", "volume", volumeName, "error", snapshotErr.Error())
-					} else {
-						changes = append(changes, Change{
-							Type:  store.OpPut,
-							Key:   types.KeyObservedVolumeLastSnapshot(volumeName),
-							Value: []byte(snapshotName),
-						})
-					}
-				}
+		if observedInfo.state != types.VolumeAttached || observedInfo.node == "" {
+			continue
+		}
+		nodeState, nodeExists := nodeStates[observedInfo.node]
+		if nodeExists && nodeState != types.NodeUnreachable {
+			continue
+		}
 
+		if storageController.storageProvider != nil {
+			snapshotName := fmt.Sprintf("%s-pre-migration-%d", volumeName, time.Now().UnixMilli())
+			snapshotErr := storageController.storageProvider.SnapshotVolume(ctx, volumeName, snapshotName)
+			if snapshotErr != nil {
+				logging.Default().Error("pre-migration snapshot failed", "volume", volumeName, "error", snapshotErr.Error())
+			} else {
 				changes = append(changes, Change{
 					Type:  store.OpPut,
-					Key:   types.KeyObservedVolumeState(volumeName),
-					Value: []byte(string(types.VolumeMigrating)),
-				})
-				changes = append(changes, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyObservedVolumeMigrationSource(volumeName),
-					Value: []byte(observedInfo.node),
-				})
-				changes = append(changes, Change{
-					Type: store.OpDelete,
-					Key:  types.KeyObservedVolumeNode(volumeName),
-				})
-				changes = append(changes, Change{
-					Type: store.OpDelete,
-					Key:  types.KeyObservedVolumeInstance(volumeName),
-				})
-				changes = append(changes, Change{
-					Type: store.OpDelete,
-					Key:  types.KeyObservedVolumeMountPath(volumeName),
+					Key:   types.KeyObservedVolumeLastSnapshot(volumeName),
+					Value: []byte(snapshotName),
 				})
 			}
 		}
-	}
 
-	// Clean up observed volumes that are no longer desired.
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyObservedVolumeState(volumeName),
+			Value: []byte(string(types.VolumeMigrating)),
+		})
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyObservedVolumeMigrationSource(volumeName),
+			Value: []byte(observedInfo.node),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeNode(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeInstance(volumeName),
+		})
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyObservedVolumeMountPath(volumeName),
+		})
+	}
+	return changes
+}
+
+// reconcileVolumeCleanup returns changes that delete all observed-state keys
+// for volumes which are no longer present in the desired set. Every observed
+// sub-key (state, size, node, instance, mount path, migration source,
+// snapshot, usage, capacity, replica count, replica state) is removed.
+func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
+	var changes []Change
 	for volumeName := range observedVolumes {
 		if _, stillDesired := desiredVolumes[volumeName]; stillDesired {
 			continue
@@ -291,8 +364,7 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 			Key:  types.KeyObservedVolumeReplicaState(volumeName),
 		})
 	}
-
-	return changes, nil
+	return changes
 }
 
 // desiredVolumeInfo holds parsed fields from desired volume facts.

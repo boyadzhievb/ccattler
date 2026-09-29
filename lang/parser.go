@@ -103,7 +103,8 @@ func (parser *Parser) ParseFile() (*File, error) {
 }
 
 // parseServiceDeclaration parses a service block, including its name and all
-// nested fields (image, instances, expose, resources, health).
+// nested fields (image, instances, expose, resources, health, etc.). Individual
+// field parsing is delegated to parseServiceField.
 func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 	line := parser.currentToken().Line
 	parser.advanceToken() // skip "service"
@@ -126,81 +127,8 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 			return nil, err
 		}
 
-		switch key {
-		case "image":
-			serviceDecl.Image, err = parser.expectStringOrIdentifier()
-		case "instances":
-			serviceDecl.Instances, err = parser.expectInteger()
-		case "expose":
-			if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "external" {
-				var externalPort ExternalPortDecl
-				externalPort, err = parser.parseExposeExternal()
-				if err == nil {
-					serviceDecl.ExternalPorts = append(serviceDecl.ExternalPorts, externalPort)
-				}
-			} else {
-				var port int
-				port, err = parser.expectInteger()
-				if err == nil {
-					serviceDecl.Ports = append(serviceDecl.Ports, port)
-				}
-			}
-		case "resources":
-			serviceDecl.Resources, err = parser.parseResourcesBlock()
-		case "health":
-			serviceDecl.Health, err = parser.parseHealthBlock()
-		case "scale":
-			serviceDecl.Scale, err = parser.parseScaleBlock()
-		case "placement":
-			serviceDecl.Placement, err = parser.parsePlacementBlock()
-		case "update":
-			serviceDecl.Update, err = parser.parseUpdateBlock()
-		case "owner":
-			serviceDecl.Owner, err = parser.expectIdentifier()
-		case "config":
-			serviceDecl.Config, err = parser.parseConfigBlock()
-		case "secret":
-			var secretDecl SecretDecl
-			secretDecl, err = parser.parseSecretDeclaration()
-			if err == nil {
-				serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
-			}
-		case "startup":
-			serviceDecl.Startup, err = parser.parseProbeBlock()
-		case "liveness":
-			serviceDecl.Liveness, err = parser.parseProbeBlock()
-		case "readiness":
-			serviceDecl.Readiness, err = parser.parseProbeBlock()
-		case "init":
-			var initStepDecl InitStepDecl
-			initStepDecl, err = parser.parseInitStepBlock()
-			if err == nil {
-				serviceDecl.InitSteps = append(serviceDecl.InitSteps, initStepDecl)
-			}
-		case "volume":
-			volumeName, mountErr := parser.expectIdentifier()
-			if mountErr != nil {
-				return nil, mountErr
-			}
-			mountPath, mountErr := parser.readMountPath()
-			if mountErr != nil {
-				return nil, mountErr
-			}
-			serviceDecl.VolumeMounts = append(serviceDecl.VolumeMounts, VolumeMountDecl{
-				VolumeName: volumeName,
-				MountPath:  mountPath,
-			})
-		case "cloud_identity":
-			cloudIdentityBinding, bindErr := parser.parseCloudIdentityBindingInService()
-			if bindErr != nil {
-				return nil, bindErr
-			}
-			serviceDecl.CloudIdentities = append(serviceDecl.CloudIdentities, cloudIdentityBinding)
-		default:
-			return nil, parser.parserErrorf("unknown service field %q", key)
-		}
-		if err != nil {
-			return nil, err
+		if fieldError := parser.parseServiceField(serviceDecl, key); fieldError != nil {
+			return nil, fieldError
 		}
 
 		parser.skipNewlineTokens()
@@ -211,6 +139,87 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 	}
 
 	return serviceDecl, nil
+}
+
+// parseServiceField dispatches parsing of a single field inside a service block.
+// The caller provides the already-consumed field keyword; this method parses the
+// value or sub-block and populates the corresponding ServiceDecl member.
+func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName string) error {
+	var err error
+	switch fieldName {
+	case "image":
+		serviceDecl.Image, err = parser.expectStringOrIdentifier()
+	case "instances":
+		serviceDecl.Instances, err = parser.expectInteger()
+	case "expose":
+		if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "external" {
+			var externalPort ExternalPortDecl
+			externalPort, err = parser.parseExposeExternal()
+			if err == nil {
+				serviceDecl.ExternalPorts = append(serviceDecl.ExternalPorts, externalPort)
+			}
+		} else {
+			var port int
+			port, err = parser.expectInteger()
+			if err == nil {
+				serviceDecl.Ports = append(serviceDecl.Ports, port)
+			}
+		}
+	case "resources":
+		serviceDecl.Resources, err = parser.parseResourcesBlock()
+	case "health":
+		serviceDecl.Health, err = parser.parseHealthBlock()
+	case "scale":
+		serviceDecl.Scale, err = parser.parseScaleBlock()
+	case "placement":
+		serviceDecl.Placement, err = parser.parsePlacementBlock()
+	case "update":
+		serviceDecl.Update, err = parser.parseUpdateBlock()
+	case "owner":
+		serviceDecl.Owner, err = parser.expectIdentifier()
+	case "config":
+		serviceDecl.Config, err = parser.parseConfigBlock()
+	case "secret":
+		var secretDecl SecretDecl
+		secretDecl, err = parser.parseSecretDeclaration()
+		if err == nil {
+			serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
+		}
+	case "startup":
+		serviceDecl.Startup, err = parser.parseProbeBlock()
+	case "liveness":
+		serviceDecl.Liveness, err = parser.parseProbeBlock()
+	case "readiness":
+		serviceDecl.Readiness, err = parser.parseProbeBlock()
+	case "init":
+		var initStepDecl InitStepDecl
+		initStepDecl, err = parser.parseInitStepBlock()
+		if err == nil {
+			serviceDecl.InitSteps = append(serviceDecl.InitSteps, initStepDecl)
+		}
+	case "volume":
+		volumeName, mountErr := parser.expectIdentifier()
+		if mountErr != nil {
+			return mountErr
+		}
+		mountPath, mountErr := parser.readMountPath()
+		if mountErr != nil {
+			return mountErr
+		}
+		serviceDecl.VolumeMounts = append(serviceDecl.VolumeMounts, VolumeMountDecl{
+			VolumeName: volumeName,
+			MountPath:  mountPath,
+		})
+	case "cloud_identity":
+		cloudIdentityBinding, bindErr := parser.parseCloudIdentityBindingInService()
+		if bindErr != nil {
+			return bindErr
+		}
+		serviceDecl.CloudIdentities = append(serviceDecl.CloudIdentities, cloudIdentityBinding)
+	default:
+		return parser.parserErrorf("unknown service field %q", fieldName)
+	}
+	return err
 }
 
 // parseResourcesBlock parses a resources { ... } block containing cpu and

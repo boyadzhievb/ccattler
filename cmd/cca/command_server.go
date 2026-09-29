@@ -20,10 +20,29 @@ import (
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tenant"
 	"github.com/boyadzhievb/ccattler/types"
+)
+
+const (
+	// defaultAPIListenPort is the default port for the CCattler API server.
+	defaultAPIListenPort = "9770"
+
+	// defaultCACertificateValidity is the validity period for the self-signed
+	// CA certificate created in auto-TLS mode.
+	defaultCACertificateValidity = 10 * 365 * 24 * time.Hour
+
+	// defaultServerCertificateTTL is the TTL for server TLS certificates,
+	// which are automatically rotated before expiry.
+	defaultServerCertificateTTL = 24 * time.Hour
+
+	// defaultEnrollmentTokenTTL is the default TTL for node enrollment join tokens.
+	defaultEnrollmentTokenTTL = 24 * time.Hour
+
+	// defaultDNSListenPort is the default port for the built-in DNS server.
+	defaultDNSListenPort = "15353"
 )
 
 // serverCommandConfig holds parsed flags for the "server" command, which runs
@@ -73,13 +92,15 @@ type serverCommandConfig struct {
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
-// following "server".
+// following "server". This function exceeds 80 lines because it is a flat
+// flag-to-field switch statement — each case is a simple one-liner assignment.
+// Extracting sub-groups would add indirection without improving clarity.
 func parseServerCommandArgs(args []string) serverCommandConfig {
 	parsedConfig := serverCommandConfig{
 		storeBackend:   "etcd",
 		etcdEndpoints:  "localhost:2379",
 		storeKeyPrefix: "/ccattler/",
-		listenAddress:  "0.0.0.0:9770",
+		listenAddress:  "0.0.0.0:" + defaultAPIListenPort,
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -178,7 +199,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 	}
 
 	if parsedConfig.dnsEnabled && parsedConfig.dnsListenAddress == "" {
-		parsedConfig.dnsListenAddress = ":15353"
+		parsedConfig.dnsListenAddress = ":" + defaultDNSListenPort
 	}
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
@@ -232,32 +253,28 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	// Authorization: create RBAC authorizer with builtin roles and an audit log.
+	// Controllers use the raw factStore (they are internal, trusted components).
+	// The API server gets an AuthorizedStore that enforces RBAC on user requests.
+	rbacAuthorizer := security.NewRBACAuthorizer()
+	for _, builtinRole := range security.BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	auditLog := security.NewInMemoryAuditLog(types.DefaultEventLogMaxEvents)
+	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+
 	runControllers := !parsedConfig.apiOnly
 	runAPIServer := !parsedConfig.controllersOnly
 
-	eventLog := types.NewEventLog(factStore, 1000)
+	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
 
 	if runControllers {
-		instanceController := controllers.NewInstanceController()
-		schedulerController := scheduler.NewScheduler()
-		endpointController := controllers.NewEndpointController()
-		failureController := controllers.NewFailureController()
-		nodeFailureController := controllers.NewNodeFailureController()
-		networkController := controllers.NewNetworkController()
-		autoscaleController := controllers.NewAutoscaleController()
-		intentResolverController := controllers.NewIntentResolverController()
-		rolloutController := controllers.NewRolloutController()
-		initController := controllers.NewInitController()
-		warmZeroController := controllers.NewWarmZeroController()
+		controllerList := append(coreControllers(),
+			controllers.NewNodeFailureController(),
+			controllers.NewNetworkController(),
+			controllers.NewWarmZeroController())
 
 		metricsCollector := controllers.NewMetricsCollector()
-
-		controllerList := []controllers.Controller{
-			instanceController, schedulerController, endpointController,
-			failureController, nodeFailureController, networkController,
-			autoscaleController, intentResolverController, rolloutController,
-			initController, warmZeroController,
-		}
 
 		if parsedConfig.cloudProviderName != "" {
 			cloudProviderInstance := createCloudProvider(parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
@@ -293,16 +310,50 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 			enrollmentEnabled = true
 		}
 
-		statusAPIServer := launchStatusAPIServer(factStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
+		// Build authenticator chain based on TLS mode. In TLS mode, mTLS
+		// certificates and bearer tokens are accepted. In non-TLS mode, the
+		// local user header identifies the caller.
+		var authenticatorChain *security.AuthenticatorChain
+		if serverTLSConfig != nil {
+			authenticatorChain = security.NewAuthenticatorChain(
+				security.NewMTLSAuthenticator(),
+			)
+		} else {
+			localUserAuthenticator := security.NewLocalUserAuthenticator()
+			authenticatorChain = security.NewAuthenticatorChain(localUserAuthenticator)
+			// In non-TLS mode, bind the local user to cluster-admin so
+			// authorization still runs but local development is frictionless.
+			rbacAuthorizer.BindRole(security.RoleBinding{
+				Principal: "user:*",
+				RoleName:  "cluster-admin",
+			})
+		}
+
+		// API-layer capability authorizer. Maps builtin roles to capability grants.
+		// In non-TLS mode, all local users get cluster-admin capabilities.
+		apiAuthorizer := security.NewAPIAuthorizer()
+		if serverTLSConfig == nil {
+			apiAuthorizer.GrantRole("user:*", "cluster-admin")
+		}
+
+		statusAPIServer := launchStatusAPIServer(authorizedStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 		statusAPIServer.SetEventLog(eventLog)
 		statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
+		statusAPIServer.SetAuthenticatorChain(authenticatorChain)
+		statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
+		statusAPIServer.SetRequirePrincipal(true)
+
+		tenantRegistry := tenant.NewTenantRegistry(factStore)
+		quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
+		policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
+		statusAPIServer.SetPolicyGate(policyGate)
 
 		if parsedConfig.apiOnly {
 			statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
 		}
 
 		if clusterCertificateAuthority != nil {
-			enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 24*time.Hour)
+			enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultEnrollmentTokenTTL)
 			statusAPIServer.SetEnrollmentService(enrollmentService)
 			fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
 		}
@@ -369,7 +420,7 @@ func createCloudProvider(providerName string, region string) cloud.CloudProvider
 // connections while all other endpoints enforce client certs via middleware. The
 // CA certificate is written to ca.pem in the .ccattler/ data directory.
 func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Config, *security.CertificateAuthority) {
-	certificateAuthority, err := security.NewCertificateAuthority(10 * 365 * 24 * time.Hour)
+	certificateAuthority, err := security.NewCertificateAuthority(defaultCACertificateValidity)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error creating CA: %v\n", err)
 		os.Exit(1)
@@ -395,7 +446,7 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Confi
 		CommonName:  "ccattler-server",
 		DNSNames:    serverDNSNames,
 		IPAddresses: serverIPAddresses,
-		TTL:         24 * time.Hour,
+		TTL:         defaultServerCertificateTTL,
 	}
 
 	serverCertRotator, err := security.NewCertificateRotator(certificateAuthority, certificateRequest, 0.7)
@@ -521,7 +572,9 @@ type volumeStatusEntry struct {
 
 // requireClientCertMiddleware wraps an HTTP handler to reject requests that
 // lack a verified client certificate. The /api/enroll path is exempted because
-// joining nodes do not yet have credentials.
+// joining nodes do not yet have credentials. Identity extraction from the
+// certificate is handled by the MTLSAuthenticator in the authenticator chain,
+// so this middleware only enforces certificate presence.
 func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -607,7 +660,7 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 
 	statusHTTPServer := &http.Server{
 		Handler:           serverHandler,
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: types.DefaultReadHeaderTimeout,
 	}
 	go func() {
 		if serveError := statusHTTPServer.Serve(listener); serveError != nil {
@@ -619,14 +672,25 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 
 // buildClusterStatusJSON collects the full cluster state from the fact store
 // and assembles it into a structured clusterStatusResponse for JSON serialization.
+// Delegates to per-section collector functions for each resource type.
 func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clusterStatusResponse {
-	var statusResponse clusterStatusResponse
-
-	// Load all instances and sort by ID for deterministic output.
+	// Load all instances once and sort by ID for deterministic output.
+	// Multiple collectors reference this shared slice.
 	allInstances, _ := types.ListInstances(ctx, factStore)
 	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
 
-	// Discover all unique service names from the desired state.
+	return clusterStatusResponse{
+		Services:   collectServiceStatusEntries(ctx, factStore, allInstances),
+		Instances:  collectInstanceStatusEntries(ctx, factStore, allInstances),
+		Networking: collectNetworkingStatusEntries(ctx, factStore),
+		Volumes:    collectVolumeStatusEntries(ctx, factStore),
+		Nodes:      collectNodeStatusEntries(ctx, factStore, allInstances),
+	}
+}
+
+// collectServiceStatusEntries discovers all unique service names from the desired
+// state and builds a status entry for each, including running instance counts.
+func collectServiceStatusEntries(ctx context.Context, factStore store.StateStore, allInstances []types.Instance) []serviceStatusEntry {
 	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredServices)
 	uniqueServiceNames := make(map[string]bool)
 	for _, fact := range desiredFacts {
@@ -640,7 +704,7 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 	}
 	sort.Strings(sortedServiceNames)
 
-	// Build service status entries with running instance counts.
+	var serviceEntries []serviceStatusEntry
 	for _, serviceName := range sortedServiceNames {
 		service, err := types.ReadService(ctx, factStore, serviceName)
 		if err != nil {
@@ -652,13 +716,18 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 				runningInstanceCount++
 			}
 		}
-		statusResponse.Services = append(statusResponse.Services, serviceStatusEntry{
+		serviceEntries = append(serviceEntries, serviceStatusEntry{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
 			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
 		})
 	}
+	return serviceEntries
+}
 
-	// Build instance status entries, excluding stopped instances.
+// collectInstanceStatusEntries builds status entries for all active (non-stopped)
+// instances, including their placement node, health state, and IP address.
+func collectInstanceStatusEntries(ctx context.Context, factStore store.StateStore, allInstances []types.Instance) []instanceStatusEntry {
+	var instanceEntries []instanceStatusEntry
 	for _, instance := range allInstances {
 		if instance.State == types.InstanceStopped {
 			continue
@@ -675,13 +744,17 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 		if instanceIPAddress == "" {
 			instanceIPAddress = "-"
 		}
-		statusResponse.Instances = append(statusResponse.Instances, instanceStatusEntry{
+		instanceEntries = append(instanceEntries, instanceStatusEntry{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
 			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
 		})
 	}
+	return instanceEntries
+}
 
-	// Build networking status entries from VIP and DNS facts.
+// collectNetworkingStatusEntries reads VIP and DNS facts from the store and
+// builds networking status entries with service name, VIP address, port, and DNS.
+func collectNetworkingStatusEntries(ctx context.Context, factStore store.StateStore) []networkStatusEntry {
 	vipFacts, _ := factStore.Scan(ctx, types.ScanNetworkVIPs)
 	dnsFacts, _ := factStore.Scan(ctx, types.ScanNetworkDNS)
 	dnsMapping := make(map[string]string)
@@ -702,37 +775,50 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}
+
+	var networkingEntries []networkStatusEntry
 	for serviceName, vipAddress := range vipByService {
 		dnsName := serviceName + "." + network.DefaultDNSDomain
-		statusResponse.Networking = append(statusResponse.Networking, networkStatusEntry{
+		networkingEntries = append(networkingEntries, networkStatusEntry{
 			ServiceName: serviceName,
 			VIP:         vipAddress,
 			Port:        vipPortByService[serviceName],
 			DNS:         dnsName,
 		})
 	}
-	sort.Slice(statusResponse.Networking, func(i, j int) bool {
-		return statusResponse.Networking[i].ServiceName < statusResponse.Networking[j].ServiceName
+	sort.Slice(networkingEntries, func(i, j int) bool {
+		return networkingEntries[i].ServiceName < networkingEntries[j].ServiceName
 	})
+	return networkingEntries
+}
 
-	// Build volume status entries from observed volume facts.
+// collectVolumeStatusEntries lists all observed volumes from the store and
+// builds status entries with name, size, state, and attachment information.
+func collectVolumeStatusEntries(ctx context.Context, factStore store.StateStore) []volumeStatusEntry {
 	allVolumes, _ := types.ListObservedVolumes(ctx, factStore)
 	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
+
+	var volumeEntries []volumeStatusEntry
 	for _, volume := range allVolumes {
-		volumeEntry := volumeStatusEntry{
+		volumeEntries = append(volumeEntries, volumeStatusEntry{
 			Name:      volume.Name,
 			Size:      volume.Size,
 			State:     string(volume.State),
 			Node:      volume.Node,
 			Instance:  volume.Instance,
 			MountPath: volume.MountPath,
-		}
-		statusResponse.Volumes = append(statusResponse.Volumes, volumeEntry)
+		})
 	}
+	return volumeEntries
+}
 
-	// Build node status entries with placement counts.
+// collectNodeStatusEntries lists all registered nodes from the store and builds
+// status entries with capacity, availability, and placed instance counts.
+func collectNodeStatusEntries(ctx context.Context, factStore store.StateStore, allInstances []types.Instance) []nodeStatusEntry {
 	allNodes, _ := types.ListNodes(ctx, factStore)
 	sort.Slice(allNodes, func(i, j int) bool { return allNodes[i].ID < allNodes[j].ID })
+
+	var nodeEntries []nodeStatusEntry
 	for _, node := range allNodes {
 		placedInstanceCount := 0
 		for _, instance := range allInstances {
@@ -743,14 +829,13 @@ func buildClusterStatusJSON(ctx context.Context, factStore store.StateStore) clu
 				placedInstanceCount++
 			}
 		}
-		statusResponse.Nodes = append(statusResponse.Nodes, nodeStatusEntry{
+		nodeEntries = append(nodeEntries, nodeStatusEntry{
 			ID: node.ID, State: string(node.State), PlacedInstances: placedInstanceCount,
 			AvailableCPU: node.AvailableCPU, CapacityCPU: node.CapacityCPU,
 			AvailableMemory: node.AvailableMemory, CapacityMemory: node.CapacityMemory,
 		})
 	}
-
-	return statusResponse
+	return nodeEntries
 }
 
 // buildStatusTextOutput renders the cluster status as human-readable formatted text.

@@ -155,6 +155,8 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 }
 
 // compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
+// It validates the declaration and delegates to per-block sub-compilers for each
+// DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
 func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([]Fact, error) {
 	if serviceDecl.Name == "" {
 		return nil, &ParseError{
@@ -193,267 +195,379 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 		})
 	}
 
-	for _, port := range serviceDecl.Ports {
+	portFacts, portError := compileServicePortsFacts(serviceDecl.Name, serviceDecl.Ports, serviceDecl.ExternalPorts, serviceDecl.Line, sourceLines)
+	if portError != nil {
+		return nil, portError
+	}
+	facts = append(facts, portFacts...)
+	facts = append(facts, compileServiceResourceFacts(serviceDecl.Name, serviceDecl.Resources)...)
+	facts = append(facts, compileServiceVolumeMountFacts(serviceDecl.Name, serviceDecl.VolumeMounts)...)
+
+	scaleFacts, scaleError := compileServiceScaleFacts(serviceDecl.Name, serviceDecl.Scale, serviceDecl.Line, sourceLines)
+	if scaleError != nil {
+		return nil, scaleError
+	}
+	facts = append(facts, scaleFacts...)
+	facts = append(facts, compileServicePlacementFacts(serviceDecl.Name, serviceDecl.Placement)...)
+	facts = append(facts, compileServiceUpdateFacts(serviceDecl.Name, serviceDecl.Update)...)
+	facts = append(facts, compileServiceHealthProbeFacts(serviceDecl.Name, serviceDecl.Health, serviceDecl.Startup, serviceDecl.Liveness, serviceDecl.Readiness)...)
+	facts = append(facts, compileServiceConfigFacts(serviceDecl.Name, serviceDecl.Config)...)
+	facts = append(facts, compileServiceSecretFacts(serviceDecl.Name, serviceDecl.Secrets)...)
+	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
+	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
+
+	return facts, nil
+}
+
+// compileServicePortsFacts produces expose and external port facts for a service.
+// Internal ports become simple expose facts; external ports additionally produce
+// cloud load balancer exposure facts with their protocol.
+func compileServicePortsFacts(serviceName string, ports []int, externalPorts []ExternalPortDecl, declarationLine int, sourceLines []string) ([]Fact, error) {
+	var portFacts []Fact
+	for _, port := range ports {
 		if port < 1 || port > 65535 {
 			return nil, &ParseError{
-				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q port %d out of range (1-65535)", serviceDecl.Name, port),
-				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				Line: declarationLine, Message: fmt.Sprintf("service %q port %d out of range (1-65535)", serviceName, port),
+				SourceLine: sourceLineAt(sourceLines, declarationLine),
 			}
 		}
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceExpose(serviceDecl.Name, port), Value: "",
+		portFacts = append(portFacts, Fact{
+			Key: types.KeyDesiredServiceExpose(serviceName, port), Value: "",
 		})
 	}
-
-	for _, externalPort := range serviceDecl.ExternalPorts {
+	for _, externalPort := range externalPorts {
 		if externalPort.Port < 1 || externalPort.Port > 65535 {
 			return nil, &ParseError{
-				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q external port %d out of range (1-65535)", serviceDecl.Name, externalPort.Port),
-				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				Line: declarationLine, Message: fmt.Sprintf("service %q external port %d out of range (1-65535)", serviceName, externalPort.Port),
+				SourceLine: sourceLineAt(sourceLines, declarationLine),
 			}
 		}
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceExpose(serviceDecl.Name, externalPort.Port), Value: "",
+		portFacts = append(portFacts, Fact{
+			Key: types.KeyDesiredServiceExpose(serviceName, externalPort.Port), Value: "",
 		})
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceExposeExternal(serviceDecl.Name, externalPort.Port), Value: externalPort.Protocol,
+		portFacts = append(portFacts, Fact{
+			Key: types.KeyDesiredServiceExposeExternal(serviceName, externalPort.Port), Value: externalPort.Protocol,
 		})
 	}
+	return portFacts, nil
+}
 
-	if serviceDecl.Resources != nil {
-		if serviceDecl.Resources.CPU != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceResourcesCPU(serviceDecl.Name), Value: serviceDecl.Resources.CPU,
-			})
-		}
-		if serviceDecl.Resources.Memory != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceResourcesMemory(serviceDecl.Name), Value: serviceDecl.Resources.Memory,
-			})
-		}
+// compileServiceResourceFacts produces CPU and memory resource requirement facts
+// for a service. Returns nil if no resource constraints are declared.
+func compileServiceResourceFacts(serviceName string, resourcesDecl *ResourcesDecl) []Fact {
+	if resourcesDecl == nil {
+		return nil
 	}
+	var resourceFacts []Fact
+	if resourcesDecl.CPU != "" {
+		resourceFacts = append(resourceFacts, Fact{
+			Key: types.KeyDesiredServiceResourcesCPU(serviceName), Value: resourcesDecl.CPU,
+		})
+	}
+	if resourcesDecl.Memory != "" {
+		resourceFacts = append(resourceFacts, Fact{
+			Key: types.KeyDesiredServiceResourcesMemory(serviceName), Value: resourcesDecl.Memory,
+		})
+	}
+	return resourceFacts
+}
 
-	for _, volumeMount := range serviceDecl.VolumeMounts {
-		facts = append(facts, Fact{
-			Key:   types.KeyDesiredServiceVolume(serviceDecl.Name, volumeMount.VolumeName),
+// compileServiceVolumeMountFacts produces volume mount binding facts that connect
+// named volumes to filesystem paths inside the service's instances.
+func compileServiceVolumeMountFacts(serviceName string, volumeMounts []VolumeMountDecl) []Fact {
+	var volumeFacts []Fact
+	for _, volumeMount := range volumeMounts {
+		volumeFacts = append(volumeFacts, Fact{
+			Key:   types.KeyDesiredServiceVolume(serviceName, volumeMount.VolumeName),
 			Value: volumeMount.MountPath,
 		})
 	}
+	return volumeFacts
+}
 
-	if serviceDecl.Scale != nil && serviceDecl.Scale.Horizontal != nil {
-		horizontal := serviceDecl.Scale.Horizontal
-		if horizontal.Min < 0 {
+// compileServiceScaleFacts produces horizontal and vertical autoscaling facts
+// for a service. Returns nil if no scaling policy is declared. Delegates to
+// compileServiceHorizontalScaleFacts and compileServiceVerticalScaleFacts for
+// each scaling dimension.
+func compileServiceScaleFacts(serviceName string, scaleDecl *ScaleDecl, declarationLine int, sourceLines []string) ([]Fact, error) {
+	if scaleDecl == nil {
+		return nil, nil
+	}
+	var scaleFacts []Fact
+	if scaleDecl.Horizontal != nil {
+		horizontalFacts, horizontalError := compileServiceHorizontalScaleFacts(serviceName, scaleDecl.Horizontal, declarationLine, sourceLines)
+		if horizontalError != nil {
+			return nil, horizontalError
+		}
+		scaleFacts = append(scaleFacts, horizontalFacts...)
+	}
+	if scaleDecl.Vertical != nil {
+		scaleFacts = append(scaleFacts, compileServiceVerticalScaleFacts(serviceName, scaleDecl.Vertical)...)
+	}
+	return scaleFacts, nil
+}
+
+// compileServiceHorizontalScaleFacts produces horizontal autoscaling facts including
+// min/max bounds, metric targets, event-driven sources, scheduled scaling, and
+// stabilization windows.
+func compileServiceHorizontalScaleFacts(serviceName string, horizontalDecl *HorizontalScaleDecl, declarationLine int, sourceLines []string) ([]Fact, error) {
+	if horizontalDecl.Min < 0 {
+		return nil, &ParseError{
+			Line: declarationLine, Message: fmt.Sprintf("service %q scale min must be >= 0", serviceName),
+			SourceLine: sourceLineAt(sourceLines, declarationLine),
+		}
+	}
+	if horizontalDecl.Max < horizontalDecl.Min {
+		return nil, &ParseError{
+			Line: declarationLine, Message: fmt.Sprintf("service %q scale max must be >= min", serviceName),
+			SourceLine: sourceLineAt(sourceLines, declarationLine),
+		}
+	}
+	horizontalFacts := []Fact{
+		{Key: types.KeyDesiredServiceScaleHorizontalMin(serviceName), Value: strconv.Itoa(horizontalDecl.Min)},
+		{Key: types.KeyDesiredServiceScaleHorizontalMax(serviceName), Value: strconv.Itoa(horizontalDecl.Max)},
+	}
+	for _, target := range horizontalDecl.Targets {
+		if target.Value <= 0 {
 			return nil, &ParseError{
-				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale min must be >= 0", serviceDecl.Name),
-				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				Line: declarationLine, Message: fmt.Sprintf("service %q scale target %q must be > 0", serviceName, target.Metric),
+				SourceLine: sourceLineAt(sourceLines, declarationLine),
 			}
 		}
-		if horizontal.Max < horizontal.Min {
+		horizontalFacts = append(horizontalFacts, Fact{
+			Key:   types.KeyDesiredServiceScaleHorizontalTarget(serviceName, target.Metric),
+			Value: strconv.Itoa(target.Value),
+		})
+	}
+	for _, eventSource := range horizontalDecl.Events {
+		if eventSource.Target <= 0 {
 			return nil, &ParseError{
-				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale max must be >= min", serviceDecl.Name),
-				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+				Line: declarationLine, Message: fmt.Sprintf("service %q event target for %q must be > 0", serviceName, eventSource.Source),
+				SourceLine: sourceLineAt(sourceLines, declarationLine),
 			}
 		}
-		facts = append(facts,
-			Fact{Key: types.KeyDesiredServiceScaleHorizontalMin(serviceDecl.Name), Value: strconv.Itoa(horizontal.Min)},
-			Fact{Key: types.KeyDesiredServiceScaleHorizontalMax(serviceDecl.Name), Value: strconv.Itoa(horizontal.Max)},
-		)
-		for _, target := range horizontal.Targets {
-			if target.Value <= 0 {
-				return nil, &ParseError{
-					Line: serviceDecl.Line, Message: fmt.Sprintf("service %q scale target %q must be > 0", serviceDecl.Name, target.Metric),
-					SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
-				}
-			}
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceScaleHorizontalTarget(serviceDecl.Name, target.Metric),
-				Value: strconv.Itoa(target.Value),
-			})
-		}
-		for _, event := range horizontal.Events {
-			if event.Target <= 0 {
-				return nil, &ParseError{
-					Line: serviceDecl.Line, Message: fmt.Sprintf("service %q event target for %q must be > 0", serviceDecl.Name, event.Source),
-					SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
-				}
-			}
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceScaleHorizontalEvent(serviceDecl.Name, event.Source),
-				Value: strconv.Itoa(event.Target),
-			})
-		}
-		if horizontal.Schedule != nil {
-			facts = append(facts,
-				Fact{Key: types.KeyDesiredServiceScaleScheduleDays(serviceDecl.Name), Value: horizontal.Schedule.Days},
-				Fact{Key: types.KeyDesiredServiceScaleScheduleStart(serviceDecl.Name), Value: horizontal.Schedule.Start},
-				Fact{Key: types.KeyDesiredServiceScaleScheduleEnd(serviceDecl.Name), Value: horizontal.Schedule.End},
-				Fact{Key: types.KeyDesiredServiceScaleScheduleMinimum(serviceDecl.Name), Value: strconv.Itoa(horizontal.Schedule.Minimum)},
-			)
-		}
-		if horizontal.Stabilization != nil {
-			if horizontal.Stabilization.ScaleUp != "" {
-				facts = append(facts, Fact{
-					Key: types.KeyDesiredServiceScaleStabilizationUp(serviceDecl.Name), Value: horizontal.Stabilization.ScaleUp,
-				})
-			}
-			if horizontal.Stabilization.ScaleDown != "" {
-				facts = append(facts, Fact{
-					Key: types.KeyDesiredServiceScaleStabilizationDown(serviceDecl.Name), Value: horizontal.Stabilization.ScaleDown,
-				})
-			}
-		}
-		if horizontal.IdleTimeout != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceScaleIdleTimeout(serviceDecl.Name), Value: horizontal.IdleTimeout,
-			})
-		}
-		if horizontal.ActivationTimeout != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceScaleActivationTimeout(serviceDecl.Name), Value: horizontal.ActivationTimeout,
-			})
-		}
+		horizontalFacts = append(horizontalFacts, Fact{
+			Key:   types.KeyDesiredServiceScaleHorizontalEvent(serviceName, eventSource.Source),
+			Value: strconv.Itoa(eventSource.Target),
+		})
 	}
-
-	if serviceDecl.Scale != nil && serviceDecl.Scale.Vertical != nil {
-		vertical := serviceDecl.Scale.Vertical
-		if vertical.CPUMin != "" {
-			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMin(serviceDecl.Name), Value: vertical.CPUMin})
-		}
-		if vertical.CPUMax != "" {
-			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMax(serviceDecl.Name), Value: vertical.CPUMax})
-		}
-		if vertical.MemoryMin != "" {
-			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMin(serviceDecl.Name), Value: vertical.MemoryMin})
-		}
-		if vertical.MemoryMax != "" {
-			facts = append(facts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMax(serviceDecl.Name), Value: vertical.MemoryMax})
-		}
-	}
-
-	if serviceDecl.Placement != nil {
-		if serviceDecl.Placement.Architecture != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServicePlacementArchitecture(serviceDecl.Name), Value: serviceDecl.Placement.Architecture,
-			})
-		}
-		if serviceDecl.Placement.ZonePolicy != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServicePlacementZonePolicy(serviceDecl.Name), Value: serviceDecl.Placement.ZonePolicy,
-			})
-		}
-		for _, requireRule := range serviceDecl.Placement.Require {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServicePlacementRequire(serviceDecl.Name, requireRule.Label), Value: requireRule.Value,
-			})
-		}
-		for _, preferRule := range serviceDecl.Placement.Prefer {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServicePlacementPrefer(serviceDecl.Name, preferRule.Label), Value: preferRule.Value,
-			})
-		}
-		for _, acceptLabel := range serviceDecl.Placement.Accept {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServicePlacementAccept(serviceDecl.Name, acceptLabel), Value: "",
-			})
-		}
-	}
-
-	if serviceDecl.Update != nil {
-		facts = append(facts,
-			Fact{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Update.MaxUnavailable)},
-			Fact{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Update.MaxExtra)},
+	if horizontalDecl.Schedule != nil {
+		horizontalFacts = append(horizontalFacts,
+			Fact{Key: types.KeyDesiredServiceScaleScheduleDays(serviceName), Value: horizontalDecl.Schedule.Days},
+			Fact{Key: types.KeyDesiredServiceScaleScheduleStart(serviceName), Value: horizontalDecl.Schedule.Start},
+			Fact{Key: types.KeyDesiredServiceScaleScheduleEnd(serviceName), Value: horizontalDecl.Schedule.End},
+			Fact{Key: types.KeyDesiredServiceScaleScheduleMinimum(serviceName), Value: strconv.Itoa(horizontalDecl.Schedule.Minimum)},
 		)
 	}
-
-	if serviceDecl.Health != nil {
-		if serviceDecl.Health.Method != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceHealthMethod(serviceDecl.Name), Value: serviceDecl.Health.Method,
+	if horizontalDecl.Stabilization != nil {
+		if horizontalDecl.Stabilization.ScaleUp != "" {
+			horizontalFacts = append(horizontalFacts, Fact{
+				Key: types.KeyDesiredServiceScaleStabilizationUp(serviceName), Value: horizontalDecl.Stabilization.ScaleUp,
 			})
 		}
-		if serviceDecl.Health.Path != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceHealthPath(serviceDecl.Name), Value: serviceDecl.Health.Path,
-			})
-		}
-		if serviceDecl.Health.Interval != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceHealthInterval(serviceDecl.Name), Value: serviceDecl.Health.Interval,
+		if horizontalDecl.Stabilization.ScaleDown != "" {
+			horizontalFacts = append(horizontalFacts, Fact{
+				Key: types.KeyDesiredServiceScaleStabilizationDown(serviceName), Value: horizontalDecl.Stabilization.ScaleDown,
 			})
 		}
 	}
+	if horizontalDecl.IdleTimeout != "" {
+		horizontalFacts = append(horizontalFacts, Fact{
+			Key: types.KeyDesiredServiceScaleIdleTimeout(serviceName), Value: horizontalDecl.IdleTimeout,
+		})
+	}
+	if horizontalDecl.ActivationTimeout != "" {
+		horizontalFacts = append(horizontalFacts, Fact{
+			Key: types.KeyDesiredServiceScaleActivationTimeout(serviceName), Value: horizontalDecl.ActivationTimeout,
+		})
+	}
+	return horizontalFacts, nil
+}
 
-	if serviceDecl.Config != nil {
-		for _, envVar := range serviceDecl.Config.EnvVars {
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceConfigEnv(serviceDecl.Name, envVar.Name),
-				Value: envVar.Value,
+// compileServiceVerticalScaleFacts produces vertical autoscaling resource bound
+// facts (CPU and memory min/max limits).
+func compileServiceVerticalScaleFacts(serviceName string, verticalDecl *VerticalScaleDecl) []Fact {
+	var verticalFacts []Fact
+	if verticalDecl.CPUMin != "" {
+		verticalFacts = append(verticalFacts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMin(serviceName), Value: verticalDecl.CPUMin})
+	}
+	if verticalDecl.CPUMax != "" {
+		verticalFacts = append(verticalFacts, Fact{Key: types.KeyDesiredServiceScaleVerticalCPUMax(serviceName), Value: verticalDecl.CPUMax})
+	}
+	if verticalDecl.MemoryMin != "" {
+		verticalFacts = append(verticalFacts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMin(serviceName), Value: verticalDecl.MemoryMin})
+	}
+	if verticalDecl.MemoryMax != "" {
+		verticalFacts = append(verticalFacts, Fact{Key: types.KeyDesiredServiceScaleVerticalMemoryMax(serviceName), Value: verticalDecl.MemoryMax})
+	}
+	return verticalFacts
+}
+
+// compileServicePlacementFacts produces placement constraint facts including
+// architecture requirements, zone spread policy, required/preferred node labels,
+// and accepted node restrictions.
+func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDecl) []Fact {
+	if placementDecl == nil {
+		return nil
+	}
+	var placementFacts []Fact
+	if placementDecl.Architecture != "" {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementArchitecture(serviceName), Value: placementDecl.Architecture,
+		})
+	}
+	if placementDecl.ZonePolicy != "" {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementZonePolicy(serviceName), Value: placementDecl.ZonePolicy,
+		})
+	}
+	for _, requireRule := range placementDecl.Require {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementRequire(serviceName, requireRule.Label), Value: requireRule.Value,
+		})
+	}
+	for _, preferRule := range placementDecl.Prefer {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementPrefer(serviceName, preferRule.Label), Value: preferRule.Value,
+		})
+	}
+	for _, acceptLabel := range placementDecl.Accept {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementAccept(serviceName, acceptLabel), Value: "",
+		})
+	}
+	return placementFacts
+}
+
+// compileServiceUpdateFacts produces rolling update strategy facts (max unavailable
+// and max extra instance counts). Returns nil if no update strategy is declared.
+func compileServiceUpdateFacts(serviceName string, updateDecl *UpdateDecl) []Fact {
+	if updateDecl == nil {
+		return nil
+	}
+	return []Fact{
+		{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceName), Value: strconv.Itoa(updateDecl.MaxUnavailable)},
+		{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceName), Value: strconv.Itoa(updateDecl.MaxExtra)},
+	}
+}
+
+// compileServiceHealthProbeFacts produces health check configuration facts for a
+// service. This includes the legacy health block (method, path, interval) and the
+// startup, liveness, and readiness probe declarations.
+func compileServiceHealthProbeFacts(serviceName string, healthDecl *HealthDecl, startupProbe *ProbeDecl, livenessProbe *ProbeDecl, readinessProbe *ProbeDecl) []Fact {
+	var healthFacts []Fact
+	if healthDecl != nil {
+		if healthDecl.Method != "" {
+			healthFacts = append(healthFacts, Fact{
+				Key: types.KeyDesiredServiceHealthMethod(serviceName), Value: healthDecl.Method,
 			})
 		}
-		for _, configFile := range serviceDecl.Config.ConfigFiles {
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceConfigFile(serviceDecl.Name, configFile.Path),
-				Value: configFile.Content,
+		if healthDecl.Path != "" {
+			healthFacts = append(healthFacts, Fact{
+				Key: types.KeyDesiredServiceHealthPath(serviceName), Value: healthDecl.Path,
+			})
+		}
+		if healthDecl.Interval != "" {
+			healthFacts = append(healthFacts, Fact{
+				Key: types.KeyDesiredServiceHealthInterval(serviceName), Value: healthDecl.Interval,
 			})
 		}
 	}
+	if startupProbe != nil {
+		healthFacts = append(healthFacts, compileProbeDeclaration(serviceName, types.ProbeStartup, startupProbe)...)
+	}
+	if livenessProbe != nil {
+		healthFacts = append(healthFacts, compileProbeDeclaration(serviceName, types.ProbeLiveness, livenessProbe)...)
+	}
+	if readinessProbe != nil {
+		healthFacts = append(healthFacts, compileProbeDeclaration(serviceName, types.ProbeReadiness, readinessProbe)...)
+	}
+	return healthFacts
+}
 
-	for _, secretDecl := range serviceDecl.Secrets {
-		facts = append(facts, Fact{
-			Key:   types.KeyDesiredServiceSecret(serviceDecl.Name, secretDecl.Name),
+// compileServiceConfigFacts produces environment variable and config file facts
+// for a service. Returns nil if no config block is declared.
+func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl) []Fact {
+	if configDecl == nil {
+		return nil
+	}
+	var configFacts []Fact
+	for _, envVar := range configDecl.EnvVars {
+		configFacts = append(configFacts, Fact{
+			Key:   types.KeyDesiredServiceConfigEnv(serviceName, envVar.Name),
+			Value: envVar.Value,
+		})
+	}
+	for _, configFile := range configDecl.ConfigFiles {
+		configFacts = append(configFacts, Fact{
+			Key:   types.KeyDesiredServiceConfigFile(serviceName, configFile.Path),
+			Value: configFile.Content,
+		})
+	}
+	return configFacts
+}
+
+// compileServiceSecretFacts produces secret mount path facts for each secret
+// bound to a service.
+func compileServiceSecretFacts(serviceName string, secretDecls []SecretDecl) []Fact {
+	var secretFacts []Fact
+	for _, secretDecl := range secretDecls {
+		secretFacts = append(secretFacts, Fact{
+			Key:   types.KeyDesiredServiceSecret(serviceName, secretDecl.Name),
 			Value: secretDecl.MountPath,
 		})
 	}
+	return secretFacts
+}
 
-	for _, cloudIdentityBinding := range serviceDecl.CloudIdentities {
-		facts = append(facts, Fact{
-			Key:   types.KeyDesiredServiceCloudIdentity(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+// compileServiceCloudIdentityFacts produces cloud identity binding facts for a
+// service, including optional mount path and delivery mode configuration.
+func compileServiceCloudIdentityFacts(serviceName string, cloudIdentityBindings []CloudIdentityBindingDecl) []Fact {
+	var identityFacts []Fact
+	for _, cloudIdentityBinding := range cloudIdentityBindings {
+		identityFacts = append(identityFacts, Fact{
+			Key:   types.KeyDesiredServiceCloudIdentity(serviceName, cloudIdentityBinding.IdentityName),
 			Value: "",
 		})
 		if cloudIdentityBinding.MountPath != "" {
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceCloudIdentityMountPath(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+			identityFacts = append(identityFacts, Fact{
+				Key:   types.KeyDesiredServiceCloudIdentityMountPath(serviceName, cloudIdentityBinding.IdentityName),
 				Value: cloudIdentityBinding.MountPath,
 			})
 		}
 		if cloudIdentityBinding.DeliverMode != "" {
-			facts = append(facts, Fact{
-				Key:   types.KeyDesiredServiceCloudIdentityDeliverMode(serviceDecl.Name, cloudIdentityBinding.IdentityName),
+			identityFacts = append(identityFacts, Fact{
+				Key:   types.KeyDesiredServiceCloudIdentityDeliverMode(serviceName, cloudIdentityBinding.IdentityName),
 				Value: cloudIdentityBinding.DeliverMode,
 			})
 		}
 	}
+	return identityFacts
+}
 
-	if serviceDecl.Startup != nil {
-		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "startup", serviceDecl.Startup)...)
-	}
-	if serviceDecl.Liveness != nil {
-		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "liveness", serviceDecl.Liveness)...)
-	}
-	if serviceDecl.Readiness != nil {
-		facts = append(facts, compileProbeDeclaration(serviceDecl.Name, "readiness", serviceDecl.Readiness)...)
-	}
-
-	for stepIndex, initStep := range serviceDecl.InitSteps {
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceInitStep(serviceDecl.Name, stepIndex), Value: "",
+// compileServiceInitStepFacts produces initialization step facts for a service,
+// including the exec command, optional timeout, and retry count for each step.
+func compileServiceInitStepFacts(serviceName string, initSteps []InitStepDecl) []Fact {
+	var initFacts []Fact
+	for stepIndex, initStep := range initSteps {
+		initFacts = append(initFacts, Fact{
+			Key: types.KeyDesiredServiceInitStep(serviceName, stepIndex), Value: "",
 		})
-		facts = append(facts, Fact{
-			Key: types.KeyDesiredServiceInitStepExec(serviceDecl.Name, stepIndex), Value: initStep.Exec,
+		initFacts = append(initFacts, Fact{
+			Key: types.KeyDesiredServiceInitStepExec(serviceName, stepIndex), Value: initStep.Exec,
 		})
 		if initStep.Timeout != "" {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceInitStepTimeout(serviceDecl.Name, stepIndex), Value: initStep.Timeout,
+			initFacts = append(initFacts, Fact{
+				Key: types.KeyDesiredServiceInitStepTimeout(serviceName, stepIndex), Value: initStep.Timeout,
 			})
 		}
 		if initStep.Retry > 0 {
-			facts = append(facts, Fact{
-				Key: types.KeyDesiredServiceInitStepRetry(serviceDecl.Name, stepIndex), Value: strconv.Itoa(initStep.Retry),
+			initFacts = append(initFacts, Fact{
+				Key: types.KeyDesiredServiceInitStepRetry(serviceName, stepIndex), Value: strconv.Itoa(initStep.Retry),
 			})
 		}
 	}
-
-	return facts, nil
+	return initFacts
 }
 
 // compileCloudIdentityDeclaration validates and converts a CloudIdentityDecl into facts.
@@ -582,7 +696,7 @@ func compileCredentialBrokerDeclaration(credentialBrokerDecl CredentialBrokerDec
 }
 
 // compileProbeDeclaration converts a ProbeDecl into facts for the given probe type.
-func compileProbeDeclaration(serviceName string, probeType string, probeDecl *ProbeDecl) []Fact {
+func compileProbeDeclaration(serviceName string, probeType types.ProbeType, probeDecl *ProbeDecl) []Fact {
 	var facts []Fact
 	facts = append(facts, Fact{
 		Key: types.KeyDesiredServiceProbeMethod(serviceName, probeType), Value: probeDecl.Method,

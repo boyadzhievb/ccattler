@@ -87,6 +87,58 @@ Per project style, receivers should be descriptive, not abbreviated:
 grep -rn 'func ([a-z]\{1,3\} \*' --include='*.go' . | grep -v vendor | grep -v _test.go | head -30
 ```
 
+### Rule 8 — No dead code (Anti-Pattern)
+
+Every exported type, function, and constant must have at least one production caller (non-test). Check for types that are only referenced from `_test.go` files:
+```bash
+# Find exported types and check for non-test callers
+for type in $(grep -rn '^type [A-Z]' --include='*.go' . | grep -v _test.go | grep -v vendor | sed 's/.*type \([A-Z][a-zA-Z]*\).*/\1/' | sort -u); do
+  callers=$(grep -rn "\b$type\b" --include='*.go' . | grep -v _test.go | grep -v "^.*:type $type" | wc -l)
+  if [ "$callers" -lt 2 ]; then
+    echo "DEAD? $type — only $callers non-test references"
+  fi
+done
+```
+
+### Rule 9 — No magic numbers (Anti-Pattern)
+
+Timeouts, capacities, thresholds, retry counts, and durations must be named constants. Check for bare numeric literals in controller/runner code:
+```bash
+grep -rn 'time\.Duration([0-9])' --include='*.go' . | grep -v _test.go | grep -v vendor
+grep -rn 'time\.\(Second\|Minute\|Millisecond\) \* [0-9]' --include='*.go' . | grep -v _test.go | grep -v vendor
+```
+
+### Rule 10 — Function length limit (Anti-Pattern)
+
+No function (excluding test functions) may exceed 80 lines. Check with:
+```bash
+# Use awk to count function lengths
+find . -name '*.go' -not -name '*_test.go' -not -path './vendor/*' -exec awk '/^func /{name=$0; start=NR} /^}/{if(start && NR-start>80) print FILENAME":"start": "name" ("NR-start" lines)"; start=0}' {} \;
+```
+
+### Rule 11 — Typed enums over raw strings (Anti-Pattern)
+
+Instance states, node states, and probe types must use typed string constants, not raw string comparisons:
+```bash
+# Check for raw string state comparisons
+grep -rn '== "running"\|== "stopped"\|== "failed"\|== "pending"\|== "alive"\|== "unreachable"\|== "dead"' --include='*.go' . | grep -v _test.go | grep -v vendor
+```
+
+### Rule 12 — Deterministic iteration
+
+Controllers must produce the same output given the same input. When iterating maps, keys must be sorted before processing:
+```bash
+# Check for range over map without prior sort in controller code
+grep -rn 'for .* range .*map\[' controllers/ --include='*.go' | grep -v _test.go
+```
+
+### Rule 13 — Data structure choices
+
+- Maps for O(1) lookups by key. Never linear scan slices when the lookup key is known.
+- Slices for ordered iteration. Sort deterministically by key before iterating.
+- Prefix-based key layout for fact store queries — `Scan(prefix)` not full-store iteration + filter.
+- Optimistic concurrency (compare-and-swap via store transactions), never lock-and-hold.
+
 ## How to Run
 
 1. Run all the checks above
@@ -104,6 +156,12 @@ Group findings by rule:
 **RULE 5 — Proposed Changes**: violations or "clean"
 **RULE 6 — Layer Separation**: violations or "clean"
 **RULE 7 — Receiver Names**: violations or "clean"
+**RULE 8 — No Dead Code**: violations or "clean"
+**RULE 9 — No Magic Numbers**: violations or "clean"
+**RULE 10 — Function Length**: violations or "clean"
+**RULE 11 — Typed Enums**: violations or "clean"
+**RULE 12 — Deterministic Iteration**: violations or "clean"
+**RULE 13 — Data Structure Choices**: violations or "clean"
 
 For each violation: file, line, what the rule requires, what the code does, suggested fix.
 
