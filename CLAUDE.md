@@ -1102,6 +1102,52 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ---
 
+## Integration Testing Infrastructure
+
+End-to-end integration tests run on a dedicated Linux server (`.42`) using libvirt VMs to validate real multi-node cluster deployments.
+
+### Test Server Requirements
+
+- **Host**: Linux server at `.42` with KVM/libvirt installed
+- **Resources**: enough CPU/RAM/disk for 3 concurrent VMs (recommend 8+ vCPU, 16+ GB RAM, 100+ GB disk)
+- **Software**: libvirt, QEMU/KVM, Vagrant with `vagrant-libvirt` provider, base VM image (Ubuntu 24.04 cloud image)
+- **Networking**: bridged network so VMs can communicate with each other and the host
+
+### Test Flow
+
+```
+1. Provision 3 VMs via Vagrant/libvirt (node-1, node-2, node-3)
+2. Download & install CCattler on each: curl install.sh | sh
+3. node-1: cca server --tls --listen 0.0.0.0:9770
+4. node-1: cca token create --node-id node-2 --ttl 15m
+5. node-2: cca join <server> <token> --node-id node-2
+6. node-3: cca join <server> <token> --node-id node-3
+7. Deploy real workload: cca apply zabbix.cca (or Java app)
+8. Health-check: wait for instances running, endpoints reachable
+9. Validate: service accessible across nodes, DNS resolution works
+10. Tear down VMs (cleanup regardless of pass/fail)
+```
+
+### Scheduling
+
+- **Trigger**: on every GitHub release (via self-hosted runner), or nightly cron
+- **Runner**: GitHub Actions self-hosted runner on `.42`, or systemd timer + script
+- **Reporting**: exit 0/1 for CI green/red; optionally post results to webhook
+
+### Test Workloads
+
+- **Zabbix**: multi-component (server + database + web frontend), validates inter-service networking
+- **Java app**: single service with health endpoint, validates container image pull + JVM startup + probe lifecycle
+
+### Tooling
+
+- **Vagrantfile**: defines 3 nodes with CPU/RAM/network config, uses `vagrant-libvirt` provider
+- **Test script** (`test/e2e/cluster_test.sh`): orchestrates the full flow above
+- **Ansible playbook** (optional): alternative to shell script for more complex setup/teardown
+- **Sample `.cca` files** (`test/e2e/workloads/`): Zabbix and Java app definitions for deployment
+
+---
+
 ## Implementation Phases & Milestones
 
 See [milestones.md](milestones.md) for the full phase checklist (Phases 0–46) and milestone table (M1–M43).
