@@ -986,20 +986,20 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 ### Phase 64 — Production Hardening (M62)
 
 #### 64a — VM integration test infrastructure
-- [ ] Vagrantfile: 3 Ubuntu 24.04 VMs via libvirt (node-1, node-2, node-3)
-- [ ] `test/e2e/cluster_test.sh`: provision → install → server → join → apply → verify → teardown
-- [ ] GitHub Actions self-hosted runner on testbed-100.43, triggered on release or nightly cron
-- [ ] Exit 0/1 for CI green/red
+- [x] Vagrantfile: 3 Ubuntu 24.04 VMs via libvirt (node-1, node-2, node-3)
+- [x] `test/e2e/cluster_test.sh`: provision → install → server → join → apply → verify → teardown
+- [x] GitHub Actions self-hosted runner on testbed-100.43, triggered on release or nightly cron
+- [x] Exit 0/1 for CI green/red
 
 #### 64b — Install scripts
-- [ ] `install.sh`: download release binary, detect arch, install to /usr/local/bin
-- [ ] `install-demo.sh`: download + Vagrant provision + deploy demo cluster
-- [ ] Ansible playbook for multi-host deployment (alternative to shell script)
+- [x] `install.sh`: download release binary, detect arch, install to /usr/local/bin
+- [x] `install-demo.sh`: download + Vagrant provision + deploy demo cluster
+- [x] Ansible playbook for multi-host deployment (alternative to shell script)
 
 #### 64c — Test workloads
-- [ ] `test/e2e/workloads/zabbix.cca`: multi-component (server + database + web frontend)
-- [ ] `test/e2e/workloads/java-app.cca`: single service with health endpoint
-- [ ] Health-check script: wait for instances running, endpoints reachable, DNS resolution
+- [x] `test/e2e/workloads/zabbix.cca`: multi-component (server + database + web frontend)
+- [x] `test/e2e/workloads/java-app.cca`: single service with health endpoint
+- [x] Health-check script: wait for instances running, endpoints reachable, DNS resolution
 
 ### Milestones
 

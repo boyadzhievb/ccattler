@@ -1,0 +1,19 @@
+# Java web application for e2e testing.
+#
+# Single Tomcat service with 2 instances spread across workers.
+# Validates container image pull, JVM startup, and health probe lifecycle.
+
+service java-webapp {
+    image "tomcat:11-jre21"
+    instances 2
+    expose 8080
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+    health {
+        http /
+        every 15s
+        timeout 5s
+    }
+}

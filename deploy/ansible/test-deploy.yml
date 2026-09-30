@@ -24,6 +24,7 @@
       loop:
         - 192.168.122.10
         - 192.168.122.20
+        - 192.168.122.30
 
 - name: Clean up old state (skip with --skip-tags cleanup)
   hosts: all

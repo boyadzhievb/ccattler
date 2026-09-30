@@ -1,0 +1,50 @@
+name: E2E Cluster Test
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "0 3 * * *"  # nightly at 03:00 UTC
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run e2e cluster test
+        run: ./test/e2e/cluster_test.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          ANSIBLE_DIR=deploy/ansible
+          for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+            ip_var=""
+            case "$vm" in
+              cca-test-ctrl)     ip_var="192.168.122.10" ;;
+              cca-test-worker-1) ip_var="192.168.122.20" ;;
+              cca-test-worker-2) ip_var="192.168.122.30" ;;
+            esac
+            key="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key"
+            if [ -f "$key" ]; then
+              echo "=== $vm server.log ==="
+              ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "vagrant@$ip_var" \
+                "sudo cat /var/log/ccattler/server.log 2>/dev/null || true" || true
+              echo "=== $vm agent.log ==="
+              ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "vagrant@$ip_var" \
+                "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
+            fi
+          done
+
+      - name: Destroy VMs
+        if: always()
+        run: |
+          cd deploy/ansible
+          VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant destroy -f 2>/dev/null || true
