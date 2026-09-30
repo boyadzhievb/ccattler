@@ -1001,6 +1001,36 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] `test/e2e/workloads/java-app.cca`: single service with health endpoint
 - [x] Health-check script: wait for instances running, endpoints reachable, DNS resolution
 
+### Phase 65 — Placement Policy & Tenant Isolation Tests (M63)
+
+#### 65a — Documentation
+- [x] `docs/placement-policies.md`: CCattler vs K8s placement mapping with ASCII diagrams
+- [x] Diagrams for require, prefer, restrict/accept, zone spread, combined (node reservation)
+- [x] Scheduling matrix: attract vs repel vs reserve
+
+#### 65b — Missing scheduler unit tests
+- [x] `TestZoneSpreadPlacement` — 3 nodes, 3 zones, 3 instances → 1 per zone
+- [x] `TestZoneSpreadUnbalanced` — 2 existing in zone-a → new goes to zone-b
+- [x] `TestArchitectureFilterAmd64` — amd64 constraint, mixed nodes
+- [x] `TestArchitectureFilterArm64` — arm64 constraint
+- [x] `TestArchitectureEmptyPassesAny` — node with no arch passes any constraint
+
+#### 65c — E2E placement + tenant test script
+- [x] `test/e2e/placement_test.sh`: 12 scenarios, exit 0/1
+- [x] 7 placement DSL fixtures in `test/e2e/workloads/placement-*.cca`
+- [x] Scenario 1: require label match → instance on correct node
+- [x] Scenario 2: require no match → fallback to any node
+- [x] Scenario 3: prefer scoring → preferred node gets first instance
+- [x] Scenario 4: restrict blocks service without accept
+- [x] Scenario 5: accept allows scheduling on restricted node
+- [x] Scenario 6: zone spread → 1 instance per zone
+- [x] Scenario 7: architecture filter → excludes arm64 node
+- [x] Scenario 8: combined (require+prefer+accept+spread+arch) → correct intersection
+- [x] Scenario 9: tenant quota ALLOW (within limit) via /api/apply
+- [x] Scenario 10: tenant quota DENY (exceeded) → HTTP 403
+- [x] Scenario 11: deleting tenant → rejects new services
+- [x] Scenario 12: restrict + quota combined
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1064,5 +1094,6 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M60 — Vertical Autoscaling | 62 | P95 resource usage → recommendation → live cgroup resize or instance replacement |
 | M61 — Cloud Provider APIs | 63 | Real AWS/GCP integration: STS token exchange, instance lifecycle, load balancers, VPC routes, KMS secrets |
 | M62 — Production Hardening | 64 | 3-VM cluster on testbed-100.43, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
+| M63 — Placement & Tenant Tests | 65 | 12-scenario e2e test: require/prefer/restrict/accept/zone-spread/architecture + tenant quota ALLOW/DENY |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

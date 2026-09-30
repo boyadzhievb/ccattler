@@ -1,0 +1,7 @@
+service ml-job {
+    image nginx:1.27
+    instances 1
+    placement {
+        accept dedicated-compute
+    }
+}

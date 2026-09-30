@@ -1,0 +1,7 @@
+service amd64-only {
+    image nginx:1.27
+    instances 1
+    placement {
+        architecture amd64
+    }
+}

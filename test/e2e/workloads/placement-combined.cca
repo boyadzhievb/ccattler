@@ -1,0 +1,11 @@
+service combined-placement {
+    image nginx:1.27
+    instances 2
+    placement {
+        architecture amd64
+        zone spread
+        require gpu = true
+        prefer ssd = true
+        accept dedicated-compute
+    }
+}

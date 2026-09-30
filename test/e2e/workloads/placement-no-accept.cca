@@ -1,0 +1,4 @@
+service no-toleration {
+    image nginx:1.27
+    instances 1
+}

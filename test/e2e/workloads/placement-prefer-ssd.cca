@@ -1,0 +1,7 @@
+service ssd-preferred {
+    image nginx:1.27
+    instances 3
+    placement {
+        prefer ssd = true
+    }
+}

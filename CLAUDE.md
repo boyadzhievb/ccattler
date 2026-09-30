@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M62 — Phase 64 Production Hardening. M1–M55 + M62 complete. Gates A–I resolved. Next: Phase 58 — ABAC Condition Engine.
+**Completed through:** M63 — Phase 65 Placement & Tenant Tests. M1–M55 + M62–M63 complete. Gates A–I resolved. Next: Phase 58 — ABAC Condition Engine.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

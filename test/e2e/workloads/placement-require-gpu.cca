@@ -1,0 +1,7 @@
+service gpu-worker {
+    image nginx:1.27
+    instances 1
+    placement {
+        require gpu = true
+    }
+}

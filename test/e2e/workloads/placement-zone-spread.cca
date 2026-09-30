@@ -1,0 +1,7 @@
+service zone-spread-svc {
+    image nginx:1.27
+    instances 3
+    placement {
+        zone spread
+    }
+}

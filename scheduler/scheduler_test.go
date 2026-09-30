@@ -601,6 +601,170 @@ func TestRestrictAndRequireCombined(t *testing.T) {
 	}
 }
 
+func TestZoneSpreadPlacement(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "pending"),
+		kv(types.KeyObservedInstanceService("ccc"), "web"),
+		kv(types.KeyObservedInstanceState("ccc"), "pending"),
+		// Service requires zone spread.
+		kv(types.KeyDesiredServicePlacementZonePolicy("web"), "spread"),
+		// Three nodes in three different zones.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeZone("node-1"), "zone-a"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeZone("node-2"), "zone-b"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeZone("node-3"), "zone-c"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 placements, got %d", len(changes))
+	}
+	// Verify all three instances land on different nodes (one per zone).
+	placedNodes := make(map[string]bool)
+	for _, change := range changes {
+		placedNodes[string(change.Value)] = true
+	}
+	if len(placedNodes) != 3 {
+		t.Errorf("expected 3 unique nodes (one per zone), got %d: %v", len(placedNodes), placedNodes)
+	}
+}
+
+func TestZoneSpreadUnbalanced(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		// One new pending instance to schedule.
+		kv(types.KeyObservedInstanceService("new-1"), "web"),
+		kv(types.KeyObservedInstanceState("new-1"), "pending"),
+		// Service requires zone spread.
+		kv(types.KeyDesiredServicePlacementZonePolicy("web"), "spread"),
+		// Two existing running instances already on node-1 (zone-a).
+		kv(types.KeyObservedInstanceService("existing-1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-1"), "running"),
+		kv(types.KeyPlacementInstance("existing-1"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-2"), "web"),
+		kv(types.KeyObservedInstanceState("existing-2"), "running"),
+		kv(types.KeyPlacementInstance("existing-2"), "node-1"),
+		// Three nodes in three zones.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeZone("node-1"), "zone-a"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeZone("node-2"), "zone-b"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeZone("node-3"), "zone-c"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	placedNode := string(changes[0].Value)
+	// New instance should go to zone-b or zone-c (0 existing) rather than zone-a (2 existing).
+	if placedNode == "node-1" {
+		t.Errorf("should avoid zone-a (already has 2 instances), placed on %s", placedNode)
+	}
+}
+
+func TestArchitectureFilterAmd64(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "amd-app"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires amd64 architecture.
+		kv(types.KeyDesiredServicePlacementArchitecture("amd-app"), "amd64"),
+		// node-1 is amd64 — eligible.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-1"), "amd64"),
+		// node-2 is arm64 — should be excluded.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-2"), "arm64"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should place on node-1 (amd64), got %s", changes[0].Value)
+	}
+}
+
+func TestArchitectureFilterArm64(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "arm-app"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires arm64 architecture.
+		kv(types.KeyDesiredServicePlacementArchitecture("arm-app"), "arm64"),
+		// node-1 is amd64 — should be excluded.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-1"), "amd64"),
+		// node-2 is arm64 — eligible.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-2"), "arm64"),
+		// node-3 is arm64 — also eligible.
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-3"), "arm64"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	placedNode := string(changes[0].Value)
+	if placedNode != "node-2" && placedNode != "node-3" {
+		t.Errorf("should place on arm64 node (node-2 or node-3), got %s", placedNode)
+	}
+}
+
+func TestArchitectureEmptyPassesAny(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "any-arch"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		// Service requires arm64 architecture.
+		kv(types.KeyDesiredServicePlacementArchitecture("any-arch"), "arm64"),
+		// node-1 has no architecture reported — should still be eligible.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		// node-2 is amd64 — should be excluded.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeArchitecture("node-2"), "amd64"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should place on node-1 (no arch = passes any constraint), got %s", changes[0].Value)
+	}
+}
+
 func TestControllerInterface(t *testing.T) {
 	placementScheduler := NewScheduler()
 	if placementScheduler.Name() != "scheduler" {
