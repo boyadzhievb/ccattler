@@ -1104,7 +1104,7 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ## Integration Testing Infrastructure
 
-End-to-end integration tests run on a dedicated Linux server (`.42`) using libvirt VMs to validate real multi-node cluster deployments.
+End-to-end integration tests run on a dedicated Linux server (`testbed-100.43`) using libvirt VMs to validate real multi-node cluster deployments.
 
 ### Test Server Requirements
 

@@ -201,7 +201,7 @@
 - [x] Agent TLS flags — `cca agent --cert/--key/--ca` for agent-side mTLS credential loading
 - [x] Vagrant + Ansible deployment — `deploy/` directory with dual-provider Vagrantfile (libvirt + VirtualBox) and 5 Ansible roles
 - [x] Deployment plan updated — dual-provider testing on Linux, libvirt primary, VirtualBox secondary
-- [x] Multi-host demo — real cluster across .43 (ctrl+worker-2) and .215 (worker-1), 4 nginx + 2 redis containers, accessible from LAN
+- [x] Multi-host demo — real cluster across testbed-100.43 (ctrl+worker-2) and testbed-100.215 (worker-1), 4 nginx + 2 redis containers, accessible from LAN
 
 ### Phase 21 — VIP Data Plane
 - [x] `DataPlaneProvider` interface — pluggable VIP forwarding abstraction (`ReconcileVIPDataPlane`, `Cleanup`)
@@ -215,7 +215,7 @@
 - [x] Fact keys — `observed/node/{id}/address` for node LAN address, `observed/instance/{id}/hostport` for Docker host port mapping
 - [x] Local backend host port resolution — agents use `127.0.0.1:<hostPort>` for local backends instead of container IP:port when no Docker network IP is assigned
 - [x] POSTROUTING MASQUERADE for cross-host DNAT — fixes source address for packets DNAT'd to remote hosts (mirrors kube-proxy masquerade)
-- [x] End-to-end test — `curl http://10.200.0.1:80` round-robins across 4 nginx containers on .43 and .215, redis VIP returns `+PONG`
+- [x] End-to-end test — `curl http://10.200.0.1:80` round-robins across 4 nginx containers on testbed-100.43 and testbed-100.215, redis VIP returns `+PONG`
 
 ### Phase 22 — Node Enrollment
 - [x] `POST /api/enroll` endpoint — validates join token, issues certificate, binds RBAC role, returns cert/key/CA
@@ -988,7 +988,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 #### 64a — VM integration test infrastructure
 - [ ] Vagrantfile: 3 Ubuntu 24.04 VMs via libvirt (node-1, node-2, node-3)
 - [ ] `test/e2e/cluster_test.sh`: provision → install → server → join → apply → verify → teardown
-- [ ] GitHub Actions self-hosted runner on .42, triggered on release or nightly cron
+- [ ] GitHub Actions self-hosted runner on testbed-100.43, triggered on release or nightly cron
 - [ ] Exit 0/1 for CI green/red
 
 #### 64b — Install scripts
@@ -1063,6 +1063,6 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M59 — Service Groups | 61 | `group frontend { process proxy; process web; share network }` co-schedules on same node with shared network namespace |
 | M60 — Vertical Autoscaling | 62 | P95 resource usage → recommendation → live cgroup resize or instance replacement |
 | M61 — Cloud Provider APIs | 63 | Real AWS/GCP integration: STS token exchange, instance lifecycle, load balancers, VPC routes, KMS secrets |
-| M62 — Production Hardening | 64 | 3-VM cluster on .42, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
+| M62 — Production Hardening | 64 | 3-VM cluster on testbed-100.43, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
