@@ -1098,3 +1098,199 @@ func TestRenderWithValuesFilesPrecedenceOrder(t *testing.T) {
 		t.Errorf("expected '80' in output, got: %s", renderedOutput)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// CollectDSLFiles tests
+// ---------------------------------------------------------------------------
+
+// TestCollectDSLFilesFindsAllExtensions verifies that CollectDSLFiles finds
+// both .cca and .ccattler files and returns them sorted.
+func TestCollectDSLFilesFindsAllExtensions(t *testing.T) {
+	tempDirectory := t.TempDir()
+
+	// Create files with both extensions plus a non-DSL file.
+	for _, fileName := range []string{"b.cca", "a.ccattler", "c.txt", "d.cca"} {
+		filePath := filepath.Join(tempDirectory, fileName)
+		if writeError := os.WriteFile(filePath, []byte("test"), 0600); writeError != nil {
+			t.Fatalf("writing %s: %v", fileName, writeError)
+		}
+	}
+
+	collectedFiles, collectError := CollectDSLFiles(tempDirectory)
+	if collectError != nil {
+		t.Fatalf("unexpected error: %v", collectError)
+	}
+
+	if len(collectedFiles) != 3 {
+		t.Fatalf("expected 3 DSL files, got %d: %v", len(collectedFiles), collectedFiles)
+	}
+
+	// Verify sorted order: a.ccattler, b.cca, d.cca.
+	expectedSuffixes := []string{"a.ccattler", "b.cca", "d.cca"}
+	for fileIndex, expectedSuffix := range expectedSuffixes {
+		if !strings.HasSuffix(collectedFiles[fileIndex], expectedSuffix) {
+			t.Errorf("file[%d]: expected suffix %q, got %q", fileIndex, expectedSuffix, collectedFiles[fileIndex])
+		}
+	}
+}
+
+// TestCollectDSLFilesEmptyDirectory verifies that CollectDSLFiles returns an
+// error when the directory contains no DSL files.
+func TestCollectDSLFilesEmptyDirectory(t *testing.T) {
+	tempDirectory := t.TempDir()
+
+	_, collectError := CollectDSLFiles(tempDirectory)
+	if collectError == nil {
+		t.Fatal("expected error for empty directory, got nil")
+	}
+	if !strings.Contains(collectError.Error(), "no .cca or .ccattler files") {
+		t.Errorf("expected 'no .cca or .ccattler files' in error, got: %v", collectError)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValidateTemplateSyntax tests
+// ---------------------------------------------------------------------------
+
+// TestValidateTemplateSyntaxValid verifies that valid Go template syntax
+// passes validation without error.
+func TestValidateTemplateSyntaxValid(t *testing.T) {
+	validTemplates := []string{
+		`{{ .image }}`,
+		`{{ default "latest" .tag }}`,
+		`{{ if .enabled }}yes{{ end }}`,
+		`plain text no templates`,
+		``,
+	}
+	for _, templateContent := range validTemplates {
+		if syntaxError := ValidateTemplateSyntax(templateContent); syntaxError != nil {
+			t.Errorf("expected valid syntax for %q, got error: %v", templateContent, syntaxError)
+		}
+	}
+}
+
+// TestValidateTemplateSyntaxInvalid verifies that malformed Go template syntax
+// is caught and returns a descriptive error.
+func TestValidateTemplateSyntaxInvalid(t *testing.T) {
+	invalidTemplates := []string{
+		`{{ .image `,
+		`{{ if }}`,
+		`{{ end }}`,
+	}
+	for _, templateContent := range invalidTemplates {
+		syntaxError := ValidateTemplateSyntax(templateContent)
+		if syntaxError == nil {
+			t.Errorf("expected syntax error for %q, got nil", templateContent)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValidateRenderedDSL tests
+// ---------------------------------------------------------------------------
+
+// TestValidateRenderedDSLValid verifies that valid rendered CCattler DSL
+// passes validation.
+func TestValidateRenderedDSLValid(t *testing.T) {
+	validDSL := `service web {
+    image nginx:1.27
+    instances 3
+    expose 8080
+}`
+	if validationError := ValidateRenderedDSL(validDSL); validationError != nil {
+		t.Errorf("expected valid DSL to pass, got error: %v", validationError)
+	}
+}
+
+// TestValidateRenderedDSLInvalidParse verifies that malformed DSL that fails
+// parsing is caught by validation.
+func TestValidateRenderedDSLInvalidParse(t *testing.T) {
+	invalidDSL := `service web { image }`
+	validationError := ValidateRenderedDSL(invalidDSL)
+	if validationError == nil {
+		t.Error("expected validation error for invalid DSL, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DetectUnusedValues tests
+// ---------------------------------------------------------------------------
+
+// TestDetectUnusedValuesNoUnused verifies that when all values are referenced
+// in the template, no unused keys are reported.
+func TestDetectUnusedValuesNoUnused(t *testing.T) {
+	templateContent := `{{ .name }} {{ .image }}`
+	valuesMap := map[string]any{
+		"name":  "web",
+		"image": "nginx",
+	}
+
+	unusedKeys := DetectUnusedValues(templateContent, valuesMap)
+	if len(unusedKeys) != 0 {
+		t.Errorf("expected no unused keys, got %v", unusedKeys)
+	}
+}
+
+// TestDetectUnusedValuesSomeUnused verifies that unreferenced top-level keys
+// are detected and returned sorted.
+func TestDetectUnusedValuesSomeUnused(t *testing.T) {
+	templateContent := `{{ .name }}`
+	valuesMap := map[string]any{
+		"name":   "web",
+		"extra":  "not used",
+		"bonus":  "also not used",
+	}
+
+	unusedKeys := DetectUnusedValues(templateContent, valuesMap)
+	if len(unusedKeys) != 2 {
+		t.Fatalf("expected 2 unused keys, got %d: %v", len(unusedKeys), unusedKeys)
+	}
+	if unusedKeys[0] != "bonus" || unusedKeys[1] != "extra" {
+		t.Errorf("expected [bonus extra], got %v", unusedKeys)
+	}
+}
+
+// TestDetectUnusedValuesNestedAccess verifies that nested access like
+// .web.image correctly detects "web" as a referenced top-level key.
+func TestDetectUnusedValuesNestedAccess(t *testing.T) {
+	templateContent := `{{ .web.image }}`
+	valuesMap := map[string]any{
+		"web":    map[string]any{"image": "nginx"},
+		"unused": "not referenced",
+	}
+
+	unusedKeys := DetectUnusedValues(templateContent, valuesMap)
+	if len(unusedKeys) != 1 {
+		t.Fatalf("expected 1 unused key, got %d: %v", len(unusedKeys), unusedKeys)
+	}
+	if unusedKeys[0] != "unused" {
+		t.Errorf("expected [unused], got %v", unusedKeys)
+	}
+}
+
+// TestDetectUnusedValuesEmptyTemplate verifies that with no template actions,
+// all values are reported as unused.
+func TestDetectUnusedValuesEmptyTemplate(t *testing.T) {
+	templateContent := `no template actions here`
+	valuesMap := map[string]any{
+		"alpha": "a",
+		"beta":  "b",
+	}
+
+	unusedKeys := DetectUnusedValues(templateContent, valuesMap)
+	if len(unusedKeys) != 2 {
+		t.Fatalf("expected 2 unused keys, got %d: %v", len(unusedKeys), unusedKeys)
+	}
+}
+
+// TestDetectUnusedValuesEmptyValues verifies that with no values provided,
+// no unused keys are reported.
+func TestDetectUnusedValuesEmptyValues(t *testing.T) {
+	templateContent := `{{ .name }}`
+	valuesMap := map[string]any{}
+
+	unusedKeys := DetectUnusedValues(templateContent, valuesMap)
+	if len(unusedKeys) != 0 {
+		t.Errorf("expected no unused keys for empty values, got %v", unusedKeys)
+	}
+}

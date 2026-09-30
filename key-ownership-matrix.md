@@ -24,12 +24,13 @@ Each controller may only write keys under its declared output prefixes. The runn
 | NodeLifecycleController | `cloud-node-lifecycle` | `observed/cloud/instance/`, `observed/node/` |
 | CloudLoadBalancerController | `cloud-loadbalancer` | `observed/cloud/loadbalancer/` |
 | CloudRouteController | `cloud-routes` | `observed/cloud/route/` |
+| AuthController | `auth` | *(none — rebuilds in-memory APIAuthorizer)* |
 
 ## Non-Controller Writers
 
 | Writer | Output Prefixes | Notes |
 |--------|----------------|-------|
-| `cca apply` (DSL compiler) | `desired/service/`, `desired/volume/`, `intent/user/` | User-declared desired state |
+| `cca apply` (DSL compiler) | `desired/service/`, `desired/volume/`, `intent/user/`, `auth/role/`, `auth/grant/`, `auth/group/` | User-declared desired state + authorization declarations |
 | Node Agent (observer) | `observed/instance/`, `observed/node/`, `lease/node/` | Runtime observations |
 | Node Agent (telemetry) | `observed/instance/{id}/cpu`, `observed/instance/{id}/memory` | Resource telemetry |
 | Node Agent (init steps) | `observed/instance/{id}/init/step/` | Init step execution results |
@@ -41,6 +42,7 @@ Each controller may only write keys under its declared output prefixes. The runn
 | API server (activate) | `derived/service/{svc}/activation/state` | Activation webhook |
 | Proxy (last request) | `observed/service/{svc}/last_request_time` | Warm-zero tracking |
 | Proxy (activation) | `derived/service/{svc}/activation/state` | Cold-start activation |
+| AuthorizedStore (audit) | `audit/{sequence}` | Persisted authorization audit entries |
 
 ## Shared Prefix Overlaps
 
@@ -102,6 +104,15 @@ lease/                      — heartbeat leases
   node/{id}                 — node lease timestamp
 
 credentials/                — encrypted credential store (AES-256-GCM)
+
+auth/                       — authorization declarations (compiled from DSL)
+  role/{name}/capability/{cap}  — capability granted by this role
+  role/{name}/scope/{path}      — scope restriction on this role
+  grant/{kind}/{principal}/role/{role} — role bound to principal
+  group/{name}/member/{id}      — member in this group
+
+audit/                      — persisted authorization audit log
+  {sequence}                — JSON {timestamp, principal, action, target, decision}
 ```
 
 ## Enforcement

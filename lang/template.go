@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 )
@@ -380,6 +383,102 @@ func RenderWithValuesFiles(
 	// Merge all layers into a single values map.
 	mergedValues := MergeValues(valueLayers...)
 
+	// Validate template syntax before rendering to provide clear error messages.
+	if syntaxError := ValidateTemplateSyntax(templateContent); syntaxError != nil {
+		return "", syntaxError
+	}
+
 	// Render the template with the merged values.
 	return RenderTemplate(templateContent, mergedValues)
+}
+
+// CollectDSLFiles finds all .cca and .ccattler files in the given directory
+// and returns their paths sorted alphabetically. Returns an error if no DSL
+// files are found or if the glob operation fails.
+func CollectDSLFiles(directoryPath string) ([]string, error) {
+	ccaFiles, ccaGlobError := filepath.Glob(filepath.Join(directoryPath, "*.cca"))
+	if ccaGlobError != nil {
+		return nil, fmt.Errorf("scanning for .cca files in %s: %w", directoryPath, ccaGlobError)
+	}
+
+	ccattlerFiles, ccattlerGlobError := filepath.Glob(filepath.Join(directoryPath, "*.ccattler"))
+	if ccattlerGlobError != nil {
+		return nil, fmt.Errorf("scanning for .ccattler files in %s: %w", directoryPath, ccattlerGlobError)
+	}
+
+	allDSLFiles := append(ccaFiles, ccattlerFiles...)
+	sort.Strings(allDSLFiles)
+
+	if len(allDSLFiles) == 0 {
+		return nil, fmt.Errorf("no .cca or .ccattler files found in %s", directoryPath)
+	}
+
+	return allDSLFiles, nil
+}
+
+// ValidateTemplateSyntax performs a parse-only check on the given template
+// content to catch syntax errors early, before rendering. This provides
+// clearer error messages than discovering syntax problems during rendering.
+func ValidateTemplateSyntax(templateContent string) error {
+	_, parseError := template.New("syntax-check").
+		Funcs(templateFunctions()).
+		Parse(templateContent)
+	if parseError != nil {
+		return fmt.Errorf("template syntax error: %w", parseError)
+	}
+	return nil
+}
+
+// ValidateRenderedDSL parses and compiles the rendered DSL content to verify
+// it is valid CCattler DSL. Returns a descriptive error if the rendered output
+// contains parse or compilation errors.
+func ValidateRenderedDSL(renderedContent string) error {
+	parsedFile, parseError := Parse(renderedContent)
+	if parseError != nil {
+		return fmt.Errorf("rendered DSL parse error: %w", parseError)
+	}
+	sourceLines := splitSourceLines(renderedContent)
+	_, compileError := CompileWithSource(parsedFile, sourceLines)
+	if compileError != nil {
+		return fmt.Errorf("rendered DSL compile error: %w", compileError)
+	}
+	return nil
+}
+
+// templateActionPattern matches Go template action blocks ({{ ... }}) including
+// those spanning multiple lines. Used by DetectUnusedValues to extract action text.
+var templateActionPattern = regexp.MustCompile(`(?s)\{\{.*?\}\}`)
+
+// templateKeyReferencePattern matches dot-prefixed identifiers within template
+// actions (e.g., .image, .web from .web.image). The captured group is the
+// top-level key name.
+var templateKeyReferencePattern = regexp.MustCompile(`\.(\w+)`)
+
+// DetectUnusedValues scans the template content for top-level value references
+// (patterns like .KeyName within {{ }} actions) and returns a sorted list of
+// top-level keys in mergedValues that are not referenced by any template action.
+// This is a heuristic: nested access like .web.image is detected as referencing
+// the top-level key "web". The result helps warn users about likely-unused values.
+func DetectUnusedValues(templateContent string, mergedValues map[string]any) []string {
+	// Extract all template action blocks.
+	templateActions := templateActionPattern.FindAllString(templateContent, -1)
+
+	// Within actions, find all .KeyName references and collect top-level keys.
+	referencedTopLevelKeys := make(map[string]bool)
+	for _, actionText := range templateActions {
+		keyMatches := templateKeyReferencePattern.FindAllStringSubmatch(actionText, -1)
+		for _, keyMatch := range keyMatches {
+			referencedTopLevelKeys[keyMatch[1]] = true
+		}
+	}
+
+	// Identify top-level keys in mergedValues that were not referenced.
+	var unusedKeyNames []string
+	for topLevelKey := range mergedValues {
+		if !referencedTopLevelKeys[topLevelKey] {
+			unusedKeyNames = append(unusedKeyNames, topLevelKey)
+		}
+	}
+	sort.Strings(unusedKeyNames)
+	return unusedKeyNames
 }

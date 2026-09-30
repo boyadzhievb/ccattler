@@ -182,6 +182,85 @@ func startControllerRunner(ctx context.Context, factStore store.StateStore, cont
 	return eventLog
 }
 
+// renderedDSLContent holds a resolved DSL file's path and its rendered content,
+// used to process single files or directories of DSL files uniformly.
+type renderedDSLContent struct {
+	// filePath is the original path to the DSL file on disk.
+	filePath string
+	// content is the rendered DSL content (after template processing if applicable).
+	content string
+}
+
+// resolveAndRenderDSLFiles resolves the config path (a single file or a directory)
+// into one or more DSL files, reads each, and applies template rendering when any
+// values flags are present. Returns a list of rendered contents ready for apply/diff.
+func resolveAndRenderDSLFiles(
+	configPath string,
+	valuesFilePaths []string,
+	setOverrides []string,
+	setFromEnvOverrides []string,
+) ([]renderedDSLContent, error) {
+	filePaths, resolveError := resolveDSLFilePaths(configPath)
+	if resolveError != nil {
+		return nil, resolveError
+	}
+
+	hasTemplateFlags := len(valuesFilePaths) > 0 || len(setOverrides) > 0 || len(setFromEnvOverrides) > 0
+	var renderedFiles []renderedDSLContent
+
+	for _, filePath := range filePaths {
+		fileData, readError := os.ReadFile(filePath) //nolint:gosec // DSL file path from CLI argument
+		if readError != nil {
+			return nil, fmt.Errorf("error reading %s: %w", filePath, readError)
+		}
+		dslContent := string(fileData)
+
+		if hasTemplateFlags {
+			renderedContent, renderError := lang.RenderWithValuesFiles(
+				dslContent, valuesFilePaths, setOverrides, setFromEnvOverrides)
+			if renderError != nil {
+				return nil, fmt.Errorf("template error in %s: %w", filePath, renderError)
+			}
+			dslContent = renderedContent
+		}
+
+		renderedFiles = append(renderedFiles, renderedDSLContent{
+			filePath: filePath,
+			content:  dslContent,
+		})
+	}
+
+	return renderedFiles, nil
+}
+
+// resolveDSLFilePaths returns the list of DSL file paths to process. When the
+// given path is a directory, it collects all .cca and .ccattler files in it.
+// When the path is a single file, it returns a slice containing just that file.
+func resolveDSLFilePaths(configPath string) ([]string, error) {
+	fileInfo, statError := os.Stat(configPath)
+	if statError != nil {
+		return nil, fmt.Errorf("cannot access %s: %w", configPath, statError)
+	}
+	if fileInfo.IsDir() {
+		return lang.CollectDSLFiles(configPath)
+	}
+	return []string{configPath}, nil
+}
+
+// combineDSLFileContents joins multiple rendered DSL file contents into a single
+// DSL string by concatenating with newlines. Used by diff and other commands that
+// need to process a directory of DSL files as a single unit.
+func combineDSLFileContents(renderedFiles []renderedDSLContent) string {
+	if len(renderedFiles) == 1 {
+		return renderedFiles[0].content
+	}
+	var contentParts []string
+	for _, rendered := range renderedFiles {
+		contentParts = append(contentParts, rendered.content)
+	}
+	return strings.Join(contentParts, "\n")
+}
+
 // runDemoStatusLoop prints cluster status at the given interval until the context
 // is cancelled. Used by demo commands that loop after their initial setup phase.
 func runDemoStatusLoop(ctx context.Context, factStore store.StateStore, interval time.Duration) {

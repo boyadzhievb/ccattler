@@ -102,30 +102,24 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 	return parsedConfig
 }
 
-// executeApplyCommand parses a .ccattler file and writes facts to the state store.
+// executeApplyCommand parses one or more .ccattler files and writes facts to the
+// state store. Supports single files and directories (all .cca/.ccattler files).
 // In remote mode (--store etcd), it connects to the shared store, writes facts,
 // and exits — controllers running in "cca server" handle reconciliation.
 // In local mode (default), it runs a local simulation with 3 simulated nodes.
 func executeApplyCommand(parsedConfig applyCommandConfig) {
-	fileData, err := os.ReadFile(parsedConfig.configFilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, err)
+	renderedFiles, resolveError := resolveAndRenderDSLFiles(
+		parsedConfig.configFilePath, parsedConfig.valuesFilePaths,
+		parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+	if resolveError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", resolveError)
 		os.Exit(1)
 	}
 
-	dslContent := string(fileData)
-	if len(parsedConfig.valuesFilePaths) > 0 || len(parsedConfig.setOverrides) > 0 || len(parsedConfig.setFromEnvOverrides) > 0 {
-		renderedContent, renderError := lang.RenderWithValuesFiles(
-			dslContent, parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
-		if renderError != nil {
-			fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
-			os.Exit(1)
-		}
-		dslContent = renderedContent
-	}
-
 	if parsedConfig.dryRunEnabled {
-		fmt.Println(dslContent)
+		for _, rendered := range renderedFiles {
+			fmt.Println(rendered.content)
+		}
 		return
 	}
 
@@ -143,11 +137,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		defer func() { _ = factStore.Close() }()
 
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
-		fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
-		if err := lang.Apply(ctx, factStore, dslContent); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
-			os.Exit(1)
-		}
+		applyRenderedFilesToStore(ctx, factStore, renderedFiles)
 		fmt.Println("Facts written to store. Controllers will reconcile.")
 		return
 	}
@@ -162,15 +152,23 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		}
 	}()
 
-	fmt.Printf("Applying %s...\n", parsedConfig.configFilePath)
-	if err := lang.Apply(ctx, factStore, dslContent); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedConfig.configFilePath))
-		os.Exit(1)
-	}
+	applyRenderedFilesToStore(ctx, factStore, renderedFiles)
 
 	// Wait for reconciliation to settle before printing status.
 	time.Sleep(applyConvergenceSettleTime)
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
+}
+
+// applyRenderedFilesToStore applies each rendered DSL file to the given store,
+// printing progress and exiting on the first error.
+func applyRenderedFilesToStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent) {
+	for _, rendered := range renderedFiles {
+		fmt.Printf("Applying %s...\n", rendered.filePath)
+		if applyError := lang.Apply(ctx, factStore, rendered.content); applyError != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(applyError, rendered.filePath))
+			os.Exit(1)
+		}
+	}
 }
 
 // setupLocalSimulationEnvironment registers 3 simulated nodes and creates all

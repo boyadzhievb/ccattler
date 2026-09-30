@@ -988,3 +988,212 @@ service api {
 		t.Errorf("expected activation_timeout '60s', got %q", horizontal.ActivationTimeout)
 	}
 }
+
+func TestParseRoleDeclaration(t *testing.T) {
+	input := `role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Roles) != 1 {
+		t.Fatalf("expected 1 role, got %d", len(file.Roles))
+	}
+	roleDecl := file.Roles[0]
+	if roleDecl.Name != "developer" {
+		t.Errorf("name: got %q, want %q", roleDecl.Name, "developer")
+	}
+	if len(roleDecl.Capabilities) != 2 {
+		t.Fatalf("expected 2 capabilities, got %d", len(roleDecl.Capabilities))
+	}
+	if roleDecl.Capabilities[0] != "workload.read" {
+		t.Errorf("capability[0]: got %q, want %q", roleDecl.Capabilities[0], "workload.read")
+	}
+	if roleDecl.Capabilities[1] != "workload.update" {
+		t.Errorf("capability[1]: got %q, want %q", roleDecl.Capabilities[1], "workload.update")
+	}
+	if len(roleDecl.Scopes) != 1 {
+		t.Fatalf("expected 1 scope, got %d", len(roleDecl.Scopes))
+	}
+	if roleDecl.Scopes[0] != "team/payments" {
+		t.Errorf("scope[0]: got %q, want %q", roleDecl.Scopes[0], "team/payments")
+	}
+}
+
+func TestParseRoleWithMultipleScopes(t *testing.T) {
+	input := `role team-admin {
+    allow workload.read
+    allow workload.create
+    allow workload.update
+    allow workload.delete
+    scope team/payments
+    scope team/frontend
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleDecl := file.Roles[0]
+	if roleDecl.Name != "team-admin" {
+		t.Errorf("name: got %q, want %q", roleDecl.Name, "team-admin")
+	}
+	if len(roleDecl.Capabilities) != 4 {
+		t.Errorf("expected 4 capabilities, got %d", len(roleDecl.Capabilities))
+	}
+	if len(roleDecl.Scopes) != 2 {
+		t.Errorf("expected 2 scopes, got %d", len(roleDecl.Scopes))
+	}
+}
+
+func TestParseRoleClusterWide(t *testing.T) {
+	input := `role cluster-admin {
+    allow cluster.admin
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleDecl := file.Roles[0]
+	if len(roleDecl.Capabilities) != 1 || roleDecl.Capabilities[0] != "cluster.admin" {
+		t.Errorf("expected [cluster.admin], got %v", roleDecl.Capabilities)
+	}
+	if len(roleDecl.Scopes) != 0 {
+		t.Errorf("expected 0 scopes for cluster-wide role, got %d", len(roleDecl.Scopes))
+	}
+}
+
+func TestParseRoleErrorUnknownField(t *testing.T) {
+	input := `role developer {
+    deny workload.delete
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown role field")
+	}
+}
+
+func TestParseGrantStatement(t *testing.T) {
+	input := `grant developer to group developers`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Grants) != 1 {
+		t.Fatalf("expected 1 grant, got %d", len(file.Grants))
+	}
+	grantDecl := file.Grants[0]
+	if grantDecl.RoleName != "developer" {
+		t.Errorf("role: got %q, want %q", grantDecl.RoleName, "developer")
+	}
+	if grantDecl.PrincipalKind != "group" {
+		t.Errorf("kind: got %q, want %q", grantDecl.PrincipalKind, "group")
+	}
+	if grantDecl.PrincipalName != "developers" {
+		t.Errorf("principal: got %q, want %q", grantDecl.PrincipalName, "developers")
+	}
+}
+
+func TestParseGrantToUser(t *testing.T) {
+	input := `grant operator to user "alice@example.com"`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantDecl := file.Grants[0]
+	if grantDecl.RoleName != "operator" {
+		t.Errorf("role: got %q, want %q", grantDecl.RoleName, "operator")
+	}
+	if grantDecl.PrincipalKind != "user" {
+		t.Errorf("kind: got %q, want %q", grantDecl.PrincipalKind, "user")
+	}
+	if grantDecl.PrincipalName != "alice@example.com" {
+		t.Errorf("principal: got %q, want %q", grantDecl.PrincipalName, "alice@example.com")
+	}
+}
+
+func TestParseGrantMissingTo(t *testing.T) {
+	input := `grant developer group developers`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for missing 'to' keyword")
+	}
+}
+
+func TestParseGroupDeclaration(t *testing.T) {
+	input := `group developers {
+    member "alice@example.com"
+    member "bob@example.com"
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Groups) != 1 {
+		t.Fatalf("expected 1 group, got %d", len(file.Groups))
+	}
+	groupDecl := file.Groups[0]
+	if groupDecl.Name != "developers" {
+		t.Errorf("name: got %q, want %q", groupDecl.Name, "developers")
+	}
+	if len(groupDecl.Members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(groupDecl.Members))
+	}
+	if groupDecl.Members[0] != "alice@example.com" {
+		t.Errorf("member[0]: got %q, want %q", groupDecl.Members[0], "alice@example.com")
+	}
+	if groupDecl.Members[1] != "bob@example.com" {
+		t.Errorf("member[1]: got %q, want %q", groupDecl.Members[1], "bob@example.com")
+	}
+}
+
+func TestParseGroupErrorUnknownField(t *testing.T) {
+	input := `group developers {
+    admin "alice@example.com"
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown group field")
+	}
+}
+
+func TestParseAuthRoundTrip(t *testing.T) {
+	input := `role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments
+}
+
+role operator {
+    allow workload.read
+    allow workload.create
+    allow workload.update
+    allow workload.delete
+    allow node.read
+    allow node.manage
+}
+
+group developers {
+    member "alice@example.com"
+    member "bob@example.com"
+}
+
+grant developer to group developers
+grant operator to user "carol@example.com"
+`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Roles) != 2 {
+		t.Errorf("expected 2 roles, got %d", len(file.Roles))
+	}
+	if len(file.Groups) != 1 {
+		t.Errorf("expected 1 group, got %d", len(file.Groups))
+	}
+	if len(file.Grants) != 2 {
+		t.Errorf("expected 2 grants, got %d", len(file.Grants))
+	}
+}

@@ -786,3 +786,121 @@ func TestCompileExposeExternal(t *testing.T) {
 		t.Errorf("expected external protocol http, got %q", externalProtocol)
 	}
 }
+
+func TestCompileRoleDeclaration(t *testing.T) {
+	file, _ := Parse(`role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyAuthRoleCapability("developer", "workload.read")] != "true" {
+		t.Error("missing role capability workload.read")
+	}
+	if compiledFactMap[types.KeyAuthRoleCapability("developer", "workload.update")] != "true" {
+		t.Error("missing role capability workload.update")
+	}
+	if compiledFactMap[types.KeyAuthRoleScope("developer", "team/payments")] != "true" {
+		t.Error("missing role scope team/payments")
+	}
+}
+
+func TestCompileRoleWithoutCapabilities(t *testing.T) {
+	file := &File{
+		Roles: []RoleDecl{{Name: "empty", Line: 1}},
+	}
+	_, err := Compile(file)
+	if err == nil {
+		t.Fatal("expected error for role with no capabilities")
+	}
+}
+
+func TestCompileGrantDeclaration(t *testing.T) {
+	file, _ := Parse(`grant developer to group developers`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	expectedKey := types.KeyAuthGrant("group", "developers", "developer")
+	if compiledFactMap[expectedKey] != "true" {
+		t.Errorf("missing grant fact at key %q", expectedKey)
+	}
+}
+
+func TestCompileGrantToUser(t *testing.T) {
+	file, _ := Parse(`grant operator to user "alice@example.com"`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	expectedKey := types.KeyAuthGrant("user", "alice@example.com", "operator")
+	if compiledFactMap[expectedKey] != "true" {
+		t.Errorf("missing grant fact at key %q", expectedKey)
+	}
+}
+
+func TestCompileGroupDeclaration(t *testing.T) {
+	file, _ := Parse(`group developers {
+    member "alice@example.com"
+    member "bob@example.com"
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyAuthGroupMember("developers", "alice@example.com")] != "true" {
+		t.Error("missing group member alice@example.com")
+	}
+	if compiledFactMap[types.KeyAuthGroupMember("developers", "bob@example.com")] != "true" {
+		t.Error("missing group member bob@example.com")
+	}
+}
+
+func TestCompileAuthRoundTrip(t *testing.T) {
+	input := `role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments
+}
+
+group developers {
+    member "alice@example.com"
+}
+
+grant developer to group developers
+`
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	if compiledFactMap[types.KeyAuthRoleCapability("developer", "workload.read")] != "true" {
+		t.Error("missing role capability")
+	}
+	if compiledFactMap[types.KeyAuthRoleScope("developer", "team/payments")] != "true" {
+		t.Error("missing role scope")
+	}
+	if compiledFactMap[types.KeyAuthGroupMember("developers", "alice@example.com")] != "true" {
+		t.Error("missing group member")
+	}
+	if compiledFactMap[types.KeyAuthGrant("group", "developers", "developer")] != "true" {
+		t.Error("missing grant")
+	}
+}

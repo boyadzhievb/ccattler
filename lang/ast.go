@@ -8,6 +8,9 @@ type File struct {
 	CloudIdentities  []CloudIdentityDecl   // top-level cloud_identity blocks in the source file
 	CredentialBroker *CredentialBrokerDecl // optional top-level credential_broker block
 	Cloud            *CloudDecl            // optional top-level cloud block for cloud provider config
+	Roles            []RoleDecl            // top-level role blocks defining capability bundles
+	Grants           []GrantDecl           // top-level grant statements binding roles to principals
+	Groups           []GroupDecl           // top-level group blocks defining member collections
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -253,4 +256,44 @@ type CloudDecl struct {
 	VPCNetwork    string // VPC/VNet network name for route management
 	RouteTable    string // VPC route table ID (AWS)
 	Line          int    // source line number for error reporting
+}
+
+// RoleDecl represents a parsed "role" block in the DSL. A role groups a set
+// of capabilities and optional scopes that can be granted to principals.
+//
+//	role developer {
+//	    allow workload.read
+//	    allow workload.update
+//	    scope team/payments
+//	}
+type RoleDecl struct {
+	Name         string   // unique role identifier (e.g. "developer", "operator")
+	Capabilities []string // capability names granted by this role (e.g. "workload.read")
+	Scopes       []string // optional scope restrictions (e.g. "team/payments"); empty means cluster
+	Line         int      // source line number for error reporting
+}
+
+// GrantDecl represents a parsed "grant" statement in the DSL. It binds a
+// named role to a principal kind and name.
+//
+//	grant developer to group developers
+//	grant operator to user alice@example.com
+type GrantDecl struct {
+	RoleName      string // name of the role to grant (must match a RoleDecl.Name)
+	PrincipalKind string // kind of principal: "group", "user", "node", or "service"
+	PrincipalName string // identifier of the principal (e.g. "developers", "alice@example.com")
+	Line          int    // source line number for error reporting
+}
+
+// GroupDecl represents a parsed "group" block in the DSL. A group is a named
+// collection of members that can be referenced in grant statements.
+//
+//	group developers {
+//	    member alice@example.com
+//	    member bob@example.com
+//	}
+type GroupDecl struct {
+	Name    string   // unique group identifier (e.g. "developers")
+	Members []string // member identifiers (e.g. user emails or service names)
+	Line    int      // source line number for error reporting
 }

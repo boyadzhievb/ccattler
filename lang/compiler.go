@@ -77,6 +77,27 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, serviceFacts...)
 	}
+	for _, roleDecl := range file.Roles {
+		roleFacts, err := compileRoleDeclaration(roleDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, roleFacts...)
+	}
+	for _, grantDecl := range file.Grants {
+		grantFacts, err := compileGrantDeclaration(grantDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, grantFacts...)
+	}
+	for _, groupDecl := range file.Groups {
+		groupFacts, err := compileGroupDeclaration(groupDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, groupFacts...)
+	}
 	return facts, nil
 }
 
@@ -798,6 +819,86 @@ func compileCloudDeclaration(cloudDecl CloudDecl, sourceLines []string) ([]Fact,
 		})
 	}
 
+	return facts, nil
+}
+
+// compileRoleDeclaration converts a RoleDecl into auth/role/ prefix facts.
+func compileRoleDeclaration(roleDecl RoleDecl, sourceLines []string) ([]Fact, error) {
+	if roleDecl.Name == "" {
+		return nil, &ParseError{
+			Line:       roleDecl.Line,
+			Message:    "role name is required",
+			SourceLine: sourceLineAt(sourceLines, roleDecl.Line),
+		}
+	}
+	if len(roleDecl.Capabilities) == 0 {
+		return nil, &ParseError{
+			Line:       roleDecl.Line,
+			Message:    "role must have at least one capability",
+			SourceLine: sourceLineAt(sourceLines, roleDecl.Line),
+		}
+	}
+
+	var facts []Fact
+	for _, capabilityName := range roleDecl.Capabilities {
+		facts = append(facts, Fact{
+			Key: types.KeyAuthRoleCapability(roleDecl.Name, capabilityName), Value: "true",
+		})
+	}
+	for _, scopePath := range roleDecl.Scopes {
+		facts = append(facts, Fact{
+			Key: types.KeyAuthRoleScope(roleDecl.Name, scopePath), Value: "true",
+		})
+	}
+	return facts, nil
+}
+
+// compileGrantDeclaration converts a GrantDecl into an auth/grant/ prefix fact.
+func compileGrantDeclaration(grantDecl GrantDecl, sourceLines []string) ([]Fact, error) {
+	if grantDecl.RoleName == "" {
+		return nil, &ParseError{
+			Line:       grantDecl.Line,
+			Message:    "grant role name is required",
+			SourceLine: sourceLineAt(sourceLines, grantDecl.Line),
+		}
+	}
+	if grantDecl.PrincipalKind == "" {
+		return nil, &ParseError{
+			Line:       grantDecl.Line,
+			Message:    "grant principal kind is required",
+			SourceLine: sourceLineAt(sourceLines, grantDecl.Line),
+		}
+	}
+	if grantDecl.PrincipalName == "" {
+		return nil, &ParseError{
+			Line:       grantDecl.Line,
+			Message:    "grant principal name is required",
+			SourceLine: sourceLineAt(sourceLines, grantDecl.Line),
+		}
+	}
+
+	facts := []Fact{
+		{Key: types.KeyAuthGrant(grantDecl.PrincipalKind, grantDecl.PrincipalName, grantDecl.RoleName), Value: "true"},
+	}
+	return facts, nil
+}
+
+// compileGroupDeclaration converts a GroupDecl into auth/group/ prefix facts.
+func compileGroupDeclaration(groupDecl GroupDecl, sourceLines []string) ([]Fact, error) {
+	if groupDecl.Name == "" {
+		return nil, &ParseError{
+			Line:       groupDecl.Line,
+			Message:    "group name is required",
+			SourceLine: sourceLineAt(sourceLines, groupDecl.Line),
+		}
+	}
+
+	var facts []Fact
+	for _, memberName := range groupDecl.Members {
+		facts = append(facts, Fact{
+			Key: types.KeyAuthGroupMember(groupDecl.Name, memberName), Value: "true",
+		})
+	}
 	return facts, nil
 }
 

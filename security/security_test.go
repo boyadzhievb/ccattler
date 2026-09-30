@@ -2189,3 +2189,390 @@ func TestAPIAuthorizerWildcardGrant(t *testing.T) {
 		t.Error("node:node-1 should NOT match user:* wildcard")
 	}
 }
+
+// TestAuthorizationScenarios is a table-driven test that validates authorization
+// decisions across different principal types, capabilities, and scopes.
+func TestAuthorizationScenarios(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:alice@example.com", CapabilityWorkloadRead, TeamScope("payments"))
+	apiAuthorizer.Grant("user:alice@example.com", CapabilityWorkloadUpdate, TeamScope("payments"))
+	apiAuthorizer.Grant("node:node-01", CapabilityWorkloadRead, ScopeCluster)
+	apiAuthorizer.Grant("node:node-01", CapabilityNodeRead, ScopeCluster)
+	apiAuthorizer.Grant("system:scheduler", CapabilityPlacementWrite, ScopeCluster)
+	apiAuthorizer.Grant("system:scheduler", CapabilityPlacementRead, ScopeCluster)
+
+	scenarios := []struct {
+		description string
+		principal   Principal
+		capability  Capability
+		scope       Scope
+		expectAllow bool
+	}{
+		{
+			description: "alice reads workloads in own team",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadRead,
+			scope:       TeamScope("payments"),
+			expectAllow: true,
+		},
+		{
+			description: "alice updates workloads in own team",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadUpdate,
+			scope:       TeamScope("payments"),
+			expectAllow: true,
+		},
+		{
+			description: "alice reads child scope of own team",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadRead,
+			scope:       Scope("team/payments/checkout"),
+			expectAllow: true,
+		},
+		{
+			description: "alice denied workload.read at cluster scope",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadRead,
+			scope:       ScopeCluster,
+			expectAllow: false,
+		},
+		{
+			description: "alice denied in other team",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadRead,
+			scope:       TeamScope("frontend"),
+			expectAllow: false,
+		},
+		{
+			description: "alice denied capability she lacks",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "alice@example.com"},
+			capability:  CapabilityWorkloadDelete,
+			scope:       TeamScope("payments"),
+			expectAllow: false,
+		},
+		{
+			description: "node-01 reads workloads cluster-wide",
+			principal:   Principal{Kind: PrincipalKindNode, Name: "node-01"},
+			capability:  CapabilityWorkloadRead,
+			scope:       ScopeCluster,
+			expectAllow: true,
+		},
+		{
+			description: "node-01 reads node state",
+			principal:   Principal{Kind: PrincipalKindNode, Name: "node-01"},
+			capability:  CapabilityNodeRead,
+			scope:       ScopeCluster,
+			expectAllow: true,
+		},
+		{
+			description: "node-01 denied placement write",
+			principal:   Principal{Kind: PrincipalKindNode, Name: "node-01"},
+			capability:  CapabilityPlacementWrite,
+			scope:       ScopeCluster,
+			expectAllow: false,
+		},
+		{
+			description: "scheduler writes placements",
+			principal:   Principal{Kind: PrincipalKindSystem, Name: "scheduler"},
+			capability:  CapabilityPlacementWrite,
+			scope:       ScopeCluster,
+			expectAllow: true,
+		},
+		{
+			description: "scheduler denied workload.create",
+			principal:   Principal{Kind: PrincipalKindSystem, Name: "scheduler"},
+			capability:  CapabilityWorkloadCreate,
+			scope:       ScopeCluster,
+			expectAllow: false,
+		},
+		{
+			description: "unauthenticated (zero principal) denied",
+			principal:   Principal{},
+			capability:  CapabilityWorkloadRead,
+			scope:       ScopeCluster,
+			expectAllow: false,
+		},
+		{
+			description: "unknown user denied",
+			principal:   Principal{Kind: PrincipalKindUser, Name: "mallory@evil.com"},
+			capability:  CapabilityWorkloadRead,
+			scope:       ScopeCluster,
+			expectAllow: false,
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.description, func(t *testing.T) {
+			err := apiAuthorizer.AuthorizeAPI(scenario.principal, scenario.capability, scenario.scope)
+			if scenario.expectAllow && err != nil {
+				t.Errorf("expected ALLOW, got DENY: %v", err)
+			}
+			if !scenario.expectAllow && err == nil {
+				t.Error("expected DENY, got ALLOW")
+			}
+		})
+	}
+}
+
+// TestStoreLayerAuthorizationScenarios validates RBAC authorization at the
+// store layer with table-driven scenarios covering different principals and
+// key prefixes.
+func TestStoreLayerAuthorizationScenarios(t *testing.T) {
+	rbacAuthorizer := NewRBACAuthorizer()
+	for _, builtinRole := range BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	rbacAuthorizer.BindRole(RoleBinding{Principal: "node:node-01", RoleName: "node-agent"})
+	rbacAuthorizer.BindRole(RoleBinding{Principal: "system:scheduler", RoleName: "scheduler"})
+	rbacAuthorizer.BindRole(RoleBinding{Principal: "user:admin", RoleName: "cluster-admin"})
+
+	scenarios := []struct {
+		description string
+		principal   string
+		operation   Permission
+		key         string
+		expectAllow bool
+	}{
+		{
+			description: "node-agent reads desired state",
+			principal:   "node:node-01",
+			operation:   PermissionRead,
+			key:         "desired/service/web/image",
+			expectAllow: true,
+		},
+		{
+			description: "node-agent writes observed instance",
+			principal:   "node:node-01",
+			operation:   PermissionWrite,
+			key:         "observed/instance/i1/state",
+			expectAllow: true,
+		},
+		{
+			description: "node-agent denied write to placement",
+			principal:   "node:node-01",
+			operation:   PermissionWrite,
+			key:         "placement/instance/i1",
+			expectAllow: false,
+		},
+		{
+			description: "scheduler writes placement",
+			principal:   "system:scheduler",
+			operation:   PermissionWrite,
+			key:         "placement/instance/i1",
+			expectAllow: true,
+		},
+		{
+			description: "scheduler denied write to observed",
+			principal:   "system:scheduler",
+			operation:   PermissionWrite,
+			key:         "observed/instance/i1/state",
+			expectAllow: false,
+		},
+		{
+			description: "cluster-admin can do anything",
+			principal:   "user:admin",
+			operation:   PermissionWrite,
+			key:         "desired/service/web/instances",
+			expectAllow: true,
+		},
+		{
+			description: "unauthenticated principal denied",
+			principal:   "",
+			operation:   PermissionRead,
+			key:         "desired/service/web/image",
+			expectAllow: false,
+		},
+		{
+			description: "unknown principal denied",
+			principal:   "user:nobody",
+			operation:   PermissionRead,
+			key:         "desired/service/web/image",
+			expectAllow: false,
+		},
+	}
+
+	for _, scenario := range scenarios {
+		t.Run(scenario.description, func(t *testing.T) {
+			err := rbacAuthorizer.Authorize(scenario.principal, scenario.operation, scenario.key)
+			if scenario.expectAllow && err != nil {
+				t.Errorf("expected ALLOW, got DENY: %v", err)
+			}
+			if !scenario.expectAllow && err == nil {
+				t.Error("expected DENY, got ALLOW")
+			}
+		})
+	}
+}
+
+// TestFailClosedZeroPrincipalDenied verifies that a zero-value Principal
+// (no kind, no name) is always denied at the API layer.
+func TestFailClosedZeroPrincipalDenied(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:*", CapabilityWorkloadRead, ScopeCluster)
+
+	zeroPrincipal := Principal{}
+	for _, capability := range AllCapabilities {
+		if err := apiAuthorizer.AuthorizeAPI(zeroPrincipal, capability, ScopeCluster); err == nil {
+			t.Errorf("zero principal should be denied %q", capability)
+		}
+	}
+}
+
+// TestFailClosedEmptyPrincipalDenied verifies that an empty-string principal
+// is denied at the store layer even when wildcard bindings exist.
+func TestFailClosedEmptyPrincipalDenied(t *testing.T) {
+	rbacAuthorizer := NewRBACAuthorizer()
+	for _, builtinRole := range BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+
+	if err := rbacAuthorizer.Authorize("", PermissionRead, "desired/service/web"); err == nil {
+		t.Error("empty principal should be denied")
+	}
+}
+
+// TestFailClosedMissingPrincipalInContext verifies that a request context
+// without a principal results in denial from the AuthorizedStore.
+func TestFailClosedMissingPrincipalInContext(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	rbacAuthorizer := NewRBACAuthorizer()
+	for _, builtinRole := range BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	auditLog := NewInMemoryAuditLog(100)
+	authorizedStore := NewAuthorizedStore(memoryStore, rbacAuthorizer, auditLog)
+
+	_, getError := authorizedStore.Get(context.Background(), "desired/service/web/image")
+	if getError == nil {
+		t.Fatal("missing principal in context should result in DENY")
+	}
+
+	_, putError := authorizedStore.Put(context.Background(), "desired/service/web/image", []byte("nginx:1.28"))
+	if putError == nil {
+		t.Fatal("missing principal should be denied for put")
+	}
+
+	deleteError := authorizedStore.Delete(context.Background(), "desired/service/web/image")
+	if deleteError == nil {
+		t.Fatal("missing principal should be denied for delete")
+	}
+
+	_, scanError := authorizedStore.Scan(context.Background(), "desired/")
+	if scanError == nil {
+		t.Fatal("missing principal should be denied for scan")
+	}
+
+	entries := auditLog.Entries()
+	for _, entry := range entries {
+		if entry.Decision != "deny" {
+			t.Errorf("expected all audit entries to be deny, got %q for %s", entry.Decision, entry.Action)
+		}
+	}
+}
+
+// TestFailClosedIncompletePrincipalDenied verifies that a principal with only
+// a kind but no name is denied.
+func TestFailClosedIncompletePrincipalDenied(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:*", CapabilityWorkloadRead, ScopeCluster)
+
+	kindOnlyPrincipal := Principal{Kind: PrincipalKindUser}
+	if err := apiAuthorizer.AuthorizeAPI(kindOnlyPrincipal, CapabilityWorkloadRead, ScopeCluster); err == nil {
+		t.Error("principal with empty name should be denied even with user:* wildcard")
+	}
+}
+
+// TestStoreBackedAuditLogPersistsEntries verifies that the store-backed
+// audit log writes entries to the fact store under the audit/ prefix.
+func TestStoreBackedAuditLogPersistsEntries(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	auditLog := NewStoreBackedAuditLog(memoryStore, 100)
+
+	auditLog.Log(AuditEntry{Principal: "user:alice", Action: "get", Target: "desired/service/web", Decision: "allow"})
+	auditLog.Log(AuditEntry{Principal: "user:mallory", Action: "put", Target: "desired/service/web", Decision: "deny"})
+
+	time.Sleep(50 * time.Millisecond)
+
+	storedFacts, scanErr := memoryStore.Scan(context.Background(), "audit/")
+	if scanErr != nil {
+		t.Fatal(scanErr)
+	}
+	if len(storedFacts) != 2 {
+		t.Fatalf("expected 2 audit facts in store, got %d", len(storedFacts))
+	}
+
+	principalsSeen := make(map[string]bool)
+	for _, storedFact := range storedFacts {
+		var entry AuditEntry
+		if err := json.Unmarshal(storedFact.Value, &entry); err != nil {
+			t.Fatalf("failed to unmarshal audit entry: %v", err)
+		}
+		principalsSeen[entry.Principal] = true
+	}
+	if !principalsSeen["user:alice"] {
+		t.Error("missing persisted audit entry for user:alice")
+	}
+	if !principalsSeen["user:mallory"] {
+		t.Error("missing persisted audit entry for user:mallory")
+	}
+
+	inMemoryEntries := auditLog.Entries()
+	if len(inMemoryEntries) != 2 {
+		t.Fatalf("expected 2 in-memory entries, got %d", len(inMemoryEntries))
+	}
+}
+
+// TestStoreBackedAuditLogRingBuffer verifies that the in-memory buffer
+// evicts oldest entries when the limit is reached.
+func TestStoreBackedAuditLogRingBuffer(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	auditLog := NewStoreBackedAuditLog(memoryStore, 3)
+
+	for entryIndex := 0; entryIndex < 5; entryIndex++ {
+		auditLog.Log(AuditEntry{
+			Principal: fmt.Sprintf("user:user%d", entryIndex),
+			Action:    "get",
+			Target:    "desired/",
+			Decision:  "allow",
+		})
+	}
+
+	entries := auditLog.Entries()
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries (ring buffer), got %d", len(entries))
+	}
+	if entries[0].Principal != "user:user2" {
+		t.Errorf("oldest entry should be user2, got %q", entries[0].Principal)
+	}
+}
+
+// TestAPIAuthorizerReplaceGrantsClearsState verifies that ReplaceGrants
+// atomically removes old grants and installs new ones.
+func TestAPIAuthorizerReplaceGrantsClearsState(t *testing.T) {
+	apiAuthorizer := NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:alice", CapabilityWorkloadRead, ScopeCluster)
+
+	alice := Principal{Kind: PrincipalKindUser, Name: "alice"}
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err != nil {
+		t.Fatalf("alice should have workload.read before replace: %v", err)
+	}
+
+	apiAuthorizer.ReplaceGrants(map[string][]CapabilityGrant{
+		"user:bob": {{Capability: CapabilityNodeRead, Scope: ScopeCluster}},
+	})
+
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err == nil {
+		t.Error("alice's grants should be cleared after ReplaceGrants")
+	}
+
+	bob := Principal{Kind: PrincipalKindUser, Name: "bob"}
+	if err := apiAuthorizer.AuthorizeAPI(bob, CapabilityNodeRead, ScopeCluster); err != nil {
+		t.Errorf("bob should have node.read after ReplaceGrants: %v", err)
+	}
+}

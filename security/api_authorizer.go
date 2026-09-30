@@ -40,6 +40,15 @@ func (apiAuthorizer *APIAuthorizer) Grant(principal string, capability Capabilit
 	})
 }
 
+// ReplaceGrants atomically replaces all grants with the provided map. This
+// supports the auth reconciliation controller rebuilding state from store facts
+// without leaving a window where grants are partially cleared.
+func (apiAuthorizer *APIAuthorizer) ReplaceGrants(newGrants map[string][]CapabilityGrant) {
+	apiAuthorizer.mutex.Lock()
+	defer apiAuthorizer.mutex.Unlock()
+	apiAuthorizer.grants = newGrants
+}
+
 // GrantRole maps a builtin role name to capability grants for a principal.
 // This connects the RBAC role model to the capability model.
 func (apiAuthorizer *APIAuthorizer) GrantRole(principal string, roleName string) {
@@ -52,6 +61,10 @@ func (apiAuthorizer *APIAuthorizer) GrantRole(principal string, roleName string)
 // given scope. Returns nil if allowed, or an error describing the denial.
 // The cluster.admin capability implicitly grants all other capabilities.
 func (apiAuthorizer *APIAuthorizer) AuthorizeAPI(principal Principal, requiredCapability Capability, requiredScope Scope) error {
+	if principal.Name == "" {
+		return fmt.Errorf("api: denied — incomplete principal identity (kind=%q, name empty)", principal.Kind)
+	}
+
 	apiAuthorizer.mutex.RLock()
 	defer apiAuthorizer.mutex.RUnlock()
 

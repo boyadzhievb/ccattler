@@ -1,0 +1,55 @@
+# Authorization example — roles, groups, and grants
+#
+# Roles bundle capabilities with optional scope restrictions.
+# Groups collect members. Grants bind roles to principals.
+
+# A developer can read and update workloads within their team.
+role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments
+}
+
+# An operator has broad workload and node management capabilities,
+# applied cluster-wide (no scope restriction).
+role operator {
+    allow workload.read
+    allow workload.create
+    allow workload.update
+    allow workload.delete
+    allow node.read
+    allow node.manage
+    allow scaling.read
+    allow scaling.write
+}
+
+# A viewer can read workloads and node state but change nothing.
+role viewer {
+    allow workload.read
+    allow node.read
+    allow placement.read
+    allow scaling.read
+}
+
+# A cluster admin has full control over everything.
+role cluster-admin {
+    allow cluster.admin
+}
+
+# Groups define collections of members for bulk grant assignment.
+group developers {
+    member "alice@example.com"
+    member "bob@example.com"
+    member "carol@example.com"
+}
+
+group oncall {
+    member "dave@example.com"
+    member "eve@example.com"
+}
+
+# Grants bind roles to principals (users or groups).
+grant developer to group developers
+grant operator to group oncall
+grant viewer to user "frank@example.com"
+grant cluster-admin to user "admin@example.com"

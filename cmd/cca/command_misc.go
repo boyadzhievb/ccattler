@@ -95,26 +95,19 @@ func parseDiffCommandArgs(args []string) diffCommandConfig {
 	return parsedConfig
 }
 
-// executeDiffCommand parses a .ccattler file and shows what facts would change
-// without writing anything. In etcd mode it compares against the live store.
-// In memory mode (default) everything is an "add" since the store is empty.
+// executeDiffCommand parses one or more .ccattler files and shows what facts
+// would change without writing anything. Supports single files and directories.
+// In etcd mode it compares against the live store. In memory mode (default)
+// everything is an "add" since the store is empty.
 func executeDiffCommand(parsedConfig diffCommandConfig) {
-	fileData, err := os.ReadFile(parsedConfig.configFilePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, err)
+	renderedFiles, resolveError := resolveAndRenderDSLFiles(
+		parsedConfig.configFilePath, parsedConfig.valuesFilePaths,
+		parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+	if resolveError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", resolveError)
 		os.Exit(1)
 	}
-
-	dslContent := string(fileData)
-	if len(parsedConfig.valuesFilePaths) > 0 || len(parsedConfig.setOverrides) > 0 || len(parsedConfig.setFromEnvOverrides) > 0 {
-		renderedContent, renderError := lang.RenderWithValuesFiles(
-			dslContent, parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
-		if renderError != nil {
-			fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
-			os.Exit(1)
-		}
-		dslContent = renderedContent
-	}
+	dslContent := combineDSLFileContents(renderedFiles)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -236,24 +229,21 @@ func parseRenderCommandArgs(args []string) renderCommandConfig {
 	return parsedConfig
 }
 
-// executeRenderCommand renders a .ccattler template file with the provided
-// values and prints the resulting DSL to stdout. This is useful for debugging
-// templates and verifying rendered output before applying.
+// executeRenderCommand renders one or more .ccattler template files with the
+// provided values and prints the resulting DSL to stdout. Supports single files
+// and directories. This is useful for debugging templates and verifying
+// rendered output before applying.
 func executeRenderCommand(parsedConfig renderCommandConfig) {
-	fileData, readError := os.ReadFile(parsedConfig.configFilePath)
-	if readError != nil {
-		fmt.Fprintf(os.Stderr, "error reading %s: %v\n", parsedConfig.configFilePath, readError)
+	renderedFiles, resolveError := resolveAndRenderDSLFiles(
+		parsedConfig.configFilePath, parsedConfig.valuesFilePaths,
+		parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
+	if resolveError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", resolveError)
 		os.Exit(1)
 	}
-
-	renderedContent, renderError := lang.RenderWithValuesFiles(
-		string(fileData), parsedConfig.valuesFilePaths, parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
-	if renderError != nil {
-		fmt.Fprintf(os.Stderr, "template error: %v\n", renderError)
-		os.Exit(1)
+	for _, rendered := range renderedFiles {
+		fmt.Print(rendered.content)
 	}
-
-	fmt.Print(renderedContent)
 }
 
 // tokenCommandConfig holds parsed flags for the "token" command, which manages

@@ -92,6 +92,24 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Cloud = cloudDecl
+		case "role":
+			roleDecl, err := parser.parseRoleDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Roles = append(file.Roles, *roleDecl)
+		case "grant":
+			grantDecl, err := parser.parseGrantStatement()
+			if err != nil {
+				return nil, err
+			}
+			file.Grants = append(file.Grants, *grantDecl)
+		case "group":
+			groupDecl, err := parser.parseGroupDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Groups = append(file.Groups, *groupDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -1406,6 +1424,135 @@ func (parser *Parser) parseCloudDeclaration() (*CloudDecl, error) {
 		return nil, err
 	}
 	return cloudDecl, nil
+}
+
+// parseRoleDeclaration parses a role block.
+// Syntax: role <name> { allow <capability> ... scope <path> ... }
+func (parser *Parser) parseRoleDeclaration() (*RoleDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "role"
+
+	name, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	roleDecl := &RoleDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "allow":
+			capabilityName, capErr := parser.expectIdentifier()
+			if capErr != nil {
+				return nil, capErr
+			}
+			roleDecl.Capabilities = append(roleDecl.Capabilities, capabilityName)
+		case "scope":
+			scopePath, scopeErr := parser.expectHierarchicalName()
+			if scopeErr != nil {
+				return nil, scopeErr
+			}
+			roleDecl.Scopes = append(roleDecl.Scopes, scopePath)
+		default:
+			return nil, parser.parserErrorf("unknown role field %q", key)
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return roleDecl, nil
+}
+
+// parseGrantStatement parses a grant statement (no braces).
+// Syntax: grant <role> to <kind> <name>
+func (parser *Parser) parseGrantStatement() (*GrantDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "grant"
+
+	roleName, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	toKeyword, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+	if toKeyword != "to" {
+		return nil, parser.parserErrorf("expected \"to\" after role name, got %q", toKeyword)
+	}
+
+	principalKind, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	principalName, err := parser.expectStringOrIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	return &GrantDecl{
+		RoleName:      roleName,
+		PrincipalKind: principalKind,
+		PrincipalName: principalName,
+		Line:          line,
+	}, nil
+}
+
+// parseGroupDeclaration parses a group block.
+// Syntax: group <name> { member <id> ... }
+func (parser *Parser) parseGroupDeclaration() (*GroupDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "group"
+
+	name, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	groupDecl := &GroupDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "member":
+			memberName, memberErr := parser.expectStringOrIdentifier()
+			if memberErr != nil {
+				return nil, memberErr
+			}
+			groupDecl.Members = append(groupDecl.Members, memberName)
+		default:
+			return nil, parser.parserErrorf("unknown group field %q", key)
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return groupDecl, nil
 }
 
 func (parser *Parser) parserErrorf(format string, args ...any) error {

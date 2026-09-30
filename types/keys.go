@@ -51,6 +51,24 @@ const (
 	// Examples: rollout tracking, credential lifecycle, init phase derivation,
 	// drain coordination.
 	PrefixDerived = "derived"
+
+	// PrefixAuth holds authorization declarations compiled from the DSL:
+	// roles, grants, and groups.
+	PrefixAuth = "auth"
+
+	// PrefixAudit holds persisted authorization audit log entries.
+	PrefixAudit = "audit"
+)
+
+const (
+	// ScanAuthRoles scans role definitions under auth/role/.
+	ScanAuthRoles = PrefixAuth + "/role/"
+
+	// ScanAuthGrants scans grant bindings under auth/grant/.
+	ScanAuthGrants = PrefixAuth + "/grant/"
+
+	// ScanAuthGroups scans group definitions under auth/group/.
+	ScanAuthGroups = PrefixAuth + "/group/"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -1397,4 +1415,28 @@ func KeyObservedCloudLoadBalancerState(serviceName string) string {
 // Path: observed/cloud/route/{destinationCIDR}
 func KeyObservedCloudRoute(destinationCIDR string) string {
 	return fmt.Sprintf("%s/cloud/route/%s", PrefixObserved, destinationCIDR)
+}
+
+// KeyAuthRoleCapability returns the store path for a capability granted by a role.
+// Path: auth/role/{roleName}/capability/{capabilityName}
+func KeyAuthRoleCapability(roleName string, capabilityName string) string {
+	return fmt.Sprintf("%s/role/%s/capability/%s", PrefixAuth, roleName, capabilityName)
+}
+
+// KeyAuthRoleScope returns the store path for a scope restriction on a role.
+// Path: auth/role/{roleName}/scope/{scopePath}
+func KeyAuthRoleScope(roleName string, scopePath string) string {
+	return fmt.Sprintf("%s/role/%s/scope/%s", PrefixAuth, roleName, scopePath)
+}
+
+// KeyAuthGrant returns the store path for a role grant to a principal.
+// Path: auth/grant/{principalKind}/{principalName}/role/{roleName}
+func KeyAuthGrant(principalKind string, principalName string, roleName string) string {
+	return fmt.Sprintf("%s/grant/%s/%s/role/%s", PrefixAuth, principalKind, principalName, roleName)
+}
+
+// KeyAuthGroupMember returns the store path for a member in a group.
+// Path: auth/group/{groupName}/member/{memberName}
+func KeyAuthGroupMember(groupName string, memberName string) string {
+	return fmt.Sprintf("%s/group/%s/member/%s", PrefixAuth, groupName, memberName)
 }

@@ -76,8 +76,17 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 ├── event/                          # append-only history (not authoritative)
 │   └── {timestamp}-{sequence}     # value = {type, subject, detail}
 │
-├── auth/                           # permissions
-│   └── {principal}/rules          # value = [{action, prefix_pattern}]
+├── auth/                           # authorization declarations (compiled from DSL)
+│   ├── role/{name}/
+│   │   ├── capability/{cap}       # value = "true" — capability granted by this role
+│   │   └── scope/{path}           # value = "true" — scope restriction (empty = cluster)
+│   ├── grant/{kind}/{principal}/
+│   │   └── role/{role}            # value = "true" — role bound to principal
+│   └── group/{name}/
+│       └── member/{id}            # value = "true" — member in this group
+│
+├── audit/                          # persisted authorization audit log
+│   └── {sequence}                 # value = JSON {timestamp, principal, action, target, decision}
 │
 └── schema/                         # plugin fact type registrations
     └── {fact-type}                # value = {fields, types, constraints}

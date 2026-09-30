@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M52 — Phase 54 Capabilities & Scopes. M1–M52 complete. Gates A–I resolved. Next: Phase 55 — Auth DSL.
+**Completed through:** M55 — Phase 57 CLI Acceptance Tests. M1–M55 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

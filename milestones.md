@@ -773,83 +773,118 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 ### Phase 55 — Authorization DSL (M53)
 
 #### 55a — AST Nodes
-- [ ] `RoleDecl` struct: `Name`, `Capabilities []string`, `Scopes []string`
-- [ ] `GrantDecl` struct: `RoleName`, `PrincipalKind`, `PrincipalName`
-- [ ] `GroupDecl` struct: `Name`, `Members []string`
-- [ ] Added to `File` struct: `Roles`, `Grants`, `Groups` fields
+- [x] `RoleDecl` struct: `Name`, `Capabilities []string`, `Scopes []string`
+- [x] `GrantDecl` struct: `RoleName`, `PrincipalKind`, `PrincipalName`
+- [x] `GroupDecl` struct: `Name`, `Members []string`
+- [x] Added to `File` struct: `Roles`, `Grants`, `Groups` fields
 
 #### 55b — Parser Extensions
-- [ ] `role` block: `role developer { allow workload.read  allow workload.update  scope team/payments }`
-- [ ] `grant` statement: `grant developer to group developers`
-- [ ] `group` block: `group developers { member alice@example.com  member bob@example.com }`
+- [x] `role` block: `role developer { allow workload.read  allow workload.update  scope team/payments }`
+- [x] `grant` statement: `grant developer to group developers`
+- [x] `group` block: `group developers { member alice@example.com  member bob@example.com }`
 
 #### 55c — Compiler Extensions
-- [ ] Auth declarations compile to `auth/` prefix facts
-- [ ] `auth/role/{name}/capability/{cap}` = `"true"`
-- [ ] `auth/role/{name}/scope/{scope}` = `"true"`
-- [ ] `auth/grant/{kind}/{principal}/role/{role}` = `"true"`
-- [ ] `auth/group/{name}/member/{principal}` = `"true"`
-- [ ] Corresponding `Key*` functions in `types/keys.go`
+- [x] Auth declarations compile to `auth/` prefix facts
+- [x] `auth/role/{name}/capability/{cap}` = `"true"`
+- [x] `auth/role/{name}/scope/{scope}` = `"true"`
+- [x] `auth/grant/{kind}/{principal}/role/{role}` = `"true"`
+- [x] `auth/group/{name}/member/{principal}` = `"true"`
+- [x] Corresponding `Key*` functions in `types/keys.go`
 
 #### 55d — Auth Reconciliation Controller
-- [ ] Watches `auth/` prefix, rebuilds APIAuthorizer + RBACAuthorizer in-memory state
-- [ ] Follows standard controller pattern (Watch + Reconcile)
-- [ ] Role/grant changes take effect without server restart
+- [x] Watches `auth/` prefix, rebuilds APIAuthorizer in-memory state
+- [x] Follows standard controller pattern (Watch + Reconcile)
+- [x] Role/grant changes take effect without server restart
 
 #### 55e — Tests
-- [ ] Parser: role/grant/group syntax round-trip
-- [ ] Compiler: auth fact generation
-- [ ] Auth controller: add role via store → grants take effect
-- [ ] Round-trip: DSL → compile → apply → authorization enforced
+- [x] Parser: role/grant/group syntax round-trip
+- [x] Compiler: auth fact generation
+- [x] Auth controller: add role via store → grants take effect
+- [x] Round-trip: DSL → compile → apply → authorization enforced
 
 ### Phase 56 — Authorization Hardening (M54)
 
 #### 56a — Integration Test Suite
-- [ ] Table-driven authorization scenarios (alice+developers, node/node01, scheduler, unauthenticated)
-- [ ] End-to-end: bootstrap → enroll → apply DSL → verify grants → deny escalation
+- [x] Table-driven authorization scenarios (alice+developers, node/node01, scheduler, unauthenticated)
+- [x] End-to-end: bootstrap → enroll → apply DSL → verify grants → deny escalation
 
 #### 56b — Fail-Closed Verification
-- [ ] Authorization failures (authorizer error, missing principal, incomplete identity) → DENY
-- [ ] Never silent ALLOW on error paths
+- [x] Authorization failures (authorizer error, missing principal, incomplete identity) → DENY
+- [x] Never silent ALLOW on error paths
 
 #### 56c — Audit Log Persistence
-- [ ] `StoreBackedAuditLog` writes audit entries under `audit/` prefix
-- [ ] InMemoryAuditLog stays for tests
+- [x] `StoreBackedAuditLog` writes audit entries under `audit/` prefix
+- [x] InMemoryAuditLog stays for tests
 
 #### 56d — Documentation Updates
-- [ ] `etcd-schema.md` — new `auth/` key prefix taxonomy
-- [ ] `key-ownership-matrix.md` — auth controller write domain
-- [ ] `examples/auth.cca` — role/grant/group examples
-- [ ] CLAUDE.md — update current status
+- [x] `etcd-schema.md` — new `auth/` key prefix taxonomy
+- [x] `key-ownership-matrix.md` — auth controller write domain
+- [x] `examples/auth.cca` — role/grant/group examples
+- [x] CLAUDE.md — update current status
 
 ### Phase 51 — DSL Templating Engine (M47) — Gate I
 
 #### 51a — Template rendering core
-- [ ] Template engine: text/template + Sprig function library
-- [ ] Values file loader: YAML → map[string]any
-- [ ] Values file layering: multiple --values flags, later overrides earlier (deep merge)
-- [ ] --set key=value CLI override (dot-path notation: web.instances=10)
-- [ ] --set-from-env KEY reads value from environment variable (CI secret injection)
-- [ ] Render pipeline: load values → merge layers → apply --set overrides → render template → parse DSL → compile facts
+- [x] Template engine: text/template + Sprig function library
+- [x] Values file loader: YAML → map[string]any
+- [x] Values file layering: multiple --values flags, later overrides earlier (deep merge)
+- [x] --set key=value CLI override (dot-path notation: web.instances=10)
+- [x] --set-from-env KEY reads value from environment variable (CI secret injection)
+- [x] Render pipeline: load values → merge layers → apply --set overrides → render template → parse DSL → compile facts
 
 #### 51b — CLI integration
-- [ ] cca apply --values base.yaml --values prod.yaml template.ccattler — render + apply
-- [ ] cca apply --dry-run --values ... — render + validate without writing to store
-- [ ] cca diff --values ... — show fact changes that would result from applying
-- [ ] cca render --values ... — output rendered DSL to stdout (debug/inspect)
-- [ ] Directory support: cca apply --values prod.yaml templates/ processes all .ccattler files
+- [x] cca apply --values base.yaml --values prod.yaml template.ccattler — render + apply
+- [x] cca apply --dry-run --values ... — render + validate without writing to store
+- [x] cca diff --values ... — show fact changes that would result from applying
+- [x] cca render --values ... — output rendered DSL to stdout (debug/inspect)
+- [x] Directory support: cca apply --values prod.yaml templates/ processes all .ccattler files
 
 #### 51c — Validation & safety
-- [ ] Template syntax validation before rendering (catch {{ .missing }} early)
-- [ ] Required values enforcement: {{ required "image is required" .image }}
-- [ ] Rendered DSL validation: parse + compile after render, report errors with template line numbers
-- [ ] Unused values warning (values provided but never referenced in templates)
+- [x] Template syntax validation before rendering (catch {{ .missing }} early)
+- [x] Required values enforcement: {{ required "image is required" .image }}
+- [x] Rendered DSL validation: parse + compile after render, report errors with template line numbers
+- [x] Unused values warning (values provided but never referenced in templates)
 
 #### 51d — Testing & docs
-- [ ] Unit tests: template rendering, values merge, --set parsing, --set-from-env
-- [ ] Integration test: multi-environment render + apply round-trip
-- [ ] Fuzz test: FuzzTemplateRender with arbitrary values/templates
-- [ ] Example templates in examples/templates/ (service + values per environment)
+- [x] Unit tests: template rendering, values merge, --set parsing, --set-from-env
+- [x] Integration test: multi-environment render + apply round-trip
+- [x] Fuzz test: FuzzTemplateRender with arbitrary values/templates
+- [x] Example templates in examples/templates/ (service + values per environment)
+
+### Phase 57 — CLI Acceptance Tests (M55)
+
+#### 57a — Test harness
+- [x] `TestMain` in `cmd/cca/cli_test.go` builds `cca` binary to `t.TempDir()` once before all tests
+- [x] `runCCA(t, args...)` helper: exec binary as subprocess, capture stdout/stderr/exit code
+- [x] Timeout per invocation (30s default), cleanup on test failure
+- [x] Helper: `writeTempFile(t, name, content)` for creating .cca/.ccattler files and values files
+
+#### 57b — Core command tests
+- [x] `TestCLIApplySimple` — `cca apply web.cca` prints status, exits 0
+- [x] `TestCLIApplyWithValues` — `cca apply --values base.yaml --values prod.yaml template.ccattler` renders + applies, exits 0
+- [x] `TestCLIApplyDryRun` — `cca apply --dry-run --values base.yaml template.ccattler` prints rendered DSL to stdout, exits 0
+- [x] `TestCLIApplyDirectory` — `cca apply --values prod.yaml templates/` processes all files, exits 0
+- [x] `TestCLIApplyInvalidFile` — `cca apply nonexistent.cca` prints error to stderr, exits 1
+- [x] `TestCLIApplyInvalidDSL` — `cca apply bad-syntax.cca` prints parse error to stderr, exits 1
+- [x] `TestCLIDiff` — `cca diff web.cca` prints fact additions, exits 0
+- [x] `TestCLIDiffWithValues` — `cca diff --values prod.yaml template.ccattler` renders + diffs, exits 0
+- [x] `TestCLIRender` — `cca render --values base.yaml template.ccattler` prints rendered DSL to stdout, exits 0
+- [x] `TestCLIScale` — apply service, then `cca scale web 10` prints confirmation, exits 0
+
+#### 57c — Informational commands
+- [x] `TestCLIStatus` — `cca status` prints cluster overview, exits 0
+- [x] `TestCLIGetServices` — apply service, then `cca get services` lists it in output
+- [x] `TestCLIGetInstances` — apply service, then `cca get instances` lists running instances
+- [x] `TestCLIGetNodes` — `cca get nodes` shows simulated nodes
+- [x] `TestCLIVersion` — `cca version` prints version string, exits 0
+- [x] `TestCLICompletion` — `cca completion bash` prints script, exits 0
+
+#### 57d — Error paths & edge cases
+- [x] `TestCLIApplyTemplateError` — `cca apply --values bad.yaml template.ccattler` with missing required value, prints template error, exits 1
+- [x] `TestCLIApplyEmptyDirectory` — `cca apply templates/` on empty dir prints error, exits 1
+- [x] `TestCLIUnknownCommand` — `cca foobar` prints usage, exits non-zero
+- [x] `TestCLISetOverride` — `cca apply --set instances=20 --values base.yaml template.ccattler` overrides value correctly
+- [x] `TestCLISetFromEnv` — `cca apply --set-from-env tag=MY_TAG --values base.yaml template.ccattler` reads from env
 
 ### Milestones
 
@@ -906,5 +941,6 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M47 — DSL Templating | 51 | Gate I complete: text/template + Sprig rendering, values file layering, --set/--set-from-env, --dry-run, cca render/diff, validation, examples |
 | M48 — Anti-Pattern Remediation | 50 | God Object split (main.go → per-command files), dead code audit, magic numbers → constants, spaghetti extraction, deduplication, typed enums |
 | M49 — CI Fix | 49b | Skip container integration test in -short mode, bump Go 1.26.6 + grpc v1.83.1 to resolve 7 govulncheck findings |
+| M55 — CLI Acceptance Tests | 57 | Build `cca` binary once via TestMain, 22 subprocess tests (17 standalone + 5 server-dependent) covering apply/diff/render/scale/get/status/version/completion, assert stdout/stderr/exit code |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

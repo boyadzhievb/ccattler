@@ -39,10 +39,11 @@ func TestAllExamplesParseAndApply(t *testing.T) {
 				t.Fatalf("apply %s: %v", exampleName, err)
 			}
 
-			// Verify at least one desired service was created.
+			// Verify at least one fact was created (services, auth, etc.).
 			desiredFacts, _ := factStore.Scan(ctx, "desired/service/")
-			if len(desiredFacts) == 0 {
-				t.Errorf("%s: expected at least one desired service fact", exampleName)
+			authFacts, _ := factStore.Scan(ctx, "auth/")
+			if len(desiredFacts) == 0 && len(authFacts) == 0 {
+				t.Errorf("%s: expected at least one fact (desired service or auth)", exampleName)
 			}
 		})
 	}
