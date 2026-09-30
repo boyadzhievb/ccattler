@@ -886,6 +886,121 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] `TestCLISetOverride` — `cca apply --set instances=20 --values base.yaml template.ccattler` overrides value correctly
 - [x] `TestCLISetFromEnv` — `cca apply --set-from-env tag=MY_TAG --values base.yaml template.ccattler` reads from env
 
+### Phase 58 — ABAC Condition Engine (M56)
+
+#### 58a — Condition evaluator
+- [ ] `Condition` type: `{Field string, Operator string, Value string}` with typed operators (==, !=, in, not_in)
+- [ ] `EvaluateCondition(condition, subject, resource) → bool` — resolve `subject.team`, `resource.team` etc. from Principal and fact metadata
+- [ ] Subject attributes: `.team`, `.role`, `.groups`, `.name` (from Principal struct)
+- [ ] Resource attributes: `.team` (from tenant ownership), `.name`, `.type` (from fact key prefix)
+- [ ] Short-circuit evaluation: all conditions must match (AND semantics), fail-closed on missing attribute
+
+#### 58b — DSL integration
+- [ ] Parse `when subject.X == resource.Y` clauses inside `policy` blocks
+- [ ] `PolicyDecl` AST node: name, capability, conditions list
+- [ ] Compiler emits `auth/policy/{name}/condition/{index}` facts
+- [ ] AuthController reads policy facts and builds in-memory condition set
+
+#### 58c — Enforcement
+- [ ] Wire condition evaluation into APIAuthorizer: after capability match, evaluate conditions
+- [ ] Condition failure produces audit entry with `decision=deny, reason=condition_failed`
+- [ ] 8+ table-driven tests: team isolation, production gate, missing attribute → deny, multi-condition AND
+
+### Phase 59 — Multi-Tenant Visibility Filtering (M57)
+
+#### 59a — Query scoping
+- [ ] `ScopedQuery(ctx, prefix, principal) → []Fact` — wraps `Scan` to filter facts by tenant ownership
+- [ ] Tenant ownership derivation: `desired/service/payments/checkout` → tenant `payments`
+- [ ] Platform principals (group `platform`) see all facts; tenant principals see only their subtree
+- [ ] API handlers for GET /state, GET /api/status wire through `ScopedQuery`
+
+#### 59b — Audit visibility
+- [ ] Audit log queries scoped by principal tenant — tenant sees only own audit entries
+- [ ] `cca get services` returns only services the authenticated principal can see
+- [ ] Integration test: two tenants, each sees only own services/instances/volumes
+
+### Phase 60 — Network Policy Enforcement (M58)
+
+#### 60a — Policy rule compiler
+- [ ] `NetworkPolicyRule` type: source identity, destination identity, port, action (allow/deny)
+- [ ] NetworkController reads `network/policy/` facts, derives per-node firewall rules
+- [ ] Rule compilation: identity policies → IP-based rules using current endpoint facts
+- [ ] When instances move (new IP), rules are recompiled — policy stays stable, rules change
+
+#### 60b — nftables data plane
+- [ ] `NftablesDataPlane` adapter: generates nftables rules from compiled policy rules
+- [ ] Chain per service identity: `ccattler-{service}` with allow/deny rules per port
+- [ ] Default deny for inter-service traffic (only explicitly allowed connections pass)
+- [ ] Agent reconciler applies nftables rules alongside container lifecycle
+
+#### 60c — Testing
+- [ ] Integration test: 2 services, allow A→B:443, deny A→C:5432, verify rule generation
+- [ ] Idempotency test: same policy applied twice produces identical rule set
+- [ ] Instance migration test: instance moves to new node, rules follow
+
+### Phase 61 — Service Groups (M59)
+
+#### 61a — DSL & facts
+- [ ] Parse `group` block with `process` and `share` keywords (distinct from auth `group`)
+- [ ] `ServiceGroupDecl` AST node: name, process list, shared resources (network, volume names)
+- [ ] Compiler emits `desired/group/{name}/process/{svc}` and `desired/group/{name}/share/{type}` facts
+
+#### 61b — Co-scheduling
+- [ ] Scheduler treats group members as a unit: all processes in a group placed on same node
+- [ ] Shared network: group members share a network namespace (same IP, different ports)
+- [ ] Shared volume: group members mount the same volume at configurable paths
+
+### Phase 62 — Vertical Autoscaling Controller (M60)
+
+#### 62a — Recommendation engine
+- [ ] VerticalAutoscaleController watches resource utilization facts and vertical scaling config
+- [ ] Recommendation algorithm: P95 usage over sliding window, round up to nearest resource step
+- [ ] Writes `intent/autoscaler/service/{svc}/cpu` and `/memory` recommendation facts
+
+#### 62b — Reconciliation
+- [ ] IntentResolverController merges vertical recommendations into effective resource requirements
+- [ ] Agent detects resource requirement change: if runtime supports live resize (cgroup v2), resize in-place
+- [ ] If live resize not supported or delta exceeds threshold, replace instance with new resource allocation
+- [ ] Stabilization: scale-up immediate (60s window), scale-down slow (5m window)
+
+### Phase 63 — Cloud Provider Real APIs (M61)
+
+#### 63a — AWS adapter
+- [ ] Real AWS STS `AssumeRoleWithWebIdentity` implementation (replace stub)
+- [ ] EC2 instance lifecycle: detect terminated instances, cordon nodes
+- [ ] ELB/ALB creation for `expose external` services
+- [ ] VPC route programming for node subnets
+
+#### 63b — GCP adapter
+- [ ] Real GCP STS token exchange (replace stub)
+- [ ] GCE instance lifecycle
+- [ ] Cloud Load Balancer for external services
+- [ ] VPC route programming
+
+#### 63c — Secrets KMS integration
+- [ ] KMS envelope encryption: master key in AWS KMS / GCP KMS / HashiCorp Vault
+- [ ] Master key rotation without re-encrypting all secrets (envelope model)
+- [ ] `cca secret set database.password` stores encrypted value via KMS
+- [ ] Agent decrypts at materialization time using scoped KMS credentials
+
+### Phase 64 — Production Hardening (M62)
+
+#### 64a — VM integration test infrastructure
+- [ ] Vagrantfile: 3 Ubuntu 24.04 VMs via libvirt (node-1, node-2, node-3)
+- [ ] `test/e2e/cluster_test.sh`: provision → install → server → join → apply → verify → teardown
+- [ ] GitHub Actions self-hosted runner on .42, triggered on release or nightly cron
+- [ ] Exit 0/1 for CI green/red
+
+#### 64b — Install scripts
+- [ ] `install.sh`: download release binary, detect arch, install to /usr/local/bin
+- [ ] `install-demo.sh`: download + Vagrant provision + deploy demo cluster
+- [ ] Ansible playbook for multi-host deployment (alternative to shell script)
+
+#### 64c — Test workloads
+- [ ] `test/e2e/workloads/zabbix.cca`: multi-component (server + database + web frontend)
+- [ ] `test/e2e/workloads/java-app.cca`: single service with health endpoint
+- [ ] Health-check script: wait for instances running, endpoints reachable, DNS resolution
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -942,5 +1057,12 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M48 — Anti-Pattern Remediation | 50 | God Object split (main.go → per-command files), dead code audit, magic numbers → constants, spaghetti extraction, deduplication, typed enums |
 | M49 — CI Fix | 49b | Skip container integration test in -short mode, bump Go 1.26.6 + grpc v1.83.1 to resolve 7 govulncheck findings |
 | M55 — CLI Acceptance Tests | 57 | Build `cca` binary once via TestMain, 22 subprocess tests (17 standalone + 5 server-dependent) covering apply/diff/render/scale/get/status/version/completion, assert stdout/stderr/exit code |
+| M56 — ABAC Condition Engine | 58 | `policy team-isolation { allow service.update when subject.team == resource.team }` — dynamic condition evaluation on every API request |
+| M57 — Tenant Visibility | 59 | `cca get services` returns only services the authenticated tenant owns; platform sees all |
+| M58 — Network Policy Enforcement | 60 | `allow frontend/web -> payments/checkout port 443` generates real nftables rules on each node |
+| M59 — Service Groups | 61 | `group frontend { process proxy; process web; share network }` co-schedules on same node with shared network namespace |
+| M60 — Vertical Autoscaling | 62 | P95 resource usage → recommendation → live cgroup resize or instance replacement |
+| M61 — Cloud Provider APIs | 63 | Real AWS/GCP integration: STS token exchange, instance lifecycle, load balancers, VPC routes, KMS secrets |
+| M62 — Production Hardening | 64 | 3-VM cluster on .42, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M55 — Phase 57 CLI Acceptance Tests. M1–M55 complete. Gates A–I resolved.
+**Completed through:** M55 — Phase 57 CLI Acceptance Tests. M1–M55 complete. Gates A–I resolved. Next: Phase 58 — ABAC Condition Engine.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
