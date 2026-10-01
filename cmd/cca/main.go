@@ -140,6 +140,12 @@ func main() {
 			os.Exit(1)
 		}
 		executeMetricSetCommand(os.Args[3], os.Args[4], os.Args[5])
+	case "secret":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete> [name] [value]")
+			os.Exit(1)
+		}
+		executeSecretCommand(os.Args[2:])
 	case "completion":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca completion <bash|zsh>")

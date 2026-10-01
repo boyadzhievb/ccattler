@@ -497,7 +497,7 @@ func TestSecretStorePutAndGet(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	secretStore, err := NewSecretStore(memoryStore, masterKey)
+	secretStore, err := NewSecretStoreWithMasterKey(memoryStore, masterKey)
 	if err != nil {
 		t.Fatalf("create secret store: %v", err)
 	}
@@ -525,7 +525,7 @@ func TestSecretStoreEncryptionAtRest(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	secretStore, err := NewSecretStore(memoryStore, masterKey)
+	secretStore, err := NewSecretStoreWithMasterKey(memoryStore, masterKey)
 	if err != nil {
 		t.Fatalf("create secret store: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestSecretStoreDeleteAndList(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	secretStore, err := NewSecretStore(memoryStore, masterKey)
+	secretStore, err := NewSecretStoreWithMasterKey(memoryStore, masterKey)
 	if err != nil {
 		t.Fatalf("create secret store: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestSecretGrantAuthorization(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 
-	secretStore, err := NewSecretStore(memoryStore, masterKey)
+	secretStore, err := NewSecretStoreWithMasterKey(memoryStore, masterKey)
 	if err != nil {
 		t.Fatalf("create secret store: %v", err)
 	}
@@ -620,6 +620,149 @@ func TestSecretGrantAuthorization(t *testing.T) {
 	_, _, err = secretStore.GetSecretForService(ctx, "api", "db-password")
 	if err == nil {
 		t.Fatal("expected denial for unauthorized service")
+	}
+}
+
+func TestEnvelopeSealAndOpen(t *testing.T) {
+	masterKey := make([]byte, 32)
+	for index := range masterKey {
+		masterKey[index] = byte(index + 1)
+	}
+	localKeyProvider, err := NewLocalKeyProvider(masterKey)
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+
+	ctx := context.Background()
+	originalPlaintext := []byte("top-secret-payload")
+
+	envelope, sealErr := SealEnvelope(ctx, localKeyProvider, originalPlaintext)
+	if sealErr != nil {
+		t.Fatalf("seal: %v", sealErr)
+	}
+
+	// Envelope must not contain the plaintext.
+	if string(envelope) == string(originalPlaintext) {
+		t.Fatal("envelope contains raw plaintext")
+	}
+
+	decrypted, openErr := OpenEnvelope(ctx, localKeyProvider, envelope)
+	if openErr != nil {
+		t.Fatalf("open: %v", openErr)
+	}
+	if string(decrypted) != string(originalPlaintext) {
+		t.Fatalf("round-trip failed: got %q, want %q", decrypted, originalPlaintext)
+	}
+}
+
+func TestEnvelopeRewrap(t *testing.T) {
+	oldMasterKey := make([]byte, 32)
+	for index := range oldMasterKey {
+		oldMasterKey[index] = byte(index)
+	}
+	newMasterKey := make([]byte, 32)
+	for index := range newMasterKey {
+		newMasterKey[index] = byte(index + 100)
+	}
+
+	oldKeyProvider, _ := NewLocalKeyProvider(oldMasterKey)
+	newKeyProvider, _ := NewLocalKeyProvider(newMasterKey)
+	ctx := context.Background()
+
+	originalPlaintext := []byte("rewrap-test-secret")
+	envelope, _ := SealEnvelope(ctx, oldKeyProvider, originalPlaintext)
+
+	// Rewrap with new key.
+	rewrappedEnvelope, err := RewrapEnvelope(ctx, oldKeyProvider, newKeyProvider, envelope)
+	if err != nil {
+		t.Fatalf("rewrap: %v", err)
+	}
+
+	// Old key can no longer open the rewrapped envelope.
+	_, openWithOldErr := OpenEnvelope(ctx, oldKeyProvider, rewrappedEnvelope)
+	if openWithOldErr == nil {
+		t.Fatal("old key should not open rewrapped envelope")
+	}
+
+	// New key can open the rewrapped envelope.
+	decrypted, openWithNewErr := OpenEnvelope(ctx, newKeyProvider, rewrappedEnvelope)
+	if openWithNewErr != nil {
+		t.Fatalf("new key open: %v", openWithNewErr)
+	}
+	if string(decrypted) != string(originalPlaintext) {
+		t.Fatalf("rewrap round-trip: got %q, want %q", decrypted, originalPlaintext)
+	}
+}
+
+func TestSecretStoreKeyRotation(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	oldMasterKey := make([]byte, 32)
+	for index := range oldMasterKey {
+		oldMasterKey[index] = byte(index)
+	}
+	newMasterKey := make([]byte, 32)
+	for index := range newMasterKey {
+		newMasterKey[index] = byte(index + 50)
+	}
+
+	secretStore, err := NewSecretStoreWithMasterKey(memoryStore, oldMasterKey)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	ctx := context.Background()
+	secretStore.PutSecret(ctx, "secret-one", []byte("value-one"))
+	secretStore.PutSecret(ctx, "secret-two", []byte("value-two"))
+
+	newKeyProvider, _ := NewLocalKeyProvider(newMasterKey)
+	if rotateErr := secretStore.RotateKeyProvider(ctx, newKeyProvider); rotateErr != nil {
+		t.Fatalf("rotate: %v", rotateErr)
+	}
+
+	// After rotation, secrets should still be readable.
+	plaintext, getErr := secretStore.GetSecret(ctx, "secret-one")
+	if getErr != nil {
+		t.Fatalf("get after rotate: %v", getErr)
+	}
+	if string(plaintext) != "value-one" {
+		t.Fatalf("expected value-one, got %s", plaintext)
+	}
+
+	plaintext, getErr = secretStore.GetSecret(ctx, "secret-two")
+	if getErr != nil {
+		t.Fatalf("get after rotate: %v", getErr)
+	}
+	if string(plaintext) != "value-two" {
+		t.Fatalf("expected value-two, got %s", plaintext)
+	}
+
+	// Confirm the provider name updated.
+	if secretStore.KeyProviderName() != "local" {
+		t.Errorf("expected provider name 'local', got %q", secretStore.KeyProviderName())
+	}
+}
+
+func TestLocalKeyProviderRejectsInvalidKeyLength(t *testing.T) {
+	_, err := NewLocalKeyProvider([]byte("too-short"))
+	if err == nil {
+		t.Fatal("expected error for short key")
+	}
+}
+
+func TestGenerateMasterKey(t *testing.T) {
+	key1, err := GenerateMasterKey()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if len(key1) != 32 {
+		t.Fatalf("expected 32 bytes, got %d", len(key1))
+	}
+
+	key2, _ := GenerateMasterKey()
+	if string(key1) == string(key2) {
+		t.Fatal("two generated keys should differ")
 	}
 }
 
@@ -1530,7 +1673,7 @@ func TestCredentialStoreRoundTrip(t *testing.T) {
 		masterKey[index] = byte(index)
 	}
 
-	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	credentialStore, err := NewCredentialStoreWithMasterKey(factStore, masterKey)
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
@@ -1579,7 +1722,7 @@ func TestCredentialStoreDelete(t *testing.T) {
 		masterKey[index] = byte(index)
 	}
 
-	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	credentialStore, err := NewCredentialStoreWithMasterKey(factStore, masterKey)
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
@@ -1609,7 +1752,7 @@ func TestCredentialStoreListCredentials(t *testing.T) {
 		masterKey[index] = byte(index)
 	}
 
-	credentialStore, err := NewCredentialStore(factStore, masterKey)
+	credentialStore, err := NewCredentialStoreWithMasterKey(factStore, masterKey)
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}
@@ -1631,7 +1774,7 @@ func TestCredentialStoreInvalidKeyLength(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
-	_, err := NewCredentialStore(factStore, []byte("short"))
+	_, err := NewCredentialStoreWithMasterKey(factStore, []byte("short"))
 	if err == nil {
 		t.Fatal("expected error for short master key")
 	}

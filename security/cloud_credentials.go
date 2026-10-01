@@ -196,40 +196,47 @@ func (adapter *SimulatorCloudAdapter) ExchangeCount() int {
 const CredentialStorePrefix = "credentials/"
 
 // CredentialStore manages encrypted cloud credentials in the fact store using
-// the same AES-256-GCM envelope encryption as the secret store.
+// envelope encryption via a KeyProvider (same architecture as SecretStore).
 type CredentialStore struct {
-	factStore store.StateStore
-	masterKey []byte // 32-byte AES-256 key encryption key
+	factStore   store.StateStore // factStore holds the encrypted credential blobs.
+	keyProvider KeyProvider      // keyProvider wraps and unwraps per-credential DEKs.
 }
 
-// NewCredentialStore creates a credential store backed by the given fact store.
-// The masterKey must be exactly 32 bytes for AES-256 encryption.
-func NewCredentialStore(factStore store.StateStore, masterKey []byte) (*CredentialStore, error) {
-	if len(masterKey) != 32 {
-		return nil, fmt.Errorf("credential store: master key must be 32 bytes, got %d", len(masterKey))
-	}
+// NewCredentialStore creates a credential store backed by the given fact store
+// and KeyProvider.
+func NewCredentialStore(factStore store.StateStore, keyProvider KeyProvider) *CredentialStore {
 	return &CredentialStore{
-		factStore: factStore,
-		masterKey: masterKey,
-	}, nil
+		factStore:   factStore,
+		keyProvider: keyProvider,
+	}
+}
+
+// NewCredentialStoreWithMasterKey creates a credential store using a local
+// 32-byte master key. Returns an error if the key is not exactly 32 bytes.
+func NewCredentialStoreWithMasterKey(factStore store.StateStore, masterKey []byte) (*CredentialStore, error) {
+	localKeyProvider, err := NewLocalKeyProvider(masterKey)
+	if err != nil {
+		return nil, err
+	}
+	return NewCredentialStore(factStore, localKeyProvider), nil
 }
 
 // PutCredential encrypts and stores a cloud credential for the given instance
-// and identity combination.
+// and identity combination using envelope encryption.
 func (credentialStore *CredentialStore) PutCredential(ctx context.Context, instanceID string, identityName string, credential *CloudCredential) error {
 	serialized := serializeCredential(credential)
-	ciphertext, err := encryptAESGCM(credentialStore.masterKey, []byte(serialized))
+	envelopeBlob, err := SealEnvelope(ctx, credentialStore.keyProvider, []byte(serialized))
 	if err != nil {
 		return fmt.Errorf("encrypt credential: %w", err)
 	}
 
 	credentialKey := CredentialStorePrefix + instanceID + "/" + identityName
-	_, err = credentialStore.factStore.Put(ctx, credentialKey, ciphertext)
+	_, err = credentialStore.factStore.Put(ctx, credentialKey, envelopeBlob)
 	return err
 }
 
 // GetCredential retrieves and decrypts a cloud credential for the given
-// instance and identity combination.
+// instance and identity combination using envelope encryption.
 func (credentialStore *CredentialStore) GetCredential(ctx context.Context, instanceID string, identityName string) (*CloudCredential, error) {
 	credentialKey := CredentialStorePrefix + instanceID + "/" + identityName
 	entry, err := credentialStore.factStore.Get(ctx, credentialKey)
@@ -237,7 +244,7 @@ func (credentialStore *CredentialStore) GetCredential(ctx context.Context, insta
 		return nil, fmt.Errorf("get credential: %w", err)
 	}
 
-	plaintext, err := decryptAESGCM(credentialStore.masterKey, entry.Value)
+	plaintext, err := OpenEnvelope(ctx, credentialStore.keyProvider, entry.Value)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}

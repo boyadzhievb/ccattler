@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M60 — Phase 62 Vertical Autoscaling Controller. M1–M60 + M62–M63 complete. Gates A–I resolved. Next: Phase 63 — Cloud Provider Real APIs.
+**Completed through:** M61 — Phase 63 Secret Encryption & KMS. M1–M61 + M62–M63 complete. Gates A–I resolved. Next: Phase 64 — remaining cloud provider SDK wiring.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

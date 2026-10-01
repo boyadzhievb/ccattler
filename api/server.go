@@ -81,10 +81,11 @@ type Server struct {
 	enrollmentService   *security.EnrollmentService
 	workloadTokenIssuer *security.WorkloadTokenIssuer
 	watchMultiplexer    *WatchMultiplexer
-	policyGate          *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
-	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
-	apiAuthorizer       *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
-	tenantAuditView     *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
+	secretStore         *security.SecretStore         // secretStore handles encrypted secret CRUD.
+	policyGate          *tenant.PolicyGate            // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain  *security.AuthenticatorChain  // authenticatorChain maps requests to principals.
+	apiAuthorizer       *security.APIAuthorizer       // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView     *tenant.TenantAuditView       // tenantAuditView provides scoped audit log views per tenant.
 	serverMode          ServerMode
 	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux
@@ -96,6 +97,12 @@ type Server struct {
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
 func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 	apiServer.eventLog = eventLog
+}
+
+// SetSecretStore attaches a secret store to the server, enabling the
+// /api/secret endpoint for encrypted secret CRUD.
+func (apiServer *Server) SetSecretStore(secretStore *security.SecretStore) {
+	apiServer.secretStore = secretStore
 }
 
 // SetTenantAuditView attaches a tenant-scoped audit view to the server,
@@ -298,6 +305,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
 	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
+	apiServer.mux.HandleFunc("/api/secret", apiServer.instrumentedHandler("secret", apiServer.handleSecret))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
 	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
 }
@@ -1211,4 +1219,117 @@ func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, requ
 	jwksDocument := apiServer.workloadTokenIssuer.JWKSDocument()
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(jwksDocument)
+}
+
+// handleSecret serves /api/secret for secret CRUD operations.
+// GET /api/secret?name=X returns the decrypted value.
+// POST /api/secret?name=X with body = plaintext stores the secret.
+// DELETE /api/secret?name=X removes the secret.
+// GET /api/secret (no name) lists all secret names.
+func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, request *http.Request) {
+	if apiServer.secretStore == nil {
+		http.Error(responseWriter, `{"error":"secret store not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	secretName := request.URL.Query().Get("name")
+
+	switch request.Method {
+	case http.MethodGet:
+		apiServer.handleSecretGet(responseWriter, request, secretName)
+	case http.MethodPost:
+		apiServer.handleSecretPut(responseWriter, request, secretName)
+	case http.MethodDelete:
+		apiServer.handleSecretDelete(responseWriter, request, secretName)
+	default:
+		http.Error(responseWriter, "GET, POST, or DELETE", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleSecretGet returns a secret value or lists secret names.
+func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
+	requestContext := request.Context()
+	if secretName == "" {
+		if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretMetadataRead, security.ScopeCluster) {
+			return
+		}
+		secretNames, listErr := apiServer.secretStore.ListSecrets(requestContext)
+		if listErr != nil {
+			http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, listErr.Error()), http.StatusInternalServerError)
+			return
+		}
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"secrets": secretNames})
+		return
+	}
+
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretUse, security.ScopeCluster) {
+		return
+	}
+	plaintext, getErr := apiServer.secretStore.GetSecret(requestContext, secretName)
+	if getErr != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, getErr.Error()), http.StatusNotFound)
+		return
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"name":  secretName,
+		"value": string(plaintext),
+	})
+}
+
+// handleSecretPut stores an encrypted secret value.
+func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+		return
+	}
+	if secretName == "" {
+		http.Error(responseWriter, `{"error":"name parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	body, readErr := io.ReadAll(request.Body)
+	if readErr != nil {
+		http.Error(responseWriter, `{"error":"read body"}`, http.StatusBadRequest)
+		return
+	}
+	if len(body) == 0 {
+		http.Error(responseWriter, `{"error":"empty body"}`, http.StatusBadRequest)
+		return
+	}
+
+	requestContext := request.Context()
+	if putErr := apiServer.secretStore.PutSecret(requestContext, secretName, body); putErr != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, putErr.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"ok":   "true",
+		"name": secretName,
+	})
+}
+
+// handleSecretDelete removes an encrypted secret.
+func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+		return
+	}
+	if secretName == "" {
+		http.Error(responseWriter, `{"error":"name parameter required"}`, http.StatusBadRequest)
+		return
+	}
+
+	requestContext := request.Context()
+	if deleteErr := apiServer.secretStore.DeleteSecret(requestContext, secretName); deleteErr != nil {
+		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, deleteErr.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"ok":   "true",
+		"name": secretName,
+	})
 }

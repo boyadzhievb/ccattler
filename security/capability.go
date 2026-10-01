@@ -25,6 +25,9 @@ const (
 	// CapabilitySecretUse allows mounting secrets into workloads.
 	CapabilitySecretUse Capability = "secret.use"
 
+	// CapabilitySecretWrite allows creating, updating, and deleting secrets.
+	CapabilitySecretWrite Capability = "secret.write"
+
 	// CapabilityNodeRead allows reading node state (health, capacity, labels).
 	CapabilityNodeRead Capability = "node.read"
 
@@ -55,6 +58,7 @@ var AllCapabilities = []Capability{
 	CapabilityWorkloadDelete,
 	CapabilitySecretMetadataRead,
 	CapabilitySecretUse,
+	CapabilitySecretWrite,
 	CapabilityNodeRead,
 	CapabilityNodeManage,
 	CapabilityPlacementRead,

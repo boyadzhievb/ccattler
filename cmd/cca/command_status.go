@@ -1113,3 +1113,126 @@ func executeWatchCommand(prefix string) {
 		}
 	}
 }
+
+// executeSecretCommand dispatches cca secret subcommands: set, get, list, delete.
+func executeSecretCommand(args []string) {
+	subcommand := args[0]
+	switch subcommand {
+	case "set":
+		if len(args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca secret set <name> <value>")
+			os.Exit(1)
+		}
+		executeSecretSet(args[1], args[2])
+	case "get":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: cca secret get <name>")
+			os.Exit(1)
+		}
+		executeSecretGet(args[1])
+	case "list":
+		executeSecretList()
+	case "delete":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: cca secret delete <name>")
+			os.Exit(1)
+		}
+		executeSecretDelete(args[1])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete> [name] [value]")
+		os.Exit(1)
+	}
+}
+
+// executeSecretSet stores an encrypted secret via the API.
+func executeSecretSet(secretName, secretValue string) {
+	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	httpResponse, err := http.Post(requestURL, "text/plain", strings.NewReader(secretValue)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
+	fmt.Printf("secret %q stored\n", secretName)
+}
+
+// executeSecretGet retrieves and displays a decrypted secret via the API.
+func executeSecretGet(secretName string) {
+	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	httpResponse, err := http.Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
+
+	var result map[string]string
+	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&result); decodeErr != nil {
+		fmt.Fprintf(os.Stderr, "decode: %v\n", decodeErr)
+		os.Exit(1)
+	}
+	fmt.Println(result["value"])
+}
+
+// executeSecretList displays all stored secret names.
+func executeSecretList() {
+	requestURL := fmt.Sprintf("http://%s/api/secret", statusAPIListenAddress)
+	httpResponse, err := http.Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
+
+	var result map[string]interface{}
+	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&result); decodeErr != nil {
+		fmt.Fprintf(os.Stderr, "decode: %v\n", decodeErr)
+		os.Exit(1)
+	}
+
+	secretNames, ok := result["secrets"].([]interface{})
+	if !ok || len(secretNames) == 0 {
+		fmt.Println("no secrets stored")
+		return
+	}
+	for _, secretName := range secretNames {
+		fmt.Println(secretName)
+	}
+}
+
+// executeSecretDelete removes an encrypted secret via the API.
+func executeSecretDelete(secretName string) {
+	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, requestURL, nil)
+	httpResponse, err := http.DefaultClient.Do(deleteRequest)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
+	fmt.Printf("secret %q deleted\n", secretName)
+}

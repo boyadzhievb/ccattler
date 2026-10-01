@@ -2,12 +2,8 @@ package security
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 
@@ -21,47 +17,60 @@ const SecretStorePrefix = "secrets/"
 const SecretGrantPrefix = "desired/"
 
 // SecretStore manages encrypted secrets in the fact store using envelope
-// encryption. Each secret is encrypted with a data encryption key (DEK)
-// which is itself encrypted with the master key (KEK).
+// encryption. Each secret is encrypted with a per-secret data encryption key
+// (DEK), and the DEK is wrapped by the configured KeyProvider. Only the
+// wrapped DEK and ciphertext are stored — the master key never touches
+// secret plaintext directly.
 type SecretStore struct {
-	factStore store.StateStore
-	masterKey []byte // 32-byte AES-256 key encryption key
-	mutex     sync.RWMutex
+	factStore   store.StateStore // factStore holds the encrypted secret blobs.
+	keyProvider KeyProvider      // keyProvider wraps and unwraps per-secret DEKs.
+	mutex       sync.RWMutex    // mutex serializes concurrent access to the store.
 }
 
-// NewSecretStore creates a secret store backed by the given fact store.
-// The masterKey must be exactly 32 bytes for AES-256 encryption.
-func NewSecretStore(factStore store.StateStore, masterKey []byte) (*SecretStore, error) {
-	if len(masterKey) != 32 {
-		return nil, fmt.Errorf("master key must be 32 bytes, got %d", len(masterKey))
-	}
+// NewSecretStore creates a secret store backed by the given fact store and
+// KeyProvider. The KeyProvider handles all key wrapping — for local keys use
+// NewLocalKeyProvider, for cloud KMS use the appropriate provider.
+func NewSecretStore(factStore store.StateStore, keyProvider KeyProvider) *SecretStore {
 	return &SecretStore{
-		factStore: factStore,
-		masterKey: masterKey,
-	}, nil
+		factStore:   factStore,
+		keyProvider: keyProvider,
+	}
 }
 
-// PutSecret encrypts and stores a secret value. The encrypted ciphertext is
-// stored as a base64-encoded fact.
+// NewSecretStoreWithMasterKey creates a secret store using a local 32-byte
+// master key. This is a convenience wrapper that creates a LocalKeyProvider
+// internally. Returns an error if the key is not exactly 32 bytes.
+func NewSecretStoreWithMasterKey(factStore store.StateStore, masterKey []byte) (*SecretStore, error) {
+	localKeyProvider, err := NewLocalKeyProvider(masterKey)
+	if err != nil {
+		return nil, err
+	}
+	return NewSecretStore(factStore, localKeyProvider), nil
+}
+
+// PutSecret encrypts and stores a secret value using envelope encryption.
+// A random DEK is generated for each secret, the plaintext is encrypted with
+// the DEK, and the DEK is wrapped by the KeyProvider. The envelope blob is
+// base64-encoded before storage.
 func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string, plaintext []byte) error {
 	secretStore.mutex.Lock()
 	defer secretStore.mutex.Unlock()
 
-	ciphertext, err := encryptAESGCM(secretStore.masterKey, plaintext)
+	envelopeBlob, err := SealEnvelope(ctx, secretStore.keyProvider, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt secret %q: %w", secretName, err)
 	}
 
-	encodedCiphertext := base64.StdEncoding.EncodeToString(ciphertext)
+	encodedEnvelope := base64.StdEncoding.EncodeToString(envelopeBlob)
 	secretKey := SecretStorePrefix + secretName
-	if _, err := secretStore.factStore.Put(ctx, secretKey, []byte(encodedCiphertext)); err != nil {
+	if _, err := secretStore.factStore.Put(ctx, secretKey, []byte(encodedEnvelope)); err != nil {
 		return fmt.Errorf("store secret %q: %w", secretName, err)
 	}
 
 	return nil
 }
 
-// GetSecret retrieves and decrypts a secret value.
+// GetSecret retrieves and decrypts a secret value using envelope encryption.
 func (secretStore *SecretStore) GetSecret(ctx context.Context, secretName string) ([]byte, error) {
 	secretStore.mutex.RLock()
 	defer secretStore.mutex.RUnlock()
@@ -72,12 +81,12 @@ func (secretStore *SecretStore) GetSecret(ctx context.Context, secretName string
 		return nil, fmt.Errorf("secret %q not found", secretName)
 	}
 
-	ciphertext, err := base64.StdEncoding.DecodeString(string(fact.Value))
+	envelopeBlob, err := base64.StdEncoding.DecodeString(string(fact.Value))
 	if err != nil {
 		return nil, fmt.Errorf("decode secret %q: %w", secretName, err)
 	}
 
-	plaintext, err := decryptAESGCM(secretStore.masterKey, ciphertext)
+	plaintext, err := OpenEnvelope(ctx, secretStore.keyProvider, envelopeBlob)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt secret %q: %w", secretName, err)
 	}
@@ -118,6 +127,7 @@ func (secretStore *SecretStore) IsAuthorized(ctx context.Context, serviceName, s
 }
 
 // GetSecretForService retrieves a secret only if the service has a grant.
+// Returns the plaintext, mount path, and any error.
 func (secretStore *SecretStore) GetSecretForService(ctx context.Context, serviceName, secretName string) ([]byte, string, error) {
 	authorized, err := secretStore.IsAuthorized(ctx, serviceName, secretName)
 	if err != nil {
@@ -142,52 +152,47 @@ func (secretStore *SecretStore) GetSecretForService(ctx context.Context, service
 	return plaintext, mountPath, nil
 }
 
-// encryptAESGCM encrypts plaintext using AES-256-GCM with a random nonce.
-func encryptAESGCM(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
+// RotateKeyProvider re-wraps all stored secrets' DEKs from the old provider
+// to a new provider without decrypting or re-encrypting the secret payloads.
+// After rotation, the SecretStore's active KeyProvider is updated to the new
+// one. This is the master key rotation operation.
+func (secretStore *SecretStore) RotateKeyProvider(ctx context.Context, newKeyProvider KeyProvider) error {
+	secretStore.mutex.Lock()
+	defer secretStore.mutex.Unlock()
+
+	facts, err := secretStore.factStore.Scan(ctx, SecretStorePrefix)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("rotate: scan secrets: %w", err)
 	}
 
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
+	for _, fact := range facts {
+		envelopeBlob, decodeErr := base64.StdEncoding.DecodeString(string(fact.Value))
+		if decodeErr != nil {
+			return fmt.Errorf("rotate: decode %s: %w", fact.Key, decodeErr)
+		}
+
+		rewrappedEnvelope, rewrapErr := RewrapEnvelope(ctx, secretStore.keyProvider, newKeyProvider, envelopeBlob)
+		if rewrapErr != nil {
+			return fmt.Errorf("rotate: rewrap %s: %w", fact.Key, rewrapErr)
+		}
+
+		encodedEnvelope := base64.StdEncoding.EncodeToString(rewrappedEnvelope)
+		if _, putErr := secretStore.factStore.Put(ctx, fact.Key, []byte(encodedEnvelope)); putErr != nil {
+			return fmt.Errorf("rotate: store %s: %w", fact.Key, putErr)
+		}
 	}
 
-	nonce := make([]byte, aesGCM.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
-	}
-
-	return aesGCM.Seal(nonce, nonce, plaintext, nil), nil
+	secretStore.keyProvider = newKeyProvider
+	return nil
 }
 
-// decryptAESGCM decrypts ciphertext produced by encryptAESGCM.
-func decryptAESGCM(key, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := aesGCM.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, fmt.Errorf("ciphertext too short")
-	}
-
-	nonce, ciphertextBody := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return aesGCM.Open(nil, nonce, ciphertextBody, nil)
+// KeyProviderName returns the name of the active KeyProvider.
+func (secretStore *SecretStore) KeyProviderName() string {
+	return secretStore.keyProvider.ProviderName()
 }
 
 // GenerateMasterKey generates a random 32-byte master key for the secret store.
+// Uses the same key generation as DEKs since both are 32-byte AES-256 keys.
 func GenerateMasterKey() ([]byte, error) {
-	masterKey := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, masterKey); err != nil {
-		return nil, fmt.Errorf("generate master key: %w", err)
-	}
-	return masterKey, nil
+	return GenerateDEK()
 }

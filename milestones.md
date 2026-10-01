@@ -992,9 +992,10 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [ ] VPC route programming
 
 #### 63c — Secrets KMS integration
-- [ ] KMS envelope encryption: master key in AWS KMS / GCP KMS / HashiCorp Vault
-- [ ] Master key rotation without re-encrypting all secrets (envelope model)
-- [ ] `cca secret set database.password` stores encrypted value via KMS
+- [x] KMS envelope encryption: KeyProvider interface + LocalKeyProvider + AWSKMSKeyProvider + GCPKMSKeyProvider + VaultTransitKeyProvider
+- [x] Master key rotation without re-encrypting all secrets (RewrapEnvelope + RotateKeyProvider)
+- [x] `cca secret set/get/list/delete` CLI commands + /api/secret endpoint with envelope encryption
+- [x] SecretStore and CredentialStore refactored from raw master key to KeyProvider + SealEnvelope/OpenEnvelope
 - [ ] Agent decrypts at materialization time using scoped KMS credentials
 
 ### Phase 64 — Production Hardening (M62)
@@ -1106,7 +1107,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M58 — Network Policy Enforcement | 60 | `allow frontend/web -> payments/checkout port 443` generates real nftables rules on each node |
 | M59 — Service Groups | 61 | `group frontend { process proxy; process web; share network }` co-schedules on same node with shared network namespace |
 | M60 — Vertical Autoscaling | 62 | P95 sliding-window recommendation, asymmetric stabilization (60s up/5m down), Runtime.Resize, agent effective/ resource detection with live resize or stop+restart fallback |
-| M61 — Cloud Provider APIs | 63 | Real AWS/GCP integration: STS token exchange, instance lifecycle, load balancers, VPC routes, KMS secrets |
+| M61 — Cloud Provider APIs | 63 | KMS envelope encryption (KeyProvider + 4 providers), SecretStore/CredentialStore refactored to per-secret DEKs, key rotation, `cca secret` CLI + API, AWS/GCP STS + cloud stubs ready for SDK wiring |
 | M62 — Production Hardening | 64 | 3-VM cluster on testbed-100.43, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
 | M63 — Placement & Tenant Tests | 65 | 12-scenario e2e test: require/prefer/restrict/accept/zone-spread/architecture + tenant quota ALLOW/DENY |
 

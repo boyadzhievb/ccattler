@@ -349,6 +349,16 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
 		statusAPIServer.SetPolicyGate(policyGate)
 
+		secretMasterKey := loadOrGenerateSecretMasterKey()
+		secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(secretMasterKey)
+		if keyProviderError != nil {
+			fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
+			os.Exit(1)
+		}
+		secretStore := security.NewSecretStore(factStore, secretKeyProvider)
+		statusAPIServer.SetSecretStore(secretStore)
+		fmt.Println("Secret store initialized (envelope encryption, local key)")
+
 		if parsedConfig.apiOnly {
 			statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
 		}
@@ -511,6 +521,36 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		MinVersion:   tls.VersionTLS13,
 	}
+}
+
+// secretMasterKeyPath is the file where the secret store's 32-byte master key
+// is persisted between server restarts.
+const secretMasterKeyPath = ".ccattler/secret-master.key"
+
+// loadOrGenerateSecretMasterKey reads the master key from disk, or generates a
+// fresh one and writes it out. The key file is 32 bytes of raw binary data.
+func loadOrGenerateSecretMasterKey() []byte {
+	if existingKey, readErr := os.ReadFile(secretMasterKeyPath); readErr == nil && len(existingKey) == 32 {
+		return existingKey
+	}
+
+	if mkdirError := os.MkdirAll(".ccattler", 0700); mkdirError != nil {
+		fmt.Fprintf(os.Stderr, "create key directory: %v\n", mkdirError)
+		os.Exit(1)
+	}
+
+	freshKey, generateError := security.GenerateMasterKey()
+	if generateError != nil {
+		fmt.Fprintf(os.Stderr, "generate secret master key: %v\n", generateError)
+		os.Exit(1)
+	}
+
+	if writeError := os.WriteFile(secretMasterKeyPath, freshKey, 0600); writeError != nil {
+		fmt.Fprintf(os.Stderr, "write secret master key: %v\n", writeError)
+		os.Exit(1)
+	}
+	fmt.Printf("Generated new secret master key at %s\n", secretMasterKeyPath)
+	return freshKey
 }
 
 // clusterStatusResponse is the structured representation of the full cluster status,

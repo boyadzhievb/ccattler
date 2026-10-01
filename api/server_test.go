@@ -1563,3 +1563,102 @@ func (recorder *httpResponseRecorder) Write(data []byte) (int, error) {
 func (recorder *httpResponseRecorder) WriteHeader(statusCode int) {
 	recorder.statusCode = statusCode
 }
+
+func TestSecretAPIRoundTrip(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	masterKey := make([]byte, 32)
+	for index := range masterKey {
+		masterKey[index] = byte(index + 1)
+	}
+	secretStore, err := security.NewSecretStoreWithMasterKey(factStore, masterKey)
+	if err != nil {
+		t.Fatalf("create secret store: %v", err)
+	}
+
+	apiServer := NewServer(factStore)
+	apiServer.SetSecretStore(secretStore)
+	address, startErr := apiServer.Start(":0")
+	if startErr != nil {
+		t.Fatalf("start server: %v", startErr)
+	}
+	defer apiServer.Close()
+	baseURL := "http://" + address
+
+	// PUT a secret.
+	putResp, putErr := http.Post(baseURL+"/api/secret?name=db-password", "text/plain", strings.NewReader("hunter2"))
+	if putErr != nil {
+		t.Fatalf("put: %v", putErr)
+	}
+	defer putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(putResp.Body)
+		t.Fatalf("put status %d: %s", putResp.StatusCode, body)
+	}
+
+	// GET the secret back.
+	getResp, getErr := http.Get(baseURL + "/api/secret?name=db-password")
+	if getErr != nil {
+		t.Fatalf("get: %v", getErr)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(getResp.Body)
+		t.Fatalf("get status %d: %s", getResp.StatusCode, body)
+	}
+	var getResult map[string]string
+	json.NewDecoder(getResp.Body).Decode(&getResult)
+	if getResult["value"] != "hunter2" {
+		t.Fatalf("expected hunter2, got %q", getResult["value"])
+	}
+
+	// LIST secrets.
+	listResp, listErr := http.Get(baseURL + "/api/secret")
+	if listErr != nil {
+		t.Fatalf("list: %v", listErr)
+	}
+	defer listResp.Body.Close()
+	var listResult map[string]interface{}
+	json.NewDecoder(listResp.Body).Decode(&listResult)
+	secretNames, ok := listResult["secrets"].([]interface{})
+	if !ok || len(secretNames) != 1 {
+		t.Fatalf("expected 1 secret, got %v", listResult)
+	}
+
+	// DELETE the secret.
+	deleteReq, _ := http.NewRequest(http.MethodDelete, baseURL+"/api/secret?name=db-password", nil)
+	deleteResp, deleteErr := http.DefaultClient.Do(deleteReq)
+	if deleteErr != nil {
+		t.Fatalf("delete: %v", deleteErr)
+	}
+	defer deleteResp.Body.Close()
+	if deleteResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(deleteResp.Body)
+		t.Fatalf("delete status %d: %s", deleteResp.StatusCode, body)
+	}
+
+	// GET should now fail.
+	getAfterDeleteResp, getAfterDeleteErr := http.Get(baseURL + "/api/secret?name=db-password")
+	if getAfterDeleteErr != nil {
+		t.Fatalf("get after delete: %v", getAfterDeleteErr)
+	}
+	defer getAfterDeleteResp.Body.Close()
+	if getAfterDeleteResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 after delete, got %d", getAfterDeleteResp.StatusCode)
+	}
+}
+
+func TestSecretAPIWithoutStore(t *testing.T) {
+	baseURL, _, cleanup := newTestServer(t)
+	defer cleanup()
+
+	resp, err := http.Get(baseURL + "/api/secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 without secret store, got %d", resp.StatusCode)
+	}
+}

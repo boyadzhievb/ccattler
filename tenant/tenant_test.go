@@ -807,7 +807,7 @@ func TestSecretIsolationSameTenantAllowed(t *testing.T) {
 	for i := range masterKey {
 		masterKey[i] = byte(i)
 	}
-	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
 	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
 	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("payments/checkout"), []byte("payments"))
@@ -837,7 +837,7 @@ func TestSecretIsolationCrossTenantDenied(t *testing.T) {
 	for i := range masterKey {
 		masterKey[i] = byte(i)
 	}
-	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
 	memoryStore.Put(ctx, types.KeyDesiredTenant("payments"), []byte(""))
 	memoryStore.Put(ctx, types.KeyDesiredTenant("frontend"), []byte(""))
@@ -864,7 +864,7 @@ func TestSecretIsolationListForTenant(t *testing.T) {
 	for i := range masterKey {
 		masterKey[i] = byte(i)
 	}
-	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
 	registry := NewTenantRegistry(memoryStore)
 	tenantSecrets := NewTenantSecretStore(secretStore, registry)
@@ -1154,7 +1154,7 @@ func TestSecretIsolationDeleteTenantScoped(t *testing.T) {
 	for i := range masterKey {
 		masterKey[i] = byte(i)
 	}
-	secretStore, _ := security.NewSecretStore(memoryStore, masterKey)
+	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
 	registry := NewTenantRegistry(memoryStore)
 	tenantSecrets := NewTenantSecretStore(secretStore, registry)
