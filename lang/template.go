@@ -406,7 +406,9 @@ func CollectDSLFiles(directoryPath string) ([]string, error) {
 		return nil, fmt.Errorf("scanning for .ccattler files in %s: %w", directoryPath, ccattlerGlobError)
 	}
 
-	allDSLFiles := append(ccaFiles, ccattlerFiles...)
+	allDSLFiles := make([]string, 0, len(ccaFiles)+len(ccattlerFiles))
+	allDSLFiles = append(allDSLFiles, ccaFiles...)
+	allDSLFiles = append(allDSLFiles, ccattlerFiles...)
 	sort.Strings(allDSLFiles)
 
 	if len(allDSLFiles) == 0 {

@@ -1236,9 +1236,9 @@ func TestDetectUnusedValuesNoUnused(t *testing.T) {
 func TestDetectUnusedValuesSomeUnused(t *testing.T) {
 	templateContent := `{{ .name }}`
 	valuesMap := map[string]any{
-		"name":   "web",
-		"extra":  "not used",
-		"bonus":  "also not used",
+		"name":  "web",
+		"extra": "not used",
+		"bonus": "also not used",
 	}
 
 	unusedKeys := DetectUnusedValues(templateContent, valuesMap)

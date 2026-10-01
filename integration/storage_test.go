@@ -89,9 +89,9 @@ func TestVolumeCreatedFromDesiredState(t *testing.T) {
 
 	types.WriteDesiredVolume(ctx, cluster.factStore, "pgdata", "100Gi", true)
 
-	waitFor(t, 5*time.Second, "observed volume pgdata with state=available", func() bool {
+	waitFor(t, 5*time.Second, "observed volume pgdata with state=available and size=100Gi", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAvailable
+		return err == nil && volume.State == types.VolumeAvailable && volume.Size == "100Gi"
 	})
 
 	volume, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")

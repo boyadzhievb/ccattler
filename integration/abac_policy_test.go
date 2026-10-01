@@ -511,10 +511,10 @@ policy team-isolation {
 	}
 
 	expectedKeys := map[string]string{
-		"auth/policy/team-isolation/capability":            "workload.update",
-		"auth/policy/team-isolation/condition/0/field":     "subject.team",
-		"auth/policy/team-isolation/condition/0/operator":  "==",
-		"auth/policy/team-isolation/condition/0/value":     "resource.team",
+		"auth/policy/team-isolation/capability":           "workload.update",
+		"auth/policy/team-isolation/condition/0/field":    "subject.team",
+		"auth/policy/team-isolation/condition/0/operator": "==",
+		"auth/policy/team-isolation/condition/0/value":    "resource.team",
 	}
 
 	factMap := make(map[string]string)

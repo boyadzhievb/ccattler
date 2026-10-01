@@ -133,5 +133,5 @@ func (auditLog *StoreBackedAuditLog) persistEntry(entry AuditEntry) {
 	if marshalErr != nil {
 		return
 	}
-	auditLog.stateStore.Put(context.Background(), key, entryJSON)
+	_, _ = auditLog.stateStore.Put(context.Background(), key, entryJSON)
 }

@@ -1640,13 +1640,14 @@ func (parser *Parser) parsePolicyCondition() (*PolicyConditionDecl, error) {
 		operator = "!="
 		parser.advanceToken()
 	case TokenIdent:
-		if currentToken.Value == "in" {
+		switch currentToken.Value {
+		case "in":
 			operator = "in"
 			parser.advanceToken()
-		} else if currentToken.Value == "not_in" {
+		case "not_in":
 			operator = "not_in"
 			parser.advanceToken()
-		} else {
+		default:
 			return nil, parser.parserErrorf("expected operator (==, !=, in, not_in), got %q", currentToken.Value)
 		}
 	default:

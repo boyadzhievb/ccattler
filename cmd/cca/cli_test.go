@@ -47,7 +47,7 @@ func TestMain(testRunner *testing.M) {
 	}
 
 	ccaBinaryPath = filepath.Join(temporaryDirectory, "cca")
-	buildCommand := exec.Command("go", "build", "-o", ccaBinaryPath, ".")
+	buildCommand := exec.Command("go", "build", "-o", ccaBinaryPath, ".") //nolint:gosec // test helper builds the binary under test
 	buildCommand.Dir = findCmdCcaDirectory()
 	buildOutput, buildError := buildCommand.CombinedOutput()
 	if buildError != nil {
@@ -97,7 +97,7 @@ func runCCAWithEnv(testContext *testing.T, extraEnvironment []string, commandArg
 	timeoutContext, cancelTimeout := context.WithTimeout(context.Background(), cliTestDefaultTimeout)
 	defer cancelTimeout()
 
-	ccaCommand := exec.CommandContext(timeoutContext, ccaBinaryPath, commandArgs...)
+	ccaCommand := exec.CommandContext(timeoutContext, ccaBinaryPath, commandArgs...) //nolint:gosec // test helper runs the binary under test
 	if len(extraEnvironment) > 0 {
 		ccaCommand.Env = append(os.Environ(), extraEnvironment...)
 	}
@@ -130,7 +130,7 @@ func runCCAWithEnv(testContext *testing.T, extraEnvironment []string, commandArg
 func writeTempFile(testContext *testing.T, directory string, fileName string, fileContent string) string {
 	testContext.Helper()
 	filePath := filepath.Join(directory, fileName)
-	writeError := os.WriteFile(filePath, []byte(fileContent), 0644)
+	writeError := os.WriteFile(filePath, []byte(fileContent), 0600)
 	if writeError != nil {
 		testContext.Fatalf("failed to write temp file %s: %v", filePath, writeError)
 	}
@@ -259,7 +259,7 @@ port: 3000
 func TestCLIApplyDirectory(testContext *testing.T) {
 	temporaryDirectory := testContext.TempDir()
 	dslSubDirectory := filepath.Join(temporaryDirectory, "configs")
-	if mkdirError := os.Mkdir(dslSubDirectory, 0755); mkdirError != nil {
+	if mkdirError := os.Mkdir(dslSubDirectory, 0750); mkdirError != nil {
 		testContext.Fatalf("failed to create subdirectory: %v", mkdirError)
 	}
 
@@ -486,7 +486,7 @@ func startCCARunServer(testContext *testing.T) func() {
 }
 `)
 
-	runCommand := exec.Command(ccaBinaryPath, "run", "--watch", dslFilePath)
+	runCommand := exec.Command(ccaBinaryPath, "run", "--watch", dslFilePath) //nolint:gosec // test runs the binary under test
 	// Use /dev/null for stdout to prevent pipe buffer issues on process kill.
 	devNull, devNullErr := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if devNullErr != nil {

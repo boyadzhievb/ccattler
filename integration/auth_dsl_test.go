@@ -126,7 +126,7 @@ grant viewer to user "alice@example.com"
 		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil) == nil
 	})
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster, nil); err == nil {
+	if authErr := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster, nil); authErr == nil {
 		t.Error("alice should NOT have node.read before additional grant")
 	}
 
