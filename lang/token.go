@@ -20,6 +20,10 @@ const (
 	TokenSlash
 	// TokenEquals represents an equals sign '=', used in assignments and comparisons.
 	TokenEquals
+	// TokenDoubleEquals represents '==', used in ABAC policy condition comparisons.
+	TokenDoubleEquals
+	// TokenNotEquals represents '!=', used in ABAC policy condition comparisons.
+	TokenNotEquals
 	// TokenNewline represents a newline character that terminates a statement.
 	TokenNewline
 )
@@ -51,6 +55,10 @@ func (t TokenType) String() string {
 		return "Slash"
 	case TokenEquals:
 		return "Equals"
+	case TokenDoubleEquals:
+		return "DoubleEquals"
+	case TokenNotEquals:
+		return "NotEquals"
 	case TokenNewline:
 		return "Newline"
 	default:

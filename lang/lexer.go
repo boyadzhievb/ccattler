@@ -76,9 +76,29 @@ func (lexer *Lexer) scanNextToken() (Token, error) {
 		return token, nil
 	}
 	if currentChar == '=' {
+		if lexer.position+1 < len(lexer.input) && lexer.input[lexer.position+1] == '=' {
+			token := Token{Type: TokenDoubleEquals, Value: "==", Line: lexer.line, Col: lexer.column}
+			lexer.advanceCursor()
+			lexer.advanceCursor()
+			return token, nil
+		}
 		token := Token{Type: TokenEquals, Value: "=", Line: lexer.line, Col: lexer.column}
 		lexer.advanceCursor()
 		return token, nil
+	}
+	if currentChar == '!' {
+		if lexer.position+1 < len(lexer.input) && lexer.input[lexer.position+1] == '=' {
+			token := Token{Type: TokenNotEquals, Value: "!=", Line: lexer.line, Col: lexer.column}
+			lexer.advanceCursor()
+			lexer.advanceCursor()
+			return token, nil
+		}
+		return Token{}, &ParseError{
+			Line:       lexer.line,
+			Col:        lexer.column,
+			Message:    "unexpected character '!' (did you mean '!='?)",
+			SourceLine: sourceLineAt(lexer.sourceLines, lexer.line),
+		}
 	}
 
 	if currentChar == '"' {

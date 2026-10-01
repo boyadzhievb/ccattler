@@ -69,6 +69,9 @@ const (
 
 	// ScanAuthGroups scans group definitions under auth/group/.
 	ScanAuthGroups = PrefixAuth + "/group/"
+
+	// ScanAuthPolicies scans ABAC policy definitions under auth/policy/.
+	ScanAuthPolicies = PrefixAuth + "/policy/"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -1439,4 +1442,28 @@ func KeyAuthGrant(principalKind string, principalName string, roleName string) s
 // Path: auth/group/{groupName}/member/{memberName}
 func KeyAuthGroupMember(groupName string, memberName string) string {
 	return fmt.Sprintf("%s/group/%s/member/%s", PrefixAuth, groupName, memberName)
+}
+
+// KeyAuthPolicyCapability returns the store path for a policy's granted capability.
+// Path: auth/policy/{policyName}/capability
+func KeyAuthPolicyCapability(policyName string) string {
+	return fmt.Sprintf("%s/policy/%s/capability", PrefixAuth, policyName)
+}
+
+// KeyAuthPolicyConditionField returns the store path for a condition's field (left-hand side).
+// Path: auth/policy/{policyName}/condition/{index}/field
+func KeyAuthPolicyConditionField(policyName string, conditionIndex int) string {
+	return fmt.Sprintf("%s/policy/%s/condition/%d/field", PrefixAuth, policyName, conditionIndex)
+}
+
+// KeyAuthPolicyConditionOperator returns the store path for a condition's operator.
+// Path: auth/policy/{policyName}/condition/{index}/operator
+func KeyAuthPolicyConditionOperator(policyName string, conditionIndex int) string {
+	return fmt.Sprintf("%s/policy/%s/condition/%d/operator", PrefixAuth, policyName, conditionIndex)
+}
+
+// KeyAuthPolicyConditionValue returns the store path for a condition's value (right-hand side).
+// Path: auth/policy/{policyName}/condition/{index}/value
+func KeyAuthPolicyConditionValue(policyName string, conditionIndex int) string {
+	return fmt.Sprintf("%s/policy/%s/condition/%d/value", PrefixAuth, policyName, conditionIndex)
 }

@@ -27,10 +27,10 @@ func TestAuthControllerWatch(t *testing.T) {
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := NewAuthController(apiAuthorizer)
 	watchPrefixes := authController.Watch()
-	if len(watchPrefixes) != 3 {
-		t.Fatalf("expected 3 watch prefixes, got %d", len(watchPrefixes))
+	if len(watchPrefixes) != 4 {
+		t.Fatalf("expected 4 watch prefixes, got %d", len(watchPrefixes))
 	}
-	expectedPrefixes := []string{types.ScanAuthRoles, types.ScanAuthGrants, types.ScanAuthGroups}
+	expectedPrefixes := []string{types.ScanAuthRoles, types.ScanAuthGrants, types.ScanAuthGroups, types.ScanAuthPolicies}
 	for prefixIndex, expectedPrefix := range expectedPrefixes {
 		if watchPrefixes[prefixIndex] != expectedPrefix {
 			t.Errorf("watch[%d]: got %q, want %q", prefixIndex, watchPrefixes[prefixIndex], expectedPrefix)
@@ -59,17 +59,17 @@ func TestAuthControllerReconcileRoleGrant(t *testing.T) {
 
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.TeamScope("payments")); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.TeamScope("payments"), nil); err != nil {
 		t.Errorf("alice should have workload.read at team/payments: %v", err)
 	}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadUpdate, security.TeamScope("payments")); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadUpdate, security.TeamScope("payments"), nil); err != nil {
 		t.Errorf("alice should have workload.update at team/payments: %v", err)
 	}
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("alice should NOT have workload.read at cluster scope")
 	}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadDelete, security.TeamScope("payments")); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadDelete, security.TeamScope("payments"), nil); err == nil {
 		t.Error("alice should NOT have workload.delete")
 	}
 }
@@ -91,7 +91,7 @@ func TestAuthControllerReconcileClusterWideRole(t *testing.T) {
 	admin := security.Principal{Kind: security.PrincipalKindUser, Name: "superadmin"}
 
 	for _, capability := range security.AllCapabilities {
-		if err := apiAuthorizer.AuthorizeAPI(admin, capability, security.ScopeCluster); err != nil {
+		if err := apiAuthorizer.AuthorizeAPI(admin, capability, security.ScopeCluster, nil); err != nil {
 			t.Errorf("admin should have %q at cluster scope: %v", capability, err)
 		}
 	}
@@ -116,15 +116,15 @@ func TestAuthControllerReconcileGroupGrant(t *testing.T) {
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
 	bob := security.Principal{Kind: security.PrincipalKindUser, Name: "bob@example.com"}
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err != nil {
 		t.Errorf("alice (via group) should have workload.read: %v", err)
 	}
-	if err := apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadRead, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err != nil {
 		t.Errorf("bob (via group) should have workload.read: %v", err)
 	}
 
 	carol := security.Principal{Kind: security.PrincipalKindUser, Name: "carol@example.com"}
-	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("carol should NOT have workload.read (not in group)")
 	}
 }
@@ -140,7 +140,7 @@ func TestAuthControllerReconcileReplacesOldGrants(t *testing.T) {
 	_, _ = authController.Reconcile(context.Background(), initialFacts)
 
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err != nil {
 		t.Fatalf("alice should have workload.read after first reconcile: %v", err)
 	}
 
@@ -150,10 +150,10 @@ func TestAuthControllerReconcileReplacesOldGrants(t *testing.T) {
 	})
 	_, _ = authController.Reconcile(context.Background(), updatedFacts)
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("alice should NOT have workload.read after second reconcile (role removed)")
 	}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster, nil); err != nil {
 		t.Errorf("alice should have node.read after second reconcile: %v", err)
 	}
 }
@@ -169,7 +169,7 @@ func TestAuthControllerReconcileEmptyFacts(t *testing.T) {
 	}
 
 	leftover := security.Principal{Kind: security.PrincipalKindUser, Name: "leftover"}
-	if err := apiAuthorizer.AuthorizeAPI(leftover, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(leftover, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("previous grants should be cleared when auth facts are empty")
 	}
 }

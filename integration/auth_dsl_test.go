@@ -63,31 +63,31 @@ grant operator to user "carol@example.com"
 	dave := security.Principal{Kind: security.PrincipalKindUser, Name: "dave@example.com"}
 
 	waitFor(t, 2*time.Second, "alice gets workload.read at team/payments", func() bool {
-		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.TeamScope("payments")) == nil
+		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.TeamScope("payments"), nil) == nil
 	})
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadUpdate, security.TeamScope("payments")); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadUpdate, security.TeamScope("payments"), nil); err != nil {
 		t.Errorf("alice should have workload.update at team/payments: %v", err)
 	}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("alice should NOT have workload.read at cluster scope (scoped to team/payments)")
 	}
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadDelete, security.TeamScope("payments")); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadDelete, security.TeamScope("payments"), nil); err == nil {
 		t.Error("alice should NOT have workload.delete (developer role lacks it)")
 	}
 
-	if err := apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadRead, security.TeamScope("payments")); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadRead, security.TeamScope("payments"), nil); err != nil {
 		t.Errorf("bob (via group) should have workload.read at team/payments: %v", err)
 	}
 
-	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityWorkloadDelete, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityWorkloadDelete, security.ScopeCluster, nil); err != nil {
 		t.Errorf("carol (operator) should have workload.delete at cluster: %v", err)
 	}
-	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityNodeManage, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(carol, security.CapabilityNodeManage, security.ScopeCluster, nil); err != nil {
 		t.Errorf("carol (operator) should have node.manage at cluster: %v", err)
 	}
 
-	if err := apiAuthorizer.AuthorizeAPI(dave, security.CapabilityWorkloadRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(dave, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err == nil {
 		t.Error("dave should NOT have any capabilities (no grant)")
 	}
 }
@@ -123,10 +123,10 @@ grant viewer to user "alice@example.com"
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
 
 	waitFor(t, 2*time.Second, "alice gets workload.read", func() bool {
-		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster) == nil
+		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil) == nil
 	})
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster, nil); err == nil {
 		t.Error("alice should NOT have node.read before additional grant")
 	}
 
@@ -143,10 +143,10 @@ grant node-viewer to user "alice@example.com"
 	}
 
 	waitFor(t, 2*time.Second, "alice gets node.read after additional grant", func() bool {
-		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster) == nil
+		return apiAuthorizer.AuthorizeAPI(alice, security.CapabilityNodeRead, security.ScopeCluster, nil) == nil
 	})
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, security.CapabilityWorkloadRead, security.ScopeCluster, nil); err != nil {
 		t.Errorf("alice should still have workload.read (additive apply): %v", err)
 	}
 }

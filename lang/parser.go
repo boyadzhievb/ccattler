@@ -110,6 +110,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Groups = append(file.Groups, *groupDecl)
+		case "policy":
+			policyDecl, err := parser.parsePolicyDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Policies = append(file.Policies, *policyDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -1553,6 +1559,111 @@ func (parser *Parser) parseGroupDeclaration() (*GroupDecl, error) {
 		return nil, err
 	}
 	return groupDecl, nil
+}
+
+// parsePolicyDeclaration parses a policy block with capability and conditions.
+// Syntax: policy <name> { allow <capability> when <field> <op> <value> ... }
+func (parser *Parser) parsePolicyDeclaration() (*PolicyDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "policy"
+
+	name, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	policyDecl := &PolicyDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "allow":
+			capabilityName, capErr := parser.expectIdentifier()
+			if capErr != nil {
+				return nil, capErr
+			}
+			policyDecl.Capability = capabilityName
+		case "when":
+			conditionDecl, condErr := parser.parsePolicyCondition()
+			if condErr != nil {
+				return nil, condErr
+			}
+			policyDecl.Conditions = append(policyDecl.Conditions, *conditionDecl)
+		default:
+			return nil, parser.parserErrorf("unknown policy field %q (expected \"allow\" or \"when\")", key)
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if policyDecl.Capability == "" {
+		return nil, &ParseError{
+			Line:       line,
+			Message:    "policy must have an \"allow\" clause",
+			SourceLine: sourceLineAt(parser.sourceLines, line),
+		}
+	}
+
+	return policyDecl, nil
+}
+
+// parsePolicyCondition parses a single "when" condition clause.
+// Syntax: <field> == <value> | <field> != <value> | <field> in <value> | <field> not_in <value>
+func (parser *Parser) parsePolicyCondition() (*PolicyConditionDecl, error) {
+	conditionLine := parser.currentToken().Line
+
+	fieldName, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	var operator string
+	currentToken := parser.currentToken()
+
+	switch currentToken.Type {
+	case TokenDoubleEquals:
+		operator = "=="
+		parser.advanceToken()
+	case TokenNotEquals:
+		operator = "!="
+		parser.advanceToken()
+	case TokenIdent:
+		if currentToken.Value == "in" {
+			operator = "in"
+			parser.advanceToken()
+		} else if currentToken.Value == "not_in" {
+			operator = "not_in"
+			parser.advanceToken()
+		} else {
+			return nil, parser.parserErrorf("expected operator (==, !=, in, not_in), got %q", currentToken.Value)
+		}
+	default:
+		return nil, parser.parserErrorf("expected operator (==, !=, in, not_in), got %s", currentToken.Type)
+	}
+
+	conditionValue, err := parser.expectStringOrIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	return &PolicyConditionDecl{
+		Field:    fieldName,
+		Operator: operator,
+		Value:    conditionValue,
+		Line:     conditionLine,
+	}, nil
 }
 
 func (parser *Parser) parserErrorf(format string, args ...any) error {

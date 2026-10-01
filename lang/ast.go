@@ -11,6 +11,7 @@ type File struct {
 	Roles            []RoleDecl            // top-level role blocks defining capability bundles
 	Grants           []GrantDecl           // top-level grant statements binding roles to principals
 	Groups           []GroupDecl           // top-level group blocks defining member collections
+	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -296,4 +297,30 @@ type GroupDecl struct {
 	Name    string   // unique group identifier (e.g. "developers")
 	Members []string // member identifiers (e.g. user emails or service names)
 	Line    int      // source line number for error reporting
+}
+
+// PolicyDecl represents a parsed "policy" block in the DSL. A policy defines
+// an ABAC rule that conditionally grants a capability when all conditions
+// evaluate to true.
+//
+//	policy team-isolation {
+//	    allow service.update
+//	    when subject.team == resource.team
+//	}
+type PolicyDecl struct {
+	Name       string                // unique policy identifier (e.g. "team-isolation")
+	Capability string                // capability granted when conditions pass (e.g. "service.update")
+	Conditions []PolicyConditionDecl // all conditions must match (AND semantics)
+	Line       int                   // source line number for error reporting
+}
+
+// PolicyConditionDecl represents a single "when" clause inside a policy block.
+// Field is a dotted path (e.g. "subject.team"), Operator is a comparison
+// operator (==, !=, in, not_in), and Value is either a literal string or a
+// field reference.
+type PolicyConditionDecl struct {
+	Field    string // left-hand side: dotted path (e.g. "subject.team")
+	Operator string // comparison operator: "==", "!=", "in", "not_in"
+	Value    string // right-hand side: literal or field reference (e.g. "resource.team")
+	Line     int    // source line number for error reporting
 }

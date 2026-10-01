@@ -889,22 +889,22 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 ### Phase 58 — ABAC Condition Engine (M56)
 
 #### 58a — Condition evaluator
-- [ ] `Condition` type: `{Field string, Operator string, Value string}` with typed operators (==, !=, in, not_in)
-- [ ] `EvaluateCondition(condition, subject, resource) → bool` — resolve `subject.team`, `resource.team` etc. from Principal and fact metadata
-- [ ] Subject attributes: `.team`, `.role`, `.groups`, `.name` (from Principal struct)
-- [ ] Resource attributes: `.team` (from tenant ownership), `.name`, `.type` (from fact key prefix)
-- [ ] Short-circuit evaluation: all conditions must match (AND semantics), fail-closed on missing attribute
+- [x] `Condition` type: `{Field string, Operator string, Value string}` with typed operators (==, !=, in, not_in)
+- [x] `EvaluateConditions(conditions, principal, resourceContext) → bool` — resolve `subject.team`, `resource.team` etc. from Principal and ResourceContext
+- [x] Subject attributes: `.team`, `.role`, `.groups`, `.name` (from Principal struct)
+- [x] Resource attributes: `.team` (from tenant ownership), `.name`, `.type` (from fact key prefix)
+- [x] Short-circuit evaluation: all conditions must match (AND semantics), fail-closed on missing attribute
 
 #### 58b — DSL integration
-- [ ] Parse `when subject.X == resource.Y` clauses inside `policy` blocks
-- [ ] `PolicyDecl` AST node: name, capability, conditions list
-- [ ] Compiler emits `auth/policy/{name}/condition/{index}` facts
-- [ ] AuthController reads policy facts and builds in-memory condition set
+- [x] Parse `when subject.X == resource.Y` clauses inside `policy` blocks
+- [x] `PolicyDecl` AST node: name, capability, conditions list
+- [x] Compiler emits `auth/policy/{name}/condition/{index}` facts
+- [x] AuthController reads policy facts and builds in-memory condition set
 
 #### 58c — Enforcement
-- [ ] Wire condition evaluation into APIAuthorizer: after capability match, evaluate conditions
-- [ ] Condition failure produces audit entry with `decision=deny, reason=condition_failed`
-- [ ] 8+ table-driven tests: team isolation, production gate, missing attribute → deny, multi-condition AND
+- [x] Wire condition evaluation into APIAuthorizer: after capability match, evaluate conditions
+- [x] Condition failure produces audit entry with `decision=deny, reason=condition_failed`
+- [x] 8+ table-driven tests: team isolation, production gate, missing attribute → deny, multi-condition AND
 
 ### Phase 59 — Multi-Tenant Visibility Filtering (M57)
 

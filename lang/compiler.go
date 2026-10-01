@@ -98,6 +98,13 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, groupFacts...)
 	}
+	for _, policyDecl := range file.Policies {
+		policyFacts, err := compilePolicyDeclaration(policyDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, policyFacts...)
+	}
 	return facts, nil
 }
 
@@ -899,6 +906,39 @@ func compileGroupDeclaration(groupDecl GroupDecl, sourceLines []string) ([]Fact,
 			Key: types.KeyAuthGroupMember(groupDecl.Name, memberName), Value: "true",
 		})
 	}
+	return facts, nil
+}
+
+// compilePolicyDeclaration converts a PolicyDecl into auth/policy/ prefix facts.
+// Each policy produces a capability fact and per-condition field/operator/value facts.
+func compilePolicyDeclaration(policyDecl PolicyDecl, sourceLines []string) ([]Fact, error) {
+	if policyDecl.Name == "" {
+		return nil, &ParseError{
+			Line:       policyDecl.Line,
+			Message:    "policy name is required",
+			SourceLine: sourceLineAt(sourceLines, policyDecl.Line),
+		}
+	}
+	if policyDecl.Capability == "" {
+		return nil, &ParseError{
+			Line:       policyDecl.Line,
+			Message:    "policy must have an \"allow\" clause with a capability",
+			SourceLine: sourceLineAt(sourceLines, policyDecl.Line),
+		}
+	}
+
+	facts := []Fact{
+		{Key: types.KeyAuthPolicyCapability(policyDecl.Name), Value: policyDecl.Capability},
+	}
+
+	for conditionIndex, conditionDecl := range policyDecl.Conditions {
+		facts = append(facts,
+			Fact{Key: types.KeyAuthPolicyConditionField(policyDecl.Name, conditionIndex), Value: conditionDecl.Field},
+			Fact{Key: types.KeyAuthPolicyConditionOperator(policyDecl.Name, conditionIndex), Value: conditionDecl.Operator},
+			Fact{Key: types.KeyAuthPolicyConditionValue(policyDecl.Name, conditionIndex), Value: conditionDecl.Value},
+		)
+	}
+
 	return facts, nil
 }
 

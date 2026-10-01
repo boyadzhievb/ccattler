@@ -2114,22 +2114,22 @@ func TestAPIAuthorizerCapabilityGrant(t *testing.T) {
 	alice := Principal{Kind: PrincipalKindUser, Name: "alice"}
 
 	// Alice can read workloads at cluster scope.
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster, nil); err != nil {
 		t.Errorf("alice should have workload.read at cluster: %v", err)
 	}
 
 	// Alice can create workloads in team/payments.
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("payments")); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("payments"), nil); err != nil {
 		t.Errorf("alice should have workload.create at team/payments: %v", err)
 	}
 
 	// Alice cannot create workloads at cluster scope (only granted at team/payments).
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, ScopeCluster, nil); err == nil {
 		t.Error("alice should NOT have workload.create at cluster scope")
 	}
 
 	// Alice cannot create workloads in team/frontend (different team).
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("frontend")); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadCreate, TeamScope("frontend"), nil); err == nil {
 		t.Error("alice should NOT have workload.create at team/frontend")
 	}
 }
@@ -2143,7 +2143,7 @@ func TestAPIAuthorizerClusterAdminGrantsAll(t *testing.T) {
 	admin := Principal{Kind: PrincipalKindUser, Name: "admin"}
 
 	for _, capability := range AllCapabilities {
-		if err := apiAuthorizer.AuthorizeAPI(admin, capability, ScopeCluster); err != nil {
+		if err := apiAuthorizer.AuthorizeAPI(admin, capability, ScopeCluster, nil); err != nil {
 			t.Errorf("cluster-admin should have %q at cluster: %v", capability, err)
 		}
 	}
@@ -2158,17 +2158,17 @@ func TestAPIAuthorizerReaderCannotWrite(t *testing.T) {
 	reader := Principal{Kind: PrincipalKindUser, Name: "reader"}
 
 	// Can read.
-	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadRead, ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadRead, ScopeCluster, nil); err != nil {
 		t.Errorf("api-reader should have workload.read: %v", err)
 	}
 
 	// Cannot create.
-	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityWorkloadCreate, ScopeCluster, nil); err == nil {
 		t.Error("api-reader should NOT have workload.create")
 	}
 
 	// Cannot scale.
-	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityScalingWrite, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(reader, CapabilityScalingWrite, ScopeCluster, nil); err == nil {
 		t.Error("api-reader should NOT have scaling.write")
 	}
 }
@@ -2180,12 +2180,12 @@ func TestAPIAuthorizerWildcardGrant(t *testing.T) {
 	apiAuthorizer.GrantRole("user:*", "cluster-admin")
 
 	anyUser := Principal{Kind: PrincipalKindUser, Name: "whoever"}
-	if err := apiAuthorizer.AuthorizeAPI(anyUser, CapabilityWorkloadCreate, ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(anyUser, CapabilityWorkloadCreate, ScopeCluster, nil); err != nil {
 		t.Errorf("user:* wildcard should grant cluster-admin: %v", err)
 	}
 
 	node := Principal{Kind: PrincipalKindNode, Name: "node-1"}
-	if err := apiAuthorizer.AuthorizeAPI(node, CapabilityWorkloadCreate, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(node, CapabilityWorkloadCreate, ScopeCluster, nil); err == nil {
 		t.Error("node:node-1 should NOT match user:* wildcard")
 	}
 }
@@ -2303,7 +2303,7 @@ func TestAuthorizationScenarios(t *testing.T) {
 
 	for _, scenario := range scenarios {
 		t.Run(scenario.description, func(t *testing.T) {
-			err := apiAuthorizer.AuthorizeAPI(scenario.principal, scenario.capability, scenario.scope)
+			err := apiAuthorizer.AuthorizeAPI(scenario.principal, scenario.capability, scenario.scope, nil)
 			if scenario.expectAllow && err != nil {
 				t.Errorf("expected ALLOW, got DENY: %v", err)
 			}
@@ -2412,7 +2412,7 @@ func TestFailClosedZeroPrincipalDenied(t *testing.T) {
 
 	zeroPrincipal := Principal{}
 	for _, capability := range AllCapabilities {
-		if err := apiAuthorizer.AuthorizeAPI(zeroPrincipal, capability, ScopeCluster); err == nil {
+		if err := apiAuthorizer.AuthorizeAPI(zeroPrincipal, capability, ScopeCluster, nil); err == nil {
 			t.Errorf("zero principal should be denied %q", capability)
 		}
 	}
@@ -2479,7 +2479,7 @@ func TestFailClosedIncompletePrincipalDenied(t *testing.T) {
 	apiAuthorizer.Grant("user:*", CapabilityWorkloadRead, ScopeCluster)
 
 	kindOnlyPrincipal := Principal{Kind: PrincipalKindUser}
-	if err := apiAuthorizer.AuthorizeAPI(kindOnlyPrincipal, CapabilityWorkloadRead, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(kindOnlyPrincipal, CapabilityWorkloadRead, ScopeCluster, nil); err == nil {
 		t.Error("principal with empty name should be denied even with user:* wildcard")
 	}
 }
@@ -2559,7 +2559,7 @@ func TestAPIAuthorizerReplaceGrantsClearsState(t *testing.T) {
 	apiAuthorizer.Grant("user:alice", CapabilityWorkloadRead, ScopeCluster)
 
 	alice := Principal{Kind: PrincipalKindUser, Name: "alice"}
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster, nil); err != nil {
 		t.Fatalf("alice should have workload.read before replace: %v", err)
 	}
 
@@ -2567,12 +2567,12 @@ func TestAPIAuthorizerReplaceGrantsClearsState(t *testing.T) {
 		"user:bob": {{Capability: CapabilityNodeRead, Scope: ScopeCluster}},
 	})
 
-	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster); err == nil {
+	if err := apiAuthorizer.AuthorizeAPI(alice, CapabilityWorkloadRead, ScopeCluster, nil); err == nil {
 		t.Error("alice's grants should be cleared after ReplaceGrants")
 	}
 
 	bob := Principal{Kind: PrincipalKindUser, Name: "bob"}
-	if err := apiAuthorizer.AuthorizeAPI(bob, CapabilityNodeRead, ScopeCluster); err != nil {
+	if err := apiAuthorizer.AuthorizeAPI(bob, CapabilityNodeRead, ScopeCluster, nil); err != nil {
 		t.Errorf("bob should have node.read after ReplaceGrants: %v", err)
 	}
 }

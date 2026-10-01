@@ -270,7 +270,7 @@ func (apiServer *Server) requireCapability(responseWriter http.ResponseWriter, r
 		return true
 	}
 	principal := security.PrincipalStructFromContext(request.Context())
-	if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, capability, scope); authError != nil {
+	if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, capability, scope, nil); authError != nil {
 		http.Error(responseWriter, "forbidden: "+authError.Error(), http.StatusForbidden)
 		return false
 	}
