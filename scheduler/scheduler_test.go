@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -770,7 +771,179 @@ func TestControllerInterface(t *testing.T) {
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(placementScheduler.Watch()) != 4 {
-		t.Fatalf("expected 4 watch prefixes, got %d", len(placementScheduler.Watch()))
+	if len(placementScheduler.Watch()) != 5 {
+		t.Fatalf("expected 5 watch prefixes, got %d", len(placementScheduler.Watch()))
+	}
+}
+
+func TestGroupCoSchedulingSameNode(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		// Two instances from two different services, both in group "frontend"
+		kv(types.KeyObservedInstanceService("proxy-1"), "proxy"),
+		kv(types.KeyObservedInstanceState("proxy-1"), "pending"),
+		kv(types.KeyObservedInstanceService("web-1"), "web"),
+		kv(types.KeyObservedInstanceState("web-1"), "pending"),
+		// Two alive nodes
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
+		// Group definition: "frontend" contains proxy and web
+		kv(types.KeyDesiredGroupProcess("frontend", "proxy"), "true"),
+		kv(types.KeyDesiredGroupProcess("frontend", "web"), "true"),
+		kv(types.KeyDesiredGroupShareNetwork("frontend"), "true"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 placements, got %d", len(changes))
+	}
+
+	// Both instances must be placed on the same node.
+	nodeForProxy := string(changes[0].Value)
+	nodeForWeb := string(changes[1].Value)
+	if nodeForProxy != nodeForWeb {
+		t.Errorf("group members placed on different nodes: %s vs %s", nodeForProxy, nodeForWeb)
+	}
+}
+
+func TestGroupCoSchedulingJoinsExistingPlacement(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		// proxy-1 is already running and placed on node-2
+		kv(types.KeyObservedInstanceService("proxy-1"), "proxy"),
+		kv(types.KeyObservedInstanceState("proxy-1"), "running"),
+		kv(types.KeyPlacementInstance("proxy-1"), "node-2"),
+		// web-1 is pending (not placed)
+		kv(types.KeyObservedInstanceService("web-1"), "web"),
+		kv(types.KeyObservedInstanceState("web-1"), "pending"),
+		// Two alive nodes
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
+		// Group: proxy and web co-scheduled
+		kv(types.KeyDesiredGroupProcess("frontend", "proxy"), "true"),
+		kv(types.KeyDesiredGroupProcess("frontend", "web"), "true"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement (web-1 only), got %d", len(changes))
+	}
+
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("expected web-1 placed on node-2 (with proxy-1), got %s", changes[0].Value)
+	}
+}
+
+func TestGroupDoesNotAffectUngroupedInstances(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		// Group instances
+		kv(types.KeyObservedInstanceService("proxy-1"), "proxy"),
+		kv(types.KeyObservedInstanceState("proxy-1"), "pending"),
+		kv(types.KeyObservedInstanceService("web-1"), "web"),
+		kv(types.KeyObservedInstanceState("web-1"), "pending"),
+		// Ungrouped instance
+		kv(types.KeyObservedInstanceService("api-1"), "api"),
+		kv(types.KeyObservedInstanceState("api-1"), "pending"),
+		// Two nodes
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
+		// Group: only proxy and web
+		kv(types.KeyDesiredGroupProcess("frontend", "proxy"), "true"),
+		kv(types.KeyDesiredGroupProcess("frontend", "web"), "true"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 placements, got %d", len(changes))
+	}
+
+	// Find placements by instance key
+	placementByInstance := make(map[string]string)
+	for _, change := range changes {
+		instanceID := strings.TrimPrefix(change.Key, types.ScanPlacements)
+		placementByInstance[instanceID] = string(change.Value)
+	}
+
+	// Group members must be co-located
+	if placementByInstance["proxy-1"] != placementByInstance["web-1"] {
+		t.Errorf("group members not co-located: proxy-1=%s, web-1=%s",
+			placementByInstance["proxy-1"], placementByInstance["web-1"])
+	}
+
+	// api-1 should be placed somewhere (possibly different node)
+	if placementByInstance["api-1"] == "" {
+		t.Error("ungrouped instance api-1 was not placed")
+	}
+}
+
+func TestExtractServiceGroupMemberships(t *testing.T) {
+	facts := buildFacts(
+		kv(types.KeyDesiredGroupProcess("frontend", "proxy"), "true"),
+		kv(types.KeyDesiredGroupProcess("frontend", "web"), "true"),
+		kv(types.KeyDesiredGroupProcess("backend", "api"), "true"),
+		kv(types.KeyDesiredGroupShareNetwork("frontend"), "true"),
+	)
+
+	serviceToGroup := extractServiceGroupMemberships(facts)
+
+	if serviceToGroup["proxy"] != "frontend" {
+		t.Errorf("proxy: got %q, want frontend", serviceToGroup["proxy"])
+	}
+	if serviceToGroup["web"] != "frontend" {
+		t.Errorf("web: got %q, want frontend", serviceToGroup["web"])
+	}
+	if serviceToGroup["api"] != "backend" {
+		t.Errorf("api: got %q, want backend", serviceToGroup["api"])
+	}
+	if _, exists := serviceToGroup["unknown"]; exists {
+		t.Error("unknown service should not be in group map")
+	}
+}
+
+func TestPartitionUnplacedByGroup(t *testing.T) {
+	instances := map[string]*schedulerInstanceInfo{
+		"proxy-1": {service: "proxy", state: types.InstancePending},
+		"web-1":   {service: "web", state: types.InstancePending},
+		"api-1":   {service: "api", state: types.InstancePending},
+	}
+	serviceToGroup := map[string]string{
+		"proxy": "frontend",
+		"web":   "frontend",
+	}
+
+	grouped, ungrouped := partitionUnplacedByGroup(
+		[]string{"api-1", "proxy-1", "web-1"}, instances, serviceToGroup,
+	)
+
+	if len(grouped["frontend"]) != 2 {
+		t.Fatalf("expected 2 instances in frontend group, got %d", len(grouped["frontend"]))
+	}
+	if len(ungrouped) != 1 || ungrouped[0] != "api-1" {
+		t.Fatalf("expected [api-1] ungrouped, got %v", ungrouped)
 	}
 }

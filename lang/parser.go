@@ -105,11 +105,19 @@ func (parser *Parser) ParseFile() (*File, error) {
 			}
 			file.Grants = append(file.Grants, *grantDecl)
 		case "group":
-			groupDecl, err := parser.parseGroupDeclaration()
-			if err != nil {
-				return nil, err
+			if parser.isServiceGroupBlock() {
+				serviceGroupDecl, err := parser.parseServiceGroupDeclaration()
+				if err != nil {
+					return nil, err
+				}
+				file.ServiceGroups = append(file.ServiceGroups, *serviceGroupDecl)
+			} else {
+				groupDecl, err := parser.parseGroupDeclaration()
+				if err != nil {
+					return nil, err
+				}
+				file.Groups = append(file.Groups, *groupDecl)
 			}
-			file.Groups = append(file.Groups, *groupDecl)
 		case "policy":
 			policyDecl, err := parser.parsePolicyDeclaration()
 			if err != nil {
@@ -1565,6 +1573,108 @@ func (parser *Parser) parseGroupDeclaration() (*GroupDecl, error) {
 		return nil, err
 	}
 	return groupDecl, nil
+}
+
+// isServiceGroupBlock peeks ahead without consuming tokens to determine
+// whether the current "group" block is a service group (with "process" or
+// "share" keywords) rather than an auth group (with "member" keywords).
+// The parser position must be at the "group" keyword.
+func (parser *Parser) isServiceGroupBlock() bool {
+	peekPosition := parser.position + 1 // skip "group"
+	// Skip the group name identifier.
+	for peekPosition < len(parser.tokens) && parser.tokens[peekPosition].Type == TokenIdent {
+		peekPosition++
+	}
+	// Skip opening brace.
+	if peekPosition < len(parser.tokens) && parser.tokens[peekPosition].Type == TokenLBrace {
+		peekPosition++
+	}
+	// Skip newlines.
+	for peekPosition < len(parser.tokens) && parser.tokens[peekPosition].Type == TokenNewline {
+		peekPosition++
+	}
+	// Check the first keyword inside the block.
+	if peekPosition < len(parser.tokens) && parser.tokens[peekPosition].Type == TokenIdent {
+		firstKeyword := parser.tokens[peekPosition].Value
+		return firstKeyword == "process" || firstKeyword == "share"
+	}
+	return false
+}
+
+// parseServiceGroupDeclaration parses a service group block.
+// Syntax: group <name> { process <svc> ... share network ... share volume <name> ... }
+func (parser *Parser) parseServiceGroupDeclaration() (*ServiceGroupDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "group"
+
+	groupName, nameErr := parser.expectIdentifier()
+	if nameErr != nil {
+		return nil, nameErr
+	}
+
+	if braceErr := parser.expectToken(TokenLBrace); braceErr != nil {
+		return nil, braceErr
+	}
+	parser.skipNewlineTokens()
+
+	serviceGroupDecl := &ServiceGroupDecl{Name: groupName, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		keyword, keyErr := parser.expectIdentifier()
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		parseErr := parseServiceGroupField(parser, serviceGroupDecl, keyword)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if closeErr := parser.expectToken(TokenRBrace); closeErr != nil {
+		return nil, closeErr
+	}
+	return serviceGroupDecl, nil
+}
+
+// parseServiceGroupField parses a single field ("process" or "share") inside
+// a service group block and updates the declaration accordingly.
+func parseServiceGroupField(parser *Parser, serviceGroupDecl *ServiceGroupDecl, keyword string) error {
+	switch keyword {
+	case "process":
+		processName, processErr := parser.expectIdentifier()
+		if processErr != nil {
+			return processErr
+		}
+		serviceGroupDecl.Processes = append(serviceGroupDecl.Processes, processName)
+	case "share":
+		return parseServiceGroupShareField(parser, serviceGroupDecl)
+	default:
+		return parser.parserErrorf("unknown service group field %q (expected process or share)", keyword)
+	}
+	return nil
+}
+
+// parseServiceGroupShareField parses a "share" directive inside a service
+// group block: either "share network" or "share volume <name>".
+func parseServiceGroupShareField(parser *Parser, serviceGroupDecl *ServiceGroupDecl) error {
+	shareType, shareErr := parser.expectIdentifier()
+	if shareErr != nil {
+		return shareErr
+	}
+	switch shareType {
+	case "network":
+		serviceGroupDecl.ShareNetwork = true
+	case "volume":
+		volumeName, volumeErr := parser.expectIdentifier()
+		if volumeErr != nil {
+			return volumeErr
+		}
+		serviceGroupDecl.SharedVolumes = append(serviceGroupDecl.SharedVolumes, volumeName)
+	default:
+		return parser.parserErrorf("unknown share type %q (expected network or volume)", shareType)
+	}
+	return nil
 }
 
 // parsePolicyDeclaration parses a policy block with capability and conditions.

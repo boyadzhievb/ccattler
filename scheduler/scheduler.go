@@ -36,6 +36,7 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanObservedNodes,
 		types.ScanObservedInstances,
 		types.ScanDesiredServices,
+		types.ScanDesiredGroups,
 	}
 }
 
@@ -43,12 +44,14 @@ func (placementScheduler *Scheduler) Watch() []string {
 // placement, then assigns each one to the alive node with the lowest load and
 // sufficient available resources. Placement constraints (architecture, zone
 // spread) are applied as filters before selecting the least-loaded node.
+// Service group members are co-scheduled onto the same node.
 func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
 	placements := extractPlacementsFromFacts(facts)
 	serviceResources := extractServiceResourcesFromFacts(facts)
 	placementConstraints := extractPlacementConstraints(facts)
+	serviceToGroup := extractServiceGroupMemberships(facts)
 
 	unplaced := findUnplacedPendingInstances(instances, placements)
 	if len(unplaced) == 0 {
@@ -56,55 +59,93 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	}
 
 	loadPerNode, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
-
 	alive := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
 	if len(alive) == 0 {
 		return nil, nil
 	}
 
 	serviceZoneCounts := computeServiceZonePlacements(placements, instances, alive)
-
-	var changes []controllers.Change
-	for _, instanceID := range unplaced {
-		instanceInfo := instances[instanceID]
-		var reqCPU, reqMemory int64
-		serviceName := ""
-		if instanceInfo != nil {
-			serviceName = instanceInfo.service
-			if resource, ok := serviceResources[instanceInfo.service]; ok {
-				reqCPU = resource.cpu
-				reqMemory = resource.memory
-			}
-		}
-
-		// Filter candidates by placement constraints.
-		candidates := filterByConstraints(alive, serviceName, placementConstraints)
-
-		// If zone spread is configured, prefer least-populated zone.
-		constraint := placementConstraints[serviceName]
-		if constraint != nil && constraint.zonePolicy == "spread" {
-			candidates = selectZoneSpreadCandidates(candidates, serviceName, serviceZoneCounts)
-		}
-
-		// Score candidates by soft preferences (prefer labels).
-		if constraint != nil && len(constraint.prefer) > 0 {
-			candidates = rankByPreferences(candidates, constraint.prefer, loadPerNode, reqCPU, reqMemory)
-		}
-
-		best := selectLeastLoadedNode(candidates, loadPerNode, reqCPU, reqMemory)
-		if best == "" {
-			continue
-		}
-		changes = append(changes, controllers.Change{
-			Type:  store.OpPut,
-			Key:   types.KeyPlacementInstance(instanceID),
-			Value: []byte(best),
-		})
-		loadPerNode[best]++
-		updateNodeResourcesAfterPlacement(alive, best, reqCPU, reqMemory, serviceName, serviceZoneCounts)
+	schedulingState := &placementState{
+		alive: alive, loadPerNode: loadPerNode,
+		serviceZoneCounts: serviceZoneCounts, serviceResources: serviceResources,
+		placementConstraints: placementConstraints, instances: instances, placements: placements,
+		serviceToGroup: serviceToGroup,
 	}
 
+	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
+
+	var changes []controllers.Change
+	changes = append(changes, placeGroupedInstances(groupedUnplaced, serviceToGroup, schedulingState)...)
+	changes = append(changes, placeUngroupedInstances(ungroupedUnplaced, schedulingState)...)
 	return changes, nil
+}
+
+// placementState bundles the mutable scheduling state passed between the
+// group and ungrouped placement functions within a single reconciliation.
+type placementState struct {
+	alive                []candidateNode
+	loadPerNode          map[string]int
+	serviceZoneCounts    map[string]map[string]int
+	serviceResources     map[string]serviceResourceRequirements
+	placementConstraints map[string]*servicePlacementConstraint
+	instances            map[string]*schedulerInstanceInfo
+	placements           map[string]string
+	serviceToGroup       map[string]string
+}
+
+// placeUngroupedInstances runs the standard per-instance placement loop for
+// instances that do not belong to any service group.
+func placeUngroupedInstances(unplaced []string, state *placementState) []controllers.Change {
+	var changes []controllers.Change
+	for _, instanceID := range unplaced {
+		change := placeSingleInstance(instanceID, state)
+		if change != nil {
+			changes = append(changes, *change)
+		}
+	}
+	return changes
+}
+
+// placeSingleInstance selects the best node for a single instance and returns
+// the placement change, or nil if no suitable node is available.
+func placeSingleInstance(instanceID string, state *placementState) *controllers.Change {
+	instanceInfo := state.instances[instanceID]
+	serviceName, reqCPU, reqMemory := resolveInstanceResourceNeeds(instanceInfo, state.serviceResources)
+
+	candidates := filterByConstraints(state.alive, serviceName, state.placementConstraints)
+	constraint := state.placementConstraints[serviceName]
+	if constraint != nil && constraint.zonePolicy == "spread" {
+		candidates = selectZoneSpreadCandidates(candidates, serviceName, state.serviceZoneCounts)
+	}
+	if constraint != nil && len(constraint.prefer) > 0 {
+		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
+	}
+
+	best := selectLeastLoadedNode(candidates, state.loadPerNode, reqCPU, reqMemory)
+	if best == "" {
+		return nil
+	}
+	state.loadPerNode[best]++
+	updateNodeResourcesAfterPlacement(state.alive, best, reqCPU, reqMemory, serviceName, state.serviceZoneCounts)
+	return &controllers.Change{
+		Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(best),
+	}
+}
+
+// resolveInstanceResourceNeeds extracts the service name and resource
+// requirements for an instance.
+func resolveInstanceResourceNeeds(
+	instanceInfo *schedulerInstanceInfo,
+	serviceResources map[string]serviceResourceRequirements,
+) (string, int64, int64) {
+	if instanceInfo == nil {
+		return "", 0, 0
+	}
+	serviceName := instanceInfo.service
+	if resource, ok := serviceResources[serviceName]; ok {
+		return serviceName, resource.cpu, resource.memory
+	}
+	return serviceName, 0, 0
 }
 
 // findUnplacedPendingInstances returns the sorted list of instance IDs that are
@@ -585,6 +626,149 @@ func selectZoneSpreadCandidates(candidates []candidateNode, serviceName string, 
 		return candidates
 	}
 	return preferred
+}
+
+// extractServiceGroupMemberships parses desired/group/ facts and returns a map
+// from service name to the group name it belongs to. A service can only belong
+// to one group.
+func extractServiceGroupMemberships(facts []store.Fact) map[string]string {
+	serviceToGroup := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredGroups) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredGroups)
+		// relativePath = "{groupName}/process/{serviceName}"
+		parts := strings.SplitN(relativePath, "/", 3)
+		if len(parts) != 3 || parts[1] != "process" {
+			continue
+		}
+		groupName := parts[0]
+		serviceName := parts[2]
+		serviceToGroup[serviceName] = groupName
+	}
+	return serviceToGroup
+}
+
+// partitionUnplacedByGroup splits unplaced instance IDs into two collections:
+// grouped (keyed by group name) and ungrouped (plain list). Deterministic
+// ordering is preserved within each group.
+func partitionUnplacedByGroup(
+	unplaced []string,
+	instances map[string]*schedulerInstanceInfo,
+	serviceToGroup map[string]string,
+) (map[string][]string, []string) {
+	groupedUnplaced := make(map[string][]string)
+	var ungroupedUnplaced []string
+	for _, instanceID := range unplaced {
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil {
+			ungroupedUnplaced = append(ungroupedUnplaced, instanceID)
+			continue
+		}
+		groupName, inGroup := serviceToGroup[instanceInfo.service]
+		if inGroup {
+			groupedUnplaced[groupName] = append(groupedUnplaced[groupName], instanceID)
+		} else {
+			ungroupedUnplaced = append(ungroupedUnplaced, instanceID)
+		}
+	}
+	return groupedUnplaced, ungroupedUnplaced
+}
+
+// placeGroupedInstances co-schedules all instances belonging to the same service
+// group onto the same node. If any group member is already placed, the remaining
+// members join it. Otherwise the node with the most remaining resources that
+// fits the combined group requirements is selected.
+func placeGroupedInstances(
+	groupedUnplaced map[string][]string,
+	serviceToGroup map[string]string,
+	state *placementState,
+) []controllers.Change {
+	sortedGroupNames := make([]string, 0, len(groupedUnplaced))
+	for groupName := range groupedUnplaced {
+		sortedGroupNames = append(sortedGroupNames, groupName)
+	}
+	sort.Strings(sortedGroupNames)
+
+	var changes []controllers.Change
+	for _, groupName := range sortedGroupNames {
+		instanceIDs := groupedUnplaced[groupName]
+		groupChanges := placeOneGroup(groupName, instanceIDs, state)
+		changes = append(changes, groupChanges...)
+	}
+	return changes
+}
+
+// placeOneGroup places all unplaced instances of a single service group onto
+// the same node. It first checks if any group member is already placed and
+// reuses that node; otherwise it picks the node that fits the combined resource
+// requirements of all unplaced members.
+func placeOneGroup(
+	groupName string,
+	instanceIDs []string,
+	state *placementState,
+) []controllers.Change {
+	targetNode := findExistingGroupNode(groupName, state)
+
+	if targetNode == "" {
+		totalCPU, totalMemory := computeGroupResourceTotal(instanceIDs, state)
+		targetNode = selectLeastLoadedNode(state.alive, state.loadPerNode, totalCPU, totalMemory)
+	}
+	if targetNode == "" {
+		return nil
+	}
+
+	var changes []controllers.Change
+	for _, instanceID := range instanceIDs {
+		instanceInfo := state.instances[instanceID]
+		_, reqCPU, reqMemory := resolveInstanceResourceNeeds(instanceInfo, state.serviceResources)
+		state.loadPerNode[targetNode]++
+		serviceName := ""
+		if instanceInfo != nil {
+			serviceName = instanceInfo.service
+		}
+		updateNodeResourcesAfterPlacement(state.alive, targetNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts)
+		changes = append(changes, controllers.Change{
+			Type:  store.OpPut,
+			Key:   types.KeyPlacementInstance(instanceID),
+			Value: []byte(targetNode),
+		})
+	}
+	return changes
+}
+
+// findExistingGroupNode looks through already-placed instances to see if any
+// instance whose service belongs to the given group is already placed on a node.
+// Returns the node ID or empty string if no group member is placed yet. When
+// multiple nodes host group members (split state), the first node in sorted
+// order is returned for determinism.
+func findExistingGroupNode(groupName string, state *placementState) string {
+	var candidateNodeIDs []string
+	for instanceID, nodeID := range state.placements {
+		instanceInfo := state.instances[instanceID]
+		if instanceInfo == nil {
+			continue
+		}
+		if state.serviceToGroup[instanceInfo.service] == groupName {
+			candidateNodeIDs = append(candidateNodeIDs, nodeID)
+		}
+	}
+	if len(candidateNodeIDs) == 0 {
+		return ""
+	}
+	sort.Strings(candidateNodeIDs)
+	return candidateNodeIDs[0]
+}
+
+// computeGroupResourceTotal sums the CPU and memory requirements across all
+// instances in a group, used for selecting a node with sufficient capacity.
+func computeGroupResourceTotal(instanceIDs []string, state *placementState) (int64, int64) {
+	var totalCPU, totalMemory int64
+	for _, instanceID := range instanceIDs {
+		instanceInfo := state.instances[instanceID]
+		_, reqCPU, reqMemory := resolveInstanceResourceNeeds(instanceInfo, state.serviceResources)
+		totalCPU += reqCPU
+		totalMemory += reqMemory
+	}
+	return totalCPU, totalMemory
 }
 
 // extractServiceResourcesFromFacts parses the flat list of store facts and

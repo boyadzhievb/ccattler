@@ -954,14 +954,14 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 ### Phase 61 — Service Groups (M59)
 
 #### 61a — DSL & facts
-- [ ] Parse `group` block with `process` and `share` keywords (distinct from auth `group`)
-- [ ] `ServiceGroupDecl` AST node: name, process list, shared resources (network, volume names)
-- [ ] Compiler emits `desired/group/{name}/process/{svc}` and `desired/group/{name}/share/{type}` facts
+- [x] Parse `group` block with `process` and `share` keywords (distinct from auth `group`)
+- [x] `ServiceGroupDecl` AST node: name, process list, shared resources (network, volume names)
+- [x] Compiler emits `desired/group/{name}/process/{svc}` and `desired/group/{name}/share/{type}` facts
 
 #### 61b — Co-scheduling
-- [ ] Scheduler treats group members as a unit: all processes in a group placed on same node
-- [ ] Shared network: group members share a network namespace (same IP, different ports)
-- [ ] Shared volume: group members mount the same volume at configurable paths
+- [x] Scheduler treats group members as a unit: all processes in a group placed on same node
+- [x] Shared network: group members share a network namespace (same IP, different ports)
+- [x] Shared volume: group members mount the same volume at configurable paths
 
 ### Phase 62 — Vertical Autoscaling Controller (M60)
 

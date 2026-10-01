@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M58 — Phase 60 Network Policy Enforcement. M1–M58 + M62–M63 complete. Gates A–I resolved. Next: Phase 61 — Secret Encryption & KMS.
+**Completed through:** M59 — Phase 61 Service Groups. M1–M59 + M62–M63 complete. Gates A–I resolved. Next: Phase 62 — Vertical Autoscaling Controller.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

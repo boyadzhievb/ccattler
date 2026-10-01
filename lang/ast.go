@@ -11,6 +11,7 @@ type File struct {
 	Roles            []RoleDecl            // top-level role blocks defining capability bundles
 	Grants           []GrantDecl           // top-level grant statements binding roles to principals
 	Groups           []GroupDecl           // top-level group blocks defining member collections
+	ServiceGroups    []ServiceGroupDecl    // top-level group blocks defining co-scheduled service groups
 	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
 	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
 }
@@ -298,6 +299,24 @@ type GroupDecl struct {
 	Name    string   // unique group identifier (e.g. "developers")
 	Members []string // member identifiers (e.g. user emails or service names)
 	Line    int      // source line number for error reporting
+}
+
+// ServiceGroupDecl represents a parsed service "group" block in the DSL. A
+// service group co-schedules multiple services on the same node and optionally
+// shares network namespace or volumes between them.
+//
+//	group frontend {
+//	    process proxy
+//	    process web
+//	    share network
+//	    share volume cache
+//	}
+type ServiceGroupDecl struct {
+	Name           string   // unique service group identifier (e.g. "frontend")
+	Processes      []string // service names that belong to this group
+	ShareNetwork   bool     // whether group members share a network namespace
+	SharedVolumes  []string // volume names shared across group members
+	Line           int      // source line number for error reporting
 }
 
 // PolicyDecl represents a parsed "policy" block in the DSL. A policy defines

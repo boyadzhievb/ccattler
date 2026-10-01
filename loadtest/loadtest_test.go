@@ -19,6 +19,10 @@ const (
 	loadTestTotalInstances      = loadTestServiceCount * loadTestInstancesPerService
 	convergenceTimeout          = 120 * time.Second
 	recoveryTimeout             = 240 * time.Second
+	// minimumTestDeadline is the minimum remaining time the test binary must
+	// have before the load test starts. This prevents panics when run under a
+	// short timeout (e.g. `go test ./... -timeout 120s`).
+	minimumTestDeadline = 5 * time.Minute
 )
 
 func buildNodeIDs(count int) []string {
@@ -112,6 +116,12 @@ func countInstancesPerNode(ctx context.Context, factStore store.StateStore) (map
 func TestSyntheticCluster50Nodes1000Workloads(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping load test in short mode")
+	}
+	if deadline, hasDeadline := t.Deadline(); hasDeadline {
+		remaining := time.Until(deadline)
+		if remaining < minimumTestDeadline {
+			t.Skipf("skipping load test: %v remaining, need at least %v (use -timeout 10m)", remaining.Round(time.Second), minimumTestDeadline)
+		}
 	}
 	nodeIDs := buildNodeIDs(loadTestNodeCount)
 	factStore := store.NewMemoryStore()

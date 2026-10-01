@@ -98,6 +98,13 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, groupFacts...)
 	}
+	for _, serviceGroupDecl := range file.ServiceGroups {
+		serviceGroupFacts, err := compileServiceGroupDeclaration(serviceGroupDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, serviceGroupFacts...)
+	}
 	for _, policyDecl := range file.Policies {
 		policyFacts, err := compilePolicyDeclaration(policyDecl, sourceLines)
 		if err != nil {
@@ -911,6 +918,46 @@ func compileGroupDeclaration(groupDecl GroupDecl, sourceLines []string) ([]Fact,
 	for _, memberName := range groupDecl.Members {
 		facts = append(facts, Fact{
 			Key: types.KeyAuthGroupMember(groupDecl.Name, memberName), Value: "true",
+		})
+	}
+	return facts, nil
+}
+
+// compileServiceGroupDeclaration converts a ServiceGroupDecl into
+// desired/group/ prefix facts: a root marker, process memberships,
+// optional shared network flag, and shared volume bindings.
+func compileServiceGroupDeclaration(serviceGroupDecl ServiceGroupDecl, sourceLines []string) ([]Fact, error) {
+	if serviceGroupDecl.Name == "" {
+		return nil, &ParseError{
+			Line:       serviceGroupDecl.Line,
+			Message:    "service group name is required",
+			SourceLine: sourceLineAt(sourceLines, serviceGroupDecl.Line),
+		}
+	}
+	if len(serviceGroupDecl.Processes) == 0 {
+		return nil, &ParseError{
+			Line:       serviceGroupDecl.Line,
+			Message:    "service group must have at least one process",
+			SourceLine: sourceLineAt(sourceLines, serviceGroupDecl.Line),
+		}
+	}
+
+	groupName := serviceGroupDecl.Name
+	facts := []Fact{{Key: types.KeyDesiredGroup(groupName), Value: "true"}}
+
+	for _, processName := range serviceGroupDecl.Processes {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredGroupProcess(groupName, processName), Value: "true",
+		})
+	}
+	if serviceGroupDecl.ShareNetwork {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredGroupShareNetwork(groupName), Value: "true",
+		})
+	}
+	for _, volumeName := range serviceGroupDecl.SharedVolumes {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredGroupShareVolume(groupName, volumeName), Value: "true",
 		})
 	}
 	return facts, nil

@@ -1487,3 +1487,35 @@ const ScanDerivedNetworkRules = "derived/network/rule/"
 func KeyDerivedNetworkRule(nodeID string, ruleIndex int) string {
 	return fmt.Sprintf("%s%s/%d", ScanDerivedNetworkRules, nodeID, ruleIndex)
 }
+
+// Service group key prefixes and helpers.
+
+// ScanDesiredGroups scans all desired service group definitions.
+const ScanDesiredGroups = PrefixDesired + "/group/"
+
+// KeyDesiredGroup returns the store path for a service group's root marker key.
+// Path: desired/group/{name}
+func KeyDesiredGroup(groupName string) string {
+	return fmt.Sprintf("%s/group/%s", PrefixDesired, groupName)
+}
+
+// KeyDesiredGroupProcess returns the store path for a service membership
+// in a group. The value is "true".
+// Path: desired/group/{name}/process/{serviceName}
+func KeyDesiredGroupProcess(groupName string, serviceName string) string {
+	return fmt.Sprintf("%s/group/%s/process/%s", PrefixDesired, groupName, serviceName)
+}
+
+// KeyDesiredGroupShareNetwork returns the store path for a group's shared
+// network namespace flag. The value is "true" when the group shares networking.
+// Path: desired/group/{name}/share/network
+func KeyDesiredGroupShareNetwork(groupName string) string {
+	return fmt.Sprintf("%s/group/%s/share/network", PrefixDesired, groupName)
+}
+
+// KeyDesiredGroupShareVolume returns the store path for a shared volume
+// binding within a group.
+// Path: desired/group/{name}/share/volume/{volumeName}
+func KeyDesiredGroupShareVolume(groupName string, volumeName string) string {
+	return fmt.Sprintf("%s/group/%s/share/volume/%s", PrefixDesired, groupName, volumeName)
+}

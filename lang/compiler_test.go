@@ -904,3 +904,59 @@ grant developer to group developers
 		t.Error("missing grant")
 	}
 }
+
+func TestCompileServiceGroupDeclaration(t *testing.T) {
+	file, _ := Parse(`group frontend {
+    process proxy
+    process web
+    share network
+    share volume cache
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredGroup("frontend")] != "true" {
+		t.Error("missing group root marker")
+	}
+	if compiledFactMap[types.KeyDesiredGroupProcess("frontend", "proxy")] != "true" {
+		t.Error("missing group process proxy")
+	}
+	if compiledFactMap[types.KeyDesiredGroupProcess("frontend", "web")] != "true" {
+		t.Error("missing group process web")
+	}
+	if compiledFactMap[types.KeyDesiredGroupShareNetwork("frontend")] != "true" {
+		t.Error("missing group share network")
+	}
+	if compiledFactMap[types.KeyDesiredGroupShareVolume("frontend", "cache")] != "true" {
+		t.Error("missing group share volume cache")
+	}
+}
+
+func TestCompileServiceGroupNoNetwork(t *testing.T) {
+	file, _ := Parse(`group backend {
+    process api
+    process worker
+    share volume data
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredGroup("backend")] != "true" {
+		t.Error("missing group root marker")
+	}
+	if compiledFactMap[types.KeyDesiredGroupProcess("backend", "api")] != "true" {
+		t.Error("missing group process api")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredGroupShareNetwork("backend")]; exists {
+		t.Error("unexpected share network fact when not declared")
+	}
+	if compiledFactMap[types.KeyDesiredGroupShareVolume("backend", "data")] != "true" {
+		t.Error("missing group share volume data")
+	}
+}
