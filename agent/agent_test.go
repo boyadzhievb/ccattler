@@ -81,6 +81,10 @@ func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string,
 	return delayed.inner.Logs(ctx, instanceID, follow)
 }
 
+func (delayed *delayedStartRuntime) Resize(ctx context.Context, instanceID string, cpuMillicores int64, memoryBytes int64) error {
+	return delayed.inner.Resize(ctx, instanceID, cpuMillicores, memoryBytes)
+}
+
 // mockSecretProvider is a test double that serves secrets from an in-memory map.
 type mockSecretProvider struct {
 	mu      sync.Mutex
@@ -1460,4 +1464,134 @@ func TestAgentTelemetryUsesRuntimeStats(t *testing.T) {
 		t.Fatal("expected memory telemetry fact")
 	}
 	t.Logf("observed memory: %s", memoryFact.Value)
+}
+
+func TestAgentResizesInstanceOnEffectiveResourceChange(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("myapp:v1"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("api"), []byte("500m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("api"), []byte("512Mi"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "inst-1", Service: "api", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "inst-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running in runtime", func() bool {
+		workloadStatus, statusError := simulatorRuntime.Status(ctx, "inst-1")
+		return statusError == nil && workloadStatus.Running
+	})
+
+	waitFor(t, 2*time.Second, "instance state=running in store", func() bool {
+		factEntry, getError := factStore.Get(ctx, types.KeyObservedInstanceState("inst-1"))
+		return getError == nil && string(factEntry.Value) == "running"
+	})
+
+	initialStats, statsError := simulatorRuntime.Stats(ctx, "inst-1")
+	if statsError != nil {
+		t.Fatalf("failed to get initial stats: %v", statsError)
+	}
+	if initialStats.CPUMillicores != 500 {
+		t.Errorf("initial CPU: got %d, want 500", initialStats.CPUMillicores)
+	}
+
+	factStore.Put(ctx, types.KeyEffectiveServiceResourcesCPU("api"), []byte("1000m"))
+	factStore.Put(ctx, types.KeyEffectiveServiceResourcesMemory("api"), []byte("1Gi"))
+
+	waitFor(t, 3*time.Second, "simulator workload resized to 1000m CPU", func() bool {
+		resourceStats, statsErr := simulatorRuntime.Stats(ctx, "inst-1")
+		return statsErr == nil && resourceStats.CPUMillicores == 1000
+	})
+
+	updatedStats, _ := simulatorRuntime.Stats(ctx, "inst-1")
+	expectedMemory := int64(1024 * 1024 * 1024)
+	if updatedStats.MemoryBytes != expectedMemory {
+		t.Errorf("memory after resize: got %d, want %d", updatedStats.MemoryBytes, expectedMemory)
+	}
+}
+
+func TestAgentRestartsInstanceWhenResizeUnsupported(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	resizeUnsupportedRuntime := &noResizeRuntime{
+		inner: runtime.NewSimulatorRuntime(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, resizeUnsupportedRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("myapp:v1"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("api"), []byte("500m"))
+	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("api"), []byte("512Mi"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "inst-2", Service: "api", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "inst-2", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		workloadStatus, statusError := resizeUnsupportedRuntime.Status(ctx, "inst-2")
+		return statusError == nil && workloadStatus.Running
+	})
+
+	factStore.Put(ctx, types.KeyEffectiveServiceResourcesCPU("api"), []byte("2000m"))
+
+	waitFor(t, 3*time.Second, "instance stopped and restarted with new resources", func() bool {
+		resourceStats, statsErr := resizeUnsupportedRuntime.Stats(ctx, "inst-2")
+		return statsErr == nil && resourceStats.CPUMillicores == 2000
+	})
+}
+
+// noResizeRuntime wraps SimulatorRuntime but returns ErrResizeUnsupported from
+// Resize, forcing the agent to stop and restart the instance.
+type noResizeRuntime struct {
+	inner *runtime.SimulatorRuntime
+}
+
+func (noResize *noResizeRuntime) Start(ctx context.Context, spec runtime.Spec) error {
+	return noResize.inner.Start(ctx, spec)
+}
+
+func (noResize *noResizeRuntime) Stop(ctx context.Context, instanceID string) error {
+	return noResize.inner.Stop(ctx, instanceID)
+}
+
+func (noResize *noResizeRuntime) Status(ctx context.Context, instanceID string) (runtime.Status, error) {
+	return noResize.inner.Status(ctx, instanceID)
+}
+
+func (noResize *noResizeRuntime) List(ctx context.Context) ([]runtime.Status, error) {
+	return noResize.inner.List(ctx)
+}
+
+func (noResize *noResizeRuntime) Exec(ctx context.Context, instanceID string, execSpec runtime.ExecSpec) error {
+	return noResize.inner.Exec(ctx, instanceID, execSpec)
+}
+
+func (noResize *noResizeRuntime) ExecInit(ctx context.Context, image string, execSpec runtime.ExecSpec) error {
+	return noResize.inner.ExecInit(ctx, image, execSpec)
+}
+
+func (noResize *noResizeRuntime) Stats(ctx context.Context, instanceID string) (runtime.ResourceStats, error) {
+	return noResize.inner.Stats(ctx, instanceID)
+}
+
+func (noResize *noResizeRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
+	return noResize.inner.Logs(ctx, instanceID, follow)
+}
+
+// Resize always returns ErrResizeUnsupported to simulate process/container runtimes.
+func (noResize *noResizeRuntime) Resize(_ context.Context, _ string, _ int64, _ int64) error {
+	return runtime.ErrResizeUnsupported
 }

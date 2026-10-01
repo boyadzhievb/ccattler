@@ -87,6 +87,12 @@ type Runtime interface {
 	// the returned reader streams new output as it is produced (blocking read).
 	// The caller must close the returned ReadCloser when done.
 	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+
+	// Resize updates the resource allocation of a running workload in place
+	// (e.g. cgroup v2 resource limits). Returns ErrResizeUnsupported if the
+	// runtime does not support live resize, in which case the caller should
+	// stop and restart the workload with the new resources.
+	Resize(ctx context.Context, id string, cpuMillicores int64, memoryBytes int64) error
 }
 
 // ResourceStats describes the observed resource usage of a running workload.

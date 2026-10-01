@@ -963,18 +963,19 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Shared network: group members share a network namespace (same IP, different ports)
 - [x] Shared volume: group members mount the same volume at configurable paths
 
-### Phase 62 — Vertical Autoscaling Controller (M60)
+### Phase 62 — Vertical Autoscaling Controller (M60) ✅
 
 #### 62a — Recommendation engine
-- [ ] VerticalAutoscaleController watches resource utilization facts and vertical scaling config
-- [ ] Recommendation algorithm: P95 usage over sliding window, round up to nearest resource step
-- [ ] Writes `intent/autoscaler/service/{svc}/cpu` and `/memory` recommendation facts
+- [x] AutoscaleController computes vertical scaling using P95 sliding window (5m) over metric history
+- [x] Recommendation algorithm: `ceil(currentResource * P95_usage / targetUtilization%)`, clamped to policy bounds
+- [x] Writes `intent/autoscaler/service/{svc}/resources/cpu` and `/memory` recommendation facts
 
 #### 62b — Reconciliation
-- [ ] IntentResolverController merges vertical recommendations into effective resource requirements
-- [ ] Agent detects resource requirement change: if runtime supports live resize (cgroup v2), resize in-place
-- [ ] If live resize not supported or delta exceeds threshold, replace instance with new resource allocation
-- [ ] Stabilization: scale-up immediate (60s window), scale-down slow (5m window)
+- [x] IntentResolverController merges vertical recommendations into effective resource requirements
+- [x] Agent reads effective/ resources (with desired/ fallback), tracks applied resources per instance
+- [x] Runtime.Resize interface: SimulatorRuntime supports live resize, Process/Container return ErrResizeUnsupported
+- [x] Agent detects resource change → tries Resize, falls back to stop+restart if unsupported
+- [x] Asymmetric stabilization: 60s scale-up window, 5m scale-down window
 
 ### Phase 63 — Cloud Provider Real APIs (M61)
 
@@ -1104,7 +1105,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M57 — Tenant Visibility | 59 | `cca get services` returns only services the authenticated tenant owns; platform sees all |
 | M58 — Network Policy Enforcement | 60 | `allow frontend/web -> payments/checkout port 443` generates real nftables rules on each node |
 | M59 — Service Groups | 61 | `group frontend { process proxy; process web; share network }` co-schedules on same node with shared network namespace |
-| M60 — Vertical Autoscaling | 62 | P95 resource usage → recommendation → live cgroup resize or instance replacement |
+| M60 — Vertical Autoscaling | 62 | P95 sliding-window recommendation, asymmetric stabilization (60s up/5m down), Runtime.Resize, agent effective/ resource detection with live resize or stop+restart fallback |
 | M61 — Cloud Provider APIs | 63 | Real AWS/GCP integration: STS token exchange, instance lifecycle, load balancers, VPC routes, KMS secrets |
 | M62 — Production Hardening | 64 | 3-VM cluster on testbed-100.43, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
 | M63 — Placement & Tenant Tests | 65 | 12-scenario e2e test: require/prefer/restrict/accept/zone-spread/architecture + tenant quota ALLOW/DENY |

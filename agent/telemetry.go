@@ -122,24 +122,42 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 	}
 }
 
-// lookupServiceResourcesFromStore reads the desired CPU and memory resource
-// requests for a service from the store and returns them as parsed values
-// (millicores and bytes). Returns zero for either value if not configured.
+// lookupServiceResourcesFromStore reads the effective CPU and memory resource
+// values for a service, falling back to desired if no effective value exists.
+// The effective values include autoscaler vertical recommendations when active.
+// Returns zero for either value if not configured.
 func (nodeReporter *NodeReporter) lookupServiceResourcesFromStore(ctx context.Context, serviceName string) (int64, int64) {
-	var cpuMillicores int64
-	var memoryBytes int64
-
-	cpuFact, cpuError := nodeReporter.factStore.Get(ctx, types.KeyDesiredServiceResourcesCPU(serviceName))
-	if cpuError == nil {
-		cpuMillicores = parseMillicores(string(cpuFact.Value))
-	}
-
-	memFact, memError := nodeReporter.factStore.Get(ctx, types.KeyDesiredServiceResourcesMemory(serviceName))
-	if memError == nil {
-		memoryBytes = parseMemoryBytes(string(memFact.Value))
-	}
-
+	cpuMillicores := lookupResourceWithFallback(ctx, nodeReporter.factStore,
+		types.KeyEffectiveServiceResourcesCPU(serviceName),
+		types.KeyDesiredServiceResourcesCPU(serviceName),
+		parseMillicores,
+	)
+	memoryBytes := lookupResourceWithFallback(ctx, nodeReporter.factStore,
+		types.KeyEffectiveServiceResourcesMemory(serviceName),
+		types.KeyDesiredServiceResourcesMemory(serviceName),
+		parseMemoryBytes,
+	)
 	return cpuMillicores, memoryBytes
+}
+
+// lookupResourceWithFallback tries the primary key first, then the fallback.
+// Returns 0 if neither key has a value.
+func lookupResourceWithFallback(
+	ctx context.Context,
+	factStore store.StateStore,
+	primaryKey string,
+	fallbackKey string,
+	parseFunc func(string) int64,
+) int64 {
+	fact, err := factStore.Get(ctx, primaryKey)
+	if err == nil && len(fact.Value) > 0 {
+		return parseFunc(string(fact.Value))
+	}
+	fact, err = factStore.Get(ctx, fallbackKey)
+	if err == nil {
+		return parseFunc(string(fact.Value))
+	}
+	return 0
 }
 
 // parseMillicores parses a Kubernetes-style CPU value (e.g. "500m") to millicores.

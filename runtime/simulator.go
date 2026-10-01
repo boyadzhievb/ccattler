@@ -12,6 +12,10 @@ import (
 // workload ID has never been registered with the runtime.
 var ErrNotFound = errors.New("workload not found")
 
+// ErrResizeUnsupported is returned by Resize when the runtime does not support
+// live resource updates. The caller should stop and restart the workload.
+var ErrResizeUnsupported = errors.New("live resize not supported")
+
 // SimulatorRuntime is a fake runtime for testing and semantic validation.
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
@@ -147,6 +151,21 @@ func (simulator *SimulatorRuntime) Logs(_ context.Context, id string, follow boo
 		return nil, ErrNotFound
 	}
 	return io.NopCloser(strings.NewReader("")), nil
+}
+
+// Resize updates the resource allocation of a simulated workload in place.
+// The simulator supports live resize by simply updating the workload spec.
+func (simulator *SimulatorRuntime) Resize(_ context.Context, id string, cpuMillicores int64, memoryBytes int64) error {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+
+	workload, exists := simulator.workloads[id]
+	if !exists {
+		return ErrNotFound
+	}
+	workload.workloadSpec.CPUm = cpuMillicores
+	workload.workloadSpec.MemoryB = memoryBytes
+	return nil
 }
 
 // List returns the status of every workload the simulator has ever seen,

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,10 +38,11 @@ type Agent struct {
 	secretProvider      SecretProvider          // secretProvider retrieves decrypted secrets; nil means no secret support.
 	materializedSecrets []MaterializedSecret    // materializedSecrets tracks secrets written for running instances.
 	advertiseAddress    string                  // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
-	interval            time.Duration           // interval is the period between periodic reconciliation cycles.
-	probeScheduler      *ProbeScheduler         // probeScheduler runs health checks and probes independently of reconciliation.
-	nodeReporter        *NodeReporter           // nodeReporter collects telemetry and publishes node state to the store.
-	dataPlaneReconciler *DataPlaneReconciler    // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
+	interval                 time.Duration                        // interval is the period between periodic reconciliation cycles.
+	appliedInstanceResources map[string]appliedResourceAllocation // appliedInstanceResources tracks the resources last applied to each running instance for resize detection.
+	probeScheduler           *ProbeScheduler                     // probeScheduler runs health checks and probes independently of reconciliation.
+	nodeReporter             *NodeReporter                       // nodeReporter collects telemetry and publishes node state to the store.
+	dataPlaneReconciler      *DataPlaneReconciler                // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -49,13 +51,14 @@ type Agent struct {
 // IP. Use SetNetworkProvider to enable real IP allocation.
 func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runtime) *Agent {
 	return &Agent{
-		nodeID:              nodeID,
-		store:               stateStore,
-		runtime:             runtimeAdapter,
-		interval:            defaultAgentReconcileInterval,
-		probeScheduler:      NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
-		nodeReporter:        NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
-		dataPlaneReconciler: NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
+		nodeID:                   nodeID,
+		store:                    stateStore,
+		runtime:                  runtimeAdapter,
+		interval:                 defaultAgentReconcileInterval,
+		appliedInstanceResources: make(map[string]appliedResourceAllocation),
+		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
+		nodeReporter:             NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
+		dataPlaneReconciler:      NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
 	}
 }
 
@@ -191,12 +194,13 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runningByID[runtimeStatus.ID] = runtimeStatus
 	}
 
-	// Reconcile each desired instance: start missing, observe running.
+	// Reconcile each desired instance: start missing, observe running, resize if needed.
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 		if !exists || !runtimeStatus.Running {
 			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
 		} else {
+			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 		}
@@ -223,6 +227,15 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 type placedInstanceInfo struct {
 	id      string // id is the unique instance identifier (e.g. "aaa").
 	service string // service is the name of the service this instance belongs to (e.g. "web").
+}
+
+// appliedResourceAllocation tracks the CPU and memory resources that were
+// last applied to a running instance. The agent uses this to detect when
+// effective resources change (e.g. from vertical autoscaling) and trigger
+// a live resize or stop-and-restart.
+type appliedResourceAllocation struct {
+	cpuMillicores int64 // cpuMillicores is the CPU allocation in millicores last applied to this instance.
+	memoryBytes   int64 // memoryBytes is the memory allocation in bytes last applied to this instance.
 }
 
 // findInstancesPlacedOnThisNode scans all placement facts in the store and
@@ -333,6 +346,11 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		return
 	}
 
+	nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
+		cpuMillicores: cpuMillicores,
+		memoryBytes:   memoryBytes,
+	}
+
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
 		hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
 		publishInstanceHostPort(ctx, nodeAgent.store, instanceInfo.id, hostPort)
@@ -347,9 +365,10 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 // cleanupUndesiredInstance tears down an instance that is no longer placed on
 // this node. Cleans up secrets, detaches volumes, stops the runtime process,
-// removes probe state, releases the network IP, and deletes the network
-// allocation fact.
+// removes probe state, releases the network IP, deletes the network
+// allocation fact, and removes the applied resource tracking entry.
 func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID string) {
+	delete(nodeAgent.appliedInstanceResources, instanceID)
 	if nodeAgent.secretProvider != nil {
 		nodeAgent.cleanupSecretsForInstance(instanceID)
 	}
@@ -688,4 +707,71 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 			}
 		}
 	}
+}
+
+// reconcileResourceChanges compares the effective resource allocation for an
+// instance's service against the resources that were last applied to the
+// instance. If they differ (e.g. vertical autoscaler changed effective CPU or
+// memory), the agent attempts a live resize via the runtime. If the runtime
+// does not support live resize, the instance is stopped so the next
+// reconciliation cycle restarts it with the updated resources.
+func (nodeAgent *Agent) reconcileResourceChanges(ctx context.Context, instanceInfo placedInstanceInfo) {
+	effectiveCPU, effectiveMemory := nodeAgent.nodeReporter.lookupServiceResourcesFromStore(ctx, instanceInfo.service)
+	if effectiveCPU == 0 && effectiveMemory == 0 {
+		return
+	}
+
+	applied, tracked := nodeAgent.appliedInstanceResources[instanceInfo.id]
+	if !tracked {
+		nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
+			cpuMillicores: effectiveCPU,
+			memoryBytes:   effectiveMemory,
+		}
+		return
+	}
+
+	if applied.cpuMillicores == effectiveCPU && applied.memoryBytes == effectiveMemory {
+		return
+	}
+
+	logging.Default().Info("resource change detected",
+		"agent", nodeAgent.nodeID,
+		"instance", instanceInfo.id,
+		"service", instanceInfo.service,
+		"old_cpu_m", strconv.FormatInt(applied.cpuMillicores, 10),
+		"new_cpu_m", strconv.FormatInt(effectiveCPU, 10),
+		"old_memory_b", strconv.FormatInt(applied.memoryBytes, 10),
+		"new_memory_b", strconv.FormatInt(effectiveMemory, 10),
+	)
+
+	resizeError := nodeAgent.runtime.Resize(ctx, instanceInfo.id, effectiveCPU, effectiveMemory)
+	if resizeError == nil {
+		nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
+			cpuMillicores: effectiveCPU,
+			memoryBytes:   effectiveMemory,
+		}
+		return
+	}
+
+	if errors.Is(resizeError, runtime.ErrResizeUnsupported) {
+		logging.Default().Info("live resize unsupported, stopping instance for restart",
+			"agent", nodeAgent.nodeID,
+			"instance", instanceInfo.id,
+		)
+		if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
+			logging.Default().Error("failed to stop instance for resize",
+				"agent", nodeAgent.nodeID,
+				"instance", instanceInfo.id,
+				"error", stopError.Error(),
+			)
+		}
+		delete(nodeAgent.appliedInstanceResources, instanceInfo.id)
+		return
+	}
+
+	logging.Default().Error("resize failed",
+		"agent", nodeAgent.nodeID,
+		"instance", instanceInfo.id,
+		"error", resizeError.Error(),
+	)
 }

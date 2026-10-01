@@ -460,6 +460,16 @@ func parseMemoryValue(memoryString string) int64 {
 
 // Logs returns the stdout/stderr output of a container via `nerdctl logs`.
 // When follow is true, the returned reader streams new output as it arrives.
+// Resize is not supported by the Docker container runtime. Live cgroup
+// updates require direct cgroup v2 manipulation, which is not available
+// through the Docker CLI. The caller should stop and restart the container.
+func (containerRuntime *ContainerRuntime) Resize(_ context.Context, _ string, _ int64, _ int64) error {
+	return ErrResizeUnsupported
+}
+
+// Logs returns a reader that streams the stdout/stderr output of the
+// container identified by id. If follow is true, the reader blocks for
+// new output. The caller must close the returned ReadCloser when done.
 func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
 	containerRuntime.mutex.Lock()
 	tracked := containerRuntime.trackedContainers[id]

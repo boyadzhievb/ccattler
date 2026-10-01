@@ -272,6 +272,14 @@ func (processRuntime *ProcessRuntime) Stats(_ context.Context, id string) (Resou
 
 // Logs returns a reader with a message indicating that log capture is not
 // available for the process runtime (output goes to parent stdout/stderr).
+// Resize is not supported by the process runtime — OS processes do not have
+// adjustable resource limits. The caller should stop and restart the process.
+func (processRuntime *ProcessRuntime) Resize(_ context.Context, _ string, _ int64, _ int64) error {
+	return ErrResizeUnsupported
+}
+
+// Logs returns a reader that streams the captured stdout/stderr of the process
+// identified by id. If follow is true, the reader blocks for new output.
 func (processRuntime *ProcessRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {
 	processRuntime.mutex.Lock()
 	defer processRuntime.mutex.Unlock()

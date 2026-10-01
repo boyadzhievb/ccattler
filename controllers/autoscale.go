@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,11 +13,38 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// verticalMetricWindowDuration is the sliding window over which P95 usage
+	// is computed for vertical autoscaling recommendations.
+	verticalMetricWindowDuration = 5 * time.Minute
+
+	// verticalScaleUpStabilizationDuration is the stabilization window for
+	// vertical scale-up — recommendations must be consistently higher for
+	// this duration before the change is applied.
+	verticalScaleUpStabilizationDuration = 60 * time.Second
+
+	// verticalScaleDownStabilizationDuration is the stabilization window for
+	// vertical scale-down — recommendations must be consistently lower for
+	// this duration before the change is applied.
+	verticalScaleDownStabilizationDuration = 5 * time.Minute
+
+	// verticalTargetUtilizationPercent is the target utilization percentage
+	// for vertical scaling. The recommendation is: P95_usage / target * current.
+	verticalTargetUtilizationPercent = 70
+)
+
 // timestampedRecommendation records a scaling recommendation with its timestamp
 // for stabilization window evaluation.
 type timestampedRecommendation struct {
 	count     int
 	timestamp time.Time
+}
+
+// timestampedMetricSample records a metric observation with its timestamp
+// for P95 sliding-window computation in vertical autoscaling.
+type timestampedMetricSample struct {
+	value     int       // observed metric value (e.g. CPU usage percentage)
+	timestamp time.Time // when this sample was observed
 }
 
 // AutoscaleController watches observed metrics and scaling policies, computes
@@ -27,18 +55,26 @@ type timestampedRecommendation struct {
 //
 // Supports stabilization windows to prevent oscillation, event-driven scaling
 // for queue-depth metrics, scheduled scaling for time-based minimums, and
-// vertical autoscaling for resource recommendations.
+// vertical autoscaling with P95 sliding-window recommendations.
 type AutoscaleController struct {
+	// recommendationHistory tracks horizontal scaling recommendations per service.
 	recommendationHistory      map[string][]timestampedRecommendation
 	recommendationHistoryMutex sync.Mutex
-	timeNow                    func() time.Time
+	// verticalMetricHistory tracks metric samples per "service/metric" key for P95.
+	verticalMetricHistory map[string][]timestampedMetricSample
+	// verticalRecommendationHistory tracks vertical resource recommendations per
+	// "service/resource" key for stabilization window evaluation.
+	verticalRecommendationHistory map[string][]timestampedRecommendation
+	timeNow                       func() time.Time
 }
 
 // NewAutoscaleController returns a new AutoscaleController.
 func NewAutoscaleController() *AutoscaleController {
 	return &AutoscaleController{
-		recommendationHistory: make(map[string][]timestampedRecommendation),
-		timeNow:               time.Now,
+		recommendationHistory:         make(map[string][]timestampedRecommendation),
+		verticalMetricHistory:         make(map[string][]timestampedMetricSample),
+		verticalRecommendationHistory: make(map[string][]timestampedRecommendation),
+		timeNow:                       time.Now,
 	}
 }
 
@@ -91,8 +127,8 @@ func (autoscaleController *AutoscaleController) Reconcile(_ context.Context, fac
 		eventTargets, scheduleRules, stabilizationWindows,
 		activationStates, currentTime,
 	)
-	verticalChanges := buildVerticalScalingChanges(
-		verticalPolicies, currentCPU, currentMemory, observedMetrics,
+	verticalChanges := autoscaleController.buildVerticalScalingChanges(
+		verticalPolicies, currentCPU, currentMemory, observedMetrics, currentTime,
 	)
 
 	return append(horizontalChanges, verticalChanges...), nil
@@ -209,55 +245,205 @@ func computeRawHorizontalRecommendation(
 }
 
 // buildVerticalScalingChanges evaluates vertical autoscaling policies for each
-// service and produces changes that recommend CPU and memory resource levels
-// based on observed utilization. Recommendations are clamped to the configured
-// minimum and maximum bounds.
-func buildVerticalScalingChanges(
+// service and produces changes that recommend CPU and memory resource levels.
+// Uses P95 of the metric sliding window (not instantaneous values) and applies
+// asymmetric stabilization (fast scale-up, slow scale-down).
+func (autoscaleController *AutoscaleController) buildVerticalScalingChanges(
 	verticalPolicies map[string]*extractedVerticalPolicy,
 	currentCPU map[string]int,
 	currentMemory map[string]int,
 	observedMetrics map[string]int,
+	currentTime time.Time,
 ) []Change {
+	autoscaleController.recommendationHistoryMutex.Lock()
+	defer autoscaleController.recommendationHistoryMutex.Unlock()
+
+	autoscaleController.recordVerticalMetricSamples(observedMetrics, currentTime)
+
 	var changes []Change
-
 	for serviceName, verticalPolicy := range verticalPolicies {
-		currentServiceCPU := currentCPU[serviceName]
-		currentServiceMemory := currentMemory[serviceName]
-		cpuMetric, hasCPU := observedMetrics[serviceName+"/cpu"]
-		memoryMetric, hasMemory := observedMetrics[serviceName+"/memory"]
-
-		if hasCPU && currentServiceCPU > 0 && verticalPolicy.cpuMax > 0 {
-			recommendedCPU := int(math.Ceil(float64(currentServiceCPU) * float64(cpuMetric) / 70.0))
-			if recommendedCPU < verticalPolicy.cpuMin {
-				recommendedCPU = verticalPolicy.cpuMin
-			}
-			if recommendedCPU > verticalPolicy.cpuMax {
-				recommendedCPU = verticalPolicy.cpuMax
-			}
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyIntentAutoscalerServiceResourcesCPU(serviceName),
-				Value: []byte(strconv.Itoa(recommendedCPU)),
-			})
+		cpuChange := autoscaleController.computeVerticalResourceChange(
+			serviceName, "cpu", currentCPU[serviceName],
+			verticalPolicy.cpuMin, verticalPolicy.cpuMax,
+			types.KeyIntentAutoscalerServiceResourcesCPU(serviceName), currentTime,
+		)
+		if cpuChange != nil {
+			changes = append(changes, *cpuChange)
 		}
 
-		if hasMemory && currentServiceMemory > 0 && verticalPolicy.memoryMax > 0 {
-			recommendedMemory := int(math.Ceil(float64(currentServiceMemory) * float64(memoryMetric) / 70.0))
-			if recommendedMemory < verticalPolicy.memoryMin {
-				recommendedMemory = verticalPolicy.memoryMin
+		memoryChange := autoscaleController.computeVerticalResourceChange(
+			serviceName, "memory", currentMemory[serviceName],
+			verticalPolicy.memoryMin, verticalPolicy.memoryMax,
+			types.KeyIntentAutoscalerServiceResourcesMemory(serviceName), currentTime,
+		)
+		if memoryChange != nil {
+			changes = append(changes, *memoryChange)
+		}
+	}
+	return changes
+}
+
+// recordVerticalMetricSamples appends current metric observations to the
+// sliding window history and prunes samples older than the window duration.
+func (autoscaleController *AutoscaleController) recordVerticalMetricSamples(
+	observedMetrics map[string]int,
+	currentTime time.Time,
+) {
+	cutoff := currentTime.Add(-verticalMetricWindowDuration)
+	for metricKey, metricValue := range observedMetrics {
+		autoscaleController.verticalMetricHistory[metricKey] = append(
+			autoscaleController.verticalMetricHistory[metricKey],
+			timestampedMetricSample{value: metricValue, timestamp: currentTime},
+		)
+		autoscaleController.verticalMetricHistory[metricKey] = pruneMetricSamples(
+			autoscaleController.verticalMetricHistory[metricKey], cutoff,
+		)
+	}
+}
+
+// computeVerticalResourceChange computes a stabilized vertical scaling
+// recommendation for a single resource dimension (cpu or memory). Returns nil
+// if no change is needed or if insufficient data is available.
+func (autoscaleController *AutoscaleController) computeVerticalResourceChange(
+	serviceName string,
+	resourceType string,
+	currentResourceValue int,
+	policyMin int,
+	policyMax int,
+	intentKey string,
+	currentTime time.Time,
+) *Change {
+	if currentResourceValue <= 0 || policyMax <= 0 {
+		return nil
+	}
+
+	metricKey := serviceName + "/" + resourceType
+	p95Usage := computeP95FromSamples(autoscaleController.verticalMetricHistory[metricKey])
+	if p95Usage <= 0 {
+		return nil
+	}
+
+	rawRecommendation := int(math.Ceil(
+		float64(currentResourceValue) * float64(p95Usage) / float64(verticalTargetUtilizationPercent),
+	))
+	rawRecommendation = clampToRange(rawRecommendation, policyMin, policyMax)
+
+	stabilizedRecommendation := autoscaleController.applyVerticalStabilization(
+		metricKey, rawRecommendation, currentResourceValue, currentTime,
+	)
+
+	if stabilizedRecommendation == currentResourceValue {
+		return nil
+	}
+
+	return &Change{
+		Type:  store.OpPut,
+		Key:   intentKey,
+		Value: []byte(strconv.Itoa(stabilizedRecommendation)),
+	}
+}
+
+// applyVerticalStabilization applies asymmetric stabilization to a vertical
+// scaling recommendation. Scale-up must be sustained for 60s; scale-down must
+// be sustained for 5m. Returns the stabilized value (may equal currentValue
+// if the window hasn't been consistently above/below).
+func (autoscaleController *AutoscaleController) applyVerticalStabilization(
+	resourceKey string,
+	recommendation int,
+	currentValue int,
+	currentTime time.Time,
+) int {
+	autoscaleController.verticalRecommendationHistory[resourceKey] = append(
+		autoscaleController.verticalRecommendationHistory[resourceKey],
+		timestampedRecommendation{count: recommendation, timestamp: currentTime},
+	)
+
+	longerWindow := verticalScaleDownStabilizationDuration
+	cutoff := currentTime.Add(-longerWindow)
+	autoscaleController.verticalRecommendationHistory[resourceKey] = pruneRecommendations(
+		autoscaleController.verticalRecommendationHistory[resourceKey], cutoff,
+	)
+
+	history := autoscaleController.verticalRecommendationHistory[resourceKey]
+	if currentValue == 0 {
+		return recommendation
+	}
+
+	if recommendation > currentValue {
+		windowStart := currentTime.Add(-verticalScaleUpStabilizationDuration)
+		for _, entry := range history {
+			if entry.timestamp.Before(windowStart) {
+				continue
 			}
-			if recommendedMemory > verticalPolicy.memoryMax {
-				recommendedMemory = verticalPolicy.memoryMax
+			if entry.count <= currentValue {
+				return currentValue
 			}
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyIntentAutoscalerServiceResourcesMemory(serviceName),
-				Value: []byte(strconv.Itoa(recommendedMemory)),
-			})
 		}
 	}
 
-	return changes
+	if recommendation < currentValue {
+		windowStart := currentTime.Add(-verticalScaleDownStabilizationDuration)
+		for _, entry := range history {
+			if entry.timestamp.Before(windowStart) {
+				continue
+			}
+			if entry.count >= currentValue {
+				return currentValue
+			}
+		}
+	}
+
+	return recommendation
+}
+
+// computeP95FromSamples returns the 95th percentile value from a slice of
+// metric samples. Returns 0 if the slice is empty.
+func computeP95FromSamples(samples []timestampedMetricSample) int {
+	if len(samples) == 0 {
+		return 0
+	}
+	values := make([]int, len(samples))
+	for index, sample := range samples {
+		values[index] = sample.value
+	}
+	sort.Ints(values)
+	p95Index := int(math.Ceil(float64(len(values))*0.95)) - 1
+	if p95Index < 0 {
+		p95Index = 0
+	}
+	if p95Index >= len(values) {
+		p95Index = len(values) - 1
+	}
+	return values[p95Index]
+}
+
+// pruneMetricSamples removes samples older than the cutoff time.
+func pruneMetricSamples(samples []timestampedMetricSample, cutoff time.Time) []timestampedMetricSample {
+	pruneStart := 0
+	for pruneStart < len(samples) && samples[pruneStart].timestamp.Before(cutoff) {
+		pruneStart++
+	}
+	return samples[pruneStart:]
+}
+
+// pruneRecommendations removes recommendations older than the cutoff time.
+func pruneRecommendations(history []timestampedRecommendation, cutoff time.Time) []timestampedRecommendation {
+	pruneStart := 0
+	for pruneStart < len(history) && history[pruneStart].timestamp.Before(cutoff) {
+		pruneStart++
+	}
+	return history[pruneStart:]
+}
+
+// clampToRange constrains a value to lie within [minimum, maximum].
+func clampToRange(value int, minimum int, maximum int) int {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
 }
 
 // applyStabilizationWindow applies asymmetric stabilization to prevent scaling
