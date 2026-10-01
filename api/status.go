@@ -9,6 +9,7 @@ import (
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/tenant"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -108,12 +109,20 @@ type CloudIdentityStatus struct {
 
 // buildStatusFromStore collects the full cluster state from the fact store
 // and assembles it into a structured ClusterStatus by delegating to
-// per-section builder functions.
-func buildStatusFromStore(ctx context.Context, factStore store.StateStore) ClusterStatus {
+// per-section builder functions. When a non-nil principal is provided,
+// results are filtered to resources visible to that principal's tenant.
+// Platform principals and nil principals see everything.
+func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal) ClusterStatus {
 	allInstances, _ := types.ListInstances(ctx, factStore)
 	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
 
 	sortedServiceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
+
+	if principal != nil && !tenant.IsPlatformPrincipal(*principal) {
+		tenantName := tenant.ResolvePrincipalTenant(*principal)
+		sortedServiceNames = tenant.FilterServiceNamesByTenant(ctx, factStore, sortedServiceNames, tenantName)
+		allInstances = filterInstancesByServiceNames(allInstances, sortedServiceNames)
+	}
 
 	return ClusterStatus{
 		Services:        collectServiceStatusFromStore(ctx, factStore, sortedServiceNames, allInstances),
@@ -125,6 +134,23 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore) Clust
 		Config:          collectConfigStatusFromStore(ctx, factStore, sortedServiceNames),
 		CloudIdentities: collectCloudIdentityStatusFromStore(ctx, factStore),
 	}
+}
+
+// filterInstancesByServiceNames returns only instances whose service name
+// is in the provided set. Used for tenant visibility filtering.
+func filterInstancesByServiceNames(allInstances []types.Instance, visibleServiceNames []string) []types.Instance {
+	serviceNameSet := make(map[string]bool, len(visibleServiceNames))
+	for _, serviceName := range visibleServiceNames {
+		serviceNameSet[serviceName] = true
+	}
+
+	var visibleInstances []types.Instance
+	for _, instance := range allInstances {
+		if serviceNameSet[instance.Service] {
+			visibleInstances = append(visibleInstances, instance)
+		}
+	}
+	return visibleInstances
 }
 
 // discoverSortedServiceNamesFromStore scans the desired-services prefix in the

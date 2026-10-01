@@ -84,6 +84,7 @@ type Server struct {
 	policyGate          *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
 	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
 	apiAuthorizer       *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView     *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
 	serverMode          ServerMode
 	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux
@@ -95,6 +96,13 @@ type Server struct {
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
 func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 	apiServer.eventLog = eventLog
+}
+
+// SetTenantAuditView attaches a tenant-scoped audit view to the server,
+// enabling the GET /api/audit endpoint with per-tenant filtering.
+func (apiServer *Server) SetTenantAuditView(auditView *tenant.TenantAuditView) {
+	apiServer.tenantAuditView = auditView
+	apiServer.mux.HandleFunc("/api/audit", apiServer.instrumentedHandler("audit", apiServer.handleAudit))
 }
 
 // SetEnrollmentService attaches the enrollment service to the server, enabling
@@ -299,7 +307,7 @@ func (apiServer *Server) registerRoutes() {
 // instance/service/node counts without a separate status query.
 func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, request *http.Request) {
 	ctx := request.Context()
-	status := buildStatusFromStore(ctx, apiServer.factStore)
+	status := buildStatusFromStore(ctx, apiServer.factStore, nil)
 
 	instancesByState.Set(0, string(types.InstancePending))
 	instancesByState.Set(0, string(types.InstanceRunning))
@@ -455,7 +463,8 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	facts, err := apiServer.factStore.Scan(requestContext, prefix)
+	statePrincipal := security.PrincipalStructFromContext(requestContext)
+	facts, err := tenant.ScopedScan(requestContext, apiServer.factStore, prefix, statePrincipal)
 	if err != nil {
 		http.Error(responseWriter, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
 		return
@@ -714,20 +723,32 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
-	if cached := apiServer.statusCache.Get("status"); cached != nil {
-		_, _ = responseWriter.Write(cached)
-		return
+	requestContext := request.Context()
+	requestPrincipal := security.PrincipalStructFromContext(requestContext)
+	hasPrincipal := requestPrincipal.Name != ""
+
+	isPlatform := !hasPrincipal || tenant.IsPlatformPrincipal(requestPrincipal)
+	if isPlatform {
+		if cached := apiServer.statusCache.Get("status"); cached != nil {
+			_, _ = responseWriter.Write(cached)
+			return
+		}
 	}
 
-	requestContext := request.Context()
-	status := buildStatusFromStore(requestContext, apiServer.factStore)
+	var principalPointer *security.Principal
+	if hasPrincipal {
+		principalPointer = &requestPrincipal
+	}
+	status := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer)
 	encoded, encodeError := json.Marshal(status)
 	if encodeError != nil {
 		_ = json.NewEncoder(responseWriter).Encode(status)
 		return
 	}
 
-	apiServer.statusCache.Set("status", encoded)
+	if isPlatform {
+		apiServer.statusCache.Set("status", encoded)
+	}
 	_, _ = responseWriter.Write(encoded)
 }
 
@@ -783,6 +804,51 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 		events = []types.SystemEvent{}
 	}
 	_ = json.NewEncoder(responseWriter).Encode(events)
+}
+
+// handleAudit serves GET /api/audit returning authorization audit entries.
+// Platform principals see all entries. Tenant principals see only entries
+// related to their tenant's resources. Supports optional query parameters:
+// denied=true to show only DENY decisions.
+func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	if apiServer.tenantAuditView == nil {
+		_ = json.NewEncoder(responseWriter).Encode([]security.AuditEntry{})
+		return
+	}
+
+	requestPrincipal := security.PrincipalStructFromContext(request.Context())
+	showDeniedOnly := request.URL.Query().Get("denied") == "true"
+
+	var entries []security.AuditEntry
+	if requestPrincipal.Name == "" || tenant.IsPlatformPrincipal(requestPrincipal) {
+		if showDeniedOnly {
+			entries = apiServer.tenantAuditView.DeniedEntries("")
+		} else {
+			entries = apiServer.tenantAuditView.AllEntries()
+		}
+	} else {
+		tenantName := tenant.ResolvePrincipalTenant(requestPrincipal)
+		if showDeniedOnly {
+			entries = apiServer.tenantAuditView.DeniedEntries(tenantName)
+		} else {
+			entries = apiServer.tenantAuditView.EntriesForTenant(tenantName)
+		}
+	}
+
+	if entries == nil {
+		entries = []security.AuditEntry{}
+	}
+	_ = json.NewEncoder(responseWriter).Encode(entries)
 }
 
 // handleDescribe serves GET /api/describe returning a detailed single-resource

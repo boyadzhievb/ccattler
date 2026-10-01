@@ -909,15 +909,17 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 ### Phase 59 — Multi-Tenant Visibility Filtering (M57)
 
 #### 59a — Query scoping
-- [ ] `ScopedQuery(ctx, prefix, principal) → []Fact` — wraps `Scan` to filter facts by tenant ownership
-- [ ] Tenant ownership derivation: `desired/service/payments/checkout` → tenant `payments`
-- [ ] Platform principals (group `platform`) see all facts; tenant principals see only their subtree
-- [ ] API handlers for GET /state, GET /api/status wire through `ScopedQuery`
+- [x] `ScopedScan(ctx, prefix, principal) → []Fact` — wraps `Scan` to filter facts by tenant ownership
+- [x] Tenant ownership derivation via explicit owner fact or hierarchical name (`ExtractTenantFromName`)
+- [x] Platform principals (group `platform` or system kind) see all facts; tenant principals see only their subtree
+- [x] `buildStatusFromStore` accepts `*Principal`, filters services/instances by tenant
+- [x] API `handleStatus` extracts principal, bypasses status cache for non-platform principals
+- [x] API `handleState` prefix scan uses `ScopedScan` for tenant-filtered results
 
 #### 59b — Audit visibility
-- [ ] Audit log queries scoped by principal tenant — tenant sees only own audit entries
-- [ ] `cca get services` returns only services the authenticated principal can see
-- [ ] Integration test: two tenants, each sees only own services/instances/volumes
+- [x] `TenantAuditView` scoped by principal tenant — tenant sees only own audit entries
+- [x] `GET /api/audit` endpoint with tenant filtering and `?denied=true` filter
+- [x] Integration test: two tenants — each sees only own services/instances, platform sees all, no-team sees nothing (10 subtests)
 
 ### Phase 60 — Network Policy Enforcement (M58)
 
