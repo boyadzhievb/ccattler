@@ -12,6 +12,7 @@ type File struct {
 	Grants           []GrantDecl           // top-level grant statements binding roles to principals
 	Groups           []GroupDecl           // top-level group blocks defining member collections
 	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
+	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -323,4 +324,27 @@ type PolicyConditionDecl struct {
 	Operator string // comparison operator: "==", "!=", "in", "not_in"
 	Value    string // right-hand side: literal or field reference (e.g. "resource.team")
 	Line     int    // source line number for error reporting
+}
+
+// NetworkDecl represents a parsed "network" block containing allow/deny rules.
+// Example DSL:
+//
+//	network {
+//	    allow frontend/web -> payments/checkout port 443
+//	    deny frontend/web -> payments/database
+//	}
+type NetworkDecl struct {
+	Rules []NetworkRuleDecl // ordered list of allow/deny rules
+	Line  int               // source line number for error reporting
+}
+
+// NetworkRuleDecl represents a single allow or deny rule inside a network block.
+// The rule specifies identity-based traffic control between two services,
+// optionally restricted to a specific port.
+type NetworkRuleDecl struct {
+	Action  string // "allow" or "deny"
+	Source  string // source service identity (e.g. "frontend/web")
+	Target  string // target service identity (e.g. "payments/checkout")
+	Port    int    // target port (0 means any port)
+	Line    int    // source line number for error reporting
 }

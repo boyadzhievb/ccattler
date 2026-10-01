@@ -101,6 +101,15 @@ func (lexer *Lexer) scanNextToken() (Token, error) {
 		}
 	}
 
+	if currentChar == '-' {
+		if lexer.position+1 < len(lexer.input) && lexer.input[lexer.position+1] == '>' {
+			token := Token{Type: TokenArrow, Value: "->", Line: lexer.line, Col: lexer.column}
+			lexer.advanceCursor()
+			lexer.advanceCursor()
+			return token, nil
+		}
+	}
+
 	if currentChar == '"' {
 		return lexer.scanQuotedString()
 	}

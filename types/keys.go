@@ -1467,3 +1467,23 @@ func KeyAuthPolicyConditionOperator(policyName string, conditionIndex int) strin
 func KeyAuthPolicyConditionValue(policyName string, conditionIndex int) string {
 	return fmt.Sprintf("%s/policy/%s/condition/%d/value", PrefixAuth, policyName, conditionIndex)
 }
+
+// ScanNetworkPolicies scans all network policy rules under the policy/network/ prefix.
+const ScanNetworkPolicies = "policy/network/"
+
+// KeyNetworkPolicyRule returns the store path for a named network policy rule.
+// The value is encoded as "source:target:port:action".
+// Path: policy/network/{ruleName}
+func KeyNetworkPolicyRule(ruleName string) string {
+	return ScanNetworkPolicies + ruleName
+}
+
+// ScanDerivedNetworkRules scans compiled IP-based firewall rules written by
+// the NetworkPolicyController.
+const ScanDerivedNetworkRules = "derived/network/rule/"
+
+// KeyDerivedNetworkRule returns the store path for a compiled per-node firewall rule.
+// Path: derived/network/rule/{nodeID}/{ruleIndex}
+func KeyDerivedNetworkRule(nodeID string, ruleIndex int) string {
+	return fmt.Sprintf("%s%s/%d", ScanDerivedNetworkRules, nodeID, ruleIndex)
+}

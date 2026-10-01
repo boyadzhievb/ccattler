@@ -194,7 +194,9 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	localNodeID := "local"
 	registerLocalNode(ctx, factStore, localNodeID)
 
-	controllerList := append(coreControllers(), controllers.NewNetworkController())
+	controllerList := append(coreControllers(),
+		controllers.NewNetworkController(),
+		controllers.NewNetworkPolicyController())
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start node agent with container runtime for real nerdctl container execution.
@@ -415,6 +417,7 @@ func executeNetworkDemoCommand() {
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
 		controllers.NewNetworkController(),
+		controllers.NewNetworkPolicyController(),
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 

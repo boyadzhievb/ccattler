@@ -24,6 +24,8 @@ const (
 	TokenDoubleEquals
 	// TokenNotEquals represents '!=', used in ABAC policy condition comparisons.
 	TokenNotEquals
+	// TokenArrow represents '->', used in network policy rules to separate source and target.
+	TokenArrow
 	// TokenNewline represents a newline character that terminates a statement.
 	TokenNewline
 )
@@ -59,6 +61,8 @@ func (t TokenType) String() string {
 		return "DoubleEquals"
 	case TokenNotEquals:
 		return "NotEquals"
+	case TokenArrow:
+		return "Arrow"
 	case TokenNewline:
 		return "Newline"
 	default:

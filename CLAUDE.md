@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M57 — Phase 59 Multi-Tenant Visibility Filtering. M1–M57 + M62–M63 complete. Gates A–I resolved. Next: Phase 60 — Network Policy Enforcement.
+**Completed through:** M58 — Phase 60 Network Policy Enforcement. M1–M58 + M62–M63 complete. Gates A–I resolved. Next: Phase 61 — Secret Encryption & KMS.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

@@ -116,6 +116,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Policies = append(file.Policies, *policyDecl)
+		case "network":
+			networkDecl, err := parser.parseNetworkDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Networks = append(file.Networks, *networkDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -1665,6 +1671,106 @@ func (parser *Parser) parsePolicyCondition() (*PolicyConditionDecl, error) {
 		Value:    conditionValue,
 		Line:     conditionLine,
 	}, nil
+}
+
+// parseNetworkDeclaration parses a "network { ... }" block containing allow
+// and deny rules. Each rule has the form:
+//
+//	allow source -> target [port N]
+//	deny  source -> target [port N]
+func (parser *Parser) parseNetworkDeclaration() (*NetworkDecl, error) {
+	lineNumber := parser.currentToken().Line
+	parser.advanceToken() // skip "network"
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	networkDecl := &NetworkDecl{Line: lineNumber}
+
+	for parser.currentToken().Type != TokenRBrace && parser.currentToken().Type != TokenEOF {
+		rule, err := parser.parseNetworkRule()
+		if err != nil {
+			return nil, err
+		}
+		networkDecl.Rules = append(networkDecl.Rules, *rule)
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return networkDecl, nil
+}
+
+// parseNetworkRule parses a single "allow src -> dst [port N]" or
+// "deny src -> dst [port N]" rule inside a network block.
+func (parser *Parser) parseNetworkRule() (*NetworkRuleDecl, error) {
+	actionToken := parser.currentToken()
+	if actionToken.Type != TokenIdent || (actionToken.Value != "allow" && actionToken.Value != "deny") {
+		return nil, parser.parserErrorf("expected 'allow' or 'deny', got %q", actionToken.Value)
+	}
+	action := actionToken.Value
+	lineNumber := actionToken.Line
+	parser.advanceToken()
+
+	sourceService, err := parser.parseServicePath()
+	if err != nil {
+		return nil, parser.parserErrorf("expected source service name")
+	}
+
+	if parser.currentToken().Type != TokenArrow {
+		return nil, parser.parserErrorf("expected '->' arrow, got %q", parser.currentToken().Value)
+	}
+	parser.advanceToken()
+
+	targetService, err := parser.parseServicePath()
+	if err != nil {
+		return nil, parser.parserErrorf("expected target service name")
+	}
+
+	port := 0
+	if parser.currentToken().Type == TokenIdent && parser.currentToken().Value == "port" {
+		parser.advanceToken()
+		portToken := parser.currentToken()
+		if portToken.Type != TokenNumber {
+			return nil, parser.parserErrorf("expected port number after 'port', got %q", portToken.Value)
+		}
+		port, _ = strconv.Atoi(portToken.Value)
+		parser.advanceToken()
+	}
+
+	return &NetworkRuleDecl{
+		Action: action,
+		Source: sourceService,
+		Target: targetService,
+		Port:   port,
+		Line:   lineNumber,
+	}, nil
+}
+
+// parseServicePath reads a potentially hierarchical service name like
+// "frontend/web" or a simple name like "web". Consumes identifier tokens
+// separated by "/" tokens.
+func (parser *Parser) parseServicePath() (string, error) {
+	token := parser.currentToken()
+	if token.Type != TokenIdent && token.Type != TokenString {
+		return "", parser.parserErrorf("expected service name, got %s", token.Type)
+	}
+	path := token.Value
+	parser.advanceToken()
+
+	for parser.currentToken().Value == "/" {
+		parser.advanceToken() // skip "/"
+		segment := parser.currentToken()
+		if segment.Type != TokenIdent && segment.Type != TokenString {
+			return "", parser.parserErrorf("expected service name segment after '/'")
+		}
+		path += "/" + segment.Value
+		parser.advanceToken()
+	}
+	return path, nil
 }
 
 func (parser *Parser) parserErrorf(format string, args ...any) error {

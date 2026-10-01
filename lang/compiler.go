@@ -105,6 +105,13 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, policyFacts...)
 	}
+	for _, networkDecl := range file.Networks {
+		networkFacts, err := compileNetworkDeclaration(networkDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, networkFacts...)
+	}
 	return facts, nil
 }
 
@@ -940,6 +947,35 @@ func compilePolicyDeclaration(policyDecl PolicyDecl, sourceLines []string) ([]Fa
 	}
 
 	return facts, nil
+}
+
+// compileNetworkDeclaration converts a NetworkDecl into policy/network/ facts.
+// Each rule is stored as "source:target:port:action" under a generated name
+// derived from the source, target, and rule index within the block.
+func compileNetworkDeclaration(networkDecl NetworkDecl, sourceLines []string) ([]Fact, error) {
+	var facts []Fact
+	for ruleIndex, rule := range networkDecl.Rules {
+		if rule.Source == "" || rule.Target == "" {
+			return nil, &ParseError{
+				Line:       rule.Line,
+				Message:    "network rule requires both source and target service names",
+				SourceLine: sourceLineAt(sourceLines, rule.Line),
+			}
+		}
+		ruleName := fmt.Sprintf("%s-to-%s-%d", sanitizeRuleName(rule.Source), sanitizeRuleName(rule.Target), ruleIndex)
+		ruleValue := fmt.Sprintf("%s:%s:%d:%s", rule.Source, rule.Target, rule.Port, rule.Action)
+		facts = append(facts, Fact{
+			Key:   types.KeyNetworkPolicyRule(ruleName),
+			Value: ruleValue,
+		})
+	}
+	return facts, nil
+}
+
+// sanitizeRuleName replaces slashes in service names with dashes to produce
+// valid fact key segments.
+func sanitizeRuleName(serviceName string) string {
+	return strings.ReplaceAll(serviceName, "/", "-")
 }
 
 // Apply parses a DSL string and writes all resulting facts to the store.

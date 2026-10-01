@@ -923,22 +923,33 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 
 ### Phase 60 — Network Policy Enforcement (M58)
 
-#### 60a — Policy rule compiler
-- [ ] `NetworkPolicyRule` type: source identity, destination identity, port, action (allow/deny)
-- [ ] NetworkController reads `network/policy/` facts, derives per-node firewall rules
-- [ ] Rule compilation: identity policies → IP-based rules using current endpoint facts
-- [ ] When instances move (new IP), rules are recompiled — policy stays stable, rules change
+#### 60a — DSL network block & policy compiler
+- [x] `TokenArrow` (`->`) lexer token for network rule syntax
+- [x] `NetworkDecl` / `NetworkRuleDecl` AST nodes for `network { allow/deny src -> dst [port N] }` blocks
+- [x] Parser: `parseNetworkDeclaration`, `parseNetworkRule`, `parseServicePath` (hierarchical names)
+- [x] Compiler: `compileNetworkDeclaration` emits `policy/network/{name}` facts with `source:target:port:action` values
+- [x] Key helpers: `ScanNetworkPolicies`, `KeyNetworkPolicyRule`, `ScanDerivedNetworkRules`, `KeyDerivedNetworkRule`
 
-#### 60b — nftables data plane
-- [ ] `NftablesDataPlane` adapter: generates nftables rules from compiled policy rules
-- [ ] Chain per service identity: `ccattler-{service}` with allow/deny rules per port
-- [ ] Default deny for inter-service traffic (only explicitly allowed connections pass)
-- [ ] Agent reconciler applies nftables rules alongside container lifecycle
+#### 60b — NetworkPolicyController
+- [x] `NetworkPolicyController` watches `policy/network/`, `endpoint/service/`, `placement/instance/`, `derived/network/rule/`
+- [x] Rule compilation: identity policies → IP-based rules using endpoint + placement facts
+- [x] Per-node derived rules: destination-side enforcement (`derived/network/rule/{nodeID}/{index}`)
+- [x] When instances move (new IP/node), rules recompile — policy stable, derived rules change
+- [x] Deterministic output: rules sorted per node for stable reconciliation
+- [x] Diff-based: only emits Put/Delete changes needed to converge
 
-#### 60c — Testing
-- [ ] Integration test: 2 services, allow A→B:443, deny A→C:5432, verify rule generation
-- [ ] Idempotency test: same policy applied twice produces identical rule set
-- [ ] Instance migration test: instance moves to new node, rules follow
+#### 60c — NftablesRuleSet renderer
+- [x] `NftablesRuleSet`: converts compiled `sourceIP:targetIP:port:action` rules to nft commands
+- [x] Default-deny chain policy with conntrack for established connections
+- [x] Wildcard source (`*`) omits `ip saddr`, port 0 omits `tcp dport`
+- [x] Wired into server (`cca server`), `cca run-container`, and `cca apply --simulate` controller sets
+
+#### 60d — Testing
+- [x] Unit tests: single rule, deny rule, fan-out (2×2=4 rules), idempotency, stale removal, instance migration, no-policy no-rules (7 tests)
+- [x] Unit tests: nftables allow, deny, setup commands, wildcard source, zero port (5 tests)
+- [x] Integration test: DSL → policy facts → endpoints → derived allow rule (full pipeline)
+- [x] Integration test: DSL deny rule → derived deny rule
+- [x] Integration test: multiple allow/deny rules in one network block
 
 ### Phase 61 — Service Groups (M59)
 

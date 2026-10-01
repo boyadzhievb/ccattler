@@ -272,6 +272,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		controllerList := append(coreControllers(),
 			controllers.NewNodeFailureController(),
 			controllers.NewNetworkController(),
+			controllers.NewNetworkPolicyController(),
 			controllers.NewWarmZeroController())
 
 		metricsCollector := controllers.NewMetricsCollector()
