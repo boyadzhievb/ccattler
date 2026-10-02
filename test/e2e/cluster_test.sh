@@ -63,7 +63,7 @@ cleanup() {
         log "Keeping VMs alive (--no-destroy). Destroy manually:"
         log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant destroy -f"
     fi
-    rm -f /tmp/cca-e2e-ca.pem
+    rm -f /tmp/cca-e2e-ca.pem /tmp/cca-e2e-client.pem /tmp/cca-e2e-client-key.pem
     if [[ $exit_code -eq 0 ]]; then
         log "TEST PASSED"
     else
@@ -125,29 +125,34 @@ ansible-playbook -i test-inventory.ini test-deploy.yml
 log "Verifying etcd health..."
 ssh_vm cca-test-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" || fail "etcd unhealthy"
 
-log "Fetching cluster CA certificate for API verification..."
+log "Fetching cluster TLS certificates for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
+CLIENT_CERT_LOCAL="/tmp/cca-e2e-client.pem"
+CLIENT_KEY_LOCAL="/tmp/cca-e2e-client-key.pem"
 ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT_LOCAL"
+ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT_LOCAL"
+ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY_LOCAL"
 CCA_API="https://${CTRL_IP}:9770"
+CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LOCAL"
 
 log "Verifying cca server API..."
 wait_for_port "$CTRL_IP" 9770 45 "cca-server API"
 deadline=$((SECONDS + 30))
 while [[ $SECONDS -lt $deadline ]]; do
-    if curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" > /dev/null 2>&1; then
+    if curl -sf $CURL_TLS "${CCA_API}/status" > /dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable"
+curl -sf $CURL_TLS "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable"
 
 log "Verifying all 3 nodes registered..."
-node_count=$(curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" | grep -c '"state":"alive"' || true)
+node_count=$(curl -sf $CURL_TLS "${CCA_API}/status" | grep -c '"state":"alive"' || true)
 if [[ "$node_count" -lt 3 ]]; then
     log "WARNING: Only $node_count/3 nodes registered, waiting..."
     deadline=$((SECONDS + CONVERGE_TIMEOUT))
     while [[ $SECONDS -lt $deadline ]]; do
-        node_count=$(curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" | grep -c '"state":"alive"' || true)
+        node_count=$(curl -sf $CURL_TLS "${CCA_API}/status" | grep -c '"state":"alive"' || true)
         if [[ "$node_count" -ge 3 ]]; then break; fi
         sleep 5
     done
@@ -201,7 +206,7 @@ log "Zabbix stack running: $total_containers total containers"
 
 # ---- Step 6: Final status ----
 log "Final cluster status:"
-curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" || true
+curl -sf $CURL_TLS "${CCA_API}/status" || true
 echo ""
 
 log "Containers on each node:"
