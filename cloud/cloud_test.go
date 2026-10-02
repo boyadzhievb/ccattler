@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -203,6 +204,9 @@ func TestGCPProviderConstructionAndName(testing *testing.T) {
 	ctx := context.Background()
 	gcpProvider, constructionError := NewGCPCloudProvider(ctx, "my-project", "us-central1")
 	if constructionError != nil {
+		if strings.Contains(constructionError.Error(), "credentials") {
+			testing.Skipf("skipping: no GCP credentials available: %v", constructionError)
+		}
 		testing.Fatalf("NewGCPCloudProvider failed: %v", constructionError)
 	}
 	if gcpProvider.ProviderName() != "gcp" {
@@ -287,6 +291,9 @@ func TestGCPProviderRequiresProjectForMethods(testing *testing.T) {
 	ctx := context.Background()
 	gcpProvider, constructionError := NewGCPCloudProvider(ctx, "", "us-central1")
 	if constructionError != nil {
+		if strings.Contains(constructionError.Error(), "credentials") {
+			testing.Skipf("skipping: no GCP credentials available: %v", constructionError)
+		}
 		testing.Fatalf("NewGCPCloudProvider failed: %v", constructionError)
 	}
 
