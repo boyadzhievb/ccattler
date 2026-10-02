@@ -147,12 +147,12 @@ done
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable"
 
 log "Verifying all 3 nodes registered..."
-node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -c '"state":"alive"' || true)
+node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -o '"state":"alive"' | wc -l | tr -d ' ')
 if [[ "$node_count" -lt 3 ]]; then
     log "WARNING: Only $node_count/3 nodes registered, waiting..."
     deadline=$((SECONDS + CONVERGE_TIMEOUT))
     while [[ $SECONDS -lt $deadline ]]; do
-        node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -c '"state":"alive"' || true)
+        node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -o '"state":"alive"' | wc -l | tr -d ' ')
         if [[ "$node_count" -ge 3 ]]; then break; fi
         sleep 5
     done
