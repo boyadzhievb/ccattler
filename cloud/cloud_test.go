@@ -193,6 +193,9 @@ func TestAWSProviderConstructionAndName(testing *testing.T) {
 	ctx := context.Background()
 	awsProvider, constructionError := NewAWSCloudProvider(ctx, "us-east-1")
 	if constructionError != nil {
+		if strings.Contains(constructionError.Error(), "credentials") {
+			testing.Skipf("skipping: no AWS credentials available: %v", constructionError)
+		}
 		testing.Fatalf("NewAWSCloudProvider failed: %v", constructionError)
 	}
 	if awsProvider.ProviderName() != "aws" {
@@ -377,6 +380,9 @@ func TestAWSProviderRequiresConfigForOperations(testing *testing.T) {
 	ctx := context.Background()
 	awsProvider, constructionError := NewAWSCloudProvider(ctx, "us-east-1")
 	if constructionError != nil {
+		if strings.Contains(constructionError.Error(), "credentials") {
+			testing.Skipf("skipping: no AWS credentials available: %v", constructionError)
+		}
 		testing.Fatalf("NewAWSCloudProvider failed: %v", constructionError)
 	}
 

@@ -79,7 +79,7 @@ ssh_vm() {
         cca-test-worker-2) ip="$WORKER2_IP" ;;
         *) fail "Unknown VM: $vm_name" ;;
     esac
-    ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key_path" "vagrant@$ip" "$@"
+    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$key_path" "vagrant@$ip" "$@"
 }
 
 count_containers() {
@@ -135,7 +135,7 @@ log "All 3 nodes registered and alive"
 
 # ---- Step 4: Deploy Java test app ----
 log "Applying Java test workload..."
-scp -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/cca-test-ctrl/libvirt/private_key" \
     "$WORKLOADS_DIR/java-app.cca" "vagrant@${CTRL_IP}:/tmp/java-app.cca"
 
@@ -157,7 +157,7 @@ log "Java app running: $total_containers containers across 3 nodes"
 
 # ---- Step 5: Deploy Zabbix stack ----
 log "Applying Zabbix test workload..."
-scp -o StrictHostKeyChecking=no -o LogLevel=ERROR \
+scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/cca-test-ctrl/libvirt/private_key" \
     "$WORKLOADS_DIR/zabbix.cca" "vagrant@${CTRL_IP}:/tmp/zabbix.cca"
 
