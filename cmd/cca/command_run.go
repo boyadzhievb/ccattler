@@ -145,7 +145,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 		}
 	}()
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
@@ -212,7 +212,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		}
 	}()
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
@@ -294,7 +294,7 @@ func executeDemoCommand() {
 	fmt.Println("Applying config:")
 	fmt.Println(builtinDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, builtinDemoConfig); err != nil {
@@ -362,7 +362,7 @@ func executeDistributedDemoCommand() {
 	fmt.Println("\nApplying config:")
 	fmt.Println(distributedDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, distributedDemoConfig); err != nil {
@@ -457,7 +457,7 @@ service api {
 	fmt.Println("\nApplying config:")
 	fmt.Println(networkDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, networkDemoConfig); err != nil {
@@ -563,7 +563,7 @@ service web {
 	fmt.Println("\nApplying config:")
 	fmt.Println(storageDemoConfig)
 
-	statusAPIServer := launchStatusAPIServer(factStore, statusAPIListenAddress, nil, false)
+	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
 	if err := lang.Apply(ctx, factStore, storageDemoConfig); err != nil {

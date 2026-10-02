@@ -316,10 +316,24 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		// certificates and bearer tokens are accepted. In non-TLS mode, the
 		// local user header identifies the caller.
 		var authenticatorChain *security.AuthenticatorChain
+		var serverPrincipal string
 		if serverTLSConfig != nil {
 			authenticatorChain = security.NewAuthenticatorChain(
 				security.NewMTLSAuthenticator(),
 			)
+			// Bind the server's own certificate identity to cluster-admin so
+			// requests authenticated with this cert (including /status) pass RBAC.
+			// Enrolled nodes get their own node-agent binding via the enrollment flow.
+			if len(serverTLSConfig.Certificates) > 0 {
+				serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
+				if parseError == nil && serverLeafCert.Subject.CommonName != "" {
+					serverPrincipal = "node:" + serverLeafCert.Subject.CommonName
+					rbacAuthorizer.BindRole(security.RoleBinding{
+						Principal: serverPrincipal,
+						RoleName:  "cluster-admin",
+					})
+				}
+			}
 		} else {
 			localUserAuthenticator := security.NewLocalUserAuthenticator()
 			authenticatorChain = security.NewAuthenticatorChain(localUserAuthenticator)
@@ -332,13 +346,14 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		}
 
 		// API-layer capability authorizer. Maps builtin roles to capability grants.
-		// In non-TLS mode, all local users get cluster-admin capabilities.
 		apiAuthorizer := security.NewAPIAuthorizer()
 		if serverTLSConfig == nil {
 			apiAuthorizer.GrantRole("user:*", "cluster-admin")
+		} else if serverPrincipal != "" {
+			apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
 		}
 
-		statusAPIServer := launchStatusAPIServer(authorizedStore, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
+		statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 		statusAPIServer.SetEventLog(eventLog)
 		statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 		statusAPIServer.SetAuthenticatorChain(authenticatorChain)
@@ -647,8 +662,10 @@ func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 // When serverTLSConfig is non-nil, the listener is wrapped with TLS for mTLS.
 // When enrollmentEnabled is true, client certs are enforced via middleware
 // (except on /api/enroll) instead of at the TLS layer.
+// The authenticatorChain extracts principal identity from TLS client certificates
+// so that legacy endpoints (/status, /metric) can pass through the AuthorizedStore.
 // Returns the api.Server so callers can attach optional components like EventLog.
-func launchStatusAPIServer(factStore store.StateStore, listenAddress string, serverTLSConfig *tls.Config, enrollmentEnabled bool) *api.Server {
+func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *security.AuthenticatorChain, listenAddress string, serverTLSConfig *tls.Config, enrollmentEnabled bool) *api.Server {
 	apiServer := api.NewServer(factStore)
 
 	httpMux := http.NewServeMux()
@@ -663,9 +680,32 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 	httpMux.Handle("/.well-known/", apiServer.Handler())
 	httpMux.Handle("/oidc/", apiServer.Handler())
 
+	// authenticateLegacyRequest extracts the principal from the TLS client
+	// certificate (via the authenticator chain) and returns an enriched context.
+	// Legacy endpoints must go through this so the AuthorizedStore can authorize
+	// their store operations. Returns the original context if no chain is set.
+	authenticateLegacyRequest := func(request *http.Request) (context.Context, error) {
+		if authenticatorChain == nil {
+			return request.Context(), nil
+		}
+		result, authError := authenticatorChain.Authenticate(request)
+		if authError != nil {
+			return nil, authError
+		}
+		if result == nil {
+			return request.Context(), nil
+		}
+		enrichedContext := security.WithPrincipal(request.Context(), result.Principal)
+		return enrichedContext, nil
+	}
+
 	// Legacy status endpoint for backward compatibility with 'cca status'.
 	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
-		requestContext := request.Context()
+		requestContext, authError := authenticateLegacyRequest(request)
+		if authError != nil {
+			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			return
+		}
 		acceptHeader := request.Header.Get("Accept")
 		if strings.Contains(acceptHeader, "application/json") {
 			responseWriter.Header().Set("Content-Type", "application/json")
@@ -682,6 +722,11 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 			http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		requestContext, authError := authenticateLegacyRequest(request)
+		if authError != nil {
+			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			return
+		}
 		serviceName := request.URL.Query().Get("service")
 		metricName := request.URL.Query().Get("metric")
 		metricValue := request.URL.Query().Get("value")
@@ -689,7 +734,6 @@ func launchStatusAPIServer(factStore store.StateStore, listenAddress string, ser
 			http.Error(responseWriter, "service, metric, and value required", http.StatusBadRequest)
 			return
 		}
-		requestContext := request.Context()
 		metricKey := types.KeyObservedMetric(serviceName, metricName)
 		if _, putError := factStore.Put(requestContext, metricKey, []byte(metricValue)); putError != nil {
 			logging.Default().Error("failed to write metric", "key", metricKey, "error", putError.Error())

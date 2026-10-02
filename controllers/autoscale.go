@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -643,6 +644,17 @@ type extractedScheduleRule struct {
 	minimum int
 }
 
+// normalizeHHMM ensures a time string is in HH:MM format with zero-padded hour,
+// so lexicographic comparison against time.Format("15:04") is correct.
+func normalizeHHMM(raw string) string {
+	parts := strings.SplitN(raw, ":", 2)
+	if len(parts) != 2 {
+		return raw
+	}
+	hour, _ := strconv.Atoi(parts[0])
+	return fmt.Sprintf("%02d:%s", hour, parts[1])
+}
+
 // extractScheduleRules parses scheduled scaling rules per service.
 func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule {
 	rules := make(map[string]*extractedScheduleRule)
@@ -667,9 +679,9 @@ func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule 
 		case "days":
 			rules[serviceName].days = string(fact.Value)
 		case "start":
-			rules[serviceName].start = string(fact.Value)
+			rules[serviceName].start = normalizeHHMM(string(fact.Value))
 		case "end":
-			rules[serviceName].end = string(fact.Value)
+			rules[serviceName].end = normalizeHHMM(string(fact.Value))
 		case "minimum":
 			rules[serviceName].minimum, _ = strconv.Atoi(string(fact.Value))
 		}
