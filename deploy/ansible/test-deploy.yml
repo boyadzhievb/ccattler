@@ -76,6 +76,7 @@
         mode: "0644"
 
     - name: Wait for CCattler server to be ready
+      become: true
       shell: >
         curl -sf --cacert {{ cca_cert_dir }}/ca.pem
         --cert {{ cca_cert_dir }}/node.pem --key {{ cca_cert_dir }}/node-key.pem
