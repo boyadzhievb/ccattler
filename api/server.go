@@ -306,6 +306,9 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
 	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
 	apiServer.mux.HandleFunc("/api/secret", apiServer.instrumentedHandler("secret", apiServer.handleSecret))
+	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
+	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))
+	apiServer.mux.HandleFunc("/api/node/enable", apiServer.instrumentedHandler("node-enable", apiServer.handleNodeEnable))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
 	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
 }
@@ -717,6 +720,154 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 		"service":   body.Service,
 		"instances": body.Instances,
 	})
+}
+
+// nodeDrainRequest is the JSON body for POST /api/node/drain.
+type nodeDrainRequest struct {
+	// NodeID is the identifier of the node to drain.
+	NodeID string `json:"node_id"`
+	// GracePeriod is the drain grace period in seconds (0 uses default).
+	GracePeriod int `json:"grace_period"`
+}
+
+// nodeDisableEnableRequest is the JSON body for POST /api/node/disable and /api/node/enable.
+type nodeDisableEnableRequest struct {
+	// NodeID is the identifier of the node to disable or enable.
+	NodeID string `json:"node_id"`
+}
+
+// handleNodeDrain serves POST /api/node/drain to initiate graceful drain of a
+// node. It sets the node state to draining and records drain metadata.
+func (apiServer *Server) handleNodeDrain(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
+		return
+	}
+
+	requestContext := request.Context()
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	var body nodeDrainRequest
+	if decodeError := json.NewDecoder(request.Body).Decode(&body); decodeError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.NodeID == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node_id required"})
+		return
+	}
+
+	if !apiServer.nodeExists(requestContext, body.NodeID) {
+		responseWriter.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+
+	apiServer.writeNodeDrainFacts(requestContext, body.NodeID)
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{"ok": true})
+}
+
+// handleNodeDisable serves POST /api/node/disable to exclude a node from new
+// placements while keeping existing workloads running.
+func (apiServer *Server) handleNodeDisable(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
+		return
+	}
+
+	requestContext := request.Context()
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	var body nodeDisableEnableRequest
+	if decodeError := json.NewDecoder(request.Body).Decode(&body); decodeError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.NodeID == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node_id required"})
+		return
+	}
+
+	if !apiServer.nodeExists(requestContext, body.NodeID) {
+		responseWriter.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyObservedNodeState(body.NodeID), []byte(string(types.NodeDisabled))); putError != nil {
+		logging.Default().Error("failed to disable node", "node", body.NodeID, "error", putError.Error())
+	}
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{"ok": true})
+}
+
+// handleNodeEnable serves POST /api/node/enable to return a disabled node
+// to the alive state, making it eligible for new placements again.
+func (apiServer *Server) handleNodeEnable(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
+		return
+	}
+
+	requestContext := request.Context()
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	var body nodeDisableEnableRequest
+	if decodeError := json.NewDecoder(request.Body).Decode(&body); decodeError != nil {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.NodeID == "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node_id required"})
+		return
+	}
+
+	if !apiServer.nodeExists(requestContext, body.NodeID) {
+		responseWriter.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "node not found"})
+		return
+	}
+
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyObservedNodeState(body.NodeID), []byte(string(types.NodeAlive))); putError != nil {
+		logging.Default().Error("failed to enable node", "node", body.NodeID, "error", putError.Error())
+	}
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{"ok": true})
+}
+
+// nodeExists checks if a node's observed state key exists in the fact store.
+// Returns true if the node is registered, false otherwise.
+func (apiServer *Server) nodeExists(requestContext context.Context, nodeID string) bool {
+	nodeStateFact, getError := apiServer.factStore.Get(requestContext, types.KeyObservedNodeState(nodeID))
+	return getError == nil && nodeStateFact.Value != nil
+}
+
+// writeNodeDrainFacts writes the draining state and drain metadata facts for a
+// node. Separated from the handler to keep the handler under the line limit.
+func (apiServer *Server) writeNodeDrainFacts(requestContext context.Context, nodeID string) {
+	drainStartedMillis := strconv.FormatInt(time.Now().UnixMilli(), 10)
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeDraining))); putError != nil {
+		logging.Default().Error("failed to set node draining", "node", nodeID, "error", putError.Error())
+	}
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyDerivedNodeDrainStarted(nodeID), []byte(drainStartedMillis)); putError != nil {
+		logging.Default().Error("failed to write drain start", "node", nodeID, "error", putError.Error())
+	}
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyDerivedNodeDrainInitiator(nodeID), []byte("user:cli")); putError != nil {
+		logging.Default().Error("failed to write drain initiator", "node", nodeID, "error", putError.Error())
+	}
 }
 
 // handleStatus serves GET /api/status returning the full cluster status as JSON.

@@ -947,3 +947,68 @@ func TestPartitionUnplacedByGroup(t *testing.T) {
 		t.Fatalf("expected [api-1] ungrouped, got %v", ungrouped)
 	}
 }
+
+func TestDisabledNodeExcludedFromScheduler(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	// Two nodes: node-1 is disabled, node-2 is alive.
+	// A pending instance should only be placed on node-2.
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("inst-1"), "web"),
+		kv(types.KeyObservedInstanceState("inst-1"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeDisabled)),
+		kv(types.KeyObservedNodeCapacityCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeCapacityMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeState("node-2"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeCapacityCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeCapacityMemory("node-2"), "8192"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
+	)
+
+	proposedChanges, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(proposedChanges) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(proposedChanges))
+	}
+	if string(proposedChanges[0].Value) != "node-2" {
+		t.Errorf("expected placement on node-2, got %s", string(proposedChanges[0].Value))
+	}
+}
+
+func TestDrainingNodeExcludedFromScheduler(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	// Two nodes: node-1 is draining, node-2 is alive.
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("inst-1"), "web"),
+		kv(types.KeyObservedInstanceState("inst-1"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeDraining)),
+		kv(types.KeyObservedNodeCapacityCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeCapacityMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "8192"),
+		kv(types.KeyObservedNodeState("node-2"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeCapacityCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeCapacityMemory("node-2"), "8192"),
+		kv(types.KeyObservedNodeAvailableCPU("node-2"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-2"), "8192"),
+	)
+
+	proposedChanges, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(proposedChanges) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(proposedChanges))
+	}
+	if string(proposedChanges[0].Value) != "node-2" {
+		t.Errorf("expected placement on node-2, got %s", string(proposedChanges[0].Value))
+	}
+}

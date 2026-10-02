@@ -314,6 +314,10 @@ const (
 	// ScanDerivedCredentials scans all controller-derived credential state
 	// (broker lifecycle, expiry, errors).
 	ScanDerivedCredentials = PrefixDerived + "/credential/"
+
+	// ScanDerivedNodes scans all controller-derived node-level facts
+	// (drain coordination: started timestamp, initiator, complete marker).
+	ScanDerivedNodes = PrefixDerived + "/node/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -1259,6 +1263,27 @@ func KeyDerivedInstanceInitPhase(instanceID string) string {
 // Path: derived/instance/{instanceID}/drain_since
 func KeyDerivedInstanceDrainSince(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixDerived, instanceID)
+}
+
+// KeyDerivedNodeDrainStarted returns the path for a node's drain start timestamp.
+// The value is a Unix-millisecond timestamp recorded when the drain was initiated.
+// Path: derived/node/{nodeID}/drain/started
+func KeyDerivedNodeDrainStarted(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/drain/started", PrefixDerived, nodeID)
+}
+
+// KeyDerivedNodeDrainInitiator returns the path for who initiated the drain.
+// The value identifies the principal that requested the drain (e.g. "user:cli").
+// Path: derived/node/{nodeID}/drain/initiator
+func KeyDerivedNodeDrainInitiator(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/drain/initiator", PrefixDerived, nodeID)
+}
+
+// KeyDerivedNodeDrainComplete returns the path for the drain-complete marker.
+// Written when zero active instances remain on a draining node.
+// Path: derived/node/{nodeID}/drain/complete
+func KeyDerivedNodeDrainComplete(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/drain/complete", PrefixDerived, nodeID)
 }
 
 // KeyDerivedCredentialState returns the broker-derived credential state for an

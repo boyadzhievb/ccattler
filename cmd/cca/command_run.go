@@ -324,6 +324,7 @@ func executeDistributedDemoCommand() {
 
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
+		controllers.NewDrainController(),
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
@@ -416,6 +417,7 @@ func executeNetworkDemoCommand() {
 
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
+		controllers.NewDrainController(),
 		controllers.NewNetworkController(),
 		controllers.NewNetworkPolicyController(),
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
@@ -512,6 +514,7 @@ func executeStorageDemoCommand() {
 
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
+		controllers.NewDrainController(),
 		controllers.NewStorageController(),
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M61 — Phase 63 Cloud Provider Real APIs. M1–M61 + M62–M63 complete. Gates A–I resolved. All cloud SDK wiring done (AWS EC2/ELBv2/STS/KMS, GCP Compute/KMS/WIF STS, agent KMS decryption). Next: Phase 64 — Production Hardening.
+**Completed through:** M61 — Phase 63 Cloud Provider Real APIs. M1–M61 + M62–M63 complete. Gates A–I resolved. Next: Phase 64 — Node Drain & Cordon, Phase 65 — Disruption Budgets, Phase 66 — Stateful Workloads, Phase 67 — Scheduler Scale.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1069,7 +1069,7 @@ service web {
 ```
 
 The `cloud` block configures the provider. `expose external` marks a port for cloud load balancer creation. The cloud controller manager runs three sub-controllers:
-- **NodeLifecycleController** — detects terminated cloud instances, cordons and drains nodes
+- **NodeLifecycleController** — detects terminated cloud instances, disables and drains nodes
 - **CloudLoadBalancerController** — creates/updates/deletes cloud LBs for `expose external` services
 - **CloudRouteController** — programs VPC routes from node subnet assignments
 

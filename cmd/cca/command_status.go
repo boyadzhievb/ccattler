@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1088,6 +1089,84 @@ func executeScaleCommand(serviceName, countStr string) {
 		os.Exit(1)
 	}
 	fmt.Printf("scaled %s to %s instances\n", serviceName, countStr)
+}
+
+// defaultCLIDrainGracePeriodSeconds is the default grace period for the drain
+// CLI command when --grace-period is not specified.
+const defaultCLIDrainGracePeriodSeconds = 30
+
+// parseDrainGracePeriod extracts the --grace-period flag from drain command
+// arguments. Returns the default grace period if the flag is not present.
+func parseDrainGracePeriod(args []string) int {
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		if args[argIndex] == "--grace-period" && argIndex+1 < len(args) {
+			parsed, parseErr := strconv.Atoi(args[argIndex+1])
+			if parseErr == nil && parsed > 0 {
+				return parsed
+			}
+		}
+	}
+	return defaultCLIDrainGracePeriodSeconds
+}
+
+// executeDrainCommand sends a drain request to the API to initiate graceful
+// eviction of all instances from a node.
+func executeDrainCommand(nodeID string, gracePeriod int) {
+	requestBody := fmt.Sprintf(`{"node_id":%q,"grace_period":%d}`, nodeID, gracePeriod)
+	apiURL := "http://" + statusAPIListenAddress + "/api/node/drain"
+	httpResponse, err := http.Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "drain failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+	fmt.Printf("draining node %s (grace period: %ds)\n", nodeID, gracePeriod)
+}
+
+// executeDisableNodeCommand sends a disable request to the API to exclude a node
+// from new placements while keeping existing workloads running.
+func executeDisableNodeCommand(nodeID string) {
+	requestBody := fmt.Sprintf(`{"node_id":%q}`, nodeID)
+	apiURL := "http://" + statusAPIListenAddress + "/api/node/disable"
+	httpResponse, err := http.Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "disable-node failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+	fmt.Printf("disabled node %s\n", nodeID)
+}
+
+// executeEnableNodeCommand sends an enable request to the API to return a
+// disabled node to normal scheduling eligibility.
+func executeEnableNodeCommand(nodeID string) {
+	requestBody := fmt.Sprintf(`{"node_id":%q}`, nodeID)
+	apiURL := "http://" + statusAPIListenAddress + "/api/node/enable"
+	httpResponse, err := http.Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "enable-node failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+	fmt.Printf("enabled node %s\n", nodeID)
 }
 
 // executeWatchCommand connects to the API's SSE watch endpoint and prints

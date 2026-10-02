@@ -271,6 +271,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	if runControllers {
 		controllerList := append(coreControllers(),
 			controllers.NewNodeFailureController(),
+			controllers.NewDrainController(),
 			controllers.NewNetworkController(),
 			controllers.NewNetworkPolicyController(),
 			controllers.NewWarmZeroController())

@@ -140,6 +140,25 @@ func main() {
 			os.Exit(1)
 		}
 		executeMetricSetCommand(os.Args[3], os.Args[4], os.Args[5])
+	case "drain":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca drain <node-id> [--grace-period 30]")
+			os.Exit(1)
+		}
+		gracePeriod := parseDrainGracePeriod(os.Args[2:])
+		executeDrainCommand(os.Args[2], gracePeriod)
+	case "disable-node":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca disable-node <node-id>")
+			os.Exit(1)
+		}
+		executeDisableNodeCommand(os.Args[2])
+	case "enable-node":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca enable-node <node-id>")
+			os.Exit(1)
+		}
+		executeEnableNodeCommand(os.Args[2])
 	case "secret":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete> [name] [value]")
@@ -195,6 +214,9 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
 	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>]  container stdout/stderr")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
+	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
+	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
+	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
 	fmt.Fprintln(os.Stderr, "")

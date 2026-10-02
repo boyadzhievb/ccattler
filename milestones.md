@@ -1046,6 +1046,49 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Scenario 11: deleting tenant → rejects new services
 - [x] Scenario 12: restrict + quota combined
 
+### Phase 64 — Node Drain & Disable/Enable (M64)
+
+- [ ] `NodeDisabled` state in `types/state.go` — scheduler excludes, existing workloads untouched
+- [ ] `DrainController` in `controllers/drain.go` — watches placements + node states, evicts instances from draining nodes one per service per cycle
+- [ ] Drain metadata fact keys: `derived/node/{id}/drain/started`, `derived/node/{id}/drain/initiator`
+- [ ] CLI commands: `cca drain <nodeID> [--grace-period 30s]`, `cca disable-node <nodeID>`, `cca enable-node <nodeID>`
+- [ ] API routes: `POST /api/node/drain|disable|enable`
+- [ ] Cloud node lifecycle integration: `NodeDisabled` → draining transition on cloud instance termination
+- [ ] Node failure controller skip: don't lease-timeout → unreachable for nodes in `NodeDraining`
+- [ ] Unit tests: `controllers/drain_test.go` — gradual eviction, grace period, drain completion
+- [ ] Integration test: deploy 3 nodes, drain 1, verify instance migration
+
+### Phase 65 — Disruption Budgets (M65)
+
+- [ ] `DisruptionDecl` AST struct: `MinAvailable`, `MaxUnavailable` in `lang/ast.go`
+- [ ] DSL syntax: `disruption { min_available 3 }` inside service block
+- [ ] Parser + compiler: emit `desired/service/{name}/disruption/min_available` facts
+- [ ] DrainController integration: check `running - draining > min_available` before evicting
+- [ ] Rollout controller integration: disruption budget as safety ceiling for `maxUnavailable`
+- [ ] Parser/compiler tests for `disruption` block
+- [ ] Integration test: 5 instances with `min_available 3`, drain node, verify never below 3
+
+### Phase 66 — Stateful Workloads (M66)
+
+- [ ] `Stateful bool` field on `ServiceDecl` in `lang/ast.go`
+- [ ] DSL syntax: `stateful` keyword inside service block
+- [ ] Ordinal instance IDs: `postgres-0`, `postgres-1`, `postgres-2` via `OrdinalInstanceID`
+- [ ] Ordered startup: instance N+1 only created when N is running
+- [ ] Reverse scale-down: highest ordinal removed first
+- [ ] Per-ordinal volumes: `postgres-0-pgdata` automatic naming
+- [ ] Stable DNS: `postgres-0.ccattler.local` resolves to instance IP
+- [ ] Stateful volume controller: `controllers/stateful_volume.go`
+- [ ] Unit tests: ordinal creation, ordering, reverse scale-down, per-ordinal volumes
+- [ ] Integration test: 3-instance stateful service with DNS verification
+
+### Phase 67 — Scheduler Scale (M67)
+
+- [ ] `NodeCapacityCache` in `scheduler/cache.go` — persistent min-heap, incremental updates on watch
+- [ ] Batch placement: group unplaced instances by service, cache filtered candidates per service
+- [ ] Optional `DeltaController` interface: `ReconcileDelta(facts, changedKeys)` for incremental cache
+- [ ] Extended load test: `TestSyntheticCluster200Nodes5000Workloads` in `loadtest/loadtest_test.go`
+- [ ] Benchmark: placements/second before and after optimization
+
 ### Milestones
 
 | Milestone | Phases | Demo |
@@ -1110,5 +1153,9 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M61 — Cloud Provider APIs | 63 | KMS envelope encryption (KeyProvider + 4 providers), SecretStore/CredentialStore refactored to per-secret DEKs, key rotation, `cca secret` CLI + API. Real AWS SDK v2 (EC2, ELBv2 NLB, VPC routes, STS, KMS) + GCP Cloud SDK (Compute, Cloud KMS, Workload Identity Federation STS). Agent KMS decryption at materialization time (`--kms-provider`/`--kms-key`). |
 | M62 — Production Hardening | 64 | 3-VM cluster on testbed-100.43, install scripts, Ansible deployment, Zabbix + Java app e2e test, CI nightly |
 | M63 — Placement & Tenant Tests | 65 | 12-scenario e2e test: require/prefer/restrict/accept/zone-spread/architecture + tenant quota ALLOW/DENY |
+| M64 — Node Drain & Disable/Enable | 64 | `cca drain node-2` gracefully evicts workloads, `cca disable-node/enable-node` toggles scheduling eligibility, DrainController rate-limits eviction |
+| M65 — Disruption Budgets | 65 | `disruption { min_available 3 }` as safety ceiling for drain + rolling update, never drops below minimum |
+| M66 — Stateful Workloads | 66 | Ordinal instance IDs (`postgres-0/1/2`), ordered startup, reverse scale-down, per-ordinal volumes, stable DNS |
+| M67 — Scheduler Scale | 67 | Incremental node cache, batch placement, 200-node/5000-workload load test with benchmark |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

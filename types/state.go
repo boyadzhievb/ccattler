@@ -50,6 +50,10 @@ const (
 	// Existing instances are being migrated away and no new placements
 	// will be scheduled here.
 	NodeDraining NodeState = "draining"
+
+	// NodeDisabled means the node is alive but excluded from new placements.
+	// Existing workloads remain running. Used for maintenance windows.
+	NodeDisabled NodeState = "disabled"
 )
 
 // HealthStatus represents the result of a health check probe against
