@@ -1340,7 +1340,7 @@ func TestParseAllWorkloadAndExampleFiles(t *testing.T) {
 			}
 			filePath := directory + "/" + entry.Name()
 			t.Run(filePath, func(t *testing.T) {
-				content, fileReadError := os.ReadFile(filePath)
+				content, fileReadError := os.ReadFile(filePath) //nolint:gosec // test reads known fixture files
 				if fileReadError != nil {
 					t.Fatalf("failed to read %s: %v", filePath, fileReadError)
 				}
