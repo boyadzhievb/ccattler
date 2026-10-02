@@ -9,10 +9,6 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// defaultDrainGracePeriodSeconds is the default grace period in seconds before
-// forcefully evicting instances from a draining node.
-const defaultDrainGracePeriodSeconds = 30
-
 // DrainController watches for nodes in the NodeDraining state and gracefully
 // evicts instances placed on those nodes. It rate-limits evictions to at most
 // one instance per service per reconciliation cycle, preventing a thundering
