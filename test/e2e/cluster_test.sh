@@ -38,8 +38,23 @@ fi
 log() { echo "==> [$(date +%H:%M:%S)] $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
+collect_vm_logs() {
+    log "Collecting VM logs before teardown..."
+    for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+        echo "=== $vm server.log ==="
+        ssh_vm "$vm" "sudo cat /var/log/ccattler/server.log 2>/dev/null || echo '(no server.log)'" 2>/dev/null || true
+        echo "=== $vm agent.log ==="
+        ssh_vm "$vm" "sudo cat /var/log/ccattler/agent.log 2>/dev/null || echo '(no agent.log)'" 2>/dev/null || true
+        echo "=== $vm systemctl status ==="
+        ssh_vm "$vm" "sudo systemctl status cca-server cca-agent 2>/dev/null || true" 2>/dev/null || true
+    done
+}
+
 cleanup() {
     local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        collect_vm_logs || true
+    fi
     if [[ "$DESTROY_ON_EXIT" == "true" ]]; then
         log "Tearing down VMs..."
         cd "$ANSIBLE_DIR"
