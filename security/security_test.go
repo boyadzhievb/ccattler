@@ -1613,8 +1613,12 @@ func TestSimulatorCloudAdapterExchangeToken(t *testing.T) {
 }
 
 func TestAWSSTSAdapterRequiresRole(t *testing.T) {
-	adapter := NewAWSSTSAdapter("us-east-1", "")
-	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{
+	ctx := context.Background()
+	adapter, adapterError := NewAWSSTSAdapter(ctx, "us-east-1", "")
+	if adapterError != nil {
+		t.Fatalf("NewAWSSTSAdapter failed: %v", adapterError)
+	}
+	_, err := adapter.ExchangeToken(ctx, "jwt", CloudIdentityConfig{
 		Provider: "aws",
 	})
 	if err == nil || !strings.Contains(err.Error(), "role ARN is required") {

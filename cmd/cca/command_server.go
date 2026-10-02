@@ -278,7 +278,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		metricsCollector := controllers.NewMetricsCollector()
 
 		if parsedConfig.cloudProviderName != "" {
-			cloudProviderInstance := createCloudProvider(parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
+			cloudProviderInstance := createCloudProvider(ctx, parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
 			if cloudProviderInstance != nil {
 				controllerList = append(controllerList,
 					controllers.NewNodeLifecycleController(cloudProviderInstance),
@@ -406,16 +406,26 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	fmt.Println("\nServer shutting down...")
 }
 
-// buildServerTLSConfig creates an ephemeral CA, issues a server certificate
 // createCloudProvider returns a CloudProvider for the given provider name, or
 // nil if the name is unrecognized. This is the factory used by `cca server`
 // to instantiate the right cloud adapter based on the --cloud-provider flag.
-func createCloudProvider(providerName string, region string) cloud.CloudProvider {
+// AWS and GCP providers load credentials from the default SDK credential chain.
+func createCloudProvider(ctx context.Context, providerName string, region string) cloud.CloudProvider {
 	switch providerName {
 	case "aws":
-		return cloud.NewAWSCloudProvider(region)
+		awsProvider, awsError := cloud.NewAWSCloudProvider(ctx, region)
+		if awsError != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to create AWS provider: %v\n", awsError)
+			return nil
+		}
+		return awsProvider
 	case "gcp":
-		return cloud.NewGCPCloudProvider("", region)
+		gcpProvider, gcpError := cloud.NewGCPCloudProvider(ctx, "", region)
+		if gcpError != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to create GCP provider: %v\n", gcpError)
+			return nil
+		}
+		return gcpProvider
 	case "azure":
 		return cloud.NewAzureCloudProvider("", "", region)
 	case "simulator":

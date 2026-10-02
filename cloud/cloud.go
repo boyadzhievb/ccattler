@@ -88,6 +88,8 @@ type InstanceConfig struct {
 	Region string
 	// Zone is the specific availability zone within the region.
 	Zone string
+	// ImageID is the machine image to boot (AMI for AWS, image name for GCP, VM image for Azure).
+	ImageID string
 	// Labels are key-value pairs applied to the instance as cloud tags.
 	Labels map[string]string
 }

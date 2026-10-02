@@ -2,10 +2,16 @@ package security
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/boyadzhievb/ccattler/store"
 )
 
@@ -49,39 +55,73 @@ type CloudProviderAdapter interface {
 	ProviderName() string
 }
 
+// awsDefaultSTSRegion is the region used for STS calls when none is specified.
+const awsDefaultSTSRegion = "us-east-1"
+
+// awsSTSSessionNamePrefix is prepended to instance IDs for STS session names.
+const awsSTSSessionNamePrefix = "ccattler-"
+
+// awsSTSCredentialDurationSeconds is the default requested credential lifetime.
+const awsSTSCredentialDurationSeconds = 3600
+
 // AWSSTSAdapter exchanges CCattler JWTs for AWS temporary credentials using
-// the STS AssumeRoleWithWebIdentity API.
+// the STS AssumeRoleWithWebIdentity API via the AWS SDK v2.
 type AWSSTSAdapter struct {
-	stsEndpoint string // STS endpoint URL (empty = default)
-	region      string // AWS region for STS calls
+	stsClient *sts.Client // stsClient is the AWS STS API client.
+	region    string      // region is the AWS region for STS calls.
 }
 
 // NewAWSSTSAdapter creates an AWS STS adapter. The region defaults to
-// "us-east-1" if empty. The stsEndpoint can be overridden for testing.
-func NewAWSSTSAdapter(region string, stsEndpoint string) *AWSSTSAdapter {
+// "us-east-1" if empty. Loads credentials from the default AWS credential
+// chain. Returns an error if the SDK config cannot be loaded.
+func NewAWSSTSAdapter(ctx context.Context, region string, stsEndpoint string) (*AWSSTSAdapter, error) {
 	if region == "" {
-		region = "us-east-1"
+		region = awsDefaultSTSRegion
+	}
+	sdkConfig, loadError := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region))
+	if loadError != nil {
+		return nil, fmt.Errorf("aws-sts: load SDK config: %w", loadError)
+	}
+	var stsOptions []func(*sts.Options)
+	if stsEndpoint != "" {
+		stsOptions = append(stsOptions, func(options *sts.Options) {
+			options.BaseEndpoint = &stsEndpoint
+		})
 	}
 	return &AWSSTSAdapter{
-		stsEndpoint: stsEndpoint,
-		region:      region,
-	}
+		stsClient: sts.NewFromConfig(sdkConfig, stsOptions...),
+		region:    region,
+	}, nil
 }
 
 // ExchangeToken calls AWS STS AssumeRoleWithWebIdentity to exchange the JWT
-// for temporary AWS credentials bound to the configured IAM role.
+// for temporary AWS credentials bound to the configured IAM role. Returns a
+// CloudCredential with the temporary access key, secret key, and session token.
 func (adapter *AWSSTSAdapter) ExchangeToken(ctx context.Context, jwtToken string, identityConfig CloudIdentityConfig) (*CloudCredential, error) {
 	if identityConfig.Role == "" {
 		return nil, fmt.Errorf("aws: role ARN is required")
 	}
-
-	// In production, this would call STS AssumeRoleWithWebIdentity.
-	// The adapter is designed for pluggable STS endpoints to enable testing
-	// without real AWS credentials.
+	sessionName := awsSTSSessionNamePrefix + identityConfig.Name
+	assumeInput := &sts.AssumeRoleWithWebIdentityInput{
+		RoleArn:          &identityConfig.Role,
+		RoleSessionName:  &sessionName,
+		WebIdentityToken: &jwtToken,
+		DurationSeconds:  intPtr(awsSTSCredentialDurationSeconds),
+	}
+	assumeOutput, assumeError := adapter.stsClient.AssumeRoleWithWebIdentity(ctx, assumeInput)
+	if assumeError != nil {
+		return nil, fmt.Errorf("aws: AssumeRoleWithWebIdentity(role=%s): %w", identityConfig.Role, assumeError)
+	}
+	if assumeOutput.Credentials == nil {
+		return nil, fmt.Errorf("aws: AssumeRoleWithWebIdentity returned nil credentials")
+	}
 	return &CloudCredential{
-		Provider:  "aws",
-		ExpiresAt: time.Now().Add(defaultCloudCredentialExpiry),
-	}, fmt.Errorf("aws: STS exchange not yet connected (role=%s)", identityConfig.Role)
+		Provider:     "aws",
+		AccessKeyID:  derefString(assumeOutput.Credentials.AccessKeyId),
+		SecretKey:    derefString(assumeOutput.Credentials.SecretAccessKey),
+		SessionToken: derefString(assumeOutput.Credentials.SessionToken),
+		ExpiresAt:    derefTime(assumeOutput.Credentials.Expiration),
+	}, nil
 }
 
 // ProviderName returns "aws".
@@ -89,22 +129,64 @@ func (adapter *AWSSTSAdapter) ProviderName() string {
 	return "aws"
 }
 
+// intPtr returns a pointer to the given int32 value.
+func intPtr(value int32) *int32 {
+	return &value
+}
+
+// derefString returns the string value of a pointer, or empty string if nil.
+func derefString(stringPtr *string) string {
+	if stringPtr == nil {
+		return ""
+	}
+	return *stringPtr
+}
+
+// derefTime returns the time value of a pointer, or zero time if nil.
+func derefTime(timePtr *time.Time) time.Time {
+	if timePtr == nil {
+		return time.Time{}
+	}
+	return *timePtr
+}
+
+// gcpDefaultSTSEndpoint is the Google Security Token Service endpoint for
+// workload identity federation token exchange.
+const gcpDefaultSTSEndpoint = "https://sts.googleapis.com/v1/token"
+
+// gcpIAMCredentialsEndpoint is the base URL for the IAM Credentials API used
+// to impersonate a service account after STS token exchange.
+const gcpIAMCredentialsEndpoint = "https://iamcredentials.googleapis.com/v1"
+
+// gcpCloudPlatformScope is the OAuth scope for full GCP API access.
+const gcpCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
+
+// gcpAccessTokenLifetime is the requested lifetime for impersonated access tokens.
+const gcpAccessTokenLifetime = "3600s"
+
 // GCPSTSAdapter exchanges CCattler JWTs for GCP access tokens using the
-// Google Security Token Service with workload identity federation.
+// Google Security Token Service with workload identity federation, then
+// impersonates the target service account via IAM Credentials.
 type GCPSTSAdapter struct {
-	stsEndpoint string // STS endpoint URL (empty = default)
+	stsEndpoint string       // stsEndpoint is the STS token exchange URL.
+	httpClient  *http.Client // httpClient is used for STS and IAM API calls.
 }
 
 // NewGCPSTSAdapter creates a GCP STS adapter. The stsEndpoint can be
-// overridden for testing.
+// overridden for testing; empty uses the default GCP STS endpoint.
 func NewGCPSTSAdapter(stsEndpoint string) *GCPSTSAdapter {
+	if stsEndpoint == "" {
+		stsEndpoint = gcpDefaultSTSEndpoint
+	}
 	return &GCPSTSAdapter{
 		stsEndpoint: stsEndpoint,
+		httpClient:  &http.Client{Timeout: defaultCloudCredentialExpiry},
 	}
 }
 
-// ExchangeToken calls GCP Security Token Service to exchange the JWT for a
-// GCP access token via workload identity federation.
+// ExchangeToken exchanges a CCattler JWT for a GCP access token via workload
+// identity federation. First exchanges the JWT for a federated STS token, then
+// impersonates the configured service account to get a usable access token.
 func (adapter *GCPSTSAdapter) ExchangeToken(ctx context.Context, jwtToken string, identityConfig CloudIdentityConfig) (*CloudCredential, error) {
 	if identityConfig.ServiceAccount == "" {
 		return nil, fmt.Errorf("gcp: service_account is required")
@@ -112,16 +194,108 @@ func (adapter *GCPSTSAdapter) ExchangeToken(ctx context.Context, jwtToken string
 	if identityConfig.Pool == "" {
 		return nil, fmt.Errorf("gcp: workload identity pool is required")
 	}
-
+	federatedToken, stsError := adapter.exchangeSTSToken(ctx, jwtToken, identityConfig.Pool)
+	if stsError != nil {
+		return nil, stsError
+	}
+	accessToken, expiresAt, impersonateError := adapter.impersonateServiceAccount(ctx, federatedToken, identityConfig.ServiceAccount)
+	if impersonateError != nil {
+		return nil, impersonateError
+	}
 	return &CloudCredential{
-		Provider:  "gcp",
-		ExpiresAt: time.Now().Add(defaultCloudCredentialExpiry),
-	}, fmt.Errorf("gcp: STS exchange not yet connected (sa=%s, pool=%s)", identityConfig.ServiceAccount, identityConfig.Pool)
+		Provider:     "gcp",
+		SessionToken: accessToken,
+		ExpiresAt:    expiresAt,
+	}, nil
 }
 
 // ProviderName returns "gcp".
 func (adapter *GCPSTSAdapter) ProviderName() string {
 	return "gcp"
+}
+
+// gcpSTSTokenResponse holds the JSON response from the GCP STS token exchange.
+type gcpSTSTokenResponse struct {
+	AccessToken string `json:"access_token"` // AccessToken is the federated STS token.
+	ExpiresIn   int    `json:"expires_in"`   // ExpiresIn is the token lifetime in seconds.
+	TokenType   string `json:"token_type"`   // TokenType is typically "Bearer".
+}
+
+// exchangeSTSToken calls the GCP Security Token Service to exchange an
+// external JWT for a federated STS access token.
+func (adapter *GCPSTSAdapter) exchangeSTSToken(ctx context.Context, jwtToken string, workloadIdentityPool string) (string, error) {
+	formData := url.Values{
+		"grant_type":           {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"audience":             {workloadIdentityPool},
+		"scope":                {gcpCloudPlatformScope},
+		"requested_token_type": {"urn:ietf:params:oauth:token-type:access_token"},
+		"subject_token_type":   {"urn:ietf:params:oauth:token-type:jwt"},
+		"subject_token":        {jwtToken},
+	}
+	httpRequest, requestError := http.NewRequestWithContext(ctx, http.MethodPost, adapter.stsEndpoint, strings.NewReader(formData.Encode()))
+	if requestError != nil {
+		return "", fmt.Errorf("gcp: build STS request: %w", requestError)
+	}
+	httpRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	httpResponse, responseError := adapter.httpClient.Do(httpRequest)
+	if responseError != nil {
+		return "", fmt.Errorf("gcp: STS token exchange: %w", responseError)
+	}
+	defer httpResponse.Body.Close()
+	responseBody, readError := io.ReadAll(httpResponse.Body)
+	if readError != nil {
+		return "", fmt.Errorf("gcp: read STS response: %w", readError)
+	}
+	if httpResponse.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gcp: STS returned %d: %s", httpResponse.StatusCode, string(responseBody))
+	}
+	var tokenResponse gcpSTSTokenResponse
+	if unmarshalError := json.Unmarshal(responseBody, &tokenResponse); unmarshalError != nil {
+		return "", fmt.Errorf("gcp: parse STS response: %w", unmarshalError)
+	}
+	return tokenResponse.AccessToken, nil
+}
+
+// gcpGenerateAccessTokenResponse holds the JSON response from the IAM
+// Credentials generateAccessToken API.
+type gcpGenerateAccessTokenResponse struct {
+	AccessToken string `json:"accessToken"` // AccessToken is the impersonated service account token.
+	ExpireTime  string `json:"expireTime"`  // ExpireTime is the RFC3339 expiry.
+}
+
+// impersonateServiceAccount uses a federated STS token to impersonate a GCP
+// service account and obtain an access token for that account.
+func (adapter *GCPSTSAdapter) impersonateServiceAccount(ctx context.Context, federatedToken string, serviceAccountEmail string) (string, time.Time, error) {
+	impersonateURL := fmt.Sprintf("%s/projects/-/serviceAccounts/%s:generateAccessToken",
+		gcpIAMCredentialsEndpoint, serviceAccountEmail)
+	requestBody := fmt.Sprintf(`{"scope":["%s"],"lifetime":"%s"}`, gcpCloudPlatformScope, gcpAccessTokenLifetime)
+	httpRequest, requestError := http.NewRequestWithContext(ctx, http.MethodPost, impersonateURL, strings.NewReader(requestBody))
+	if requestError != nil {
+		return "", time.Time{}, fmt.Errorf("gcp: build impersonate request: %w", requestError)
+	}
+	httpRequest.Header.Set("Authorization", "Bearer "+federatedToken)
+	httpRequest.Header.Set("Content-Type", "application/json")
+	httpResponse, responseError := adapter.httpClient.Do(httpRequest)
+	if responseError != nil {
+		return "", time.Time{}, fmt.Errorf("gcp: impersonate service account: %w", responseError)
+	}
+	defer httpResponse.Body.Close()
+	responseBody, readError := io.ReadAll(httpResponse.Body)
+	if readError != nil {
+		return "", time.Time{}, fmt.Errorf("gcp: read impersonate response: %w", readError)
+	}
+	if httpResponse.StatusCode != http.StatusOK {
+		return "", time.Time{}, fmt.Errorf("gcp: impersonate returned %d: %s", httpResponse.StatusCode, string(responseBody))
+	}
+	var tokenResponse gcpGenerateAccessTokenResponse
+	if unmarshalError := json.Unmarshal(responseBody, &tokenResponse); unmarshalError != nil {
+		return "", time.Time{}, fmt.Errorf("gcp: parse impersonate response: %w", unmarshalError)
+	}
+	expiresAt, parseError := time.Parse(time.RFC3339, tokenResponse.ExpireTime)
+	if parseError != nil {
+		expiresAt = time.Now().Add(defaultCloudCredentialExpiry)
+	}
+	return tokenResponse.AccessToken, expiresAt, nil
 }
 
 // AzureADAdapter exchanges CCattler JWTs for Azure access tokens using

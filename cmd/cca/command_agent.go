@@ -34,6 +34,8 @@ type agentCommandConfig struct {
 	proxyListenAddress string
 	logLevel           string
 	logFormat          string
+	kmsProvider        string // kmsProvider selects the KMS backend for secret decryption ("aws-kms", "gcp-kms", or empty for local).
+	kmsKeyID           string // kmsKeyID is the KMS key ARN (AWS) or resource name (GCP) for secret decryption.
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -129,6 +131,16 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.logFormat = args[argIndex]
 			}
+		case "--kms-provider":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.kmsProvider = args[argIndex]
+			}
+		case "--kms-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.kmsKeyID = args[argIndex]
+			}
 		}
 	}
 
@@ -200,6 +212,8 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
 	}
+
+	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)
 
 	go func() {
 		if runError := nodeAgent.Run(ctx); runError != nil {
@@ -284,4 +298,35 @@ func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.
 	if containerRuntime, isContainerRuntime := runtimeAdapter.(*runtime.ContainerRuntime); isContainerRuntime {
 		containerRuntime.StopAll(context.Background())
 	}
+}
+
+// configureAgentSecretProvider sets up the agent's secret provider based on
+// KMS configuration. When --kms-provider is set, secrets are decrypted using
+// the specified cloud KMS at materialization time. When not set, secrets use
+// a local master key loaded from the data directory.
+func configureAgentSecretProvider(ctx context.Context, nodeAgent *agent.Agent, factStore store.StateStore, parsedConfig agentCommandConfig) {
+	if parsedConfig.kmsProvider != "" {
+		if parsedConfig.kmsKeyID == "" {
+			fmt.Fprintf(os.Stderr, "error: --kms-key is required when --kms-provider is set\n")
+			os.Exit(1)
+		}
+		keyProvider, keyProviderError := agent.CreateAgentKeyProvider(ctx, parsedConfig.kmsProvider, parsedConfig.kmsKeyID)
+		if keyProviderError != nil {
+			fmt.Fprintf(os.Stderr, "error: create KMS key provider: %v\n", keyProviderError)
+			os.Exit(1)
+		}
+		kmsSecretProvider := agent.NewKMSSecretProvider(factStore, keyProvider)
+		nodeAgent.SetSecretProvider(kmsSecretProvider)
+		fmt.Printf("Agent %s: secret decryption enabled (KMS provider: %s)\n",
+			parsedConfig.nodeID, parsedConfig.kmsProvider)
+		return
+	}
+	localMasterKey := loadOrGenerateSecretMasterKey()
+	localSecretProvider, localError := agent.NewLocalSecretProvider(factStore, localMasterKey)
+	if localError != nil {
+		fmt.Fprintf(os.Stderr, "error: create local secret provider: %v\n", localError)
+		os.Exit(1)
+	}
+	nodeAgent.SetSecretProvider(localSecretProvider)
+	fmt.Printf("Agent %s: secret decryption enabled (local key)\n", parsedConfig.nodeID)
 }
