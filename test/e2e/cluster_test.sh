@@ -145,17 +145,34 @@ while [[ $SECONDS -lt $deadline ]]; do
 done
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable after 60s"
 
+count_alive_nodes() {
+    local status_json
+    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null) || { echo 0; return; }
+    local count
+    count=$(echo "$status_json" | grep -o '"state":"alive"' | wc -l | tr -d ' \n') || true
+    echo "${count:-0}"
+}
+
 log "Verifying all 3 nodes registered..."
-node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -o '"state":"alive"' | wc -l | tr -d ' \n' || echo 0)
+node_count=$(count_alive_nodes)
+log "Initial node count: $node_count"
 if [[ "$node_count" -lt 3 ]]; then
     log "WARNING: Only $node_count/3 nodes registered, waiting..."
     deadline=$((SECONDS + CONVERGE_TIMEOUT))
     while [[ $SECONDS -lt $deadline ]]; do
-        node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -o '"state":"alive"' | wc -l | tr -d ' \n' || echo 0)
+        node_count=$(count_alive_nodes)
         if [[ "$node_count" -ge 3 ]]; then break; fi
         sleep 5
     done
-    [[ "$node_count" -ge 3 ]] || fail "Only $node_count/3 nodes registered after ${CONVERGE_TIMEOUT}s"
+    if [[ "$node_count" -lt 3 ]]; then
+        log "Final node count: $node_count"
+        log "Final /status response:"
+        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>&1 || true
+        echo ""
+        log "etcd keys under /ccattler/observed/node/:"
+        ssh_vm cca-test-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/observed/node/ --keys-only" 2>/dev/null || true
+        fail "Only $node_count/3 nodes registered after ${CONVERGE_TIMEOUT}s"
+    fi
 fi
 log "All 3 nodes registered and alive"
 
