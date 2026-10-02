@@ -1,6 +1,10 @@
 package lang
 
-import "testing"
+import (
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestParseMinimalService(t *testing.T) {
 	input := `service web {
@@ -92,6 +96,31 @@ func TestParseServiceWithHealth(t *testing.T) {
 	}
 	if svc.Health.Interval != "10s" {
 		t.Errorf("interval: got %s, want 10s", svc.Health.Interval)
+	}
+}
+
+func TestParseServiceWithHealthBareSlash(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    health {
+        http /
+        every 15s
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := file.Services[0]
+	if svc.Health == nil {
+		t.Fatal("expected health block")
+	}
+	if svc.Health.Method != "http" {
+		t.Errorf("method: got %s, want http", svc.Health.Method)
+	}
+	if svc.Health.Path != "/" {
+		t.Errorf("path: got %q, want /", svc.Health.Path)
 	}
 }
 
@@ -1292,4 +1321,34 @@ func TestParseServiceGroupErrorNoProcesses(t *testing.T) {
 	// with no processes — either way the compiler catches the validation.
 	// If the parser accepts it, the compiler test below checks the error.
 	_ = err
+}
+
+func TestParseAllWorkloadAndExampleFiles(t *testing.T) {
+	directories := []string{
+		"../test/e2e/workloads",
+		"../examples",
+	}
+	for _, directory := range directories {
+		entries, readError := os.ReadDir(directory)
+		if readError != nil {
+			t.Logf("skipping %s: %v", directory, readError)
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".cca") && !strings.HasSuffix(entry.Name(), ".ccattler")) {
+				continue
+			}
+			filePath := directory + "/" + entry.Name()
+			t.Run(filePath, func(t *testing.T) {
+				content, fileReadError := os.ReadFile(filePath)
+				if fileReadError != nil {
+					t.Fatalf("failed to read %s: %v", filePath, fileReadError)
+				}
+				_, parseError := Parse(string(content))
+				if parseError != nil {
+					t.Errorf("parse error in %s: %v", filePath, parseError)
+				}
+			})
+		}
+	}
 }

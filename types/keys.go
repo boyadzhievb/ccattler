@@ -128,6 +128,12 @@ func KeyDesiredServiceHealthInterval(name string) string {
 	return fmt.Sprintf("%s/service/%s/health/interval", PrefixDesired, name)
 }
 
+// KeyDesiredServiceHealthTimeout returns the store path for a service's health check timeout.
+// Path: desired/service/{name}/health/timeout
+func KeyDesiredServiceHealthTimeout(name string) string {
+	return fmt.Sprintf("%s/service/%s/health/timeout", PrefixDesired, name)
+}
+
 // KeyEffectiveServiceInstances returns the store path for a service's effective (resolved)
 // instance count, derived from all intent layers.
 // Path: effective/service/{name}/instances

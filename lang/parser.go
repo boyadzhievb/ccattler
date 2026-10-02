@@ -319,11 +319,15 @@ func (parser *Parser) parseHealthBlock() (*HealthDecl, error) {
 			healthDecl.Method = "http"
 			if parser.currentTokenIs(TokenSlash) {
 				parser.advanceToken()
-				path, err := parser.expectIdentifier()
-				if err != nil {
-					return nil, err
+				if parser.currentTokenIs(TokenIdent) || parser.currentTokenIs(TokenNumber) {
+					path, err := parser.expectIdentifier()
+					if err != nil {
+						return nil, err
+					}
+					healthDecl.Path = "/" + path
+				} else {
+					healthDecl.Path = "/"
 				}
-				healthDecl.Path = "/" + path
 			}
 		case "tcp":
 			healthDecl.Method = "tcp"
@@ -333,6 +337,13 @@ func (parser *Parser) parseHealthBlock() (*HealthDecl, error) {
 				return nil, parser.parserErrorf("expected interval value, got %s", token.Type)
 			}
 			healthDecl.Interval = token.Value
+			parser.advanceToken()
+		case "timeout":
+			token := parser.currentToken()
+			if token.Type != TokenNumber && token.Type != TokenIdent {
+				return nil, parser.parserErrorf("expected timeout value, got %s", token.Type)
+			}
+			healthDecl.Timeout = token.Value
 			parser.advanceToken()
 		default:
 			return nil, parser.parserErrorf("unknown health field %q", key)

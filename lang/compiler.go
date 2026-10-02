@@ -514,6 +514,11 @@ func compileServiceHealthProbeFacts(serviceName string, healthDecl *HealthDecl, 
 				Key: types.KeyDesiredServiceHealthInterval(serviceName), Value: healthDecl.Interval,
 			})
 		}
+		if healthDecl.Timeout != "" {
+			healthFacts = append(healthFacts, Fact{
+				Key: types.KeyDesiredServiceHealthTimeout(serviceName), Value: healthDecl.Timeout,
+			})
+		}
 	}
 	if startupProbe != nil {
 		healthFacts = append(healthFacts, compileProbeDeclaration(serviceName, types.ProbeStartup, startupProbe)...)

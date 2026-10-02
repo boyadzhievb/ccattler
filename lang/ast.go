@@ -83,6 +83,7 @@ type HealthDecl struct {
 	Method   string // "http" or "tcp"
 	Path     string // URL path for HTTP checks (e.g. "/health")
 	Interval string // time between checks (e.g. "10s")
+	Timeout  string // max time per check (e.g. "5s")
 }
 
 // ScaleDecl holds autoscaling configuration for a service.
