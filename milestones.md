@@ -1048,14 +1048,14 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 
 ### Phase 64 — Node Drain & Disable/Enable (M64)
 
-- [ ] `NodeDisabled` state in `types/state.go` — scheduler excludes, existing workloads untouched
-- [ ] `DrainController` in `controllers/drain.go` — watches placements + node states, evicts instances from draining nodes one per service per cycle
-- [ ] Drain metadata fact keys: `derived/node/{id}/drain/started`, `derived/node/{id}/drain/initiator`
-- [ ] CLI commands: `cca drain <nodeID> [--grace-period 30s]`, `cca disable-node <nodeID>`, `cca enable-node <nodeID>`
-- [ ] API routes: `POST /api/node/drain|disable|enable`
-- [ ] Cloud node lifecycle integration: `NodeDisabled` → draining transition on cloud instance termination
-- [ ] Node failure controller skip: don't lease-timeout → unreachable for nodes in `NodeDraining`
-- [ ] Unit tests: `controllers/drain_test.go` — gradual eviction, grace period, drain completion
+- [x] `NodeDisabled` state in `types/state.go` — scheduler excludes, existing workloads untouched
+- [x] `DrainController` in `controllers/drain.go` — watches placements + node states, evicts instances from draining nodes one per service per cycle
+- [x] Drain metadata fact keys: `derived/node/{id}/drain/started`, `derived/node/{id}/drain/initiator`
+- [x] CLI commands: `cca drain <nodeID> [--grace-period 30s]`, `cca disable-node <nodeID>`, `cca enable-node <nodeID>`
+- [x] API routes: `POST /api/node/drain|disable|enable`
+- [x] Cloud node lifecycle integration: `NodeDisabled` → draining transition on cloud instance termination
+- [x] Node failure controller skip: don't lease-timeout → unreachable for nodes in `NodeDraining`
+- [x] Unit tests: `controllers/drain_test.go` — gradual eviction, grace period, drain completion
 - [ ] Integration test: deploy 3 nodes, drain 1, verify instance migration
 
 ### Phase 65 — Disruption Budgets (M65)
