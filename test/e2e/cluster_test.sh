@@ -117,6 +117,13 @@ CCA_API="https://${CTRL_IP}:9770"
 
 log "Verifying cca server API..."
 wait_for_port "$CTRL_IP" 9770 45 "cca-server API"
+deadline=$((SECONDS + 30))
+while [[ $SECONDS -lt $deadline ]]; do
+    if curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" > /dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
 curl -sf --cacert "$CA_CERT_LOCAL" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable"
 
 log "Verifying all 3 nodes registered..."
