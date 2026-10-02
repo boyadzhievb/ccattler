@@ -1089,6 +1089,14 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [ ] Extended load test: `TestSyntheticCluster200Nodes5000Workloads` in `loadtest/loadtest_test.go`
 - [ ] Benchmark: placements/second before and after optimization
 
+### Phase 68 — Node Runtime Inspection (M68)
+
+- [ ] Agent HTTP debug API: `/debug/containers`, `/debug/images`, `/debug/stats` on agent's local port
+- [ ] `cca node-inspect <node-id>` CLI: queries agent API, shows live runtime containers, images, resource usage
+- [ ] `cca agent debug` local command: talks directly to containerd, bypasses control plane
+- [ ] `cca exec <instance-id> -- <command>` CLI: exec into a running container via agent relay
+- [ ] Image management: `cca images list`, `cca images pull <image>`
+
 ### Milestones
 
 | Milestone | Phases | Demo |
