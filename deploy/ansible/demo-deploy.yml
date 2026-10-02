@@ -99,7 +99,7 @@
         seconds: 20
 
     - name: Verify Java app is running
-      shell: nerdctl ps --filter name=cca- --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
+      shell: nerdctl ps --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
       become: true
       delegate_to: "{{ item }}"
       loop: "{{ groups['workers'] }}"

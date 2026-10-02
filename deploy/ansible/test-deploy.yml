@@ -76,10 +76,14 @@
         mode: "0644"
 
     - name: Wait for CCattler server to be ready
-      wait_for:
-        port: 9770
-        host: "{{ ansible_host }}"
-        timeout: 30
+      shell: >
+        curl -sf --cacert {{ cca_cert_dir }}/ca.pem
+        --cert {{ cca_cert_dir }}/node.pem --key {{ cca_cert_dir }}/node-key.pem
+        https://{{ ansible_host }}:9770/healthz
+      retries: 15
+      delay: 2
+      register: server_ready
+      until: server_ready.rc == 0
 
     - name: Apply Java test app
       command: >
@@ -92,7 +96,7 @@
         seconds: 20
 
     - name: Verify Java app is running
-      shell: nerdctl ps --filter name=cca- --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
+      shell: nerdctl ps --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
       become: true
       delegate_to: "{{ item }}"
       loop: "{{ groups['workers'] }}"

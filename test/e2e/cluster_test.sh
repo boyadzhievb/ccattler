@@ -98,8 +98,8 @@ ssh_vm() {
 }
 
 count_containers() {
-    local vm_name="$1" filter="${2:-cca-}"
-    ssh_vm "$vm_name" "sudo nerdctl ps --filter name=$filter -q 2>/dev/null | wc -l" | tr -d ' '
+    local vm_name="$1"
+    ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
 # ---- Step 0: Build binary ----

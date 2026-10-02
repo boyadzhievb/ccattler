@@ -172,7 +172,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.instanceID != "" {
-		streamContainerLogs(parsedConfig.instanceID, parsedConfig.follow)
+		streamContainerLogs(parsedConfig.serviceName, parsedConfig.instanceID, parsedConfig.follow)
 		return
 	}
 
@@ -200,13 +200,13 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.follow {
-		streamContainerLogs(instanceIDs[0], true)
+		streamContainerLogs(parsedConfig.serviceName, instanceIDs[0], true)
 		return
 	}
 
 	for _, instanceID := range instanceIDs {
 		fmt.Printf("==> %s <==\n", instanceID)
-		streamContainerLogs(instanceID, false)
+		streamContainerLogs(parsedConfig.serviceName, instanceID, false)
 		fmt.Println()
 	}
 }
@@ -246,7 +246,8 @@ func findInstanceIDsForService(facts []struct {
 
 // streamContainerLogs runs nerdctl logs for the given instance and streams
 // output to stdout. Falls back to docker if nerdctl is not available.
-func streamContainerLogs(instanceID string, follow bool) {
+// The container name is built from the service name and instance ID.
+func streamContainerLogs(serviceName string, instanceID string, follow bool) {
 	containerTool := "nerdctl"
 	if _, lookupErr := exec.LookPath("nerdctl"); lookupErr != nil {
 		containerTool = "docker"
@@ -256,7 +257,11 @@ func streamContainerLogs(instanceID string, follow bool) {
 	if follow {
 		logsArgs = append(logsArgs, "--follow")
 	}
-	logsArgs = append(logsArgs, "cca-"+instanceID)
+	containerName := serviceName + "-" + instanceID
+	if serviceName == "" {
+		containerName = "cca-" + instanceID
+	}
+	logsArgs = append(logsArgs, containerName)
 
 	logsCommand := exec.Command(containerTool, logsArgs...)
 	logsCommand.Stdout = os.Stdout
