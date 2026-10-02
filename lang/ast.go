@@ -312,11 +312,11 @@ type GroupDecl struct {
 //	    share volume cache
 //	}
 type ServiceGroupDecl struct {
-	Name           string   // unique service group identifier (e.g. "frontend")
-	Processes      []string // service names that belong to this group
-	ShareNetwork   bool     // whether group members share a network namespace
-	SharedVolumes  []string // volume names shared across group members
-	Line           int      // source line number for error reporting
+	Name          string   // unique service group identifier (e.g. "frontend")
+	Processes     []string // service names that belong to this group
+	ShareNetwork  bool     // whether group members share a network namespace
+	SharedVolumes []string // volume names shared across group members
+	Line          int      // source line number for error reporting
 }
 
 // PolicyDecl represents a parsed "policy" block in the DSL. A policy defines
@@ -361,9 +361,9 @@ type NetworkDecl struct {
 // The rule specifies identity-based traffic control between two services,
 // optionally restricted to a specific port.
 type NetworkRuleDecl struct {
-	Action  string // "allow" or "deny"
-	Source  string // source service identity (e.g. "frontend/web")
-	Target  string // target service identity (e.g. "payments/checkout")
-	Port    int    // target port (0 means any port)
-	Line    int    // source line number for error reporting
+	Action string // "allow" or "deny"
+	Source string // source service identity (e.g. "frontend/web")
+	Target string // target service identity (e.g. "payments/checkout")
+	Port   int    // target port (0 means any port)
+	Line   int    // source line number for error reporting
 }

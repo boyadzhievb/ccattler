@@ -24,7 +24,7 @@ const SecretGrantPrefix = "desired/"
 type SecretStore struct {
 	factStore   store.StateStore // factStore holds the encrypted secret blobs.
 	keyProvider KeyProvider      // keyProvider wraps and unwraps per-secret DEKs.
-	mutex       sync.RWMutex    // mutex serializes concurrent access to the store.
+	mutex       sync.RWMutex     // mutex serializes concurrent access to the store.
 }
 
 // NewSecretStore creates a secret store backed by the given fact store and

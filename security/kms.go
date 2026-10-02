@@ -165,7 +165,7 @@ func RewrapEnvelope(ctx context.Context, oldKeyProvider KeyProvider, newKeyProvi
 // binary format: [4-byte wrappedDEK length (big-endian)][wrappedDEK][ciphertext].
 func packEnvelope(wrappedDEK []byte, ciphertext []byte) []byte {
 	envelope := make([]byte, envelopeHeaderSize+len(wrappedDEK)+len(ciphertext))
-	binary.BigEndian.PutUint32(envelope[:envelopeHeaderSize], uint32(len(wrappedDEK)))
+	binary.BigEndian.PutUint32(envelope[:envelopeHeaderSize], uint32(len(wrappedDEK))) //nolint:gosec // wrappedDEK is a KMS-wrapped key, always < 1KB
 	copy(envelope[envelopeHeaderSize:], wrappedDEK)
 	copy(envelope[envelopeHeaderSize+len(wrappedDEK):], ciphertext)
 	return envelope
@@ -224,9 +224,9 @@ func decryptWithDEK(dataEncryptionKey []byte, ciphertext []byte) ([]byte, error)
 // The keyID is the ARN or alias of the KMS key (e.g.
 // "arn:aws:kms:us-east-1:123:key/abc" or "alias/ccattler-secrets").
 type AWSKMSKeyProvider struct {
-	keyID     string          // keyID is the AWS KMS key ARN or alias.
-	region    string          // region is the AWS region for KMS API calls.
-	kmsClient *awskms.Client  // kmsClient is the AWS KMS API client.
+	keyID     string         // keyID is the AWS KMS key ARN or alias.
+	region    string         // region is the AWS region for KMS API calls.
+	kmsClient *awskms.Client // kmsClient is the AWS KMS API client.
 }
 
 // NewAWSKMSKeyProvider creates a provider that delegates wrap/unwrap to AWS
@@ -284,8 +284,8 @@ func (awsKMSProvider *AWSKMSKeyProvider) ProviderName() string {
 // Encrypt/Decrypt. The keyName is the full resource name (e.g.
 // "projects/P/locations/L/keyRings/R/cryptoKeys/K").
 type GCPKMSKeyProvider struct {
-	keyName   string                          // keyName is the full GCP KMS key resource name.
-	kmsClient *gcpkms.KeyManagementClient     // kmsClient is the GCP Cloud KMS API client.
+	keyName   string                      // keyName is the full GCP KMS key resource name.
+	kmsClient *gcpkms.KeyManagementClient // kmsClient is the GCP Cloud KMS API client.
 }
 
 // NewGCPKMSKeyProvider creates a provider that delegates wrap/unwrap to GCP

@@ -154,9 +154,9 @@ func derefTime(timePtr *time.Time) time.Time {
 // workload identity federation token exchange.
 const gcpDefaultSTSEndpoint = "https://sts.googleapis.com/v1/token"
 
-// gcpIAMCredentialsEndpoint is the base URL for the IAM Credentials API used
+// gcpIAMServiceAccountEndpoint is the base URL for the IAM Credentials API used
 // to impersonate a service account after STS token exchange.
-const gcpIAMCredentialsEndpoint = "https://iamcredentials.googleapis.com/v1"
+const gcpIAMServiceAccountEndpoint = "https://iamcredentials.googleapis.com/v1"
 
 // gcpCloudPlatformScope is the OAuth scope for full GCP API access.
 const gcpCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
@@ -241,7 +241,7 @@ func (adapter *GCPSTSAdapter) exchangeSTSToken(ctx context.Context, jwtToken str
 	if responseError != nil {
 		return "", fmt.Errorf("gcp: STS token exchange: %w", responseError)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, readError := io.ReadAll(httpResponse.Body)
 	if readError != nil {
 		return "", fmt.Errorf("gcp: read STS response: %w", readError)
@@ -267,7 +267,7 @@ type gcpGenerateAccessTokenResponse struct {
 // service account and obtain an access token for that account.
 func (adapter *GCPSTSAdapter) impersonateServiceAccount(ctx context.Context, federatedToken string, serviceAccountEmail string) (string, time.Time, error) {
 	impersonateURL := fmt.Sprintf("%s/projects/-/serviceAccounts/%s:generateAccessToken",
-		gcpIAMCredentialsEndpoint, serviceAccountEmail)
+		gcpIAMServiceAccountEndpoint, serviceAccountEmail)
 	requestBody := fmt.Sprintf(`{"scope":["%s"],"lifetime":"%s"}`, gcpCloudPlatformScope, gcpAccessTokenLifetime)
 	httpRequest, requestError := http.NewRequestWithContext(ctx, http.MethodPost, impersonateURL, strings.NewReader(requestBody))
 	if requestError != nil {
@@ -279,7 +279,7 @@ func (adapter *GCPSTSAdapter) impersonateServiceAccount(ctx context.Context, fed
 	if responseError != nil {
 		return "", time.Time{}, fmt.Errorf("gcp: impersonate service account: %w", responseError)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, readError := io.ReadAll(httpResponse.Body)
 	if readError != nil {
 		return "", time.Time{}, fmt.Errorf("gcp: read impersonate response: %w", readError)

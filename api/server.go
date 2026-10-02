@@ -81,11 +81,11 @@ type Server struct {
 	enrollmentService   *security.EnrollmentService
 	workloadTokenIssuer *security.WorkloadTokenIssuer
 	watchMultiplexer    *WatchMultiplexer
-	secretStore         *security.SecretStore         // secretStore handles encrypted secret CRUD.
-	policyGate          *tenant.PolicyGate            // policyGate is the optional admission pipeline for /api/apply.
-	authenticatorChain  *security.AuthenticatorChain  // authenticatorChain maps requests to principals.
-	apiAuthorizer       *security.APIAuthorizer       // apiAuthorizer checks capability-based API permissions.
-	tenantAuditView     *tenant.TenantAuditView       // tenantAuditView provides scoped audit log views per tenant.
+	secretStore         *security.SecretStore        // secretStore handles encrypted secret CRUD.
+	policyGate          *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
+	apiAuthorizer       *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView     *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
 	serverMode          ServerMode
 	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux

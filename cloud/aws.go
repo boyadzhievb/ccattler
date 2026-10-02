@@ -380,7 +380,7 @@ func (awsProvider *AWSCloudProvider) findOrCreateTargetGroup(ctx context.Context
 	createInput := &elasticloadbalancingv2.CreateTargetGroupInput{
 		Name:       aws.String(targetGroupName),
 		Protocol:   elbv2types.ProtocolEnumTcp,
-		Port:       aws.Int32(int32(loadBalancerConfig.TargetPort)),
+		Port:       aws.Int32(safeIntToInt32(loadBalancerConfig.TargetPort)),
 		TargetType: elbv2types.TargetTypeEnumIp,
 		VpcId:      aws.String(awsProvider.vpcID),
 		Tags: []elbv2types.Tag{
@@ -407,7 +407,7 @@ func (awsProvider *AWSCloudProvider) ensureNLBListener(ctx context.Context, load
 	describeOutput, describeError := awsProvider.elbv2Client.DescribeListeners(ctx, describeInput)
 	if describeError == nil {
 		for _, existingListener := range describeOutput.Listeners {
-			if aws.ToInt32(existingListener.Port) == int32(port) {
+			if aws.ToInt32(existingListener.Port) == safeIntToInt32(port) {
 				return nil
 			}
 		}
@@ -415,7 +415,7 @@ func (awsProvider *AWSCloudProvider) ensureNLBListener(ctx context.Context, load
 	createInput := &elasticloadbalancingv2.CreateListenerInput{
 		LoadBalancerArn: aws.String(loadBalancerARN),
 		Protocol:        elbv2types.ProtocolEnumTcp,
-		Port:            aws.Int32(int32(port)),
+		Port:            aws.Int32(safeIntToInt32(port)),
 		DefaultActions: []elbv2types.Action{
 			{Type: elbv2types.ActionTypeEnumForward, TargetGroupArn: aws.String(targetGroupARN)},
 		},
@@ -435,7 +435,7 @@ func (awsProvider *AWSCloudProvider) syncTargetRegistrations(ctx context.Context
 		targetKey := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
 		desiredTargets[targetKey] = elbv2types.TargetDescription{
 			Id:   aws.String(backend.Address),
-			Port: aws.Int32(int32(backend.Port)),
+			Port: aws.Int32(safeIntToInt32(backend.Port)),
 		}
 	}
 	currentTargets, currentError := awsProvider.describeCurrentTargets(ctx, targetGroupARN)
@@ -637,6 +637,16 @@ func extractInstanceRoutesFromTables(routeTables []ec2types.RouteTable) []RouteE
 		}
 	}
 	return routeEntries
+}
+
+// safeIntToInt32 converts an int to int32, clamping to math.MaxInt32 if the
+// value overflows. Port numbers are always within int32 range in practice.
+func safeIntToInt32(value int) int32 {
+	const maxInt32 = 1<<31 - 1
+	if value > maxInt32 {
+		return maxInt32
+	}
+	return int32(value) //nolint:gosec // clamped above
 }
 
 // awsSanitizeResourceName builds an AWS resource name from a prefix and a

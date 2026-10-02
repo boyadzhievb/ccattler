@@ -244,12 +244,12 @@ func (gcpProvider *GCPCloudProvider) EnsureRoute(ctx context.Context, routeConfi
 	networkURL := fmt.Sprintf("projects/%s/global/networks/%s",
 		gcpProvider.projectID, gcpProvider.networkName)
 	routeResource := &computepb.Route{
-		Name:             proto.String(routeName),
-		Network:          proto.String(networkURL),
-		DestRange:        proto.String(routeConfig.DestinationCIDR),
-		NextHopInstance:  proto.String(nextHopURL),
-		Priority:         proto.Uint32(gcpRoutePriority),
-		Description:      proto.String("CCattler node route for " + routeConfig.TargetNodeID),
+		Name:            proto.String(routeName),
+		Network:         proto.String(networkURL),
+		DestRange:       proto.String(routeConfig.DestinationCIDR),
+		NextHopInstance: proto.String(nextHopURL),
+		Priority:        proto.Uint32(gcpRoutePriority),
+		Description:     proto.String("CCattler node route for " + routeConfig.TargetNodeID),
 	}
 	insertRequest := &computepb.InsertRouteRequest{
 		Project:       gcpProvider.projectID,

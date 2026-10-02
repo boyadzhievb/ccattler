@@ -30,19 +30,19 @@ const defaultAgentReconcileInterval = 1 * time.Second
 //   - NodeReporter: telemetry collection, heartbeat, and node registration
 //   - DataPlaneReconciler: VIP DNAT rule programming via the data plane provider
 type Agent struct {
-	nodeID              string                  // nodeID is the unique identifier for the node this agent manages.
-	store               store.StateStore        // store is the fact store used to read desired state and write observed state.
-	runtime             runtime.Runtime         // runtime is the pluggable container/process runtime adapter.
-	networkProvider     network.NetworkProvider // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
-	storageProvider     storage.StorageProvider // storageProvider manages volume attach/detach; nil means no volume support.
-	secretProvider      SecretProvider          // secretProvider retrieves decrypted secrets; nil means no secret support.
-	materializedSecrets []MaterializedSecret    // materializedSecrets tracks secrets written for running instances.
-	advertiseAddress    string                  // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
+	nodeID                   string                               // nodeID is the unique identifier for the node this agent manages.
+	store                    store.StateStore                     // store is the fact store used to read desired state and write observed state.
+	runtime                  runtime.Runtime                      // runtime is the pluggable container/process runtime adapter.
+	networkProvider          network.NetworkProvider              // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
+	storageProvider          storage.StorageProvider              // storageProvider manages volume attach/detach; nil means no volume support.
+	secretProvider           SecretProvider                       // secretProvider retrieves decrypted secrets; nil means no secret support.
+	materializedSecrets      []MaterializedSecret                 // materializedSecrets tracks secrets written for running instances.
+	advertiseAddress         string                               // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
 	interval                 time.Duration                        // interval is the period between periodic reconciliation cycles.
 	appliedInstanceResources map[string]appliedResourceAllocation // appliedInstanceResources tracks the resources last applied to each running instance for resize detection.
-	probeScheduler           *ProbeScheduler                     // probeScheduler runs health checks and probes independently of reconciliation.
-	nodeReporter             *NodeReporter                       // nodeReporter collects telemetry and publishes node state to the store.
-	dataPlaneReconciler      *DataPlaneReconciler                // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
+	probeScheduler           *ProbeScheduler                      // probeScheduler runs health checks and probes independently of reconciliation.
+	nodeReporter             *NodeReporter                        // nodeReporter collects telemetry and publishes node state to the store.
+	dataPlaneReconciler      *DataPlaneReconciler                 // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
