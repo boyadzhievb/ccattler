@@ -136,15 +136,14 @@ CCA_API="https://${CTRL_IP}:9770"
 CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LOCAL"
 
 log "Verifying cca server API..."
-wait_for_port "$CTRL_IP" 9770 45 "cca-server API"
-deadline=$((SECONDS + 30))
+deadline=$((SECONDS + 60))
 while [[ $SECONDS -lt $deadline ]]; do
     if curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable"
+curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable after 60s"
 
 log "Verifying all 3 nodes registered..."
 node_count=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" | grep -o '"state":"alive"' | wc -l | tr -d ' ' || echo 0)
