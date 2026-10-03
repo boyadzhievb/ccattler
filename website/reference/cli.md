@@ -200,4 +200,5 @@ cca demo-distributed    # 6 instances across 3 simulated nodes
 cca demo-network        # VIPs, DNS, load balancing
 cca demo-storage        # persistent volumes survive node failures
 cca chaos               # random failures — test convergence
+cca benchmark [--json]  # chaos benchmark with recovery metrics
 ```

@@ -2,7 +2,100 @@
 
 All notable releases of CCattler are documented here.
 
-## v1.0.0-beta <Badge type="tip" text="latest" /> {#v1-0-0-beta}
+## v1.6.0-beta <Badge type="tip" text="latest" /> {#v1-6-0-beta}
+
+**2026-10-03** — Phase 67c: chaos benchmark with recovery metrics.
+
+- **Chaos benchmark CLI** — `cca benchmark --json` for structured recovery reporting with P50/P95/P99 convergence times
+- **RecoveryReport** — structured metrics (mean/P50/P95/P99/max convergence, recovery success rate) at 100/1K/5K workload scales
+- **Node recovery scenario** — new chaos injection type: restart previously killed nodes
+- **Autoscaler oscillation test** — validates stabilization windows prevent rapid scale-up/down thrashing
+
+---
+
+## v1.5.0-beta {#v1-5-0-beta}
+
+**2026-10-03** — Phase 67b: HA and control plane resilience tests.
+
+- **9 resilience tests** — etcd unavailable (workloads survive), control plane restart (no data loss), leader election fencing, disaster recovery from snapshot, split-brain healing, endpoint staleness during partition, volume disappearance recovery, slow store latency, rolling control plane upgrade
+- **slowStore wrapper** — configurable per-operation latency injection for store operations
+
+---
+
+## v1.4.0-beta {#v1-4-0-beta}
+
+**2026-10-03** — Phase 67a: controller failure isolation tests.
+
+- **5 isolation tests** — scheduler crash, network controller crash, instance controller restart, all controllers restart, concurrent controller recovery
+- **Per-controller lifecycle** — independent kill/restart of individual controller groups via separate Runner instances
+
+---
+
+## v1.3.0-beta {#v1-3-0-beta}
+
+**2026-10-03** — Phase 66: stateful workloads.
+
+- **Stateful workloads** — ordinal instance IDs, ordered startup/teardown, per-ordinal persistent volumes, stable DNS names per ordinal
+- **Disruption budgets** — `max_unavailable` enforcement during voluntary operations (drain, rolling update)
+- **Security audit remediation** — 10 findings from external audit addressed: local token auth, default listen localhost, request body limits, SSE connection caps, secret capability split, cross-tenant tests, GitHub Actions SHA pinning
+- **Node drain and disable/enable** — `cca drain` and `cca disable-node`/`enable-node` commands
+
+### What's new since v1.2.0
+
+| Milestone | Phase | Summary |
+|---|---|---|
+| M64 | 64 | Node drain and disable/enable |
+| M65 | 65 | Disruption budgets + security audit remediation |
+| M66 | 66 | Stateful workloads: ordinal IDs, ordered startup, per-ordinal volumes |
+
+---
+
+## v1.2.0-beta {#v1-2-0-beta}
+
+**2026-10-02** — Phases 58–63 complete. Full authorization stack, cloud SDK integration, and production hardening.
+
+- **ABAC condition engine** — attribute-based access control with `when` conditions
+- **Multi-tenant visibility** — tenant-scoped filtering across all API endpoints
+- **Network policy enforcement** — identity-based allow/deny with iptables rule generation
+- **Service groups** — co-scheduled process groups sharing network and volumes
+- **Vertical autoscaling** — P95 sliding window with asymmetric stabilization
+- **Real cloud SDKs** — AWS EC2/ELB/VPC and GCP Compute/LB/Routes integration
+- **Secret encryption** — envelope encryption with KMS (AWS KMS, GCP KMS)
+- **3-VM E2E tests** — Vagrant/libvirt cluster tests with real container workloads
+
+| Milestone | Phase | Summary |
+|---|---|---|
+| M56 | 58 | ABAC condition engine |
+| M57 | 59 | Multi-tenant visibility filtering |
+| M58 | 60 | Network policy enforcement |
+| M59 | 61 | Service groups with co-scheduling |
+| M60 | 62 | Vertical autoscaling controller |
+| M61 | 63 | Cloud SDK wiring (AWS, GCP) + secret encryption |
+| M62 | 64 | Production hardening: E2E tests, install scripts |
+| M63 | 65 | Placement policy and tenant isolation tests |
+
+---
+
+## v1.1.0-beta {#v1-1-0-beta}
+
+**2026-09-28** — Phases 48–57 complete. Authorization architecture, DSL templating, anti-pattern remediation.
+
+- **Anti-pattern remediation** — dead code removal, magic number extraction, function length enforcement, typed enums
+- **Authorization wiring** — capability-based permissions, per-controller least privilege, store prefix RBAC
+- **Authentication** — local token auth, mTLS cert auth, OIDC infrastructure
+- **DSL templating** — values files, `--set`, `--set-from-env`, `cca render` command
+- **CLI acceptance tests** — end-to-end CLI command validation
+
+| Milestone | Phase | Summary |
+|---|---|---|
+| M48 | 50a | Split god-object main.go into per-command files |
+| M49 | 49b | CI fix: skip container tests in short mode |
+| M52 | 50b–54 | Anti-pattern remediation, authorization, authentication |
+| M55 | 55–57 | Auth DSL, templating engine, CLI acceptance tests |
+
+---
+
+## v1.0.0-beta {#v1-0-0-beta}
 
 **2026-09-25** — Gate F complete. All correctness, security, and performance gates resolved.
 
