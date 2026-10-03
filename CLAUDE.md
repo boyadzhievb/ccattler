@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M61 — Phase 63 Cloud Provider Real APIs. M1–M61 + M62–M63 complete. Gates A–I resolved. Next: Phase 64 — Node Drain & Cordon, Phase 65 — Disruption Budgets, Phase 66 — Stateful Workloads, Phase 67 — Scheduler Scale.
+**Completed through:** M65 — Phase 65 Disruption Budgets. M1–M65 complete. Gates A–I resolved. Next: Phase 66 — Stateful Workloads, Phase 67 — Scheduler Scale.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

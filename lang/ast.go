@@ -54,6 +54,7 @@ type ServiceDecl struct {
 	Startup         *ProbeDecl                 // optional startup probe (gates liveness/readiness)
 	Liveness        *ProbeDecl                 // optional liveness probe (triggers restart on failure)
 	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
+	Disruption      *DisruptionDecl            // optional disruption budget for drain/rollout safety
 	Line            int                        // source line number for error reporting
 }
 
@@ -160,6 +161,16 @@ type PlacementMatchDecl struct {
 type UpdateDecl struct {
 	MaxUnavailable int // maximum instances that can be unavailable during update
 	MaxExtra       int // maximum extra instances allowed during surge
+}
+
+// DisruptionDecl holds the disruption budget for a service. During node drains
+// and rolling updates, the system guarantees that at least MinAvailable
+// instances remain running. If MaxUnavailable is set instead, it caps how many
+// instances may be simultaneously unavailable. Only one of the two fields
+// should be non-zero.
+type DisruptionDecl struct {
+	MinAvailable   int // minimum instances that must remain running (0 = unset)
+	MaxUnavailable int // maximum instances that may be unavailable (0 = unset)
 }
 
 // ConfigDecl holds configuration declarations for a service — environment

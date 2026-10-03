@@ -248,6 +248,8 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 			VolumeName: volumeName,
 			MountPath:  mountPath,
 		})
+	case "disruption":
+		serviceDecl.Disruption, err = parser.parseDisruptionBlock()
 	case "cloud_identity":
 		cloudIdentityBinding, bindErr := parser.parseCloudIdentityBindingInService()
 		if bindErr != nil {
@@ -836,6 +838,49 @@ func (parser *Parser) parseUpdateBlock() (*UpdateDecl, error) {
 		return nil, err
 	}
 	return updateDecl, nil
+}
+
+// parseDisruptionBlock parses a disruption { min_available N } or
+// disruption { max_unavailable N } block inside a service declaration.
+func (parser *Parser) parseDisruptionBlock() (*DisruptionDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	disruptionDecl := &DisruptionDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch key {
+		case "min_available":
+			disruptionDecl.MinAvailable, err = parser.expectInteger()
+		case "max_unavailable":
+			disruptionDecl.MaxUnavailable, err = parser.expectInteger()
+		default:
+			return nil, parser.parserErrorf("unknown disruption field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if disruptionDecl.MinAvailable == 0 && disruptionDecl.MaxUnavailable == 0 {
+		return nil, parser.parserErrorf("disruption block must set min_available or max_unavailable")
+	}
+	if disruptionDecl.MinAvailable != 0 && disruptionDecl.MaxUnavailable != 0 {
+		return nil, parser.parserErrorf("disruption block must set only one of min_available or max_unavailable")
+	}
+
+	return disruptionDecl, nil
 }
 
 // parseTargetValue extracts an integer from a token value that may include a

@@ -257,6 +257,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 	facts = append(facts, compileServiceSecretFacts(serviceDecl.Name, serviceDecl.Secrets)...)
 	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
+	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
 
 	return facts, nil
 }
@@ -491,6 +492,29 @@ func compileServiceUpdateFacts(serviceName string, updateDecl *UpdateDecl) []Fac
 		{Key: types.KeyDesiredServiceUpdateMaxUnavailable(serviceName), Value: strconv.Itoa(updateDecl.MaxUnavailable)},
 		{Key: types.KeyDesiredServiceUpdateMaxExtra(serviceName), Value: strconv.Itoa(updateDecl.MaxExtra)},
 	}
+}
+
+// compileServiceDisruptionFacts produces disruption budget facts for a service.
+// The budget constrains how many instances may be taken down simultaneously
+// during node drains and rolling updates.
+func compileServiceDisruptionFacts(serviceName string, disruptionDecl *DisruptionDecl) []Fact {
+	if disruptionDecl == nil {
+		return nil
+	}
+	var disruptionFacts []Fact
+	if disruptionDecl.MinAvailable != 0 {
+		disruptionFacts = append(disruptionFacts, Fact{
+			Key:   types.KeyDesiredServiceDisruptionMinAvailable(serviceName),
+			Value: strconv.Itoa(disruptionDecl.MinAvailable),
+		})
+	}
+	if disruptionDecl.MaxUnavailable != 0 {
+		disruptionFacts = append(disruptionFacts, Fact{
+			Key:   types.KeyDesiredServiceDisruptionMaxUnavailable(serviceName),
+			Value: strconv.Itoa(disruptionDecl.MaxUnavailable),
+		})
+	}
+	return disruptionFacts
 }
 
 // compileServiceHealthProbeFacts produces health check configuration facts for a

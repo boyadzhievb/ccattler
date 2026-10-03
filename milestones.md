@@ -1060,13 +1060,13 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 
 ### Phase 65 — Disruption Budgets (M65)
 
-- [ ] `DisruptionDecl` AST struct: `MinAvailable`, `MaxUnavailable` in `lang/ast.go`
-- [ ] DSL syntax: `disruption { min_available 3 }` inside service block
-- [ ] Parser + compiler: emit `desired/service/{name}/disruption/min_available` facts
-- [ ] DrainController integration: check `running - draining > min_available` before evicting
-- [ ] Rollout controller integration: disruption budget as safety ceiling for `maxUnavailable`
-- [ ] Parser/compiler tests for `disruption` block
-- [ ] Integration test: 5 instances with `min_available 3`, drain node, verify never below 3
+- [x] `DisruptionDecl` AST struct: `MinAvailable`, `MaxUnavailable` in `lang/ast.go`
+- [x] DSL syntax: `disruption { min_available 3 }` inside service block
+- [x] Parser + compiler: emit `desired/service/{name}/disruption/min_available` facts
+- [x] DrainController integration: check `running - draining > min_available` before evicting
+- [x] Rollout controller integration: disruption budget as safety ceiling for `maxUnavailable`
+- [x] Parser/compiler tests for `disruption` block
+- [x] Integration test: 5 instances with `min_available 3`, drain node, verify never below 3
 
 ### Phase 66 — Stateful Workloads (M66)
 

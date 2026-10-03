@@ -7,14 +7,17 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -259,6 +262,49 @@ func combineDSLFileContents(renderedFiles []renderedDSLContent) string {
 		contentParts = append(contentParts, rendered.content)
 	}
 	return strings.Join(contentParts, "\n")
+}
+
+// localTokenRoundTripper is an http.RoundTripper that injects the local bearer
+// token into every outgoing request's Authorization header. Used by CLI commands
+// to authenticate against the non-TLS server.
+type localTokenRoundTripper struct {
+	// baseTransport is the underlying transport that performs the actual HTTP call.
+	baseTransport http.RoundTripper
+	// bearerToken is the hex-encoded local token read from .ccattler/local-token.
+	bearerToken string
+}
+
+// RoundTrip adds the Authorization header and delegates to the base transport.
+func (roundTripper *localTokenRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	request.Header.Set("Authorization", "Bearer "+roundTripper.bearerToken)
+	return roundTripper.baseTransport.RoundTrip(request)
+}
+
+// cachedAuthenticatedClient holds the lazily-initialized HTTP client with token auth.
+var cachedAuthenticatedClient *http.Client
+
+// authenticatedClientOnce ensures the client is built exactly once.
+var authenticatedClientOnce sync.Once
+
+// buildAuthenticatedHTTPClient returns an *http.Client that automatically injects
+// the local bearer token into every request. If the token file does not exist
+// (e.g., server uses mTLS), falls back to http.DefaultClient. The client is
+// built once and cached for the process lifetime.
+func buildAuthenticatedHTTPClient() *http.Client {
+	authenticatedClientOnce.Do(func() {
+		localToken, readError := security.ReadLocalToken()
+		if readError != nil {
+			cachedAuthenticatedClient = http.DefaultClient
+			return
+		}
+		cachedAuthenticatedClient = &http.Client{
+			Transport: &localTokenRoundTripper{
+				baseTransport: http.DefaultTransport,
+				bearerToken:   localToken,
+			},
+		}
+	})
+	return cachedAuthenticatedClient
 }
 
 // runDemoStatusLoop prints cluster status at the given interval until the context

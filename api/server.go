@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"strings"
 	"time"
 
@@ -60,6 +61,21 @@ var (
 // before being recomputed from the fact store.
 const defaultStatusCacheTTL = 2 * time.Second
 
+// maxConfigRequestBodyBytes is the maximum size of a request body for DSL config
+// endpoints (/api/apply, /api/diff, /api/secret). Limits memory consumption from
+// oversized or malicious payloads.
+const maxConfigRequestBodyBytes = 1 << 20 // 1 MiB
+
+// maxSmallRequestBodyBytes is the maximum size of a request body for small JSON
+// command endpoints (/api/scale, /api/node/drain, /api/node/disable, /api/node/enable,
+// /api/enroll). These payloads are short JSON objects.
+const maxSmallRequestBodyBytes = 64 << 10 // 64 KiB
+
+// maxConcurrentWatchConnections is the maximum number of simultaneous SSE watch
+// and event stream connections the server will accept. Connections beyond this
+// limit receive HTTP 503.
+const maxConcurrentWatchConnections = 1000
+
 // ServerMode controls which components the API server expects to be available,
 // affecting health checks and operational behavior.
 type ServerMode string
@@ -89,9 +105,10 @@ type Server struct {
 	serverMode          ServerMode
 	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
 	mux                 *http.ServeMux
-	rateLimiter         *RateLimiter
-	statusCache         *ResponseCache
-	listener            net.Listener
+	rateLimiter              *RateLimiter
+	statusCache              *ResponseCache
+	listener                 net.Listener
+	activeWatchConnectionCount atomic.Int64 // activeWatchConnectionCount tracks concurrent SSE connections.
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
@@ -513,6 +530,7 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadCreate, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -596,6 +614,13 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
+
+	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
+		http.Error(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		return
+	}
+	apiServer.activeWatchConnectionCount.Add(1)
+	defer apiServer.activeWatchConnectionCount.Add(-1)
 
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
@@ -685,6 +710,7 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityScalingWrite, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -746,6 +772,7 @@ func (apiServer *Server) handleNodeDrain(responseWriter http.ResponseWriter, req
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -782,6 +809,7 @@ func (apiServer *Server) handleNodeDisable(responseWriter http.ResponseWriter, r
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -820,6 +848,7 @@ func (apiServer *Server) handleNodeEnable(responseWriter http.ResponseWriter, re
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
 
 	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -1076,6 +1105,13 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 		return
 	}
 
+	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
+		http.Error(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		return
+	}
+	apiServer.activeWatchConnectionCount.Add(1)
+	defer apiServer.activeWatchConnectionCount.Add(-1)
+
 	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
 		http.Error(responseWriter, "streaming not supported", http.StatusInternalServerError)
@@ -1145,6 +1181,7 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	requestContext := request.Context()
@@ -1211,6 +1248,7 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
@@ -1414,7 +1452,7 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 		return
 	}
 
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretUse, security.ScopeCluster) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretRead, security.ScopeCluster) {
 		return
 	}
 	plaintext, getErr := apiServer.secretStore.GetSecret(requestContext, secretName)
@@ -1434,6 +1472,7 @@ func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, req
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
 		return
 	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 	if secretName == "" {
 		http.Error(responseWriter, `{"error":"name parameter required"}`, http.StatusBadRequest)
 		return

@@ -222,6 +222,202 @@ func TestDrainControllerDoesNotDuplicateCompleteMarker(t *testing.T) {
 	}
 }
 
+func TestDrainControllerRespectsMinAvailableBudget(t *testing.T) {
+	drainController := NewDrainController()
+
+	// 5 instances total: 2 on draining node-1, 3 on healthy node-2.
+	// Disruption budget: min_available 4.
+	// Only 1 can be evicted (5-1=4 >= 4), second eviction blocked (4-1=3 < 4).
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyDesiredServiceInstances("web"), Value: []byte("5")},
+		{Key: types.KeyDesiredServiceDisruptionMinAvailable("web"), Value: []byte("4")},
+		// Instances on draining node-1.
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-2"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		// Instances on healthy node-2.
+		{Key: types.KeyPlacementInstance("inst-3"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-4"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-4"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-4"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-5"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-5"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-5"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	evictedCount := 0
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			evictedCount++
+		}
+	}
+	// Rate-limit already caps at 1 per service per cycle, and the budget allows
+	// exactly 1 eviction (5-1=4 >= min_available 4).
+	if evictedCount != 1 {
+		t.Errorf("expected 1 eviction (budget allows it), got %d", evictedCount)
+	}
+}
+
+func TestDrainControllerBlocksEvictionWhenAtMinAvailable(t *testing.T) {
+	drainController := NewDrainController()
+
+	// 3 instances total: 1 on draining node-1, 2 on healthy node-2.
+	// Disruption budget: min_available 3.
+	// Evicting would drop to 2, violating the budget — must block.
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyDesiredServiceInstances("web"), Value: []byte("3")},
+		{Key: types.KeyDesiredServiceDisruptionMinAvailable("web"), Value: []byte("3")},
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-2"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-3"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			t.Error("expected no evictions when at min_available, but got one")
+		}
+	}
+}
+
+func TestDrainControllerRespectsMaxUnavailableBudget(t *testing.T) {
+	drainController := NewDrainController()
+
+	// 5 desired, 4 currently running (1 already unavailable).
+	// Disruption budget: max_unavailable 2.
+	// 1 already unavailable, so 1 more eviction allowed (1+1=2 <= 2).
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyDesiredServiceInstances("web"), Value: []byte("5")},
+		{Key: types.KeyDesiredServiceDisruptionMaxUnavailable("web"), Value: []byte("2")},
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-2"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-3"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-4"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-4"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-4"), Value: []byte("web")},
+		// inst-5 is stopped/failed — already unavailable.
+		{Key: types.KeyPlacementInstance("inst-5"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-5"), Value: []byte("stopped")},
+		{Key: types.KeyObservedInstanceService("inst-5"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	evictedCount := 0
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			evictedCount++
+		}
+	}
+	if evictedCount != 1 {
+		t.Errorf("expected 1 eviction (max_unavailable budget allows 1 more), got %d", evictedCount)
+	}
+}
+
+func TestDrainControllerBlocksEvictionAtMaxUnavailable(t *testing.T) {
+	drainController := NewDrainController()
+
+	// 5 desired, 3 currently running (2 already unavailable).
+	// Disruption budget: max_unavailable 2.
+	// 2 already unavailable, so no more evictions allowed.
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyDesiredServiceInstances("web"), Value: []byte("5")},
+		{Key: types.KeyDesiredServiceDisruptionMaxUnavailable("web"), Value: []byte("2")},
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-2"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-3"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+		// 2 instances already unavailable.
+		{Key: types.KeyPlacementInstance("inst-4"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-4"), Value: []byte("stopped")},
+		{Key: types.KeyObservedInstanceService("inst-4"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-5"), Value: []byte("node-2")},
+		{Key: types.KeyObservedInstanceState("inst-5"), Value: []byte("stopped")},
+		{Key: types.KeyObservedInstanceService("inst-5"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			t.Error("expected no evictions when at max_unavailable limit, but got one")
+		}
+	}
+}
+
+func TestDrainControllerNoBudgetAllowsEviction(t *testing.T) {
+	drainController := NewDrainController()
+
+	// No disruption budget — eviction should proceed normally.
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	evictedCount := 0
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			evictedCount++
+		}
+	}
+	if evictedCount != 1 {
+		t.Errorf("expected 1 eviction (no budget), got %d", evictedCount)
+	}
+}
+
 func TestDrainControllerImplementsInterface(t *testing.T) {
 	var _ Controller = NewDrainController()
 }

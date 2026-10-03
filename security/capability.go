@@ -22,6 +22,9 @@ const (
 	// CapabilitySecretMetadataRead allows listing secret names and grants without values.
 	CapabilitySecretMetadataRead Capability = "secret.metadata.read"
 
+	// CapabilitySecretRead allows retrieving plaintext secret values via the API.
+	CapabilitySecretRead Capability = "secret.read"
+
 	// CapabilitySecretUse allows mounting secrets into workloads.
 	CapabilitySecretUse Capability = "secret.use"
 
@@ -57,6 +60,7 @@ var AllCapabilities = []Capability{
 	CapabilityWorkloadUpdate,
 	CapabilityWorkloadDelete,
 	CapabilitySecretMetadataRead,
+	CapabilitySecretRead,
 	CapabilitySecretUse,
 	CapabilitySecretWrite,
 	CapabilityNodeRead,

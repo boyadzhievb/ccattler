@@ -233,7 +233,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --dry-run                    render + validate without applying (apply only)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for server:")
-	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 0.0.0.0:9770)")
+	fmt.Fprintln(os.Stderr, "  --listen host:port           API listen address (default: 127.0.0.1:9770, 0.0.0.0:9770 with --tls)")
 	fmt.Fprintln(os.Stderr, "  --tls                        enable mTLS (auto-generates CA, writes ca.pem)")
 	fmt.Fprintln(os.Stderr, "  --cert <path>                PEM server certificate (requires --key and --ca)")
 	fmt.Fprintln(os.Stderr, "  --key <path>                 PEM server private key")

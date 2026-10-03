@@ -597,6 +597,20 @@ func KeyDesiredServiceUpdateMaxExtra(name string) string {
 	return fmt.Sprintf("%s/service/%s/update/max_extra", PrefixDesired, name)
 }
 
+// KeyDesiredServiceDisruptionMinAvailable returns the store path for the
+// minimum number of instances that must remain running during drains and
+// rollouts.
+func KeyDesiredServiceDisruptionMinAvailable(name string) string {
+	return fmt.Sprintf("%s/service/%s/disruption/min_available", PrefixDesired, name)
+}
+
+// KeyDesiredServiceDisruptionMaxUnavailable returns the store path for the
+// maximum number of instances that may be simultaneously unavailable during
+// drains and rollouts.
+func KeyDesiredServiceDisruptionMaxUnavailable(name string) string {
+	return fmt.Sprintf("%s/service/%s/disruption/max_unavailable", PrefixDesired, name)
+}
+
 // KeyDesiredClusterAutoscaleMinNodes returns the store path for the minimum number
 // of nodes the cluster autoscaler should maintain.
 func KeyDesiredClusterAutoscaleMinNodes() string {

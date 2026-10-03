@@ -960,3 +960,59 @@ func TestCompileServiceGroupNoNetwork(t *testing.T) {
 		t.Error("missing group share volume data")
 	}
 }
+
+func TestCompileServiceWithDisruptionMinAvailable(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.28
+    instances 5
+    disruption {
+        min_available 3
+    }
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	minAvailableValue := compiledFactMap[types.KeyDesiredServiceDisruptionMinAvailable("web")]
+	if minAvailableValue != "3" {
+		t.Errorf("disruption min_available: got %q, want %q", minAvailableValue, "3")
+	}
+	maxUnavailableValue := compiledFactMap[types.KeyDesiredServiceDisruptionMaxUnavailable("web")]
+	if maxUnavailableValue != "" {
+		t.Errorf("disruption max_unavailable should not be set, got %q", maxUnavailableValue)
+	}
+}
+
+func TestCompileServiceWithDisruptionMaxUnavailable(t *testing.T) {
+	file, err := Parse(`service web {
+    image nginx:1.28
+    instances 5
+    disruption {
+        max_unavailable 2
+    }
+}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compiledFactMap := factMap(facts)
+	maxUnavailableValue := compiledFactMap[types.KeyDesiredServiceDisruptionMaxUnavailable("web")]
+	if maxUnavailableValue != "2" {
+		t.Errorf("disruption max_unavailable: got %q, want %q", maxUnavailableValue, "2")
+	}
+	minAvailableValue := compiledFactMap[types.KeyDesiredServiceDisruptionMinAvailable("web")]
+	if minAvailableValue != "" {
+		t.Errorf("disruption min_available should not be set, got %q", minAvailableValue)
+	}
+}

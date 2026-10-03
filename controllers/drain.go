@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -53,12 +54,17 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 	instanceStates := parseInstanceStates(facts)
 	instanceServices := parseInstanceServices(facts)
 	drainCompleteMarkers := parseDrainCompleteMarkers(facts)
+	disruptionBudgets := parseDisruptionBudgets(facts)
+	desiredInstanceCounts := parseDesiredInstanceCounts(facts)
+	globalActiveCountByService := countGlobalActiveInstancesByService(instanceStates, instanceServices)
 
 	var proposedChanges []Change
 
 	for _, drainingNodeID := range sortedKeys(drainingNodeSet) {
 		evictedPerService, activeCount := drainController.evictInstancesFromNode(
-			drainingNodeID, instancePlacementNode, instanceStates, instanceServices,
+			drainingNodeID, instancePlacementNode, instanceStates,
+			instanceServices, disruptionBudgets, desiredInstanceCounts,
+			globalActiveCountByService,
 		)
 		proposedChanges = append(proposedChanges, evictedPerService...)
 
@@ -75,14 +81,17 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 }
 
 // evictInstancesFromNode finds all active instances on the given draining node
-// and evicts at most one per service per call. Returns the proposed changes and
-// the count of active instances that remain (including ones being evicted this
-// cycle).
+// and evicts at most one per service per call, respecting disruption budgets.
+// Returns the proposed changes and the count of active instances that remain
+// (including ones being evicted this cycle).
 func (drainController *DrainController) evictInstancesFromNode(
 	drainingNodeID string,
 	instancePlacementNode map[string]string,
 	instanceStates map[string]string,
 	instanceServices map[string]string,
+	disruptionBudgets map[string]disruptionBudget,
+	desiredInstanceCounts map[string]int,
+	globalActiveCountByService map[string]int,
 ) ([]Change, int) {
 	// Collect active instances on this node grouped by service.
 	activeInstancesByService := make(map[string][]string)
@@ -103,12 +112,16 @@ func (drainController *DrainController) evictInstancesFromNode(
 		activeInstancesByService[serviceName] = append(activeInstancesByService[serviceName], instanceID)
 	}
 
-	// Evict at most one instance per service (rate-limiting).
+	// Evict at most one instance per service (rate-limiting), respecting
+	// disruption budgets.
 	var evictionChanges []Change
 	sortedServiceNames := sortedKeys(activeInstancesByService)
 	for _, serviceName := range sortedServiceNames {
 		instanceIDs := activeInstancesByService[serviceName]
 		if len(instanceIDs) == 0 {
+			continue
+		}
+		if !canEvictUnderDisruptionBudget(serviceName, disruptionBudgets, desiredInstanceCounts, globalActiveCountByService) {
 			continue
 		}
 		// Evict the first (deterministically sorted) instance.
@@ -117,6 +130,9 @@ func (drainController *DrainController) evictInstancesFromNode(
 			Key:   types.KeyObservedInstanceState(instanceIDs[0]),
 			Value: []byte(string(types.InstanceStopped)),
 		})
+		// Decrement global count so subsequent draining nodes in this cycle
+		// see the updated budget headroom.
+		globalActiveCountByService[serviceName]--
 	}
 
 	return evictionChanges, totalActiveCount
@@ -189,6 +205,100 @@ func parseDrainCompleteMarkers(facts []store.Fact) map[string]bool {
 		}
 	}
 	return completeMarkers
+}
+
+// disruptionBudget holds the parsed disruption budget for a single service.
+// Only one of the two fields will be non-zero.
+type disruptionBudget struct {
+	minAvailable   int // minimum instances that must remain running
+	maxUnavailable int // maximum instances that may be simultaneously unavailable
+}
+
+// parseDisruptionBudgets scans desired service facts and returns disruption
+// budgets keyed by service name.
+func parseDisruptionBudgets(facts []store.Fact) map[string]disruptionBudget {
+	budgetsByService := make(map[string]disruptionBudget)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) != 2 {
+			continue
+		}
+		serviceName := pathParts[0]
+		suffix := pathParts[1]
+		budget := budgetsByService[serviceName]
+		switch suffix {
+		case "disruption/min_available":
+			budget.minAvailable, _ = strconv.Atoi(string(factEntry.Value))
+		case "disruption/max_unavailable":
+			budget.maxUnavailable, _ = strconv.Atoi(string(factEntry.Value))
+		default:
+			continue
+		}
+		budgetsByService[serviceName] = budget
+	}
+	return budgetsByService
+}
+
+// countGlobalActiveInstancesByService counts all active instances per service
+// across all nodes in the cluster, using observed instance states and service
+// membership.
+func countGlobalActiveInstancesByService(
+	instanceStates map[string]string,
+	instanceServices map[string]string,
+) map[string]int {
+	activeCountByService := make(map[string]int)
+	for instanceID, stateValue := range instanceStates {
+		if isActiveInstanceState(types.InstanceState(stateValue)) {
+			serviceName := instanceServices[instanceID]
+			if serviceName != "" {
+				activeCountByService[serviceName]++
+			}
+		}
+	}
+	return activeCountByService
+}
+
+// parseDesiredInstanceCounts scans desired service facts and returns the
+// desired instance count for each service.
+func parseDesiredInstanceCounts(facts []store.Fact) map[string]int {
+	desiredCounts := make(map[string]int)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) == 2 && pathParts[1] == "instances" {
+			desiredCounts[pathParts[0]], _ = strconv.Atoi(string(factEntry.Value))
+		}
+	}
+	return desiredCounts
+}
+
+// canEvictUnderDisruptionBudget checks whether evicting one more instance of
+// the given service is permitted by its disruption budget. If no budget is
+// configured, eviction is always allowed.
+func canEvictUnderDisruptionBudget(
+	serviceName string,
+	disruptionBudgets map[string]disruptionBudget,
+	desiredInstanceCounts map[string]int,
+	globalActiveCountByService map[string]int,
+) bool {
+	budget, hasBudget := disruptionBudgets[serviceName]
+	if !hasBudget {
+		return true
+	}
+	currentActiveCount := globalActiveCountByService[serviceName]
+	if budget.minAvailable > 0 {
+		return currentActiveCount-1 >= budget.minAvailable
+	}
+	if budget.maxUnavailable > 0 {
+		desiredCount := desiredInstanceCounts[serviceName]
+		if desiredCount == 0 {
+			return true
+		}
+		currentlyUnavailable := desiredCount - currentActiveCount
+		return currentlyUnavailable+1 <= budget.maxUnavailable
+	}
+	return true
 }
 
 // isActiveInstanceState returns true if the instance state represents a

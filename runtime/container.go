@@ -352,6 +352,9 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 // ExecInit runs an initialization command by creating a temporary container
 // from the given image, executing the command, and removing the container.
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
+	if !validImageReferencePattern.MatchString(image) {
+		return fmt.Errorf("invalid image reference: %q", image)
+	}
 	args := []string{"run", "--rm", image, "sh", "-c", execSpec.Command}
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer

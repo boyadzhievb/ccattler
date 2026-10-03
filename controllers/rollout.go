@@ -43,6 +43,8 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 	updatePolicies := extractUpdatePolicies(facts)
 	instancesByService := extractInstancesByService(facts)
 	rolloutState := extractRolloutState(facts)
+	rolloutDisruptionBudgets := extractRolloutDisruptionBudgets(facts)
+	desiredInstancesByService := extractDesiredInstanceCounts(facts)
 
 	var changes []Change
 
@@ -75,8 +77,13 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 			continue
 		}
 
+		effectivePolicy := applyDisruptionBudgetToUpdatePolicy(
+			updatePolicies[serviceName],
+			rolloutDisruptionBudgets[serviceName],
+			desiredInstancesByService[serviceName],
+		)
 		stopChanges := buildOldInstanceStopChanges(
-			oldImageInstances, newImageInstances, updatePolicies[serviceName],
+			oldImageInstances, newImageInstances, effectivePolicy,
 		)
 		changes = append(changes, stopChanges...)
 	}
@@ -295,6 +302,77 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 		}
 	}
 	return result
+}
+
+// rolloutDisruptionBudget holds parsed disruption budget fields for a service
+// used during rollout decisions.
+type rolloutDisruptionBudget struct {
+	minAvailable   int // minimum instances that must remain running
+	maxUnavailable int // maximum instances that may be simultaneously unavailable
+}
+
+// extractRolloutDisruptionBudgets scans desired service facts and returns
+// disruption budgets keyed by service name.
+func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisruptionBudget {
+	budgets := make(map[string]rolloutDisruptionBudget)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) != 2 {
+			continue
+		}
+		serviceName := pathParts[0]
+		suffix := pathParts[1]
+		budget := budgets[serviceName]
+		switch suffix {
+		case "disruption/min_available":
+			budget.minAvailable, _ = strconv.Atoi(string(factEntry.Value))
+		case "disruption/max_unavailable":
+			budget.maxUnavailable, _ = strconv.Atoi(string(factEntry.Value))
+		default:
+			continue
+		}
+		budgets[serviceName] = budget
+	}
+	return budgets
+}
+
+// extractDesiredInstanceCounts scans desired service facts and returns the
+// desired instance count per service.
+func extractDesiredInstanceCounts(facts []store.Fact) map[string]int {
+	counts := make(map[string]int)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) == 2 && pathParts[1] == "instances" {
+			counts[pathParts[0]], _ = strconv.Atoi(string(factEntry.Value))
+		}
+	}
+	return counts
+}
+
+// applyDisruptionBudgetToUpdatePolicy returns an update policy with
+// maxUnavailable capped by the disruption budget. If the budget is more
+// restrictive than the update policy, the budget wins.
+func applyDisruptionBudgetToUpdatePolicy(
+	originalPolicy extractedUpdatePolicy,
+	budget rolloutDisruptionBudget,
+	desiredInstanceCount int,
+) extractedUpdatePolicy {
+	effectivePolicy := originalPolicy
+	if budget.maxUnavailable > 0 && budget.maxUnavailable < effectivePolicy.maxUnavailable {
+		effectivePolicy.maxUnavailable = budget.maxUnavailable
+	}
+	if budget.minAvailable > 0 && desiredInstanceCount > 0 {
+		budgetMaxUnavailable := desiredInstanceCount - budget.minAvailable
+		if budgetMaxUnavailable < 1 {
+			budgetMaxUnavailable = 1
+		}
+		if effectivePolicy.maxUnavailable == 0 || budgetMaxUnavailable < effectivePolicy.maxUnavailable {
+			effectivePolicy.maxUnavailable = budgetMaxUnavailable
+		}
+	}
+	return effectivePolicy
 }
 
 // extractRolloutState returns rollout tracking facts from the derived prefix.

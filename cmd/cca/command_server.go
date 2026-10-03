@@ -18,7 +18,6 @@ import (
 	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/cloud"
 	"github.com/boyadzhievb/ccattler/controllers"
-	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -102,6 +101,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 		storeKeyPrefix: "/ccattler/",
 		listenAddress:  "0.0.0.0:" + defaultAPIListenPort,
 	}
+	explicitListenProvided := false
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
 		currentArg := args[argIndex]
@@ -125,6 +125,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.listenAddress = args[argIndex]
+				explicitListenProvided = true
 			}
 		case "--tls":
 			parsedConfig.tlsEnabled = true
@@ -227,6 +228,15 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 		} else {
 			parsedConfig.nodeID = "controlplane-1"
 		}
+	}
+
+	// Default to localhost-only when TLS is not enabled to prevent exposing
+	// the token-authenticated API to the network.
+	if !explicitListenProvided && !parsedConfig.tlsEnabled {
+		parsedConfig.listenAddress = "127.0.0.1:" + defaultAPIListenPort
+	}
+	if explicitListenProvided && !parsedConfig.tlsEnabled && strings.HasPrefix(parsedConfig.listenAddress, "0.0.0.0:") {
+		fmt.Fprintln(os.Stderr, "WARNING: non-TLS server bound to 0.0.0.0 — use --tls for network-accessible deployments")
 	}
 
 	return parsedConfig
@@ -335,12 +345,18 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 				}
 			}
 		} else {
-			localUserAuthenticator := security.NewLocalUserAuthenticator()
-			authenticatorChain = security.NewAuthenticatorChain(localUserAuthenticator)
-			// In non-TLS mode, bind the local user to cluster-admin so
-			// authorization still runs but local development is frictionless.
+			localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
+			if tokenError != nil {
+				fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
+			authenticatorChain = security.NewAuthenticatorChain(localTokenAuthenticator)
+			// In non-TLS mode, bind the fixed local-admin principal (not a
+			// wildcard) to cluster-admin so authorization still runs but local
+			// development is frictionless.
 			rbacAuthorizer.BindRole(security.RoleBinding{
-				Principal: "user:*",
+				Principal: "user:local-admin",
 				RoleName:  "cluster-admin",
 			})
 		}
@@ -348,7 +364,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		// API-layer capability authorizer. Maps builtin roles to capability grants.
 		apiAuthorizer := security.NewAPIAuthorizer()
 		if serverTLSConfig == nil {
-			apiAuthorizer.GrantRole("user:*", "cluster-admin")
+			apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
 		} else if serverPrincipal != "" {
 			apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
 		}
@@ -714,31 +730,6 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 		}
 		responseWriter.Header().Set("Content-Type", "text/plain")
 		_, _ = responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
-	})
-
-	// Legacy metric endpoint for backward compatibility with 'cca metric set'.
-	httpMux.HandleFunc("/metric", func(responseWriter http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
-			return
-		}
-		requestContext, authError := authenticateLegacyRequest(request)
-		if authError != nil {
-			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
-			return
-		}
-		serviceName := request.URL.Query().Get("service")
-		metricName := request.URL.Query().Get("metric")
-		metricValue := request.URL.Query().Get("value")
-		if serviceName == "" || metricName == "" || metricValue == "" {
-			http.Error(responseWriter, "service, metric, and value required", http.StatusBadRequest)
-			return
-		}
-		metricKey := types.KeyObservedMetric(serviceName, metricName)
-		if _, putError := factStore.Put(requestContext, metricKey, []byte(metricValue)); putError != nil {
-			logging.Default().Error("failed to write metric", "key", metricKey, "error", putError.Error())
-		}
-		_, _ = fmt.Fprintf(responseWriter, "set %s.%s = %s\n", serviceName, metricName, metricValue) //nolint:gosec // internal CLI metric endpoint, not user-facing
 	})
 
 	listener, err := net.Listen("tcp", listenAddress)

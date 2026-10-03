@@ -1352,3 +1352,98 @@ func TestParseAllWorkloadAndExampleFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestParseDisruptionMinAvailable(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 5
+
+    disruption {
+        min_available 3
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Disruption == nil {
+		t.Fatal("disruption is nil")
+	}
+	if serviceDecl.Disruption.MinAvailable != 3 {
+		t.Errorf("min_available: got %d, want 3", serviceDecl.Disruption.MinAvailable)
+	}
+	if serviceDecl.Disruption.MaxUnavailable != 0 {
+		t.Errorf("max_unavailable should be 0, got %d", serviceDecl.Disruption.MaxUnavailable)
+	}
+}
+
+func TestParseDisruptionMaxUnavailable(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 5
+
+    disruption {
+        max_unavailable 2
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Disruption == nil {
+		t.Fatal("disruption is nil")
+	}
+	if serviceDecl.Disruption.MaxUnavailable != 2 {
+		t.Errorf("max_unavailable: got %d, want 2", serviceDecl.Disruption.MaxUnavailable)
+	}
+	if serviceDecl.Disruption.MinAvailable != 0 {
+		t.Errorf("min_available should be 0, got %d", serviceDecl.Disruption.MinAvailable)
+	}
+}
+
+func TestParseDisruptionRejectsBothFields(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 5
+
+    disruption {
+        min_available 3
+        max_unavailable 2
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error when both min_available and max_unavailable are set")
+	}
+}
+
+func TestParseDisruptionRejectsEmptyBlock(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 5
+
+    disruption {
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for empty disruption block")
+	}
+}
+
+func TestParseDisruptionRejectsUnknownField(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 5
+
+    disruption {
+        budget 3
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown disruption field")
+	}
+}
