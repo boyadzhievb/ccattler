@@ -1096,15 +1096,15 @@ Motivated by external review from a principal K8s engineer (chat-03oct-1.md). Go
 
 #### 67b — HA & Control Plane Resilience Tests
 
-- [ ] `TestEtcdUnavailable_WorkloadsKeepRunning` — partition agents from etcd, verify containers stay running (agent cached state); reconnect, verify convergence
-- [ ] `TestControlPlaneRestart_NoDataLoss` — stop server + all controllers, restart, verify desired/observed state intact, reconciliation resumes
-- [ ] `TestLeaderElectionFencing` — simulate two controller runners, verify only leader writes (store transaction CAS rejects stale runner)
-- [ ] `TestDisasterRecovery_EtcdSnapshot` — populate cluster, snapshot etcd, destroy and restore, verify cluster recovers to pre-snapshot state
-- [ ] `TestSplitBrainHeal` — partition network between controllers and subset of agents, heal partition, verify convergence without duplicates
-- [ ] `TestNetworkPartition_EndpointStaleness` — partition a node, verify its endpoints are removed within lease timeout; heal, verify endpoints re-added
-- [ ] `TestStorageFailure_VolumeDisappears` — delete a volume's observed facts mid-operation, verify storage controller detects and re-attaches or reports degraded
-- [ ] `TestStorageFailure_SlowStore` — inject artificial latency into store operations, verify controllers degrade gracefully (backoff, no crash loops)
-- [ ] `TestRollingControlPlaneUpgrade` — stop one API replica at a time while traffic continues, verify zero dropped requests; restart controllers sequentially, verify no reconciliation gap
+- [x] `TestEtcdUnavailable_WorkloadsKeepRunning` — partition agents from etcd, verify containers stay running (agent cached state); reconnect, verify convergence
+- [x] `TestControlPlaneRestart_NoDataLoss` — stop server + all controllers, restart, verify desired/observed state intact, reconciliation resumes
+- [x] `TestLeaderElectionFencing` — simulate two controller runners, verify only leader writes (store transaction CAS rejects stale runner)
+- [x] `TestDisasterRecovery_EtcdSnapshot` — populate cluster, snapshot etcd, destroy and restore, verify cluster recovers to pre-snapshot state
+- [x] `TestSplitBrainHeal` — partition network between controllers and subset of agents, heal partition, verify convergence without duplicates
+- [x] `TestNetworkPartition_EndpointStaleness` — partition a node, verify its endpoints are removed within lease timeout; heal, verify endpoints re-added
+- [x] `TestStorageFailure_VolumeDisappears` — delete a volume's observed facts mid-operation, verify storage controller detects and re-attaches or reports degraded
+- [x] `TestStorageFailure_SlowStore` — inject artificial latency into store operations, verify controllers degrade gracefully (backoff, no crash loops)
+- [x] `TestRollingControlPlaneUpgrade` — stop one API replica at a time while traffic continues, verify zero dropped requests; restart controllers sequentially, verify no reconciliation gap
 
 #### 67c — Chaos Benchmark with Recovery Metrics
 
