@@ -556,12 +556,16 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 
 	controllerGroupOrder := []string{"instance", "scheduler", "endpoint", "failure", "node-failure", "network"}
 	groupControllers := map[string][]controllers.Controller{
-		"instance":     {controllers.NewInstanceController()},
-		"scheduler":    {scheduler.NewScheduler()},
-		"endpoint":     {controllers.NewEndpointController()},
-		"failure":      {controllers.NewFailureController()},
-		"node-failure": {func() controllers.Controller { c := controllers.NewNodeFailureController(); c.LeaseTimeout = 300 * time.Millisecond; return c }()},
-		"network":      {controllers.NewNetworkController()},
+		"instance":  {controllers.NewInstanceController()},
+		"scheduler": {scheduler.NewScheduler()},
+		"endpoint":  {controllers.NewEndpointController()},
+		"failure":   {controllers.NewFailureController()},
+		"node-failure": {func() controllers.Controller {
+			c := controllers.NewNodeFailureController()
+			c.LeaseTimeout = 300 * time.Millisecond
+			return c
+		}()},
+		"network": {controllers.NewNetworkController()},
 	}
 
 	var violations []string
