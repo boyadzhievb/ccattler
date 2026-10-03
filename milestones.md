@@ -1110,13 +1110,13 @@ Motivated by external review from a principal K8s engineer (chat-03oct-1.md). Go
 
 Extend `chaos/` and `loadtest/` to produce a structured report comparing recovery behavior at different scales.
 
-- [ ] `RecoveryReport` struct: fields for scale (nodes, workloads), scenario, convergence time, instances lost, instances recovered, control plane load (txn/sec), scheduling latency
-- [ ] `TestChaosBenchmark_100Workloads` — 10 nodes, 100 workloads, 5 failure scenarios, measure recovery metrics per scenario
-- [ ] `TestChaosBenchmark_1000Workloads` — 50 nodes, 1000 workloads, same 5 scenarios
-- [ ] `TestChaosBenchmark_5000Workloads` — 200 nodes, 5000 workloads, same 5 scenarios (extends Phase 68 load test)
-- [ ] JSON report output: `cca benchmark --json` prints the structured `RecoveryReport` (can be compared across releases)
-- [ ] Add node-recovery scenario to chaos runner: kill node, wait for lease expiry, verify replacement scheduling time
-- [ ] `TestAutoscalerOscillation` — inject rapidly alternating high/low CPU metrics, verify stabilization windows prevent thrashing (instance count stays stable within bounds)
+- [x] `RecoveryReport` struct: fields for scale (nodes, workloads), scenario, convergence time, instances lost, instances recovered, control plane load (txn/sec), scheduling latency
+- [x] `TestChaosBenchmark_100Workloads` — 10 nodes, 100 workloads, 5 failure scenarios, measure recovery metrics per scenario
+- [x] `TestChaosBenchmark_1000Workloads` — 50 nodes, 1000 workloads, same 5 scenarios
+- [x] `TestChaosBenchmark_5000Workloads` — 200 nodes, 5000 workloads, same 5 scenarios (extends Phase 68 load test)
+- [x] JSON report output: `cca benchmark --json` prints the structured `RecoveryReport` (can be compared across releases)
+- [x] Add node-recovery scenario to chaos runner: kill node, wait for lease expiry, verify replacement scheduling time
+- [x] `TestAutoscalerOscillation` — inject rapidly alternating high/low CPU metrics, verify stabilization windows prevent thrashing (instance count stays stable within bounds)
 
 #### 67d — Security Test Evidence
 

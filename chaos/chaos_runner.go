@@ -18,6 +18,8 @@ const (
 	ScenarioControllerRestart FailureScenario = "controller-restart"
 	// ScenarioScaleChange randomly scales a service up or down.
 	ScenarioScaleChange FailureScenario = "scale-change"
+	// ScenarioNodeRecovery restarts a previously killed node.
+	ScenarioNodeRecovery FailureScenario = "node-recovery"
 )
 
 // ChaosEvent records a single failure injection with its timestamp and details.
@@ -164,6 +166,8 @@ func (chaosRunner *ChaosRunner) injectRandomFailure(ctx context.Context, elapsed
 		target = chaosRunner.injectControllerRestart(ctx)
 	case ScenarioScaleChange:
 		target = chaosRunner.injectScaleChange(ctx)
+	case ScenarioNodeRecovery:
+		target = chaosRunner.injectNodeRecovery(ctx)
 	}
 
 	if target == "" {
@@ -219,6 +223,22 @@ func (chaosRunner *ChaosRunner) injectScaleChange(ctx context.Context) string {
 	newCount := 2 + chaosRunner.config.RandSource.Intn(8)
 	chaosRunner.cluster.SetServiceScale(ctx, serviceName, newCount)
 	return serviceName
+}
+
+// injectNodeRecovery restarts a random killed (non-alive) node.
+func (chaosRunner *ChaosRunner) injectNodeRecovery(ctx context.Context) string {
+	var candidates []string
+	for _, nodeID := range chaosRunner.cluster.NodeIDs() {
+		if !chaosRunner.cluster.IsNodeAlive(nodeID) {
+			candidates = append(candidates, nodeID)
+		}
+	}
+	if len(candidates) == 0 {
+		return ""
+	}
+	nodeID := candidates[chaosRunner.config.RandSource.Intn(len(candidates))]
+	chaosRunner.cluster.RestartNode(ctx, nodeID)
+	return nodeID
 }
 
 // waitForConvergence polls CheckConvergence until success or timeout.

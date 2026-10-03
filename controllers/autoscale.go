@@ -79,6 +79,12 @@ func NewAutoscaleController() *AutoscaleController {
 	}
 }
 
+// SetTimeNow overrides the clock function used for stabilization window
+// evaluation. Intended for deterministic testing with simulated time.
+func (autoscaleController *AutoscaleController) SetTimeNow(timeFn func() time.Time) {
+	autoscaleController.timeNow = timeFn
+}
+
 // Name returns "autoscale", identifying this controller in logs and runner bookkeeping.
 func (autoscaleController *AutoscaleController) Name() string { return "autoscale" }
 
