@@ -1068,18 +1068,19 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Parser/compiler tests for `disruption` block
 - [x] Integration test: 5 instances with `min_available 3`, drain node, verify never below 3
 
-### Phase 66 — Stateful Workloads (M66)
+### Phase 66 — Stateful Workloads (M66) ✅
 
-- [ ] `Stateful bool` field on `ServiceDecl` in `lang/ast.go`
-- [ ] DSL syntax: `stateful` keyword inside service block
-- [ ] Ordinal instance IDs: `postgres-0`, `postgres-1`, `postgres-2` via `OrdinalInstanceID`
-- [ ] Ordered startup: instance N+1 only created when N is running
-- [ ] Reverse scale-down: highest ordinal removed first
-- [ ] Per-ordinal volumes: `postgres-0-pgdata` automatic naming
-- [ ] Stable DNS: `postgres-0.ccattler.local` resolves to instance IP
-- [ ] Stateful volume controller: `controllers/stateful_volume.go`
-- [ ] Unit tests: ordinal creation, ordering, reverse scale-down, per-ordinal volumes
-- [ ] Integration test: 3-instance stateful service with DNS verification
+- [x] `Stateful bool` field on `ServiceDecl` in `lang/ast.go`
+- [x] DSL syntax: `stateful` keyword inside service block
+- [x] Ordinal instance IDs: `postgres-0`, `postgres-1`, `postgres-2` (instance controller)
+- [x] Ordered startup: instance N+1 only created when N is running
+- [x] Reverse scale-down: highest ordinal removed first
+- [x] Per-ordinal volumes: `postgres-0-pgdata` automatic naming (`controllers/stateful_volume.go`)
+- [x] Stable DNS: `postgres-0.ccattler.local` resolves to instance IP (`controllers/stateful_dns.go`)
+- [x] Stateful volume controller: `controllers/stateful_volume.go`
+- [x] Stateful DNS controller: `controllers/stateful_dns.go`
+- [x] Unit tests: ordinal creation, ordering, reverse scale-down, per-ordinal volumes, DNS (19 tests)
+- [x] Integration test: 3-instance stateful service with DNS and volume verification
 
 ### Phase 67 — Scheduler Scale (M67)
 

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M65 — Phase 65 Disruption Budgets. M1–M65 complete. Gates A–I resolved. Next: Phase 66 — Stateful Workloads, Phase 67 — Scheduler Scale.
+**Completed through:** M66 — Phase 66 Stateful Workloads. M1–M66 complete. Gates A–I resolved. Next: Phase 67 — Scheduler Scale.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

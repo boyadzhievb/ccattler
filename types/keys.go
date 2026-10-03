@@ -392,6 +392,24 @@ func KeyNetworkDNS(serviceName string) string {
 	return fmt.Sprintf("%s/dns/%s", PrefixNetwork, serviceName)
 }
 
+// KeyObservedInstanceOrdinal returns the store path for a stateful instance's
+// ordinal index within its service (e.g. "0", "1", "2").
+// Path: observed/instance/{instanceID}/ordinal
+func KeyObservedInstanceOrdinal(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/ordinal", PrefixObserved, instanceID)
+}
+
+// KeyNetworkDNSInstance returns the store path for a per-instance DNS name
+// used by stateful services. The name resolves to the instance's IP address
+// (e.g. "postgres-0.ccattler.local" → "10.0.1.4").
+// Path: network/dns/instance/{instanceID}
+func KeyNetworkDNSInstance(instanceID string) string {
+	return fmt.Sprintf("%s/dns/instance/%s", PrefixNetwork, instanceID)
+}
+
+// ScanNetworkDNSInstances scans all per-instance DNS entries for stateful services.
+const ScanNetworkDNSInstances = PrefixNetwork + "/dns/instance/"
+
 // KeyDesiredServiceScaleHorizontalMin returns the store path for a service's
 // horizontal autoscaling minimum instance count.
 // Path: desired/service/{name}/scale/horizontal/min
@@ -595,6 +613,21 @@ func KeyDesiredServiceUpdateMaxUnavailable(name string) string {
 // of extra instances allowed during a rolling update surge.
 func KeyDesiredServiceUpdateMaxExtra(name string) string {
 	return fmt.Sprintf("%s/service/%s/update/max_extra", PrefixDesired, name)
+}
+
+// KeyDesiredServiceStateful returns the store path for a service's stateful
+// flag. When "true", the instance controller uses ordinal IDs, ordered
+// startup, and reverse scale-down.
+// Path: desired/service/{name}/stateful
+func KeyDesiredServiceStateful(name string) string {
+	return fmt.Sprintf("%s/service/%s/stateful", PrefixDesired, name)
+}
+
+// KeyEffectiveServiceStateful returns the store path for a service's effective
+// stateful flag, propagated from desired state.
+// Path: effective/service/{name}/stateful
+func KeyEffectiveServiceStateful(name string) string {
+	return fmt.Sprintf("%s/service/%s/stateful", PrefixEffective, name)
 }
 
 // KeyDesiredServiceDisruptionMinAvailable returns the store path for the

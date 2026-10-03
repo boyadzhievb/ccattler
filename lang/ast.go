@@ -55,6 +55,7 @@ type ServiceDecl struct {
 	Liveness        *ProbeDecl                 // optional liveness probe (triggers restart on failure)
 	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
 	Disruption      *DisruptionDecl            // optional disruption budget for drain/rollout safety
+	Stateful        bool                       // true if service uses ordinal instance IDs and ordered startup
 	Line            int                        // source line number for error reporting
 }
 

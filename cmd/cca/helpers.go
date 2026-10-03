@@ -167,6 +167,8 @@ func coreControllers() []controllers.Controller {
 		controllers.NewIntentResolverController(),
 		controllers.NewRolloutController(),
 		controllers.NewInitController(),
+		controllers.NewStatefulDNSController(),
+		controllers.NewStatefulVolumeController(),
 	}
 }
 

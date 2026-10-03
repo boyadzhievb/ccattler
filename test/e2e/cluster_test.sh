@@ -160,9 +160,10 @@ if [[ "$node_count" -lt 3 ]]; then
     log "WARNING: Only $node_count/3 nodes registered, waiting..."
     deadline=$((SECONDS + CONVERGE_TIMEOUT))
     while [[ $SECONDS -lt $deadline ]]; do
-        node_count=$(count_alive_nodes)
-        if [[ "$node_count" -ge 3 ]]; then break; fi
         sleep 5
+        node_count=$(count_alive_nodes)
+        log "  Retry: $node_count/3 nodes registered (${SECONDS}s elapsed)"
+        if [[ "$node_count" -ge 3 ]]; then break; fi
     done
     if [[ "$node_count" -lt 3 ]]; then
         log "Final node count: $node_count"
@@ -188,12 +189,13 @@ log "Waiting for Java app containers to start..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))
 total_containers=0
 while [[ $SECONDS -lt $deadline ]]; do
+    sleep 5
     c1=$(count_containers cca-test-ctrl)
     c2=$(count_containers cca-test-worker-1)
     c3=$(count_containers cca-test-worker-2)
     total_containers=$((c1 + c2 + c3))
+    log "  Retry: $total_containers/2 containers (ctrl=$c1 w1=$c2 w2=$c3, ${SECONDS}s elapsed)"
     if [[ "$total_containers" -ge 2 ]]; then break; fi
-    sleep 5
 done
 [[ "$total_containers" -ge 2 ]] || fail "Expected 2+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
 log "Java app running: $total_containers containers across 3 nodes"
@@ -209,13 +211,14 @@ ssh_vm cca-test-ctrl "/usr/local/bin/cca apply /tmp/zabbix.cca --store etcd --en
 log "Waiting for Zabbix containers (3 services)..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))
 while [[ $SECONDS -lt $deadline ]]; do
+    sleep 5
     c1=$(count_containers cca-test-ctrl)
     c2=$(count_containers cca-test-worker-1)
     c3=$(count_containers cca-test-worker-2)
     total_containers=$((c1 + c2 + c3))
+    log "  Retry: $total_containers/5 containers (ctrl=$c1 w1=$c2 w2=$c3, ${SECONDS}s elapsed)"
     # Java (2) + Zabbix (3) = 5 total
     if [[ "$total_containers" -ge 5 ]]; then break; fi
-    sleep 5
 done
 [[ "$total_containers" -ge 5 ]] || fail "Expected 5+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
 log "Zabbix stack running: $total_containers total containers"

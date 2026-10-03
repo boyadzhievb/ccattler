@@ -248,6 +248,8 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 			VolumeName: volumeName,
 			MountPath:  mountPath,
 		})
+	case "stateful":
+		serviceDecl.Stateful = true
 	case "disruption":
 		serviceDecl.Disruption, err = parser.parseDisruptionBlock()
 	case "cloud_identity":

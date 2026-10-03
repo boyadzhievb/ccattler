@@ -259,6 +259,13 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
 	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
 
+	if serviceDecl.Stateful {
+		facts = append(facts,
+			Fact{Key: types.KeyDesiredServiceStateful(serviceDecl.Name), Value: "true"},
+			Fact{Key: types.KeyEffectiveServiceStateful(serviceDecl.Name), Value: "true"},
+		)
+	}
+
 	return facts, nil
 }
 

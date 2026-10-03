@@ -1016,3 +1016,51 @@ func TestCompileServiceWithDisruptionMaxUnavailable(t *testing.T) {
 		t.Errorf("disruption min_available should not be set, got %q", minAvailableValue)
 	}
 }
+
+// TestCompileStatefulService verifies that the stateful keyword emits both
+// desired and effective stateful facts for the service.
+func TestCompileStatefulService(t *testing.T) {
+	file, parseErr := Parse(`service postgres {
+    image postgres:16
+    instances 3
+    stateful
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	desiredStateful := compiledFactMap[types.KeyDesiredServiceStateful("postgres")]
+	if desiredStateful != "true" {
+		t.Errorf("desired stateful: got %q, want %q", desiredStateful, "true")
+	}
+	effectiveStateful := compiledFactMap[types.KeyEffectiveServiceStateful("postgres")]
+	if effectiveStateful != "true" {
+		t.Errorf("effective stateful: got %q, want %q", effectiveStateful, "true")
+	}
+}
+
+// TestCompileNonStatefulServiceOmitsStatefulFact verifies that services
+// without the stateful keyword do not emit stateful facts.
+func TestCompileNonStatefulServiceOmitsStatefulFact(t *testing.T) {
+	file, parseErr := Parse(`service web {
+    image nginx:1.28
+    instances 3
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if _, exists := compiledFactMap[types.KeyDesiredServiceStateful("web")]; exists {
+		t.Errorf("non-stateful service should not emit stateful fact")
+	}
+}
