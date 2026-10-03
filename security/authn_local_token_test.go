@@ -10,7 +10,7 @@ import (
 func TestLocalTokenAuthenticatorAcceptsCorrectToken(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
@@ -44,7 +44,7 @@ func TestLocalTokenAuthenticatorAcceptsCorrectToken(t *testing.T) {
 func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
@@ -65,7 +65,7 @@ func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
 func TestLocalTokenAuthenticatorRejectsNoHeader(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
@@ -87,7 +87,7 @@ func TestLocalTokenAuthenticatorRejectsNoHeader(t *testing.T) {
 func TestLocalTokenFilePermissions(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	_, createError := NewLocalTokenAuthenticator()
@@ -110,7 +110,7 @@ func TestLocalTokenFilePermissions(t *testing.T) {
 func TestLocalTokenAuthenticatorRejectsEmptyBearerToken(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
@@ -130,7 +130,7 @@ func TestLocalTokenAuthenticatorRejectsEmptyBearerToken(t *testing.T) {
 func TestSpoofedXCCattlerUserHeaderRejected(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
@@ -154,7 +154,7 @@ func TestSpoofedXCCattlerUserHeaderRejected(t *testing.T) {
 func TestLoadLocalTokenAuthenticator(t *testing.T) {
 	originalDirectory, _ := os.Getwd()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory) //nolint:errcheck // test helper
+	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
 	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
 	originalAuthenticator, createError := NewLocalTokenAuthenticator()

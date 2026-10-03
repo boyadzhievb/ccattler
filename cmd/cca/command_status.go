@@ -1305,8 +1305,8 @@ func executeSecretList() {
 // executeSecretDelete removes an encrypted secret via the API.
 func executeSecretDelete(secretName string) {
 	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
-	deleteRequest, _ := http.NewRequest(http.MethodDelete, requestURL, nil)      //nolint:gosec // URL is local CLI → server, not user-controlled
-	httpResponse, err := buildAuthenticatedHTTPClient().Do(deleteRequest) //nolint:gosec // URL is local CLI → server, not user-controlled
+	deleteRequest, _ := http.NewRequest(http.MethodDelete, requestURL, nil) //nolint:gosec // URL is local CLI → server, not user-controlled
+	httpResponse, err := buildAuthenticatedHTTPClient().Do(deleteRequest)   //nolint:gosec // URL is local CLI → server, not user-controlled
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
 		os.Exit(1)

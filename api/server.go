@@ -12,8 +12,8 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"sync/atomic"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/lang"
@@ -92,22 +92,22 @@ const (
 // Server is the CCattler HTTP API server that provides endpoints for reading,
 // querying, and modifying the fact store.
 type Server struct {
-	factStore           store.StateStore
-	eventLog            *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
-	enrollmentService   *security.EnrollmentService
-	workloadTokenIssuer *security.WorkloadTokenIssuer
-	watchMultiplexer    *WatchMultiplexer
-	secretStore         *security.SecretStore        // secretStore handles encrypted secret CRUD.
-	policyGate          *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
-	authenticatorChain  *security.AuthenticatorChain // authenticatorChain maps requests to principals.
-	apiAuthorizer       *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
-	tenantAuditView     *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
-	serverMode          ServerMode
-	requirePrincipal    bool // requirePrincipal enables 401 on requests without a principal in context.
-	mux                 *http.ServeMux
-	rateLimiter              *RateLimiter
-	statusCache              *ResponseCache
-	listener                 net.Listener
+	factStore                  store.StateStore
+	eventLog                   *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
+	enrollmentService          *security.EnrollmentService
+	workloadTokenIssuer        *security.WorkloadTokenIssuer
+	watchMultiplexer           *WatchMultiplexer
+	secretStore                *security.SecretStore        // secretStore handles encrypted secret CRUD.
+	policyGate                 *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain         *security.AuthenticatorChain // authenticatorChain maps requests to principals.
+	apiAuthorizer              *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView            *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
+	serverMode                 ServerMode
+	requirePrincipal           bool // requirePrincipal enables 401 on requests without a principal in context.
+	mux                        *http.ServeMux
+	rateLimiter                *RateLimiter
+	statusCache                *ResponseCache
+	listener                   net.Listener
 	activeWatchConnectionCount atomic.Int64 // activeWatchConnectionCount tracks concurrent SSE connections.
 }
 
