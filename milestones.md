@@ -1082,7 +1082,70 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Unit tests: ordinal creation, ordering, reverse scale-down, per-ordinal volumes, DNS (19 tests)
 - [x] Integration test: 3-instance stateful service with DNS and volume verification
 
-### Phase 67 — Scheduler Scale (M67)
+### Phase 67 — Production Readiness Validation (M67)
+
+Motivated by external review from a principal K8s engineer (chat-03oct-1.md). Goal: build measurable evidence for the reviewer's test matrix — controller failure isolation, HA resilience, chaos recovery metrics, and security test evidence.
+
+#### 67a — Controller Failure Isolation Tests
+
+- [x] `TestControllerIsolation_SchedulerCrash` — kill scheduler, verify instance/endpoint/network controllers continue operating; workloads already placed keep running
+- [x] `TestControllerIsolation_NetworkControllerCrash` — kill network controller, verify scheduler still places and instances still start
+- [x] `TestControllerIsolation_InstanceControllerRestart` — restart instance controller mid-reconciliation, verify no duplicate instances, no orphans
+- [x] `TestControllerIsolation_AllControllersRestart` — stop all controllers, verify running workloads survive, controllers re-derive state from store on restart
+- [x] `TestConcurrentControllerRecovery` — kill 3 controllers simultaneously, restart them, verify convergence with no conflicts (optimistic concurrency prevents double-writes)
+
+#### 67b — HA & Control Plane Resilience Tests
+
+- [ ] `TestEtcdUnavailable_WorkloadsKeepRunning` — partition agents from etcd, verify containers stay running (agent cached state); reconnect, verify convergence
+- [ ] `TestControlPlaneRestart_NoDataLoss` — stop server + all controllers, restart, verify desired/observed state intact, reconciliation resumes
+- [ ] `TestLeaderElectionFencing` — simulate two controller runners, verify only leader writes (store transaction CAS rejects stale runner)
+- [ ] `TestDisasterRecovery_EtcdSnapshot` — populate cluster, snapshot etcd, destroy and restore, verify cluster recovers to pre-snapshot state
+- [ ] `TestSplitBrainHeal` — partition network between controllers and subset of agents, heal partition, verify convergence without duplicates
+- [ ] `TestNetworkPartition_EndpointStaleness` — partition a node, verify its endpoints are removed within lease timeout; heal, verify endpoints re-added
+- [ ] `TestStorageFailure_VolumeDisappears` — delete a volume's observed facts mid-operation, verify storage controller detects and re-attaches or reports degraded
+- [ ] `TestStorageFailure_SlowStore` — inject artificial latency into store operations, verify controllers degrade gracefully (backoff, no crash loops)
+- [ ] `TestRollingControlPlaneUpgrade` — stop one API replica at a time while traffic continues, verify zero dropped requests; restart controllers sequentially, verify no reconciliation gap
+
+#### 67c — Chaos Benchmark with Recovery Metrics
+
+Extend `chaos/` and `loadtest/` to produce a structured report comparing recovery behavior at different scales.
+
+- [ ] `RecoveryReport` struct: fields for scale (nodes, workloads), scenario, convergence time, instances lost, instances recovered, control plane load (txn/sec), scheduling latency
+- [ ] `TestChaosBenchmark_100Workloads` — 10 nodes, 100 workloads, 5 failure scenarios, measure recovery metrics per scenario
+- [ ] `TestChaosBenchmark_1000Workloads` — 50 nodes, 1000 workloads, same 5 scenarios
+- [ ] `TestChaosBenchmark_5000Workloads` — 200 nodes, 5000 workloads, same 5 scenarios (extends Phase 68 load test)
+- [ ] JSON report output: `cca benchmark --json` prints the structured `RecoveryReport` (can be compared across releases)
+- [ ] Add node-recovery scenario to chaos runner: kill node, wait for lease expiry, verify replacement scheduling time
+- [ ] `TestAutoscalerOscillation` — inject rapidly alternating high/low CPU metrics, verify stabilization windows prevent thrashing (instance count stays stable within bounds)
+
+#### 67d — Security Test Evidence
+
+- [ ] `TestCompromisedControllerCannotEscalate` — scheduler identity cannot write to `desired/` or `secret/` prefixes (store write-domain enforcement)
+- [ ] `TestCompromisedNodeCannotWriteDesired` — node agent identity is restricted to `observed/node-X/*`, verify 403 for `desired/` writes
+- [ ] `TestTenantIsolation_CrossTenantRead` — tenant A principal cannot read tenant B services/secrets via API
+- [ ] `TestTenantIsolation_CrossTenantWrite` — tenant A principal cannot modify tenant B resources
+- [ ] `TestSecretNeverInPlaintext` — scan all fact store keys after cluster deployment, verify no key under `secret/` contains plaintext values
+- [ ] `TestCertificateRotation` — rotate node certificate mid-operation, verify agent re-authenticates without downtime
+
+#### 67e — Runtime, Observability, API & Ecosystem Evidence
+
+- [ ] `TestContainerRuntime_ImagePullFailure` — configure a non-existent image, verify instance stays pending with clear error in observed state (not crash loop)
+- [ ] `TestContainerRuntime_OOMKill` — simulate OOM via cgroup limit, verify agent detects killed container and reports failed state
+- [ ] `TestContainerRuntime_GracefulShutdown` — send stop to running container, verify SIGTERM → grace period → SIGKILL sequence and correct state transitions
+- [ ] `TestObservability_DecisionAuditTrail` — deploy a service, verify event stream contains entries explaining *why* each placement/scaling/endpoint decision was made (scheduler reason, controller action)
+- [ ] `TestObservability_ReconciliationExplainability` — after a node failure, verify `cca events` output shows the causal chain: node unreachable → instances failed → replacements created → placed on surviving nodes
+- [ ] `TestAPIVersioning_BackwardsCompatibility` — verify existing `.cca` files from earlier phases still parse and compile without errors (regression suite for DSL grammar)
+- [ ] `TestAPIStability_StatusEndpointContract` — verify `/status` JSON schema has not changed field names or types (snapshot comparison against a committed schema fixture)
+- [ ] `TestEcosystem_ControllerSDKPlugin` — write a minimal external controller (custom fact type + reconciler), register it via the controller SDK, verify it receives facts and writes back through the standard `Controller` interface
+- [ ] `TestEcosystem_WatchIntegration` — external process connects to `/api/watch`, receives real-time fact changes, verifies event format is documented and stable
+
+#### 67f — Production Readiness Report
+
+- [ ] `cca readiness` CLI command: runs the test matrix, prints pass/fail table covering the reviewer's 16 areas (scheduling, control plane, network, nodes, storage, upgrades, reconciliation, security, multi-tenancy, autoscaling, topology, runtime, observability, recovery, API, ecosystem)
+- [ ] Each area maps to 1-3 existing tests; report aggregates results and shows evidence links
+- [ ] Missing areas marked as "not yet validated" with clear gap description
+
+### Phase 68 — Scheduler Scale (M68)
 
 - [ ] `NodeCapacityCache` in `scheduler/cache.go` — persistent min-heap, incremental updates on watch
 - [ ] Batch placement: group unplaced instances by service, cache filtered candidates per service
@@ -1090,7 +1153,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [ ] Extended load test: `TestSyntheticCluster200Nodes5000Workloads` in `loadtest/loadtest_test.go`
 - [ ] Benchmark: placements/second before and after optimization
 
-### Phase 68 — Node Runtime Inspection (M68)
+### Phase 69 — Node Runtime Inspection (M69)
 
 - [ ] Agent HTTP debug API: `/debug/containers`, `/debug/images`, `/debug/stats` on agent's local port
 - [ ] `cca node-inspect <node-id>` CLI: queries agent API, shows live runtime containers, images, resource usage
@@ -1165,6 +1228,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 | M64 — Node Drain & Disable/Enable | 64 | `cca drain node-2` gracefully evicts workloads, `cca disable-node/enable-node` toggles scheduling eligibility, DrainController rate-limits eviction |
 | M65 — Disruption Budgets | 65 | `disruption { min_available 3 }` as safety ceiling for drain + rolling update, never drops below minimum |
 | M66 — Stateful Workloads | 66 | Ordinal instance IDs (`postgres-0/1/2`), ordered startup, reverse scale-down, per-ordinal volumes, stable DNS |
-| M67 — Scheduler Scale | 67 | Incremental node cache, batch placement, 200-node/5000-workload load test with benchmark |
+| M67 — Production Readiness Validation | 67 | Controller isolation, HA resilience (etcd down, split-brain, disaster recovery, storage failure, rolling upgrade), chaos benchmark at 100/1K/5K scale, autoscaler oscillation, security evidence, runtime edge cases (OOM, image pull, graceful shutdown), observability audit trail, API stability fixtures, ecosystem SDK plugin test, `cca readiness` report |
+| M68 — Scheduler Scale | 68 | Incremental node cache, batch placement, 200-node/5000-workload load test with benchmark |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
