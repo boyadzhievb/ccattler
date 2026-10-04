@@ -1,10 +1,9 @@
 # -*- mode: ruby -*-
-# Test CCattler cluster on libvirt VMs (runs on testbed-100.43)
+# Ephemeral CCattler e2e test cluster on libvirt VMs (runs on testbed-100.43)
 #
-# Three-node cluster:
+# Two-node cluster (saves resources — deploy-Vagrantfile has 3 nodes):
 #   cca-test-ctrl     (122.10) — etcd + control plane + worker
 #   cca-test-worker-1 (122.20) — worker
-#   cca-test-worker-2 (122.30) — worker
 #
 # VMs are created without provisioning — use test-deploy.yml for that.
 
@@ -28,16 +27,6 @@ Vagrant.configure("2") do |config|
   config.vm.define "cca-test-worker-1" do |node|
     node.vm.hostname = "cca-test-worker-1"
     node.vm.network "private_network", ip: "192.168.122.20"
-
-    node.vm.provider "libvirt" do |lv|
-      lv.memory = 2048
-      lv.cpus   = 2
-    end
-  end
-
-  config.vm.define "cca-test-worker-2" do |node|
-    node.vm.hostname = "cca-test-worker-2"
-    node.vm.network "private_network", ip: "192.168.122.30"
 
     node.vm.provider "libvirt" do |lv|
       lv.memory = 2048

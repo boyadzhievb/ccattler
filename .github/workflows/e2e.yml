@@ -3,6 +3,10 @@ name: E2E Cluster Test
 on:
   workflow_dispatch:
 
+concurrency:
+  group: testbed-e2e
+  cancel-in-progress: false
+
 jobs:
   e2e:
     runs-on: self-hosted
@@ -15,19 +19,18 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Run e2e cluster test
+      - name: Run e2e cluster test (2-node)
         run: ./test/e2e/cluster_test.sh
 
       - name: Collect logs on failure
         if: failure()
         run: |
           ANSIBLE_DIR=deploy/ansible
-          for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+          for vm in cca-test-ctrl cca-test-worker-1; do
             ip_var=""
             case "$vm" in
               cca-test-ctrl)     ip_var="192.168.122.10" ;;
               cca-test-worker-1) ip_var="192.168.122.20" ;;
-              cca-test-worker-2) ip_var="192.168.122.30" ;;
             esac
             key="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key"
             if [ -f "$key" ]; then

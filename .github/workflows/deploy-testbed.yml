@@ -3,6 +3,10 @@ name: Deploy Testbed Cluster
 on:
   workflow_dispatch:
 
+concurrency:
+  group: testbed-deploy
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: self-hosted
@@ -10,19 +14,19 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Deploy cluster (no teardown, latest release binary)
-        run: ./test/e2e/cluster_test.sh --from-release --no-destroy
+      - name: Deploy cluster (3-node, no teardown, latest release binary)
+        run: ./test/e2e/cluster_test.sh --env deploy --from-release
 
       - name: Collect logs on failure
         if: failure()
         run: |
           ANSIBLE_DIR=deploy/ansible
-          for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+          for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
             ip_var=""
             case "$vm" in
-              cca-test-ctrl)     ip_var="192.168.122.10" ;;
-              cca-test-worker-1) ip_var="192.168.122.20" ;;
-              cca-test-worker-2) ip_var="192.168.122.30" ;;
+              cca-deploy-ctrl)     ip_var="192.168.124.10" ;;
+              cca-deploy-worker-1) ip_var="192.168.124.20" ;;
+              cca-deploy-worker-2) ip_var="192.168.124.30" ;;
             esac
             key="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key"
             if [ -f "$key" ]; then

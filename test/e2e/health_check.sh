@@ -8,7 +8,7 @@
 # Exit codes: 0 = healthy, 1 = unhealthy
 #
 # Prerequisites:
-#   - Cluster deployed via cluster_test.sh --no-destroy or deploy workflow
+#   - Cluster deployed via cluster_test.sh --env deploy or deploy workflow
 #   - Vagrant SSH keys present at deploy/ansible/.vagrant/
 
 set -euo pipefail
@@ -17,9 +17,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 
-CTRL_IP="192.168.122.10"
-WORKER1_IP="192.168.122.20"
-WORKER2_IP="192.168.122.30"
+CTRL_IP="192.168.124.10"
+WORKER1_IP="192.168.124.20"
+WORKER2_IP="192.168.124.30"
 ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 
 HEALTHY=true
@@ -31,9 +31,9 @@ ssh_vm() {
     local key_path="$ANSIBLE_DIR/.vagrant/machines/$vm_name/libvirt/private_key"
     local ip
     case "$vm_name" in
-        cca-test-ctrl)     ip="$CTRL_IP" ;;
-        cca-test-worker-1) ip="$WORKER1_IP" ;;
-        cca-test-worker-2) ip="$WORKER2_IP" ;;
+        cca-deploy-ctrl)     ip="$CTRL_IP" ;;
+        cca-deploy-worker-1) ip="$WORKER1_IP" ;;
+        cca-deploy-worker-2) ip="$WORKER2_IP" ;;
         *) echo "Unknown VM: $vm_name" >&2; return 1 ;;
     esac
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -48,7 +48,7 @@ count_containers() {
 
 # ---- Check 1: VM reachability ----
 log "Checking VM reachability..."
-for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
     if ssh_vm "$vm" "true" 2>/dev/null; then
         log "  $vm: reachable"
     else
@@ -59,7 +59,7 @@ done
 
 # ---- Check 2: etcd health ----
 log "Checking etcd health..."
-if ssh_vm cca-test-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" 2>/dev/null; then
+if ssh_vm cca-deploy-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" 2>/dev/null; then
     log "  etcd: healthy"
 else
     log "  etcd: UNHEALTHY"
@@ -72,9 +72,9 @@ CA_CERT="/tmp/cca-healthcheck-ca.pem"
 CLIENT_CERT="/tmp/cca-healthcheck-client.pem"
 CLIENT_KEY="/tmp/cca-healthcheck-client-key.pem"
 
-ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT" 2>/dev/null
-ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT" 2>/dev/null
-ssh_vm cca-test-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY" 2>/dev/null
+ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT" 2>/dev/null
+ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT" 2>/dev/null
+ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY" 2>/dev/null
 
 CCA_API="https://${CTRL_IP}:9770"
 CURL_TLS="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY"
@@ -102,7 +102,7 @@ fi
 # ---- Check 5: Container count ----
 log "Checking containers on each node..."
 total_containers=0
-for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
     count=$(count_containers "$vm")
     log "  $vm: $count containers"
     total_containers=$((total_containers + count))
@@ -115,7 +115,7 @@ fi
 
 # ---- Check 6: systemd services ----
 log "Checking systemd services..."
-for vm in cca-test-ctrl cca-test-worker-1 cca-test-worker-2; do
+for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
     server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null)
     agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null)
     log "  $vm: server=$server_active agent=$agent_active"

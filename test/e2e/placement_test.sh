@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # placement_test.sh — Placement policy & tenant isolation e2e tests
 #
-# Runs 12 scenarios against a 3-node CCattler cluster deployed on libvirt VMs.
+# Runs 12 scenarios against the 3-node CCattler deploy cluster on libvirt VMs.
 # Tests require, prefer, restrict/accept, zone spread, architecture, combined
 # constraints, and tenant quota enforcement.
 #
 # Prerequisites:
-#   - 3-VM cluster already provisioned (run cluster_test.sh first, or --provision)
-#   - etcd accessible at 192.168.122.10:2379
-#   - cca server API at 192.168.122.10:9770
+#   - 3-VM deploy cluster already provisioned (run cluster_test.sh --env deploy, or --provision)
+#   - etcd accessible at 192.168.124.10:2379
+#   - cca server API at 192.168.124.10:9770
 #
 # Usage:
 #   ./test/e2e/placement_test.sh                    # tests only (cluster must be up)
@@ -22,7 +22,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 
-CTRL_IP="192.168.122.10"
+CTRL_IP="192.168.124.10"
 ETCD="etcdctl --endpoints=http://${CTRL_IP}:2379"
 PFX="/ccattler"
 API="http://${CTRL_IP}:9770"
@@ -52,7 +52,7 @@ cleanup_exit() {
     if [[ "$DESTROY_ON_EXIT" == "true" && "$PROVISION" == "true" ]]; then
         log "Tearing down VMs..."
         cd "$ANSIBLE_DIR"
-        VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant destroy -f 2>/dev/null || true
+        VAGRANT_VAGRANTFILE=deploy-Vagrantfile vagrant destroy -f 2>/dev/null || true
     fi
     if [[ $FAILED -gt 0 ]]; then exit 1; fi
     exit $exit_code
@@ -163,7 +163,7 @@ cleanup_scenario() {
     $ETCD del --prefix "${PFX}/observed/instance/" >/dev/null 2>&1 || true
     $ETCD del --prefix "${PFX}/placement/instance/" >/dev/null 2>&1 || true
     $ETCD del --prefix "${PFX}/desired/tenant/" >/dev/null 2>&1 || true
-    for node_id in test-node-1 test-node-2 test-node-3; do
+    for node_id in deploy-node-1 deploy-node-2 deploy-node-3; do
         $ETCD del --prefix "${PFX}/observed/node/${node_id}/label/" >/dev/null 2>&1 || true
         $ETCD del --prefix "${PFX}/observed/node/${node_id}/restrict/" >/dev/null 2>&1 || true
         $ETCD del "${PFX}/observed/node/${node_id}/zone" >/dev/null 2>&1 || true
@@ -173,7 +173,7 @@ cleanup_scenario() {
 }
 
 ssh_ctrl() {
-    local key="$ANSIBLE_DIR/.vagrant/machines/cca-test-ctrl/libvirt/private_key"
+    local key="$ANSIBLE_DIR/.vagrant/machines/cca-deploy-ctrl/libvirt/private_key"
     ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "vagrant@${CTRL_IP}" "$@"
 }
 
@@ -183,10 +183,10 @@ if [[ "$PROVISION" == "true" ]]; then
     log "Building cca binary..."
     (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
 
-    log "Provisioning cluster..."
+    log "Provisioning deploy cluster..."
     cd "$ANSIBLE_DIR"
-    VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant up --no-provision
-    ansible-playbook -i test-inventory.ini test-deploy.yml
+    VAGRANT_VAGRANTFILE=deploy-Vagrantfile vagrant up --no-provision
+    ansible-playbook -i deploy-inventory.ini deploy-deploy.yml
 fi
 
 # ── Verify cluster is up ─────────────────────────────────────────
@@ -203,17 +203,17 @@ echo ""
 TOTAL=$((TOTAL + 1))
 log "Scenario 1: require gpu=true (hard label filter)"
 cleanup_scenario
-set_node_label test-node-2 gpu true
+set_node_label deploy-node-2 gpu true
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-require-gpu.cca" >/dev/null 2>&1
 
 if wait_for_placements gpu-worker 1; then
     placed_on=$(get_placed_nodes gpu-worker)
-    if [[ "$placed_on" == "test-node-2" ]]; then
-        pass "require gpu=true → placed on test-node-2 (correct)"
+    if [[ "$placed_on" == "deploy-node-2" ]]; then
+        pass "require gpu=true → placed on deploy-node-2 (correct)"
     else
-        fail_scenario "require gpu=true → placed on $placed_on (expected test-node-2)"
+        fail_scenario "require gpu=true → placed on $placed_on (expected deploy-node-2)"
     fi
 else
     fail_scenario "require gpu=true → no placement within timeout"
@@ -241,17 +241,17 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 3: prefer ssd=true (soft scoring)"
 cleanup_scenario
-set_node_label test-node-1 ssd true
+set_node_label deploy-node-1 ssd true
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-prefer-ssd.cca" >/dev/null 2>&1
 
 if wait_for_placements ssd-preferred 3 45; then
     nodes=$(get_placed_nodes ssd-preferred)
-    if echo "$nodes" | grep -q "test-node-1"; then
-        pass "prefer ssd=true → test-node-1 received instance (preferred node used)"
+    if echo "$nodes" | grep -q "deploy-node-1"; then
+        pass "prefer ssd=true → deploy-node-1 received instance (preferred node used)"
     else
-        fail_scenario "prefer ssd=true → test-node-1 not used: $nodes"
+        fail_scenario "prefer ssd=true → deploy-node-1 not used: $nodes"
     fi
 else
     fail_scenario "prefer ssd=true → insufficient placements"
@@ -263,17 +263,17 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 4: restrict dedicated-compute on node-1 (no accept)"
 cleanup_scenario
-set_node_restrict test-node-1 dedicated-compute
+set_node_restrict deploy-node-1 dedicated-compute
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-no-accept.cca" >/dev/null 2>&1
 
 if wait_for_placements no-toleration 1; then
     placed_on=$(get_placed_nodes no-toleration)
-    if [[ "$placed_on" != *"test-node-1"* ]]; then
+    if [[ "$placed_on" != *"deploy-node-1"* ]]; then
         pass "restrict blocks → placed on $placed_on (avoided restricted node-1)"
     else
-        fail_scenario "restrict blocks → placed on test-node-1 (should have been avoided)"
+        fail_scenario "restrict blocks → placed on deploy-node-1 (should have been avoided)"
     fi
 else
     fail_scenario "restrict blocks → no placement"
@@ -285,7 +285,7 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 5: accept dedicated-compute (tolerates restriction)"
 cleanup_scenario
-set_node_restrict test-node-1 dedicated-compute
+set_node_restrict deploy-node-1 dedicated-compute
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-restrict-accept.cca" >/dev/null 2>&1
@@ -302,9 +302,9 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 6: zone spread (3 instances, 3 zones)"
 cleanup_scenario
-set_node_zone test-node-1 zone-a
-set_node_zone test-node-2 zone-b
-set_node_zone test-node-3 zone-c
+set_node_zone deploy-node-1 zone-a
+set_node_zone deploy-node-2 zone-b
+set_node_zone deploy-node-3 zone-c
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-zone-spread.cca" >/dev/null 2>&1
@@ -327,19 +327,19 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 7: architecture amd64 (node-2 is arm64)"
 cleanup_scenario
-set_node_arch test-node-1 amd64
-set_node_arch test-node-2 arm64
-set_node_arch test-node-3 amd64
+set_node_arch deploy-node-1 amd64
+set_node_arch deploy-node-2 arm64
+set_node_arch deploy-node-3 amd64
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-architecture.cca" >/dev/null 2>&1
 
 if wait_for_placements amd64-only 1; then
     placed_on=$(get_placed_nodes amd64-only)
-    if [[ "$placed_on" != *"test-node-2"* ]]; then
+    if [[ "$placed_on" != *"deploy-node-2"* ]]; then
         pass "architecture amd64 → placed on $placed_on (avoided arm64 node-2)"
     else
-        fail_scenario "architecture amd64 → placed on test-node-2 (arm64, should be excluded)"
+        fail_scenario "architecture amd64 → placed on deploy-node-2 (arm64, should be excluded)"
     fi
 else
     fail_scenario "architecture amd64 → no placement"
@@ -351,18 +351,18 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 8: combined (require+prefer+accept+spread+arch)"
 cleanup_scenario
-set_node_label test-node-1 gpu true
-set_node_label test-node-1 ssd true
-set_node_restrict test-node-1 dedicated-compute
-set_node_arch test-node-1 amd64
-set_node_zone test-node-1 zone-a
+set_node_label deploy-node-1 gpu true
+set_node_label deploy-node-1 ssd true
+set_node_restrict deploy-node-1 dedicated-compute
+set_node_arch deploy-node-1 amd64
+set_node_zone deploy-node-1 zone-a
 
-set_node_label test-node-2 gpu true
-set_node_arch test-node-2 amd64
-set_node_zone test-node-2 zone-b
+set_node_label deploy-node-2 gpu true
+set_node_arch deploy-node-2 amd64
+set_node_zone deploy-node-2 zone-b
 
-set_node_arch test-node-3 arm64
-set_node_zone test-node-3 zone-c
+set_node_arch deploy-node-3 arm64
+set_node_zone deploy-node-3 zone-c
 
 ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
     < "$WORKLOADS_DIR/placement-combined.cca" >/dev/null 2>&1
@@ -370,7 +370,7 @@ ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${
 if wait_for_placements combined-placement 2 45; then
     nodes=$(get_placed_nodes combined-placement | tr '\n' ',')
     # node-3 excluded (arm64). node-1 and node-2 eligible (amd64, gpu=true, accept dedicated-compute).
-    if echo "$nodes" | grep -q "test-node-1" && echo "$nodes" | grep -q "test-node-2"; then
+    if echo "$nodes" | grep -q "deploy-node-1" && echo "$nodes" | grep -q "deploy-node-2"; then
         pass "combined → placed on node-1 and node-2 (correct intersection)"
     else
         fail_scenario "combined → placed on $nodes (expected node-1,node-2)"
@@ -434,7 +434,7 @@ fi
 TOTAL=$((TOTAL + 1))
 log "Scenario 12: restrict on node-1 + tenant quota (combined)"
 cleanup_scenario
-set_node_restrict test-node-1 gpu-pool
+set_node_restrict deploy-node-1 gpu-pool
 create_tenant gamma 3
 
 http_code=$(api_apply_status 'service gamma/app { image nginx:1.27; instances 2 }')
@@ -442,7 +442,7 @@ if [[ "$http_code" == "200" ]]; then
     # Wait for scheduler to place instances.
     sleep 5
     nodes=$(get_placed_nodes gamma/app | tr '\n' ',')
-    if [[ -n "$nodes" ]] && [[ "$nodes" != *"test-node-1"* ]]; then
+    if [[ -n "$nodes" ]] && [[ "$nodes" != *"deploy-node-1"* ]]; then
         pass "restrict+quota → HTTP 200, placed on non-restricted nodes: $nodes"
     elif [[ -z "$nodes" ]]; then
         pass "restrict+quota → HTTP 200 (quota allowed, placement pending)"

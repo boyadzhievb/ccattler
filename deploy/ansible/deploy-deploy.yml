@@ -1,20 +1,21 @@
 ---
-# Ephemeral e2e test cluster: 2 VMs, deploy CCattler, deploy Java test app
+# Long-lived deploy cluster: create libvirt VMs, deploy CCattler, deploy Java test app
 #
-# Uses test-Vagrantfile (192.168.122.x, 2 nodes) — separate from deploy-Vagrantfile.
+# Uses deploy-Vagrantfile (192.168.124.x) — separate from test-Vagrantfile so
+# the e2e test cluster (192.168.122.x) and deploy cluster can coexist.
 #
 # Run on 192.168.100.43:
 #   cd /path/to/ccattler/deploy/ansible
-#   ansible-playbook -i test-inventory.ini test-deploy.yml
+#   ansible-playbook -i deploy-inventory.ini deploy-deploy.yml
 
-- name: Create test VMs with vagrant
+- name: Create deploy VMs with vagrant
   hosts: localhost
   connection: local
   gather_facts: false
   tags: [vagrant]
   tasks:
     - name: Start VMs (no provisioning)
-      shell: VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant up --no-provision
+      shell: VAGRANT_VAGRANTFILE=deploy-Vagrantfile vagrant up --no-provision
       args:
         chdir: "{{ playbook_dir }}"
 
@@ -24,8 +25,9 @@
         port: 22
         timeout: 180
       loop:
-        - 192.168.122.10
-        - 192.168.122.20
+        - 192.168.124.10
+        - 192.168.124.20
+        - 192.168.124.30
 
 - name: Clean up old state (skip with --skip-tags cleanup)
   hosts: all

@@ -1,0 +1,47 @@
+# -*- mode: ruby -*-
+# Long-lived CCattler deploy cluster on libvirt VMs (testbed-100.43)
+#
+# Uses different names/IPs from test-Vagrantfile so both can coexist:
+#   cca-deploy-ctrl     (124.10) — etcd + control plane + worker
+#   cca-deploy-worker-1 (124.20) — worker
+#   cca-deploy-worker-2 (124.30) — worker
+#
+# VMs are created without provisioning — use deploy-deploy.yml for that.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/ubuntu2204"
+
+  config.vm.provider "libvirt" do |lv|
+    lv.driver = "kvm"
+  end
+
+  config.vm.define "cca-deploy-ctrl" do |node|
+    node.vm.hostname = "cca-deploy-ctrl"
+    node.vm.network "private_network", ip: "192.168.124.10"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
+  end
+
+  config.vm.define "cca-deploy-worker-1" do |node|
+    node.vm.hostname = "cca-deploy-worker-1"
+    node.vm.network "private_network", ip: "192.168.124.20"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
+  end
+
+  config.vm.define "cca-deploy-worker-2" do |node|
+    node.vm.hostname = "cca-deploy-worker-2"
+    node.vm.network "private_network", ip: "192.168.124.30"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus   = 2
+    end
+  end
+end
