@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package infra defines the InfrastructureProvider interface for cluster
 // autoscaling. An InfrastructureProvider can provision and decommission nodes
 // in response to unsatisfied scheduling demand.

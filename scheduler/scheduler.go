@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package scheduler implements the CCattler placement scheduler. It assigns
 // pending service instances to alive nodes using a least-loaded, resource-aware
 // scoring strategy. The scheduler is a pure function of facts: given the current

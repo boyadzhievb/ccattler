@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package api implements the CCattler HTTP API server.
 package api
 

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package main_test contains CLI acceptance tests that exercise the cca binary
 // as a subprocess. Each test builds the binary once via TestMain, then invokes
 // it with arguments and asserts on stdout, stderr, and exit code. These tests

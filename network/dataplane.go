@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package network — data plane provider interface for VIP-based load balancing.
 //
 // The DataPlaneProvider programs per-node packet forwarding rules that

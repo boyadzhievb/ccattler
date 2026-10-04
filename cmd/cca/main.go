@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package main implements the ccattler CLI — the entry point for the CCattler
 // container orchestrator. It provides commands for applying configurations,
 // running workloads (as processes or containers), querying cluster status,

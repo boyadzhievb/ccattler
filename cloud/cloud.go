@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package cloud defines the CloudProvider interface for managing cloud
 // infrastructure resources. A CloudProvider can manage node lifecycle
 // (provision/terminate instances), cloud load balancers for externally

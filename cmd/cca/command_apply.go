@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_apply.go contains the apply command configuration, argument parsing,
 // and execution logic extracted from main.go.
 package main

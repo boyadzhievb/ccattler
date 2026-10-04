@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package network defines the pluggable networking subsystem for CCattler.
 // It provides an abstraction layer between the control plane and the
 // underlying packet implementation, covering addressing, service discovery,

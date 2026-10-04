@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_misc.go contains the diff, render, token, join, and completion command
 // configurations, argument parsing, and execution logic extracted from main.go.
 package main

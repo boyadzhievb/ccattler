@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_run.go contains the run, run-container, and demo command configurations,
 // argument parsing, store creation, and execution logic extracted from main.go.
 package main

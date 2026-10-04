@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 package controllers
 
 // topologicalSortResult holds the sorted ordering and any controllers

@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package controllers implements the reconciliation controllers for CCattler.
 // Each controller watches a set of fact prefixes in the store, compares desired
 // state against observed state, and produces a list of proposed changes that

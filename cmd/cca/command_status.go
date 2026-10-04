@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_status.go contains CLI commands for querying cluster status, events,
 // logs, metrics, resource utilization, describe, get, watch, and scale.
 package main

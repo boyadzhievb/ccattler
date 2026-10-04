@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 package lang
 
 // TokenType represents the category of a lexical token produced by the CCattler DSL lexer.

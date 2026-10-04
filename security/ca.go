@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package security implements CCattler's built-in certificate authority and
 // mTLS infrastructure. It provides automatic certificate issuance, rotation,
 // and verification for all cluster communication.

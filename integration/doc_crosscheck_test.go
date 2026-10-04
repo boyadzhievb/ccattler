@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package integration contains integration tests for the CCattler container
 // orchestrator. This file cross-checks documentation claims in CLAUDE.md
 // against the actual codebase to detect documentation drift.

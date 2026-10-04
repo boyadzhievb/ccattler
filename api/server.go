@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package api implements the CCattler HTTP API server. It provides endpoints
 // for reading and querying facts, applying DSL configurations, watching for
 // changes via Server-Sent Events, and managing cluster state.

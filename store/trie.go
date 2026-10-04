@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 package store
 
 // trieNode represents a node in the prefix trie. Each node may hold a fact

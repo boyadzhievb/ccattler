@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_benchmark.go implements `cca benchmark` — a chaos benchmark that
 // deploys workloads, injects failures, and reports structured recovery metrics.
 package main

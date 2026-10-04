@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // Package metrics provides lightweight Prometheus-compatible metrics
 // collection without external dependencies. It supports counters, gauges,
 // and histograms, and serves them in Prometheus text exposition format.

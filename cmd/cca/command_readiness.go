@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_readiness.go implements `cca readiness` — a production readiness
 // validation command that runs the project's Go test suite selectively across
 // 16 areas and prints a structured report showing pass/fail status, test

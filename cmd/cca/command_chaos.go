@@ -1,3 +1,6 @@
+// Copyright (C) 2026 CCattler Contributors
+// SPDX-License-Identifier: GPL-3.0-only
+
 // command_chaos.go contains CLI commands for chaos testing and related helpers.
 package main
 
