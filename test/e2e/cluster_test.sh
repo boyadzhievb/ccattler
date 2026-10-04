@@ -118,6 +118,15 @@ if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
     log "vagrant-libvirt installed"
 fi
 
+# ---- Cleanup stale VMs from previous runs ----
+for stale_domain in ansible_cca-test-ctrl ansible_cca-test-worker-1 ansible_cca-test-worker-2; do
+    if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
+        log "Removing stale libvirt domain: $stale_domain"
+        sudo virsh destroy "$stale_domain" 2>/dev/null || true
+        sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+    fi
+done
+
 # ---- Step 0: Obtain binary ----
 if [[ "$BINARY_SOURCE" == "release" ]]; then
     log "Downloading latest release binary..."
