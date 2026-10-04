@@ -1120,24 +1120,33 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 
 #### 67d — Security Test Evidence
 
-- [ ] `TestCompromisedControllerCannotEscalate` — scheduler identity cannot write to `desired/` or `secret/` prefixes (store write-domain enforcement)
-- [ ] `TestCompromisedNodeCannotWriteDesired` — node agent identity is restricted to `observed/node-X/*`, verify 403 for `desired/` writes
-- [ ] `TestTenantIsolation_CrossTenantRead` — tenant A principal cannot read tenant B services/secrets via API
-- [ ] `TestTenantIsolation_CrossTenantWrite` — tenant A principal cannot modify tenant B resources
-- [ ] `TestSecretNeverInPlaintext` — scan all fact store keys after cluster deployment, verify no key under `secret/` contains plaintext values
-- [ ] `TestCertificateRotation` — rotate node certificate mid-operation, verify agent re-authenticates without downtime
+- [x] `TestCompromisedControllerCannotEscalate` — scheduler identity cannot write to `desired/` or `secret/` prefixes (store write-domain enforcement)
+- [x] `TestCompromisedNodeCannotWriteDesired` — node agent identity is restricted to `observed/node-X/*`, verify 403 for `desired/` writes
+- [x] `TestTenantIsolation_CrossTenantRead` — tenant A principal cannot read tenant B services/secrets via API
+- [x] `TestTenantIsolation_CrossTenantWrite` — tenant A principal cannot modify tenant B resources
+- [x] `TestSecretNeverInPlaintext` — scan all fact store keys after cluster deployment, verify no key under `secret/` contains plaintext values
+- [x] `TestCertificateRotation` — rotate node certificate mid-operation, verify agent re-authenticates without downtime
 
 #### 67e — Runtime, Observability, API & Ecosystem Evidence
 
-- [ ] `TestContainerRuntime_ImagePullFailure` — configure a non-existent image, verify instance stays pending with clear error in observed state (not crash loop)
-- [ ] `TestContainerRuntime_OOMKill` — simulate OOM via cgroup limit, verify agent detects killed container and reports failed state
-- [ ] `TestContainerRuntime_GracefulShutdown` — send stop to running container, verify SIGTERM → grace period → SIGKILL sequence and correct state transitions
-- [ ] `TestObservability_DecisionAuditTrail` — deploy a service, verify event stream contains entries explaining *why* each placement/scaling/endpoint decision was made (scheduler reason, controller action)
-- [ ] `TestObservability_ReconciliationExplainability` — after a node failure, verify `cca events` output shows the causal chain: node unreachable → instances failed → replacements created → placed on surviving nodes
-- [ ] `TestAPIVersioning_BackwardsCompatibility` — verify existing `.cca` files from earlier phases still parse and compile without errors (regression suite for DSL grammar)
-- [ ] `TestAPIStability_StatusEndpointContract` — verify `/status` JSON schema has not changed field names or types (snapshot comparison against a committed schema fixture)
-- [ ] `TestEcosystem_ControllerSDKPlugin` — write a minimal external controller (custom fact type + reconciler), register it via the controller SDK, verify it receives facts and writes back through the standard `Controller` interface
-- [ ] `TestEcosystem_WatchIntegration` — external process connects to `/api/watch`, receives real-time fact changes, verifies event format is documented and stable
+- [x] `TestContainerRuntime_ImagePullFailure` — configure a non-existent image, verify instance stays pending with clear error in observed state (not crash loop)
+- [x] `TestContainerRuntime_OOMKill` — simulate OOM via cgroup limit, verify agent detects killed container and reports failed state
+- [x] `TestContainerRuntime_GracefulShutdown` — send stop to running container, verify SIGTERM → grace period → SIGKILL sequence and correct state transitions
+- [x] `TestObservability_DecisionAuditTrail` — deploy a service, verify event stream contains entries explaining *why* each placement/scaling/endpoint decision was made (scheduler reason, controller action)
+- [x] `TestObservability_ReconciliationExplainability` — after a node failure, verify `cca events` output shows the causal chain: node unreachable → instances failed → replacements created → placed on surviving nodes
+- [x] `TestAPIVersioning_BackwardsCompatibility` — verify existing `.cca` files from earlier phases still parse and compile without errors (regression suite for DSL grammar)
+- [x] `TestAPIStability_StatusEndpointContract` — verify `/status` JSON schema has not changed field names or types (snapshot comparison against a committed schema fixture)
+- [x] `TestEcosystem_ControllerSDKPlugin` — write a minimal external controller (custom fact type + reconciler), register it via the controller SDK, verify it receives facts and writes back through the standard `Controller` interface
+- [x] `TestEcosystem_WatchIntegration` — external process connects to `/api/watch`, receives real-time fact changes, verifies event format is documented and stable
+
+#### 67.5 — Correctness Audit Fixes
+
+- [x] **67.5a — Silent parse failures**: Replace `_ = strconv.Atoi/ParseInt` and `_ = fmt.Sscanf` with proper error handling across `types/codec.go` (18), `scheduler/scheduler.go` (2), `controllers/rollout.go` (4), `controllers/intent.go` (2), `controllers/clusterscale.go` (2), `lang/parser.go` (1), `agent/dataplane.go` (1), `security/network_policy.go` (1), `tenant/tenant.go` (4), `cmd/cca/command_server.go` (1), `cmd/cca/command_benchmark.go` (3)
+- [x] **67.5b — Error visibility**: Add logging to silent `return` paths in `tenant/lifecycle.go`, `agent/agent.go`, `agent/probes.go`, `types/eventlog.go`, `controllers/leader.go`; fix TLS error discard in `cmd/cca/command_agent.go`; fix audit log error swallowing in `security/audit.go`; fix infra simulator success-on-failure in `infra/simulator.go`
+- [ ] **67.5c — Data plane correctness**: Fix iptables error handling in `network/iptables_dataplane.go` (`ensureVIPAddress`/`ensureDummyInterface`); replace hardcoded `127.0.0.1` in `agent/dataplane.go`; fix VIP port=0 default
+- [ ] **67.5d — Magic numbers**: Extract 68 raw literals to named constants across `cmd/mcp/tools.go` (18), `cmd/cca/command_benchmark.go` (19), `chaos/chaos_cluster.go` (4), `chaos/chaos_runner.go` (1), `cmd/cca/command_run.go` (1), `cmd/cca/command_status.go` (1), `network/iptables_dataplane.go` (1)
+- [ ] **67.5e — Long function refactoring**: Break down 27 functions exceeding 80-line limit, starting with 6 critical (120+ lines) in `cmd/cca/`
+- [ ] **67.5f — Duplication & dead code**: Extract 3 shared parsing helpers to `controllers/helpers.go`; delete 5 dead `KeyObserved*` functions from `types/keys.go`
 
 #### 67f — Production Readiness Report
 
