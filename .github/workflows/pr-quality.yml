@@ -1,0 +1,90 @@
+name: PR Quality
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  pr-size:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Check PR size
+        run: |
+          ADDITIONS=$(git diff --numstat origin/master...HEAD -- '*.go' | awk '{s+=$1} END {print s+0}')
+          DELETIONS=$(git diff --numstat origin/master...HEAD -- '*.go' | awk '{s+=$2} END {print s+0}')
+          TOTAL=$((ADDITIONS + DELETIONS))
+
+          echo "## PR Size: $TOTAL lines changed (+$ADDITIONS/-$DELETIONS)" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$TOTAL" -gt 1000 ]; then
+            echo "::error::PR is too large ($TOTAL lines). Split into smaller PRs under 500 lines when possible."
+            echo "**Status: TOO LARGE** — consider splitting this PR" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          elif [ "$TOTAL" -gt 500 ]; then
+            echo "::warning::PR is large ($TOTAL lines). Consider splitting into smaller PRs for easier review."
+            echo "**Status: LARGE** — reviewable but consider splitting" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Status: OK**" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  dco-signoff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Check DCO sign-off
+        run: |
+          FAILED=0
+          for COMMIT_SHA in $(git rev-list origin/master...HEAD); do
+            MESSAGE=$(git log -1 --format='%B' "$COMMIT_SHA")
+            AUTHOR=$(git log -1 --format='%an <%ae>' "$COMMIT_SHA")
+            if ! echo "$MESSAGE" | grep -qiF "Signed-off-by:"; then
+              echo "::error::Commit $COMMIT_SHA by $AUTHOR is missing Signed-off-by line"
+              echo "Use: git commit --signoff (or git commit -s)"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "## DCO Check Failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "All commits must include a \`Signed-off-by\` line." >> "$GITHUB_STEP_SUMMARY"
+            echo "Add it with: \`git commit --amend --signoff\` or \`git rebase --signoff\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "## DCO Check Passed" >> "$GITHUB_STEP_SUMMARY"
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run tests with coverage
+        run: go test -short -count=1 -timeout=5m -coverprofile=coverage.out ./...
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(go tool cover -func=coverage.out | grep '^total:' | awk '{print $3}' | tr -d '%')
+          echo "## Test Coverage: ${COVERAGE}%" >> "$GITHUB_STEP_SUMMARY"
+
+          THRESHOLD=40
+          RESULT=$(echo "$COVERAGE < $THRESHOLD" | bc -l)
+          if [ "$RESULT" -eq 1 ]; then
+            echo "::error::Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            echo "**Status: BELOW THRESHOLD** (minimum ${THRESHOLD}%)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "**Status: OK** (threshold ${THRESHOLD}%)" >> "$GITHUB_STEP_SUMMARY"
+          fi
