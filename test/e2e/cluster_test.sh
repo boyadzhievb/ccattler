@@ -14,9 +14,14 @@
 #   - Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
 #   - CCattler binary at deploy/ansible/cca-linux-amd64
 #
+# VM lifecycle: VMs are stopped (not destroyed) after each run, preserving cached
+# container images. On the next run, stopped VMs boot in seconds and skip Ansible
+# provisioning. The binary is updated and services restarted automatically.
+#
 # Usage:
 #   ./test/e2e/cluster_test.sh                       # 2-node e2e test, build from source
-#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs for debugging
+#   ./test/e2e/cluster_test.sh --destroy             # destroy VMs after run (fresh next time)
+#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs running for debugging
 #   ./test/e2e/cluster_test.sh --from-release        # download latest release binary
 #   ./test/e2e/cluster_test.sh --env deploy --from-release  # 3-node deploy cluster
 
@@ -26,13 +31,14 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
-DESTROY_ON_EXIT=true
+DESTROY_ON_EXIT=halt
 BINARY_SOURCE=build
 CLUSTER_ENV=test
 
 for arg in "$@"; do
     case "$arg" in
-        --no-destroy)   DESTROY_ON_EXIT=false ;;
+        --no-destroy)   DESTROY_ON_EXIT=none ;;
+        --destroy)      DESTROY_ON_EXIT=destroy ;;
         --from-release) BINARY_SOURCE=release ;;
         --env=*)        CLUSTER_ENV="${arg#--env=}" ;;
         --env)          ;; # handled below with next arg
@@ -104,13 +110,17 @@ cleanup() {
     if [[ $exit_code -ne 0 ]]; then
         collect_vm_logs || true
     fi
-    if [[ "$DESTROY_ON_EXIT" == "true" ]]; then
-        log "Tearing down VMs..."
+    if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
+        log "Destroying VMs..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant destroy -f 2>/dev/null || true
+    elif [[ "$DESTROY_ON_EXIT" == "halt" ]]; then
+        log "Stopping VMs (images and state preserved for next run)..."
+        cd "$ANSIBLE_DIR"
+        VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant halt 2>/dev/null || true
     else
-        log "Keeping VMs alive (--no-destroy). Destroy manually:"
-        log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE vagrant destroy -f"
+        log "Keeping VMs running (--no-destroy). Stop manually:"
+        log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE vagrant halt"
     fi
     rm -f /tmp/cca-e2e-ca.pem /tmp/cca-e2e-client.pem /tmp/cca-e2e-client-key.pem
     if [[ $exit_code -eq 0 ]]; then
@@ -161,15 +171,17 @@ if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
     log "vagrant-libvirt installed"
 fi
 
-# ---- Cleanup stale VMs from previous runs (only for this environment) ----
-for vm in "${VM_NAMES[@]}"; do
-    stale_domain="ansible_${vm}"
-    if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-        log "Removing stale libvirt domain: $stale_domain"
-        sudo virsh destroy "$stale_domain" 2>/dev/null || true
-        sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
-    fi
-done
+# ---- Cleanup stale VMs (only with --destroy, forces fresh provisioning) ----
+if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
+    for vm in "${VM_NAMES[@]}"; do
+        stale_domain="ansible_${vm}"
+        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
+            log "Removing stale libvirt domain: $stale_domain"
+            sudo virsh destroy "$stale_domain" 2>/dev/null || true
+            sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+        fi
+    done
+fi
 
 # ---- Step 0: Obtain binary ----
 if [[ "$BINARY_SOURCE" == "release" ]]; then
@@ -190,8 +202,7 @@ else
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 fi
 
-# ---- Step 1: Provision VMs ----
-log "Provisioning ${#VM_NAMES[@]} VMs via Vagrant (env=$CLUSTER_ENV)..."
+# ---- Step 1: Start VMs (reuse existing or provision new) ----
 cd "$ANSIBLE_DIR"
 VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision
 
@@ -200,9 +211,49 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
-# ---- Step 2: Deploy cluster via Ansible ----
-log "Running Ansible deployment..."
-ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
+# Check if cluster is already provisioned by testing for the cca binary.
+ALREADY_PROVISIONED=false
+if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
+    ALREADY_PROVISIONED=true
+    log "VMs already provisioned — skipping Ansible, cleaning previous workloads..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/desired/service/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/effective/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/observed/instance/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    log "Previous workloads cleaned"
+fi
+
+# ---- Step 2: Deploy cluster via Ansible (skip if reusing) ----
+if [[ "$ALREADY_PROVISIONED" == "false" ]]; then
+    log "Running Ansible deployment (first-time provisioning)..."
+    ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
+else
+    log "Updating binary on existing VMs..."
+    for vm in "${VM_NAMES[@]}"; do
+        local_ip=""
+        case "$vm" in
+            *-ctrl)     local_ip="$CTRL_IP" ;;
+            *-worker-1) local_ip="${WORKER_IPS[0]}" ;;
+            *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
+        esac
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
+            "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${local_ip}:/tmp/cca-linux-amd64"
+        ssh_vm "$vm" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
+    done
+    # Restart services with new binary.
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart cca-server" || true
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo systemctl restart cca-agent" 2>/dev/null || true
+    done
+    sleep 3
+    log "Binary updated and services restarted"
+fi
 
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health..."

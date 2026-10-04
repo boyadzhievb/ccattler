@@ -45,8 +45,8 @@ jobs:
             fi
           done
 
-      - name: Destroy VMs
+      - name: Stop VMs (preserve cached images)
         if: always()
         run: |
           cd deploy/ansible
-          VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant destroy -f 2>/dev/null || true
+          VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant halt 2>/dev/null || true
