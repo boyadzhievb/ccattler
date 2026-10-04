@@ -82,7 +82,7 @@ ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 
 # Maximum seconds to wait for convergence checks.
 CONVERGE_TIMEOUT=120
-CONTAINER_TIMEOUT=90
+CONTAINER_TIMEOUT=180
 
 log() { echo "==> [$(date +%H:%M:%S)] $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -259,6 +259,18 @@ if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
     fi
 fi
 log "All $EXPECTED_NODES nodes registered and alive"
+
+# ---- Step 3.5: Pre-pull container images on all nodes ----
+log "Pre-pulling container images on all nodes..."
+IMAGES=("tomcat:11-jre21" "postgres:16" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
+for vm in "${VM_NAMES[@]}"; do
+    for image in "${IMAGES[@]}"; do
+        ssh_vm "$vm" "sudo nerdctl pull $image" &
+    done
+done
+log "Waiting for all image pulls to complete..."
+wait
+log "Image pre-pull complete"
 
 # ---- Step 4: Deploy Java test app ----
 log "Applying Java test workload..."
