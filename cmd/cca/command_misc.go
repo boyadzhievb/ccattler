@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -343,7 +345,8 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 			os.Exit(1)
 		}
 
-		fmt.Printf("Token:   %s\n", joinToken.Token)
+		compositeTokenValue := joinToken.CompositeTokenString()
+		fmt.Printf("Token:   %s\n", compositeTokenValue)
 		fmt.Printf("Expires: %s (in %s)\n", joinToken.ExpiresAt.Format("2006-01-02 15:04:05"), parsedConfig.tokenTTL)
 		if parsedConfig.nodeID != "" {
 			fmt.Printf("Node:    %s (scoped)\n", parsedConfig.nodeID)
@@ -352,7 +355,7 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 		}
 		fmt.Println()
 		fmt.Println("Join command:")
-		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id> --ca-cert <path>\n", joinToken.Token)
+		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", compositeTokenValue)
 
 	case "list":
 		tokens, listError := enrollmentService.ListJoinTokens(ctx)
@@ -374,7 +377,7 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 			}
 			expiresIn := time.Until(token.ExpiresAt).Round(time.Second)
 			fmt.Printf("%-72s  %-12s  %s (in %s)\n",
-				token.Token, nodeScope, token.ExpiresAt.Format("15:04:05"), expiresIn)
+				token.CompositeTokenString(), nodeScope, token.ExpiresAt.Format("15:04:05"), expiresIn)
 		}
 
 	case "revoke":
@@ -401,7 +404,7 @@ type joinCommandConfig struct {
 	serverAddress string // https://host:port
 	joinToken     string
 	nodeID        string
-	caCertPath    string // required: verify server cert against this CA
+	caCertPath    string // optional: verify server cert against this CA (overrides token fingerprint)
 	dataDirectory string // where to write cert/key/ca (default ".ccattler")
 }
 
@@ -447,11 +450,22 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 
 // executeJoinCommand enrolls this node with the cluster by contacting the
 // server's enrollment endpoint, presenting the join token, and saving the
-// issued certificate material to the data directory.
+// issued certificate material to the data directory. The token may be a
+// composite "<hex-token>.<ca-fingerprint>" — if so, the CA fingerprint is used
+// to verify the server's identity during the TLS handshake.
 func executeJoinCommand(parsedConfig joinCommandConfig) {
 	fmt.Printf("Enrolling node %s with %s...\n", parsedConfig.nodeID, parsedConfig.serverAddress)
 
-	enrollmentHTTPClient := buildEnrollmentHTTPClient(parsedConfig.caCertPath)
+	// Split the composite token into the raw token and optional CA fingerprint.
+	rawToken := parsedConfig.joinToken
+	embeddedCAFingerprint := ""
+	tokenParts := strings.SplitN(parsedConfig.joinToken, ".", 2)
+	if len(tokenParts) == 2 {
+		rawToken = tokenParts[0]
+		embeddedCAFingerprint = tokenParts[1]
+	}
+
+	enrollmentHTTPClient := buildEnrollmentHTTPClient(parsedConfig.caCertPath, embeddedCAFingerprint)
 
 	localIPAddresses := detectLocalIPAddresses()
 	ipStrings := make([]string, len(localIPAddresses))
@@ -459,8 +473,9 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		ipStrings[ipIndex] = ipAddr.String()
 	}
 
+	// Send only the raw token (without the fingerprint suffix) to the server.
 	enrollmentRequestBody, _ := json.Marshal(map[string]interface{}{
-		"token":        parsedConfig.joinToken,
+		"token":        rawToken,
 		"node_id":      parsedConfig.nodeID,
 		"ip_addresses": ipStrings,
 	})
@@ -504,13 +519,30 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 }
 
 // buildEnrollmentHTTPClient creates an HTTP client configured for the node
-// enrollment request. The CA certificate is required to verify the server
-// identity — zero-trust requires authenticating even the bootstrap endpoint.
-func buildEnrollmentHTTPClient(caCertPath string) *http.Client {
-	if caCertPath == "" {
-		fmt.Fprintln(os.Stderr, "error: --ca-cert is required for node enrollment (zero-trust: server identity must be verified)")
-		os.Exit(1)
+// enrollment request. Server identity is verified via one of two methods:
+//   - If caCertPath is provided, the CA certificate file is used directly.
+//   - If expectedCAFingerprint is provided (from a composite join token), the
+//     TLS handshake verifies the server's CA certificate fingerprint instead.
+//
+// At least one method must be available — zero-trust requires authenticating
+// even the bootstrap endpoint.
+func buildEnrollmentHTTPClient(caCertPath string, expectedCAFingerprint string) *http.Client {
+	if caCertPath != "" {
+		return buildHTTPClientFromCACertFile(caCertPath)
 	}
+
+	if expectedCAFingerprint != "" {
+		return buildHTTPClientFromCAFingerprint(expectedCAFingerprint)
+	}
+
+	fmt.Fprintln(os.Stderr, "error: server identity must be verified — use a token with embedded CA fingerprint or pass --ca-cert <path>")
+	os.Exit(1)
+	return nil
+}
+
+// buildHTTPClientFromCACertFile creates an HTTP client that verifies the server
+// certificate against the CA certificate loaded from the given file path.
+func buildHTTPClientFromCACertFile(caCertPath string) *http.Client {
 	caCertPEM, readError := os.ReadFile(filepath.Clean(caCertPath))
 	if readError != nil {
 		fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
@@ -525,10 +557,74 @@ func buildEnrollmentHTTPClient(caCertPath string) *http.Client {
 		RootCAs:    caCertPool,
 		MinVersion: tls.VersionTLS13,
 	}
-
 	return &http.Client{
 		Transport: &http.Transport{TLSClientConfig: transportTLSConfig},
 		Timeout:   enrollmentHTTPTimeout,
+	}
+}
+
+// buildHTTPClientFromCAFingerprint creates an HTTP client that verifies the
+// server's CA certificate by comparing its SHA256 fingerprint against the
+// expected value embedded in the join token. The VerifyPeerCertificate callback
+// finds the matching CA cert in the TLS chain and verifies the leaf against it.
+func buildHTTPClientFromCAFingerprint(expectedCAFingerprint string) *http.Client {
+	transportTLSConfig := &tls.Config{
+		InsecureSkipVerify:     true, //nolint:gosec // fingerprint verification in VerifyPeerCertificate below
+		VerifyPeerCertificate:  buildFingerprintVerifier(expectedCAFingerprint),
+		SessionTicketsDisabled: true, // disable session resumption so VerifyPeerCertificate runs on every connection
+		MinVersion:             tls.VersionTLS13,
+	}
+	return &http.Client{
+		Transport: &http.Transport{TLSClientConfig: transportTLSConfig},
+		Timeout:   enrollmentHTTPTimeout,
+	}
+}
+
+// buildFingerprintVerifier returns a TLS VerifyPeerCertificate callback that
+// validates the server's certificate chain by matching the CA certificate's
+// SHA256 fingerprint against the expected value. It then verifies that the
+// server's leaf certificate was signed by the fingerprint-matched CA.
+func buildFingerprintVerifier(expectedCAFingerprint string) func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return fmt.Errorf("server presented no certificates")
+		}
+
+		// Search the presented certificate chain for a cert matching the
+		// expected CA fingerprint.
+		var matchingCACertificate *x509.Certificate
+		for _, rawCertBytes := range rawCerts {
+			fingerprintHash := sha256.Sum256(rawCertBytes)
+			actualFingerprint := hex.EncodeToString(fingerprintHash[:])
+			if actualFingerprint == expectedCAFingerprint {
+				parsedCert, parseError := x509.ParseCertificate(rawCertBytes)
+				if parseError != nil {
+					return fmt.Errorf("parse CA certificate from chain: %w", parseError)
+				}
+				matchingCACertificate = parsedCert
+				break
+			}
+		}
+
+		if matchingCACertificate == nil {
+			return fmt.Errorf("CA certificate fingerprint mismatch — token may be for a different cluster")
+		}
+
+		// Verify the server's leaf certificate is signed by the matched CA.
+		serverLeafCertificate, parseError := x509.ParseCertificate(rawCerts[0])
+		if parseError != nil {
+			return fmt.Errorf("parse server leaf certificate: %w", parseError)
+		}
+
+		caCertPool := x509.NewCertPool()
+		caCertPool.AddCert(matchingCACertificate)
+		_, verifyError := serverLeafCertificate.Verify(x509.VerifyOptions{
+			Roots: caCertPool,
+		})
+		if verifyError != nil {
+			return fmt.Errorf("verify server certificate against CA: %w", verifyError)
+		}
+		return nil
 	}
 }
 

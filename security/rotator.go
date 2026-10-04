@@ -113,14 +113,24 @@ func (rotator *CertificateRotator) renewalLoop(ctx context.Context) {
 }
 
 // renewCertificate issues a new certificate and atomically replaces the
-// current one.
+// current one. The TLS certificate chain includes the CA certificate so that
+// connecting clients can verify the server identity via CA fingerprint without
+// needing a pre-distributed CA certificate file.
 func (rotator *CertificateRotator) renewCertificate() error {
 	issuedCertificate, err := rotator.certificateAuthority.IssueCertificate(rotator.request)
 	if err != nil {
 		return fmt.Errorf("renew certificate: %w", err)
 	}
 
-	tlsCertificate, err := tls.X509KeyPair(issuedCertificate.CertificatePEM, issuedCertificate.PrivateKeyPEM)
+	// Build the full chain PEM: leaf cert followed by the CA cert. This allows
+	// clients (e.g. cca join with fingerprint verification) to find the CA cert
+	// in the TLS handshake without a separate --ca-cert file.
+	fullChainPEM := append(
+		append([]byte{}, issuedCertificate.CertificatePEM...),
+		rotator.certificateAuthority.CACertificatePEM()...,
+	)
+
+	tlsCertificate, err := tls.X509KeyPair(fullChainPEM, issuedCertificate.PrivateKeyPEM)
 	if err != nil {
 		return fmt.Errorf("parse renewed keypair: %w", err)
 	}

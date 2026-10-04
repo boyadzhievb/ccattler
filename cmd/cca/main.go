@@ -62,8 +62,8 @@ func main() {
 		executeTokenCommand(parsedTokenConfig)
 	case "join":
 		parsedJoinConfig := parseJoinCommandArgs(os.Args[2:])
-		if parsedJoinConfig.serverAddress == "" || parsedJoinConfig.joinToken == "" || parsedJoinConfig.nodeID == "" || parsedJoinConfig.caCertPath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca join <server-url> <token> --node-id <id> --ca-cert <path> [--data-dir <path>]")
+		if parsedJoinConfig.serverAddress == "" || parsedJoinConfig.joinToken == "" || parsedJoinConfig.nodeID == "" {
+			fmt.Fprintln(os.Stderr, "usage: cca join <server-url> <token> --node-id <id> [--ca-cert <path>] [--data-dir <path>]")
 			os.Exit(1)
 		}
 		executeJoinCommand(parsedJoinConfig)
@@ -275,7 +275,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for join:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               unique node identifier (required)")
-	fmt.Fprintln(os.Stderr, "  --ca-cert <path>             PEM CA certificate to verify server (recommended)")
+	fmt.Fprintln(os.Stderr, "  --ca-cert <path>             PEM CA certificate to verify server (optional if token has fingerprint)")
 	fmt.Fprintln(os.Stderr, "  --data-dir <path>            directory for cert/key files (default: .ccattler)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "shell completion:")

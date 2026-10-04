@@ -6,8 +6,10 @@ package security
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -26,9 +28,21 @@ const EnrolledNodePrefix = "enrollment/node/"
 
 // JoinToken represents a token that authorizes a node to join the cluster.
 type JoinToken struct {
-	Token     string    // hex-encoded token value
-	NodeID    string    // the node ID this token is for (empty means any node)
-	ExpiresAt time.Time // when the token expires
+	Token         string    // hex-encoded token value
+	NodeID        string    // the node ID this token is for (empty means any node)
+	ExpiresAt     time.Time // when the token expires
+	CAFingerprint string    // SHA256 hex fingerprint of the DER-encoded CA certificate (empty if CA unavailable)
+}
+
+// CompositeTokenString returns the user-facing token string that embeds the CA
+// fingerprint. The format is "<hex-token>.<ca-fingerprint>". If no fingerprint
+// is available (e.g. CA was not provided), returns just the raw hex token for
+// backward compatibility.
+func (joinToken *JoinToken) CompositeTokenString() string {
+	if joinToken.CAFingerprint == "" {
+		return joinToken.Token
+	}
+	return joinToken.Token + "." + joinToken.CAFingerprint
 }
 
 // EnrolledNode records a node that has successfully joined the cluster.
@@ -76,10 +90,19 @@ func (enrollmentService *EnrollmentService) GenerateJoinToken(ctx context.Contex
 	tokenValue := hex.EncodeToString(tokenBytes)
 	expiresAt := time.Now().Add(tokenTTL)
 
+	// Compute CA certificate fingerprint if the certificate authority is available.
+	// This allows the token to carry the fingerprint so that joining nodes can verify
+	// the server identity without needing a separate --ca-cert file.
+	caFingerprint := ""
+	if enrollmentService.certificateAuthority != nil {
+		caFingerprint = computeCAFingerprint(enrollmentService.certificateAuthority.CACertificatePEM())
+	}
+
 	joinToken := &JoinToken{
-		Token:     tokenValue,
-		NodeID:    nodeID,
-		ExpiresAt: expiresAt,
+		Token:         tokenValue,
+		NodeID:        nodeID,
+		ExpiresAt:     expiresAt,
+		CAFingerprint: caFingerprint,
 	}
 
 	tokenJSON, err := json.Marshal(joinToken)
@@ -244,4 +267,16 @@ func (enrollmentService *EnrollmentService) ListJoinTokens(ctx context.Context) 
 		}
 	}
 	return tokens, nil
+}
+
+// computeCAFingerprint returns the SHA256 hex digest of the DER-encoded CA
+// certificate extracted from the given PEM data. Returns an empty string if the
+// PEM cannot be decoded.
+func computeCAFingerprint(caCertificatePEM []byte) string {
+	pemBlock, _ := pem.Decode(caCertificatePEM)
+	if pemBlock == nil {
+		return ""
+	}
+	fingerprintHash := sha256.Sum256(pemBlock.Bytes)
+	return hex.EncodeToString(fingerprintHash[:])
 }

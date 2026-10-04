@@ -7,16 +7,20 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1104,6 +1108,151 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("reused token should fail")
+	}
+}
+
+func TestGenerateJoinTokenIncludesCAFingerprint(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	if joinToken.CAFingerprint == "" {
+		t.Fatal("expected non-empty CA fingerprint when CA is available")
+	}
+
+	// Fingerprint should be 64 hex characters (SHA256 = 32 bytes = 64 hex).
+	if len(joinToken.CAFingerprint) != 64 {
+		t.Fatalf("expected 64 hex chars for fingerprint, got %d", len(joinToken.CAFingerprint))
+	}
+
+	// Verify the fingerprint matches the actual CA certificate.
+	caCertPEM := certificateAuthority.CACertificatePEM()
+	pemBlock, _ := pem.Decode(caCertPEM)
+	if pemBlock == nil {
+		t.Fatal("failed to decode CA PEM")
+	}
+	expectedHash := sha256.Sum256(pemBlock.Bytes)
+	expectedFingerprint := hex.EncodeToString(expectedHash[:])
+	if joinToken.CAFingerprint != expectedFingerprint {
+		t.Fatalf("fingerprint mismatch:\n  got:  %s\n  want: %s", joinToken.CAFingerprint, expectedFingerprint)
+	}
+}
+
+func TestGenerateJoinTokenWithoutCAReturnsEmptyFingerprint(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	// No CA provided (nil) — fingerprint should be empty.
+	enrollmentService := NewEnrollmentService(memoryStore, nil, nil, 0)
+	ctx := context.Background()
+
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	if joinToken.CAFingerprint != "" {
+		t.Fatalf("expected empty fingerprint without CA, got %q", joinToken.CAFingerprint)
+	}
+}
+
+func TestCompositeTokenStringFormat(t *testing.T) {
+	// A 64-char hex token followed by a dot and a 64-char hex fingerprint.
+	compositePattern := regexp.MustCompile(`^[0-9a-f]{64}\.[0-9a-f]{64}$`)
+
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	compositeValue := joinToken.CompositeTokenString()
+	if !compositePattern.MatchString(compositeValue) {
+		t.Fatalf("composite token %q does not match pattern <64hex>.<64hex>", compositeValue)
+	}
+
+	// Verify the parts split correctly.
+	parts := strings.SplitN(compositeValue, ".", 2)
+	if parts[0] != joinToken.Token {
+		t.Fatalf("token part mismatch: got %q, want %q", parts[0], joinToken.Token)
+	}
+	if parts[1] != joinToken.CAFingerprint {
+		t.Fatalf("fingerprint part mismatch: got %q, want %q", parts[1], joinToken.CAFingerprint)
+	}
+}
+
+func TestCompositeTokenStringWithoutFingerprint(t *testing.T) {
+	joinToken := &JoinToken{
+		Token:         "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
+		CAFingerprint: "",
+	}
+	if joinToken.CompositeTokenString() != joinToken.Token {
+		t.Fatalf("expected raw token when fingerprint is empty, got %q", joinToken.CompositeTokenString())
+	}
+}
+
+func TestEnrollNodeAcceptsRawTokenFromComposite(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	// The composite token is "<raw>.<fingerprint>". The server receives only
+	// the raw part — verify that enrollment succeeds with the raw token.
+	response, enrollError := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:       joinToken.Token,
+		NodeID:      "node-fingerprint-test",
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.5")},
+	})
+	if enrollError != nil {
+		t.Fatalf("enroll with raw token: %v", enrollError)
+	}
+	if response.Principal != "node:node-fingerprint-test" {
+		t.Fatalf("expected node:node-fingerprint-test, got %s", response.Principal)
+	}
+}
+
+func TestCAFingerprintConsistentAcrossTokens(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	firstToken, _ := enrollmentService.GenerateJoinToken(ctx, "node-a", 5*time.Minute)
+	secondToken, _ := enrollmentService.GenerateJoinToken(ctx, "node-b", 5*time.Minute)
+
+	// Same CA should produce the same fingerprint for all tokens.
+	if firstToken.CAFingerprint != secondToken.CAFingerprint {
+		t.Fatalf("fingerprints should be identical for same CA:\n  first:  %s\n  second: %s",
+			firstToken.CAFingerprint, secondToken.CAFingerprint)
+	}
+
+	// But the raw token values should be different.
+	if firstToken.Token == secondToken.Token {
+		t.Fatal("two tokens should have different random values")
 	}
 }
 
