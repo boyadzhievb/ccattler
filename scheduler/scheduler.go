@@ -864,7 +864,11 @@ func extractServiceResourcesFromFacts(facts []store.Fact) map[string]serviceReso
 		}
 		name := parts[0]
 		resource := resources[name]
-		parsedValue, _ := strconv.ParseInt(string(fact.Value), 10, 64)
+		parsedValue, parseError := strconv.ParseInt(string(fact.Value), 10, 64)
+		if parseError != nil {
+			logging.Default().Warn("corrupt resource fact", "key", fact.Key, "value", string(fact.Value))
+			continue
+		}
 		switch parts[2] {
 		case "cpu":
 			resource.cpu = parsedValue

@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"github.com/boyadzhievb/ccattler/logging"
 	"strconv"
 	"strings"
 
@@ -46,14 +47,15 @@ func collectStringValuesBySuffix(facts []store.Fact, prefix string, matchSuffix 
 // each key into entity name and suffix via splitFactKeyIntoEntityAndSuffix,
 // and parses the value as an integer for entries whose suffix matches exactly.
 // Returns a map from entity name to the parsed integer value. Values that
-// cannot be parsed as integers are silently stored as zero, matching the
-// existing convention used throughout the controllers package.
+// cannot be parsed as integers are logged and omitted from the result.
 func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]int {
 	collectedValues := make(map[string]int)
 	for _, fact := range store.FactsWithPrefix(facts, prefix) {
 		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
 		if hasSuffix && suffix == matchSuffix {
-			collectedValues[entityName], _ = strconv.Atoi(string(fact.Value))
+			if parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+				collectedValues[entityName] = parsedValue
+			}
 		}
 	}
 	return collectedValues
@@ -98,7 +100,11 @@ func extractServiceExposedPorts(facts []store.Fact) map[string][]int {
 			if pathParts[len(pathParts)-1] == "external" {
 				continue
 			}
-			portNumber, _ := strconv.Atoi(pathParts[2])
+			portNumber, parseError := strconv.Atoi(pathParts[2])
+			if parseError != nil {
+				logging.Default().Warn("corrupt exposed port in fact key", "key", fact.Key)
+				continue
+			}
 			if portNumber > 0 {
 				alreadyPresent := false
 				for _, existingPort := range servicePorts[pathParts[0]] {

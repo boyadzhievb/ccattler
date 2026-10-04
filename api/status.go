@@ -5,7 +5,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strings"
 
@@ -277,8 +276,10 @@ func collectNetworkingStatusFromStore(ctx context.Context, factStore store.State
 		if len(pathParts) == 1 {
 			vipByService[pathParts[0]] = string(vipFact.Value)
 		} else if len(pathParts) == 2 && pathParts[1] == "port" {
-			portValue := 0
-			_, _ = fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			portValue, parsedOK := types.ParseFactInt(vipFact.Key, string(vipFact.Value))
+			if !parsedOK {
+				continue
+			}
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}

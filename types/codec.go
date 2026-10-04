@@ -23,6 +23,19 @@ func parseStoredInt(value string) (int, error) {
 	return strconv.Atoi(value)
 }
 
+// ParseFactInt parses a fact value as an int for controllers and agents that
+// read facts in bulk. When the value is not a valid integer it logs a warning
+// naming the fact key and reports false, so the caller can skip the corrupt
+// fact instead of silently treating it as zero.
+func ParseFactInt(factKey string, rawValue string) (int, bool) {
+	parsedValue, parseError := strconv.Atoi(rawValue)
+	if parseError != nil {
+		logging.Default().Warn("corrupt integer fact", "key", factKey, "value", rawValue)
+		return 0, false
+	}
+	return parsedValue, true
+}
+
 // parseStoredInt64 parses a fact store value into an int64. Empty strings return
 // 0 with no error (the field was not present). Non-empty invalid values return
 // an error so callers can detect corrupted data rather than silently defaulting

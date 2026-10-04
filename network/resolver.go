@@ -6,7 +6,6 @@ package network
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -62,7 +61,10 @@ func (storeBackedResolver *StoreBackedResolver) ResolveEndpoints(ctx context.Con
 		}
 
 		endpointIP := addressAndPort[:colonIndex]
-		endpointPort, _ := strconv.Atoi(addressAndPort[colonIndex+1:])
+		endpointPort, parsedOK := types.ParseFactInt(endpointFact.Key, addressAndPort[colonIndex+1:])
+		if !parsedOK {
+			continue
+		}
 
 		resolvedEndpoints = append(resolvedEndpoints, types.Endpoint{
 			Service:    serviceName,

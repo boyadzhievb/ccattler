@@ -90,7 +90,10 @@ func TestHTTPPortFromString(t *testing.T) {
 	defer ln.Close()
 
 	portStr := strconv.Itoa(port)
-	portInt, _ := strconv.Atoi(portStr)
+	portInt, portParseError := strconv.Atoi(portStr)
+	if portParseError != nil {
+		t.Fatalf("parsing listener port %q: %v", portStr, portParseError)
+	}
 
 	ok := CheckHealth(context.Background(), HealthProbe{
 		Type: ProbeHTTP, Port: portInt, Path: "/", Timeout: time.Second,

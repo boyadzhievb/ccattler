@@ -41,13 +41,22 @@ func ValidateResourceName(resourceName string) error {
 func ParseDurationSeconds(durationString string) int {
 	durationString = strings.TrimSpace(durationString)
 	if strings.HasSuffix(durationString, "s") {
-		seconds, _ := strconv.Atoi(strings.TrimSuffix(durationString, "s"))
+		seconds, parseError := strconv.Atoi(strings.TrimSuffix(durationString, "s"))
+		if parseError != nil {
+			return 0
+		}
 		return seconds
 	}
 	if strings.HasSuffix(durationString, "m") {
-		minutes, _ := strconv.Atoi(strings.TrimSuffix(durationString, "m"))
+		minutes, parseError := strconv.Atoi(strings.TrimSuffix(durationString, "m"))
+		if parseError != nil {
+			return 0
+		}
 		return minutes * 60
 	}
-	seconds, _ := strconv.Atoi(durationString)
+	seconds, parseError := strconv.Atoi(durationString)
+	if parseError != nil {
+		return 0
+	}
 	return seconds
 }

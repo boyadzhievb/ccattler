@@ -6,7 +6,6 @@ package controllers
 import (
 	"context"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -216,9 +215,13 @@ func parseDisruptionBudgets(facts []store.Fact) map[string]disruptionBudget {
 		budget := budgetsByService[serviceName]
 		switch suffix {
 		case "disruption/min_available":
-			budget.minAvailable, _ = strconv.Atoi(string(factEntry.Value))
+			if parsedValue, parsedOK := types.ParseFactInt(factEntry.Key, string(factEntry.Value)); parsedOK {
+				budget.minAvailable = parsedValue
+			}
 		case "disruption/max_unavailable":
-			budget.maxUnavailable, _ = strconv.Atoi(string(factEntry.Value))
+			if parsedValue, parsedOK := types.ParseFactInt(factEntry.Key, string(factEntry.Value)); parsedOK {
+				budget.maxUnavailable = parsedValue
+			}
 		default:
 			continue
 		}

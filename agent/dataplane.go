@@ -73,7 +73,10 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 		if strings.HasSuffix(relativePath, "/port") {
 			serviceName := strings.TrimSuffix(relativePath, "/port")
 			if existingConfig, exists := serviceVIPMap[serviceName]; exists {
-				parsedPort, _ := strconv.Atoi(string(vipFact.Value))
+				parsedPort, parsedOK := types.ParseFactInt(vipFact.Key, string(vipFact.Value))
+				if !parsedOK {
+					continue
+				}
 				existingConfig.Port = parsedPort
 			}
 			continue
@@ -139,7 +142,10 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 			continue
 		}
 		endpointIP := endpointValue[:colonIndex]
-		endpointPort, _ := strconv.Atoi(endpointValue[colonIndex+1:])
+		endpointPort, parsedOK := types.ParseFactInt(endpointFact.Key, endpointValue[colonIndex+1:])
+		if !parsedOK {
+			continue
+		}
 
 		instanceNodeFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceNode(instanceID))
 		if err != nil {

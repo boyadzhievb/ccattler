@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"github.com/boyadzhievb/ccattler/logging"
 	"strconv"
 	"strings"
 
@@ -158,7 +159,11 @@ func determineNextVIPFourthOctet(existingVIPs map[string]string) int {
 	for _, vipAddress := range existingVIPs {
 		vipParts := strings.Split(vipAddress, ".")
 		if len(vipParts) == 4 {
-			fourthOctet, _ := strconv.Atoi(vipParts[3])
+			fourthOctet, parseError := strconv.Atoi(vipParts[3])
+			if parseError != nil {
+				logging.Default().Warn("corrupt VIP address", "address", vipAddress)
+				continue
+			}
 			if fourthOctet >= nextVIPFourthOctet {
 				nextVIPFourthOctet = fourthOctet + 1
 			}

@@ -93,7 +93,10 @@ func parseCompiledFirewallRule(compiledRule string) (string, string, int, string
 	if len(parts) != 4 {
 		return "", "", 0, "", false
 	}
-	port, _ := strconv.Atoi(parts[2])
+	port, parseError := strconv.Atoi(parts[2])
+	if parseError != nil {
+		return "", "", 0, "", false
+	}
 	return parts[0], parts[1], port, parts[3], true
 }
 

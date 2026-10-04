@@ -600,13 +600,18 @@ func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 
 		switch {
 		case scaleField == "min":
-			policy.min, _ = strconv.Atoi(string(fact.Value))
+			if parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+				policy.min = parsedValue
+			}
 		case scaleField == "max":
-			policy.max, _ = strconv.Atoi(string(fact.Value))
+			if parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+				policy.max = parsedValue
+			}
 		case strings.HasPrefix(scaleField, "target/"):
 			metricName := strings.TrimPrefix(scaleField, "target/")
-			targetValue, _ := strconv.Atoi(string(fact.Value))
-			policy.targets[metricName] = targetValue
+			if targetValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+				policy.targets[metricName] = targetValue
+			}
 		}
 	}
 
@@ -626,7 +631,10 @@ func extractEventTargets(facts []store.Fact) map[string]map[string]int {
 			continue
 		}
 		source := strings.TrimPrefix(suffix, "scale/horizontal/event/")
-		targetValue, _ := strconv.Atoi(string(fact.Value))
+		targetValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value))
+		if !parsedOK {
+			continue
+		}
 		if targets[serviceName] == nil {
 			targets[serviceName] = make(map[string]int)
 		}
@@ -650,7 +658,10 @@ func normalizeHHMM(raw string) string {
 	if len(parts) != 2 {
 		return raw
 	}
-	hour, _ := strconv.Atoi(parts[0])
+	hour, parseError := strconv.Atoi(parts[0])
+	if parseError != nil {
+		return raw
+	}
 	return fmt.Sprintf("%02d:%s", hour, parts[1])
 }
 
@@ -679,7 +690,9 @@ func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule 
 		case "end":
 			rules[serviceName].end = normalizeHHMM(string(fact.Value))
 		case "minimum":
-			rules[serviceName].minimum, _ = strconv.Atoi(string(fact.Value))
+			if minimumValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+				rules[serviceName].minimum = minimumValue
+			}
 		}
 	}
 	return rules
@@ -739,7 +752,10 @@ func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPo
 		if policies[serviceName] == nil {
 			policies[serviceName] = &extractedVerticalPolicy{}
 		}
-		parsedValue, _ := strconv.Atoi(string(fact.Value))
+		parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value))
+		if !parsedOK {
+			continue
+		}
 		switch field {
 		case "cpu/min":
 			policies[serviceName].cpuMin = parsedValue
@@ -770,7 +786,10 @@ func extractObservedMetrics(facts []store.Fact) map[string]int {
 			continue
 		}
 		serviceAndMetric := strings.TrimPrefix(relativePath, "service/")
-		metricValue, _ := strconv.Atoi(string(fact.Value))
+		metricValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value))
+		if !parsedOK {
+			continue
+		}
 		metrics[serviceAndMetric] = metricValue
 	}
 

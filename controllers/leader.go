@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -218,9 +219,13 @@ func (election *LeaderElection) release(ctx context.Context) {
 	}
 }
 
-// parseLeaseTimestamp parses a millisecond Unix timestamp string.
+// parseLeaseTimestamp parses a millisecond Unix timestamp string. A corrupt
+// value is logged and treated as the epoch, so the lease reads as expired.
 func parseLeaseTimestamp(value string) time.Time {
-	var millis int64
-	_, _ = fmt.Sscanf(value, "%d", &millis)
+	millis, parseError := strconv.ParseInt(value, 10, 64)
+	if parseError != nil {
+		logging.Default().Warn("corrupt leader lease timestamp", "value", value)
+		return time.UnixMilli(0)
+	}
 	return time.UnixMilli(millis)
 }

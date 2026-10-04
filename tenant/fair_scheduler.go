@@ -6,7 +6,6 @@ package tenant
 import (
 	"context"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -174,11 +173,17 @@ func (fairScheduler *FairScheduler) computeTenantCPU(ctx context.Context, tenant
 			serviceExists[serviceName] = true
 		case "resources/cpu":
 			cpuValue := strings.TrimSuffix(string(fact.Value), "m")
-			parsed, _ := strconv.Atoi(cpuValue)
+			parsed, parsedOK := types.ParseFactInt(fact.Key, cpuValue)
+			if !parsedOK {
+				continue
+			}
 			serviceCPU[serviceName] = parsed
 			serviceExists[serviceName] = true
 		case "instances":
-			parsed, _ := strconv.Atoi(string(fact.Value))
+			parsed, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value))
+			if !parsedOK {
+				continue
+			}
 			serviceInstances[serviceName] = parsed
 			serviceExists[serviceName] = true
 		}

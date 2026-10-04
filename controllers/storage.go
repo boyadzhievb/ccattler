@@ -104,7 +104,9 @@ func collectDesiredVolumes(facts []store.Fact) map[string]desiredVolumeInfo {
 			case "persistent":
 				info.persistent = string(fact.Value) == "true"
 			case "replicas":
-				info.replicas, _ = strconv.Atoi(string(fact.Value))
+				if parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+					info.replicas = parsedValue
+				}
 			}
 			desiredVolumes[volumeName] = info
 		}
@@ -140,7 +142,9 @@ func collectObservedVolumes(facts []store.Fact) map[string]observedVolumeInfo {
 			case "migration_source":
 				info.migrationSource = string(fact.Value)
 			case "replica_count":
-				info.replicaCount, _ = strconv.Atoi(string(fact.Value))
+				if parsedValue, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value)); parsedOK {
+					info.replicaCount = parsedValue
+				}
 			case "replica_state":
 				info.replicaState = types.ReplicaState(fact.Value)
 			}

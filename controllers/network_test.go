@@ -314,8 +314,14 @@ func TestNetworkControllerNewServiceGetsNextVIP(t *testing.T) {
 	// Extract fourth octets — api's should be web's + 1.
 	webParts := strings.Split(string(webVIP.Value), ".")
 	apiParts := strings.Split(string(apiVIP.Value), ".")
-	webFourthOctet, _ := strconv.Atoi(webParts[3])
-	apiFourthOctet, _ := strconv.Atoi(apiParts[3])
+	webFourthOctet, webParseError := strconv.Atoi(webParts[3])
+	if webParseError != nil {
+		t.Fatalf("parsing web VIP fourth octet %q: %v", webParts[3], webParseError)
+	}
+	apiFourthOctet, apiParseError := strconv.Atoi(apiParts[3])
+	if apiParseError != nil {
+		t.Fatalf("parsing api VIP fourth octet %q: %v", apiParts[3], apiParseError)
+	}
 
 	if apiFourthOctet != webFourthOctet+1 {
 		t.Errorf("api VIP fourth octet = %d, want %d (web=%s, api=%s)",

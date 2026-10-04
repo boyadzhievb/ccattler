@@ -91,7 +91,10 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 		}
 		switch suffix {
 		case "instances":
-			parsedCount, _ := strconv.Atoi(string(fact.Value))
+			parsedCount, parsedOK := types.ParseFactInt(fact.Key, string(fact.Value))
+			if !parsedOK {
+				continue
+			}
 			desiredCounts[serviceName] = parsedCount
 		case "stateful":
 			statefulServices[serviceName] = string(fact.Value) == "true"

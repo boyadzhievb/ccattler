@@ -111,8 +111,10 @@ func parseIdentityPolicyRuleValue(ruleName, ruleValue string) (identityPolicyRul
 	if len(parts) != 4 {
 		return identityPolicyRule{}, fmt.Errorf("invalid rule format: %s", ruleValue)
 	}
-	port := 0
-	_, _ = fmt.Sscanf(parts[2], "%d", &port)
+	port, parseError := strconv.Atoi(parts[2])
+	if parseError != nil {
+		return identityPolicyRule{}, fmt.Errorf("invalid port %q in rule %s: %w", parts[2], ruleName, parseError)
+	}
 	return identityPolicyRule{
 		name:          ruleName,
 		sourceService: parts[0],

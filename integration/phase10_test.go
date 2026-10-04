@@ -209,7 +209,10 @@ func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		recommended, _ := strconv.Atoi(string(fact.Value))
+		recommended, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			t.Fatalf("parsing CPU recommendation %q: %v", string(fact.Value), parseError)
+		}
 		return recommended > 500
 	})
 
@@ -218,7 +221,10 @@ func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		recommended, _ := strconv.Atoi(string(fact.Value))
+		recommended, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			t.Fatalf("parsing memory recommendation %q: %v", string(fact.Value), parseError)
+		}
 		return recommended > 512
 	})
 }
