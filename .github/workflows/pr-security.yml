@@ -1,0 +1,88 @@
+name: PR Security Check
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check for go.mod changes
+        id: gomod
+        run: |
+          if git diff --name-only origin/master...HEAD | grep -q '^go\.\(mod\|sum\)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::go.mod or go.sum changed — review new dependencies carefully"
+            echo "## Dependency changes" >> "$GITHUB_STEP_SUMMARY"
+            echo '```diff' >> "$GITHUB_STEP_SUMMARY"
+            git diff origin/master...HEAD -- go.mod >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        if: steps.gomod.outputs.changed == 'true'
+        with:
+          go-version-file: go.mod
+
+      - name: Verify module integrity
+        if: steps.gomod.outputs.changed == 'true'
+        run: go mod verify
+
+      - name: Check for known vulnerabilities in new dependencies
+        if: steps.gomod.outputs.changed == 'true'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          govulncheck ./...
+
+  sensitive-files:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Flag changes to CI workflows
+        run: |
+          WORKFLOW_CHANGES=$(git diff --name-only origin/master...HEAD -- '.github/workflows/' || true)
+          if [ -n "$WORKFLOW_CHANGES" ]; then
+            echo "::warning::PR modifies CI workflows — review for command injection or secret exfiltration"
+            echo "## CI workflow changes" >> "$GITHUB_STEP_SUMMARY"
+            echo "The following workflow files were modified:" >> "$GITHUB_STEP_SUMMARY"
+            echo "$WORKFLOW_CHANGES" | while read -r f; do echo "- \`$f\`" >> "$GITHUB_STEP_SUMMARY"; done
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**Review checklist:**" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [ ] No \`curl | sh\` or piped execution from untrusted URLs" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [ ] No new secrets access or exfiltration" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [ ] No \`permissions\` escalation" >> "$GITHUB_STEP_SUMMARY"
+            echo "- [ ] Action versions are pinned to commit SHAs" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Flag changes to build and install scripts
+        run: |
+          SCRIPT_CHANGES=$(git diff --name-only origin/master...HEAD -- 'Makefile' 'deploy/' 'install*' '*.sh' || true)
+          if [ -n "$SCRIPT_CHANGES" ]; then
+            echo "::warning::PR modifies build/deploy scripts — review for unexpected commands"
+            echo "## Build/deploy script changes" >> "$GITHUB_STEP_SUMMARY"
+            echo "$SCRIPT_CHANGES" | while read -r f; do echo "- \`$f\`" >> "$GITHUB_STEP_SUMMARY"; done
+          fi
+
+      - name: Check for secrets or credentials in diff
+        run: |
+          SUSPICIOUS=$(git diff origin/master...HEAD | grep -inE '(password|secret|token|api.?key|private.?key|credential).*=' | grep -v '_test\.go' | grep -v '\.md' | grep -v 'TODO\|FIXME\|placeholder\|example\|dummy\|fake\|mock' || true)
+          if [ -n "$SUSPICIOUS" ]; then
+            echo "::error::Potential hardcoded secrets detected in diff"
+            echo "## Potential secrets in diff" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo "$SUSPICIOUS" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
