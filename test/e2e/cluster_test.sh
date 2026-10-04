@@ -171,16 +171,30 @@ if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
     log "vagrant-libvirt installed"
 fi
 
-# ---- Cleanup stale VMs (only with --destroy, forces fresh provisioning) ----
+# ---- Handle orphaned libvirt domains ----
+# After a fresh checkout, .vagrant/ state is gone but libvirt domains may still
+# exist from a previous halted run. Vagrant can't manage them without its state,
+# so clean them up and let Vagrant recreate from scratch.
+for vm in "${VM_NAMES[@]}"; do
+    stale_domain="ansible_${vm}"
+    vagrant_state="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/id"
+    if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1 && [[ ! -f "$vagrant_state" ]]; then
+        log "Cleaning orphaned libvirt domain: $stale_domain (no Vagrant state)"
+        sudo virsh destroy "$stale_domain" 2>/dev/null || true
+        sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+    fi
+done
+# With --destroy, also clean domains that Vagrant knows about.
 if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
     for vm in "${VM_NAMES[@]}"; do
         stale_domain="ansible_${vm}"
         if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-            log "Removing stale libvirt domain: $stale_domain"
+            log "Removing libvirt domain: $stale_domain (--destroy)"
             sudo virsh destroy "$stale_domain" 2>/dev/null || true
             sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
         fi
     done
+    rm -rf "$ANSIBLE_DIR/.vagrant"
 fi
 
 # ---- Step 0: Obtain binary ----
