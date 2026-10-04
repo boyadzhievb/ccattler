@@ -16,7 +16,6 @@ import (
 	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
-	"github.com/boyadzhievb/ccattler/types"
 )
 
 // ---------------------------------------------------------------------------
@@ -523,12 +522,12 @@ func TestSecretNeverInPlaintext(t *testing.T) {
 	}
 
 	secretContext := context.Background()
-	testSecrets := map[string]string{
-		"database.password":     "super-secret-db-password-2026",
-		"api-key":               "sk-live-abc123def456ghi789",
-		"payments/stripe-key":   "sk_live_payments_secret_token",
-		"frontend/cdn-token":    "cdn-auth-bearer-token-value",
-		"platform/master-cred":  "root-credential-never-expose",
+	testSecrets := map[string]string{ //nolint:gosec // test-only fake credentials
+		"database.password":    "super-secret-db-password-2026",
+		"api-key":              "sk-live-abc123def456ghi789",
+		"payments/stripe-key":  "sk_live_payments_secret_token",
+		"frontend/cdn-token":   "cdn-auth-bearer-token-value",
+		"platform/master-cred": "root-credential-never-expose",
 	}
 
 	for secretName, secretValue := range testSecrets {
@@ -788,17 +787,4 @@ func TestCertificateRotation(t *testing.T) {
 			t.Fatal("client with certificate from different CA should be rejected")
 		}
 	})
-}
-
-// helperVerifyDesiredInstancesUnchanged confirms that the desired instance
-// count for a service has not been tampered with by an unauthorized write.
-func helperVerifyDesiredInstancesUnchanged(t *testing.T, factStore store.StateStore, serviceName string, expectedCount string) {
-	t.Helper()
-	fact, getError := factStore.Get(context.Background(), types.KeyDesiredServiceInstances(serviceName))
-	if getError != nil {
-		t.Fatalf("read desired instances for %s: %v", serviceName, getError)
-	}
-	if string(fact.Value) != expectedCount {
-		t.Errorf("desired instances for %s changed: got %s, want %s", serviceName, string(fact.Value), expectedCount)
-	}
 }

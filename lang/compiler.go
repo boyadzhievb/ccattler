@@ -589,7 +589,7 @@ func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, baseD
 			if baseDir != "" && !filepath.IsAbs(resolvedPath) {
 				resolvedPath = filepath.Join(baseDir, resolvedPath)
 			}
-			fileBytes, readErr := os.ReadFile(resolvedPath)
+			fileBytes, readErr := os.ReadFile(resolvedPath) //nolint:gosec // intentional: user-specified config file reference
 			if readErr != nil {
 				return nil, fmt.Errorf("config file %q: cannot read %q: %w", configFile.Path, configFile.FromFile, readErr)
 			}
