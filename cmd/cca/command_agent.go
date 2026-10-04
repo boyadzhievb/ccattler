@@ -249,10 +249,7 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 		}
 	}
 	if tlsCertPath != "" {
-		if tlsLoadError := loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath); tlsLoadError != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to load TLS credentials for agent %s: %v\n", nodeID, tlsLoadError)
-			os.Exit(1)
-		}
+		loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath)
 		fmt.Printf("Agent %s TLS credentials loaded\n", nodeID)
 	}
 }
