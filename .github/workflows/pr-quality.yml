@@ -88,3 +88,30 @@ jobs:
           else
             echo "**Status: OK** (threshold ${THRESHOLD}%)" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  license-header:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check license headers on Go files
+        run: |
+          MISSING=0
+          while IFS= read -r gofile; do
+            if ! head -2 "$gofile" | grep -q 'SPDX-License-Identifier: GPL-3.0-only'; then
+              echo "::error file=$gofile::Missing license header"
+              MISSING=$((MISSING + 1))
+            fi
+          done < <(find . -name '*.go' -not -path '*/vendor/*')
+
+          if [ "$MISSING" -gt 0 ]; then
+            echo "## License Header Check Failed" >> "$GITHUB_STEP_SUMMARY"
+            echo "$MISSING file(s) missing the GPL-3.0 license header." >> "$GITHUB_STEP_SUMMARY"
+            echo "Add to the top of each file:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            echo '// Copyright (C) 2026 CCattler Contributors' >> "$GITHUB_STEP_SUMMARY"
+            echo '// SPDX-License-Identifier: GPL-3.0-only' >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "## License Header Check Passed" >> "$GITHUB_STEP_SUMMARY"
