@@ -407,7 +407,7 @@ func formatResourceUsage(used, capacity int64, unit string) string {
 // prints a detailed human-readable view of all related facts, health state,
 // placement, networking, and recent events.
 func executeDescribeCommand(resourceType, resourceName string) {
-	normalizedType := resourceType
+	var normalizedType string
 	switch resourceType {
 	case "service", "svc":
 		normalizedType = "service"

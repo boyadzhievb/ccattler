@@ -352,7 +352,7 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 		}
 		fmt.Println()
 		fmt.Println("Join command:")
-		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", joinToken.Token)
+		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id> --ca-cert <path>\n", joinToken.Token)
 
 	case "list":
 		tokens, listError := enrollmentService.ListJoinTokens(ctx)
@@ -401,7 +401,7 @@ type joinCommandConfig struct {
 	serverAddress string // https://host:port
 	joinToken     string
 	nodeID        string
-	caCertPath    string // optional: verify server cert against this CA
+	caCertPath    string // required: verify server cert against this CA
 	dataDirectory string // where to write cert/key/ca (default ".ccattler")
 }
 
@@ -504,32 +504,26 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 }
 
 // buildEnrollmentHTTPClient creates an HTTP client configured for the node
-// enrollment request. If caCertPath is provided, the client verifies the server
-// certificate against that CA. Otherwise it skips verification with a warning,
-// since the node does not yet have cluster credentials during bootstrap.
+// enrollment request. The CA certificate is required to verify the server
+// identity — zero-trust requires authenticating even the bootstrap endpoint.
 func buildEnrollmentHTTPClient(caCertPath string) *http.Client {
-	var transportTLSConfig *tls.Config
-	if caCertPath != "" {
-		caCertPEM, readError := os.ReadFile(filepath.Clean(caCertPath))
-		if readError != nil {
-			fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
-			os.Exit(1)
-		}
-		caCertPool := x509.NewCertPool()
-		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
-			fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
-			os.Exit(1)
-		}
-		transportTLSConfig = &tls.Config{
-			RootCAs:    caCertPool,
-			MinVersion: tls.VersionTLS13,
-		}
-	} else {
-		transportTLSConfig = &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec // TLS verification disabled during node bootstrap when no CA cert provided
-			MinVersion:         tls.VersionTLS13,
-		}
-		fmt.Println("WARNING: no --ca-cert provided, server certificate will not be verified")
+	if caCertPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --ca-cert is required for node enrollment (zero-trust: server identity must be verified)")
+		os.Exit(1)
+	}
+	caCertPEM, readError := os.ReadFile(filepath.Clean(caCertPath))
+	if readError != nil {
+		fmt.Fprintf(os.Stderr, "error reading CA certificate: %v\n", readError)
+		os.Exit(1)
+	}
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+		fmt.Fprintln(os.Stderr, "error: CA certificate file contains no valid certificates")
+		os.Exit(1)
+	}
+	transportTLSConfig := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS13,
 	}
 
 	return &http.Client{

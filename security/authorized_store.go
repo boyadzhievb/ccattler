@@ -6,9 +6,17 @@ package security
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
 )
+
+// sanitizeForAudit removes newlines and control characters from a string to
+// prevent log injection when recording audit entries.
+func sanitizeForAudit(input string) string {
+	replacer := strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t")
+	return replacer.Replace(input)
+}
 
 // principalContextKey is the context key for the authenticated principal identity.
 type principalContextKey struct{}
@@ -147,9 +155,9 @@ func (authorizedStore *AuthorizedStore) Close() error {
 func (authorizedStore *AuthorizedStore) logAllowed(principal, action, target string) {
 	if authorizedStore.auditLog != nil {
 		authorizedStore.auditLog.Log(AuditEntry{
-			Principal: principal,
-			Action:    action,
-			Target:    target,
+			Principal: sanitizeForAudit(principal),
+			Action:    sanitizeForAudit(action),
+			Target:    sanitizeForAudit(target),
 			Decision:  "allow",
 		})
 	}
@@ -159,9 +167,9 @@ func (authorizedStore *AuthorizedStore) logAllowed(principal, action, target str
 func (authorizedStore *AuthorizedStore) logDenied(principal, action, target string) {
 	if authorizedStore.auditLog != nil {
 		authorizedStore.auditLog.Log(AuditEntry{
-			Principal: principal,
-			Action:    action,
-			Target:    target,
+			Principal: sanitizeForAudit(principal),
+			Action:    sanitizeForAudit(action),
+			Target:    sanitizeForAudit(target),
 			Decision:  "deny",
 		})
 	}

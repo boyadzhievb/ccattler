@@ -585,7 +585,8 @@ func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
 		case activeWatcher.eventChannel <- event:
 		default:
 			if !activeWatcher.overflowDetected {
-				log.Printf("WARNING: watch event dropped for key %s (channel buffer full)", event.Fact.Key)
+				sanitizedKey := strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(event.Fact.Key)
+				log.Printf("WARNING: watch event dropped for key %s (channel buffer full)", sanitizedKey)
 			}
 			activeWatcher.overflowDetected = true
 		}
