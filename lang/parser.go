@@ -45,6 +45,10 @@ func ParseWithFileName(input string, fileName string) (*File, error) {
 
 // ParseFile parses the top-level declarations of a CCattler file and returns
 // the complete File AST.
+//
+// This function exceeds 80 lines because it is a flat keyword-dispatch switch
+// statement — each case is a simple delegation to a sub-parser. Extracting
+// sub-groups would add indirection without improving clarity.
 func (parser *Parser) ParseFile() (*File, error) {
 	file := &File{}
 	parser.skipNewlineTokens()
@@ -182,6 +186,10 @@ func (parser *Parser) parseServiceDeclaration() (*ServiceDecl, error) {
 // parseServiceField dispatches parsing of a single field inside a service block.
 // The caller provides the already-consumed field keyword; this method parses the
 // value or sub-block and populates the corresponding ServiceDecl member.
+//
+// This function exceeds 80 lines because it is a flat field-dispatch switch
+// statement — each case is a simple delegation to a sub-parser or assignment.
+// Extracting sub-groups would add indirection without improving clarity.
 func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName string) error {
 	var err error
 	switch fieldName {
@@ -672,59 +680,13 @@ func (parser *Parser) parseVerticalScaleBlock() (*VerticalScaleDecl, error) {
 
 		switch key {
 		case "cpu":
-			if err := parser.expectToken(TokenLBrace); err != nil {
-				return nil, err
-			}
-			parser.skipNewlineTokens()
-			for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
-				subKey, subErr := parser.expectIdentifier()
-				if subErr != nil {
-					return nil, subErr
-				}
-				valueToken := parser.currentToken()
-				if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
-					return nil, parser.parserErrorf("expected value for cpu %s, got %s", subKey, valueToken.Type)
-				}
-				parser.advanceToken()
-				switch subKey {
-				case "min":
-					verticalDecl.CPUMin = valueToken.Value
-				case "max":
-					verticalDecl.CPUMax = valueToken.Value
-				default:
-					return nil, parser.parserErrorf("unknown vertical cpu field %q", subKey)
-				}
-				parser.skipNewlineTokens()
-			}
-			if err := parser.expectToken(TokenRBrace); err != nil {
+			verticalDecl.CPUMin, verticalDecl.CPUMax, err = parser.parseVerticalResourceMinMax("cpu")
+			if err != nil {
 				return nil, err
 			}
 		case "memory":
-			if err := parser.expectToken(TokenLBrace); err != nil {
-				return nil, err
-			}
-			parser.skipNewlineTokens()
-			for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
-				subKey, subErr := parser.expectIdentifier()
-				if subErr != nil {
-					return nil, subErr
-				}
-				valueToken := parser.currentToken()
-				if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
-					return nil, parser.parserErrorf("expected value for memory %s, got %s", subKey, valueToken.Type)
-				}
-				parser.advanceToken()
-				switch subKey {
-				case "min":
-					verticalDecl.MemoryMin = valueToken.Value
-				case "max":
-					verticalDecl.MemoryMax = valueToken.Value
-				default:
-					return nil, parser.parserErrorf("unknown vertical memory field %q", subKey)
-				}
-				parser.skipNewlineTokens()
-			}
-			if err := parser.expectToken(TokenRBrace); err != nil {
+			verticalDecl.MemoryMin, verticalDecl.MemoryMax, err = parser.parseVerticalResourceMinMax("memory")
+			if err != nil {
 				return nil, err
 			}
 		default:
@@ -737,6 +699,43 @@ func (parser *Parser) parseVerticalScaleBlock() (*VerticalScaleDecl, error) {
 		return nil, err
 	}
 	return verticalDecl, nil
+}
+
+// parseVerticalResourceMinMax parses a vertical scaling resource sub-block
+// containing min and max fields (e.g. `{ min 250m, max 4 }`), returning the
+// parsed minimum and maximum values.
+func (parser *Parser) parseVerticalResourceMinMax(resourceName string) (string, string, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return "", "", err
+	}
+	parser.skipNewlineTokens()
+
+	var minValue, maxValue string
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		subKey, subErr := parser.expectIdentifier()
+		if subErr != nil {
+			return "", "", subErr
+		}
+		valueToken := parser.currentToken()
+		if valueToken.Type != TokenNumber && valueToken.Type != TokenIdent {
+			return "", "", parser.parserErrorf("expected value for %s %s, got %s", resourceName, subKey, valueToken.Type)
+		}
+		parser.advanceToken()
+		switch subKey {
+		case "min":
+			minValue = valueToken.Value
+		case "max":
+			maxValue = valueToken.Value
+		default:
+			return "", "", parser.parserErrorf("unknown vertical %s field %q", resourceName, subKey)
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return "", "", err
+	}
+	return minValue, maxValue, nil
 }
 
 // parsePlacementBlock parses a placement { architecture ..., zone ... } block.

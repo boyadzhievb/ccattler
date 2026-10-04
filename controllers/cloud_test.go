@@ -2,12 +2,20 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/cloud"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// testKeyObservedNodeProviderInstanceID constructs the store path mapping a
+// node to its cloud provider instance ID, for use in tests only. Production
+// code reads this via prefix scan on ScanObservedNodes.
+func testKeyObservedNodeProviderInstanceID(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/provider_instance_id", types.PrefixObserved, nodeID)
+}
 
 func TestNodeLifecycleControllerDetectsTerminatedInstance(testing *testing.T) {
 	simulatorProvider := cloud.NewSimulatorCloudProvider()
@@ -21,7 +29,7 @@ func TestNodeLifecycleControllerDetectsTerminatedInstance(testing *testing.T) {
 
 	facts := []store.Fact{
 		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeAlive))},
-		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
+		{Key: testKeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
 	}
 
 	store.SortFacts(facts)
@@ -60,7 +68,7 @@ func TestNodeLifecycleControllerDrainingToUnreachable(testing *testing.T) {
 
 	facts := []store.Fact{
 		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeDraining))},
-		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
+		{Key: testKeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
 		{Key: types.KeyObservedCloudInstanceState(instanceID), Value: []byte(string(cloud.InstanceStateTerminated))},
 	}
 
@@ -89,7 +97,7 @@ func TestNodeLifecycleControllerIgnoresRunningInstances(testing *testing.T) {
 
 	facts := []store.Fact{
 		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeAlive))},
-		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
+		{Key: testKeyObservedNodeProviderInstanceID("worker-1"), Value: []byte(instanceID)},
 	}
 
 	store.SortFacts(facts)
@@ -183,7 +191,7 @@ func TestCloudRouteControllerCreatesRoutes(testing *testing.T) {
 	facts := []store.Fact{
 		{Key: types.KeyNetworkNodeSubnet("worker-1"), Value: []byte("10.244.1.0/24")},
 		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeAlive))},
-		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
+		{Key: testKeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
 	}
 
 	store.SortFacts(facts)
@@ -251,7 +259,7 @@ func TestCloudRouteControllerSkipsUnreachableNodes(testing *testing.T) {
 	facts := []store.Fact{
 		{Key: types.KeyNetworkNodeSubnet("worker-1"), Value: []byte("10.244.1.0/24")},
 		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeUnreachable))},
-		{Key: types.KeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
+		{Key: testKeyObservedNodeProviderInstanceID("worker-1"), Value: []byte("i-abc123")},
 	}
 
 	store.SortFacts(facts)

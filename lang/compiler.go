@@ -37,6 +37,33 @@ func Compile(file *File) ([]Fact, error) {
 // provided source lines for richer error context in diagnostics.
 func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 	var facts []Fact
+	infrastructureFacts, infrastructureErr := compileInfrastructureDeclarations(file, sourceLines)
+	if infrastructureErr != nil {
+		return nil, infrastructureErr
+	}
+	facts = append(facts, infrastructureFacts...)
+
+	for _, serviceDecl := range file.Services {
+		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir)
+		if serviceErr != nil {
+			return nil, serviceErr
+		}
+		facts = append(facts, serviceFacts...)
+	}
+
+	accessControlFacts, accessControlErr := compileAccessControlDeclarations(file, sourceLines)
+	if accessControlErr != nil {
+		return nil, accessControlErr
+	}
+	facts = append(facts, accessControlFacts...)
+
+	return facts, nil
+}
+
+// compileInfrastructureDeclarations compiles tenant, volume, cloud identity,
+// credential broker, and cloud declarations into their corresponding facts.
+func compileInfrastructureDeclarations(file *File, sourceLines []string) ([]Fact, error) {
+	var facts []Fact
 	for _, tenantDecl := range file.Tenants {
 		tenantFacts, err := compileTenantDeclaration(tenantDecl, sourceLines)
 		if err != nil {
@@ -72,13 +99,13 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		}
 		facts = append(facts, cloudFacts...)
 	}
-	for _, serviceDecl := range file.Services {
-		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir)
-		if err != nil {
-			return nil, err
-		}
-		facts = append(facts, serviceFacts...)
-	}
+	return facts, nil
+}
+
+// compileAccessControlDeclarations compiles role, grant, group, service group,
+// policy, and network declarations into their corresponding facts.
+func compileAccessControlDeclarations(file *File, sourceLines []string) ([]Fact, error) {
+	var facts []Fact
 	for _, roleDecl := range file.Roles {
 		roleFacts, err := compileRoleDeclaration(roleDecl, sourceLines)
 		if err != nil {
@@ -668,15 +695,24 @@ func compileServiceInitStepFacts(serviceName string, initSteps []InitStepDecl) [
 
 // compileCloudIdentityDeclaration validates and converts a CloudIdentityDecl into facts.
 func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, sourceLines []string) ([]Fact, error) {
+	if validationErr := validateCloudIdentityRequiredFields(cloudIdentityDecl, sourceLines); validationErr != nil {
+		return nil, validationErr
+	}
+	return buildCloudIdentityFactsFromDeclaration(cloudIdentityDecl), nil
+}
+
+// validateCloudIdentityRequiredFields checks that a cloud identity declaration
+// has a name, a valid provider, and all provider-specific required fields.
+func validateCloudIdentityRequiredFields(cloudIdentityDecl CloudIdentityDecl, sourceLines []string) error {
 	if cloudIdentityDecl.Name == "" {
-		return nil, &ParseError{
+		return &ParseError{
 			Line:       cloudIdentityDecl.Line,
 			Message:    "cloud_identity name is required",
 			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
 		}
 	}
 	if cloudIdentityDecl.Provider == "" {
-		return nil, &ParseError{
+		return &ParseError{
 			Line:       cloudIdentityDecl.Line,
 			Message:    fmt.Sprintf("cloud_identity %q requires a provider (aws, gcp, or azure)", cloudIdentityDecl.Name),
 			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
@@ -686,7 +722,7 @@ func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, source
 	switch cloudIdentityDecl.Provider {
 	case "aws":
 		if cloudIdentityDecl.Role == "" {
-			return nil, &ParseError{
+			return &ParseError{
 				Line:       cloudIdentityDecl.Line,
 				Message:    fmt.Sprintf("cloud_identity %q with provider aws requires a role", cloudIdentityDecl.Name),
 				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
@@ -694,14 +730,14 @@ func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, source
 		}
 	case "gcp":
 		if cloudIdentityDecl.ServiceAccount == "" {
-			return nil, &ParseError{
+			return &ParseError{
 				Line:       cloudIdentityDecl.Line,
 				Message:    fmt.Sprintf("cloud_identity %q with provider gcp requires a service_account", cloudIdentityDecl.Name),
 				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
 			}
 		}
 		if cloudIdentityDecl.Pool == "" {
-			return nil, &ParseError{
+			return &ParseError{
 				Line:       cloudIdentityDecl.Line,
 				Message:    fmt.Sprintf("cloud_identity %q with provider gcp requires a pool", cloudIdentityDecl.Name),
 				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
@@ -709,27 +745,32 @@ func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, source
 		}
 	case "azure":
 		if cloudIdentityDecl.ClientID == "" {
-			return nil, &ParseError{
+			return &ParseError{
 				Line:       cloudIdentityDecl.Line,
 				Message:    fmt.Sprintf("cloud_identity %q with provider azure requires a client_id", cloudIdentityDecl.Name),
 				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
 			}
 		}
 		if cloudIdentityDecl.TenantID == "" {
-			return nil, &ParseError{
+			return &ParseError{
 				Line:       cloudIdentityDecl.Line,
 				Message:    fmt.Sprintf("cloud_identity %q with provider azure requires a tenant_id", cloudIdentityDecl.Name),
 				SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
 			}
 		}
 	default:
-		return nil, &ParseError{
+		return &ParseError{
 			Line:       cloudIdentityDecl.Line,
 			Message:    fmt.Sprintf("cloud_identity %q has unknown provider %q (must be aws, gcp, or azure)", cloudIdentityDecl.Name, cloudIdentityDecl.Provider),
 			SourceLine: sourceLineAt(sourceLines, cloudIdentityDecl.Line),
 		}
 	}
+	return nil
+}
 
+// buildCloudIdentityFactsFromDeclaration converts a validated CloudIdentityDecl
+// into its corresponding fact entries for the store.
+func buildCloudIdentityFactsFromDeclaration(cloudIdentityDecl CloudIdentityDecl) []Fact {
 	facts := []Fact{
 		{Key: types.KeyDesiredCloudIdentity(cloudIdentityDecl.Name), Value: ""},
 		{Key: types.KeyDesiredCloudIdentityProvider(cloudIdentityDecl.Name), Value: cloudIdentityDecl.Provider},
@@ -761,7 +802,7 @@ func compileCloudIdentityDeclaration(cloudIdentityDecl CloudIdentityDecl, source
 		})
 	}
 
-	return facts, nil
+	return facts
 }
 
 // compileCredentialBrokerDeclaration validates and converts a CredentialBrokerDecl into facts.

@@ -105,14 +105,12 @@ func parseServiceVolumeMountsWithPaths(facts []store.Fact) map[string][]volumeMo
 func parseVolumeTemplates(facts []store.Fact) map[string]volumeTemplate {
 	templates := make(map[string]volumeTemplate)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredVolumes) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredVolumes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		volumeName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredVolumes)
+		if !hasSuffix {
 			continue
 		}
-		volumeName := pathParts[0]
 		current := templates[volumeName]
-		switch pathParts[1] {
+		switch suffix {
 		case "size":
 			current.size = string(fact.Value)
 		case "persistent":

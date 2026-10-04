@@ -32,6 +32,10 @@ const (
 	// networkDemoStatusInterval is the status print interval for the network
 	// demo command, which runs longer and benefits from less frequent updates.
 	networkDemoStatusInterval = 5 * time.Second
+
+	// simulatorVolumeSizeBytes is the default size (50 GiB) used when
+	// creating volumes in the simulator storage provider for demos.
+	simulatorVolumeSizeBytes = 50 * 1024 * 1024 * 1024
 )
 
 // runCommandConfig holds all parsed flags and arguments for the "run" and
@@ -393,19 +397,11 @@ func executeDistributedDemoCommand() {
 	runDemoStatusLoop(ctx, factStore, types.DefaultStatusPrintInterval)
 }
 
-// executeNetworkDemoCommand runs a multi-node demo with networking enabled:
-// IP allocation from per-node subnets, VIP assignment, DNS resolution, and
-// load-balanced traffic routing. Deploys two services and shows the complete
-// networking state including per-instance IPs, service VIPs, and DNS records.
-func executeNetworkDemoCommand() {
-	factStore := store.NewMemoryStore()
-	defer func() { _ = factStore.Close() }()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
-
+// setupNetworkDemoNodesAndAgents registers three simulated nodes with per-node
+// subnets, starts core controllers plus networking controllers, and launches
+// a simulator agent on each node with the shared network provider. Returns
+// the event log for wiring into the status API.
+func setupNetworkDemoNodesAndAgents(ctx context.Context, factStore store.StateStore, simulatorNetworkProvider *network.SimulatorNetworkProvider) *types.EventLog {
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
 	registerSimulatedNodes(ctx, factStore, nodeIDs)
 	for _, nodeID := range nodeIDs {
@@ -426,7 +422,6 @@ func executeNetworkDemoCommand() {
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
-	// Start 3 agents, each with its own simulator runtime and the shared network provider.
 	for _, nodeID := range nodeIDs {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
@@ -437,6 +432,45 @@ func executeNetworkDemoCommand() {
 			}
 		}()
 	}
+
+	return eventLog
+}
+
+// demonstrateLoadBalancedTrafficRouting routes sample requests through the
+// simulator proxy for each named service and prints the selected endpoint,
+// showing round-robin load distribution across healthy instances.
+func demonstrateLoadBalancedTrafficRouting(ctx context.Context, factStore store.StateStore) {
+	storeBackedResolver := network.NewStoreBackedResolver(factStore)
+	simulatorProxy := network.NewSimulatorProxy(storeBackedResolver)
+
+	fmt.Println("\n--- Load Balancing Demo ---")
+	for _, serviceName := range []string{"web", "api"} {
+		fmt.Printf("\nRouting 6 requests to %s:\n", serviceName)
+		for requestIndex := 0; requestIndex < 6; requestIndex++ {
+			selectedEndpoint, err := simulatorProxy.RouteRequest(ctx, serviceName)
+			if err != nil {
+				fmt.Printf("  request %d: ERROR %v\n", requestIndex+1, err)
+				continue
+			}
+			fmt.Printf("  request %d → %s:%d (instance %s)\n",
+				requestIndex+1, selectedEndpoint.IP, selectedEndpoint.Port, selectedEndpoint.InstanceID)
+		}
+	}
+}
+
+// executeNetworkDemoCommand runs a multi-node demo with networking enabled:
+// IP allocation from per-node subnets, VIP assignment, DNS resolution, and
+// load-balanced traffic routing. Deploys two services and shows the complete
+// networking state including per-instance IPs, service VIPs, and DNS records.
+func executeNetworkDemoCommand() {
+	factStore := store.NewMemoryStore()
+	defer func() { _ = factStore.Close() }()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+	eventLog := setupNetworkDemoNodesAndAgents(ctx, factStore, simulatorNetworkProvider)
 
 	networkDemoConfig := `service web {
     image nginx:1.28
@@ -468,31 +502,64 @@ service api {
 		os.Exit(1)
 	}
 
-	// Wait for reconciliation to settle.
 	time.Sleep(types.DefaultPostStartupSettleTime)
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	// Demonstrate load balancing via the simulator proxy.
-	storeBackedResolver := network.NewStoreBackedResolver(factStore)
-	simulatorProxy := network.NewSimulatorProxy(storeBackedResolver)
-
-	fmt.Println("\n--- Load Balancing Demo ---")
-	for _, serviceName := range []string{"web", "api"} {
-		fmt.Printf("\nRouting 6 requests to %s:\n", serviceName)
-		for requestIndex := 0; requestIndex < 6; requestIndex++ {
-			selectedEndpoint, err := simulatorProxy.RouteRequest(ctx, serviceName)
-			if err != nil {
-				fmt.Printf("  request %d: ERROR %v\n", requestIndex+1, err)
-				continue
-			}
-			fmt.Printf("  request %d → %s:%d (instance %s)\n",
-				requestIndex+1, selectedEndpoint.IP, selectedEndpoint.Port, selectedEndpoint.InstanceID)
-		}
-	}
+	demonstrateLoadBalancedTrafficRouting(ctx, factStore)
 
 	fmt.Printf("\nRunning. Status API on %s. Press Ctrl+C to stop.\n", statusAPIListenAddress)
 	runDemoStatusLoop(ctx, factStore, networkDemoStatusInterval)
+}
+
+// startStorageDemoAgentsWithNodeContexts launches a simulator agent for each
+// node with an independent cancellable context, allowing individual node kills.
+// Each agent is configured with the provided storage provider for volume
+// operations. Returns a map from node ID to the cancel function for that agent.
+func startStorageDemoAgentsWithNodeContexts(ctx context.Context, factStore store.StateStore, nodeIDs []string, storageProvider *storage.SimulatorStorageProvider) map[string]context.CancelFunc {
+	nodeAgentContexts := make(map[string]context.CancelFunc)
+	for _, nodeID := range nodeIDs {
+		nodeContext, nodeCancel := context.WithCancel(ctx)
+		nodeAgentContexts[nodeID] = nodeCancel
+
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetStorageProvider(storageProvider)
+		go func() {
+			if runError := nodeAgent.Run(nodeContext); runError != nil {
+				logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
+			}
+		}()
+	}
+	return nodeAgentContexts
+}
+
+// simulateStorageNodeFailureAndWatchRecovery finds which node runs the postgres
+// service, kills that node's agent, force-detaches the persistent volume, and
+// enters the status display loop to show volume migration and rescheduling.
+func simulateStorageNodeFailureAndWatchRecovery(ctx context.Context, factStore store.StateStore, storageProvider *storage.SimulatorStorageProvider, nodeAgentContexts map[string]context.CancelFunc) {
+	postgresNodeID := findNodeRunningService(ctx, factStore, "postgres")
+	if postgresNodeID == "" {
+		fmt.Println("\nCould not determine which node runs postgres. Exiting.")
+		return
+	}
+
+	fmt.Printf("\n--- Killing %s (running postgres) in 5 seconds to demonstrate volume migration ---\n", postgresNodeID)
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(types.DefaultEtcdDialTimeout):
+	}
+
+	if killFunc, exists := nodeAgentContexts[postgresNodeID]; exists {
+		killFunc()
+	}
+	if forceDetachError := storageProvider.ForceDetach(ctx, "pgdata"); forceDetachError != nil {
+		logging.Default().Error("failed to force-detach volume", "volume", "pgdata", "error", forceDetachError.Error())
+	}
+	fmt.Printf("%s agent killed. Waiting for failure detection, volume force-detach, and rescheduling...\n\n", postgresNodeID)
+
+	runDemoStatusLoop(ctx, factStore, types.DefaultStatusPrintInterval)
 }
 
 // executeStorageDemoCommand runs a multi-node demo with persistent volumes.
@@ -507,7 +574,7 @@ func executeStorageDemoCommand() {
 	defer cancel()
 
 	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
-	if createVolumeError := simulatorStorageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024); createVolumeError != nil {
+	if createVolumeError := simulatorStorageProvider.CreateVolume(ctx, "pgdata", simulatorVolumeSizeBytes); createVolumeError != nil {
 		logging.Default().Error("failed to create volume", "volume", "pgdata", "error", createVolumeError.Error())
 	}
 
@@ -522,21 +589,7 @@ func executeStorageDemoCommand() {
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
-	// Track which context each node's agent uses so we can kill one later.
-	nodeAgentContexts := make(map[string]context.CancelFunc)
-	for _, nodeID := range nodeIDs {
-		nodeContext, nodeCancel := context.WithCancel(ctx)
-		nodeAgentContexts[nodeID] = nodeCancel
-
-		simulatorRuntime := runtime.NewSimulatorRuntime()
-		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
-		nodeAgent.SetStorageProvider(simulatorStorageProvider)
-		go func() {
-			if runError := nodeAgent.Run(nodeContext); runError != nil {
-				logging.Default().Error("node agent exited with error", "node", nodeID, "error", runError.Error())
-			}
-		}()
-	}
+	nodeAgentContexts := startStorageDemoAgentsWithNodeContexts(ctx, factStore, nodeIDs, simulatorStorageProvider)
 
 	storageDemoConfig := `volume pgdata {
     size 50Gi
@@ -578,27 +631,5 @@ service web {
 	fmt.Println()
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 
-	// Find which node is running postgres so we can kill it.
-	postgresNodeID := findNodeRunningService(ctx, factStore, "postgres")
-	if postgresNodeID == "" {
-		fmt.Println("\nCould not determine which node runs postgres. Exiting.")
-		return
-	}
-
-	fmt.Printf("\n--- Killing %s (running postgres) in 5 seconds to demonstrate volume migration ---\n", postgresNodeID)
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(types.DefaultEtcdDialTimeout):
-	}
-
-	if killFunc, exists := nodeAgentContexts[postgresNodeID]; exists {
-		killFunc()
-	}
-	if forceDetachError := simulatorStorageProvider.ForceDetach(ctx, "pgdata"); forceDetachError != nil {
-		logging.Default().Error("failed to force-detach volume", "volume", "pgdata", "error", forceDetachError.Error())
-	}
-	fmt.Printf("%s agent killed. Waiting for failure detection, volume force-detach, and rescheduling...\n\n", postgresNodeID)
-
-	runDemoStatusLoop(ctx, factStore, types.DefaultStatusPrintInterval)
+	simulateStorageNodeFailureAndWatchRecovery(ctx, factStore, simulatorStorageProvider, nodeAgentContexts)
 }

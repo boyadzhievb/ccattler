@@ -298,17 +298,16 @@ func parseInstanceServiceAndRunState(facts []store.Fact) (map[string]string, map
 	instanceServices := make(map[string]string)
 	runningInstances := make(map[string]bool)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		remainder := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(remainder, "/", 2)
-		if len(parts) != 2 {
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if !hasSuffix {
 			continue
 		}
-		switch parts[1] {
+		switch suffix {
 		case "service":
-			instanceServices[parts[0]] = string(fact.Value)
+			instanceServices[instanceID] = string(fact.Value)
 		case "state":
 			if string(fact.Value) == string(types.InstanceRunning) {
-				runningInstances[parts[0]] = true
+				runningInstances[instanceID] = true
 			}
 		}
 	}

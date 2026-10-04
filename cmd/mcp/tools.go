@@ -14,9 +14,71 @@ import (
 	"time"
 )
 
-// maxOutputBytes is the maximum number of bytes returned from any single tool call
-// to prevent flooding the MCP client.
-const maxOutputBytes = 100 * 1024
+const (
+	// maxOutputBytes is the maximum number of bytes returned from any single tool call
+	// to prevent flooding the MCP client.
+	maxOutputBytes = 100 * 1024
+
+	// mcpMaxGitLogCommitCount is the upper bound on commits the git_log tool will return.
+	mcpMaxGitLogCommitCount = 100
+
+	// mcpDefaultGitLogCommitCount is the number of commits shown when the caller omits the count parameter.
+	mcpDefaultGitLogCommitCount = 20
+
+	// mcpMaxComponentLogLineCount is the upper bound on log lines the component_logs tool will return.
+	mcpMaxComponentLogLineCount = 500
+
+	// mcpDefaultComponentLogLineCount is the number of log lines shown when the caller omits the lines parameter.
+	mcpDefaultComponentLogLineCount = 50
+
+	// mcpGitStatusTimeout is the deadline for a git status invocation.
+	mcpGitStatusTimeout = 30 * time.Second
+
+	// mcpGitLogTimeout is the deadline for a git log invocation.
+	mcpGitLogTimeout = 30 * time.Second
+
+	// mcpGitPullTimeout is the deadline for a git pull --ff-only invocation.
+	mcpGitPullTimeout = 60 * time.Second
+
+	// mcpBuildBinaryTimeout is the deadline for compiling a single CCattler binary (cca or ccattler-mcp).
+	mcpBuildBinaryTimeout = 5 * time.Minute
+
+	// mcpGoTestTimeout is the deadline for running the Go test suite.
+	mcpGoTestTimeout = 5 * time.Minute
+
+	// mcpClusterStatusTimeout is the deadline for a cca status invocation.
+	mcpClusterStatusTimeout = 30 * time.Second
+
+	// mcpProcessListTimeout is the deadline for listing running processes via ps.
+	mcpProcessListTimeout = 10 * time.Second
+
+	// mcpDockerListTimeout is the deadline for listing Docker containers via docker ps.
+	mcpDockerListTimeout = 15 * time.Second
+
+	// mcpComponentLogTailTimeout is the deadline for reading the tail of a component log file.
+	mcpComponentLogTailTimeout = 10 * time.Second
+
+	// mcpDiskUsageTimeout is the deadline for the df -h command.
+	mcpDiskUsageTimeout = 10 * time.Second
+
+	// mcpApplyConfigTimeout is the deadline for applying a .ccl configuration file via cca apply.
+	mcpApplyConfigTimeout = 30 * time.Second
+
+	// mcpEtcdStartSettleDelay is the pause after starting etcd to let it initialize before starting dependents.
+	mcpEtcdStartSettleDelay = 2 * time.Second
+
+	// mcpComponentStartSettleDelay is the pause after starting a non-etcd component before starting the next one.
+	mcpComponentStartSettleDelay = 500 * time.Millisecond
+
+	// mcpPkillTimeout is the deadline for the pkill command when stopping a component process.
+	mcpPkillTimeout = 10 * time.Second
+
+	// mcpPostStopSettleDelay is the pause after sending SIGTERM to let the process exit cleanly.
+	mcpPostStopSettleDelay = 500 * time.Millisecond
+
+	// mcpLogFilePermissions is the Unix file mode for component log files (owner read/write only).
+	mcpLogFilePermissions = 0600
+)
 
 // allowedComponents defines the CCattler components that can be managed by the MCP
 // server. Each component has a process search pattern and a start command. Only these
@@ -101,7 +163,7 @@ func buildToolRegistry() []toolRegistryEntry {
 						"type":        "integer",
 						"description": "Number of commits to show (1-100, default 20)",
 						"minimum":     1,
-						"maximum":     100,
+						"maximum":     mcpMaxGitLogCommitCount,
 					},
 				},
 			},
@@ -166,7 +228,7 @@ func buildToolRegistry() []toolRegistryEntry {
 						"type":        "integer",
 						"description": "Number of log lines to show (1-500, default 50)",
 						"minimum":     1,
-						"maximum":     500,
+						"maximum":     mcpMaxComponentLogLineCount,
 					},
 				},
 				"required": []string{"component"},
@@ -237,12 +299,12 @@ func buildToolRegistry() []toolRegistryEntry {
 
 // handleGitStatus runs git status in the CCattler repository.
 func handleGitStatus(arguments map[string]any) (string, error) {
-	return runCommandWithTimeout(30*time.Second, "git", "-C", serverConfig.repoPath, "status")
+	return runCommandWithTimeout(mcpGitStatusTimeout, "git", "-C", serverConfig.repoPath, "status")
 }
 
 // handleGitLog shows recent commits in the CCattler repository.
 func handleGitLog(arguments map[string]any) (string, error) {
-	commitCount := 20
+	commitCount := mcpDefaultGitLogCommitCount
 	if rawCount, hasCount := arguments["count"]; hasCount {
 		if parsedCount, isFloat := rawCount.(float64); isFloat {
 			commitCount = int(parsedCount)
@@ -251,16 +313,16 @@ func handleGitLog(arguments map[string]any) (string, error) {
 	if commitCount < 1 {
 		commitCount = 1
 	}
-	if commitCount > 100 {
-		commitCount = 100
+	if commitCount > mcpMaxGitLogCommitCount {
+		commitCount = mcpMaxGitLogCommitCount
 	}
-	return runCommandWithTimeout(30*time.Second, "git", "-C", serverConfig.repoPath,
+	return runCommandWithTimeout(mcpGitLogTimeout, "git", "-C", serverConfig.repoPath,
 		"log", "--oneline", "--decorate", "-n", strconv.Itoa(commitCount))
 }
 
 // handleGitPull pulls the latest changes using fast-forward only (safe, no merge conflicts).
 func handleGitPull(arguments map[string]any) (string, error) {
-	return runCommandWithTimeout(60*time.Second, "git", "-C", serverConfig.repoPath, "pull", "--ff-only")
+	return runCommandWithTimeout(mcpGitPullTimeout, "git", "-C", serverConfig.repoPath, "pull", "--ff-only")
 }
 
 // handleBuild compiles both CCattler binaries.
@@ -268,7 +330,7 @@ func handleBuild(arguments map[string]any) (string, error) {
 	var outputBuilder strings.Builder
 
 	outputBuilder.WriteString("=== Building cca ===\n")
-	ccaOutput, ccaBuildError := runCommandInDir(5*time.Minute, serverConfig.repoPath, "go", "build", "-o", "cca", "./cmd/cca/")
+	ccaOutput, ccaBuildError := runCommandInDir(mcpBuildBinaryTimeout, serverConfig.repoPath, "go", "build", "-o", "cca", "./cmd/cca/")
 	outputBuilder.WriteString(ccaOutput)
 	if ccaBuildError != nil {
 		return outputBuilder.String(), fmt.Errorf("cca build failed: %w", ccaBuildError)
@@ -276,7 +338,7 @@ func handleBuild(arguments map[string]any) (string, error) {
 	outputBuilder.WriteString("cca: OK\n\n")
 
 	outputBuilder.WriteString("=== Building ccattler-mcp ===\n")
-	mcpOutput, mcpBuildError := runCommandInDir(5*time.Minute, serverConfig.repoPath, "go", "build", "-o", "ccattler-mcp", "./cmd/mcp/")
+	mcpOutput, mcpBuildError := runCommandInDir(mcpBuildBinaryTimeout, serverConfig.repoPath, "go", "build", "-o", "ccattler-mcp", "./cmd/mcp/")
 	outputBuilder.WriteString(mcpOutput)
 	if mcpBuildError != nil {
 		return outputBuilder.String(), fmt.Errorf("mcp build failed: %w", mcpBuildError)
@@ -299,18 +361,18 @@ func handleTest(arguments map[string]any) (string, error) {
 		return "", fmt.Errorf("invalid package path %q: must match pattern ./[alphanumeric/._]", packagePath)
 	}
 
-	return runCommandInDir(5*time.Minute, serverConfig.repoPath, "go", "test", "-v", "-count=1", packagePath)
+	return runCommandInDir(mcpGoTestTimeout, serverConfig.repoPath, "go", "test", "-v", "-count=1", packagePath)
 }
 
 // handleClusterStatus runs cca status against the running etcd-backed cluster.
 func handleClusterStatus(arguments map[string]any) (string, error) {
 	ccaBinaryPath := filepath.Join(serverConfig.repoPath, "cca")
-	return runCommandWithTimeout(30*time.Second, ccaBinaryPath, "status", "--store", "etcd", "--endpoints", serverConfig.etcdEndpoints)
+	return runCommandWithTimeout(mcpClusterStatusTimeout, ccaBinaryPath, "status", "--store", "etcd", "--endpoints", serverConfig.etcdEndpoints)
 }
 
 // handleProcessList shows running CCattler and etcd processes.
 func handleProcessList(arguments map[string]any) (string, error) {
-	psOutput, psError := runCommandWithTimeout(10*time.Second, "ps", "aux")
+	psOutput, psError := runCommandWithTimeout(mcpProcessListTimeout, "ps", "aux")
 	if psError != nil {
 		return "", psError
 	}
@@ -328,7 +390,7 @@ func handleProcessList(arguments map[string]any) (string, error) {
 
 // handleContainerList shows Docker containers on this host.
 func handleContainerList(arguments map[string]any) (string, error) {
-	return runCommandWithTimeout(15*time.Second, "docker", "ps", "-a",
+	return runCommandWithTimeout(mcpDockerListTimeout, "docker", "ps", "-a",
 		"--format", "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Names}}\t{{.Ports}}")
 }
 
@@ -344,7 +406,7 @@ func handleComponentLogs(arguments map[string]any) (string, error) {
 		return "", fmt.Errorf("unknown component: %s", componentName)
 	}
 
-	lineCount := 50
+	lineCount := mcpDefaultComponentLogLineCount
 	if rawLines, hasLines := arguments["lines"]; hasLines {
 		if parsedLines, isFloat := rawLines.(float64); isFloat {
 			lineCount = int(parsedLines)
@@ -353,11 +415,11 @@ func handleComponentLogs(arguments map[string]any) (string, error) {
 	if lineCount < 1 {
 		lineCount = 1
 	}
-	if lineCount > 500 {
-		lineCount = 500
+	if lineCount > mcpMaxComponentLogLineCount {
+		lineCount = mcpMaxComponentLogLineCount
 	}
 
-	return runCommandWithTimeout(10*time.Second, "tail", "-n", strconv.Itoa(lineCount), componentDef.logFile)
+	return runCommandWithTimeout(mcpComponentLogTailTimeout, "tail", "-n", strconv.Itoa(lineCount), componentDef.logFile)
 }
 
 // handleStopComponent stops one or all CCattler components by sending SIGTERM.
@@ -429,7 +491,7 @@ func handleDeploy(arguments map[string]any) (string, error) {
 
 // handleDiskUsage shows disk usage on the host.
 func handleDiskUsage(arguments map[string]any) (string, error) {
-	return runCommandWithTimeout(10*time.Second, "df", "-h")
+	return runCommandWithTimeout(mcpDiskUsageTimeout, "df", "-h")
 }
 
 // handleApplyConfig applies a .ccl file to the running cluster.
@@ -456,7 +518,7 @@ func handleApplyConfig(arguments map[string]any) (string, error) {
 	}
 
 	ccaBinaryPath := filepath.Join(serverConfig.repoPath, "cca")
-	return runCommandWithTimeout(30*time.Second, ccaBinaryPath, "apply",
+	return runCommandWithTimeout(mcpApplyConfigTimeout, ccaBinaryPath, "apply",
 		"--store", "etcd", "--endpoints", serverConfig.etcdEndpoints, absoluteFilePath)
 }
 
@@ -485,9 +547,9 @@ func startAllComponents() (string, error) {
 			return outputBuilder.String(), fmt.Errorf("failed to start %s: %w", componentName, singleError)
 		}
 		if componentName == "etcd" {
-			time.Sleep(2 * time.Second)
+			time.Sleep(mcpEtcdStartSettleDelay)
 		} else {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(mcpComponentStartSettleDelay)
 		}
 	}
 	return outputBuilder.String(), nil
@@ -500,8 +562,8 @@ func stopSingleComponent(componentName string) (string, error) {
 		return "", fmt.Errorf("unknown component: %s", componentName)
 	}
 
-	pkillOutput, _ := runCommandWithTimeout(10*time.Second, "pkill", "-f", componentDef.processMatch)
-	time.Sleep(500 * time.Millisecond)
+	pkillOutput, _ := runCommandWithTimeout(mcpPkillTimeout, "pkill", "-f", componentDef.processMatch)
+	time.Sleep(mcpPostStopSettleDelay)
 	return fmt.Sprintf("stopped %s\n%s", componentDef.displayName, pkillOutput), nil
 }
 
@@ -517,7 +579,7 @@ func startSingleComponent(componentName string) (string, error) {
 		return "", fmt.Errorf("no start command defined for %s", componentName)
 	}
 
-	logFile, logOpenError := os.OpenFile(componentDef.logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	logFile, logOpenError := os.OpenFile(componentDef.logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, mcpLogFilePermissions)
 	if logOpenError != nil {
 		return "", fmt.Errorf("cannot open log file %s: %w", componentDef.logFile, logOpenError)
 	}

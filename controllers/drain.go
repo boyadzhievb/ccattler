@@ -143,11 +143,10 @@ func (drainController *DrainController) evictInstancesFromNode(
 func parseDrainingNodes(facts []store.Fact) map[string]bool {
 	drainingNodeSet := make(map[string]bool)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
+		nodeID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanObservedNodes)
+		if hasSuffix && suffix == "state" {
 			if string(factEntry.Value) == string(types.NodeDraining) {
-				drainingNodeSet[pathParts[0]] = true
+				drainingNodeSet[nodeID] = true
 			}
 		}
 	}
@@ -168,29 +167,13 @@ func parsePlacementsByNode(facts []store.Fact) map[string]string {
 // parseInstanceStates scans observed instance facts and returns a map from
 // instance ID to its current lifecycle state string.
 func parseInstanceStates(facts []store.Fact) map[string]string {
-	currentInstanceStates := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
-			currentInstanceStates[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return currentInstanceStates
+	return collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
 }
 
 // parseInstanceServices scans observed instance facts and returns a map from
 // instance ID to the service name it belongs to.
 func parseInstanceServices(facts []store.Fact) map[string]string {
-	instanceServiceMap := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "service" {
-			instanceServiceMap[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return instanceServiceMap
+	return collectStringValuesBySuffix(facts, types.ScanObservedInstances, "service")
 }
 
 // parseDrainCompleteMarkers scans derived node facts and returns a set of node
@@ -219,13 +202,10 @@ type disruptionBudget struct {
 func parseDisruptionBudgets(facts []store.Fact) map[string]disruptionBudget {
 	budgetsByService := make(map[string]disruptionBudget)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := pathParts[0]
-		suffix := pathParts[1]
 		budget := budgetsByService[serviceName]
 		switch suffix {
 		case "disruption/min_available":
@@ -262,15 +242,7 @@ func countGlobalActiveInstancesByService(
 // parseDesiredInstanceCounts scans desired service facts and returns the
 // desired instance count for each service.
 func parseDesiredInstanceCounts(facts []store.Fact) map[string]int {
-	desiredCounts := make(map[string]int)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "instances" {
-			desiredCounts[pathParts[0]], _ = strconv.Atoi(string(factEntry.Value))
-		}
-	}
-	return desiredCounts
+	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "instances")
 }
 
 // canEvictUnderDisruptionBudget checks whether evicting one more instance of

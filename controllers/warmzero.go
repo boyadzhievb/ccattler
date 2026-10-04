@@ -120,13 +120,10 @@ func extractWarmZeroConfigs(facts []store.Fact) map[string]warmZeroConfig {
 	minValues := make(map[string]int)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) < 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		switch suffix {
 		case "scale/horizontal/min":
@@ -155,15 +152,7 @@ func extractWarmZeroConfigs(facts []store.Fact) map[string]warmZeroConfig {
 }
 
 func extractActivationStates(facts []store.Fact) map[string]string {
-	states := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "activation/state" {
-			states[parts[0]] = string(fact.Value)
-		}
-	}
-	return states
+	return collectStringValuesBySuffix(facts, types.ScanDerivedServices, "activation/state")
 }
 
 func countRunningInstancesPerService(facts []store.Fact) map[string]int {
@@ -171,13 +160,10 @@ func countRunningInstancesPerService(facts []store.Fact) map[string]int {
 	runningInstances := make(map[string]bool)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) < 2 {
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if !hasSuffix {
 			continue
 		}
-		instanceID := parts[0]
-		suffix := parts[1]
 		switch suffix {
 		case "service":
 			serviceForInstance[instanceID] = string(fact.Value)
@@ -212,12 +198,11 @@ func countEndpointsPerService(facts []store.Fact) map[string]int {
 func extractLastRequestTimes(facts []store.Fact) map[string]time.Time {
 	times := make(map[string]time.Time)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "last_request_time" {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedServices)
+		if hasSuffix && suffix == "last_request_time" {
 			millis, parseError := strconv.ParseInt(string(fact.Value), 10, 64)
 			if parseError == nil {
-				times[parts[0]] = time.UnixMilli(millis)
+				times[serviceName] = time.UnixMilli(millis)
 			}
 		}
 	}

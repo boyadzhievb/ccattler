@@ -98,6 +98,7 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	var serviceVIPConfigs []network.ServiceVIPConfig
 	for serviceName, vipConfig := range serviceVIPMap {
 		if vipConfig.Port == 0 {
+			logging.Default().Warn("skipping service with no VIP port configured", "service", serviceName)
 			continue
 		}
 
@@ -150,11 +151,11 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 
 		if instanceNodeID == dataPlaneReconciler.nodeID {
 			hostPortFact, hostPortErr := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
-			if hostPortErr == nil {
+			if hostPortErr == nil && dataPlaneReconciler.advertiseAddress != "" {
 				hostPort, parseErr := strconv.Atoi(string(hostPortFact.Value))
 				if parseErr == nil && hostPort > 0 {
 					backends = append(backends, network.DataPlaneBackend{
-						Address: "127.0.0.1",
+						Address: dataPlaneReconciler.advertiseAddress,
 						Port:    hostPort,
 					})
 					continue

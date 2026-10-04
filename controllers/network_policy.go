@@ -289,16 +289,15 @@ func collectExistingDerivedNetworkRules(facts []store.Fact) map[string]map[int]s
 // parseDerivedNetworkRuleKey extracts the nodeID and rule index from a
 // derived/network/rule/{nodeID}/{index} key.
 func parseDerivedNetworkRuleKey(factKey string) (string, int, bool) {
-	relativePath := strings.TrimPrefix(factKey, types.ScanDerivedNetworkRules)
-	pathParts := strings.SplitN(relativePath, "/", 2)
-	if len(pathParts) != 2 {
+	nodeID, indexString, hasSuffix := splitFactKeyIntoEntityAndSuffix(factKey, types.ScanDerivedNetworkRules)
+	if !hasSuffix {
 		return "", 0, false
 	}
-	ruleIndex, parseErr := strconv.Atoi(pathParts[1])
+	ruleIndex, parseErr := strconv.Atoi(indexString)
 	if parseErr != nil {
 		return "", 0, false
 	}
-	return pathParts[0], ruleIndex, true
+	return nodeID, ruleIndex, true
 }
 
 // diffDerivedNetworkRules compares the desired compiled rules per node with

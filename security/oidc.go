@@ -68,6 +68,24 @@ type AuthenticationResult struct {
 // token must be signed with the configured public key, not expired, and have
 // the expected issuer and audience claims.
 func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*AuthenticationResult, error) {
+	claimsJSON, err := authenticator.parseAndVerifyJWTSignature(tokenString)
+	if err != nil {
+		return nil, err
+	}
+
+	claims, expiresAt, err := authenticator.extractAndValidateJWTClaims(claimsJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	return authenticator.constructAuthenticationResultFromClaims(claims, expiresAt)
+}
+
+// parseAndVerifyJWTSignature splits a JWT token string into its three parts,
+// validates the header algorithm is ES256, and verifies the ECDSA signature
+// using the configured public key. Returns the raw JSON bytes of the claims
+// payload on success.
+func (authenticator *OIDCAuthenticator) parseAndVerifyJWTSignature(tokenString string) ([]byte, error) {
 	parts := strings.Split(tokenString, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("oidc: invalid token format")
@@ -111,19 +129,26 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 		return nil, fmt.Errorf("oidc: decode claims: %w", err)
 	}
 
+	return claimsJSON, nil
+}
+
+// extractAndValidateJWTClaims unmarshals the raw JSON claims, validates the
+// issuer and audience against the authenticator configuration, and checks the
+// token expiry. Returns the claims map and the resolved expiration time.
+func (authenticator *OIDCAuthenticator) extractAndValidateJWTClaims(claimsJSON []byte) (map[string]interface{}, time.Time, error) {
 	var claims map[string]interface{}
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
-		return nil, fmt.Errorf("oidc: parse claims: %w", err)
+		return nil, time.Time{}, fmt.Errorf("oidc: parse claims: %w", err)
 	}
 
 	if issuer, _ := claims["iss"].(string); issuer != authenticator.config.Issuer {
-		return nil, fmt.Errorf("oidc: issuer mismatch: got %q, want %q", issuer, authenticator.config.Issuer)
+		return nil, time.Time{}, fmt.Errorf("oidc: issuer mismatch: got %q, want %q", issuer, authenticator.config.Issuer)
 	}
 
 	if authenticator.config.Audience != "" {
 		audience, _ := claims["aud"].(string)
 		if audience != authenticator.config.Audience {
-			return nil, fmt.Errorf("oidc: audience mismatch: got %q, want %q", audience, authenticator.config.Audience)
+			return nil, time.Time{}, fmt.Errorf("oidc: audience mismatch: got %q, want %q", audience, authenticator.config.Audience)
 		}
 	}
 
@@ -131,10 +156,17 @@ func (authenticator *OIDCAuthenticator) Authenticate(tokenString string) (*Authe
 	if expFloat, ok := claims["exp"].(float64); ok {
 		expiresAt = time.Unix(int64(expFloat), 0)
 		if time.Now().After(expiresAt) {
-			return nil, fmt.Errorf("oidc: token expired")
+			return nil, time.Time{}, fmt.Errorf("oidc: token expired")
 		}
 	}
 
+	return claims, expiresAt, nil
+}
+
+// constructAuthenticationResultFromClaims builds an AuthenticationResult from
+// the validated JWT claims map. It extracts the principal identity from the
+// configured principal claim and maps team/role claims to ABAC attributes.
+func (authenticator *OIDCAuthenticator) constructAuthenticationResultFromClaims(claims map[string]interface{}, expiresAt time.Time) (*AuthenticationResult, error) {
 	principalClaim := authenticator.config.ClaimMapping.PrincipalClaim
 	principalValue, _ := claims[principalClaim].(string)
 	if principalValue == "" {

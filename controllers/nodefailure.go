@@ -59,7 +59,21 @@ func (nodeFailureController *NodeFailureController) Watch() []string {
 func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	currentTime := nodeFailureController.Now()
 
-	// Parse lease timestamps: nodeID -> unix-millisecond timestamp of last heartbeat.
+	lastHeartbeatMillisByNode := parseNodeLeaseTimestamps(facts)
+	currentNodeStates := parseCurrentNodeStates(facts)
+
+	unreachableNodeSet, nodeStateChanges := nodeFailureController.identifyUnreachableNodes(
+		currentTime, lastHeartbeatMillisByNode, currentNodeStates,
+	)
+
+	instanceFailureChanges := markInstancesOnUnreachableNodesAsFailed(facts, unreachableNodeSet)
+
+	return append(nodeStateChanges, instanceFailureChanges...), nil
+}
+
+// parseNodeLeaseTimestamps extracts the last heartbeat unix-millisecond
+// timestamp for each node from lease/ prefix facts.
+func parseNodeLeaseTimestamps(facts []store.Fact) map[string]int64 {
 	lastHeartbeatMillisByNode := make(map[string]int64)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanLeaseNodes) {
 		nodeID := strings.TrimPrefix(factEntry.Key, types.ScanLeaseNodes)
@@ -67,18 +81,23 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 			lastHeartbeatMillisByNode[nodeID] = milliTimestamp
 		}
 	}
+	return lastHeartbeatMillisByNode
+}
 
-	// Parse current node states: nodeID -> state string (e.g. "alive", "unreachable").
-	currentNodeStates := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
-			currentNodeStates[pathParts[0]] = string(factEntry.Value)
-		}
-	}
+// parseCurrentNodeStates extracts the current state string (e.g. "alive",
+// "unreachable") for each node from observed/node/ prefix facts.
+func parseCurrentNodeStates(facts []store.Fact) map[string]string {
+	return collectStringValuesBySuffix(facts, types.ScanObservedNodes, "state")
+}
 
-	// Identify nodes whose lease has expired past the timeout threshold.
+// identifyUnreachableNodes examines each node's heartbeat timestamp against
+// the current time and the configured lease timeout. Returns the set of
+// unreachable node IDs and changes to mark newly-unreachable nodes.
+func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
+	currentTime time.Time,
+	lastHeartbeatMillisByNode map[string]int64,
+	currentNodeStates map[string]string,
+) (map[string]bool, []Change) {
 	unreachableNodeSet := make(map[string]bool)
 	for nodeID, heartbeatMillis := range lastHeartbeatMillisByNode {
 		nodeState := currentNodeStates[nodeID]
@@ -96,12 +115,10 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		}
 	}
 
-	var proposedChanges []Change
-
-	// Emit state changes to mark expired nodes as unreachable.
+	var nodeStateChanges []Change
 	for nodeID := range unreachableNodeSet {
 		if currentNodeStates[nodeID] != string(types.NodeUnreachable) {
-			proposedChanges = append(proposedChanges, Change{
+			nodeStateChanges = append(nodeStateChanges, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyObservedNodeState(nodeID),
 				Value: []byte(string(types.NodeUnreachable)),
@@ -109,31 +126,29 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		}
 	}
 
-	// Parse placements: instanceID -> target nodeID.
+	return unreachableNodeSet, nodeStateChanges
+}
+
+// markInstancesOnUnreachableNodesAsFailed scans placement and instance state
+// facts, and for any running, pending, or starting instance placed on an
+// unreachable node, emits a change to mark it as failed.
+func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNodeSet map[string]bool) []Change {
 	instancePlacementNode := make(map[string]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanPlacements) {
 		instanceID := strings.TrimPrefix(factEntry.Key, types.ScanPlacements)
 		instancePlacementNode[instanceID] = string(factEntry.Value)
 	}
 
-	// Parse instance states: instanceID -> current lifecycle state.
-	currentInstanceStates := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
-			currentInstanceStates[pathParts[0]] = string(factEntry.Value)
-		}
-	}
+	currentInstanceStates := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
 
-	// Mark running or pending instances on unreachable nodes as failed.
+	var instanceFailureChanges []Change
 	for instanceID, placedNodeID := range instancePlacementNode {
 		if !unreachableNodeSet[placedNodeID] {
 			continue
 		}
 		instanceState := types.InstanceState(currentInstanceStates[instanceID])
 		if instanceState == types.InstanceRunning || instanceState == types.InstancePending || instanceState == types.InstanceStarting {
-			proposedChanges = append(proposedChanges, Change{
+			instanceFailureChanges = append(instanceFailureChanges, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyObservedInstanceState(instanceID),
 				Value: []byte(string(types.InstanceFailed)),
@@ -141,5 +156,5 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		}
 	}
 
-	return proposedChanges, nil
+	return instanceFailureChanges
 }

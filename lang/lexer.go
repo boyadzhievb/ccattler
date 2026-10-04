@@ -43,6 +43,10 @@ func (lexer *Lexer) Tokenize() ([]Token, error) {
 }
 
 // scanNextToken reads the next token from the input, skipping whitespace and comments.
+//
+// This function exceeds 80 lines because it is a flat character-dispatch
+// conditional chain — each branch handles a single token type. Extracting
+// sub-groups would add indirection without improving clarity.
 func (lexer *Lexer) scanNextToken() (Token, error) {
 	lexer.skipWhitespaceExceptNewlines()
 	lexer.skipLineComment()

@@ -19,6 +19,20 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// instanceIDDisplayWidth is the maximum number of characters shown for
+	// instance IDs in CLI tables (instances and volumes).
+	instanceIDDisplayWidth = 12
+
+	// configValueDisplayWidth is the maximum number of characters shown for
+	// config values in the "get config" CLI table.
+	configValueDisplayWidth = 50
+
+	// sseWatchReadBufferSize is the byte-buffer size used when streaming
+	// SSE watch events from the API server.
+	sseWatchReadBufferSize = 4096
+)
+
 // eventsCommandConfig holds parsed flags for the "events" command.
 type eventsCommandConfig struct {
 	// followMode enables real-time streaming of new events via SSE.
@@ -935,7 +949,7 @@ func printInstancesTable(instances []api.InstanceStatus) {
 			ipDisplay = "-"
 		}
 		rows = append(rows, []string{
-			truncateValue(instance.ID, 12),
+			truncateValue(instance.ID, instanceIDDisplayWidth),
 			instance.ServiceName,
 			instance.State,
 			instance.NodeID,
@@ -988,7 +1002,7 @@ func printVolumesTable(volumes []api.VolumeStatus) {
 			volume.Size,
 			volume.State,
 			nodeDisplay,
-			truncateValue(instanceDisplay, 12),
+			truncateValue(instanceDisplay, instanceIDDisplayWidth),
 			mountDisplay,
 		})
 	}
@@ -1049,7 +1063,7 @@ func printConfigTable(configEntries []api.ConfigStatus) {
 			entry.Service,
 			entry.Type,
 			entry.Key,
-			truncateValue(entry.Value, 50),
+			truncateValue(entry.Value, configValueDisplayWidth),
 		})
 	}
 	printAlignedTable(header, rows)
@@ -1186,7 +1200,7 @@ func executeWatchCommand(prefix string) {
 	defer func() { _ = httpResponse.Body.Close() }()
 
 	fmt.Printf("watching %s ...\n", prefix)
-	buffer := make([]byte, 4096)
+	buffer := make([]byte, sseWatchReadBufferSize)
 	for {
 		bytesRead, readErr := httpResponse.Body.Read(buffer)
 		if bytesRead > 0 {

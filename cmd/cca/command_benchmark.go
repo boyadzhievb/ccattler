@@ -32,6 +32,44 @@ const (
 	benchmarkInjectionInterval = 3 * time.Second
 	// benchmarkPerInjectionTimeout is the convergence timeout after each injection.
 	benchmarkPerInjectionTimeout = 30 * time.Second
+
+	// benchmarkWatchChannelBufferSize is the channel buffer capacity for fact store watches
+	// during benchmark runs. Larger buffers prevent blocking under high event throughput.
+	benchmarkWatchChannelBufferSize = 4096
+	// benchmarkRecoverySuccessRateThreshold is the minimum recovery success rate percentage
+	// required for the benchmark to report PASS.
+	benchmarkRecoverySuccessRateThreshold = 80
+
+	// benchmarkSmallClusterNodeThreshold is the maximum node count classified as a small cluster.
+	benchmarkSmallClusterNodeThreshold = 20
+	// benchmarkSmallClusterAgentInterval is the agent reconciliation interval for small clusters.
+	benchmarkSmallClusterAgentInterval = 100 * time.Millisecond
+	// benchmarkSmallClusterControllerDebounce is the controller debounce duration for small clusters.
+	benchmarkSmallClusterControllerDebounce = 50 * time.Millisecond
+	// benchmarkSmallClusterMaxReconciliationAttempts is the maximum reconciliation retries for small clusters.
+	benchmarkSmallClusterMaxReconciliationAttempts = 5
+	// benchmarkSmallClusterLeaseTimeout is the node lease TTL for small clusters.
+	benchmarkSmallClusterLeaseTimeout = 5 * time.Second
+
+	// benchmarkMediumClusterNodeThreshold is the maximum node count classified as a medium cluster.
+	benchmarkMediumClusterNodeThreshold = 100
+	// benchmarkMediumClusterAgentInterval is the agent reconciliation interval for medium clusters.
+	benchmarkMediumClusterAgentInterval = 200 * time.Millisecond
+	// benchmarkMediumClusterControllerDebounce is the controller debounce duration for medium clusters.
+	benchmarkMediumClusterControllerDebounce = 100 * time.Millisecond
+	// benchmarkMediumClusterMaxReconciliationAttempts is the maximum reconciliation retries for medium clusters.
+	benchmarkMediumClusterMaxReconciliationAttempts = 10
+	// benchmarkMediumClusterLeaseTimeout is the node lease TTL for medium clusters.
+	benchmarkMediumClusterLeaseTimeout = 30 * time.Second
+
+	// benchmarkLargeClusterAgentInterval is the agent reconciliation interval for large clusters (above medium threshold).
+	benchmarkLargeClusterAgentInterval = 500 * time.Millisecond
+	// benchmarkLargeClusterControllerDebounce is the controller debounce duration for large clusters.
+	benchmarkLargeClusterControllerDebounce = 200 * time.Millisecond
+	// benchmarkLargeClusterMaxReconciliationAttempts is the maximum reconciliation retries for large clusters.
+	benchmarkLargeClusterMaxReconciliationAttempts = 15
+	// benchmarkLargeClusterLeaseTimeout is the node lease TTL for large clusters.
+	benchmarkLargeClusterLeaseTimeout = 60 * time.Second
 )
 
 // benchmarkConfig holds parsed command-line options for the benchmark command.
@@ -94,35 +132,11 @@ func parseBenchmarkCommandArgs(args []string) benchmarkConfig {
 	return config
 }
 
-// executeBenchmarkCommand runs a chaos benchmark on a simulated cluster and
-// prints recovery metrics. With --json, outputs a full RecoveryReport as JSON.
-func executeBenchmarkCommand(config benchmarkConfig) {
-	totalInstances := config.serviceCount * config.instancesPerService
-
-	factStore := store.NewMemoryStore()
-	defer func() { _ = factStore.Close() }()
-
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
-
-	factStore.SetWatchChannelBufferSize(4096)
-
-	nodeIDs := make([]string, config.nodeCount)
-	for nodeIndex := range nodeIDs {
-		nodeIDs[nodeIndex] = fmt.Sprintf("node-%03d", nodeIndex)
-	}
-
-	benchmarkCluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
-	configureBenchmarkCluster(benchmarkCluster, config.nodeCount)
-	benchmarkCluster.Start(ctx)
-
-	if !config.jsonOutput {
-		fmt.Printf("=== CCattler Chaos Benchmark ===\n\n")
-		fmt.Printf("Cluster: %d nodes, %d services × %d instances = %d total\n\n",
-			config.nodeCount, config.serviceCount, config.instancesPerService, totalInstances)
-		fmt.Println("Deploying workloads...")
-	}
-
+// deployBenchmarkWorkloads creates the configured number of services on the
+// cluster and waits for all instances to reach a converged state. Returns the
+// wall-clock duration of the convergence wait and whether it succeeded within
+// the deadline.
+func deployBenchmarkWorkloads(ctx context.Context, benchmarkCluster *chaos.SimulatedChaosCluster, config benchmarkConfig) (time.Duration, bool) {
 	for serviceIndex := 0; serviceIndex < config.serviceCount; serviceIndex++ {
 		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
 		benchmarkCluster.DeployService(ctx, serviceName, fmt.Sprintf("app:v%d", serviceIndex), config.instancesPerService)
@@ -132,16 +146,14 @@ func executeBenchmarkCommand(config benchmarkConfig) {
 	deployConverged := waitForBenchmarkConvergence(ctx, benchmarkCluster, benchmarkDeployConvergenceDeadline)
 	deployDuration := time.Since(deployStart)
 
-	if !deployConverged {
-		fmt.Fprintf(os.Stderr, "deployment did not converge within %v\n", benchmarkDeployConvergenceDeadline)
-		os.Exit(1)
-	}
+	return deployDuration, deployConverged
+}
 
-	if !config.jsonOutput {
-		fmt.Printf("Deployment converged in %v\n\n", deployDuration.Round(time.Millisecond))
-		fmt.Println("Starting chaos injection for 60 seconds...")
-	}
-
+// runBenchmarkChaosInjection configures the chaos runner with standard failure
+// scenarios (node kill, partition, controller restart, scale change, recovery)
+// and executes injection for the benchmark duration. When not in JSON output
+// mode, prints per-event progress as each injection resolves or times out.
+func runBenchmarkChaosInjection(ctx context.Context, benchmarkCluster *chaos.SimulatedChaosCluster, jsonOutput bool) []chaos.ChaosEvent {
 	chaosConfig := chaos.ChaosConfig{
 		Duration:           benchmarkInjectionDuration,
 		InjectionInterval:  benchmarkInjectionInterval,
@@ -157,7 +169,7 @@ func executeBenchmarkCommand(config benchmarkConfig) {
 	}
 
 	chaosRunner := chaos.NewChaosRunner(chaosConfig, benchmarkCluster)
-	if !config.jsonOutput {
+	if !jsonOutput {
 		chaosRunner.SetEventCallback(func(event chaos.ChaosEvent) {
 			convergenceLabel := "TIMEOUT"
 			if event.Converged {
@@ -168,8 +180,13 @@ func executeBenchmarkCommand(config benchmarkConfig) {
 		})
 	}
 
-	chaosEvents := chaosRunner.Run(ctx)
+	return chaosRunner.Run(ctx)
+}
 
+// buildAndOutputBenchmarkReport computes recovery metrics from chaos events,
+// assembles the full report, and outputs it as JSON (when jsonOutput is set
+// in the config) or as a human-readable summary to stdout.
+func buildAndOutputBenchmarkReport(ctx context.Context, benchmarkCluster *chaos.SimulatedChaosCluster, config benchmarkConfig, totalInstances int, deployDuration time.Duration, chaosEvents []chaos.ChaosEvent) {
 	finalConverged, finalStatus := benchmarkCluster.CheckConvergence(ctx)
 	recoveryMetrics := chaos.ComputeRecoveryMetrics(chaosEvents)
 
@@ -197,6 +214,52 @@ func executeBenchmarkCommand(config benchmarkConfig) {
 	printBenchmarkSummary(report)
 }
 
+// executeBenchmarkCommand runs a chaos benchmark on a simulated cluster and
+// prints recovery metrics. With --json, outputs a full RecoveryReport as JSON.
+func executeBenchmarkCommand(config benchmarkConfig) {
+	totalInstances := config.serviceCount * config.instancesPerService
+
+	factStore := store.NewMemoryStore()
+	defer func() { _ = factStore.Close() }()
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+
+	factStore.SetWatchChannelBufferSize(benchmarkWatchChannelBufferSize)
+
+	nodeIDs := make([]string, config.nodeCount)
+	for nodeIndex := range nodeIDs {
+		nodeIDs[nodeIndex] = fmt.Sprintf("node-%03d", nodeIndex)
+	}
+
+	benchmarkCluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
+	configureBenchmarkCluster(benchmarkCluster, config.nodeCount)
+	benchmarkCluster.Start(ctx)
+
+	if !config.jsonOutput {
+		fmt.Printf("=== CCattler Chaos Benchmark ===\n\n")
+		fmt.Printf("Cluster: %d nodes, %d services × %d instances = %d total\n\n",
+			config.nodeCount, config.serviceCount, config.instancesPerService, totalInstances)
+		fmt.Println("Deploying workloads...")
+	}
+
+	deployDuration, deployConverged := deployBenchmarkWorkloads(ctx, benchmarkCluster, config)
+
+	if !deployConverged {
+		fmt.Fprintf(os.Stderr, "deployment did not converge within %v\n", benchmarkDeployConvergenceDeadline)
+		os.Exit(1)
+	}
+
+	if !config.jsonOutput {
+		fmt.Printf("Deployment converged in %v\n\n", deployDuration.Round(time.Millisecond))
+		fmt.Println("Starting chaos injection for 60 seconds...")
+	}
+
+	chaosEvents := runBenchmarkChaosInjection(ctx, benchmarkCluster, config.jsonOutput)
+
+	buildAndOutputBenchmarkReport(ctx, benchmarkCluster, config, totalInstances, deployDuration, chaosEvents)
+}
+
 // printBenchmarkSummary prints a human-readable summary of the benchmark results.
 func printBenchmarkSummary(report chaos.RecoveryReport) {
 	metrics := report.Metrics
@@ -211,10 +274,10 @@ func printBenchmarkSummary(report chaos.RecoveryReport) {
 	fmt.Printf("Max convergence:  %v\n", metrics.MaxConvergenceTime.Round(time.Millisecond))
 	fmt.Printf("Final converged:  %v (%s)\n", report.FinalConverged, report.FinalStatus)
 
-	if metrics.RecoverySuccessRate >= 80 {
+	if metrics.RecoverySuccessRate >= benchmarkRecoverySuccessRateThreshold {
 		fmt.Println("\nResult: PASS")
 	} else {
-		fmt.Println("\nResult: FAIL — recovery rate below 80%")
+		fmt.Printf("\nResult: FAIL — recovery rate below %d%%\n", benchmarkRecoverySuccessRateThreshold)
 	}
 }
 
@@ -222,21 +285,21 @@ func printBenchmarkSummary(report chaos.RecoveryReport) {
 // appropriate for the given node count.
 func configureBenchmarkCluster(cluster *chaos.SimulatedChaosCluster, nodeCount int) {
 	switch {
-	case nodeCount <= 20:
-		cluster.SetAgentInterval(100 * time.Millisecond)
-		cluster.SetControllerDebounce(50 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(5)
-		cluster.SetLeaseTimeout(5 * time.Second)
-	case nodeCount <= 100:
-		cluster.SetAgentInterval(200 * time.Millisecond)
-		cluster.SetControllerDebounce(100 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(10)
-		cluster.SetLeaseTimeout(30 * time.Second)
+	case nodeCount <= benchmarkSmallClusterNodeThreshold:
+		cluster.SetAgentInterval(benchmarkSmallClusterAgentInterval)
+		cluster.SetControllerDebounce(benchmarkSmallClusterControllerDebounce)
+		cluster.SetMaxReconciliationAttempts(benchmarkSmallClusterMaxReconciliationAttempts)
+		cluster.SetLeaseTimeout(benchmarkSmallClusterLeaseTimeout)
+	case nodeCount <= benchmarkMediumClusterNodeThreshold:
+		cluster.SetAgentInterval(benchmarkMediumClusterAgentInterval)
+		cluster.SetControllerDebounce(benchmarkMediumClusterControllerDebounce)
+		cluster.SetMaxReconciliationAttempts(benchmarkMediumClusterMaxReconciliationAttempts)
+		cluster.SetLeaseTimeout(benchmarkMediumClusterLeaseTimeout)
 	default:
-		cluster.SetAgentInterval(500 * time.Millisecond)
-		cluster.SetControllerDebounce(200 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(15)
-		cluster.SetLeaseTimeout(60 * time.Second)
+		cluster.SetAgentInterval(benchmarkLargeClusterAgentInterval)
+		cluster.SetControllerDebounce(benchmarkLargeClusterControllerDebounce)
+		cluster.SetMaxReconciliationAttempts(benchmarkLargeClusterMaxReconciliationAttempts)
+		cluster.SetLeaseTimeout(benchmarkLargeClusterLeaseTimeout)
 	}
 	cluster.SetMaxInputKeyGuards(0)
 }

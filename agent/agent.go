@@ -309,6 +309,14 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
 	}
 
+	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
+	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, runtimeSpec)
+}
+
+// buildRuntimeSpecForInstance resolves the complete runtime specification for an
+// instance by reading config env vars, config files, exposed ports, resource
+// limits, and allocating a network IP address from the configured provider.
+func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanceInfo placedInstanceInfo, image string) runtime.Spec {
 	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, instanceInfo.service)
 	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
 	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
@@ -324,7 +332,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		}
 	}
 
-	if startError := nodeAgent.runtime.Start(ctx, runtime.Spec{
+	return runtime.Spec{
 		ID:          instanceInfo.id,
 		ServiceName: instanceInfo.service,
 		Image:       image,
@@ -334,7 +342,16 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		IP:          allocatedIP,
 		CPUm:        cpuMillicores,
 		MemoryB:     memoryBytes,
-	}); startError != nil {
+	}
+}
+
+// startInstanceAndPublishState starts an instance using the given runtime spec,
+// records the applied resource allocation, publishes host port information for
+// container runtimes, observes the instance state from the runtime, and writes
+// the observed state and image to the store. On failure, cleans up secrets,
+// publishes a failed state, and records the image reference.
+func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, runtimeSpec runtime.Spec) {
+	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
 		if nodeAgent.secretProvider != nil {
 			nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
@@ -347,8 +364,8 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	}
 
 	nodeAgent.appliedInstanceResources[instanceInfo.id] = appliedResourceAllocation{
-		cpuMillicores: cpuMillicores,
-		memoryBytes:   memoryBytes,
+		cpuMillicores: runtimeSpec.CPUm,
+		memoryBytes:   runtimeSpec.MemoryB,
 	}
 
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {

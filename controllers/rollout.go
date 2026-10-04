@@ -230,15 +230,7 @@ type rolloutInstanceInfo struct {
 
 // extractDesiredImages returns a map of service name to desired container image.
 func extractDesiredImages(facts []store.Fact) map[string]string {
-	images := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "image" {
-			images[parts[0]] = string(fact.Value)
-		}
-	}
-	return images
+	return collectStringValuesBySuffix(facts, types.ScanDesiredServices, "image")
 }
 
 // extractedUpdatePolicy holds parsed update strategy from facts.
@@ -251,13 +243,10 @@ type extractedUpdatePolicy struct {
 func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy {
 	policies := make(map[string]extractedUpdatePolicy)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 		policy := policies[serviceName]
 		switch suffix {
 		case "update/max_unavailable":
@@ -287,16 +276,14 @@ func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceI
 	instanceMap := make(map[string]*rolloutInstanceInfo)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if !hasSuffix {
 			continue
 		}
-		instanceID := parts[0]
 		if instanceMap[instanceID] == nil {
 			instanceMap[instanceID] = &rolloutInstanceInfo{id: instanceID}
 		}
-		switch parts[1] {
+		switch suffix {
 		case "service":
 			instanceMap[instanceID].service = string(fact.Value)
 		case "state":
@@ -327,13 +314,10 @@ type rolloutDisruptionBudget struct {
 func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisruptionBudget {
 	budgets := make(map[string]rolloutDisruptionBudget)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := pathParts[0]
-		suffix := pathParts[1]
 		budget := budgets[serviceName]
 		switch suffix {
 		case "disruption/min_available":
@@ -361,15 +345,7 @@ func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisru
 // extractDesiredInstanceCounts scans desired service facts and returns the
 // desired instance count per service.
 func extractDesiredInstanceCounts(facts []store.Fact) map[string]int {
-	counts := make(map[string]int)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDesiredServices)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "instances" {
-			counts[pathParts[0]], _ = strconv.Atoi(string(factEntry.Value))
-		}
-	}
-	return counts
+	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "instances")
 }
 
 // applyDisruptionBudgetToUpdatePolicy returns an update policy with
@@ -400,13 +376,11 @@ func applyDisruptionBudgetToUpdatePolicy(
 func extractRolloutState(facts []store.Fact) map[string]string {
 	state := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 || !strings.HasPrefix(parts[1], "rollout/") {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDerivedServices)
+		if !hasSuffix || !strings.HasPrefix(suffix, "rollout/") {
 			continue
 		}
-		serviceName := parts[0]
-		rolloutField := strings.TrimPrefix(parts[1], "rollout/")
+		rolloutField := strings.TrimPrefix(suffix, "rollout/")
 		switch rolloutField {
 		case "state":
 			state[serviceName] = string(fact.Value)

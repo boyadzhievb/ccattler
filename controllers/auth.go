@@ -168,6 +168,16 @@ func buildCapabilityGrants(
 	return newGrants
 }
 
+// policyConditionComponents holds the raw capability names and condition
+// field/operator/value maps collected from auth/policy/ facts. Each inner map
+// is keyed by policy name, then by zero-based condition index.
+type policyConditionComponents struct {
+	capabilities map[string]string         // policyName → capability string
+	fields       map[string]map[int]string // policyName → conditionIndex → field
+	operators    map[string]map[int]string // policyName → conditionIndex → operator
+	values       map[string]map[int]string // policyName → conditionIndex → value
+}
+
 // parseConditionalPoliciesFromFacts extracts ABAC policies from auth/policy/
 // facts. Each policy has a capability and zero or more conditions. The key
 // layout is:
@@ -177,10 +187,38 @@ func buildCapabilityGrants(
 //	auth/policy/{name}/condition/{index}/operator → "=="
 //	auth/policy/{name}/condition/{index}/value → "resource.team"
 func parseConditionalPoliciesFromFacts(facts []store.Fact) []security.ConditionalPolicy {
-	policyCapabilities := make(map[string]string)
-	conditionFields := make(map[string]map[int]string)
-	conditionOperators := make(map[string]map[int]string)
-	conditionValues := make(map[string]map[int]string)
+	components := collectPolicyConditionComponentsFromFacts(facts)
+
+	sortedPolicyNames := make([]string, 0, len(components.capabilities))
+	for policyName := range components.capabilities {
+		sortedPolicyNames = append(sortedPolicyNames, policyName)
+	}
+	sort.Strings(sortedPolicyNames)
+
+	var conditionalPolicies []security.ConditionalPolicy
+	for _, policyName := range sortedPolicyNames {
+		capabilityName := components.capabilities[policyName]
+		policy := security.ConditionalPolicy{
+			Name:       policyName,
+			Capability: security.Capability(capabilityName),
+			Conditions: assembleConditionsForPolicy(policyName, components),
+		}
+		conditionalPolicies = append(conditionalPolicies, policy)
+	}
+
+	return conditionalPolicies
+}
+
+// collectPolicyConditionComponentsFromFacts scans auth/policy/ facts and
+// collects the raw capability names, condition fields, operators, and values
+// into maps keyed by policy name and condition index.
+func collectPolicyConditionComponentsFromFacts(facts []store.Fact) policyConditionComponents {
+	components := policyConditionComponents{
+		capabilities: make(map[string]string),
+		fields:       make(map[string]map[int]string),
+		operators:    make(map[string]map[int]string),
+		values:       make(map[string]map[int]string),
+	}
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanAuthPolicies) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanAuthPolicies)
@@ -194,81 +232,75 @@ func parseConditionalPoliciesFromFacts(facts []store.Fact) []security.Conditiona
 		subKey := pathParts[1]
 
 		if subKey == "capability" && len(pathParts) == 2 {
-			policyCapabilities[policyName] = string(fact.Value)
+			components.capabilities[policyName] = string(fact.Value)
 			continue
 		}
 
 		if subKey == "condition" && len(pathParts) == 4 {
-			conditionIndexStr := pathParts[2]
-			conditionField := pathParts[3]
-			conditionIndex := parseConditionIndex(conditionIndexStr)
+			conditionIndex := parseConditionIndex(pathParts[2])
 			if conditionIndex < 0 {
 				continue
 			}
-
-			switch conditionField {
-			case "field":
-				if conditionFields[policyName] == nil {
-					conditionFields[policyName] = make(map[int]string)
-				}
-				conditionFields[policyName][conditionIndex] = string(fact.Value)
-			case "operator":
-				if conditionOperators[policyName] == nil {
-					conditionOperators[policyName] = make(map[int]string)
-				}
-				conditionOperators[policyName][conditionIndex] = string(fact.Value)
-			case "value":
-				if conditionValues[policyName] == nil {
-					conditionValues[policyName] = make(map[int]string)
-				}
-				conditionValues[policyName][conditionIndex] = string(fact.Value)
-			}
+			storeConditionComponent(&components, policyName, conditionIndex, pathParts[3], string(fact.Value))
 		}
 	}
 
-	sortedPolicyNames := make([]string, 0, len(policyCapabilities))
-	for policyName := range policyCapabilities {
-		sortedPolicyNames = append(sortedPolicyNames, policyName)
+	return components
+}
+
+// storeConditionComponent stores a single condition field, operator, or value
+// into the appropriate map within the policy condition components.
+func storeConditionComponent(components *policyConditionComponents, policyName string, conditionIndex int, componentType, componentValue string) {
+	switch componentType {
+	case "field":
+		if components.fields[policyName] == nil {
+			components.fields[policyName] = make(map[int]string)
+		}
+		components.fields[policyName][conditionIndex] = componentValue
+	case "operator":
+		if components.operators[policyName] == nil {
+			components.operators[policyName] = make(map[int]string)
+		}
+		components.operators[policyName][conditionIndex] = componentValue
+	case "value":
+		if components.values[policyName] == nil {
+			components.values[policyName] = make(map[int]string)
+		}
+		components.values[policyName][conditionIndex] = componentValue
 	}
-	sort.Strings(sortedPolicyNames)
+}
 
-	var conditionalPolicies []security.ConditionalPolicy
-	for _, policyName := range sortedPolicyNames {
-		capabilityName := policyCapabilities[policyName]
-		policy := security.ConditionalPolicy{
-			Name:       policyName,
-			Capability: security.Capability(capabilityName),
+// assembleConditionsForPolicy builds the ordered list of conditions for a
+// single policy from the collected field/operator/value maps. Conditions
+// with missing components are skipped.
+func assembleConditionsForPolicy(policyName string, components policyConditionComponents) []security.Condition {
+	fieldMap := components.fields[policyName]
+	operatorMap := components.operators[policyName]
+	valueMap := components.values[policyName]
+
+	maxIndex := -1
+	for conditionIndex := range fieldMap {
+		if conditionIndex > maxIndex {
+			maxIndex = conditionIndex
 		}
-
-		fieldMap := conditionFields[policyName]
-		operatorMap := conditionOperators[policyName]
-		valueMap := conditionValues[policyName]
-
-		maxIndex := -1
-		for conditionIndex := range fieldMap {
-			if conditionIndex > maxIndex {
-				maxIndex = conditionIndex
-			}
-		}
-
-		for conditionIndex := 0; conditionIndex <= maxIndex; conditionIndex++ {
-			fieldValue, hasField := fieldMap[conditionIndex]
-			operatorValue, hasOperator := operatorMap[conditionIndex]
-			valueStr, hasValue := valueMap[conditionIndex]
-			if !hasField || !hasOperator || !hasValue {
-				continue
-			}
-			policy.Conditions = append(policy.Conditions, security.Condition{
-				Field:    fieldValue,
-				Operator: security.ConditionOperator(operatorValue),
-				Value:    valueStr,
-			})
-		}
-
-		conditionalPolicies = append(conditionalPolicies, policy)
 	}
 
-	return conditionalPolicies
+	var conditions []security.Condition
+	for conditionIndex := 0; conditionIndex <= maxIndex; conditionIndex++ {
+		fieldValue, hasField := fieldMap[conditionIndex]
+		operatorValue, hasOperator := operatorMap[conditionIndex]
+		valueStr, hasValue := valueMap[conditionIndex]
+		if !hasField || !hasOperator || !hasValue {
+			continue
+		}
+		conditions = append(conditions, security.Condition{
+			Field:    fieldValue,
+			Operator: security.ConditionOperator(operatorValue),
+			Value:    valueStr,
+		})
+	}
+
+	return conditions
 }
 
 // parseConditionIndex parses a string condition index into an integer.

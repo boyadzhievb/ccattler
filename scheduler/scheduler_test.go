@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -9,6 +10,18 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// testKeyObservedNodeLabel constructs the store path for a node label in tests.
+// Production code reads this via prefix scan, not through a shared key function.
+func testKeyObservedNodeLabel(nodeID, label string) string {
+	return fmt.Sprintf("%s/node/%s/label/%s", types.PrefixObserved, nodeID, label)
+}
+
+// testKeyObservedNodeRestrict constructs the store path for a node restriction in tests.
+// Production code reads this via prefix scan, not through a shared key function.
+func testKeyObservedNodeRestrict(nodeID, label string) string {
+	return fmt.Sprintf("%s/node/%s/restrict/%s", types.PrefixObserved, nodeID, label)
+}
 
 func buildFacts(entries ...struct{ k, v string }) []store.Fact {
 	facts := make([]store.Fact, len(entries))
@@ -334,7 +347,7 @@ func TestRequireLabelPlacement(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		// node-2 has gpu=true — should be selected.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
+		kv(testKeyObservedNodeLabel("node-2", "gpu"), "true"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -359,7 +372,7 @@ func TestRequireLabelMismatch(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementRequire("ml-training", "gpu"), "true"),
 		// node-1 has gpu=false — label exists but value doesn't match.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "false"),
+		kv(testKeyObservedNodeLabel("node-1", "gpu"), "false"),
 		// node-2 has no gpu label at all.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
@@ -385,11 +398,11 @@ func TestMultipleRequireLabels(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementRequire("special", "ssd"), "true"),
 		// node-1 has gpu=true only.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
+		kv(testKeyObservedNodeLabel("node-1", "gpu"), "true"),
 		// node-2 has gpu=true and ssd=true.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
-		kv(types.KeyObservedNodeLabel("node-2", "ssd"), "true"),
+		kv(testKeyObservedNodeLabel("node-2", "gpu"), "true"),
+		kv(testKeyObservedNodeLabel("node-2", "ssd"), "true"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -414,10 +427,10 @@ func TestPreferLabelScoring(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementPrefer("web", "region"), "us-east"),
 		// node-1 has region=us-west.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-1", "region"), "us-west"),
+		kv(testKeyObservedNodeLabel("node-1", "region"), "us-west"),
 		// node-2 has region=us-east — preferred.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-2", "region"), "us-east"),
+		kv(testKeyObservedNodeLabel("node-2", "region"), "us-east"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -466,7 +479,7 @@ func TestRestrictedNodeExcluded(t *testing.T) {
 		kv(types.KeyObservedInstanceState("aaa"), "pending"),
 		// node-1 is restricted with "dedicated-compute".
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		kv(testKeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
 		// node-2 has no restrictions.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
@@ -493,7 +506,7 @@ func TestAcceptRestrictedNode(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementAccept("ml-training", "dedicated-compute"), ""),
 		// node-1 is restricted — service accepts it.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		kv(testKeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
 		// node-2 has no restrictions.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
@@ -521,7 +534,7 @@ func TestAcceptMissingRestrictionLabel(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementAccept("web", "gpu-pool"), ""),
 		// node-1 restricted with "dedicated-compute" — not accepted.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		kv(testKeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
 		// node-2 unrestricted.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 	)
@@ -549,15 +562,15 @@ func TestRequireAndPreferCombined(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementPrefer("ml-training", "region"), "us-east"),
 		// node-1: gpu=true, region=us-west — satisfies require, not preferred.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
-		kv(types.KeyObservedNodeLabel("node-1", "region"), "us-west"),
+		kv(testKeyObservedNodeLabel("node-1", "gpu"), "true"),
+		kv(testKeyObservedNodeLabel("node-1", "region"), "us-west"),
 		// node-2: gpu=true, region=us-east — satisfies require + preferred.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "true"),
-		kv(types.KeyObservedNodeLabel("node-2", "region"), "us-east"),
+		kv(testKeyObservedNodeLabel("node-2", "gpu"), "true"),
+		kv(testKeyObservedNodeLabel("node-2", "region"), "us-east"),
 		// node-3: no gpu — filtered out by require.
 		kv(types.KeyObservedNodeState("node-3"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-3", "region"), "us-east"),
+		kv(testKeyObservedNodeLabel("node-3", "region"), "us-east"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)
@@ -583,11 +596,11 @@ func TestRestrictAndRequireCombined(t *testing.T) {
 		kv(types.KeyDesiredServicePlacementAccept("ml-training", "dedicated-compute"), ""),
 		// node-1: gpu=true, restricted — service accepts restriction.
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-1", "gpu"), "true"),
-		kv(types.KeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
+		kv(testKeyObservedNodeLabel("node-1", "gpu"), "true"),
+		kv(testKeyObservedNodeRestrict("node-1", "dedicated-compute"), ""),
 		// node-2: gpu=false, no restriction.
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
-		kv(types.KeyObservedNodeLabel("node-2", "gpu"), "false"),
+		kv(testKeyObservedNodeLabel("node-2", "gpu"), "false"),
 	)
 
 	changes, err := placementScheduler.Reconcile(context.Background(), facts)

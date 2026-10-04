@@ -22,6 +22,21 @@ const (
 	ScenarioNodeRecovery FailureScenario = "node-recovery"
 )
 
+const (
+	// chaosScaleMinimumInstances is the lower bound for the random instance
+	// count chosen by the scale-change chaos scenario.
+	chaosScaleMinimumInstances = 2
+
+	// chaosScaleRandomRange is the upper bound (exclusive) added to the
+	// minimum when computing a random scale target:
+	//   newCount = chaosScaleMinimumInstances + rand.Intn(chaosScaleRandomRange)
+	chaosScaleRandomRange = 8
+
+	// chaosConvergencePollInterval is how often waitForConvergence checks
+	// the cluster state while waiting for desired == observed.
+	chaosConvergencePollInterval = 50 * time.Millisecond
+)
+
 // ChaosEvent records a single failure injection with its timestamp and details.
 type ChaosEvent struct {
 	// Timestamp is when the injection occurred, relative to chaos start.
@@ -220,7 +235,7 @@ func (chaosRunner *ChaosRunner) injectScaleChange(ctx context.Context) string {
 		return ""
 	}
 	serviceName := serviceNames[chaosRunner.config.RandSource.Intn(len(serviceNames))]
-	newCount := 2 + chaosRunner.config.RandSource.Intn(8)
+	newCount := chaosScaleMinimumInstances + chaosRunner.config.RandSource.Intn(chaosScaleRandomRange)
 	chaosRunner.cluster.SetServiceScale(ctx, serviceName, newCount)
 	return serviceName
 }
@@ -257,7 +272,7 @@ func (chaosRunner *ChaosRunner) waitForConvergence(ctx context.Context) (bool, t
 		if converged {
 			return true, time.Since(convergenceStart)
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(chaosConvergencePollInterval)
 	}
 	return false, time.Since(convergenceStart)
 }

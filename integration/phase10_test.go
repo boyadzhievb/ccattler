@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -252,7 +253,7 @@ func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceScaleHorizontalTarget("web", "cpu"), []byte("50"))
 
 	// Set quota to 4 instances max.
-	factStore.Put(ctx, types.KeyDesiredServiceQuotaInstances("web"), []byte("4"))
+	factStore.Put(ctx, fmt.Sprintf("%s/service/%s/quota/instances", types.PrefixDesired, "web"), []byte("4"))
 
 	waitFor(t, 5*time.Second, "2 running instances", func() bool {
 		return countRunningInstancesForService(ctx, factStore, "web") >= 2

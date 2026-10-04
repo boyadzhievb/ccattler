@@ -551,11 +551,6 @@ func KeyDesiredServiceScaleScheduleMinimum(name string) string {
 	return fmt.Sprintf("%s/service/%s/scale/horizontal/schedule/minimum", PrefixDesired, name)
 }
 
-// KeyDesiredServiceQuotaInstances returns the store path for a service's instance quota ceiling.
-func KeyDesiredServiceQuotaInstances(name string) string {
-	return fmt.Sprintf("%s/service/%s/quota/instances", PrefixDesired, name)
-}
-
 // KeyDesiredServicePlacementArchitecture returns the store path for a service's
 // required CPU architecture constraint.
 func KeyDesiredServicePlacementArchitecture(name string) string {
@@ -587,20 +582,6 @@ func KeyDesiredServicePlacementPrefer(name, label string) string {
 // Path: desired/service/{name}/placement/accept/{label}
 func KeyDesiredServicePlacementAccept(name, label string) string {
 	return fmt.Sprintf("%s/service/%s/placement/accept/%s", PrefixDesired, name, label)
-}
-
-// KeyObservedNodeLabel returns the store path for a node's label used for
-// placement matching (require/prefer).
-// Path: observed/node/{nodeID}/label/{label}
-func KeyObservedNodeLabel(nodeID, label string) string {
-	return fmt.Sprintf("%s/node/%s/label/%s", PrefixObserved, nodeID, label)
-}
-
-// KeyObservedNodeRestrict returns the store path for a node restriction that
-// prevents scheduling unless the service explicitly accepts it.
-// Path: observed/node/{nodeID}/restrict/{label}
-func KeyObservedNodeRestrict(nodeID, label string) string {
-	return fmt.Sprintf("%s/node/%s/restrict/%s", PrefixObserved, nodeID, label)
 }
 
 // KeyDesiredServiceUpdateMaxUnavailable returns the store path for the maximum number
@@ -656,23 +637,6 @@ func KeyDesiredClusterAutoscaleMaxNodes() string {
 	return fmt.Sprintf("%s/cluster/autoscale/max_nodes", PrefixDesired)
 }
 
-// KeyObservedServiceRolloutImage returns the store path tracking the previous image
-// during a rolling update for rollback purposes.
-func KeyObservedServiceRolloutImage(name string) string {
-	return fmt.Sprintf("%s/service/%s/rollout/previous_image", PrefixObserved, name)
-}
-
-// KeyObservedServiceRolloutState returns the store path for a service's rollout state.
-func KeyObservedServiceRolloutState(name string) string {
-	return fmt.Sprintf("%s/service/%s/rollout/state", PrefixObserved, name)
-}
-
-// KeyObservedServiceRolloutFailures returns the count of failed new-image instances
-// during a rollout, used for rollback decisions.
-func KeyObservedServiceRolloutFailures(name string) string {
-	return fmt.Sprintf("%s/service/%s/rollout/failures", PrefixObserved, name)
-}
-
 // KeyDesiredServiceConfigEnv returns the store path for a service's environment variable.
 // Path: desired/service/{name}/config/env/{varName}
 func KeyDesiredServiceConfigEnv(serviceName, varName string) string {
@@ -719,18 +683,6 @@ func KeyObservedNodeUtilizationMemory(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/utilization/memory", PrefixObserved, nodeID)
 }
 
-// KeyObservedNodeDiskUsed returns the store path for a node's disk usage as bytes.
-// Path: observed/node/{nodeID}/disk/used
-func KeyObservedNodeDiskUsed(nodeID string) string {
-	return fmt.Sprintf("%s/node/%s/disk/used", PrefixObserved, nodeID)
-}
-
-// KeyObservedNodeDiskCapacity returns the store path for a node's total disk capacity.
-// Path: observed/node/{nodeID}/disk/capacity
-func KeyObservedNodeDiskCapacity(nodeID string) string {
-	return fmt.Sprintf("%s/node/%s/disk/capacity", PrefixObserved, nodeID)
-}
-
 // KeyObservedNodeWorkloadCount returns the store path for the number of workloads
 // running on a node.
 // Path: observed/node/{nodeID}/workloads
@@ -758,15 +710,6 @@ func KeyObservedInstanceMemory(instanceID string) string {
 // Path: observed/instance/{instanceID}/restarts
 func KeyObservedInstanceRestarts(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/restarts", PrefixObserved, instanceID)
-}
-
-// KeyObservedInstanceDrainSince returns the store path for the Unix-millisecond
-// timestamp when an instance started draining. The failure controller writes this
-// when a liveness or startup probe triggers a graceful drain instead of an
-// immediate stop.
-// Path: observed/instance/{instanceID}/drain_since
-func KeyObservedInstanceDrainSince(instanceID string) string {
-	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixObserved, instanceID)
 }
 
 // Init step key functions. Init steps are ordered by index (0, 1, 2, ...) and
@@ -799,12 +742,6 @@ func KeyDesiredServiceInitStepRetry(serviceName string, stepIndex int) string {
 // ScanDesiredServiceInitSteps returns the scan prefix for all init steps of a service.
 func ScanDesiredServiceInitSteps(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/init/", PrefixDesired, serviceName)
-}
-
-// KeyObservedInstanceInitPhase returns the store path for an instance's overall init phase.
-// Path: observed/instance/{instanceID}/init/phase
-func KeyObservedInstanceInitPhase(instanceID string) string {
-	return fmt.Sprintf("%s/instance/%s/init/phase", PrefixObserved, instanceID)
 }
 
 // KeyObservedInstanceInitStepState returns the store path for an instance's init step result.
@@ -1255,30 +1192,6 @@ func KeyDesiredCredentialBrokerRefreshBefore() string {
 	return PrefixDesired + "/credential_broker/refresh_before"
 }
 
-// KeyObservedCredentialState returns the credential state for an instance's identity.
-// Path: observed/credential/{instanceID}/{identityName}/state
-func KeyObservedCredentialState(instanceID string, identityName string) string {
-	return fmt.Sprintf("%s/credential/%s/%s/state", PrefixObserved, instanceID, identityName)
-}
-
-// KeyObservedCredentialExpiresAt returns the expiry timestamp for an instance's credential.
-// Path: observed/credential/{instanceID}/{identityName}/expires_at
-func KeyObservedCredentialExpiresAt(instanceID string, identityName string) string {
-	return fmt.Sprintf("%s/credential/%s/%s/expires_at", PrefixObserved, instanceID, identityName)
-}
-
-// KeyObservedCredentialIssuedAt returns the issuance timestamp for an instance's credential.
-// Path: observed/credential/{instanceID}/{identityName}/issued_at
-func KeyObservedCredentialIssuedAt(instanceID string, identityName string) string {
-	return fmt.Sprintf("%s/credential/%s/%s/issued_at", PrefixObserved, instanceID, identityName)
-}
-
-// KeyObservedCredentialError returns the last error for an instance's credential.
-// Path: observed/credential/{instanceID}/{identityName}/error
-func KeyObservedCredentialError(instanceID string, identityName string) string {
-	return fmt.Sprintf("%s/credential/%s/%s/error", PrefixObserved, instanceID, identityName)
-}
-
 // ---------------------------------------------------------------------------
 // Derived key functions (controller-derived state, not agent observations)
 // ---------------------------------------------------------------------------
@@ -1454,13 +1367,6 @@ func KeyDesiredServiceExposeExternal(serviceName string, port int) string {
 // exposed ports of a service.
 func ScanDesiredServiceExposeExternal(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/expose/", PrefixDesired, serviceName)
-}
-
-// KeyObservedNodeProviderInstanceID returns the store path mapping a CCattler
-// node to its cloud provider instance ID.
-// Path: observed/node/{nodeID}/provider_instance_id
-func KeyObservedNodeProviderInstanceID(nodeID string) string {
-	return fmt.Sprintf("%s/node/%s/provider_instance_id", PrefixObserved, nodeID)
 }
 
 // KeyObservedCloudInstanceState returns the store path for a cloud instance's

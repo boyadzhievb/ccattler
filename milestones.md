@@ -1143,16 +1143,16 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 
 - [x] **67.5a — Silent parse failures**: Replace `_ = strconv.Atoi/ParseInt` and `_ = fmt.Sscanf` with proper error handling across `types/codec.go` (18), `scheduler/scheduler.go` (2), `controllers/rollout.go` (4), `controllers/intent.go` (2), `controllers/clusterscale.go` (2), `lang/parser.go` (1), `agent/dataplane.go` (1), `security/network_policy.go` (1), `tenant/tenant.go` (4), `cmd/cca/command_server.go` (1), `cmd/cca/command_benchmark.go` (3)
 - [x] **67.5b — Error visibility**: Add logging to silent `return` paths in `tenant/lifecycle.go`, `agent/agent.go`, `agent/probes.go`, `types/eventlog.go`, `controllers/leader.go`; fix TLS error discard in `cmd/cca/command_agent.go`; fix audit log error swallowing in `security/audit.go`; fix infra simulator success-on-failure in `infra/simulator.go`
-- [ ] **67.5c — Data plane correctness**: Fix iptables error handling in `network/iptables_dataplane.go` (`ensureVIPAddress`/`ensureDummyInterface`); replace hardcoded `127.0.0.1` in `agent/dataplane.go`; fix VIP port=0 default
-- [ ] **67.5d — Magic numbers**: Extract 68 raw literals to named constants across `cmd/mcp/tools.go` (18), `cmd/cca/command_benchmark.go` (19), `chaos/chaos_cluster.go` (4), `chaos/chaos_runner.go` (1), `cmd/cca/command_run.go` (1), `cmd/cca/command_status.go` (1), `network/iptables_dataplane.go` (1)
-- [ ] **67.5e — Long function refactoring**: Break down 27 functions exceeding 80-line limit, starting with 6 critical (120+ lines) in `cmd/cca/`
-- [ ] **67.5f — Duplication & dead code**: Extract 3 shared parsing helpers to `controllers/helpers.go`; delete 5 dead `KeyObserved*` functions from `types/keys.go`
+- [x] **67.5c — Data plane correctness**: Fix iptables error handling in `network/iptables_dataplane.go` (`ensureVIPAddress`/`ensureDummyInterface`); replace hardcoded `127.0.0.1` in `agent/dataplane.go`; fix VIP port=0 default
+- [x] **67.5d — Magic numbers**: Extract 68 raw literals to named constants across `cmd/mcp/tools.go` (21), `cmd/cca/command_benchmark.go` (16), `chaos/chaos_cluster.go` (4), `chaos/chaos_runner.go` (3), `cmd/cca/command_run.go` (1), `cmd/cca/command_status.go` (4), `network/iptables_dataplane.go` (1)
+- [x] **67.5e — Long function refactoring**: Break down 19 functions exceeding 80-line limit; added exclusion comments for 8 flat dispatch/data functions
+- [x] **67.5f — Duplication & dead code**: Extract 3 shared parsing helpers to `controllers/helpers.go`; delete 15 dead `Key*` functions from `types/keys.go`
 
 #### 67f — Production Readiness Report
 
-- [ ] `cca readiness` CLI command: runs the test matrix, prints pass/fail table covering the reviewer's 16 areas (scheduling, control plane, network, nodes, storage, upgrades, reconciliation, security, multi-tenancy, autoscaling, topology, runtime, observability, recovery, API, ecosystem)
-- [ ] Each area maps to 1-3 existing tests; report aggregates results and shows evidence links
-- [ ] Missing areas marked as "not yet validated" with clear gap description
+- [x] `cca readiness` CLI command: runs the test matrix, prints pass/fail table covering the reviewer's 16 areas (scheduling, control plane, network, nodes, storage, upgrades, reconciliation, security, multi-tenancy, autoscaling, topology, runtime, observability, recovery, API, ecosystem)
+- [x] Each area maps to 1-3 existing tests; report aggregates results and shows evidence links
+- [x] Missing areas marked as "not yet validated" with clear gap description
 
 ### Phase 68 — Scheduler Scale (M68)
 

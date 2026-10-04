@@ -22,6 +22,12 @@ const iptablesServiceChainPrefix = "CCA_SVC_"
 // assign VIP addresses so the kernel accepts packets destined for them.
 const vipDummyInterface = "cca0"
 
+// maxJumpRuleRemovalAttempts is the maximum number of iterations when
+// removing all jump rules from CCA_SERVICES that target a given
+// per-service chain. Multiple passes are needed because iptables -D
+// removes only one matching rule per invocation.
+const maxJumpRuleRemovalAttempts = 20
+
 // IptablesDataPlane programs iptables nat-table DNAT rules for VIP-based
 // load balancing, analogous to kube-proxy in iptables mode. For each
 // service VIP it creates a per-service chain with round-robin DNAT rules
@@ -149,17 +155,25 @@ func (iptablesDataPlane *IptablesDataPlane) ensureGlobalChainAndJumpRules() erro
 }
 
 // ensureDummyInterface creates the cca0 dummy interface and brings it up.
+// The "ip link add" is idempotent — "already exists" is ignored, but other
+// errors (permission denied, unsupported type) are surfaced.
 func (iptablesDataPlane *IptablesDataPlane) ensureDummyInterface() error {
-	runCommand("ip", "link", "add", vipDummyInterface, "type", "dummy")
+	if err := runCommandIdempotent("ip", "link", "add", vipDummyInterface, "type", "dummy"); err != nil {
+		return fmt.Errorf("creating dummy interface %s: %w", vipDummyInterface, err)
+	}
 	if err := runCommandStrict("ip", "link", "set", vipDummyInterface, "up"); err != nil {
 		return fmt.Errorf("bringing up %s: %w", vipDummyInterface, err)
 	}
 	return nil
 }
 
-// ensureVIPAddress adds a /32 VIP address to the dummy interface. Idempotent.
+// ensureVIPAddress adds a /32 VIP address to the dummy interface. Idempotent —
+// "already exists" is ignored, but other errors (interface missing, permission
+// denied) are returned.
 func (iptablesDataPlane *IptablesDataPlane) ensureVIPAddress(virtualIP string) error {
-	runCommand("ip", "addr", "add", virtualIP+"/32", "dev", vipDummyInterface)
+	if err := runCommandIdempotent("ip", "addr", "add", virtualIP+"/32", "dev", vipDummyInterface); err != nil {
+		return fmt.Errorf("adding VIP %s to %s: %w", virtualIP, vipDummyInterface, err)
+	}
 	iptablesDataPlane.activeVIPAddresses[virtualIP] = true
 	return nil
 }
@@ -282,7 +296,7 @@ func ensureJumpFromMainToService(virtualIP string, port int, serviceChain string
 // removeJumpRuleFromMainChain removes all rules in CCA_SERVICES that jump
 // to the given per-service chain.
 func removeJumpRuleFromMainChain(serviceChain string) {
-	for attempt := 0; attempt < 20; attempt++ {
+	for attempt := 0; attempt < maxJumpRuleRemovalAttempts; attempt++ {
 		output, err := exec.Command("iptables", "-t", "nat", "-S", iptablesMainChain).CombinedOutput()
 		if err != nil {
 			return
@@ -371,6 +385,21 @@ func runCommand(name string, arguments ...string) {
 func runCommandStrict(name string, arguments ...string) error {
 	output, err := exec.Command(name, arguments...).CombinedOutput() //nolint:gosec // iptables commands with validated arguments
 	if err != nil {
+		return fmt.Errorf("%s %s: %s: %w", name, strings.Join(arguments, " "), string(output), err)
+	}
+	return nil
+}
+
+// runCommandIdempotent executes a system command and ignores "File exists"
+// errors (EEXIST), which indicate the resource already exists. All other
+// errors are returned. Used for idempotent "create" operations (ip link add,
+// ip addr add) where "already exists" is expected on repeat calls.
+func runCommandIdempotent(name string, arguments ...string) error {
+	output, err := exec.Command(name, arguments...).CombinedOutput() //nolint:gosec // system commands with validated arguments
+	if err != nil {
+		if strings.Contains(string(output), "File exists") {
+			return nil
+		}
 		return fmt.Errorf("%s %s: %s: %w", name, strings.Join(arguments, " "), string(output), err)
 	}
 	return nil

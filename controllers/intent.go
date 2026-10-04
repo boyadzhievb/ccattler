@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"strconv"
-	"strings"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
@@ -59,6 +58,30 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 
 	var changes []Change
 
+	changes = append(changes, resolveEffectiveInstanceCountChanges(
+		userIntents, autoscalerIntents, policyBounds, currentEffective, quotaCeilings,
+	)...)
+
+	changes = append(changes, resolveEffectiveResourceChanges(
+		autoscalerResourceIntents, currentEffectiveResources, userResources,
+	)...)
+
+	return changes, nil
+}
+
+// resolveEffectiveInstanceCountChanges computes the effective instance count
+// for each service by combining user intent, autoscaler intent, policy bounds,
+// and quota ceilings. Returns changes only for services whose effective count
+// differs from the current effective count.
+func resolveEffectiveInstanceCountChanges(
+	userIntents map[string]int,
+	autoscalerIntents map[string]int,
+	policyBounds map[string]scalePolicyBounds,
+	currentEffective map[string]int,
+	quotaCeilings map[string]int,
+) []Change {
+	var changes []Change
+
 	for serviceName, userCount := range userIntents {
 		effectiveCount := userCount
 
@@ -91,6 +114,20 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 			Value: []byte(strconv.Itoa(effectiveCount)),
 		})
 	}
+
+	return changes
+}
+
+// resolveEffectiveResourceChanges computes effective CPU and memory values for
+// each service by merging autoscaler resource recommendations with user-declared
+// resources. Autoscaler recommendations take precedence when present. Returns
+// changes only when the effective value differs from the current value.
+func resolveEffectiveResourceChanges(
+	autoscalerResourceIntents map[string]autoscalerResourceIntent,
+	currentEffectiveResources map[string]string,
+	userResources map[string]string,
+) []Change {
+	var changes []Change
 
 	for serviceName, autoscalerResources := range autoscalerResourceIntents {
 		if autoscalerResources.cpu != "" {
@@ -136,22 +173,13 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 		}
 	}
 
-	return changes, nil
+	return changes
 }
 
 // extractIntentCounts scans facts under the given intent prefix and returns
 // a map of service name to desired instance count for that intent layer.
 func extractIntentCounts(facts []store.Fact, prefix string) map[string]int {
-	counts := make(map[string]int)
-	for _, fact := range store.FactsWithPrefix(facts, prefix) {
-		relativePath := strings.TrimPrefix(fact.Key, prefix)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "instances" {
-			parsedCount, _ := strconv.Atoi(string(fact.Value))
-			counts[parts[0]] = parsedCount
-		}
-	}
-	return counts
+	return collectIntValuesBySuffix(facts, prefix, "instances")
 }
 
 // scalePolicyBounds holds the min/max instance counts from a service's
@@ -166,13 +194,10 @@ type scalePolicyBounds struct {
 func extractPolicyBounds(facts []store.Fact) map[string]scalePolicyBounds {
 	bounds := make(map[string]scalePolicyBounds)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		current := bounds[serviceName]
 		switch suffix {
@@ -200,30 +225,12 @@ func extractPolicyBounds(facts []store.Fact) map[string]scalePolicyBounds {
 // extractEffectiveCounts scans effective service facts and returns the
 // current effective instance count for each service.
 func extractEffectiveCounts(facts []store.Fact) map[string]int {
-	counts := make(map[string]int)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "instances" {
-			parsedCount, _ := strconv.Atoi(string(fact.Value))
-			counts[parts[0]] = parsedCount
-		}
-	}
-	return counts
+	return collectIntValuesBySuffix(facts, types.ScanEffectiveServices, "instances")
 }
 
 // extractQuotaCeilings scans desired service facts for instance quota ceilings.
 func extractQuotaCeilings(facts []store.Fact) map[string]int {
-	quotas := make(map[string]int)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "quota/instances" {
-			parsedQuota, _ := strconv.Atoi(string(fact.Value))
-			quotas[parts[0]] = parsedQuota
-		}
-	}
-	return quotas
+	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "quota/instances")
 }
 
 // autoscalerResourceIntent holds the autoscaler's recommended CPU and memory.
@@ -237,14 +244,12 @@ func extractAutoscalerResourceIntents(facts []store.Fact) map[string]autoscalerR
 	intents := make(map[string]autoscalerResourceIntent)
 	prefix := types.ScanIntentAutoscalerServices
 	for _, fact := range store.FactsWithPrefix(facts, prefix) {
-		relativePath := strings.TrimPrefix(fact.Key, prefix)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
 		intent := intents[serviceName]
-		switch parts[1] {
+		switch suffix {
 		case "resources/cpu":
 			intent.cpu = string(fact.Value)
 		case "resources/memory":
@@ -259,16 +264,15 @@ func extractAutoscalerResourceIntents(facts []store.Fact) map[string]autoscalerR
 func extractEffectiveResources(facts []store.Fact) map[string]string {
 	resources := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanEffectiveServices)
+		if !hasSuffix {
 			continue
 		}
-		switch parts[1] {
+		switch suffix {
 		case "resources/cpu":
-			resources[parts[0]+"/cpu"] = string(fact.Value)
+			resources[serviceName+"/cpu"] = string(fact.Value)
 		case "resources/memory":
-			resources[parts[0]+"/memory"] = string(fact.Value)
+			resources[serviceName+"/memory"] = string(fact.Value)
 		}
 	}
 	return resources
@@ -278,16 +282,15 @@ func extractEffectiveResources(facts []store.Fact) map[string]string {
 func extractUserResources(facts []store.Fact) map[string]string {
 	resources := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		switch parts[1] {
+		switch suffix {
 		case "resources/cpu":
-			resources[parts[0]+"/cpu"] = string(fact.Value)
+			resources[serviceName+"/cpu"] = string(fact.Value)
 		case "resources/memory":
-			resources[parts[0]+"/memory"] = string(fact.Value)
+			resources[serviceName+"/memory"] = string(fact.Value)
 		}
 	}
 	return resources

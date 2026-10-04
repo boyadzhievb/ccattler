@@ -75,15 +75,7 @@ func detectServicesWithReadinessProbe(facts []store.Fact) map[string]bool {
 // parseNodeAdvertiseAddresses scans observed node facts and returns a map from
 // node ID to the advertise address reported by that node agent.
 func parseNodeAdvertiseAddresses(facts []store.Fact) map[string]string {
-	nodeAddresses := make(map[string]string)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "address" {
-			nodeAddresses[pathParts[0]] = string(fact.Value)
-		}
-	}
-	return nodeAddresses
+	return collectStringValuesBySuffix(facts, types.ScanObservedNodes, "address")
 }
 
 // parseExistingEndpoints scans endpoint facts and returns a set of existing

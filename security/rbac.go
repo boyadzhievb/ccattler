@@ -132,6 +132,9 @@ func (authorizer *RBACAuthorizer) Authorize(principal string, operation Permissi
 
 // BuiltinRoles returns the default roles for a CCattler cluster. Each
 // controller and node agent gets a role scoped to the prefixes it needs.
+// This function exceeds 80 lines because it is a flat slice literal of role
+// definitions — each element is an independent data declaration. Extracting
+// sub-builders would scatter related role data without improving clarity.
 func BuiltinRoles() []Role {
 	return []Role{
 		{

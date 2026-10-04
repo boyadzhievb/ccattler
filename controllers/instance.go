@@ -82,17 +82,16 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 	statefulServices := make(map[string]bool)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanEffectiveServices)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanEffectiveServices)
+		if !hasSuffix {
 			continue
 		}
-		switch pathParts[1] {
+		switch suffix {
 		case "instances":
 			parsedCount, _ := strconv.Atoi(string(fact.Value))
-			desiredCounts[pathParts[0]] = parsedCount
+			desiredCounts[serviceName] = parsedCount
 		case "stateful":
-			statefulServices[pathParts[0]] = string(fact.Value) == "true"
+			statefulServices[serviceName] = string(fact.Value) == "true"
 		}
 	}
 
@@ -106,13 +105,11 @@ func parseObservedInstanceFacts(facts []store.Fact) (map[string]types.InstanceSt
 	serviceByInstanceID := make(map[string]string)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if !hasSuffix {
 			continue
 		}
-		instanceID := pathParts[0]
-		switch pathParts[1] {
+		switch suffix {
 		case "state":
 			stateByInstanceID[instanceID] = types.InstanceState(fact.Value)
 		case "service":

@@ -146,23 +146,13 @@ type endpointBackend struct {
 func extractServiceEndpointBackends(facts []store.Fact) map[string][]endpointBackend {
 	serviceEndpoints := make(map[string][]endpointBackend)
 
-	instanceNodes := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "node" {
-			instanceNodes[pathParts[0]] = string(factEntry.Value)
-		}
-	}
+	instanceNodes := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "node")
 
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanEndpoints)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		serviceName, instanceID, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanEndpoints)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := pathParts[0]
-		instanceID := pathParts[1]
 
 		addressPort := string(factEntry.Value)
 		colonIndex := strings.LastIndex(addressPort, ":")
@@ -186,15 +176,7 @@ func extractServiceEndpointBackends(facts []store.Fact) map[string][]endpointBac
 
 // extractNodeAddressesFromFacts builds a map of node ID to advertised address.
 func extractNodeAddressesFromFacts(facts []store.Fact) map[string]string {
-	nodeAddresses := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "address" {
-			nodeAddresses[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return nodeAddresses
+	return collectStringValuesBySuffix(facts, types.ScanObservedNodes, "address")
 }
 
 // buildLoadBalancerBackends converts endpoint backends to cloud load balancer
@@ -220,13 +202,5 @@ func buildLoadBalancerBackends(endpoints []endpointBackend, nodeAddresses map[st
 // extractExistingLoadBalancers returns a map of service name to external
 // address for all load balancers currently tracked in the store.
 func extractExistingLoadBalancers(facts []store.Fact) map[string]string {
-	loadBalancers := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedCloudLoadBalancers) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedCloudLoadBalancers)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "address" {
-			loadBalancers[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return loadBalancers
+	return collectStringValuesBySuffix(facts, types.ScanObservedCloudLoadBalancers, "address")
 }

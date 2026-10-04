@@ -113,32 +113,54 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 		return helperCountRunningInstances(clusterContext, factStore, "web") == 6
 	})
 
+	waitFor(testHandle, 5*time.Second, "6 containers across runtimes", func() bool {
+		totalContainers := 0
+		for _, simulatorRuntime := range agentRuntimes {
+			statuses, _ := simulatorRuntime.List(context.Background())
+			for _, status := range statuses {
+				if status.Running {
+					totalContainers++
+				}
+			}
+		}
+		return totalContainers >= 6
+	})
+
 	for _, nodeID := range nodeIDs {
 		partitionedStores[nodeID].Partition()
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	waitFor(testHandle, 5*time.Second, "6 containers still running during partition", func() bool {
+		totalRunning := 0
+		for _, simulatorRuntime := range agentRuntimes {
+			statuses, listError := simulatorRuntime.List(context.Background())
+			if listError != nil {
+				continue
+			}
+			for _, containerStatus := range statuses {
+				if containerStatus.Running {
+					totalRunning++
+				}
+			}
+		}
+		return totalRunning >= 6
+	})
 
-	totalRunningDuringPartition := 0
 	for _, nodeID := range nodeIDs {
 		statuses, listError := agentRuntimes[nodeID].List(context.Background())
 		if listError != nil {
 			testHandle.Errorf("failed to list containers on %s: %v", nodeID, listError)
 			continue
 		}
-		nodeRunning := 0
-		for _, status := range statuses {
-			if status.Running {
-				nodeRunning++
+		nodeRunningCount := 0
+		for _, containerStatus := range statuses {
+			if containerStatus.Running {
+				nodeRunningCount++
 			}
 		}
-		if nodeRunning == 0 {
+		if nodeRunningCount == 0 {
 			testHandle.Errorf("node %s has 0 running containers during partition — workloads should persist", nodeID)
 		}
-		totalRunningDuringPartition += nodeRunning
-	}
-	if totalRunningDuringPartition < 6 {
-		testHandle.Errorf("only %d containers running during partition, expected 6", totalRunningDuringPartition)
 	}
 
 	for _, nodeID := range nodeIDs {

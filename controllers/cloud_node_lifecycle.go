@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"strings"
 
 	"github.com/boyadzhievb/ccattler/cloud"
 	"github.com/boyadzhievb/ccattler/store"
@@ -106,16 +105,15 @@ func extractNodeProviderAndStates(facts []store.Fact) (map[string]string, map[st
 	nodeToProviderInstance := make(map[string]string)
 	nodeStates := make(map[string]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedNodes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
+		nodeID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanObservedNodes)
+		if !hasSuffix {
 			continue
 		}
-		switch pathParts[1] {
+		switch suffix {
 		case "provider_instance_id":
-			nodeToProviderInstance[pathParts[0]] = string(factEntry.Value)
+			nodeToProviderInstance[nodeID] = string(factEntry.Value)
 		case "state":
-			nodeStates[pathParts[0]] = string(factEntry.Value)
+			nodeStates[nodeID] = string(factEntry.Value)
 		}
 	}
 	return nodeToProviderInstance, nodeStates
@@ -124,13 +122,5 @@ func extractNodeProviderAndStates(facts []store.Fact) (map[string]string, map[st
 // extractObservedCloudInstanceStates builds a map from provider instance ID to
 // the last observed cloud state.
 func extractObservedCloudInstanceStates(facts []store.Fact) map[string]string {
-	cloudStates := make(map[string]string)
-	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanObservedCloudInstances) {
-		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanObservedCloudInstances)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) == 2 && pathParts[1] == "state" {
-			cloudStates[pathParts[0]] = string(factEntry.Value)
-		}
-	}
-	return cloudStates
+	return collectStringValuesBySuffix(facts, types.ScanObservedCloudInstances, "state")
 }

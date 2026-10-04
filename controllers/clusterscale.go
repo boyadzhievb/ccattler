@@ -147,10 +147,9 @@ func countUnplacedPendingInstances(facts []store.Fact) int {
 	}
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "state" && types.InstanceState(fact.Value) == types.InstancePending {
-			pendingInstances[parts[0]] = true
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if hasSuffix && suffix == "state" && types.InstanceState(fact.Value) == types.InstancePending {
+			pendingInstances[instanceID] = true
 		}
 	}
 
@@ -165,26 +164,20 @@ func countUnplacedPendingInstances(facts []store.Fact) int {
 
 // extractClusterNodeStates returns a map of node ID to node state.
 func extractClusterNodeStates(facts []store.Fact) map[string]types.NodeState {
-	nodeStates := make(map[string]types.NodeState)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "state" {
-			nodeStates[parts[0]] = types.NodeState(fact.Value)
-		}
+	stringStates := collectStringValuesBySuffix(facts, types.ScanObservedNodes, "state")
+	nodeStates := make(map[string]types.NodeState, len(stringStates))
+	for nodeID, stateValue := range stringStates {
+		nodeStates[nodeID] = types.NodeState(stateValue)
 	}
 	return nodeStates
 }
 
 // countInstancesPerNode counts the number of active placed instances per node.
 func countInstancesPerNode(facts []store.Fact) map[string]int {
-	instanceStates := make(map[string]types.InstanceState)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "state" {
-			instanceStates[parts[0]] = types.InstanceState(fact.Value)
-		}
+	stateStrings := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
+	instanceStates := make(map[string]types.InstanceState, len(stateStrings))
+	for instanceID, stateValue := range stateStrings {
+		instanceStates[instanceID] = types.InstanceState(stateValue)
 	}
 
 	counts := make(map[string]int)

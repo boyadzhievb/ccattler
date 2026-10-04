@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M66 — Phase 66 Stateful Workloads. M1–M66 complete. Gates A–I resolved. Next: Phase 67 — Production Readiness Validation, Phase 68 — Scheduler Scale.
+**Completed through:** M67 — Phase 67 Production Readiness Validation. M1–M67 complete. Gates A–I resolved. Next: Phase 68 — Scheduler Scale, Phase 69 — Node Runtime Inspection.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

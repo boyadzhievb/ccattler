@@ -80,44 +80,88 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 	}
 
 	// Stage 3: Authorization (RBAC/ABAC check on each fact key).
-	if gate.authorizer != nil {
-		for _, fact := range facts {
-			if err := gate.authorizer.Authorize(principal, security.PermissionWrite, fact.Key); err != nil {
-				gate.logAudit(principal, "apply", fact.Key, "DENY", "authorization")
-				return &GateResult{
-					Allowed:  false,
-					Stage:    "authorization",
-					Reason:   fmt.Sprintf("not authorized to write %q: %v", fact.Key, err),
-					Facts:    facts,
-					Duration: time.Since(startTime),
-				}, nil
-			}
-		}
+	if denial := gate.evaluateAuthorizationGate(principal, facts, startTime); denial != nil {
+		return denial, nil
 	}
 
 	// Stage 4: Quota check (for services, check instance quotas).
-	if gate.quotaAdmission != nil {
-		for _, serviceDecl := range file.Services {
-			if serviceDecl.Instances > 0 {
-				result, err := gate.quotaAdmission.CheckInstanceAdmission(ctx, serviceDecl.Name, serviceDecl.Instances)
-				if err != nil {
-					continue
-				}
-				if !result.Allowed {
-					gate.logAudit(principal, "apply", serviceDecl.Name, "DENY", "quota")
-					return &GateResult{
-						Allowed:  false,
-						Stage:    "quota",
-						Reason:   result.Reason,
-						Facts:    facts,
-						Duration: time.Since(startTime),
-					}, nil
+	if denial := gate.evaluateQuotaGate(ctx, principal, file, facts, startTime); denial != nil {
+		return denial, nil
+	}
+
+	// Stage 5: Security policy (tenant state check).
+	if denial := gate.evaluateSecurityPolicyGate(ctx, principal, file, facts, startTime); denial != nil {
+		return denial, nil
+	}
+
+	// Stage 6: Mutation (no-op for now — facts pass through unchanged).
+
+	// Stage 7: Commit.
+	gate.logAudit(principal, "apply", "dsl", "ALLOW", "commit")
+	return &GateResult{
+		Allowed:  true,
+		Stage:    "commit",
+		Reason:   "all gates passed",
+		Facts:    facts,
+		Duration: time.Since(startTime),
+	}, nil
+}
+
+// evaluateAuthorizationGate checks RBAC/ABAC authorization for each compiled
+// fact key. Returns a denial GateResult if any fact is not writable by the
+// principal, or nil if all facts pass authorization.
+func (gate *PolicyGate) evaluateAuthorizationGate(principal string, facts []lang.Fact, startTime time.Time) *GateResult {
+	if gate.authorizer == nil {
+		return nil
+	}
+	for _, fact := range facts {
+		if err := gate.authorizer.Authorize(principal, security.PermissionWrite, fact.Key); err != nil {
+			gate.logAudit(principal, "apply", fact.Key, "DENY", "authorization")
+			return &GateResult{
+				Allowed:  false,
+				Stage:    "authorization",
+				Reason:   fmt.Sprintf("not authorized to write %q: %v", fact.Key, err),
+				Facts:    facts,
+				Duration: time.Since(startTime),
+			}
+		}
+	}
+	return nil
+}
+
+// evaluateQuotaGate checks instance quota admission for each service declared
+// in the DSL input. Returns a denial GateResult if any service exceeds its
+// instance quota, or nil if all services pass.
+func (gate *PolicyGate) evaluateQuotaGate(ctx context.Context, principal string, file *lang.File, facts []lang.Fact, startTime time.Time) *GateResult {
+	if gate.quotaAdmission == nil {
+		return nil
+	}
+	for _, serviceDecl := range file.Services {
+		if serviceDecl.Instances > 0 {
+			result, err := gate.quotaAdmission.CheckInstanceAdmission(ctx, serviceDecl.Name, serviceDecl.Instances)
+			if err != nil {
+				continue
+			}
+			if !result.Allowed {
+				gate.logAudit(principal, "apply", serviceDecl.Name, "DENY", "quota")
+				return &GateResult{
+					Allowed:  false,
+					Stage:    "quota",
+					Reason:   result.Reason,
+					Facts:    facts,
+					Duration: time.Since(startTime),
 				}
 			}
 		}
 	}
+	return nil
+}
 
-	// Stage 5: Security policy (tenant state check — reject changes to deleting tenants).
+// evaluateSecurityPolicyGate checks tenant-level security policies. Specifically,
+// it rejects changes to services owned by tenants that are being deleted. Returns
+// a denial GateResult if any service belongs to a deleting tenant, or nil if all
+// services pass.
+func (gate *PolicyGate) evaluateSecurityPolicyGate(ctx context.Context, principal string, file *lang.File, facts []lang.Fact, startTime time.Time) *GateResult {
 	for _, serviceDecl := range file.Services {
 		tenantName := serviceDecl.Owner
 		if tenantName == "" {
@@ -132,22 +176,11 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 					Reason:   fmt.Sprintf("tenant %q is being deleted", tenantName),
 					Facts:    facts,
 					Duration: time.Since(startTime),
-				}, nil
+				}
 			}
 		}
 	}
-
-	// Stage 6: Mutation (no-op for now — facts pass through unchanged).
-
-	// Stage 7: Commit.
-	gate.logAudit(principal, "apply", "dsl", "ALLOW", "commit")
-	return &GateResult{
-		Allowed:  true,
-		Stage:    "commit",
-		Reason:   "all gates passed",
-		Facts:    facts,
-		Duration: time.Since(startTime),
-	}, nil
+	return nil
 }
 
 // EvaluateAndCommit runs the pipeline and commits facts to the store if allowed.

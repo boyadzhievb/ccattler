@@ -16,6 +16,25 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+const (
+	// defaultChaosAgentInterval is the reconciliation interval for each
+	// simulated node agent during chaos testing.
+	defaultChaosAgentInterval = 50 * time.Millisecond
+
+	// defaultChaosControllerDebounce is the debounce interval for the
+	// controller runner in chaos mode, keeping controller cycles fast.
+	defaultChaosControllerDebounce = 10 * time.Millisecond
+
+	// defaultChaosLeaseTimeout is the lease TTL used by the
+	// NodeFailureController during chaos testing — short so that killed
+	// nodes are detected quickly.
+	defaultChaosLeaseTimeout = 300 * time.Millisecond
+
+	// controllerRestartSettleDelay is the brief pause after cancelling
+	// controllers and before restarting them, allowing goroutines to drain.
+	controllerRestartSettleDelay = 10 * time.Millisecond
+)
+
 // SimulatedChaosCluster implements ChaosCluster for the in-process simulated
 // cluster used by integration tests and the CLI demo.
 type SimulatedChaosCluster struct {
@@ -64,9 +83,9 @@ func NewSimulatedChaosCluster(factStore *store.MemoryStore, nodeIDs []string) *S
 		nodeAlive:          make(map[string]bool),
 		agentRuntimes:      make(map[string]*runtime.SimulatorRuntime),
 		services:           make(map[string]int),
-		agentInterval:      50 * time.Millisecond,
-		controllerDebounce: 10 * time.Millisecond,
-		leaseTimeout:       300 * time.Millisecond,
+		agentInterval:      defaultChaosAgentInterval,
+		controllerDebounce: defaultChaosControllerDebounce,
+		leaseTimeout:       defaultChaosLeaseTimeout,
 		maxInputKeyGuards:  -1,
 	}
 }
@@ -205,7 +224,7 @@ func (simulatedCluster *SimulatedChaosCluster) RestartControllers(ctx context.Co
 	}
 	simulatedCluster.mutex.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(controllerRestartSettleDelay)
 	simulatedCluster.startControllers(ctx)
 }
 

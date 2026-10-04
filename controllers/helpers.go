@@ -8,6 +8,54 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// splitFactKeyIntoEntityAndSuffix strips a known prefix from a fact key and
+// splits the remainder at the first "/" into two parts: the entity name (e.g.
+// service name, node ID, instance ID, volume name) and the remaining suffix
+// (e.g. "state", "image", "scale/horizontal/min"). Returns ("", "", false)
+// when the key has no "/" after the prefix, indicating a root-level key.
+func splitFactKeyIntoEntityAndSuffix(factKey string, prefix string) (string, string, bool) {
+	relativePath := strings.TrimPrefix(factKey, prefix)
+	pathParts := strings.SplitN(relativePath, "/", 2)
+	if len(pathParts) != 2 {
+		return "", "", false
+	}
+	return pathParts[0], pathParts[1], true
+}
+
+// collectStringValuesBySuffix scans all facts under the given prefix, splits
+// each key into entity name and suffix via splitFactKeyIntoEntityAndSuffix,
+// and collects the string value for entries whose suffix matches exactly.
+// Returns a map from entity name to the fact's string value. This replaces
+// the common pattern of iterating a prefix, TrimPrefix, SplitN, and checking
+// a specific suffix to build a map[string]string.
+func collectStringValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]string {
+	collectedValues := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
+		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
+		if hasSuffix && suffix == matchSuffix {
+			collectedValues[entityName] = string(fact.Value)
+		}
+	}
+	return collectedValues
+}
+
+// collectIntValuesBySuffix scans all facts under the given prefix, splits
+// each key into entity name and suffix via splitFactKeyIntoEntityAndSuffix,
+// and parses the value as an integer for entries whose suffix matches exactly.
+// Returns a map from entity name to the parsed integer value. Values that
+// cannot be parsed as integers are silently stored as zero, matching the
+// existing convention used throughout the controllers package.
+func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]int {
+	collectedValues := make(map[string]int)
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
+		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
+		if hasSuffix && suffix == matchSuffix {
+			collectedValues[entityName], _ = strconv.Atoi(string(fact.Value))
+		}
+	}
+	return collectedValues
+}
+
 // parseInstanceFieldsFromFacts scans observed and derived instance facts and
 // returns a nested map keyed by instance ID, where each inner map holds field
 // name to value pairs (e.g. "state" -> "running", "service" -> "web",

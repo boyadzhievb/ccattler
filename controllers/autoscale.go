@@ -533,13 +533,10 @@ type stabilizationConfig struct {
 func extractStabilizationWindows(facts []store.Fact) map[string]*stabilizationConfig {
 	windows := make(map[string]*stabilizationConfig)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		switch suffix {
 		case "scale/horizontal/stabilization/up":
@@ -578,14 +575,10 @@ func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 	policies := make(map[string]*extractedScalePolicy)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		if !strings.HasPrefix(suffix, "scale/horizontal/") {
 			continue
@@ -621,13 +614,10 @@ func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 func extractEventTargets(facts []store.Fact) map[string]map[string]int {
 	targets := make(map[string]map[string]int)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		if !strings.HasPrefix(suffix, "scale/horizontal/event/") {
 			continue
@@ -665,13 +655,10 @@ func normalizeHHMM(raw string) string {
 func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule {
 	rules := make(map[string]*extractedScheduleRule)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		if !strings.HasPrefix(suffix, "scale/horizontal/schedule/") {
 			continue
@@ -736,13 +723,10 @@ type extractedVerticalPolicy struct {
 func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPolicy {
 	policies := make(map[string]*extractedVerticalPolicy)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix {
 			continue
 		}
-		serviceName := parts[0]
-		suffix := parts[1]
 
 		if !strings.HasPrefix(suffix, "scale/vertical/") {
 			continue
@@ -769,19 +753,7 @@ func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPo
 
 // extractCurrentResources extracts current resource values per service.
 func extractCurrentResources(facts []store.Fact, resourceType string) map[string]int {
-	resources := make(map[string]int)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		if parts[1] == "resources/"+resourceType {
-			parsedValue, _ := strconv.Atoi(string(fact.Value))
-			resources[parts[0]] = parsedValue
-		}
-	}
-	return resources
+	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "resources/"+resourceType)
 }
 
 // extractObservedMetrics scans observed metric facts and returns a map of
@@ -809,13 +781,11 @@ func extractActiveInstanceCounts(facts []store.Fact) map[string]int {
 	stateByID := make(map[string]types.InstanceState)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) != 2 {
+		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
+		if !hasSuffix {
 			continue
 		}
-		instanceID := parts[0]
-		switch parts[1] {
+		switch suffix {
 		case "service":
 			serviceByID[instanceID] = string(fact.Value)
 		case "state":

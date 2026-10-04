@@ -264,157 +264,217 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	// Authorization: create RBAC authorizer with builtin roles and an audit log.
-	// Controllers use the raw factStore (they are internal, trusted components).
-	// The API server gets an AuthorizedStore that enforces RBAC on user requests.
+	rbacAuthorizer, auditLog, authorizedStore := initializeAuthorizationLayer(factStore)
+
+	runControllers := !parsedConfig.apiOnly
+	runAPIServer := !parsedConfig.controllersOnly
+	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
+
+	if runControllers {
+		startControllersWithLeaderElection(ctx, factStore, parsedConfig)
+	}
+
+	if runAPIServer {
+		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig)
+	}
+
+	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
+}
+
+// initializeAuthorizationLayer creates the RBAC authorizer with all builtin
+// roles, an in-memory audit log, and an AuthorizedStore that wraps the raw
+// fact store with authorization enforcement. Controllers use the raw store
+// directly (they are internal trusted components); the API server uses the
+// AuthorizedStore so user requests are subject to RBAC.
+func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAuthorizer, *security.InMemoryAuditLog, *security.AuthorizedStore) {
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	for _, builtinRole := range security.BuiltinRoles() {
 		rbacAuthorizer.AddRole(builtinRole)
 	}
 	auditLog := security.NewInMemoryAuditLog(types.DefaultEventLogMaxEvents)
 	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+	return rbacAuthorizer, auditLog, authorizedStore
+}
 
-	runControllers := !parsedConfig.apiOnly
-	runAPIServer := !parsedConfig.controllersOnly
+// startControllersWithLeaderElection assembles the full controller list (core
+// controllers plus optional cloud controllers) and starts them inside an HA
+// runner with leader election. The runner goroutine runs until the context is
+// cancelled.
+func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, parsedConfig serverCommandConfig) {
+	controllerList := append(coreControllers(),
+		controllers.NewNodeFailureController(),
+		controllers.NewDrainController(),
+		controllers.NewNetworkController(),
+		controllers.NewNetworkPolicyController(),
+		controllers.NewWarmZeroController())
 
-	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
+	metricsCollector := controllers.NewMetricsCollector()
 
-	if runControllers {
-		controllerList := append(coreControllers(),
-			controllers.NewNodeFailureController(),
-			controllers.NewDrainController(),
-			controllers.NewNetworkController(),
-			controllers.NewNetworkPolicyController(),
-			controllers.NewWarmZeroController())
-
-		metricsCollector := controllers.NewMetricsCollector()
-
-		if parsedConfig.cloudProviderName != "" {
-			cloudProviderInstance := createCloudProvider(ctx, parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
-			if cloudProviderInstance != nil {
-				controllerList = append(controllerList,
-					controllers.NewNodeLifecycleController(cloudProviderInstance),
-					controllers.NewCloudLoadBalancerController(cloudProviderInstance),
-					controllers.NewCloudRouteController(cloudProviderInstance),
-				)
-				fmt.Printf("Cloud controllers enabled (provider: %s)\n", parsedConfig.cloudProviderName)
-			}
-		}
-
-		haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
-			controllerList...)
-
-		go func() {
-			if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {
-				fmt.Fprintf(os.Stderr, "controller runner error: %v\n", runError)
-			}
-		}()
-		fmt.Printf("Controllers started with leader election (node: %s)\n", parsedConfig.nodeID)
-	}
-
-	if runAPIServer {
-		var serverTLSConfig *tls.Config
-		var clusterCertificateAuthority *security.CertificateAuthority
-		enrollmentEnabled := false
-		if parsedConfig.tlsCertPath != "" {
-			serverTLSConfig = loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
-		} else if parsedConfig.tlsEnabled {
-			serverTLSConfig, clusterCertificateAuthority = buildServerTLSConfig(ctx, parsedConfig.listenAddress)
-			enrollmentEnabled = true
-		}
-
-		// Build authenticator chain based on TLS mode. In TLS mode, mTLS
-		// certificates and bearer tokens are accepted. In non-TLS mode, the
-		// local user header identifies the caller.
-		var authenticatorChain *security.AuthenticatorChain
-		var serverPrincipal string
-		if serverTLSConfig != nil {
-			authenticatorChain = security.NewAuthenticatorChain(
-				security.NewMTLSAuthenticator(),
+	if parsedConfig.cloudProviderName != "" {
+		cloudProviderInstance := createCloudProvider(ctx, parsedConfig.cloudProviderName, parsedConfig.cloudRegion)
+		if cloudProviderInstance != nil {
+			controllerList = append(controllerList,
+				controllers.NewNodeLifecycleController(cloudProviderInstance),
+				controllers.NewCloudLoadBalancerController(cloudProviderInstance),
+				controllers.NewCloudRouteController(cloudProviderInstance),
 			)
-			// Bind the server's own certificate identity to cluster-admin so
-			// requests authenticated with this cert (including /status) pass RBAC.
-			// Enrolled nodes get their own node-agent binding via the enrollment flow.
-			if len(serverTLSConfig.Certificates) > 0 {
-				serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
-				if parseError == nil && serverLeafCert.Subject.CommonName != "" {
-					serverPrincipal = "node:" + serverLeafCert.Subject.CommonName
-					rbacAuthorizer.BindRole(security.RoleBinding{
-						Principal: serverPrincipal,
-						RoleName:  "cluster-admin",
-					})
-				}
-			}
-		} else {
-			localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
-			if tokenError != nil {
-				fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
-				os.Exit(1)
-			}
-			fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
-			authenticatorChain = security.NewAuthenticatorChain(localTokenAuthenticator)
-			// In non-TLS mode, bind the fixed local-admin principal (not a
-			// wildcard) to cluster-admin so authorization still runs but local
-			// development is frictionless.
-			rbacAuthorizer.BindRole(security.RoleBinding{
-				Principal: "user:local-admin",
-				RoleName:  "cluster-admin",
-			})
-		}
-
-		// API-layer capability authorizer. Maps builtin roles to capability grants.
-		apiAuthorizer := security.NewAPIAuthorizer()
-		if serverTLSConfig == nil {
-			apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
-		} else if serverPrincipal != "" {
-			apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
-		}
-
-		statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
-		statusAPIServer.SetEventLog(eventLog)
-		statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
-		statusAPIServer.SetAuthenticatorChain(authenticatorChain)
-		statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
-		statusAPIServer.SetRequirePrincipal(true)
-
-		tenantRegistry := tenant.NewTenantRegistry(factStore)
-		quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
-		policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
-		statusAPIServer.SetPolicyGate(policyGate)
-
-		secretMasterKey := loadOrGenerateSecretMasterKey()
-		secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(secretMasterKey)
-		if keyProviderError != nil {
-			fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
-			os.Exit(1)
-		}
-		secretStore := security.NewSecretStore(factStore, secretKeyProvider)
-		statusAPIServer.SetSecretStore(secretStore)
-		fmt.Println("Secret store initialized (envelope encryption, local key)")
-
-		if parsedConfig.apiOnly {
-			statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
-		}
-
-		if clusterCertificateAuthority != nil {
-			enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultEnrollmentTokenTTL)
-			statusAPIServer.SetEnrollmentService(enrollmentService)
-			fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
-		}
-
-		if parsedConfig.dnsEnabled {
-			serviceResolver := network.NewStoreBackedResolver(factStore)
-			dnsServer := network.NewDNSServer(serviceResolver, parsedConfig.dnsListenAddress)
-			go func() {
-				if dnsStartError := dnsServer.Start(ctx); dnsStartError != nil && ctx.Err() == nil {
-					fmt.Fprintf(os.Stderr, "DNS server error: %v\n", dnsStartError)
-				}
-			}()
-			fmt.Printf("DNS server listening on %s (resolving *.%s)\n",
-				parsedConfig.dnsListenAddress, network.DefaultDNSDomain)
+			fmt.Printf("Cloud controllers enabled (provider: %s)\n", parsedConfig.cloudProviderName)
 		}
 	}
 
+	haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
+		controllerList...)
+
+	go func() {
+		if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "controller runner error: %v\n", runError)
+		}
+	}()
+	fmt.Printf("Controllers started with leader election (node: %s)\n", parsedConfig.nodeID)
+}
+
+// resolveServerTLSConfiguration determines the TLS configuration for the API
+// server based on the parsed flags. When explicit cert/key/ca paths are given,
+// it loads them from disk. When --tls is set without explicit paths, it creates
+// an auto-generated CA with certificate rotation. Returns the TLS config (nil
+// if TLS is disabled), the cluster CA (nil unless auto-generated), and whether
+// enrollment is enabled.
+func resolveServerTLSConfiguration(ctx context.Context, parsedConfig serverCommandConfig) (*tls.Config, *security.CertificateAuthority, bool) {
+	if parsedConfig.tlsCertPath != "" {
+		return loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath), nil, false
+	}
+	if parsedConfig.tlsEnabled {
+		serverTLSConfig, clusterCertificateAuthority := buildServerTLSConfig(ctx, parsedConfig.listenAddress)
+		return serverTLSConfig, clusterCertificateAuthority, true
+	}
+	return nil, nil, false
+}
+
+// buildServerAuthenticatorAndBindings creates the authenticator chain and
+// binds the server's own identity to the cluster-admin RBAC role. In TLS mode,
+// mTLS client certificates are used for authentication and the server's leaf
+// certificate CN becomes the server principal. In non-TLS mode, a local token
+// file authenticates the caller and the fixed local-admin principal is bound.
+// Returns the authenticator chain and the server principal string (empty in
+// non-TLS mode).
+func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer) (*security.AuthenticatorChain, string) {
+	if serverTLSConfig != nil {
+		authenticatorChain := security.NewAuthenticatorChain(
+			security.NewMTLSAuthenticator(),
+		)
+		// Bind the server's own certificate identity to cluster-admin so
+		// requests authenticated with this cert (including /status) pass RBAC.
+		// Enrolled nodes get their own node-agent binding via the enrollment flow.
+		var serverPrincipal string
+		if len(serverTLSConfig.Certificates) > 0 {
+			serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
+			if parseError == nil && serverLeafCert.Subject.CommonName != "" {
+				serverPrincipal = "node:" + serverLeafCert.Subject.CommonName
+				rbacAuthorizer.BindRole(security.RoleBinding{
+					Principal: serverPrincipal,
+					RoleName:  "cluster-admin",
+				})
+			}
+		}
+		return authenticatorChain, serverPrincipal
+	}
+
+	// Non-TLS mode: local token authentication with a fixed local-admin
+	// principal bound to cluster-admin for frictionless local development.
+	localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
+	if tokenError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
+	authenticatorChain := security.NewAuthenticatorChain(localTokenAuthenticator)
+	rbacAuthorizer.BindRole(security.RoleBinding{
+		Principal: "user:local-admin",
+		RoleName:  "cluster-admin",
+	})
+	return authenticatorChain, ""
+}
+
+// configureAndStartAPIServer sets up the full API server stack: TLS, authentication,
+// authorization, policy gate, secret store, enrollment, and DNS. It launches the
+// HTTP listener in the background and attaches all optional server components.
+func configureAndStartAPIServer(
+	ctx context.Context,
+	factStore store.StateStore,
+	authorizedStore *security.AuthorizedStore,
+	rbacAuthorizer *security.RBACAuthorizer,
+	auditLog *security.InMemoryAuditLog,
+	eventLog *types.EventLog,
+	parsedConfig serverCommandConfig,
+) {
+	serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled := resolveServerTLSConfiguration(ctx, parsedConfig)
+	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer)
+
+	// API-layer capability authorizer. Maps builtin roles to capability grants.
+	apiAuthorizer := security.NewAPIAuthorizer()
+	if serverTLSConfig == nil {
+		apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
+	} else if serverPrincipal != "" {
+		apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
+	}
+
+	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
+	statusAPIServer.SetEventLog(eventLog)
+	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
+	statusAPIServer.SetAuthenticatorChain(authenticatorChain)
+	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
+	statusAPIServer.SetRequirePrincipal(true)
+
+	tenantRegistry := tenant.NewTenantRegistry(factStore)
+	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
+	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
+	statusAPIServer.SetPolicyGate(policyGate)
+
+	secretMasterKey := loadOrGenerateSecretMasterKey()
+	secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(secretMasterKey)
+	if keyProviderError != nil {
+		fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
+		os.Exit(1)
+	}
+	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
+	statusAPIServer.SetSecretStore(secretStore)
+	fmt.Println("Secret store initialized (envelope encryption, local key)")
+
+	if parsedConfig.apiOnly {
+		statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
+	}
+
+	if clusterCertificateAuthority != nil {
+		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultEnrollmentTokenTTL)
+		statusAPIServer.SetEnrollmentService(enrollmentService)
+		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
+	}
+
+	if parsedConfig.dnsEnabled {
+		startDNSServer(ctx, factStore, parsedConfig.dnsListenAddress)
+	}
+}
+
+// startDNSServer launches the built-in DNS server in a background goroutine.
+// The server resolves service names to their current endpoints using facts
+// from the store.
+func startDNSServer(ctx context.Context, factStore store.StateStore, dnsListenAddress string) {
+	serviceResolver := network.NewStoreBackedResolver(factStore)
+	dnsServer := network.NewDNSServer(serviceResolver, dnsListenAddress)
+	go func() {
+		if dnsStartError := dnsServer.Start(ctx); dnsStartError != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "DNS server error: %v\n", dnsStartError)
+		}
+	}()
+	fmt.Printf("DNS server listening on %s (resolving *.%s)\n",
+		dnsListenAddress, network.DefaultDNSDomain)
+}
+
+// printStartupBannerAndAwaitShutdown prints the server mode and protocol to
+// stdout, then blocks until the context is cancelled (typically by Ctrl+C).
+// This is the final step of server startup — all components are already running
+// when this function is called.
+func printStartupBannerAndAwaitShutdown(ctx context.Context, parsedConfig serverCommandConfig, runAPIServer bool) {
 	modeLabel := "full"
 	if parsedConfig.apiOnly {
 		modeLabel = "api-only"

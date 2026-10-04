@@ -168,6 +168,9 @@ func main() {
 			os.Exit(1)
 		}
 		executeSecretCommand(os.Args[2:])
+	case "readiness":
+		parsedReadinessConfig := parseReadinessCommandArgs(os.Args[2:])
+		executeReadinessCommand(parsedReadinessConfig)
 	case "completion":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca completion <bash|zsh>")
@@ -181,6 +184,9 @@ func main() {
 }
 
 // printUsage prints the full CLI help text to stderr.
+// This function exceeds 80 lines because it is flat help text assembled via
+// fmt.Fprintln calls — each line is an independent output statement. Extracting
+// sub-groups would add indirection without improving clarity.
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: cca <command>")
 	fmt.Fprintln(os.Stderr, "")
@@ -207,6 +213,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  demo-storage                 3 nodes with persistent volumes, node kill")
 	fmt.Fprintln(os.Stderr, "  chaos                        random failure injection, convergence reporting")
 	fmt.Fprintln(os.Stderr, "  benchmark [--json] [--nodes N] [--services N] [--instances N]  chaos benchmark with recovery metrics")
+	fmt.Fprintln(os.Stderr, "  readiness [--json]           run test suite across 16 areas, print readiness report")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "cluster management:")
 	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")

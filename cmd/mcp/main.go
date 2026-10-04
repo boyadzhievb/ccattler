@@ -385,6 +385,10 @@ func handleToolsList(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 // handleToolsCall executes a named tool with the provided arguments and returns the result.
 // Enforces authentication (token must have been validated during init), read-only mode
 // (blocks mutation tools), and writes a structured audit log entry for every call.
+// This function exceeds 80 lines because it is a linear dispatch over guard clauses
+// (auth check, param parse, read-only check) followed by a tool-registry lookup — each
+// block is an independent validation step. Extracting sub-functions would scatter the
+// request handling flow without improving clarity.
 func handleToolsCall(incomingRequest jsonRPCRequest) *jsonRPCResponse {
 	if !clientAuthenticated {
 		return &jsonRPCResponse{
