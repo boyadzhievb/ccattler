@@ -18,10 +18,13 @@
 # container images. On the next run, stopped VMs boot in seconds and skip Ansible
 # provisioning. The binary is updated and services restarted automatically.
 #
+# Vagrant state is persisted at /tmp/cca-vagrant-state-<env> between runs so that
+# CI checkout doesn't lose track of existing VMs.
+#
 # Usage:
-#   ./test/e2e/cluster_test.sh                       # 2-node e2e test, build from source
-#   ./test/e2e/cluster_test.sh --destroy             # destroy VMs after run (fresh next time)
-#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs running for debugging
+#   ./test/e2e/cluster_test.sh                       # 2-node e2e test, reuse VMs if available
+#   ./test/e2e/cluster_test.sh --clean               # destroy VMs + wipe persisted state (fresh start)
+#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs running after test (debugging)
 #   ./test/e2e/cluster_test.sh --from-release        # download latest release binary
 #   ./test/e2e/cluster_test.sh --env deploy --from-release  # 3-node deploy cluster
 
@@ -34,11 +37,12 @@ WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 DESTROY_ON_EXIT=halt
 BINARY_SOURCE=build
 CLUSTER_ENV=test
+CLEAN_START=false
 
 for arg in "$@"; do
     case "$arg" in
         --no-destroy)   DESTROY_ON_EXIT=none ;;
-        --destroy)      DESTROY_ON_EXIT=destroy ;;
+        --clean)        CLEAN_START=true; DESTROY_ON_EXIT=destroy ;;
         --from-release) BINARY_SOURCE=release ;;
         --env=*)        CLUSTER_ENV="${arg#--env=}" ;;
         --env)          ;; # handled below with next arg
@@ -86,6 +90,9 @@ esac
 ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 
+# Persisted Vagrant state directory — survives git checkout and workspace cleanup.
+VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
+
 # Maximum seconds to wait for convergence checks.
 CONVERGE_TIMEOUT=120
 CONTAINER_TIMEOUT=180
@@ -111,16 +118,23 @@ cleanup() {
         collect_vm_logs || true
     fi
     if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
-        log "Destroying VMs..."
+        log "Destroying VMs and wiping persisted state..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant destroy -f 2>/dev/null || true
+        rm -rf "$VAGRANT_STATE_DIR"
     elif [[ "$DESTROY_ON_EXIT" == "halt" ]]; then
         log "Stopping VMs (images and state preserved for next run)..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant halt 2>/dev/null || true
+        # Persist Vagrant state so next CI run can reuse the VMs.
+        rm -rf "$VAGRANT_STATE_DIR"
+        cp -a "$ANSIBLE_DIR/.vagrant" "$VAGRANT_STATE_DIR"
+        log "Vagrant state saved to $VAGRANT_STATE_DIR"
     else
         log "Keeping VMs running (--no-destroy). Stop manually:"
         log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE vagrant halt"
+        rm -rf "$VAGRANT_STATE_DIR"
+        cp -a "$ANSIBLE_DIR/.vagrant" "$VAGRANT_STATE_DIR"
     fi
     rm -f /tmp/cca-e2e-ca.pem /tmp/cca-e2e-client.pem /tmp/cca-e2e-client-key.pem
     if [[ $exit_code -eq 0 ]]; then
@@ -171,10 +185,30 @@ if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
     log "vagrant-libvirt installed"
 fi
 
+# ---- Clean start: wipe everything and start fresh ----
+if [[ "$CLEAN_START" == "true" ]]; then
+    log "Clean start requested — destroying VMs and wiping state..."
+    rm -rf "$VAGRANT_STATE_DIR"
+    rm -rf "$ANSIBLE_DIR/.vagrant"
+    for vm in "${VM_NAMES[@]}"; do
+        stale_domain="ansible_${vm}"
+        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
+            sudo virsh destroy "$stale_domain" 2>/dev/null || true
+            sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+        fi
+    done
+fi
+
+# ---- Restore persisted Vagrant state ----
+# CI checkout wipes .vagrant/ — restore from the persisted directory if available.
+if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+    log "Restoring Vagrant state from $VAGRANT_STATE_DIR"
+    cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
+fi
+
 # ---- Handle orphaned libvirt domains ----
-# After a fresh checkout, .vagrant/ state is gone but libvirt domains may still
-# exist from a previous halted run. Vagrant can't manage them without its state,
-# so clean them up and let Vagrant recreate from scratch.
+# If libvirt domains exist but Vagrant state is missing (persisted state was also
+# lost), clean them up so vagrant up can recreate from scratch.
 for vm in "${VM_NAMES[@]}"; do
     stale_domain="ansible_${vm}"
     vagrant_state="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/id"

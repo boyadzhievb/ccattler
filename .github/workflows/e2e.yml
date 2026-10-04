@@ -14,19 +14,7 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 30
     steps:
-      - name: Preserve Vagrant state before checkout
-        run: |
-          if [ -d deploy/ansible/.vagrant ]; then
-            cp -a deploy/ansible/.vagrant /tmp/cca-vagrant-state
-          fi
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Restore Vagrant state after checkout
-        run: |
-          if [ -d /tmp/cca-vagrant-state ]; then
-            mv /tmp/cca-vagrant-state deploy/ansible/.vagrant
-          fi
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -56,9 +44,3 @@ jobs:
                 "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
             fi
           done
-
-      - name: Stop VMs (preserve cached images)
-        if: always()
-        run: |
-          cd deploy/ansible
-          VAGRANT_VAGRANTFILE=test-Vagrantfile vagrant halt 2>/dev/null || true
