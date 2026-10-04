@@ -188,6 +188,37 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	containerName := buildContainerName(spec.ServiceName, spec.ID)
+	args, firstHostPort, validationError := containerRuntime.buildRunArguments(spec, containerName, volumeMountArgs)
+	if validationError != nil {
+		return validationError
+	}
+
+	runCommand := containerRuntime.buildExecCommand(ctx, args...)
+	var stderr bytes.Buffer
+	runCommand.Stderr = &stderr
+	if err := runCommand.Run(); err != nil {
+		if configTempDirectoryPath != "" {
+			_ = os.RemoveAll(configTempDirectoryPath)
+		}
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("%v: %s", err, stderr.String())}
+	}
+
+	containerRuntime.trackedContainers[spec.ID] = true
+	containerRuntime.containerNames[spec.ID] = containerName
+	if firstHostPort > 0 {
+		containerRuntime.instanceHostPorts[spec.ID] = firstHostPort
+	}
+	if configTempDirectoryPath != "" {
+		containerRuntime.configFileTempDirectories[spec.ID] = configTempDirectoryPath
+	}
+	return nil
+}
+
+// buildRunArguments constructs the nerdctl/docker run argument list from a
+// workload spec. Returns the args slice, the first allocated host port (0 if
+// no ports), and a validation error if the image reference is invalid. This
+// function is separated from Start for testability.
+func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, containerName string, volumeMountArgs []string) ([]string, int, error) {
 	args := []string{"run", "-d", "--name", containerName}
 
 	if spec.IP != "" && containerRuntime.networkName != "" {
@@ -224,30 +255,11 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	if !validImageReferencePattern.MatchString(spec.Image) {
-		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("invalid image reference: %q", spec.Image)}
+		return nil, 0, &StartError{ID: spec.ID, Reason: fmt.Sprintf("invalid image reference: %q", spec.Image)}
 	}
 
 	args = append(args, spec.Image)
-
-	runCommand := containerRuntime.buildExecCommand(ctx, args...)
-	var stderr bytes.Buffer
-	runCommand.Stderr = &stderr
-	if err := runCommand.Run(); err != nil {
-		if configTempDirectoryPath != "" {
-			_ = os.RemoveAll(configTempDirectoryPath)
-		}
-		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("%v: %s", err, stderr.String())}
-	}
-
-	containerRuntime.trackedContainers[spec.ID] = true
-	containerRuntime.containerNames[spec.ID] = containerName
-	if firstHostPort > 0 {
-		containerRuntime.instanceHostPorts[spec.ID] = firstHostPort
-	}
-	if configTempDirectoryPath != "" {
-		containerRuntime.configFileTempDirectories[spec.ID] = configTempDirectoryPath
-	}
-	return nil
+	return args, firstHostPort, nil
 }
 
 // HostPortForInstance returns the host port allocated to the given workload's
