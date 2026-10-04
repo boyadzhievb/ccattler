@@ -11,8 +11,10 @@
 #   - CCattler binary at deploy/ansible/cca-linux-amd64
 #
 # Usage:
-#   ./test/e2e/cluster_test.sh              # full run
-#   ./test/e2e/cluster_test.sh --no-destroy # keep VMs on failure for debugging
+#   ./test/e2e/cluster_test.sh                       # full run, build from source
+#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs for debugging
+#   ./test/e2e/cluster_test.sh --from-release        # download latest release binary
+#   ./test/e2e/cluster_test.sh --from-release --no-destroy
 
 set -euo pipefail
 
@@ -21,6 +23,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 DESTROY_ON_EXIT=true
+BINARY_SOURCE=build
 
 CTRL_IP="192.168.122.10"
 WORKER1_IP="192.168.122.20"
@@ -31,9 +34,12 @@ ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 CONVERGE_TIMEOUT=120
 CONTAINER_TIMEOUT=90
 
-if [[ "${1:-}" == "--no-destroy" ]]; then
-    DESTROY_ON_EXIT=false
-fi
+for arg in "$@"; do
+    case "$arg" in
+        --no-destroy)  DESTROY_ON_EXIT=false ;;
+        --from-release) BINARY_SOURCE=release ;;
+    esac
+done
 
 log() { echo "==> [$(date +%H:%M:%S)] $*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -102,10 +108,34 @@ count_containers() {
     ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
-# ---- Step 0: Build binary ----
-log "Building cca binary for linux/amd64..."
-(cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
-log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+# ---- Prerequisites ----
+command -v vagrant >/dev/null 2>&1 || fail "vagrant not found in PATH"
+command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found in PATH"
+
+if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
+    log "vagrant-libvirt plugin not found, installing..."
+    vagrant plugin install vagrant-libvirt || fail "failed to install vagrant-libvirt plugin"
+    log "vagrant-libvirt installed"
+fi
+
+# ---- Step 0: Obtain binary ----
+if [[ "$BINARY_SOURCE" == "release" ]]; then
+    log "Downloading latest release binary..."
+    GITHUB_REPO="boyadzhievb/ccattler"
+    RELEASE_TAG=$(curl -sS "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | jq -r '.tag_name')
+    TARBALL_NAME="cca-${RELEASE_TAG}-linux-amd64.tar.gz"
+    DOWNLOAD_URL="https://github.com/${GITHUB_REPO}/releases/download/${RELEASE_TAG}/${TARBALL_NAME}"
+    log "Release: ${RELEASE_TAG} — downloading ${TARBALL_NAME}..."
+    curl -sSL "$DOWNLOAD_URL" -o "/tmp/${TARBALL_NAME}"
+    tar xzf "/tmp/${TARBALL_NAME}" -C "$ANSIBLE_DIR" --strip-components=0
+    mv "$ANSIBLE_DIR/cca" "$ANSIBLE_DIR/cca-linux-amd64" 2>/dev/null || true
+    rm -f "/tmp/${TARBALL_NAME}"
+    log "Release binary: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+else
+    log "Building cca binary for linux/amd64..."
+    (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+fi
 
 # ---- Step 1: Provision VMs ----
 log "Provisioning 3 VMs via Vagrant..."
