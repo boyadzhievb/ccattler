@@ -586,6 +586,9 @@ func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
 		default:
 			if !activeWatcher.overflowDetected {
 				sanitizedKey := strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(event.Fact.Key)
+				if strings.Contains(sanitizedKey, "/secret/") {
+					sanitizedKey = strings.SplitN(sanitizedKey, "/secret/", 2)[0] + "/secret/[REDACTED]"
+				}
 				log.Printf("WARNING: watch event dropped for key %s (channel buffer full)", sanitizedKey)
 			}
 			activeWatcher.overflowDetected = true

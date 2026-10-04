@@ -11,11 +11,16 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
-// sanitizeForAudit removes newlines and control characters from a string to
-// prevent log injection when recording audit entries.
+// sanitizeForAudit removes newlines and control characters from a string and
+// redacts secret-related paths to prevent log injection and sensitive data
+// exposure when recording audit entries.
 func sanitizeForAudit(input string) string {
-	replacer := strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t")
-	return replacer.Replace(input)
+	sanitized := strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(input)
+	if strings.Contains(sanitized, "/secret/") {
+		parts := strings.SplitN(sanitized, "/secret/", 2)
+		sanitized = parts[0] + "/secret/[REDACTED]"
+	}
+	return sanitized
 }
 
 // principalContextKey is the context key for the authenticated principal identity.
