@@ -181,6 +181,7 @@ func (eventLog *EventLog) Count(ctx context.Context) (int, error) {
 func (eventLog *EventLog) trimOldEvents(ctx context.Context) {
 	allFacts, err := eventLog.factStore.Scan(ctx, PrefixEvent+"/")
 	if err != nil {
+		logging.Default().Warn("failed to scan events for trimming", "error", err.Error())
 		return
 	}
 

@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -119,7 +120,13 @@ func parseNetworkPolicyRule(name, value string) (NetworkPolicyRule, error) {
 	}
 
 	port := 0
-	_, _ = fmt.Sscanf(parts[2], "%d", &port)
+	if parts[2] != "" {
+		parsedPort, parseError := strconv.Atoi(parts[2])
+		if parseError != nil {
+			return NetworkPolicyRule{}, fmt.Errorf("invalid port %q in rule %s", parts[2], name)
+		}
+		port = parsedPort
+	}
 
 	return NetworkPolicyRule{
 		Name:          name,

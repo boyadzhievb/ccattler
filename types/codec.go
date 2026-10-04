@@ -10,6 +10,27 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
+// parseStoredInt parses a fact store value into an int. Empty strings return 0
+// with no error (the field was not present). Non-empty invalid values return an
+// error so callers can detect corrupted data rather than silently defaulting to 0.
+func parseStoredInt(value string) (int, error) {
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(value)
+}
+
+// parseStoredInt64 parses a fact store value into an int64. Empty strings return
+// 0 with no error (the field was not present). Non-empty invalid values return
+// an error so callers can detect corrupted data rather than silently defaulting
+// to 0.
+func parseStoredInt64(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
 // WriteService writes a service definition as flat key-value pairs under the
 // desired/ prefix in the fact store. Each field of the Service struct becomes
 // a separate key, allowing controllers to watch individual fields independently.
@@ -55,7 +76,11 @@ func ReadService(ctx context.Context, stateStore store.StateStore, name string) 
 		case "image":
 			service.Image = fieldValue
 		case "instances":
-			service.Instances, _ = strconv.Atoi(fieldValue)
+			parsedInstances, parseError := parseStoredInt(fieldValue)
+			if parseError != nil {
+				return nil, fmt.Errorf("service %s: corrupt instances value %q", name, fieldValue)
+			}
+			service.Instances = parsedInstances
 		case "resources/cpu":
 			service.CPU = fieldValue
 		case "resources/memory":
@@ -220,13 +245,21 @@ func ReadNode(ctx context.Context, stateStore store.StateStore, id string) (*Nod
 		case "state":
 			node.State = NodeState(val)
 		case "capacity/cpu":
-			node.CapacityCPU, _ = strconv.ParseInt(val, 10, 64)
+			if node.CapacityCPU, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("node %s: corrupt capacity/cpu value %q", id, val)
+			}
 		case "capacity/memory":
-			node.CapacityMemory, _ = strconv.ParseInt(val, 10, 64)
+			if node.CapacityMemory, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("node %s: corrupt capacity/memory value %q", id, val)
+			}
 		case "available/cpu":
-			node.AvailableCPU, _ = strconv.ParseInt(val, 10, 64)
+			if node.AvailableCPU, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("node %s: corrupt available/cpu value %q", id, val)
+			}
 		case "available/memory":
-			node.AvailableMemory, _ = strconv.ParseInt(val, 10, 64)
+			if node.AvailableMemory, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("node %s: corrupt available/memory value %q", id, val)
+			}
 		case "architecture":
 			node.Architecture = val
 		case "zone":
@@ -262,10 +295,26 @@ func ListNodes(ctx context.Context, stateStore store.StateStore) ([]Node, error)
 	for id, fields := range grouped {
 		node := Node{ID: id}
 		node.State = NodeState(fields["state"])
-		node.CapacityCPU, _ = strconv.ParseInt(fields["capacity/cpu"], 10, 64)
-		node.CapacityMemory, _ = strconv.ParseInt(fields["capacity/memory"], 10, 64)
-		node.AvailableCPU, _ = strconv.ParseInt(fields["available/cpu"], 10, 64)
-		node.AvailableMemory, _ = strconv.ParseInt(fields["available/memory"], 10, 64)
+		if parsedValue, parseError := parseStoredInt64(fields["capacity/cpu"]); parseError != nil {
+			logging.Default().Warn("corrupt node fact", "node", id, "field", "capacity/cpu", "value", fields["capacity/cpu"])
+		} else {
+			node.CapacityCPU = parsedValue
+		}
+		if parsedValue, parseError := parseStoredInt64(fields["capacity/memory"]); parseError != nil {
+			logging.Default().Warn("corrupt node fact", "node", id, "field", "capacity/memory", "value", fields["capacity/memory"])
+		} else {
+			node.CapacityMemory = parsedValue
+		}
+		if parsedValue, parseError := parseStoredInt64(fields["available/cpu"]); parseError != nil {
+			logging.Default().Warn("corrupt node fact", "node", id, "field", "available/cpu", "value", fields["available/cpu"])
+		} else {
+			node.AvailableCPU = parsedValue
+		}
+		if parsedValue, parseError := parseStoredInt64(fields["available/memory"]); parseError != nil {
+			logging.Default().Warn("corrupt node fact", "node", id, "field", "available/memory", "value", fields["available/memory"])
+		} else {
+			node.AvailableMemory = parsedValue
+		}
 		node.Architecture = fields["architecture"]
 		node.Zone = fields["zone"]
 		nodes = append(nodes, node)
@@ -320,7 +369,11 @@ func ReadServiceVIP(ctx context.Context, stateStore store.StateStore, serviceNam
 	}
 	portFact, err := stateStore.Get(ctx, KeyNetworkVIPServicePort(serviceName))
 	if err == nil {
-		serviceVIP.Port, _ = strconv.Atoi(string(portFact.Value))
+		parsedPort, parseError := parseStoredInt(string(portFact.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("service %s: corrupt VIP port value %q", serviceName, string(portFact.Value))
+		}
+		serviceVIP.Port = parsedPort
 	}
 	return serviceVIP, nil
 }
@@ -449,11 +502,17 @@ func ReadObservedVolume(ctx context.Context, stateStore store.StateStore, volume
 		case "migration_source":
 			volume.MigrationSource = val
 		case "used_bytes":
-			volume.UsedBytes, _ = strconv.ParseInt(val, 10, 64)
+			if volume.UsedBytes, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("volume %s: corrupt used_bytes value %q", volumeName, val)
+			}
 		case "capacity_bytes":
-			volume.CapacityBytes, _ = strconv.ParseInt(val, 10, 64)
+			if volume.CapacityBytes, err = parseStoredInt64(val); err != nil {
+				return nil, fmt.Errorf("volume %s: corrupt capacity_bytes value %q", volumeName, val)
+			}
 		case "replica_count":
-			volume.ReplicaCount, _ = strconv.Atoi(val)
+			if volume.ReplicaCount, err = parseStoredInt(val); err != nil {
+				return nil, fmt.Errorf("volume %s: corrupt replica_count value %q", volumeName, val)
+			}
 		case "replica_state":
 			volume.ReplicaState = ReplicaState(val)
 		}
@@ -491,9 +550,21 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 		volume.Instance = fields["instance"]
 		volume.MountPath = fields["mount_path"]
 		volume.MigrationSource = fields["migration_source"]
-		volume.UsedBytes, _ = strconv.ParseInt(fields["used_bytes"], 10, 64)
-		volume.CapacityBytes, _ = strconv.ParseInt(fields["capacity_bytes"], 10, 64)
-		volume.ReplicaCount, _ = strconv.Atoi(fields["replica_count"])
+		if parsedValue, parseError := parseStoredInt64(fields["used_bytes"]); parseError != nil {
+			logging.Default().Warn("corrupt volume fact", "volume", volumeName, "field", "used_bytes", "value", fields["used_bytes"])
+		} else {
+			volume.UsedBytes = parsedValue
+		}
+		if parsedValue, parseError := parseStoredInt64(fields["capacity_bytes"]); parseError != nil {
+			logging.Default().Warn("corrupt volume fact", "volume", volumeName, "field", "capacity_bytes", "value", fields["capacity_bytes"])
+		} else {
+			volume.CapacityBytes = parsedValue
+		}
+		if parsedValue, parseError := parseStoredInt(fields["replica_count"]); parseError != nil {
+			logging.Default().Warn("corrupt volume fact", "volume", volumeName, "field", "replica_count", "value", fields["replica_count"])
+		} else {
+			volume.ReplicaCount = parsedValue
+		}
 		volume.ReplicaState = ReplicaState(fields["replica_state"])
 		volumes = append(volumes, volume)
 	}
@@ -535,8 +606,16 @@ func ReadScalePolicy(ctx context.Context, stateStore store.StateStore, serviceNa
 	}
 
 	policy := &ScalePolicy{Service: serviceName}
-	policy.Min, _ = strconv.Atoi(string(minFact.Value))
-	policy.Max, _ = strconv.Atoi(string(maxFact.Value))
+	parsedMin, parseError := parseStoredInt(string(minFact.Value))
+	if parseError != nil {
+		return nil, fmt.Errorf("scale policy %s: corrupt min value %q", serviceName, string(minFact.Value))
+	}
+	policy.Min = parsedMin
+	parsedMax, parseError := parseStoredInt(string(maxFact.Value))
+	if parseError != nil {
+		return nil, fmt.Errorf("scale policy %s: corrupt max value %q", serviceName, string(maxFact.Value))
+	}
+	policy.Max = parsedMax
 
 	targetFacts, err := stateStore.Scan(ctx, ScanDesiredServiceScaleTargets(serviceName))
 	if err != nil {
@@ -544,7 +623,10 @@ func ReadScalePolicy(ctx context.Context, stateStore store.StateStore, serviceNa
 	}
 	for _, factEntry := range targetFacts {
 		metricName := strings.TrimPrefix(factEntry.Key, ScanDesiredServiceScaleTargets(serviceName))
-		targetValue, _ := strconv.Atoi(string(factEntry.Value))
+		targetValue, parseError := parseStoredInt(string(factEntry.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("scale target %s/%s: corrupt value %q", serviceName, metricName, string(factEntry.Value))
+		}
 		policy.Targets = append(policy.Targets, ScaleTarget{
 			Metric: metricName,
 			Value:  targetValue,

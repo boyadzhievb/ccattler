@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -260,9 +261,19 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 		policy := policies[serviceName]
 		switch suffix {
 		case "update/max_unavailable":
-			policy.maxUnavailable, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt rollout max_unavailable", "service", serviceName, "value", string(fact.Value))
+				continue
+			}
+			policy.maxUnavailable = parsedValue
 		case "update/max_extra":
-			policy.maxExtra, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt rollout max_extra", "service", serviceName, "value", string(fact.Value))
+				continue
+			}
+			policy.maxExtra = parsedValue
 		default:
 			continue
 		}
@@ -326,9 +337,19 @@ func extractRolloutDisruptionBudgets(facts []store.Fact) map[string]rolloutDisru
 		budget := budgets[serviceName]
 		switch suffix {
 		case "disruption/min_available":
-			budget.minAvailable, _ = strconv.Atoi(string(factEntry.Value))
+			parsedValue, parseError := strconv.Atoi(string(factEntry.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt disruption min_available", "service", serviceName, "value", string(factEntry.Value))
+				continue
+			}
+			budget.minAvailable = parsedValue
 		case "disruption/max_unavailable":
-			budget.maxUnavailable, _ = strconv.Atoi(string(factEntry.Value))
+			parsedValue, parseError := strconv.Atoi(string(factEntry.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt disruption max_unavailable", "service", serviceName, "value", string(factEntry.Value))
+				continue
+			}
+			budget.maxUnavailable = parsedValue
 		default:
 			continue
 		}

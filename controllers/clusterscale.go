@@ -116,9 +116,19 @@ func extractClusterAutoscaleConfig(facts []store.Fact) clusterAutoscaleConfig {
 	for _, fact := range store.FactsWithPrefix(facts, clusterAutoscalePrefix) {
 		switch fact.Key {
 		case types.KeyDesiredClusterAutoscaleMinNodes():
-			config.minNodes, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt cluster autoscale min_nodes", "value", string(fact.Value))
+				continue
+			}
+			config.minNodes = parsedValue
 		case types.KeyDesiredClusterAutoscaleMaxNodes():
-			config.maxNodes, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt cluster autoscale max_nodes", "value", string(fact.Value))
+				continue
+			}
+			config.maxNodes = parsedValue
 		}
 	}
 	return config

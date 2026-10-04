@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -379,9 +380,19 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 			case parts[1] == "state":
 				node.state = types.NodeState(fieldValue)
 			case parts[1] == "available/cpu":
-				node.availCPU, _ = strconv.ParseInt(fieldValue, 10, 64)
+				parsedCPU, parseError := strconv.ParseInt(fieldValue, 10, 64)
+				if parseError != nil {
+					logging.Default().Warn("corrupt node available/cpu fact", "node", nodeID, "value", fieldValue)
+					continue
+				}
+				node.availCPU = parsedCPU
 			case parts[1] == "available/memory":
-				node.availMemory, _ = strconv.ParseInt(fieldValue, 10, 64)
+				parsedMemory, parseError := strconv.ParseInt(fieldValue, 10, 64)
+				if parseError != nil {
+					logging.Default().Warn("corrupt node available/memory fact", "node", nodeID, "value", fieldValue)
+					continue
+				}
+				node.availMemory = parsedMemory
 			case parts[1] == "architecture":
 				node.architecture = fieldValue
 			case parts[1] == "zone":

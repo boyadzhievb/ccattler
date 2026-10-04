@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -102,23 +103,39 @@ func (registry *TenantRegistry) GetTenant(ctx context.Context, tenantName string
 
 	tenant := &Tenant{Name: tenantName}
 
-	if cpuFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaCPU(tenantName)); err == nil {
-		_, _ = fmt.Sscanf(string(cpuFact.Value), "%d", &tenant.Quota.CPU)
+	if cpuFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaCPU(tenantName)); getErr == nil {
+		parsedCPU, parseError := strconv.Atoi(string(cpuFact.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("tenant %s: corrupt quota CPU value %q", tenantName, string(cpuFact.Value))
+		}
+		tenant.Quota.CPU = parsedCPU
 	}
-	if memFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaMemory(tenantName)); err == nil {
+	if memFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaMemory(tenantName)); getErr == nil {
 		tenant.Quota.Memory = string(memFact.Value)
 	}
-	if instFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaInstances(tenantName)); err == nil {
-		_, _ = fmt.Sscanf(string(instFact.Value), "%d", &tenant.Quota.Instances)
+	if instFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaInstances(tenantName)); getErr == nil {
+		parsedInstances, parseError := strconv.Atoi(string(instFact.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("tenant %s: corrupt quota instances value %q", tenantName, string(instFact.Value))
+		}
+		tenant.Quota.Instances = parsedInstances
 	}
-	if volFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName)); err == nil {
-		_, _ = fmt.Sscanf(string(volFact.Value), "%d", &tenant.Quota.Volumes)
+	if volFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName)); getErr == nil {
+		parsedVolumes, parseError := strconv.Atoi(string(volFact.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("tenant %s: corrupt quota volumes value %q", tenantName, string(volFact.Value))
+		}
+		tenant.Quota.Volumes = parsedVolumes
 	}
-	if storageFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaStorage(tenantName)); err == nil {
+	if storageFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaStorage(tenantName)); getErr == nil {
 		tenant.Quota.Storage = string(storageFact.Value)
 	}
-	if weightFact, err := registry.factStore.Get(ctx, types.KeyDesiredTenantWeight(tenantName)); err == nil {
-		_, _ = fmt.Sscanf(string(weightFact.Value), "%d", &tenant.Weight)
+	if weightFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantWeight(tenantName)); getErr == nil {
+		parsedWeight, parseError := strconv.Atoi(string(weightFact.Value))
+		if parseError != nil {
+			return nil, fmt.Errorf("tenant %s: corrupt weight value %q", tenantName, string(weightFact.Value))
+		}
+		tenant.Weight = parsedWeight
 	}
 
 	return tenant, nil

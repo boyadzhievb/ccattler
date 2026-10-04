@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -857,8 +858,10 @@ func collectNetworkingStatusEntries(ctx context.Context, factStore store.StateSt
 		if len(pathParts) == 1 {
 			vipByService[pathParts[0]] = string(vipFact.Value)
 		} else if len(pathParts) == 2 && pathParts[1] == "port" {
-			portValue := 0
-			_, _ = fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			portValue, parseError := strconv.Atoi(string(vipFact.Value))
+			if parseError != nil {
+				portValue = 0
+			}
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}

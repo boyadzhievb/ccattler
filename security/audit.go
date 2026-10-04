@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -131,7 +132,10 @@ func (auditLog *StoreBackedAuditLog) persistEntry(entry AuditEntry) {
 	key := fmt.Sprintf("%s/%020d", types.PrefixAudit, sequenceNumber)
 	entryJSON, marshalErr := json.Marshal(entry)
 	if marshalErr != nil {
+		logging.Default().Error("failed to marshal audit entry", "error", marshalErr.Error(), "action", entry.Action)
 		return
 	}
-	_, _ = auditLog.stateStore.Put(context.Background(), key, entryJSON)
+	if _, putError := auditLog.stateStore.Put(context.Background(), key, entryJSON); putError != nil {
+		logging.Default().Error("failed to persist audit entry", "error", putError.Error(), "action", entry.Action, "principal", entry.Principal)
+	}
 }

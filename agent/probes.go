@@ -110,6 +110,7 @@ func (probeScheduler *ProbeScheduler) Run(ctx context.Context, findInstances fun
 func (probeScheduler *ProbeScheduler) ExecuteProbePass(ctx context.Context, findInstances func(context.Context) ([]placedInstanceInfo, error)) {
 	instances, err := findInstances(ctx)
 	if err != nil {
+		logging.Default().Warn("probe pass skipped: failed to find instances", "error", err.Error())
 		return
 	}
 

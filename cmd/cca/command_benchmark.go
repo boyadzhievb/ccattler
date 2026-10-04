@@ -61,17 +61,32 @@ func parseBenchmarkCommandArgs(args []string) benchmarkConfig {
 		case "--nodes":
 			if index+1 < len(args) {
 				index++
-				config.nodeCount, _ = strconv.Atoi(args[index])
+				parsedValue, parseError := strconv.Atoi(args[index])
+				if parseError != nil {
+					fmt.Fprintf(os.Stderr, "invalid --nodes value %q: must be an integer\n", args[index])
+					os.Exit(1)
+				}
+				config.nodeCount = parsedValue
 			}
 		case "--services":
 			if index+1 < len(args) {
 				index++
-				config.serviceCount, _ = strconv.Atoi(args[index])
+				parsedValue, parseError := strconv.Atoi(args[index])
+				if parseError != nil {
+					fmt.Fprintf(os.Stderr, "invalid --services value %q: must be an integer\n", args[index])
+					os.Exit(1)
+				}
+				config.serviceCount = parsedValue
 			}
 		case "--instances":
 			if index+1 < len(args) {
 				index++
-				config.instancesPerService, _ = strconv.Atoi(args[index])
+				parsedValue, parseError := strconv.Atoi(args[index])
+				if parseError != nil {
+					fmt.Fprintf(os.Stderr, "invalid --instances value %q: must be an integer\n", args[index])
+					os.Exit(1)
+				}
+				config.instancesPerService = parsedValue
 			}
 		}
 	}

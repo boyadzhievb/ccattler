@@ -631,6 +631,7 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID string) {
 	serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
 	if err != nil {
+		logging.Default().Warn("failed to look up service for volume detach", "instance", instanceID, "error", err.Error())
 		return
 	}
 	serviceName := string(serviceFact.Value)

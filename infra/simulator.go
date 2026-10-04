@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -42,7 +41,7 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 		AvailableMemory: types.DefaultSimulatedNodeMemory,
 		Architecture:    "amd64",
 	}); writeError != nil {
-		logging.Default().Error("failed to write simulated node", "node", nodeID, "error", writeError.Error())
+		return "", fmt.Errorf("failed to write simulated node %s: %w", nodeID, writeError)
 	}
 
 	simulatorInfraProvider.providerMutex.Lock()
@@ -55,7 +54,7 @@ func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Co
 // RemoveNode marks a simulated node as unreachable and removes it from tracking.
 func (simulatorInfraProvider *SimulatorInfraProvider) RemoveNode(ctx context.Context, nodeID string) error {
 	if _, putError := simulatorInfraProvider.factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeUnreachable))); putError != nil {
-		logging.Default().Error("failed to mark node unreachable", "node", nodeID, "error", putError.Error())
+		return fmt.Errorf("failed to mark node %s unreachable: %w", nodeID, putError)
 	}
 
 	simulatorInfraProvider.providerMutex.Lock()

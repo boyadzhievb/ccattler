@@ -80,7 +80,12 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 		parsedPort := 0
 		portFact, portErr := dataPlaneReconciler.factStore.Get(ctx, types.KeyNetworkVIPServicePort(serviceName))
 		if portErr == nil {
-			parsedPort, _ = strconv.Atoi(string(portFact.Value))
+			portValue, parseError := strconv.Atoi(string(portFact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt VIP port fact", "service", serviceName, "value", string(portFact.Value))
+				continue
+			}
+			parsedPort = portValue
 		}
 
 		serviceVIPMap[serviceName] = &network.ServiceVIPConfig{

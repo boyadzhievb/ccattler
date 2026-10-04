@@ -290,6 +290,7 @@ func (lifecycle *TenantLifecycle) deleteTenantInfraFacts(ctx context.Context, te
 	infraPrefix := fmt.Sprintf("tenant/%s/", tenantName)
 	infraFacts, err := lifecycle.factStore.Scan(ctx, infraPrefix)
 	if err != nil {
+		logging.Default().Error("failed to scan tenant infra facts for cleanup", "tenant", tenantName, "error", err.Error())
 		return
 	}
 	for _, fact := range infraFacts {
@@ -304,6 +305,7 @@ func (lifecycle *TenantLifecycle) deleteTenantDesiredFacts(ctx context.Context, 
 	tenantPrefix := types.PrefixDesiredTenant + tenantName
 	tenantFacts, err := lifecycle.factStore.Scan(ctx, tenantPrefix)
 	if err != nil {
+		logging.Default().Error("failed to scan tenant desired facts for cleanup", "tenant", tenantName, "error", err.Error())
 		return
 	}
 	for _, fact := range tenantFacts {

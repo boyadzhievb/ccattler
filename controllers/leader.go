@@ -181,6 +181,7 @@ func (election *LeaderElection) acquireLease(ctx context.Context, nowStr string)
 		nil,
 	)
 	if err != nil {
+		logging.Default().Warn("leader election transaction failed", "node", election.nodeID, "error", err.Error())
 		return
 	}
 	if ok {

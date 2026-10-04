@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -176,10 +177,20 @@ func extractPolicyBounds(facts []store.Fact) map[string]scalePolicyBounds {
 		current := bounds[serviceName]
 		switch suffix {
 		case "scale/horizontal/min":
-			current.min, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt scale horizontal/min", "service", serviceName, "value", string(fact.Value))
+				continue
+			}
+			current.min = parsedValue
 			bounds[serviceName] = current
 		case "scale/horizontal/max":
-			current.max, _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseError := strconv.Atoi(string(fact.Value))
+			if parseError != nil {
+				logging.Default().Warn("corrupt scale horizontal/max", "service", serviceName, "value", string(fact.Value))
+				continue
+			}
+			current.max = parsedValue
 			bounds[serviceName] = current
 		}
 	}
