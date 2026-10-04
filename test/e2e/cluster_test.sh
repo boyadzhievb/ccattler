@@ -264,9 +264,9 @@ log "All $EXPECTED_NODES nodes registered and alive"
 log "Applying Java test workload..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-    "$WORKLOADS_DIR/java-app.cca" "vagrant@${CTRL_IP}:/tmp/java-app.cca"
+    "$WORKLOADS_DIR/java-app.cca" "$WORKLOADS_DIR/index.jsp" "vagrant@${CTRL_IP}:/tmp/"
 
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/java-app.cca --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "cd /tmp && /usr/local/bin/cca apply /tmp/java-app.cca --store etcd --endpoints $ETCD_ENDPOINTS"
 
 log "Waiting for Java app containers to start..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))
