@@ -14,6 +14,7 @@ type File struct {
 	ServiceGroups    []ServiceGroupDecl    // top-level group blocks defining co-scheduled service groups
 	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
 	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
+	BaseDir          string                // directory of the source file, used to resolve "from" paths
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.
@@ -187,10 +188,13 @@ type EnvVarDecl struct {
 	Value string // environment variable value (may reference a secret)
 }
 
-// ConfigFileDecl represents a "file PATH CONTENT" entry in a config block.
+// ConfigFileDecl represents a "file PATH CONTENT" or "file PATH from LOCAL" entry
+// in a config block. When FromFile is set, the content is loaded from a local file
+// at apply time rather than being provided inline.
 type ConfigFileDecl struct {
-	Path    string // filesystem path to mount the config file at
-	Content string // file contents (inline or template reference)
+	Path     string // filesystem path to mount the config file at
+	Content  string // file contents when provided inline
+	FromFile string // local file path to load content from at apply time
 }
 
 // InitStepDecl represents a single "init { ... }" block in a service declaration.

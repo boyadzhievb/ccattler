@@ -1,0 +1,18 @@
+# Simple "whoami" web app for demo and testing.
+#
+# Each instance responds with its hostname, IP, and request headers.
+# Useful for verifying load balancing, VIP routing, and instance identity.
+
+service whoami {
+    image "traefik/whoami:latest"
+    instances 2
+    expose 80
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
+    health {
+        http /health
+        every 10s
+    }
+}

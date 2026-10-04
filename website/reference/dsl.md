@@ -57,9 +57,10 @@ service web {
     }
 
     config {
-        env "LOG_LEVEL" "info"
-        env "PORT" "8080"
-        file "/etc/app/config.yaml" "key: value"
+        env "LOG_LEVEL" = "info"
+        env "PORT" = "8080"
+        file "/etc/app/config.yaml" = "key: value"
+        file "/usr/share/nginx/html/index.html" from "index.html"
     }
 
     secret database.password {
@@ -185,12 +186,29 @@ policy team-isolation {
 
 ### config
 
-Standalone config block (outside a service).
+Configuration block for environment variables and config files. Can appear inside a service block or as a standalone top-level block. The `=` sign between key and value is optional.
+
+Config files are injected into containers via bind mounts — the agent writes the content to a temp directory on the host and mounts it read-only into the container. This is simpler than Kubernetes ConfigMaps, which require creating a separate resource and referencing it in a volume mount. In CCattler, the file content is part of the service declaration.
+
+Two ways to provide file content:
+
+- **Inline**: `file "/path" = "content"` — content is in the DSL string
+- **From file**: `file "/path" from "local-file.txt"` — content is loaded from a local file at apply time, relative to the `.cca` file's directory
+
+For multi-line content, use triple-quoted strings (`"""`):
 
 ```hcl
 config api {
-    env "LOG_LEVEL" "info"
-    file "/etc/api/config.yaml" "..."
+    env "LOG_LEVEL" = "info"
+    file "/etc/api/config.yaml" = """
+server:
+  port: 8080
+  log_level: info
+database:
+  host: db.internal
+  pool_size: 10
+"""
+    file "/etc/api/custom.conf" from "custom.conf"
 }
 ```
 
@@ -251,7 +269,8 @@ export platform/dns {
 | `retry` | init | Number of retries on failure |
 | `config` | service/top-level | Configuration block |
 | `env` | config | Environment variable |
-| `file` | config | Config file with path and content |
+| `file` | config | Config file — inline content or `from` local file |
+| `from` | file | Load config file content from a local file |
 | `secret` | top-level/service | Declare or reference a secret |
 | `mount` | secret (in service) | Mount path for secret file |
 | `scale` | service | Scaling configuration |

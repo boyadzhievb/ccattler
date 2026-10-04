@@ -2,6 +2,7 @@
 #
 # Single Tomcat service with 2 instances spread across workers.
 # Validates container image pull, JVM startup, and health probe lifecycle.
+# Serves a JSP page that shows container hostname for round-robin visibility.
 
 service java-webapp {
     image "tomcat:11-jre21"
@@ -15,5 +16,8 @@ service java-webapp {
         http /
         every 15s
         timeout 5s
+    }
+    config {
+        file "/usr/local/tomcat/webapps/ROOT/index.jsp" from "index.jsp"
     }
 }

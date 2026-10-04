@@ -111,6 +111,9 @@ func (lexer *Lexer) scanNextToken() (Token, error) {
 	}
 
 	if currentChar == '"' {
+		if lexer.position+2 < len(lexer.input) && lexer.input[lexer.position+1] == '"' && lexer.input[lexer.position+2] == '"' {
+			return lexer.scanTripleQuotedString()
+		}
 		return lexer.scanQuotedString()
 	}
 
@@ -184,6 +187,50 @@ func (lexer *Lexer) scanQuotedString() (Token, error) {
 	}
 	lexer.advanceCursor() // skip closing quote
 	return Token{Type: TokenString, Value: builder.String(), Line: startLine, Col: startCol}, nil
+}
+
+// scanTripleQuotedString reads a triple-quoted (""") string literal that allows
+// newlines and embedded double quotes. Content between the opening and closing
+// triple quotes is returned as-is. A leading newline after the opening """ is
+// stripped so the content can start on the next line.
+func (lexer *Lexer) scanTripleQuotedString() (Token, error) {
+	startLine, startCol := lexer.line, lexer.column
+	lexer.advanceCursor() // skip first "
+	lexer.advanceCursor() // skip second "
+	lexer.advanceCursor() // skip third "
+
+	// Strip optional leading newline so content can begin on the next line.
+	if lexer.position < len(lexer.input) && lexer.input[lexer.position] == '\n' {
+		lexer.advanceCursor()
+	}
+
+	var builder strings.Builder
+	for lexer.position < len(lexer.input) {
+		if lexer.input[lexer.position] == '"' &&
+			lexer.position+2 < len(lexer.input) &&
+			lexer.input[lexer.position+1] == '"' &&
+			lexer.input[lexer.position+2] == '"' {
+			// Found closing """.
+			content := builder.String()
+			// Strip trailing newline before closing """ for clean indentation.
+			if len(content) > 0 && content[len(content)-1] == '\n' {
+				content = content[:len(content)-1]
+			}
+			lexer.advanceCursor() // skip first "
+			lexer.advanceCursor() // skip second "
+			lexer.advanceCursor() // skip third "
+			return Token{Type: TokenString, Value: content, Line: startLine, Col: startCol}, nil
+		}
+		builder.WriteRune(lexer.input[lexer.position])
+		lexer.advanceCursor()
+	}
+
+	return Token{}, &ParseError{
+		Line:       startLine,
+		Col:        startCol,
+		Message:    "unterminated triple-quoted string",
+		SourceLine: sourceLineAt(lexer.sourceLines, startLine),
+	}
 }
 
 // scanNumericLiteral reads a number (with optional decimal point, percent, and unit suffix) and returns a TokenNumber token.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
@@ -164,7 +165,8 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 func applyRenderedFilesToStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent) {
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
-		if applyError := lang.Apply(ctx, factStore, rendered.content); applyError != nil {
+		baseDir := filepath.Dir(rendered.filePath)
+		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir); applyError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(applyError, rendered.filePath))
 			os.Exit(1)
 		}

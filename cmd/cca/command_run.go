@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/agent"
@@ -149,7 +150,8 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
-	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+	configBaseDir := filepath.Dir(parsedRunConfig.configFilePath)
+	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), configBaseDir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}
@@ -216,7 +218,8 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	statusAPIServer.SetEventLog(eventLog)
 
 	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
-	if err := lang.Apply(ctx, factStore, string(fileData)); err != nil {
+	containerConfigBaseDir := filepath.Dir(parsedRunConfig.configFilePath)
+	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), containerConfigBaseDir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}

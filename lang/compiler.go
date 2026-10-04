@@ -3,6 +3,8 @@ package lang
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -71,7 +73,7 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		facts = append(facts, cloudFacts...)
 	}
 	for _, serviceDecl := range file.Services {
-		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines)
+		serviceFacts, err := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir)
 		if err != nil {
 			return nil, err
 		}
@@ -199,7 +201,7 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 // compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
 // It validates the declaration and delegates to per-block sub-compilers for each
 // DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
-func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([]Fact, error) {
+func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, baseDir string) ([]Fact, error) {
 	if serviceDecl.Name == "" {
 		return nil, &ParseError{
 			Line: serviceDecl.Line, Message: "service name is required",
@@ -253,7 +255,11 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string) ([
 	facts = append(facts, compileServicePlacementFacts(serviceDecl.Name, serviceDecl.Placement)...)
 	facts = append(facts, compileServiceUpdateFacts(serviceDecl.Name, serviceDecl.Update)...)
 	facts = append(facts, compileServiceHealthProbeFacts(serviceDecl.Name, serviceDecl.Health, serviceDecl.Startup, serviceDecl.Liveness, serviceDecl.Readiness)...)
-	facts = append(facts, compileServiceConfigFacts(serviceDecl.Name, serviceDecl.Config)...)
+	configFacts, configError := compileServiceConfigFacts(serviceDecl.Name, serviceDecl.Config, baseDir)
+	if configError != nil {
+		return nil, configError
+	}
+	facts = append(facts, configFacts...)
 	facts = append(facts, compileServiceSecretFacts(serviceDecl.Name, serviceDecl.Secrets)...)
 	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
@@ -565,9 +571,9 @@ func compileServiceHealthProbeFacts(serviceName string, healthDecl *HealthDecl, 
 
 // compileServiceConfigFacts produces environment variable and config file facts
 // for a service. Returns nil if no config block is declared.
-func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl) []Fact {
+func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, baseDir string) ([]Fact, error) {
 	if configDecl == nil {
-		return nil
+		return nil, nil
 	}
 	var configFacts []Fact
 	for _, envVar := range configDecl.EnvVars {
@@ -577,12 +583,24 @@ func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl) []Fac
 		})
 	}
 	for _, configFile := range configDecl.ConfigFiles {
+		fileContent := configFile.Content
+		if configFile.FromFile != "" {
+			resolvedPath := configFile.FromFile
+			if baseDir != "" && !filepath.IsAbs(resolvedPath) {
+				resolvedPath = filepath.Join(baseDir, resolvedPath)
+			}
+			fileBytes, readErr := os.ReadFile(resolvedPath)
+			if readErr != nil {
+				return nil, fmt.Errorf("config file %q: cannot read %q: %w", configFile.Path, configFile.FromFile, readErr)
+			}
+			fileContent = string(fileBytes)
+		}
 		configFacts = append(configFacts, Fact{
 			Key:   types.KeyDesiredServiceConfigFile(serviceName, configFile.Path),
-			Value: configFile.Content,
+			Value: fileContent,
 		})
 	}
-	return configFacts
+	return configFacts, nil
 }
 
 // compileServiceSecretFacts produces secret mount path facts for each secret
@@ -1063,10 +1081,17 @@ func sanitizeRuleName(serviceName string) string {
 
 // Apply parses a DSL string and writes all resulting facts to the store.
 func Apply(ctx context.Context, stateStore store.StateStore, input string) error {
+	return ApplyWithBaseDir(ctx, stateStore, input, "")
+}
+
+// ApplyWithBaseDir parses a DSL string and writes all resulting facts to the
+// store. The baseDir is used to resolve relative "from" paths in config blocks.
+func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input string, baseDir string) error {
 	file, parseError := Parse(input)
 	if parseError != nil {
 		return parseError
 	}
+	file.BaseDir = baseDir
 	sourceLines := splitSourceLines(input)
 	facts, compileError := CompileWithSource(file, sourceLines)
 	if compileError != nil {

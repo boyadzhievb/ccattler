@@ -1042,6 +1042,14 @@ func (parser *Parser) skipNewlineTokens() {
 	}
 }
 
+// skipOptionalEquals consumes a TokenEquals if the current token is one,
+// allowing both "env KEY VALUE" and "env KEY = VALUE" syntax in config blocks.
+func (parser *Parser) skipOptionalEquals() {
+	if parser.currentToken().Type == TokenEquals {
+		parser.advanceToken()
+	}
+}
+
 // expectHierarchicalName parses an identifier optionally followed by slash-separated
 // segments, producing names like "payments/checkout" for hierarchical naming.
 func (parser *Parser) expectHierarchicalName() (string, error) {
@@ -1088,10 +1096,11 @@ func (parser *Parser) parseConfigBlock() (*ConfigDecl, error) {
 
 		switch key {
 		case "env":
-			envName, err := parser.expectIdentifier()
+			envName, err := parser.expectStringOrIdentifier()
 			if err != nil {
 				return nil, err
 			}
+			parser.skipOptionalEquals()
 			envValue, err := parser.expectStringOrIdentifier()
 			if err != nil {
 				return nil, err
@@ -1104,13 +1113,25 @@ func (parser *Parser) parseConfigBlock() (*ConfigDecl, error) {
 			if err != nil {
 				return nil, err
 			}
-			fileContent, err := parser.expectStringOrIdentifier()
-			if err != nil {
-				return nil, err
+			if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "from" {
+				parser.advanceToken()
+				localPath, fromErr := parser.expectStringOrIdentifier()
+				if fromErr != nil {
+					return nil, fromErr
+				}
+				configDecl.ConfigFiles = append(configDecl.ConfigFiles, ConfigFileDecl{
+					Path: filePath, FromFile: localPath,
+				})
+			} else {
+				parser.skipOptionalEquals()
+				fileContent, contentErr := parser.expectStringOrIdentifier()
+				if contentErr != nil {
+					return nil, contentErr
+				}
+				configDecl.ConfigFiles = append(configDecl.ConfigFiles, ConfigFileDecl{
+					Path: filePath, Content: fileContent,
+				})
 			}
-			configDecl.ConfigFiles = append(configDecl.ConfigFiles, ConfigFileDecl{
-				Path: filePath, Content: fileContent,
-			})
 		default:
 			return nil, parser.parserErrorf("unknown config field %q", key)
 		}
@@ -1905,7 +1926,11 @@ func (parser *Parser) parseNetworkRule() (*NetworkRuleDecl, error) {
 		if portToken.Type != TokenNumber {
 			return nil, parser.parserErrorf("expected port number after 'port', got %q", portToken.Value)
 		}
-		port, _ = strconv.Atoi(portToken.Value)
+		parsedPort, parseError := strconv.Atoi(portToken.Value)
+		if parseError != nil {
+			return nil, parser.parserErrorf("invalid port number %q", portToken.Value)
+		}
+		port = parsedPort
 		parser.advanceToken()
 	}
 
