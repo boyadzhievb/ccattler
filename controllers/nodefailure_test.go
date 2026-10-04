@@ -17,11 +17,11 @@ func millis(unixSeconds int64) []byte {
 
 func TestNodeFailureDetectsExpiredLease(t *testing.T) {
 	failureController := NewNodeFailureController()
-	failureController.LeaseTimeout = 5 * time.Second
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)}, // 10s ago — expired
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(960)}, // 10s ago — expired
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 	}
 
@@ -44,7 +44,7 @@ func TestNodeFailureDetectsExpiredLease(t *testing.T) {
 
 func TestNodeFailureIgnoresFreshLease(t *testing.T) {
 	failureController := NewNodeFailureController()
-	failureController.LeaseTimeout = 5 * time.Second
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
@@ -65,12 +65,12 @@ func TestNodeFailureIgnoresFreshLease(t *testing.T) {
 
 func TestNodeFailureMarksInstancesAsFailed(t *testing.T) {
 	failureController := NewNodeFailureController()
-	failureController.LeaseTimeout = 5 * time.Second
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
 		// node-1: expired lease, two running instances placed on it.
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)},
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(960)},
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 		{Key: types.KeyPlacementInstance("aaa"), Value: []byte("node-1")},
 		{Key: types.KeyObservedInstanceState("aaa"), Value: []byte("running")},
@@ -109,11 +109,11 @@ func TestNodeFailureMarksInstancesAsFailed(t *testing.T) {
 
 func TestNodeFailureSkipsAlreadyUnreachable(t *testing.T) {
 	failureController := NewNodeFailureController()
-	failureController.LeaseTimeout = 5 * time.Second
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)},
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(960)},
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("unreachable")},
 	}
 
@@ -132,11 +132,11 @@ func TestNodeFailureSkipsAlreadyUnreachable(t *testing.T) {
 
 func TestNodeFailureSkipsStoppedInstances(t *testing.T) {
 	failureController := NewNodeFailureController()
-	failureController.LeaseTimeout = 5 * time.Second
+	failureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	failureController.Now = func() time.Time { return time.Unix(1000, 0) }
 
 	inputFacts := []store.Fact{
-		{Key: types.KeyLeaseNode("node-1"), Value: millis(990)},
+		{Key: types.KeyLeaseNode("node-1"), Value: millis(960)},
 		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
 		{Key: types.KeyPlacementInstance("aaa"), Value: []byte("node-1")},
 		{Key: types.KeyObservedInstanceState("aaa"), Value: []byte("stopped")},

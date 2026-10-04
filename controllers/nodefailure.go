@@ -11,15 +11,17 @@ import (
 )
 
 // defaultNodeFailureLeaseTimeout is the duration since the last heartbeat
-// before a node is considered unreachable by the failure controller.
-const defaultNodeFailureLeaseTimeout = 5 * time.Second
+// before a node is considered unreachable by the failure controller. Set to
+// 30 seconds to tolerate real-world operations like container image pulls,
+// network configuration, and cgroup setup that can take tens of seconds.
+const defaultNodeFailureLeaseTimeout = 30 * time.Second
 
 // NodeFailureController watches node heartbeat leases and marks nodes as
 // unreachable when their lease expires. It also marks all instances placed
 // on unreachable nodes as failed, so the failure controller can reschedule them.
 type NodeFailureController struct {
 	// LeaseTimeout is how long since the last heartbeat before a node is
-	// considered unreachable. Defaults to 5 seconds.
+	// considered unreachable. Defaults to 30 seconds.
 	LeaseTimeout time.Duration
 
 	// Now returns the current time. Defaults to time.Now but can be overridden
@@ -27,7 +29,7 @@ type NodeFailureController struct {
 	Now func() time.Time
 }
 
-// NewNodeFailureController returns a NodeFailureController with a 5-second
+// NewNodeFailureController returns a NodeFailureController with a 30-second
 // default lease timeout and time.Now as the clock source.
 func NewNodeFailureController() *NodeFailureController {
 	return &NodeFailureController{

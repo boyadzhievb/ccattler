@@ -194,10 +194,19 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runningByID[runtimeStatus.ID] = runtimeStatus
 	}
 
+	logging.Default().Info("reconcile cycle",
+		"agent", nodeAgent.nodeID,
+		"desired", strconv.Itoa(len(desired)),
+		"running", strconv.Itoa(len(running)))
+
 	// Reconcile each desired instance: start missing, observe running, resize if needed.
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 		if !exists || !runtimeStatus.Running {
+			logging.Default().Info("starting instance",
+				"agent", nodeAgent.nodeID,
+				"instance", instanceInfo.id,
+				"service", instanceInfo.service)
 			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
 		} else {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)

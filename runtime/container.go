@@ -201,7 +201,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 		args = append(args, fmt.Sprintf("--cpus=%d.%03d", spec.CPUm/1000, spec.CPUm%1000))
 	}
 	if spec.MemoryB > 0 {
-		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB*1024*1024))
+		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB))
 	}
 
 	firstHostPort := 0
