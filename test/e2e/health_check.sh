@@ -22,6 +22,13 @@ WORKER1_IP="192.168.124.20"
 WORKER2_IP="192.168.124.30"
 ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 
+# Restore persisted Vagrant state — CI checkout wipes .vagrant/ but the deploy
+# workflow saves keys and machine IDs to this directory.
+VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-deploy"
+if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+    cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
+fi
+
 HEALTHY=true
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
@@ -72,15 +79,25 @@ CA_CERT="/tmp/cca-healthcheck-ca.pem"
 CLIENT_CERT="/tmp/cca-healthcheck-client.pem"
 CLIENT_KEY="/tmp/cca-healthcheck-client-key.pem"
 
-ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT" 2>/dev/null
-ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT" 2>/dev/null
-ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY" 2>/dev/null
+CERTS_FETCHED=true
+if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT" 2>/dev/null; then
+    CERTS_FETCHED=false
+fi
+if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT" 2>/dev/null; then
+    CERTS_FETCHED=false
+fi
+if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY" 2>/dev/null; then
+    CERTS_FETCHED=false
+fi
 
 CCA_API="https://${CTRL_IP}:9770"
 CURL_TLS="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY"
 
 STATUS_JSON=""
-if STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null); then
+if [[ "$CERTS_FETCHED" != "true" ]]; then
+    log "  API /status: UNREACHABLE (could not fetch TLS certs from ctrl node)"
+    HEALTHY=false
+elif STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null); then
     log "  API /status: reachable"
     echo "$STATUS_JSON" | jq . 2>/dev/null || echo "$STATUS_JSON"
 else
