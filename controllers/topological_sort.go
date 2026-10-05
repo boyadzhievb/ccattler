@@ -101,6 +101,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"cloud-node-lifecycle": {"observed/cloud/instance/", "observed/node/"},
 		"cloud-loadbalancer":   {"observed/cloud/loadbalancer/"},
 		"cloud-routes":         {"observed/cloud/route/"},
+		"drain":                {"derived/node/"},
 		"auth":                 {},
 	}
 }

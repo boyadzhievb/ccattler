@@ -1056,7 +1056,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Cloud node lifecycle integration: `NodeDisabled` → draining transition on cloud instance termination
 - [x] Node failure controller skip: don't lease-timeout → unreachable for nodes in `NodeDraining`
 - [x] Unit tests: `controllers/drain_test.go` — gradual eviction, grace period, drain completion
-- [ ] Integration test: deploy 3 nodes, drain 1, verify instance migration
+- [x] Integration test: deploy 3 nodes, drain 1, verify instance migration
 
 ### Phase 65 — Disruption Budgets (M65)
 

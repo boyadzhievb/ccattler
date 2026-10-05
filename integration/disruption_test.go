@@ -5,10 +5,13 @@ package integration
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -90,22 +93,140 @@ func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	// Let the drain controller run several cycles.
+	// Let the drain controller run several cycles to write eviction markers.
 	time.Sleep(500 * time.Millisecond)
 
-	// Count active (non-stopped) instances of web.
-	currentInstances, _ := types.ListInstances(ctx, factStore)
-	activeInstanceCount := 0
-	for _, instanceEntry := range currentInstances {
-		if instanceEntry.Service == "web" && instanceEntry.State != types.InstanceStopped && instanceEntry.State != types.InstanceFailed {
-			activeInstanceCount++
+	// Count eviction markers. The drain controller writes
+	// derived/node/{nodeID}/drain/evict/{instanceID} = "true" for each evicted
+	// instance, but the disruption budget limits how many markers can exist.
+	derivedFacts, _ := factStore.Scan(ctx, types.ScanDerivedNodes)
+	evictionCount := 0
+	for _, derivedFact := range derivedFacts {
+		if strings.Contains(derivedFact.Key, "/drain/evict/") {
+			evictionCount++
 		}
 	}
 
-	// The disruption budget requires min_available=3. The drain controller
-	// should evict instances from node-1 but never drop below 3 active.
-	if activeInstanceCount < 3 {
-		t.Errorf("disruption budget violated: only %d active instances, min_available is 3", activeInstanceCount)
+	// 5 instances with min_available=3 means at most 2 can be evicted.
+	// With instances spread across node-1 and node-2, only node-1's instances
+	// are evicted. The budget should never allow more than 2 evictions.
+	totalInstances := 5
+	nonEvictedCount := totalInstances - evictionCount
+	if nonEvictedCount < 3 {
+		t.Errorf("disruption budget violated: only %d non-evicted instances, min_available is 3", nonEvictedCount)
 	}
-	t.Logf("active instances after drain cycles: %d (min_available=3)", activeInstanceCount)
+	t.Logf("eviction markers after drain cycles: %d (min_available=3, non-evicted=%d)", evictionCount, nonEvictedCount)
+}
+
+// TestDrainNodeMigratesInstances deploys a service across 3 nodes with real
+// agents, drains one node, and verifies that all instances are migrated to
+// the surviving nodes while total instance count is preserved.
+func TestDrainNodeMigratesInstances(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	clusterContext, clusterCancel := context.WithCancel(context.Background())
+	defer clusterCancel()
+
+	nodeIdentifiers := []string{"node-1", "node-2", "node-3"}
+	for _, nodeID := range nodeIdentifiers {
+		types.WriteNode(clusterContext, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+	}
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	drainController := controllers.NewDrainController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController,
+		schedulerController, endpointController, failureController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
+	go controllerRunner.Run(clusterContext)
+
+	// The drain controller runs in a separate runner with no input-key guards.
+	// This avoids transaction conflicts with agent writes to observed/instance/.
+	drainRunner := controllers.NewRunner(factStore, drainController)
+	drainRunner.SetDebounce(10 * time.Millisecond)
+	drainRunner.SetMaxInputKeyGuards(0)
+	go drainRunner.Run(clusterContext)
+
+	for _, nodeID := range nodeIdentifiers {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetInterval(50 * time.Millisecond)
+		go nodeAgent.Run(clusterContext)
+	}
+
+	// Deploy 6 instances — expect roughly 2 per node.
+	factStore.Put(clusterContext, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(clusterContext, types.KeyEffectiveServiceInstances("web"), []byte("6"))
+	factStore.Put(clusterContext, types.KeyDesiredServiceInstances("web"), []byte("6"))
+
+	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+		return helperCountRunningInstances(clusterContext, factStore, "web") == 6
+	})
+
+	// Verify instances are spread across at least 2 nodes.
+	placementsBefore, _ := factStore.Scan(clusterContext, types.ScanPlacements)
+	instancesPerNode := make(map[string]int)
+	for _, placementFact := range placementsBefore {
+		instancesPerNode[string(placementFact.Value)]++
+	}
+	if len(instancesPerNode) < 2 {
+		t.Fatalf("instances placed on only %d node(s), expected spread across 2+", len(instancesPerNode))
+	}
+	instancesOnDrainedNode := instancesPerNode["node-1"]
+	t.Logf("before drain: %v (node-1 has %d)", instancesPerNode, instancesOnDrainedNode)
+
+	// Drain node-1.
+	types.WriteNode(clusterContext, factStore, types.Node{
+		ID: "node-1", State: types.NodeDraining,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	// Wait for all instances to migrate off node-1.
+	waitFor(t, 10*time.Second, "zero running instances on node-1", func() bool {
+		placements, _ := factStore.Scan(clusterContext, types.ScanPlacements)
+		for _, placementFact := range placements {
+			if string(placementFact.Value) == "node-1" {
+				instanceID := placementFact.Key[len(types.ScanPlacements):]
+				stateValue, err := factStore.Get(clusterContext, types.KeyObservedInstanceState(instanceID))
+				if err == nil && string(stateValue.Value) == string(types.InstanceRunning) {
+					return false
+				}
+			}
+		}
+		return true
+	})
+
+	// Verify total running count is still 6 — all migrated to node-2 and node-3.
+	waitFor(t, 5*time.Second, "6 running web instances after drain", func() bool {
+		return helperCountRunningInstances(clusterContext, factStore, "web") == 6
+	})
+
+	// Verify placements: all 6 instances now on node-2 and node-3 only.
+	placementsAfter, _ := factStore.Scan(clusterContext, types.ScanPlacements)
+	instancesPerNodeAfter := make(map[string]int)
+	for _, placementFact := range placementsAfter {
+		instanceID := placementFact.Key[len(types.ScanPlacements):]
+		stateValue, _ := factStore.Get(clusterContext, types.KeyObservedInstanceState(instanceID))
+		if string(stateValue.Value) == string(types.InstanceRunning) {
+			instancesPerNodeAfter[string(placementFact.Value)]++
+		}
+	}
+	t.Logf("after drain: %v", instancesPerNodeAfter)
+
+	if instancesPerNodeAfter["node-1"] > 0 {
+		t.Errorf("node-1 still has %d running instances after drain", instancesPerNodeAfter["node-1"])
+	}
+	totalRunningAfter := instancesPerNodeAfter["node-2"] + instancesPerNodeAfter["node-3"]
+	if totalRunningAfter != 6 {
+		t.Errorf("expected 6 running instances on node-2+node-3, got %d", totalRunningAfter)
+	}
 }

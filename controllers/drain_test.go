@@ -5,11 +5,27 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// countEvictionMarkers returns how many drain eviction markers are in the
+// proposed changes, and optionally returns the set of evicted instance IDs.
+func countEvictionMarkers(proposedChanges []Change) (int, map[string]bool) {
+	evictedInstances := make(map[string]bool)
+	for _, change := range proposedChanges {
+		if strings.Contains(change.Key, "/drain/evict/") && string(change.Value) == "true" {
+			parts := strings.Split(change.Key, "/drain/evict/")
+			if len(parts) == 2 {
+				evictedInstances[parts[1]] = true
+			}
+		}
+	}
+	return len(evictedInstances), evictedInstances
+}
 
 func TestDrainControllerEvictsInstancesFromDrainingNode(t *testing.T) {
 	drainController := NewDrainController()
@@ -35,24 +51,13 @@ func TestDrainControllerEvictsInstancesFromDrainingNode(t *testing.T) {
 	}
 
 	// Rate-limited: only 1 instance per service per cycle should be evicted.
-	evictedCount := 0
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			evictedCount++
-		}
-	}
+	evictedCount, evictedInstances := countEvictionMarkers(proposedChanges)
 	if evictedCount != 1 {
 		t.Errorf("expected 1 eviction per cycle (rate-limited by service), got %d", evictedCount)
 	}
 
 	// The first instance alphabetically (inst-1) should be evicted.
-	foundEviction := false
-	for _, change := range proposedChanges {
-		if change.Key == types.KeyObservedInstanceState("inst-1") && string(change.Value) == string(types.InstanceStopped) {
-			foundEviction = true
-		}
-	}
-	if !foundEviction {
+	if !evictedInstances["inst-1"] {
 		t.Error("expected inst-1 (first alphabetically) to be evicted")
 	}
 }
@@ -101,18 +106,15 @@ func TestDrainControllerSkipsAlreadyStoppedInstances(t *testing.T) {
 	}
 
 	// No active instances means no evictions, but we should see a drain-complete marker.
-	evictionCount := 0
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
 	drainCompleteWritten := false
 	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			evictionCount++
-		}
 		if change.Key == types.KeyDerivedNodeDrainComplete("node-1") {
 			drainCompleteWritten = true
 		}
 	}
-	if evictionCount != 0 {
-		t.Errorf("expected no evictions for stopped/failed instances, got %d", evictionCount)
+	if evictedCount != 0 {
+		t.Errorf("expected no evictions for stopped/failed instances, got %d", evictedCount)
 	}
 	if !drainCompleteWritten {
 		t.Error("expected drain-complete marker when zero active instances remain")
@@ -146,29 +148,24 @@ func TestDrainControllerRateLimitsByService(t *testing.T) {
 	}
 
 	// Rate-limiting is per-service: should evict 1 of svc-a + 1 of svc-b = 2 total.
-	evictedServices := make(map[string]int)
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			// Extract the instance ID from the key to find which service it belongs to.
-			for _, instanceID := range []string{"a-inst-1", "a-inst-2", "b-inst-1", "b-inst-2"} {
-				if change.Key == types.KeyObservedInstanceState(instanceID) {
-					serviceName := ""
-					for _, factEntry := range inputFacts {
-						if factEntry.Key == types.KeyObservedInstanceService(instanceID) {
-							serviceName = string(factEntry.Value)
-						}
-					}
-					evictedServices[serviceName]++
-				}
-			}
+	_, evictedInstances := countEvictionMarkers(proposedChanges)
+
+	svcACount := 0
+	svcBCount := 0
+	for instanceID := range evictedInstances {
+		if strings.HasPrefix(instanceID, "a-") {
+			svcACount++
+		}
+		if strings.HasPrefix(instanceID, "b-") {
+			svcBCount++
 		}
 	}
 
-	if evictedServices["svc-a"] != 1 {
-		t.Errorf("expected 1 eviction for svc-a, got %d", evictedServices["svc-a"])
+	if svcACount != 1 {
+		t.Errorf("expected 1 eviction for svc-a, got %d", svcACount)
 	}
-	if evictedServices["svc-b"] != 1 {
-		t.Errorf("expected 1 eviction for svc-b, got %d", evictedServices["svc-b"])
+	if svcBCount != 1 {
+		t.Errorf("expected 1 eviction for svc-b, got %d", svcBCount)
 	}
 }
 
@@ -260,12 +257,7 @@ func TestDrainControllerRespectsMinAvailableBudget(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	evictedCount := 0
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			evictedCount++
-		}
-	}
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
 	// Rate-limit already caps at 1 per service per cycle, and the budget allows
 	// exactly 1 eviction (5-1=4 >= min_available 4).
 	if evictedCount != 1 {
@@ -300,10 +292,9 @@ func TestDrainControllerBlocksEvictionWhenAtMinAvailable(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			t.Error("expected no evictions when at min_available, but got one")
-		}
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
+	if evictedCount != 0 {
+		t.Errorf("expected no evictions when at min_available, got %d", evictedCount)
 	}
 }
 
@@ -341,12 +332,7 @@ func TestDrainControllerRespectsMaxUnavailableBudget(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	evictedCount := 0
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			evictedCount++
-		}
-	}
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
 	if evictedCount != 1 {
 		t.Errorf("expected 1 eviction (max_unavailable budget allows 1 more), got %d", evictedCount)
 	}
@@ -386,10 +372,9 @@ func TestDrainControllerBlocksEvictionAtMaxUnavailable(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			t.Error("expected no evictions when at max_unavailable limit, but got one")
-		}
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
+	if evictedCount != 0 {
+		t.Errorf("expected no evictions when at max_unavailable limit, got %d", evictedCount)
 	}
 }
 
@@ -410,14 +395,40 @@ func TestDrainControllerNoBudgetAllowsEviction(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	evictedCount := 0
-	for _, change := range proposedChanges {
-		if string(change.Value) == string(types.InstanceStopped) {
-			evictedCount++
-		}
-	}
+	evictedCount, _ := countEvictionMarkers(proposedChanges)
 	if evictedCount != 1 {
 		t.Errorf("expected 1 eviction (no budget), got %d", evictedCount)
+	}
+}
+
+func TestDrainControllerSkipsAlreadyEvictedInstances(t *testing.T) {
+	drainController := NewDrainController()
+
+	// node-1 is draining with 2 running instances, but inst-1 already has
+	// an eviction marker from a prior cycle.
+	inputFacts := []store.Fact{
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte("draining")},
+		{Key: types.KeyDerivedNodeDrainEvict("node-1", "inst-1"), Value: []byte("true")},
+		{Key: types.KeyPlacementInstance("inst-1"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyPlacementInstance("inst-2"), Value: []byte("node-1")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := drainController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	_, evictedInstances := countEvictionMarkers(proposedChanges)
+	if evictedInstances["inst-1"] {
+		t.Error("should not re-evict inst-1 which already has an eviction marker")
+	}
+	if !evictedInstances["inst-2"] {
+		t.Error("expected inst-2 to be evicted (no prior marker)")
 	}
 }
 

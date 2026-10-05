@@ -1255,6 +1255,14 @@ func KeyDerivedNodeDrainComplete(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/drain/complete", PrefixDerived, nodeID)
 }
 
+// KeyDerivedNodeDrainEvict returns the path for a per-instance eviction marker.
+// The drain controller writes this to signal the agent that it should stop the
+// instance. Agents read these markers to avoid overwriting them with "running".
+// Path: derived/node/{nodeID}/drain/evict/{instanceID}
+func KeyDerivedNodeDrainEvict(nodeID string, instanceID string) string {
+	return fmt.Sprintf("%s/node/%s/drain/evict/%s", PrefixDerived, nodeID, instanceID)
+}
+
 // KeyDerivedCredentialState returns the broker-derived credential state for an
 // instance's cloud identity binding.
 // Path: derived/credential/{instanceID}/{identityName}/state

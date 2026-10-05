@@ -252,7 +252,7 @@ type appliedResourceAllocation struct {
 
 // findInstancesPlacedOnThisNode scans all placement facts in the store and
 // returns the subset whose target node matches this agent's nodeID. Instances
-// that are in the "stopped" state are excluded.
+// that are in the "stopped" state or marked for drain eviction are excluded.
 func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]placedInstanceInfo, error) {
 	placements, err := nodeAgent.store.Scan(ctx, types.ScanPlacements)
 	if err != nil {
@@ -270,6 +270,12 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 		// Check instance isn't stopped.
 		stateFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceState(instanceID))
 		if err == nil && types.InstanceState(stateFact.Value) == types.InstanceStopped {
+			continue
+		}
+
+		// Check for drain eviction marker written by the DrainController.
+		evictKey := types.KeyDerivedNodeDrainEvict(nodeAgent.nodeID, instanceID)
+		if _, evictError := nodeAgent.store.Get(ctx, evictKey); evictError == nil {
 			continue
 		}
 
@@ -406,6 +412,9 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 	}
 	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
 		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
+		logging.Default().Error("failed to publish stopped state", "instance", instanceID, "error", putError.Error())
 	}
 	nodeAgent.probeScheduler.CleanupInstance(instanceID)
 	if nodeAgent.networkProvider != nil {

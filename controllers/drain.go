@@ -59,7 +59,8 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 	drainCompleteMarkers := parseDrainCompleteMarkers(facts)
 	disruptionBudgets := parseDisruptionBudgets(facts)
 	desiredInstanceCounts := parseDesiredInstanceCounts(facts)
-	globalActiveCountByService := countGlobalActiveInstancesByService(instanceStates, instanceServices)
+	existingEvictions := parseDrainEvictionMarkers(facts)
+	globalActiveCountByService := countGlobalActiveInstancesByService(instanceStates, instanceServices, existingEvictions)
 
 	var proposedChanges []Change
 
@@ -67,7 +68,7 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 		evictedPerService, activeCount := drainController.evictInstancesFromNode(
 			drainingNodeID, instancePlacementNode, instanceStates,
 			instanceServices, disruptionBudgets, desiredInstanceCounts,
-			globalActiveCountByService,
+			globalActiveCountByService, existingEvictions,
 		)
 		proposedChanges = append(proposedChanges, evictedPerService...)
 
@@ -85,8 +86,9 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 
 // evictInstancesFromNode finds all active instances on the given draining node
 // and evicts at most one per service per call, respecting disruption budgets.
-// Returns the proposed changes and the count of active instances that remain
-// (including ones being evicted this cycle).
+// It writes eviction markers to derived/ rather than observed/ to avoid racing
+// with agent state writes. Returns the proposed changes and the count of
+// non-evicted active instances that remain.
 func (drainController *DrainController) evictInstancesFromNode(
 	drainingNodeID string,
 	instancePlacementNode map[string]string,
@@ -95,8 +97,10 @@ func (drainController *DrainController) evictInstancesFromNode(
 	disruptionBudgets map[string]disruptionBudget,
 	desiredInstanceCounts map[string]int,
 	globalActiveCountByService map[string]int,
+	existingEvictions map[string]bool,
 ) ([]Change, int) {
-	// Collect active instances on this node grouped by service.
+	// Collect active instances on this node grouped by service, skipping
+	// instances that already have eviction markers.
 	activeInstancesByService := make(map[string][]string)
 	totalActiveCount := 0
 
@@ -104,6 +108,9 @@ func (drainController *DrainController) evictInstancesFromNode(
 	for _, instanceID := range sortedInstanceIDs {
 		placedNodeID := instancePlacementNode[instanceID]
 		if placedNodeID != drainingNodeID {
+			continue
+		}
+		if existingEvictions[instanceID] {
 			continue
 		}
 		instanceState := types.InstanceState(instanceStates[instanceID])
@@ -127,14 +134,11 @@ func (drainController *DrainController) evictInstancesFromNode(
 		if !canEvictUnderDisruptionBudget(serviceName, disruptionBudgets, desiredInstanceCounts, globalActiveCountByService) {
 			continue
 		}
-		// Evict the first (deterministically sorted) instance.
 		evictionChanges = append(evictionChanges, Change{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceState(instanceIDs[0]),
-			Value: []byte(string(types.InstanceStopped)),
+			Key:   types.KeyDerivedNodeDrainEvict(drainingNodeID, instanceIDs[0]),
+			Value: []byte("true"),
 		})
-		// Decrement global count so subsequent draining nodes in this cycle
-		// see the updated budget headroom.
 		globalActiveCountByService[serviceName]--
 	}
 
@@ -225,13 +229,18 @@ func parseDisruptionBudgets(facts []store.Fact) map[string]disruptionBudget {
 
 // countGlobalActiveInstancesByService counts all active instances per service
 // across all nodes in the cluster, using observed instance states and service
-// membership.
+// membership. Instances with existing eviction markers are excluded since they
+// are being drained and will be stopped by the agent.
 func countGlobalActiveInstancesByService(
 	instanceStates map[string]string,
 	instanceServices map[string]string,
+	evictedInstances map[string]bool,
 ) map[string]int {
 	activeCountByService := make(map[string]int)
 	for instanceID, stateValue := range instanceStates {
+		if evictedInstances[instanceID] {
+			continue
+		}
 		if isActiveInstanceState(types.InstanceState(stateValue)) {
 			serviceName := instanceServices[instanceID]
 			if serviceName != "" {
@@ -274,6 +283,20 @@ func canEvictUnderDisruptionBudget(
 		return currentlyUnavailable+1 <= budget.maxUnavailable
 	}
 	return true
+}
+
+// parseDrainEvictionMarkers scans derived node facts and returns a set of
+// instance IDs that have already been marked for eviction by a prior cycle.
+func parseDrainEvictionMarkers(facts []store.Fact) map[string]bool {
+	evictedInstances := make(map[string]bool)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDerivedNodes) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDerivedNodes)
+		pathParts := strings.SplitN(relativePath, "/", 4)
+		if len(pathParts) == 4 && pathParts[1] == "drain" && pathParts[2] == "evict" {
+			evictedInstances[pathParts[3]] = true
+		}
+	}
+	return evictedInstances
 }
 
 // isActiveInstanceState returns true if the instance state represents a
