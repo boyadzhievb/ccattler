@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M67 — Phase 67 Production Readiness Validation. M1–M67 complete. Gates A–I resolved. Next: Phase 68 — Scheduler Scale, Phase 69 — Node Runtime Inspection.
+**Completed through:** M68 — Phase 68 Scheduler Scale. M1–M68 complete (DeltaController deferred). Gates A–I resolved. Next: Phase 69 — Node Runtime Inspection.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

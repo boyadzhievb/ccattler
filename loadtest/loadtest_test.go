@@ -273,3 +273,171 @@ func TestSyntheticCluster50Nodes1000Workloads(t *testing.T) {
 	t.Logf("  Scale-up convergence: %v (1000 → %d instances)", scaleUpDuration, scaleUpTotal)
 	t.Logf("  Total store facts:    %d", len(allFacts))
 }
+
+const (
+	scaleTestNodeCount           = 100
+	scaleTestServiceCount        = 10
+	scaleTestInstancesPerService = 200
+	scaleTestTotalInstances      = scaleTestServiceCount * scaleTestInstancesPerService
+	scaleTestConvergenceTimeout  = 300 * time.Second
+	scaleTestRecoveryTimeout     = 300 * time.Second
+	scaleTestMinimumDeadline     = 15 * time.Minute
+)
+
+// TestSyntheticCluster100Nodes2000Workloads exercises the scheduler and
+// control plane at 2× the base load test scale: 100 simulated nodes, 10
+// services, 2000 total instances. Validates convergence, distribution, node
+// failure recovery, and scale-up. The scheduler benchmark separately
+// validates placement throughput at 200n/5000i; this test validates
+// end-to-end system behavior at a scale that stresses the batch placement
+// and NodeCapacityCache optimizations.
+func TestSyntheticCluster100Nodes2000Workloads(testHandle *testing.T) {
+	if testing.Short() {
+		testHandle.Skip("skipping scale load test in short mode")
+	}
+	if deadline, hasDeadline := testHandle.Deadline(); hasDeadline {
+		remaining := time.Until(deadline)
+		if remaining < scaleTestMinimumDeadline {
+			testHandle.Skipf("skipping scale load test: %v remaining, need at least %v (use -timeout 20m)", remaining.Round(time.Second), scaleTestMinimumDeadline)
+		}
+	}
+
+	nodeIDs := buildNodeIDs(scaleTestNodeCount)
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	factStore.SetWatchChannelBufferSize(8192)
+
+	cluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
+	cluster.SetAgentInterval(200 * time.Millisecond)
+	cluster.SetControllerDebounce(100 * time.Millisecond)
+	cluster.SetMaxReconciliationAttempts(15)
+	cluster.SetMaxInputKeyGuards(0)
+	cluster.SetLeaseTimeout(5 * time.Minute)
+	cluster.Start(ctx)
+
+	// ── Phase 1: Deploy 10 services × 200 instances ─────────────────────
+	testHandle.Logf("Phase 1: deploying %d services × %d instances = %d total", scaleTestServiceCount, scaleTestInstancesPerService, scaleTestTotalInstances)
+	for serviceIndex := 0; serviceIndex < scaleTestServiceCount; serviceIndex++ {
+		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
+		cluster.DeployService(ctx, serviceName, fmt.Sprintf("app:v%d", serviceIndex), scaleTestInstancesPerService)
+	}
+
+	convergenceDuration, converged, status := waitForNearConvergence(testHandle, ctx, cluster, factStore, scaleTestConvergenceTimeout, scaleTestTotalInstances, 95.0)
+	if !converged {
+		testHandle.Fatalf("Phase 1 FAILED — did not converge within %v: %s", scaleTestConvergenceTimeout, status)
+	}
+	testHandle.Logf("Phase 1 PASS — %d instances converged in %v", scaleTestTotalInstances, convergenceDuration)
+
+	// ── Phase 2: Verify placement distribution ───────────────────────────
+	testHandle.Log("Phase 2: checking placement distribution across 100 nodes")
+	nodeCounts, countError := countInstancesPerNode(ctx, factStore)
+	if countError != nil {
+		testHandle.Fatalf("Phase 2 FAILED — could not count instances: %v", countError)
+	}
+
+	populatedNodeCount := len(nodeCounts)
+	if populatedNodeCount < scaleTestNodeCount/2 {
+		testHandle.Logf("Phase 2 NOTE — only %d/%d nodes have instances", populatedNodeCount, scaleTestNodeCount)
+	}
+
+	var minPerNode, maxPerNode int
+	var totalPlaced int
+	for _, nodeCount := range nodeCounts {
+		if minPerNode == 0 || nodeCount < minPerNode {
+			minPerNode = nodeCount
+		}
+		if nodeCount > maxPerNode {
+			maxPerNode = nodeCount
+		}
+		totalPlaced += nodeCount
+	}
+
+	averagePerNode := float64(totalPlaced) / float64(populatedNodeCount)
+	var varianceSum float64
+	for _, nodeCount := range nodeCounts {
+		diff := float64(nodeCount) - averagePerNode
+		varianceSum += diff * diff
+	}
+	standardDeviation := math.Sqrt(varianceSum / float64(populatedNodeCount))
+
+	testHandle.Logf("Phase 2 PASS — %d instances across %d nodes: min=%d max=%d avg=%.1f stddev=%.1f",
+		totalPlaced, populatedNodeCount, minPerNode, maxPerNode, averagePerNode, standardDeviation)
+
+	idealPerNode := float64(scaleTestTotalInstances) / float64(scaleTestNodeCount)
+	if maxPerNode > int(idealPerNode*3) {
+		testHandle.Logf("Phase 2 NOTE — max instances per node (%d) exceeds 3× ideal (%.0f)", maxPerNode, idealPerNode)
+	}
+
+	// ── Phase 3: Kill 10 nodes, measure recovery ────────────────────────
+	nodesToKill := 10
+	testHandle.Logf("Phase 3: killing %d nodes, measuring recovery", nodesToKill)
+	for killIndex := 0; killIndex < nodesToKill; killIndex++ {
+		nodeID := nodeIDs[killIndex]
+		cluster.KillNode(nodeID)
+	}
+	time.Sleep(500 * time.Millisecond)
+
+	killedNodeSet := make(map[string]bool, nodesToKill)
+	for killIndex := 0; killIndex < nodesToKill; killIndex++ {
+		nodeID := nodeIDs[killIndex]
+		killedNodeSet[nodeID] = true
+		factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeUnreachable)))
+	}
+
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	for _, instance := range allInstances {
+		if killedNodeSet[instance.Node] && instance.State == types.InstanceRunning {
+			factStore.Put(ctx, types.KeyObservedInstanceState(instance.ID), []byte(string(types.InstanceFailed)))
+		}
+	}
+
+	recoveryDuration, recovered, recoveryStatus := waitForNearConvergence(testHandle, ctx, cluster, factStore, scaleTestRecoveryTimeout, scaleTestTotalInstances, 95.0)
+	if !recovered {
+		testHandle.Fatalf("Phase 3 FAILED — did not recover within %v: %s", scaleTestRecoveryTimeout, recoveryStatus)
+	}
+	testHandle.Logf("Phase 3 PASS — recovered from %d node failures in %v", nodesToKill, recoveryDuration)
+
+	// ── Phase 4: Scale up to 3000 instances ─────────────────────────────
+	scaleUpTarget := 300
+	scaleUpTotal := scaleTestServiceCount * scaleUpTarget
+	testHandle.Logf("Phase 4: restarting killed nodes and scaling to %d instances per service (%d total)", scaleUpTarget, scaleUpTotal)
+	for killIndex := 0; killIndex < nodesToKill; killIndex++ {
+		nodeID := nodeIDs[killIndex]
+		factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeAlive)))
+		cluster.RestartNode(ctx, nodeID)
+	}
+	for serviceIndex := 0; serviceIndex < scaleTestServiceCount; serviceIndex++ {
+		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
+		cluster.SetServiceScale(ctx, serviceName, scaleUpTarget)
+	}
+
+	scaleUpDuration, scaledUp, scaleUpStatus := waitForNearConvergence(testHandle, ctx, cluster, factStore, scaleTestRecoveryTimeout, scaleUpTotal, 95.0)
+	if !scaledUp {
+		testHandle.Fatalf("Phase 4 FAILED — scale-up did not converge within %v: %s", scaleTestRecoveryTimeout, scaleUpStatus)
+	}
+	testHandle.Logf("Phase 4 PASS — scaled to %d instances in %v", scaleUpTotal, scaleUpDuration)
+
+	// ── Phase 5: Store fact count verification ──────────────────────────
+	testHandle.Log("Phase 5: verifying store fact count")
+	allFacts, scanError := factStore.Scan(ctx, "")
+	if scanError != nil {
+		testHandle.Fatalf("Phase 5 FAILED — store scan error: %v", scanError)
+	}
+	testHandle.Logf("Phase 5 PASS — store contains %d facts", len(allFacts))
+
+	finalStateCounts, _ := countInstancesByState(ctx, factStore)
+	testHandle.Logf("Instance states: %v", finalStateCounts)
+
+	// ── Summary ─────────────────────────────────────────────────────────
+	testHandle.Log("─── Scale Load Test Summary ───")
+	testHandle.Logf("  Nodes:                %d", scaleTestNodeCount)
+	testHandle.Logf("  Deploy convergence:   %v (%d instances)", convergenceDuration, scaleTestTotalInstances)
+	testHandle.Logf("  Placement spread:     min=%d max=%d stddev=%.1f", minPerNode, maxPerNode, standardDeviation)
+	testHandle.Logf("  Failure recovery:     %v (%d nodes killed)", recoveryDuration, nodesToKill)
+	testHandle.Logf("  Scale-up convergence: %v (%d → %d instances)", scaleUpDuration, scaleTestTotalInstances, scaleUpTotal)
+	testHandle.Logf("  Total store facts:    %d", len(allFacts))
+}

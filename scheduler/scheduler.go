@@ -68,12 +68,14 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 		return nil, nil
 	}
 
-	serviceZoneCounts := computeServiceZonePlacements(placements, instances, alive)
+	nodeIndexMap := buildNodeIndexMap(alive)
+	nodeZoneMap := buildNodeZoneMap(alive)
+	serviceZoneCounts := computeServiceZonePlacements(placements, instances, nodeZoneMap)
 	schedulingState := &placementState{
 		alive: alive, loadPerNode: loadPerNode,
 		serviceZoneCounts: serviceZoneCounts, serviceResources: serviceResources,
 		placementConstraints: placementConstraints, instances: instances, placements: placements,
-		serviceToGroup: serviceToGroup,
+		serviceToGroup: serviceToGroup, nodeIndexMap: nodeIndexMap,
 	}
 
 	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
@@ -95,23 +97,128 @@ type placementState struct {
 	instances            map[string]*schedulerInstanceInfo
 	placements           map[string]string
 	serviceToGroup       map[string]string
+	// nodeIndexMap maps node ID to its index in the alive slice for O(1) lookup.
+	nodeIndexMap map[string]int
 }
 
-// placeUngroupedInstances runs the standard per-instance placement loop for
-// instances that do not belong to any service group.
+// placeUngroupedInstances groups unplaced instances by service, then places
+// each service batch using a shared NodeCapacityCache. This builds the
+// filter/rank/heap pipeline once per service instead of once per instance.
 func placeUngroupedInstances(unplaced []string, state *placementState) []controllers.Change {
+	serviceBatches := groupInstancesByService(unplaced, state.instances)
 	var changes []controllers.Change
-	for _, instanceID := range unplaced {
-		change := placeSingleInstance(instanceID, state)
-		if change != nil {
-			changes = append(changes, *change)
-		}
+	for _, serviceName := range sortedServiceNames(serviceBatches) {
+		batchChanges := placeBatchedInstances(serviceName, serviceBatches[serviceName], state)
+		changes = append(changes, batchChanges...)
 	}
 	return changes
 }
 
+// groupInstancesByService partitions instance IDs by their service name.
+func groupInstancesByService(instanceIDs []string, instances map[string]*schedulerInstanceInfo) map[string][]string {
+	batches := make(map[string][]string)
+	for _, instanceID := range instanceIDs {
+		serviceName := ""
+		if info := instances[instanceID]; info != nil {
+			serviceName = info.service
+		}
+		batches[serviceName] = append(batches[serviceName], instanceID)
+	}
+	return batches
+}
+
+// sortedServiceNames returns service names in deterministic order.
+func sortedServiceNames(batches map[string][]string) []string {
+	names := make([]string, 0, len(batches))
+	for name := range batches {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// placeBatchedInstances places all unplaced instances of a single service
+// using a shared NodeCapacityCache. The filter and rank pipeline runs once,
+// and the cache is updated incrementally via RecordPlacement after each
+// placement — O(log n) per placement instead of O(n) for a full heap rebuild.
+func placeBatchedInstances(serviceName string, instanceIDs []string, state *placementState) []controllers.Change {
+	resource := state.serviceResources[serviceName]
+	reqCPU := resource.cpu
+	reqMemory := resource.memory
+
+	candidates := filterByConstraints(state.alive, serviceName, state.placementConstraints)
+	constraint := state.placementConstraints[serviceName]
+	if constraint != nil && len(constraint.prefer) > 0 {
+		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
+	}
+
+	useZoneSpread := constraint != nil && constraint.zonePolicy == "spread"
+	cache := NewNodeCapacityCache(candidates, state.loadPerNode, reqCPU, reqMemory)
+
+	var changes []controllers.Change
+	for _, instanceID := range instanceIDs {
+		if cache.Len() == 0 {
+			break
+		}
+
+		var bestNode string
+		if useZoneSpread {
+			acceptableZones := findMinZones(candidates, serviceName, state.serviceZoneCounts)
+			bestNode = cache.BestNodeInZones(acceptableZones)
+		} else {
+			bestNode = cache.BestNode()
+		}
+
+		if bestNode == "" {
+			break
+		}
+
+		state.loadPerNode[bestNode]++
+		cache.RecordPlacement(bestNode, reqCPU, reqMemory)
+		updateNodeResourcesAfterPlacement(state.alive, bestNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
+
+		changes = append(changes, controllers.Change{
+			Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(bestNode),
+		})
+	}
+	return changes
+}
+
+// findMinZones returns the set of zones that have the minimum instance count
+// for the given service, enabling zone-spread candidate selection.
+func findMinZones(candidates []candidateNode, serviceName string, serviceZoneCounts map[string]map[string]int) map[string]bool {
+	zoneCounts := serviceZoneCounts[serviceName]
+	if zoneCounts == nil {
+		zoneCounts = make(map[string]int)
+	}
+
+	minCount := math.MaxInt
+	for _, candidate := range candidates {
+		zone := candidate.zone
+		if zone == "" {
+			zone = "_default"
+		}
+		if zoneCounts[zone] < minCount {
+			minCount = zoneCounts[zone]
+		}
+	}
+
+	acceptableZones := make(map[string]bool)
+	for _, candidate := range candidates {
+		zone := candidate.zone
+		if zone == "" {
+			zone = "_default"
+		}
+		if zoneCounts[zone] == minCount {
+			acceptableZones[zone] = true
+		}
+	}
+	return acceptableZones
+}
+
 // placeSingleInstance selects the best node for a single instance and returns
-// the placement change, or nil if no suitable node is available.
+// the placement change, or nil if no suitable node is available. Used by the
+// grouped placement path where instances target a pre-selected node.
 func placeSingleInstance(instanceID string, state *placementState) *controllers.Change {
 	instanceInfo := state.instances[instanceID]
 	serviceName, reqCPU, reqMemory := resolveInstanceResourceNeeds(instanceInfo, state.serviceResources)
@@ -130,7 +237,7 @@ func placeSingleInstance(instanceID string, state *placementState) *controllers.
 		return nil
 	}
 	state.loadPerNode[best]++
-	updateNodeResourcesAfterPlacement(state.alive, best, reqCPU, reqMemory, serviceName, state.serviceZoneCounts)
+	updateNodeResourcesAfterPlacement(state.alive, best, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
 	return &controllers.Change{
 		Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(best),
 	}
@@ -191,7 +298,7 @@ func computeNodeLoadAndResourceUsage(
 // buildAliveCandidateNodes filters the node map to only alive nodes and computes
 // each node's remaining CPU and memory after subtracting already-consumed
 // resources. The result is sorted by node ID for deterministic scheduling.
-func buildAliveCandidateNodes(nodes map[string]schedulerNodeInfo, usedCPU map[string]int64, usedMemory map[string]int64) []candidateNode {
+func buildAliveCandidateNodes(nodes map[string]*schedulerNodeInfo, usedCPU map[string]int64, usedMemory map[string]int64) []candidateNode {
 	var alive []candidateNode
 	for _, node := range nodes {
 		if node.state != types.NodeAlive {
@@ -213,13 +320,36 @@ func buildAliveCandidateNodes(nodes map[string]schedulerNodeInfo, usedCPU map[st
 	return alive
 }
 
+// buildNodeIndexMap creates a map from node ID to its index in the alive slice,
+// enabling O(1) lookup when updating node resources after placement.
+func buildNodeIndexMap(alive []candidateNode) map[string]int {
+	indexMap := make(map[string]int, len(alive))
+	for index := range alive {
+		indexMap[alive[index].id] = index
+	}
+	return indexMap
+}
+
+// buildNodeZoneMap creates a map from node ID to its zone string, enabling
+// O(1) zone lookup in computeServiceZonePlacements.
+func buildNodeZoneMap(alive []candidateNode) map[string]string {
+	zoneMap := make(map[string]string, len(alive))
+	for _, node := range alive {
+		if node.zone != "" {
+			zoneMap[node.id] = node.zone
+		}
+	}
+	return zoneMap
+}
+
 // computeServiceZonePlacements counts the number of existing placements per
 // zone for each service. This information is used by the zone-spread placement
-// strategy to prefer zones with fewer instances.
+// strategy to prefer zones with fewer instances. Uses a node lookup map to
+// avoid O(p*n) nested iteration over placements and alive nodes.
 func computeServiceZonePlacements(
 	placements map[string]string,
 	instances map[string]*schedulerInstanceInfo,
-	aliveNodes []candidateNode,
+	nodeZoneMap map[string]string,
 ) map[string]map[string]int {
 	serviceZoneCounts := make(map[string]map[string]int)
 	for instanceID, nodeID := range placements {
@@ -227,22 +357,22 @@ func computeServiceZonePlacements(
 		if instanceInfo == nil || instanceInfo.state == types.InstanceStopped {
 			continue
 		}
-		for _, node := range aliveNodes {
-			if node.id == nodeID && node.zone != "" {
-				if serviceZoneCounts[instanceInfo.service] == nil {
-					serviceZoneCounts[instanceInfo.service] = make(map[string]int)
-				}
-				serviceZoneCounts[instanceInfo.service][node.zone]++
-			}
+		zone := nodeZoneMap[nodeID]
+		if zone == "" {
+			continue
 		}
+		if serviceZoneCounts[instanceInfo.service] == nil {
+			serviceZoneCounts[instanceInfo.service] = make(map[string]int)
+		}
+		serviceZoneCounts[instanceInfo.service][zone]++
 	}
 	return serviceZoneCounts
 }
 
 // updateNodeResourcesAfterPlacement adjusts the available resources of the
 // selected node after a placement decision, and increments the zone count for
-// the placed service. This keeps subsequent placement decisions in the same
-// reconciliation cycle aware of resources already committed.
+// the placed service. Uses the nodeIndexMap for O(1) lookup instead of linear
+// scan.
 func updateNodeResourcesAfterPlacement(
 	aliveNodes []candidateNode,
 	selectedNodeID string,
@@ -250,19 +380,19 @@ func updateNodeResourcesAfterPlacement(
 	requiredMemory int64,
 	serviceName string,
 	serviceZoneCounts map[string]map[string]int,
+	nodeIndexMap map[string]int,
 ) {
-	for i := range aliveNodes {
-		if aliveNodes[i].id == selectedNodeID {
-			aliveNodes[i].availCPU -= requiredCPU
-			aliveNodes[i].availMemory -= requiredMemory
-			if aliveNodes[i].zone != "" && serviceName != "" {
-				if serviceZoneCounts[serviceName] == nil {
-					serviceZoneCounts[serviceName] = make(map[string]int)
-				}
-				serviceZoneCounts[serviceName][aliveNodes[i].zone]++
-			}
-			break
+	nodeIndex, exists := nodeIndexMap[selectedNodeID]
+	if !exists {
+		return
+	}
+	aliveNodes[nodeIndex].availCPU -= requiredCPU
+	aliveNodes[nodeIndex].availMemory -= requiredMemory
+	if aliveNodes[nodeIndex].zone != "" && serviceName != "" {
+		if serviceZoneCounts[serviceName] == nil {
+			serviceZoneCounts[serviceName] = make(map[string]int)
 		}
+		serviceZoneCounts[serviceName][aliveNodes[nodeIndex].zone]++
 	}
 }
 
@@ -365,9 +495,10 @@ func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInsta
 
 // extractNodeInfoFromFacts parses the flat list of store facts and returns a
 // map of node ID to schedulerNodeInfo, extracting each node's state and
-// available CPU/memory from the observed-nodes key prefix.
-func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
-	nodes := make(map[string]schedulerNodeInfo)
+// available CPU/memory from the observed-nodes key prefix. Uses pointer values
+// to avoid copying the struct back into the map on every fact iteration.
+func extractNodeInfoFromFacts(facts []store.Fact) map[string]*schedulerNodeInfo {
+	nodes := make(map[string]*schedulerNodeInfo)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedNodes)
 		parts := strings.SplitN(relativePath, "/", 2)
@@ -376,7 +507,10 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 		}
 		nodeID := parts[0]
 		node := nodes[nodeID]
-		node.id = nodeID
+		if node == nil {
+			node = &schedulerNodeInfo{id: nodeID}
+			nodes[nodeID] = node
+		}
 		if len(parts) == 2 {
 			fieldValue := string(fact.Value)
 			switch {
@@ -414,7 +548,6 @@ func extractNodeInfoFromFacts(facts []store.Fact) map[string]schedulerNodeInfo {
 				node.restrictions[restrictLabel] = fieldValue
 			}
 		}
-		nodes[nodeID] = node
 	}
 	return nodes
 }
@@ -739,7 +872,7 @@ func placeOneGroup(
 		if instanceInfo != nil {
 			serviceName = instanceInfo.service
 		}
-		updateNodeResourcesAfterPlacement(state.alive, targetNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts)
+		updateNodeResourcesAfterPlacement(state.alive, targetNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
 		changes = append(changes, controllers.Change{
 			Type:  store.OpPut,
 			Key:   types.KeyPlacementInstance(instanceID),

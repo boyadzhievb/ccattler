@@ -35,6 +35,7 @@ func buildSchedulerBenchFacts(nodeCount int, pendingInstances int) []store.Fact 
 		store.Fact{Key: types.KeyDesiredServiceResourcesCPU("bench-svc"), Value: []byte("500")},
 		store.Fact{Key: types.KeyDesiredServiceResourcesMemory("bench-svc"), Value: []byte("536870912")},
 	)
+	store.SortFacts(facts)
 	return facts
 }
 
@@ -63,6 +64,17 @@ func BenchmarkSchedule100Nodes100Instances(b *testing.B) {
 func BenchmarkSchedule100Nodes1000Instances(b *testing.B) {
 	placementScheduler := NewScheduler()
 	facts := buildSchedulerBenchFacts(100, 1000)
+	benchContext := context.Background()
+
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		placementScheduler.Reconcile(benchContext, facts)
+	}
+}
+
+func BenchmarkSchedule200Nodes5000Instances(b *testing.B) {
+	placementScheduler := NewScheduler()
+	facts := buildSchedulerBenchFacts(200, 5000)
 	benchContext := context.Background()
 
 	b.ResetTimer()
