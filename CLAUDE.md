@@ -32,6 +32,7 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 - **No copy-paste duplication.** If the same pattern appears in 3+ places, extract it into a shared helper. Near-duplicate blocks over 10 lines must be refactored.
 - **Typed enums over raw strings.** Instance states, node states, probe types, and similar finite sets must use typed string constants (e.g., `type InstanceState string`). Use these typed constants in comparisons, not raw string literals. This catches typos at compile time.
 - **Every exported type must be wired.** If you add a new exported type or interface, show where it gets instantiated in production (in `cmd/`, `api/`, or a controller). Interfaces need at least one production call site, not just test implementations.
+- **Integration test assertions must be inside `waitFor`.** Never assert a fact written by a different goroutine immediately after a `waitFor` that checked a different fact. Multiple async writers (controllers, agents) commit facts at different times — a running instance does not guarantee its network allocation exists yet. Put every condition the test depends on inside the same `waitFor` predicate, or use a second `waitFor` before the assertion. A bare assertion after `waitFor` is only safe for facts produced in the same transaction as the waited-on fact.
 
 ### Data Structures & Algorithms
 
