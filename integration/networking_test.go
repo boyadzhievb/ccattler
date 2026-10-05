@@ -493,7 +493,7 @@ func TestInstanceIPReleasedOnStop(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("4"))
 
-	waitFor(t, 5*time.Second, "4 running instances", func() bool {
+	waitFor(t, 5*time.Second, "4 running instances with network allocations", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningCount := 0
 		for _, instance := range allInstances {
@@ -501,15 +501,13 @@ func TestInstanceIPReleasedOnStop(t *testing.T) {
 				runningCount++
 			}
 		}
-		return runningCount >= 4
+		allocations, _ := factStore.Scan(ctx, types.ScanNetworkAllocations)
+		return runningCount >= 4 && len(allocations) >= 4
 	})
 
 	// Count allocations before scale-down.
 	allocationsBefore, _ := factStore.Scan(ctx, types.ScanNetworkAllocations)
 	initialAllocationCount := len(allocationsBefore)
-	if initialAllocationCount < 4 {
-		t.Fatalf("expected at least 4 allocations, got %d", initialAllocationCount)
-	}
 
 	// Scale down to 2.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("2"))
