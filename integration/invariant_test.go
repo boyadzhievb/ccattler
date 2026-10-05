@@ -457,24 +457,54 @@ func TestInvariantEndpointsMatchRunningInstances(t *testing.T) {
 
 	backgroundContext := context.Background()
 
-	// Wait for endpoints to be created by the endpoint controller.
-	waitFor(t, 5*time.Second, "endpoint facts created for "+serviceName, func() bool {
-		endpointFacts, _ := cluster.factStore.Scan(backgroundContext, types.ScanEndpoints)
-		serviceEndpointCount := 0
-		for _, endpointFact := range endpointFacts {
-			if strings.Contains(endpointFact.Key, serviceName) {
-				serviceEndpointCount++
+	// Wait for endpoints to match running instances exactly.
+	waitFor(t, 5*time.Second, "endpoints match running instances for "+serviceName, func() bool {
+		allInstances, instanceListError := types.ListInstances(backgroundContext, cluster.factStore)
+		if instanceListError != nil {
+			return false
+		}
+		runningInstanceIDs := make(map[string]bool)
+		for _, instance := range allInstances {
+			if instance.Service == serviceName && instance.State == types.InstanceRunning {
+				runningInstanceIDs[instance.ID] = true
 			}
 		}
-		return serviceEndpointCount >= desiredCount
+		if len(runningInstanceIDs) < desiredCount {
+			return false
+		}
+
+		allEndpointFacts, endpointScanError := cluster.factStore.Scan(backgroundContext, types.ScanEndpoints)
+		if endpointScanError != nil {
+			return false
+		}
+		endpointInstanceIDs := make(map[string]bool)
+		for _, endpointFact := range allEndpointFacts {
+			if strings.Contains(endpointFact.Key, serviceName) {
+				keyParts := strings.Split(endpointFact.Key, "/")
+				if len(keyParts) >= 5 {
+					endpointInstanceIDs[keyParts[3]] = true
+				}
+			}
+		}
+
+		if len(endpointInstanceIDs) != len(runningInstanceIDs) {
+			return false
+		}
+		for runningID := range runningInstanceIDs {
+			if !endpointInstanceIDs[runningID] {
+				return false
+			}
+		}
+		for endpointID := range endpointInstanceIDs {
+			if !runningInstanceIDs[endpointID] {
+				return false
+			}
+		}
+		return true
 	})
 
-	// Count running instances for the service.
-	allInstances, instanceListError := types.ListInstances(backgroundContext, cluster.factStore)
-	if instanceListError != nil {
-		t.Fatalf("failed to list instances: %v", instanceListError)
-	}
-
+	// Log final state for diagnostics.
+	allInstances, _ := types.ListInstances(backgroundContext, cluster.factStore)
 	runningInstanceIDs := make(map[string]bool)
 	for _, instance := range allInstances {
 		if instance.Service == serviceName && instance.State == types.InstanceRunning {
@@ -482,50 +512,6 @@ func TestInvariantEndpointsMatchRunningInstances(t *testing.T) {
 		}
 	}
 
-	// Scan all endpoint facts for this service.
-	allEndpointFacts, endpointScanError := cluster.factStore.Scan(backgroundContext, types.ScanEndpoints)
-	if endpointScanError != nil {
-		t.Fatalf("failed to scan endpoints: %v", endpointScanError)
-	}
-
-	serviceEndpointCount := 0
-	endpointInstanceIDs := make(map[string]bool)
-	for _, endpointFact := range allEndpointFacts {
-		if strings.Contains(endpointFact.Key, serviceName) {
-			serviceEndpointCount++
-			// Extract the instance ID from the endpoint key.
-			// Endpoint keys follow the pattern: endpoint/service/{serviceName}/{instanceID}/{port}
-			keyParts := strings.Split(endpointFact.Key, "/")
-			// Expected: ["endpoint", "service", serviceName, instanceID, port]
-			if len(keyParts) >= 5 {
-				endpointInstanceID := keyParts[3]
-				endpointInstanceIDs[endpointInstanceID] = true
-			}
-		}
-	}
-
-	// Verify the endpoint count matches the running instance count.
-	if serviceEndpointCount != len(runningInstanceIDs) {
-		t.Errorf("invariant violation: service %q has %d endpoints but %d running instances",
-			serviceName, serviceEndpointCount, len(runningInstanceIDs))
-	}
-
-	// Verify every endpoint references a running instance.
-	for endpointInstanceID := range endpointInstanceIDs {
-		if !runningInstanceIDs[endpointInstanceID] {
-			t.Errorf("invariant violation: endpoint references instance %q which is not running",
-				endpointInstanceID)
-		}
-	}
-
-	// Verify every running instance has an endpoint.
-	for runningInstanceID := range runningInstanceIDs {
-		if !endpointInstanceIDs[runningInstanceID] {
-			t.Errorf("invariant violation: running instance %q has no endpoint",
-				runningInstanceID)
-		}
-	}
-
-	t.Logf("verified endpoint invariant: %d endpoints match %d running instances for service %q",
-		serviceEndpointCount, len(runningInstanceIDs), serviceName)
+	t.Logf("verified endpoint invariant: %d running instances for service %q",
+		len(runningInstanceIDs), serviceName)
 }

@@ -119,18 +119,11 @@ func TestVolumeAttachedWhenInstanceStarts(t *testing.T) {
 	cluster.factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
 	cluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("1"))
 
-	waitFor(t, 5*time.Second, "volume pgdata attached", func() bool {
+	waitFor(t, 5*time.Second, "volume pgdata attached with mount path and instance", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAttached && volume.Node != ""
+		return err == nil && volume.State == types.VolumeAttached && volume.Node != "" &&
+			volume.MountPath == "/mnt/volumes/pgdata" && volume.Instance != ""
 	})
-
-	volume, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-	if volume.MountPath != "/mnt/volumes/pgdata" {
-		t.Errorf("volume mount path = %s, want /mnt/volumes/pgdata", volume.MountPath)
-	}
-	if volume.Instance == "" {
-		t.Error("expected volume to be associated with an instance")
-	}
 }
 
 // TestVolumeDetachedWhenInstanceStops verifies that scaling a service to zero
@@ -201,10 +194,12 @@ func TestVolumeSurvivesNodeFailure(t *testing.T) {
 	cluster.killNode[originalNodeID]()
 	cluster.storageProvider.ForceDetach(ctx, "pgdata")
 
-	// Wait for the volume to reattach on a different node.
-	waitFor(t, 10*time.Second, "volume reattached on different node", func() bool {
+	// Wait for the volume to reattach on a different node with mount path.
+	waitFor(t, 10*time.Second, "volume reattached on different node with mount path", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAttached && volume.Node != "" && volume.Node != originalNodeID
+		return err == nil && volume.State == types.VolumeAttached &&
+			volume.Node != "" && volume.Node != originalNodeID &&
+			volume.MountPath == "/mnt/volumes/pgdata"
 	})
 
 	// Verify postgres is running again on the new node.
@@ -220,14 +215,6 @@ func TestVolumeSurvivesNodeFailure(t *testing.T) {
 		}
 		return false
 	})
-
-	volumeAfter, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-	if volumeAfter.Node == originalNodeID {
-		t.Errorf("volume still on dead node %s", originalNodeID)
-	}
-	if volumeAfter.MountPath != "/mnt/volumes/pgdata" {
-		t.Errorf("mount path after migration = %s, want /mnt/volumes/pgdata", volumeAfter.MountPath)
-	}
 }
 
 // TestVolumeForceDetachOnUnreachableNode verifies that the StorageController
@@ -258,15 +245,11 @@ func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
 	cluster.killNode[attachedNodeID]()
 
 	// Wait for StorageController to force-detach — volume transitions to migrating.
-	waitFor(t, 5*time.Second, "volume force-detached to migrating", func() bool {
+	waitFor(t, 5*time.Second, "volume force-detached to migrating with source", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeMigrating
+		return err == nil && volume.State == types.VolumeMigrating &&
+			volume.MigrationSource == attachedNodeID
 	})
-
-	migratingVolume, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-	if migratingVolume.MigrationSource != attachedNodeID {
-		t.Errorf("migration source = %s, want %s", migratingVolume.MigrationSource, attachedNodeID)
-	}
 }
 
 // TestMultipleServicesIndependentVolumes verifies that two services with
@@ -337,19 +320,16 @@ func TestServiceWithoutVolumeUnaffected(t *testing.T) {
 		return runningCount >= 4
 	})
 
-	allInstances, _ := types.ListInstances(ctx, cluster.factStore)
-	runningByService := make(map[string]int)
-	for _, instance := range allInstances {
-		if instance.State == types.InstanceRunning {
-			runningByService[instance.Service]++
+	waitFor(t, 5*time.Second, "web>=3 and postgres>=1 running", func() bool {
+		allInstances, _ := types.ListInstances(ctx, cluster.factStore)
+		runningByService := make(map[string]int)
+		for _, instance := range allInstances {
+			if instance.State == types.InstanceRunning {
+				runningByService[instance.Service]++
+			}
 		}
-	}
-	if runningByService["web"] < 3 {
-		t.Errorf("web: expected 3 running, got %d", runningByService["web"])
-	}
-	if runningByService["postgres"] < 1 {
-		t.Errorf("postgres: expected 1 running, got %d", runningByService["postgres"])
-	}
+		return runningByService["web"] >= 3 && runningByService["postgres"] >= 1
+	})
 }
 
 // TestVolumeStateReflectedInStore verifies that all expected observed volume
@@ -367,15 +347,18 @@ func TestVolumeStateReflectedInStore(t *testing.T) {
 	cluster.factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
 	cluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("1"))
 
-	waitFor(t, 5*time.Second, "volume attached with all facts", func() bool {
+	waitFor(t, 5*time.Second, "volume attached with all facts including size", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAttached &&
-			volume.Node != "" && volume.Instance != "" && volume.MountPath != ""
+		if err != nil || volume.State != types.VolumeAttached ||
+			volume.Node == "" || volume.Instance == "" || volume.MountPath == "" {
+			return false
+		}
+		sizeFact, sizeErr := cluster.factStore.Get(ctx, types.KeyObservedVolumeSize("pgdata"))
+		return sizeErr == nil && string(sizeFact.Value) == "100Gi"
 	})
 
 	volume, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
 
-	// Verify each individual fact key exists and has the correct value.
 	stateFact, err := cluster.factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
 	if err != nil || string(stateFact.Value) != string(types.VolumeAttached) {
 		t.Errorf("volume state fact: got %v (err=%v), want attached", string(stateFact.Value), err)

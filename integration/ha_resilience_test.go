@@ -133,38 +133,24 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 		partitionedStores[nodeID].Partition()
 	}
 
-	waitFor(testHandle, 5*time.Second, "6 containers still running during partition", func() bool {
-		totalRunning := 0
-		for _, simulatorRuntime := range agentRuntimes {
-			statuses, listError := simulatorRuntime.List(context.Background())
+	waitFor(testHandle, 5*time.Second, "all nodes have running containers during partition", func() bool {
+		for _, nodeID := range nodeIDs {
+			statuses, listError := agentRuntimes[nodeID].List(context.Background())
 			if listError != nil {
-				continue
+				return false
 			}
+			nodeRunningCount := 0
 			for _, containerStatus := range statuses {
 				if containerStatus.Running {
-					totalRunning++
+					nodeRunningCount++
 				}
 			}
-		}
-		return totalRunning >= 6
-	})
-
-	for _, nodeID := range nodeIDs {
-		statuses, listError := agentRuntimes[nodeID].List(context.Background())
-		if listError != nil {
-			testHandle.Errorf("failed to list containers on %s: %v", nodeID, listError)
-			continue
-		}
-		nodeRunningCount := 0
-		for _, containerStatus := range statuses {
-			if containerStatus.Running {
-				nodeRunningCount++
+			if nodeRunningCount == 0 {
+				return false
 			}
 		}
-		if nodeRunningCount == 0 {
-			testHandle.Errorf("node %s has 0 running containers during partition — workloads should persist", nodeID)
-		}
-	}
+		return true
+	})
 
 	for _, nodeID := range nodeIDs {
 		partitionedStores[nodeID].Heal()
@@ -274,16 +260,19 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 		return helperCountRunningInstances(clusterContext, factStore, "web") == 5
 	})
 
-	allInstances, _ := types.ListInstances(clusterContext, factStore)
-	nonStoppedCount := 0
-	for _, instance := range allInstances {
-		if instance.Service == "web" && instance.State != types.InstanceStopped {
-			nonStoppedCount++
+	waitFor(testHandle, 5*time.Second, "exactly 5 non-stopped web instances (no duplicates)", func() bool {
+		allInstances, listError := types.ListInstances(clusterContext, factStore)
+		if listError != nil {
+			return false
 		}
-	}
-	if nonStoppedCount != 5 {
-		testHandle.Errorf("two concurrent runners produced %d non-stopped web instances, expected exactly 5 (no duplicates)", nonStoppedCount)
-	}
+		nonStoppedCount := 0
+		for _, instance := range allInstances {
+			if instance.Service == "web" && instance.State != types.InstanceStopped {
+				nonStoppedCount++
+			}
+		}
+		return nonStoppedCount == 5
+	})
 }
 
 // TestDisasterRecovery_EtcdSnapshot verifies that a cluster can be rebuilt
@@ -388,16 +377,19 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 		return nodesAlive && helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
-	allInstances, _ := types.ListInstances(ctx, cluster.factStore)
-	nonStoppedCount := 0
-	for _, instance := range allInstances {
-		if instance.Service == "web" && instance.State != types.InstanceStopped {
-			nonStoppedCount++
+	waitFor(testHandle, 5*time.Second, "exactly 6 non-stopped web instances (no duplicates)", func() bool {
+		allInstances, listError := types.ListInstances(ctx, cluster.factStore)
+		if listError != nil {
+			return false
 		}
-	}
-	if nonStoppedCount != 6 {
-		testHandle.Errorf("split-brain heal produced %d non-stopped instances, expected 6 (no duplicates)", nonStoppedCount)
-	}
+		nonStoppedCount := 0
+		for _, instance := range allInstances {
+			if instance.Service == "web" && instance.State != types.InstanceStopped {
+				nonStoppedCount++
+			}
+		}
+		return nonStoppedCount == 6
+	})
 }
 
 // TestNetworkPartition_EndpointStaleness verifies that when a node is

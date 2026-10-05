@@ -181,14 +181,10 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 
 	cluster.restartControllerGroup("scheduler", []controllers.Controller{scheduler.NewScheduler()})
 
-	waitFor(testHandle, 5*time.Second, "3 running api instances after scheduler restart", func() bool {
-		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
+	waitFor(testHandle, 5*time.Second, "api=3 and web=6 after scheduler restart", func() bool {
+		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3 &&
+			helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
-
-	webFinalCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
-	if webFinalCount != 6 {
-		testHandle.Errorf("web instance count changed: got %d, want 6", webFinalCount)
-	}
 }
 
 // TestControllerIsolation_NetworkControllerCrash verifies that killing the
@@ -211,14 +207,10 @@ func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "3")
 
-	waitFor(testHandle, 5*time.Second, "3 running api instances without network controller", func() bool {
-		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
+	waitFor(testHandle, 5*time.Second, "api=3 and web=3 without network controller", func() bool {
+		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3 &&
+			helperCountRunningInstances(ctx, cluster.factStore, "web") == 3
 	})
-
-	webStillRunning := helperCountRunningInstances(ctx, cluster.factStore, "web")
-	if webStillRunning != 3 {
-		testHandle.Errorf("web instances disrupted: got %d, want 3", webStillRunning)
-	}
 }
 
 // TestControllerIsolation_InstanceControllerRestart verifies that restarting
@@ -240,19 +232,10 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "4")
 
-	waitFor(testHandle, 5*time.Second, "4 running api instances after instance controller restart", func() bool {
-		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 4
+	waitFor(testHandle, 5*time.Second, "api=4 and web=6 after instance controller restart", func() bool {
+		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 4 &&
+			helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
-
-	webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
-	if webCount != 6 {
-		testHandle.Errorf("web duplicated or lost after instance controller restart: got %d, want 6", webCount)
-	}
-
-	apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
-	if apiCount != 4 {
-		testHandle.Errorf("api count wrong: got %d, want 4", apiCount)
-	}
 }
 
 // TestControllerIsolation_AllControllersRestart verifies that stopping all
@@ -337,35 +320,29 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 		return webCount == 6 && apiCount == 4 && dbCount == 2
 	})
 
-	allInstances, listError := types.ListInstances(ctx, cluster.factStore)
-	if listError != nil {
-		testHandle.Fatal(listError)
-	}
-	webInstanceCount := 0
-	apiInstanceCount := 0
-	dbInstanceCount := 0
-	for _, instance := range allInstances {
-		if instance.State == types.InstanceStopped {
-			continue
+	waitFor(testHandle, 5*time.Second, "no extra non-stopped instances (6/4/2)", func() bool {
+		allInstances, listError := types.ListInstances(ctx, cluster.factStore)
+		if listError != nil {
+			return false
 		}
-		switch instance.Service {
-		case "web":
-			webInstanceCount++
-		case "api":
-			apiInstanceCount++
-		case "db":
-			dbInstanceCount++
+		webNonStopped := 0
+		apiNonStopped := 0
+		dbNonStopped := 0
+		for _, instance := range allInstances {
+			if instance.State == types.InstanceStopped {
+				continue
+			}
+			switch instance.Service {
+			case "web":
+				webNonStopped++
+			case "api":
+				apiNonStopped++
+			case "db":
+				dbNonStopped++
+			}
 		}
-	}
-	if webInstanceCount != 6 {
-		testHandle.Errorf("web has %d non-stopped instances (expected 6) — possible duplicates", webInstanceCount)
-	}
-	if apiInstanceCount != 4 {
-		testHandle.Errorf("api has %d non-stopped instances (expected 4) — possible duplicates", apiInstanceCount)
-	}
-	if dbInstanceCount != 2 {
-		testHandle.Errorf("db has %d non-stopped instances (expected 2) — possible duplicates", dbInstanceCount)
-	}
+		return webNonStopped == 6 && apiNonStopped == 4 && dbNonStopped == 2
+	})
 }
 
 // helperCountPlacedInstances returns the number of instances for a service that

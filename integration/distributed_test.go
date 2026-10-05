@@ -155,27 +155,20 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 	// Wait for the system to converge: node failure controller marks instances
 	// as failed → failure controller creates replacements → scheduler places
 	// them on node-2/node-3 → those agents start them.
-	waitFor(t, 10*time.Second, "6 running instances after node failure", func() bool {
+	waitFor(t, 10*time.Second, "6 running instances, none on dead node-1", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningCount := 0
 		for _, instance := range allInstances {
 			if instance.Service == "web" && instance.State == types.InstanceRunning {
+				placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID))
+				if err == nil && string(placementFact.Value) == "node-1" {
+					return false
+				}
 				runningCount++
 			}
 		}
 		return runningCount >= 6
 	})
-
-	// Verify no running instances remain placed on the dead node.
-	allInstances, _ := types.ListInstances(ctx, factStore)
-	for _, instance := range allInstances {
-		if instance.Service == "web" && instance.State == types.InstanceRunning {
-			placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID))
-			if err == nil && string(placementFact.Value) == "node-1" {
-				t.Errorf("instance %s still placed on dead node-1", instance.ID)
-			}
-		}
-	}
 }
 
 // TestDistributedHeartbeatsVisibleInStore verifies that the agent writes

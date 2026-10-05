@@ -97,8 +97,8 @@ group frontend {
 		t.Fatalf("apply error: %v", applyErr)
 	}
 
-	// Wait for both instances to be placed and running.
-	waitFor(t, 5*time.Second, "both group instances running", func() bool {
+	// Wait for both instances to be running and co-located on the same node.
+	waitFor(t, 5*time.Second, "both group instances running and co-located", func() bool {
 		allFacts, _ := factStore.Scan(ctx, types.ScanObservedInstances)
 		runningCount := 0
 		for _, fact := range allFacts {
@@ -106,46 +106,41 @@ group frontend {
 				runningCount++
 			}
 		}
-		return runningCount >= 2
+		if runningCount < 2 {
+			return false
+		}
+
+		placements, _ := factStore.Scan(ctx, types.ScanPlacements)
+		nodesByInstance := make(map[string]string)
+		for _, fact := range placements {
+			instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
+			if instanceID != "" && !strings.Contains(instanceID, "/") {
+				nodesByInstance[instanceID] = string(fact.Value)
+			}
+		}
+
+		observedInstances, _ := factStore.Scan(ctx, types.ScanObservedInstances)
+		serviceByInstance := make(map[string]string)
+		for _, fact := range observedInstances {
+			relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+			parts := strings.SplitN(relativePath, "/", 2)
+			if len(parts) == 2 && parts[1] == "service" {
+				serviceByInstance[parts[0]] = string(fact.Value)
+			}
+		}
+
+		var proxyNode, webNode string
+		for instanceID, serviceName := range serviceByInstance {
+			switch serviceName {
+			case "proxy":
+				proxyNode = nodesByInstance[instanceID]
+			case "web":
+				webNode = nodesByInstance[instanceID]
+			}
+		}
+
+		return proxyNode != "" && webNode != "" && proxyNode == webNode
 	})
-
-	// Verify both instances are placed on the same node.
-	placements, _ := factStore.Scan(ctx, types.ScanPlacements)
-	nodesByInstance := make(map[string]string)
-	for _, fact := range placements {
-		instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
-		if instanceID != "" && !strings.Contains(instanceID, "/") {
-			nodesByInstance[instanceID] = string(fact.Value)
-		}
-	}
-
-	// Find which instances belong to proxy and web via their service field.
-	observedInstances, _ := factStore.Scan(ctx, types.ScanObservedInstances)
-	serviceByInstance := make(map[string]string)
-	for _, fact := range observedInstances {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "service" {
-			serviceByInstance[parts[0]] = string(fact.Value)
-		}
-	}
-
-	var proxyNode, webNode string
-	for instanceID, serviceName := range serviceByInstance {
-		switch serviceName {
-		case "proxy":
-			proxyNode = nodesByInstance[instanceID]
-		case "web":
-			webNode = nodesByInstance[instanceID]
-		}
-	}
-
-	if proxyNode == "" || webNode == "" {
-		t.Fatalf("missing placements: proxy=%q, web=%q", proxyNode, webNode)
-	}
-	if proxyNode != webNode {
-		t.Errorf("group members on different nodes: proxy=%s, web=%s", proxyNode, webNode)
-	}
 }
 
 // TestServiceGroupWithUngroupedService verifies that ungrouped services are
@@ -188,8 +183,8 @@ group frontend {
 		t.Fatalf("apply error: %v", applyErr)
 	}
 
-	// Wait for all 3 instances to be running.
-	waitFor(t, 5*time.Second, "all three instances running", func() bool {
+	// Wait for all 3 instances running and grouped services co-located.
+	waitFor(t, 5*time.Second, "all three instances running and group co-located", func() bool {
 		allFacts, _ := factStore.Scan(ctx, types.ScanObservedInstances)
 		runningCount := 0
 		for _, fact := range allFacts {
@@ -197,21 +192,21 @@ group frontend {
 				runningCount++
 			}
 		}
-		return runningCount >= 3
-	})
-
-	// Collect placements and service mappings.
-	placements, _ := factStore.Scan(ctx, types.ScanPlacements)
-	nodesByInstance := make(map[string]string)
-	for _, fact := range placements {
-		instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
-		if instanceID != "" && !strings.Contains(instanceID, "/") {
-			nodesByInstance[instanceID] = string(fact.Value)
+		if runningCount < 3 {
+			return false
 		}
-	}
 
-	observedInstances, _ := factStore.Scan(ctx, types.ScanObservedInstances)
-	serviceByInstance := make(map[string]string)
+		placements, _ := factStore.Scan(ctx, types.ScanPlacements)
+		nodesByInstance := make(map[string]string)
+		for _, fact := range placements {
+			instanceID := strings.TrimPrefix(fact.Key, types.ScanPlacements)
+			if instanceID != "" && !strings.Contains(instanceID, "/") {
+				nodesByInstance[instanceID] = string(fact.Value)
+			}
+		}
+
+		observedInstances, _ := factStore.Scan(ctx, types.ScanObservedInstances)
+		serviceByInstance := make(map[string]string)
 	for _, fact := range observedInstances {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
 		parts := strings.SplitN(relativePath, "/", 2)
@@ -230,10 +225,6 @@ group frontend {
 		}
 	}
 
-	if proxyNode == "" || webNode == "" {
-		t.Fatalf("missing placements: proxy=%q, web=%q", proxyNode, webNode)
-	}
-	if proxyNode != webNode {
-		t.Errorf("group members on different nodes: proxy=%s, web=%s", proxyNode, webNode)
-	}
+	return proxyNode != "" && webNode != "" && proxyNode == webNode
+	})
 }

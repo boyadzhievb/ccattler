@@ -640,16 +640,13 @@ service api {
 	factStore.Put(ctx, types.KeyEffectiveServiceResourcesMemory("api"), []byte("1Gi"))
 
 	// The agent should detect the effective resource change and resize the instance.
-	waitFor(t, 5*time.Second, "agent resizes instance to 1000m CPU", func() bool {
-		resourceStats, statsErr := simulatorRuntime.Stats(ctx, instanceID)
-		return statsErr == nil && resourceStats.CPUMillicores == 1000
-	})
-
-	finalStats, _ := simulatorRuntime.Stats(ctx, instanceID)
 	expectedMemory := int64(1024 * 1024 * 1024)
-	if finalStats.MemoryBytes != expectedMemory {
-		t.Errorf("memory after resize: got %d, want %d", finalStats.MemoryBytes, expectedMemory)
-	}
+	waitFor(t, 5*time.Second, "agent resizes instance to 1000m CPU and 1Gi memory", func() bool {
+		resourceStats, statsErr := simulatorRuntime.Stats(ctx, instanceID)
+		return statsErr == nil && resourceStats.CPUMillicores == 1000 &&
+			resourceStats.MemoryBytes == expectedMemory
+	})
+	finalStats, _ := simulatorRuntime.Stats(ctx, instanceID)
 	t.Logf("final stats: cpu=%d, memory=%d", finalStats.CPUMillicores, finalStats.MemoryBytes)
 }
 

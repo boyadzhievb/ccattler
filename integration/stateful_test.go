@@ -113,22 +113,16 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	}
 
 	// Step 6: Verify per-ordinal volumes were created.
-	waitFor(t, 3*time.Second, "per-ordinal volumes", func() bool {
+	waitFor(t, 3*time.Second, "per-ordinal volumes with size and persistent", func() bool {
 		vol0, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-0-pgdata"))
 		vol1, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-1-pgdata"))
 		vol2, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-2-pgdata"))
-		return vol0 != nil && vol1 != nil && vol2 != nil
+		size0, _ := factStore.Get(ctx, types.KeyDesiredVolumeSize("postgres-0-pgdata"))
+		persist0, _ := factStore.Get(ctx, types.KeyDesiredVolumePersistent("postgres-0-pgdata"))
+		return vol0 != nil && vol1 != nil && vol2 != nil &&
+			size0 != nil && string(size0.Value) == "100Gi" &&
+			persist0 != nil && string(persist0.Value) == "true"
 	})
-
-	volSizeFact, _ := factStore.Get(ctx, types.KeyDesiredVolumeSize("postgres-0-pgdata"))
-	if volSizeFact == nil || string(volSizeFact.Value) != "100Gi" {
-		t.Errorf("per-ordinal volume size: got %v, want %q", volSizeFact, "100Gi")
-	}
-
-	volPersistFact, _ := factStore.Get(ctx, types.KeyDesiredVolumePersistent("postgres-0-pgdata"))
-	if volPersistFact == nil || string(volPersistFact.Value) != "true" {
-		t.Errorf("per-ordinal volume persistent: got %v, want %q", volPersistFact, "true")
-	}
 }
 
 // TestStatefulServiceScaleDown verifies that scaling down a stateful service

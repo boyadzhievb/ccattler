@@ -175,13 +175,10 @@ func TestControllerRestartRecovery(t *testing.T) {
 
 	cluster.restartControllers()
 
-	waitFor(t, 5*time.Second, "2 running api instances after controller restart", func() bool {
-		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 2
+	waitFor(t, 5*time.Second, "api=2 and web>=3 after controller restart", func() bool {
+		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 2 &&
+			helperCountRunningInstances(ctx, cluster.factStore, "web") >= 3
 	})
-
-	if helperCountRunningInstances(ctx, cluster.factStore, "web") < 3 {
-		t.Error("web instances disrupted after controller restart")
-	}
 }
 
 // TestControllerRestartPreservesExistingState verifies that restarting
@@ -380,16 +377,19 @@ func TestScaleChangeDuringNodeFailure(t *testing.T) {
 	cluster.killNode["node-1"]()
 	cluster.factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("6"))
 
-	waitFor(t, 10*time.Second, "6 running on surviving nodes", func() bool {
-		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
-	})
-
-	allInstances, _ := types.ListInstances(ctx, cluster.factStore)
-	for _, instance := range allInstances {
-		if instance.Service == "web" && instance.State == types.InstanceRunning && instance.Node == "node-1" {
-			t.Error("found running instance on dead node-1")
+	waitFor(t, 10*time.Second, "6 running on surviving nodes, none on node-1", func() bool {
+		allInstances, _ := types.ListInstances(ctx, cluster.factStore)
+		runningCount := 0
+		for _, instance := range allInstances {
+			if instance.Service == "web" && instance.State == types.InstanceRunning {
+				if instance.Node == "node-1" {
+					return false
+				}
+				runningCount++
+			}
 		}
-	}
+		return runningCount == 6
+	})
 }
 
 // TestFullResilienceCycle runs a sequential gauntlet of failures: deploy,

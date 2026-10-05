@@ -163,18 +163,15 @@ func TestServiceGetsVIPAndDNS(t *testing.T) {
 		return err == nil && strings.HasPrefix(string(dnsFact.Value), "10.200.0.")
 	})
 
-	// VIP and DNS should point to the same address.
-	vipFact, _ := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
-	dnsFact, _ := factStore.Get(ctx, types.KeyNetworkDNS("web"))
-	if string(vipFact.Value) != string(dnsFact.Value) {
-		t.Errorf("VIP=%s DNS=%s, should match", vipFact.Value, dnsFact.Value)
-	}
-
-	// VIP port should match the exposed port.
-	portFact, _ := factStore.Get(ctx, types.KeyNetworkVIPServicePort("web"))
-	if string(portFact.Value) != "8080" {
-		t.Errorf("VIP port=%s, want 8080", portFact.Value)
-	}
+	waitFor(t, 5*time.Second, "VIP port set and VIP matches DNS", func() bool {
+		vipFact, vipErr := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+		dnsFact, dnsErr := factStore.Get(ctx, types.KeyNetworkDNS("web"))
+		portFact, portErr := factStore.Get(ctx, types.KeyNetworkVIPServicePort("web"))
+		if vipErr != nil || dnsErr != nil || portErr != nil {
+			return false
+		}
+		return string(vipFact.Value) == string(dnsFact.Value) && string(portFact.Value) == "8080"
+	})
 }
 
 // TestDNSResolvesServiceToVIP verifies that the StoreBackedResolver returns
@@ -308,24 +305,19 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	cancelNode1Agent()
 
 	// Wait for system to recover: 6 running instances, none on node-1.
-	waitFor(t, 10*time.Second, "6 running instances after failure", func() bool {
+	waitFor(t, 10*time.Second, "6 running instances with real IPs after failure", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
-		runningCount := 0
+		runningWithRealIP := 0
 		for _, instance := range allInstances {
 			if instance.Service == "web" && instance.State == types.InstanceRunning {
-				runningCount++
+				if instance.IP == "127.0.0.1" || instance.IP == "" {
+					return false
+				}
+				runningWithRealIP++
 			}
 		}
-		return runningCount >= 6
+		return runningWithRealIP >= 6
 	})
-
-	// Verify all running instances have real IPs (not 127.0.0.1).
-	allInstances, _ := types.ListInstances(ctx, factStore)
-	for _, instance := range allInstances {
-		if instance.State == types.InstanceRunning && instance.IP == "127.0.0.1" {
-			t.Errorf("running instance %s still has 127.0.0.1", instance.ID)
-		}
-	}
 }
 
 // TestScaleUpAddsToLoadBalancerPool verifies that scaling up a service
@@ -348,18 +340,18 @@ func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
 	// Scale up to 4.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("4"))
 
-	waitFor(t, 5*time.Second, "4 endpoints after scale-up", func() bool {
+	waitFor(t, 5*time.Second, "4 endpoints with real IPs after scale-up", func() bool {
 		resolvedEndpoints, _ := storeBackedResolver.ResolveEndpoints(ctx, "web")
-		return len(resolvedEndpoints) >= 4
-	})
-
-	// All 4 endpoints should have real IPs.
-	resolvedEndpoints, _ := storeBackedResolver.ResolveEndpoints(ctx, "web")
-	for _, endpoint := range resolvedEndpoints {
-		if endpoint.IP == "127.0.0.1" || endpoint.IP == "" {
-			t.Errorf("endpoint %s has bad IP: %s", endpoint.InstanceID, endpoint.IP)
+		if len(resolvedEndpoints) < 4 {
+			return false
 		}
-	}
+		for _, endpoint := range resolvedEndpoints {
+			if endpoint.IP == "127.0.0.1" || endpoint.IP == "" {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // TestServiceReachableByName is the M4 headline test: deploy two services,
