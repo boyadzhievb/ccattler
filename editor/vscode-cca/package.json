@@ -1,0 +1,33 @@
+{
+  "name": "ccattler-dsl",
+  "displayName": "CCattler DSL",
+  "description": "Syntax highlighting for CCattler (.cca) service definition files",
+  "version": "0.1.0",
+  "publisher": "ccattler",
+  "license": "GPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/boyadzhievb/ccattler"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "cca",
+        "aliases": ["CCattler", "cca"],
+        "extensions": [".cca"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "cca",
+        "scopeName": "source.cca",
+        "path": "./syntaxes/cca.tmLanguage.json"
+      }
+    ]
+  }
+}

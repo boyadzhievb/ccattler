@@ -1,0 +1,79 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "CCattler",
+  "scopeName": "source.cca",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#grant-statement" },
+    { "include": "#top-level-block" },
+    { "include": "#string" },
+    { "include": "#number" },
+    { "include": "#duration" },
+    { "include": "#size" },
+    { "include": "#operator" },
+    { "include": "#block-keyword" },
+    { "include": "#field-keyword" },
+    { "include": "#constant" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "#.*$",
+      "name": "comment.line.number-sign.cca"
+    },
+    "top-level-block": {
+      "match": "^\\s*(service|volume|tenant|cloud_identity|credential_broker|cloud|role|group|policy|network)\\s+([a-zA-Z_][a-zA-Z0-9_-]*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.cca" },
+        "2": { "name": "entity.name.type.cca" }
+      }
+    },
+    "grant-statement": {
+      "match": "^\\s*(grant)\\s+([a-zA-Z_][a-zA-Z0-9_-]*)\\s+(to)\\s+(user|group|node|service)\\s+",
+      "captures": {
+        "1": { "name": "keyword.declaration.cca" },
+        "2": { "name": "entity.name.type.cca" },
+        "3": { "name": "keyword.operator.cca" },
+        "4": { "name": "storage.type.cca" }
+      }
+    },
+    "block-keyword": {
+      "match": "\\b(resources|health|scale|horizontal|vertical|placement|update|config|schedule|stabilization|quota|init|startup|liveness|readiness|disruption)\\b",
+      "name": "keyword.control.cca"
+    },
+    "field-keyword": {
+      "match": "\\b(image|instances|expose|cpu|memory|size|persistent|min|max|target|event|days|start|end|minimum|architecture|zone|spread|max_unavailable|max_extra|max_instances|min_available|http|tcp|exec|every|timeout|retry|file|env|from|allow|deny|scope|member|process|share|when|weight|port|external|idle_timeout|activation_timeout|cpu_min|cpu_max|memory_min|memory_max|failure_threshold|success_threshold|initial_delay|scale_up|scale_down|require|prefer|accept|provider|region|credentials|instance_type|project_id|resource_group|vpc_network|route_table|oidc_issuer|credential_ttl|refresh_before|deliver|stateful)\\b",
+      "name": "support.function.cca"
+    },
+    "constant": {
+      "match": "\\b(true|false|weekdays|everyday|amd64|arm64|tcp|http|credentials|token|aws|gcp|azure)\\b",
+      "name": "constant.language.cca"
+    },
+    "string": {
+      "begin": "\"",
+      "end": "\"",
+      "name": "string.quoted.double.cca",
+      "patterns": [
+        {
+          "match": "\\\\.",
+          "name": "constant.character.escape.cca"
+        }
+      ]
+    },
+    "number": {
+      "match": "\\b[0-9]+\\.?[0-9]*\\b",
+      "name": "constant.numeric.cca"
+    },
+    "duration": {
+      "match": "\\b[0-9]+[smhd]\\b",
+      "name": "constant.numeric.duration.cca"
+    },
+    "size": {
+      "match": "\\b[0-9]+(m|Mi|Gi|Ti|Ki)\\b",
+      "name": "constant.numeric.size.cca"
+    },
+    "operator": {
+      "match": "(->|==|!=|=)",
+      "name": "keyword.operator.cca"
+    }
+  }
+}
