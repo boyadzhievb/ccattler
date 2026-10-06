@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
@@ -237,7 +239,11 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 				logging.Default().Error("debug API server error", "node", parsedConfig.nodeID, "error", debugError.Error())
 			}
 		}()
-		fmt.Printf("Agent %s: debug API listening on %s\n", parsedConfig.nodeID, parsedConfig.debugListenAddress)
+		publishableDebugAddress := buildPublishableDebugAddress(parsedConfig.debugListenAddress, parsedConfig.advertiseAddress)
+		if _, putError := factStore.Put(ctx, types.KeyObservedNodeDebugAddress(parsedConfig.nodeID), []byte(publishableDebugAddress)); putError != nil {
+			logging.Default().Error("failed to publish debug address", "node", parsedConfig.nodeID, "error", putError.Error())
+		}
+		fmt.Printf("Agent %s: debug API listening on %s (published as %s)\n", parsedConfig.nodeID, parsedConfig.debugListenAddress, publishableDebugAddress)
 	}
 
 	if parsedConfig.proxyEnabled {
@@ -348,4 +354,22 @@ func configureAgentSecretProvider(ctx context.Context, nodeAgent *agent.Agent, f
 	}
 	nodeAgent.SetSecretProvider(localSecretProvider)
 	fmt.Printf("Agent %s: secret decryption enabled (local key)\n", parsedConfig.nodeID)
+}
+
+// buildPublishableDebugAddress returns the debug API address that remote
+// clients should use. When the listen address binds to 0.0.0.0 or 127.0.0.1
+// and an advertise address is configured, the advertise IP replaces the host
+// portion so the address is reachable from other machines.
+func buildPublishableDebugAddress(debugListenAddress string, advertiseAddress string) string {
+	if advertiseAddress == "" {
+		return debugListenAddress
+	}
+	host, port, splitError := net.SplitHostPort(debugListenAddress)
+	if splitError != nil {
+		return debugListenAddress
+	}
+	if host == "0.0.0.0" || host == "127.0.0.1" || host == "" {
+		return net.JoinHostPort(advertiseAddress, port)
+	}
+	return debugListenAddress
 }

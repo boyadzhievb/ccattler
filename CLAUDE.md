@@ -1097,6 +1097,7 @@ cca scale web 20              # change desired count
 cca logs <service> [--follow] [--instance <id>]  # aggregate container stdout/stderr logs
 cca status                    # cluster overview
 cca watch [prefix]            # stream fact store changes
+cca node-inspect <node-id>    # query agent debug API for live runtime state
 cca top [nodes|workloads]     # resource utilization (CPU, memory, instances)
 cca metric set <svc> <m> <v>  # inject simulated metric
 ```

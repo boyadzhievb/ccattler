@@ -70,7 +70,7 @@ func TestDebugContainersEmpty(testContext *testing.T) {
 		testContext.Fatalf("expected 200, got %d", response.StatusCode)
 	}
 
-	var containerResponse debugContainersResponse
+	var containerResponse DebugContainersResponse
 	if decodeError := json.NewDecoder(response.Body).Decode(&containerResponse); decodeError != nil {
 		testContext.Fatalf("decode error: %v", decodeError)
 	}
@@ -102,7 +102,7 @@ func TestDebugContainersWithRunningWorkloads(testContext *testing.T) {
 	}
 	defer response.Body.Close()
 
-	var containerResponse debugContainersResponse
+	var containerResponse DebugContainersResponse
 	if decodeError := json.NewDecoder(response.Body).Decode(&containerResponse); decodeError != nil {
 		testContext.Fatalf("decode error: %v", decodeError)
 	}
@@ -136,7 +136,7 @@ func TestDebugImagesEmptyForSimulator(testContext *testing.T) {
 		testContext.Fatalf("expected 200, got %d", response.StatusCode)
 	}
 
-	var imagesResponse debugImagesResponse
+	var imagesResponse DebugImagesResponse
 	if decodeError := json.NewDecoder(response.Body).Decode(&imagesResponse); decodeError != nil {
 		testContext.Fatalf("decode error: %v", decodeError)
 	}
@@ -164,7 +164,7 @@ func TestDebugStatsEmpty(testContext *testing.T) {
 		testContext.Fatalf("expected 200, got %d", response.StatusCode)
 	}
 
-	var statsResponse debugStatsResponse
+	var statsResponse DebugStatsResponse
 	if decodeError := json.NewDecoder(response.Body).Decode(&statsResponse); decodeError != nil {
 		testContext.Fatalf("decode error: %v", decodeError)
 	}
@@ -196,7 +196,7 @@ func TestDebugStatsWithWorkloads(testContext *testing.T) {
 	}
 	defer response.Body.Close()
 
-	var statsResponse debugStatsResponse
+	var statsResponse DebugStatsResponse
 	if decodeError := json.NewDecoder(response.Body).Decode(&statsResponse); decodeError != nil {
 		testContext.Fatalf("decode error: %v", decodeError)
 	}

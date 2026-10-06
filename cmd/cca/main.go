@@ -171,6 +171,12 @@ func main() {
 			os.Exit(1)
 		}
 		executeSecretCommand(os.Args[2:])
+	case "node-inspect":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca node-inspect <node-id>")
+			os.Exit(1)
+		}
+		executeNodeInspectCommand(os.Args[2])
 	case "readiness":
 		parsedReadinessConfig := parseReadinessCommandArgs(os.Args[2:])
 		executeReadinessCommand(parsedReadinessConfig)
@@ -231,6 +237,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
 	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
+	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
 	fmt.Fprintln(os.Stderr, "")

@@ -79,9 +79,9 @@ func (debugServer *DebugServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// debugContainerEntry is the JSON representation of a single container in the
+// DebugContainerEntry is the JSON representation of a single container in the
 // /debug/containers response.
-type debugContainerEntry struct {
+type DebugContainerEntry struct {
 	InstanceID    string `json:"instance_id"`
 	Running       bool   `json:"running"`
 	PID           int    `json:"pid,omitempty"`
@@ -91,11 +91,11 @@ type debugContainerEntry struct {
 	MemoryBytes   int64  `json:"memory_bytes,omitempty"`
 }
 
-// debugContainersResponse is the JSON envelope for /debug/containers.
-type debugContainersResponse struct {
+// DebugContainersResponse is the JSON envelope for /debug/containers.
+type DebugContainersResponse struct {
 	NodeID     string                `json:"node_id"`
 	Count      int                   `json:"count"`
-	Containers []debugContainerEntry `json:"containers"`
+	Containers []DebugContainerEntry `json:"containers"`
 }
 
 // handleDebugContainers lists all containers tracked by the runtime along with
@@ -117,9 +117,9 @@ func (debugServer *DebugServer) handleDebugContainers(responseWriter http.Respon
 		return workloads[indexA].ID < workloads[indexB].ID
 	})
 
-	entries := make([]debugContainerEntry, 0, len(workloads))
+	entries := make([]DebugContainerEntry, 0, len(workloads))
 	for _, workloadStatus := range workloads {
-		entry := debugContainerEntry{
+		entry := DebugContainerEntry{
 			InstanceID: workloadStatus.ID,
 			Running:    workloadStatus.Running,
 			PID:        workloadStatus.PID,
@@ -136,27 +136,27 @@ func (debugServer *DebugServer) handleDebugContainers(responseWriter http.Respon
 		entries = append(entries, entry)
 	}
 
-	writeJSONResponse(responseWriter, debugContainersResponse{
+	writeJSONResponse(responseWriter, DebugContainersResponse{
 		NodeID:     debugServer.nodeID,
 		Count:      len(entries),
 		Containers: entries,
 	})
 }
 
-// debugImageEntry is the JSON representation of a single image in the
+// DebugImageEntry is the JSON representation of a single image in the
 // /debug/images response.
-type debugImageEntry struct {
+type DebugImageEntry struct {
 	Repository string `json:"repository"`
 	Tag        string `json:"tag"`
 	ImageID    string `json:"image_id"`
 	SizeBytes  int64  `json:"size_bytes"`
 }
 
-// debugImagesResponse is the JSON envelope for /debug/images.
-type debugImagesResponse struct {
+// DebugImagesResponse is the JSON envelope for /debug/images.
+type DebugImagesResponse struct {
 	NodeID string            `json:"node_id"`
 	Count  int               `json:"count"`
-	Images []debugImageEntry `json:"images"`
+	Images []DebugImageEntry `json:"images"`
 }
 
 // handleDebugImages lists locally cached container images. Returns an empty
@@ -167,7 +167,7 @@ func (debugServer *DebugServer) handleDebugImages(responseWriter http.ResponseWr
 		return
 	}
 
-	var images []debugImageEntry
+	var images []DebugImageEntry
 
 	if imageLister, supportsImages := debugServer.runtimeAdapter.(runtime.ImageLister); supportsImages {
 		imageList, listError := imageLister.ListImages(request.Context())
@@ -175,9 +175,9 @@ func (debugServer *DebugServer) handleDebugImages(responseWriter http.ResponseWr
 			http.Error(responseWriter, listError.Error(), http.StatusInternalServerError)
 			return
 		}
-		images = make([]debugImageEntry, 0, len(imageList))
+		images = make([]DebugImageEntry, 0, len(imageList))
 		for _, imageInfo := range imageList {
-			images = append(images, debugImageEntry{
+			images = append(images, DebugImageEntry{
 				Repository: imageInfo.Repository,
 				Tag:        imageInfo.Tag,
 				ImageID:    imageInfo.ImageID,
@@ -187,18 +187,18 @@ func (debugServer *DebugServer) handleDebugImages(responseWriter http.ResponseWr
 	}
 
 	if images == nil {
-		images = []debugImageEntry{}
+		images = []DebugImageEntry{}
 	}
 
-	writeJSONResponse(responseWriter, debugImagesResponse{
+	writeJSONResponse(responseWriter, DebugImagesResponse{
 		NodeID: debugServer.nodeID,
 		Count:  len(images),
 		Images: images,
 	})
 }
 
-// debugStatsResponse is the JSON envelope for /debug/stats.
-type debugStatsResponse struct {
+// DebugStatsResponse is the JSON envelope for /debug/stats.
+type DebugStatsResponse struct {
 	NodeID             string `json:"node_id"`
 	WorkloadCount      int    `json:"workload_count"`
 	RunningCount       int    `json:"running_count"`
@@ -237,7 +237,7 @@ func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWri
 		}
 	}
 
-	writeJSONResponse(responseWriter, debugStatsResponse{
+	writeJSONResponse(responseWriter, DebugStatsResponse{
 		NodeID:             debugServer.nodeID,
 		WorkloadCount:      len(workloads),
 		RunningCount:       runningCount,

@@ -200,6 +200,14 @@ func KeyObservedNodeAddress(nodeID string) string {
 	return fmt.Sprintf("%s/node/%s/address", PrefixObserved, nodeID)
 }
 
+// KeyObservedNodeDebugAddress returns the store path for a node's debug API
+// listen address. The agent publishes this when --debug-listen is set so that
+// `cca node-inspect` can discover and query the agent's debug endpoints.
+// Path: observed/node/{nodeID}/debug_address
+func KeyObservedNodeDebugAddress(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/debug_address", PrefixObserved, nodeID)
+}
+
 // KeyObservedInstance returns the store path for an instance's root marker key.
 // Path: observed/instance/{instanceID}
 func KeyObservedInstance(instanceID string) string {
