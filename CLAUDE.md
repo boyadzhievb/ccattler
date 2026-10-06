@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M68 — Phase 68 Scheduler Scale. M1–M68 complete (DeltaController deferred). Gates A–I resolved. Phase 69 in progress — Node Runtime Inspection.
+**Completed through:** M69 — Phase 69 Node Runtime Inspection. M1–M69 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1100,6 +1100,8 @@ cca watch [prefix]            # stream fact store changes
 cca node-inspect <node-id>    # query agent debug API for live runtime state
 cca agent debug               # inspect local container runtime (bypasses control plane)
 cca exec <id> -- <command>    # exec into running container via agent relay
+cca images list [--node <id>] # list cached images on one or all nodes
+cca images pull <img> [--node] # pull image on one or all nodes
 cca top [nodes|workloads]     # resource utilization (CPU, memory, instances)
 cca metric set <svc> <m> <v>  # inject simulated metric
 ```

@@ -735,6 +735,21 @@ func parseContainerStatsOutput(output string) []ContainerResourceUsage {
 	return usages
 }
 
+// PullImage pulls a container image from a registry by shelling out to
+// nerdctl/docker pull. Blocks until the pull completes or fails.
+func (containerRuntime *ContainerRuntime) PullImage(ctx context.Context, imageReference string) error {
+	if !validImageReferencePattern.MatchString(imageReference) {
+		return fmt.Errorf("invalid image reference: %q", imageReference)
+	}
+	pullCommand := containerRuntime.buildExecCommand(ctx, "pull", imageReference)
+	var stderrOutput bytes.Buffer
+	pullCommand.Stderr = &stderrOutput
+	if pullError := pullCommand.Run(); pullError != nil {
+		return fmt.Errorf("pulling image %s: %v: %s", imageReference, pullError, stderrOutput.String())
+	}
+	return nil
+}
+
 // buildContainerName generates a deterministic nerdctl container name
 // from a service name and instance ID, following the Kubernetes pattern of
 // {resource}-{hash}. For example, "web-a8f31bc2" instead of "cca-a8f31bc2".

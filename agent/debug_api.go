@@ -46,6 +46,7 @@ func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.
 	serveMux.HandleFunc("/debug/images", debugServer.handleDebugImages)
 	serveMux.HandleFunc("/debug/stats", debugServer.handleDebugStats)
 	serveMux.HandleFunc("/debug/exec", debugServer.handleDebugExec)
+	serveMux.HandleFunc("/debug/images/pull", debugServer.handleDebugImagePull)
 
 	debugServer.httpServer = &http.Server{
 		Addr:         listenAddress,
@@ -296,6 +297,55 @@ func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWrit
 	if execError != nil {
 		response.Error = execError.Error()
 		response.ExitCode = 1
+	}
+	writeJSONResponse(responseWriter, response)
+}
+
+// DebugImagePullRequest is the JSON body for POST /debug/images/pull.
+type DebugImagePullRequest struct {
+	ImageReference string `json:"image"`
+}
+
+// DebugImagePullResponse is the JSON envelope for /debug/images/pull.
+type DebugImagePullResponse struct {
+	NodeID         string `json:"node_id"`
+	ImageReference string `json:"image"`
+	Success        bool   `json:"success"`
+	Error          string `json:"error,omitempty"`
+}
+
+// handleDebugImagePull pulls a container image on this node. Requires the
+// runtime to implement ImagePuller; returns 501 otherwise.
+func (debugServer *DebugServer) handleDebugImagePull(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var pullRequest DebugImagePullRequest
+	if decodeError := json.NewDecoder(request.Body).Decode(&pullRequest); decodeError != nil {
+		http.Error(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
+		return
+	}
+	if pullRequest.ImageReference == "" {
+		http.Error(responseWriter, "image is required", http.StatusBadRequest)
+		return
+	}
+
+	imagePuller, supportsPull := debugServer.runtimeAdapter.(runtime.ImagePuller)
+	if !supportsPull {
+		http.Error(responseWriter, "runtime does not support image pull", http.StatusNotImplemented)
+		return
+	}
+
+	pullError := imagePuller.PullImage(request.Context(), pullRequest.ImageReference)
+	response := DebugImagePullResponse{
+		NodeID:         debugServer.nodeID,
+		ImageReference: pullRequest.ImageReference,
+		Success:        pullError == nil,
+	}
+	if pullError != nil {
+		response.Error = pullError.Error()
 	}
 	writeJSONResponse(responseWriter, response)
 }

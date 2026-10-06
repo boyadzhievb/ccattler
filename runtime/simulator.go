@@ -29,6 +29,7 @@ type SimulatorRuntime struct {
 	ExecFailures  map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
 	StartFailures map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
 	ExecInitCalls []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
+	PulledImages  []string                      // PulledImages records image references passed to PullImage for test verification.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by
@@ -161,6 +162,14 @@ func (simulator *SimulatorRuntime) ExecCapture(_ context.Context, instanceID str
 		return nil, &StartError{ID: instanceID, Reason: "exec probe failed (injected)"}
 	}
 	return []byte(fmt.Sprintf("[simulated] exec %q in %s\n", execSpec.Command, instanceID)), nil
+}
+
+// PullImage simulates pulling a container image. Records the pull and succeeds.
+func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference string) error {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	simulator.PulledImages = append(simulator.PulledImages, imageReference)
+	return nil
 }
 
 // ExecInit runs an initialization command against an image in the simulator.

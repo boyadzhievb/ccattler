@@ -127,6 +127,13 @@ type ExecCapturer interface {
 	ExecCapture(ctx context.Context, instanceID string, execSpec ExecSpec) ([]byte, error)
 }
 
+// ImagePuller is an optional interface for runtimes that can pull container
+// images from a registry. Not all runtimes support this — ProcessRuntime
+// and SimulatorRuntime do not pull real images.
+type ImagePuller interface {
+	PullImage(ctx context.Context, imageReference string) error
+}
+
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
 	Command string // Command is the shell command to execute.

@@ -1169,7 +1169,7 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 - [x] `cca node-inspect <node-id>` CLI: queries agent API, shows live runtime containers, images, resource usage
 - [x] `cca agent debug` local command: talks directly to containerd, bypasses control plane
 - [x] `cca exec <instance-id> -- <command>` CLI: exec into a running container via agent relay
-- [ ] Image management: `cca images list`, `cca images pull <image>`
+- [x] Image management: `cca images list`, `cca images pull <image>`
 
 ### Milestones
 

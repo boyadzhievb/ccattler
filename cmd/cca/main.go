@@ -175,6 +175,21 @@ func main() {
 			os.Exit(1)
 		}
 		executeSecretCommand(os.Args[2:])
+	case "images":
+		imagesConfig := parseImagesCommandArgs(os.Args[2:])
+		switch imagesConfig.subcommand {
+		case "list":
+			executeImagesListCommand(imagesConfig.nodeID)
+		case "pull":
+			if imagesConfig.imageReference == "" {
+				fmt.Fprintln(os.Stderr, "usage: cca images pull <image> [--node <node-id>]")
+				os.Exit(1)
+			}
+			executeImagesPullCommand(imagesConfig.imageReference, imagesConfig.nodeID)
+		default:
+			fmt.Fprintln(os.Stderr, "usage: cca images <list|pull> [flags]")
+			os.Exit(1)
+		}
 	case "exec":
 		instanceID, commandParts := parseExecArgs(os.Args[2:])
 		if instanceID == "" || len(commandParts) == 0 {
@@ -250,6 +265,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
 	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
 	fmt.Fprintln(os.Stderr, "  exec <instance-id> -- <cmd>  exec into a running container via agent relay")
+	fmt.Fprintln(os.Stderr, "  images list [--node <id>]    list cached images on nodes")
+	fmt.Fprintln(os.Stderr, "  images pull <img> [--node]   pull image on one or all nodes")
 	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
