@@ -26,14 +26,12 @@ const (
 )
 
 const (
-	// chaosScaleMinimumInstances is the lower bound for the random instance
-	// count chosen by the scale-change chaos scenario.
+	// chaosScaleMinimumInstances is the lower bound for any scale-change target.
 	chaosScaleMinimumInstances = 2
 
-	// chaosScaleRandomRange is the upper bound (exclusive) added to the
-	// minimum when computing a random scale target:
-	//   newCount = chaosScaleMinimumInstances + rand.Intn(chaosScaleRandomRange)
-	chaosScaleRandomRange = 8
+	// chaosScaleMaxDeltaPercent is the maximum percentage change (up or down)
+	// that a scale-change injection applies relative to the current count.
+	chaosScaleMaxDeltaPercent = 30
 
 	// chaosConvergencePollInterval is how often waitForConvergence checks
 	// the cluster state while waiting for desired == observed.
@@ -88,6 +86,8 @@ type ChaosCluster interface {
 	RestartControllers(ctx context.Context)
 	// SetServiceScale changes the effective instance count for a service.
 	SetServiceScale(ctx context.Context, serviceName string, instanceCount int)
+	// ServiceScale returns the current desired instance count for a service.
+	ServiceScale(serviceName string) int
 	// ServiceNames returns all deployed service names.
 	ServiceNames() []string
 	// CheckConvergence verifies all services have desired == running instance
@@ -231,14 +231,29 @@ func (chaosRunner *ChaosRunner) injectControllerRestart(ctx context.Context) str
 	return "controllers"
 }
 
-// injectScaleChange picks a random service and randomly scales it up or down.
+// injectScaleChange picks a random service and scales it by up to ±30% of
+// the current count, clamped to a minimum of chaosScaleMinimumInstances.
 func (chaosRunner *ChaosRunner) injectScaleChange(ctx context.Context) string {
 	serviceNames := chaosRunner.cluster.ServiceNames()
 	if len(serviceNames) == 0 {
 		return ""
 	}
 	serviceName := serviceNames[chaosRunner.config.RandSource.Intn(len(serviceNames))]
-	newCount := chaosScaleMinimumInstances + chaosRunner.config.RandSource.Intn(chaosScaleRandomRange)
+	currentCount := chaosRunner.cluster.ServiceScale(serviceName)
+	if currentCount < chaosScaleMinimumInstances {
+		currentCount = chaosScaleMinimumInstances
+	}
+
+	maxDelta := currentCount * chaosScaleMaxDeltaPercent / 100
+	if maxDelta < 1 {
+		maxDelta = 1
+	}
+	delta := chaosRunner.config.RandSource.Intn(2*maxDelta+1) - maxDelta
+	newCount := currentCount + delta
+	if newCount < chaosScaleMinimumInstances {
+		newCount = chaosScaleMinimumInstances
+	}
+
 	chaosRunner.cluster.SetServiceScale(ctx, serviceName, newCount)
 	return serviceName
 }

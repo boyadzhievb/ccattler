@@ -211,3 +211,45 @@ func BenchmarkStoreTransaction1000Facts(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkInstanceController200Nodes5000Running measures instance controller
+// cycle time when all 5000 instances are running (steady state at 200-node scale).
+func BenchmarkInstanceController200Nodes5000Running(benchmarkHandle *testing.B) {
+	facts := buildClusterFacts(200, 10, 500)
+	instanceController := controllers.NewInstanceController()
+
+	benchmarkHandle.ResetTimer()
+	for range benchmarkHandle.N {
+		changes, reconcileError := instanceController.Reconcile(context.Background(), facts)
+		if reconcileError != nil {
+			benchmarkHandle.Fatal(reconcileError)
+		}
+		if len(changes) != 0 {
+			benchmarkHandle.Fatalf("expected no changes in steady state, got %d", len(changes))
+		}
+	}
+}
+
+// BenchmarkStoreScan200Nodes5000Instances measures scan throughput with the
+// fact count of a 200-node/5000-instance cluster.
+func BenchmarkStoreScan200Nodes5000Instances(benchmarkHandle *testing.B) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+
+	facts := buildClusterFacts(200, 10, 500)
+	for _, fact := range facts {
+		memoryStore.Put(ctx, fact.Key, fact.Value)
+	}
+
+	benchmarkHandle.ResetTimer()
+	for range benchmarkHandle.N {
+		results, scanError := memoryStore.Scan(ctx, types.ScanObservedInstances)
+		if scanError != nil {
+			benchmarkHandle.Fatal(scanError)
+		}
+		if len(results) == 0 {
+			benchmarkHandle.Fatal("expected facts from scan")
+		}
+	}
+}

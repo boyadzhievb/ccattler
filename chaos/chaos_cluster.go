@@ -242,6 +242,13 @@ func (simulatedCluster *SimulatedChaosCluster) SetServiceScale(ctx context.Conte
 	}
 }
 
+// ServiceScale returns the current desired instance count for a service.
+func (simulatedCluster *SimulatedChaosCluster) ServiceScale(serviceName string) int {
+	simulatedCluster.mutex.Lock()
+	defer simulatedCluster.mutex.Unlock()
+	return simulatedCluster.services[serviceName]
+}
+
 // ServiceNames returns all deployed service names.
 func (simulatedCluster *SimulatedChaosCluster) ServiceNames() []string {
 	simulatedCluster.mutex.Lock()

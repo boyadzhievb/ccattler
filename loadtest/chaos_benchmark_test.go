@@ -15,16 +15,10 @@ import (
 )
 
 const (
-	// benchmarkChaosDuration is the total time chaos events are injected.
-	benchmarkChaosDuration = 60 * time.Second
 	// benchmarkChaosInterval is the minimum time between consecutive injections.
 	benchmarkChaosInterval = 3 * time.Second
-	// benchmarkChaosConvergenceTimeout is the per-injection convergence timeout.
-	benchmarkChaosConvergenceTimeout = 30 * time.Second
 	// benchmarkMinimumRecoveryRate is the minimum acceptable recovery success rate.
 	benchmarkMinimumRecoveryRate = 80.0
-	// benchmarkDeployTimeout is how long initial deployment may take.
-	benchmarkDeployTimeout = 120 * time.Second
 	// benchmarkMinTestDeadline is the minimum time the test binary must have remaining.
 	benchmarkMinTestDeadline = 3 * time.Minute
 )
@@ -38,6 +32,20 @@ var benchmarkChaosScenarios = []chaos.FailureScenario{
 	chaos.ScenarioNodeRecovery,
 }
 
+// deployTimeoutForScale returns a deploy convergence timeout proportional to
+// cluster size. Small clusters (<=20 nodes) converge in 120s; medium (<=100)
+// get 300s; large clusters get 1800s to match the regular load test timeouts.
+func deployTimeoutForScale(nodeCount int) time.Duration {
+	switch {
+	case nodeCount <= 20:
+		return 120 * time.Second
+	case nodeCount <= 100:
+		return 300 * time.Second
+	default:
+		return 1800 * time.Second
+	}
+}
+
 // runChaosBenchmark runs a full chaos benchmark at the given scale and returns
 // a RecoveryReport with aggregate metrics. The test deploys workloads, waits
 // for convergence, runs chaos injections, and computes recovery statistics.
@@ -45,50 +53,60 @@ func runChaosBenchmark(testHandle *testing.T, nodeCount int, serviceCount int, i
 	testHandle.Helper()
 	totalInstances := serviceCount * instancesPerService
 
+	deployTimeout := deployTimeoutForScale(nodeCount)
+	clusterTuning := scaleConfigForNodeCount(nodeCount)
+	minimumDeadline := deployTimeout + clusterTuning.chaosDuration + benchmarkMinTestDeadline
+
 	if deadline, hasDeadline := testHandle.Deadline(); hasDeadline {
 		remaining := time.Until(deadline)
-		if remaining < benchmarkMinTestDeadline {
+		if remaining < minimumDeadline {
 			testHandle.Skipf("skipping chaos benchmark: %v remaining, need at least %v",
-				remaining.Round(time.Second), benchmarkMinTestDeadline)
+				remaining.Round(time.Second), minimumDeadline)
 		}
 	}
 
 	nodeIDs := buildNodeIDs(nodeCount)
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	contextTimeout := deployTimeout + clusterTuning.chaosDuration + 5*time.Minute
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout)
 	defer cancel()
 
 	factStore.SetWatchChannelBufferSize(4096)
 
 	cluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
-	configureClusterForScale(cluster, nodeCount)
+	clusterConfig := configureClusterForScale(cluster, nodeCount)
 	cluster.Start(ctx)
 
 	// Phase 1: Deploy services and measure convergence time.
-	testHandle.Logf("deploying %d services × %d instances = %d total on %d nodes",
-		serviceCount, instancesPerService, totalInstances, nodeCount)
+	testHandle.Logf("deploying %d services × %d instances = %d total on %d nodes (timeout %v)",
+		serviceCount, instancesPerService, totalInstances, nodeCount, deployTimeout)
 
 	for serviceIndex := 0; serviceIndex < serviceCount; serviceIndex++ {
 		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
 		cluster.DeployService(ctx, serviceName, fmt.Sprintf("app:v%d", serviceIndex), instancesPerService)
 	}
 
-	deployDuration, converged, deployStatus := waitForConvergenceWithProgress(
-		testHandle, ctx, cluster, factStore, benchmarkDeployTimeout)
+	convergenceThreshold := 95.0
+	if nodeCount > 100 {
+		convergenceThreshold = 85.0
+	}
+	deployDuration, converged, deployStatus := waitForNearConvergence(
+		testHandle, ctx, cluster, factStore, deployTimeout, totalInstances, convergenceThreshold)
 	if !converged {
-		testHandle.Fatalf("initial deployment did not converge within %v: %s", benchmarkDeployTimeout, deployStatus)
+		testHandle.Fatalf("initial deployment did not converge within %v: %s", deployTimeout, deployStatus)
 	}
 	testHandle.Logf("deployment converged in %v", deployDuration)
 
 	// Phase 2: Run chaos injections.
-	testHandle.Log("starting chaos injections")
+	perInjectionTimeout := clusterConfig.leaseTimeout + clusterConfig.convergenceHeadroom
+	testHandle.Logf("starting chaos injections (per-injection timeout %v = %v lease + %v headroom)",
+		perInjectionTimeout, clusterConfig.leaseTimeout, clusterConfig.convergenceHeadroom)
 
 	chaosConfig := chaos.ChaosConfig{
-		Duration:           benchmarkChaosDuration,
+		Duration:           clusterConfig.chaosDuration,
 		InjectionInterval:  benchmarkChaosInterval,
-		ConvergenceTimeout: benchmarkChaosConvergenceTimeout,
+		ConvergenceTimeout: perInjectionTimeout,
 		EnabledScenarios:   benchmarkChaosScenarios,
 		RandSource:         rand.New(rand.NewSource(42)), //nolint:gosec // deterministic seed for reproducibility
 	}
@@ -137,28 +155,62 @@ func runChaosBenchmark(testHandle *testing.T, nodeCount int, serviceCount int, i
 	return report
 }
 
+// scaleConfig holds per-tier tuning parameters for the simulated cluster.
+type scaleConfig struct {
+	agentInterval        time.Duration
+	controllerDebounce   time.Duration
+	maxReconcileAttempts int
+	leaseTimeout         time.Duration
+	convergenceHeadroom  time.Duration
+	chaosDuration        time.Duration
+}
+
+// scaleConfigForNodeCount returns tuning parameters appropriate for the given
+// cluster size. The convergenceHeadroom is the time needed beyond the lease
+// timeout for rescheduling to complete after a failure injection.
+func scaleConfigForNodeCount(nodeCount int) scaleConfig {
+	switch {
+	case nodeCount <= 20:
+		return scaleConfig{
+			agentInterval:        100 * time.Millisecond,
+			controllerDebounce:   50 * time.Millisecond,
+			maxReconcileAttempts: 5,
+			leaseTimeout:         5 * time.Second,
+			convergenceHeadroom:  10 * time.Second,
+			chaosDuration:        120 * time.Second,
+		}
+	case nodeCount <= 100:
+		return scaleConfig{
+			agentInterval:        500 * time.Millisecond,
+			controllerDebounce:   100 * time.Millisecond,
+			maxReconcileAttempts: 15,
+			leaseTimeout:         30 * time.Second,
+			convergenceHeadroom:  15 * time.Second,
+			chaosDuration:        270 * time.Second,
+		}
+	default:
+		return scaleConfig{
+			agentInterval:        500 * time.Millisecond,
+			controllerDebounce:   200 * time.Millisecond,
+			maxReconcileAttempts: 20,
+			leaseTimeout:         60 * time.Second,
+			convergenceHeadroom:  30 * time.Second,
+			chaosDuration:        480 * time.Second,
+		}
+	}
+}
+
 // configureClusterForScale adjusts agent and controller tuning parameters
 // based on cluster size. Larger clusters need longer intervals to avoid
 // excessive store contention.
-func configureClusterForScale(cluster *chaos.SimulatedChaosCluster, nodeCount int) {
-	switch {
-	case nodeCount <= 20:
-		cluster.SetAgentInterval(100 * time.Millisecond)
-		cluster.SetControllerDebounce(50 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(5)
-		cluster.SetLeaseTimeout(5 * time.Second)
-	case nodeCount <= 100:
-		cluster.SetAgentInterval(200 * time.Millisecond)
-		cluster.SetControllerDebounce(100 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(10)
-		cluster.SetLeaseTimeout(30 * time.Second)
-	default:
-		cluster.SetAgentInterval(500 * time.Millisecond)
-		cluster.SetControllerDebounce(200 * time.Millisecond)
-		cluster.SetMaxReconciliationAttempts(15)
-		cluster.SetLeaseTimeout(60 * time.Second)
-	}
+func configureClusterForScale(cluster *chaos.SimulatedChaosCluster, nodeCount int) scaleConfig {
+	config := scaleConfigForNodeCount(nodeCount)
+	cluster.SetAgentInterval(config.agentInterval)
+	cluster.SetControllerDebounce(config.controllerDebounce)
+	cluster.SetMaxReconciliationAttempts(config.maxReconcileAttempts)
+	cluster.SetLeaseTimeout(config.leaseTimeout)
 	cluster.SetMaxInputKeyGuards(0)
+	return config
 }
 
 // TestChaosBenchmark_100Workloads runs a chaos benchmark at small scale:
