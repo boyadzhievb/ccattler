@@ -64,10 +64,9 @@ func (debugServer *DebugServer) Start(ctx context.Context) error {
 		return listenError
 	}
 
-	go func() {
+	go func() { //nolint:gosec // G118: shutdown goroutine needs context.Background — parent ctx is already done
 		<-ctx.Done()
-		// Parent ctx is cancelled here — shutdown needs an independent deadline.
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second) //nolint:gosec // G118: intentional — parent ctx is already done
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		_ = debugServer.httpServer.Shutdown(shutdownCtx)
 	}()
