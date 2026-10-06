@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -141,6 +142,25 @@ func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec E
 		return &StartError{ID: id, Reason: "exec probe failed (injected)"}
 	}
 	return nil
+}
+
+// ExecCapture simulates running a command and capturing its output. Returns
+// a synthetic response indicating success, or ErrNotFound if not running.
+func (simulator *SimulatorRuntime) ExecCapture(_ context.Context, instanceID string, execSpec ExecSpec) ([]byte, error) {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+
+	workload, exists := simulator.workloads[instanceID]
+	if !exists {
+		return nil, ErrNotFound
+	}
+	if !workload.isRunning {
+		return nil, &StartError{ID: instanceID, Reason: "workload not running"}
+	}
+	if simulator.ExecFailures[instanceID] {
+		return nil, &StartError{ID: instanceID, Reason: "exec probe failed (injected)"}
+	}
+	return []byte(fmt.Sprintf("[simulated] exec %q in %s\n", execSpec.Command, instanceID)), nil
 }
 
 // ExecInit runs an initialization command against an image in the simulator.

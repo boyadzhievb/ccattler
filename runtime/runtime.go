@@ -120,6 +120,13 @@ type ImageLister interface {
 	ListImages(ctx context.Context) ([]ImageInfo, error)
 }
 
+// ExecCapturer is an optional interface for runtimes that can capture the
+// combined stdout and stderr output of an exec command. The standard Exec
+// method returns only an error; ExecCapture returns the output as well.
+type ExecCapturer interface {
+	ExecCapture(ctx context.Context, instanceID string, execSpec ExecSpec) ([]byte, error)
+}
+
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
 	Command string // Command is the shell command to execute.

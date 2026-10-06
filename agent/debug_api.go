@@ -45,6 +45,7 @@ func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.
 	serveMux.HandleFunc("/debug/containers", debugServer.handleDebugContainers)
 	serveMux.HandleFunc("/debug/images", debugServer.handleDebugImages)
 	serveMux.HandleFunc("/debug/stats", debugServer.handleDebugStats)
+	serveMux.HandleFunc("/debug/exec", debugServer.handleDebugExec)
 
 	debugServer.httpServer = &http.Server{
 		Addr:         listenAddress,
@@ -243,6 +244,60 @@ func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWri
 		TotalCPUMillicores: totalCPUMillicores,
 		TotalMemoryBytes:   totalMemoryBytes,
 	})
+}
+
+// DebugExecRequest is the JSON body for POST /debug/exec.
+type DebugExecRequest struct {
+	InstanceID string `json:"instance_id"`
+	Command    string `json:"command"`
+}
+
+// DebugExecResponse is the JSON envelope for /debug/exec.
+type DebugExecResponse struct {
+	NodeID     string `json:"node_id"`
+	InstanceID string `json:"instance_id"`
+	ExitCode   int    `json:"exit_code"`
+	Output     string `json:"output"`
+	Error      string `json:"error,omitempty"`
+}
+
+// handleDebugExec runs a command inside a container and returns the output.
+// Requires the runtime to implement ExecCapturer; returns 501 otherwise.
+func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var execRequest DebugExecRequest
+	if decodeError := json.NewDecoder(request.Body).Decode(&execRequest); decodeError != nil {
+		http.Error(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
+		return
+	}
+	if execRequest.InstanceID == "" || execRequest.Command == "" {
+		http.Error(responseWriter, "instance_id and command are required", http.StatusBadRequest)
+		return
+	}
+
+	execCapturer, supportsCapture := debugServer.runtimeAdapter.(runtime.ExecCapturer)
+	if !supportsCapture {
+		http.Error(responseWriter, "runtime does not support exec capture", http.StatusNotImplemented)
+		return
+	}
+
+	output, execError := execCapturer.ExecCapture(
+		request.Context(), execRequest.InstanceID, runtime.ExecSpec{Command: execRequest.Command})
+
+	response := DebugExecResponse{
+		NodeID:     debugServer.nodeID,
+		InstanceID: execRequest.InstanceID,
+		Output:     string(output),
+	}
+	if execError != nil {
+		response.Error = execError.Error()
+		response.ExitCode = 1
+	}
+	writeJSONResponse(responseWriter, response)
 }
 
 // writeJSONResponse marshals the payload as JSON and writes it with the

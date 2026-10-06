@@ -1099,6 +1099,7 @@ cca status                    # cluster overview
 cca watch [prefix]            # stream fact store changes
 cca node-inspect <node-id>    # query agent debug API for live runtime state
 cca agent debug               # inspect local container runtime (bypasses control plane)
+cca exec <id> -- <command>    # exec into running container via agent relay
 cca top [nodes|workloads]     # resource utilization (CPU, memory, instances)
 cca metric set <svc> <m> <v>  # inject simulated metric
 ```

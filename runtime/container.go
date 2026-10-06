@@ -364,6 +364,28 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 	return nil
 }
 
+// ExecCapture runs a command inside a running container and returns the
+// combined stdout and stderr output. Unlike Exec, this captures the output
+// for relay back to callers (e.g. the debug API exec endpoint).
+func (containerRuntime *ContainerRuntime) ExecCapture(ctx context.Context, instanceID string, execSpec ExecSpec) ([]byte, error) {
+	containerRuntime.mutex.Lock()
+	tracked := containerRuntime.trackedContainers[instanceID]
+	containerName := containerRuntime.resolveContainerName(instanceID)
+	containerRuntime.mutex.Unlock()
+
+	if !tracked {
+		return nil, ErrNotFound
+	}
+
+	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
+	execCommand := containerRuntime.buildExecCommand(ctx, args...)
+	var combinedOutput bytes.Buffer
+	execCommand.Stdout = &combinedOutput
+	execCommand.Stderr = &combinedOutput
+	execError := execCommand.Run()
+	return combinedOutput.Bytes(), execError
+}
+
 // ExecInit runs an initialization command by creating a temporary container
 // from the given image, executing the command, and removing the container.
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {

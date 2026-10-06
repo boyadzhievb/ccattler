@@ -175,6 +175,13 @@ func main() {
 			os.Exit(1)
 		}
 		executeSecretCommand(os.Args[2:])
+	case "exec":
+		instanceID, commandParts := parseExecArgs(os.Args[2:])
+		if instanceID == "" || len(commandParts) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: cca exec <instance-id> -- <command>")
+			os.Exit(1)
+		}
+		executeExecCommand(instanceID, commandParts)
 	case "node-inspect":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca node-inspect <node-id>")
@@ -242,6 +249,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
 	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
+	fmt.Fprintln(os.Stderr, "  exec <instance-id> -- <cmd>  exec into a running container via agent relay")
 	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
