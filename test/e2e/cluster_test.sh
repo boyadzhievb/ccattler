@@ -419,6 +419,77 @@ done
 [[ "$total_containers" -ge 5 ]] || fail "Expected 5+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
 log "Zabbix stack running: $total_containers total containers"
 
+# ---- Step 5.5: Phase 69 — Node Runtime Inspection tests ----
+# The CLI commands (node-inspect, exec, images) connect to the control plane
+# HTTP API. In the E2E cluster, the API uses mTLS on a non-default address,
+# so we test the debug API endpoints directly via curl and test 'agent debug'
+# via SSH on the worker node.
+
+log "Testing 'cca agent debug' on worker node (local runtime inspection)..."
+AGENT_DEBUG_OUTPUT=$(ssh_vm "${VM_PREFIX}-worker-1" "sudo /usr/local/bin/cca agent debug 2>&1") || fail "cca agent debug failed"
+echo "$AGENT_DEBUG_OUTPUT" | grep -q "CONTAINERS" || fail "agent debug missing CONTAINERS section"
+echo "$AGENT_DEBUG_OUTPUT" | grep -q "RESOURCE USAGE" || fail "agent debug missing RESOURCE USAGE section"
+echo "$AGENT_DEBUG_OUTPUT" | grep -q "IMAGES" || fail "agent debug missing IMAGES section"
+log "'cca agent debug' OK — shows containers, resource usage, and images"
+
+log "Discovering agent debug addresses from etcd..."
+WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${VM_PREFIX}-worker-1/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
+    # Wait for the debug address to be published.
+    deadline=$((SECONDS + 30))
+    while [[ $SECONDS -lt $deadline ]]; do
+        sleep 2
+        WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${VM_PREFIX}-worker-1/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+        [[ -n "$WORKER1_DEBUG_ADDR" ]] && break
+    done
+fi
+[[ -n "$WORKER1_DEBUG_ADDR" ]] || fail "Worker-1 debug address not found in etcd"
+log "Worker-1 debug API at $WORKER1_DEBUG_ADDR"
+
+log "Testing GET /debug/containers on worker-1..."
+CONTAINERS_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/containers" 2>&1) || fail "debug/containers request failed"
+echo "$CONTAINERS_JSON" | grep -q '"node_id"' || fail "debug/containers missing node_id"
+CONTAINER_COUNT=$(echo "$CONTAINERS_JSON" | grep -o '"count":[0-9]*' | head -1 | cut -d: -f2)
+log "GET /debug/containers OK — $CONTAINER_COUNT containers on worker-1"
+
+log "Testing GET /debug/stats on worker-1..."
+STATS_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/stats" 2>&1) || fail "debug/stats request failed"
+echo "$STATS_JSON" | grep -q '"workload_count"' || fail "debug/stats missing workload_count"
+log "GET /debug/stats OK"
+
+log "Testing GET /debug/images on worker-1..."
+IMAGES_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/images" 2>&1) || fail "debug/images request failed"
+echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images field"
+log "GET /debug/images OK"
+
+log "Testing POST /debug/exec on worker-1..."
+INSTANCE_ID=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null | grep -v '^/ccattler/' | head -1" | tr -d '\r\n')
+if [[ -n "$INSTANCE_ID" ]]; then
+    # Find an instance placed on worker-1.
+    WORKER1_INSTANCE=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null" | \
+        awk -v node="${VM_PREFIX}-worker-1" 'prev && $0 == node {print prev} {prev=$0}' | head -1 | sed 's|.*/||')
+    if [[ -n "$WORKER1_INSTANCE" ]]; then
+        EXEC_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/exec" \
+            -H "Content-Type: application/json" \
+            -d "{\"instance_id\":\"$WORKER1_INSTANCE\",\"command\":\"hostname\"}" 2>&1) || log "WARNING: exec request returned non-zero"
+        echo "$EXEC_JSON" | grep -q '"instance_id"' || fail "debug/exec missing instance_id"
+        log "POST /debug/exec OK for instance $WORKER1_INSTANCE"
+    else
+        log "WARNING: No instance placed on worker-1, skipping exec test"
+    fi
+else
+    log "WARNING: No placements found, skipping exec test"
+fi
+
+log "Testing POST /debug/images/pull on worker-1..."
+PULL_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
+    -H "Content-Type: application/json" \
+    -d '{"image":"alpine:3.20"}' 2>&1) || fail "debug/images/pull request failed"
+echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
+log "POST /debug/images/pull OK — pulled alpine:3.20 on worker-1"
+
+log "Phase 69 E2E tests passed"
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true
