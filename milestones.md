@@ -1171,6 +1171,11 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 - [x] `cca exec <instance-id> -- <command>` CLI: exec into a running container via agent relay
 - [x] Image management: `cca images list`, `cca images pull <image>`
 
+### Backlog
+
+- [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
+- [ ] VS Code extension: DSL syntax highlighting for `.cca` files
+
 ### Milestones
 
 | Milestone | Phases | Demo |

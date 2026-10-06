@@ -273,6 +273,7 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/observed/instance/ >/dev/null 2>&1 || true"
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/observed/node/ >/dev/null 2>&1 || true"
     log "Previous workloads cleaned"
 fi
 
@@ -281,26 +282,63 @@ if [[ "$ALREADY_PROVISIONED" == "false" ]]; then
     log "Running Ansible deployment (first-time provisioning)..."
     ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 else
-    log "Updating binary on existing VMs..."
+    log "Updating binary and service files on existing VMs..."
     for vm in "${VM_NAMES[@]}"; do
         local_ip=""
+        node_id=""
         case "$vm" in
             *-ctrl)     local_ip="$CTRL_IP" ;;
             *-worker-1) local_ip="${WORKER_IPS[0]}" ;;
             *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
         esac
+        case "$CLUSTER_ENV" in
+            test)   case "$vm" in *-ctrl) node_id="test-node-1" ;; *-worker-1) node_id="test-node-2" ;; esac ;;
+            deploy) case "$vm" in *-ctrl) node_id="deploy-node-1" ;; *-worker-1) node_id="deploy-node-2" ;; *-worker-2) node_id="deploy-node-3" ;; esac ;;
+        esac
         scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
             -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
             "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${local_ip}:/tmp/cca-linux-amd64"
         ssh_vm "$vm" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
+        # Regenerate agent service file to pick up new flags (e.g. --debug-listen).
+        cat > /tmp/cca-agent-${vm}.service <<SVCEOF
+[Unit]
+Description=CCattler Agent — node ${node_id}
+After=network.target containerd.service
+Requires=containerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca agent \\
+  --node-id ${node_id} \\
+  --store etcd \\
+  --endpoints ${ETCD_ENDPOINTS} \\
+  --advertise-address ${local_ip} \\
+  --proxy --proxy-listen ${local_ip}:80 \\
+  --debug-listen ${local_ip}:9771 \\
+  --cert /etc/ccattler/pki/node.pem \\
+  --key /etc/ccattler/pki/node-key.pem \\
+  --ca /etc/ccattler/pki/ca.pem
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/agent.log
+StandardError=append:/var/log/ccattler/agent.log
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
+            "/tmp/cca-agent-${vm}.service" "vagrant@${local_ip}:/tmp/cca-agent.service"
+        ssh_vm "$vm" "sudo mv /tmp/cca-agent.service /etc/systemd/system/cca-agent.service && sudo systemctl daemon-reload"
+        rm -f "/tmp/cca-agent-${vm}.service"
     done
-    # Restart services with new binary.
+    # Restart services with new binary and service files.
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart cca-server" || true
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo systemctl restart cca-agent" 2>/dev/null || true
     done
     sleep 3
-    log "Binary updated and services restarted"
+    log "Binary and service files updated, services restarted"
 fi
 
 # ---- Step 3: Verify cluster basics ----
@@ -433,13 +471,18 @@ echo "$AGENT_DEBUG_OUTPUT" | grep -q "IMAGES" || fail "agent debug missing IMAGE
 log "'cca agent debug' OK — shows containers, resource usage, and images"
 
 log "Discovering agent debug addresses from etcd..."
-WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${VM_PREFIX}-worker-1/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+# The agent publishes its debug address under its node_id, not the VM name.
+case "$CLUSTER_ENV" in
+    test)   WORKER1_NODE_ID="test-node-2" ;;
+    deploy) WORKER1_NODE_ID="deploy-node-2" ;;
+esac
+WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${WORKER1_NODE_ID}/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
 if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
     # Wait for the debug address to be published.
     deadline=$((SECONDS + 30))
     while [[ $SECONDS -lt $deadline ]]; do
         sleep 2
-        WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${VM_PREFIX}-worker-1/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+        WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${WORKER1_NODE_ID}/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
         [[ -n "$WORKER1_DEBUG_ADDR" ]] && break
     done
 fi
@@ -465,9 +508,9 @@ log "GET /debug/images OK"
 log "Testing POST /debug/exec on worker-1..."
 INSTANCE_ID=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null | grep -v '^/ccattler/' | head -1" | tr -d '\r\n')
 if [[ -n "$INSTANCE_ID" ]]; then
-    # Find an instance placed on worker-1.
+    # Find an instance placed on worker-1 (placement values are node IDs, not VM names).
     WORKER1_INSTANCE=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null" | \
-        awk -v node="${VM_PREFIX}-worker-1" 'prev && $0 == node {print prev} {prev=$0}' | head -1 | sed 's|.*/||')
+        awk -v node="$WORKER1_NODE_ID" 'prev && $0 == node {print prev} {prev=$0}' | head -1 | sed 's|.*/||')
     if [[ -n "$WORKER1_INSTANCE" ]]; then
         EXEC_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/exec" \
             -H "Content-Type: application/json" \
