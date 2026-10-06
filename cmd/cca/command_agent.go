@@ -39,6 +39,7 @@ type agentCommandConfig struct {
 	logFormat          string
 	kmsProvider        string // kmsProvider selects the KMS backend for secret decryption ("aws-kms", "gcp-kms", or empty for local).
 	kmsKeyID           string // kmsKeyID is the KMS key ARN (AWS) or resource name (GCP) for secret decryption.
+	debugListenAddress string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -144,6 +145,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.kmsKeyID = args[argIndex]
 			}
+		case "--debug-listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.debugListenAddress = args[argIndex]
+			}
 		}
 	}
 
@@ -223,6 +229,16 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			logging.Default().Error("node agent exited with error", "node", parsedConfig.nodeID, "error", runError.Error())
 		}
 	}()
+
+	if parsedConfig.debugListenAddress != "" {
+		debugServer := agent.NewDebugServer(parsedConfig.nodeID, parsedConfig.debugListenAddress, runtimeAdapter)
+		go func() {
+			if debugError := debugServer.Start(ctx); debugError != nil {
+				logging.Default().Error("debug API server error", "node", parsedConfig.nodeID, "error", debugError.Error())
+			}
+		}()
+		fmt.Printf("Agent %s: debug API listening on %s\n", parsedConfig.nodeID, parsedConfig.debugListenAddress)
+	}
 
 	if parsedConfig.proxyEnabled {
 		startAgentHTTPProxy(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyListenAddress)

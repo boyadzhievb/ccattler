@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M68 — Phase 68 Scheduler Scale. M1–M68 complete (DeltaController deferred). Gates A–I resolved. Next: Phase 69 — Node Runtime Inspection.
+**Completed through:** M68 — Phase 68 Scheduler Scale. M1–M68 complete (DeltaController deferred). Gates A–I resolved. Phase 69 in progress — Node Runtime Inspection.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -1083,7 +1083,7 @@ cca apply <file>              # deploy config (simulated, prints status and exit
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
 cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]  # control plane (--cloud-provider enables cloud controllers)
-cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>]  # node agent (mTLS, VIP data plane)
+cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>] [--debug-listen <addr>]  # node agent (mTLS, VIP data plane, debug API)
 cca token create [--node-id <id>] [--ttl 15m]  # generate join token
 cca token list                # list active join tokens
 cca token revoke <token>      # revoke a join token

@@ -105,6 +105,21 @@ type ResourceStats struct {
 	MemoryBytes   int64 // MemoryBytes is the current resident memory usage in bytes.
 }
 
+// ImageInfo describes a container image available on the local node.
+type ImageInfo struct {
+	Repository string // Repository is the image name (e.g. "nginx", "docker.io/library/nginx").
+	Tag        string // Tag is the image tag (e.g. "1.27", "latest").
+	ImageID    string // ImageID is the content-addressable image digest.
+	SizeBytes  int64  // SizeBytes is the on-disk size of the image in bytes.
+}
+
+// ImageLister is an optional interface implemented by runtimes that can
+// enumerate locally cached container images. Not all runtimes support this —
+// ProcessRuntime and SimulatorRuntime do not have images.
+type ImageLister interface {
+	ListImages(ctx context.Context) ([]ImageInfo, error)
+}
+
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
 	Command string // Command is the shell command to execute.

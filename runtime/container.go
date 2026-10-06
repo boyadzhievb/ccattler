@@ -565,6 +565,38 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 	}
 }
 
+// ListImages returns all locally cached container images by running
+// `nerdctl images` (or `docker images`). Implements the ImageLister interface.
+func (containerRuntime *ContainerRuntime) ListImages(ctx context.Context) ([]ImageInfo, error) {
+	listCommand := containerRuntime.buildExecCommand(ctx, "images",
+		"--format", "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}")
+	var commandOutput bytes.Buffer
+	listCommand.Stdout = &commandOutput
+	if runError := listCommand.Run(); runError != nil {
+		return nil, fmt.Errorf("listing images: %w", runError)
+	}
+
+	var images []ImageInfo
+	for _, outputLine := range strings.Split(commandOutput.String(), "\n") {
+		outputLine = strings.TrimSpace(outputLine)
+		if outputLine == "" {
+			continue
+		}
+		fields := strings.SplitN(outputLine, "\t", 4)
+		if len(fields) < 4 {
+			continue
+		}
+		sizeBytes := parseMemoryValue(fields[3])
+		images = append(images, ImageInfo{
+			Repository: fields[0],
+			Tag:        fields[1],
+			ImageID:    fields[2],
+			SizeBytes:  sizeBytes,
+		})
+	}
+	return images, nil
+}
+
 // buildContainerName generates a deterministic nerdctl container name
 // from a service name and instance ID, following the Kubernetes pattern of
 // {resource}-{hash}. For example, "web-a8f31bc2" instead of "cca-a8f31bc2".

@@ -1165,7 +1165,7 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 
 ### Phase 69 — Node Runtime Inspection (M69)
 
-- [ ] Agent HTTP debug API: `/debug/containers`, `/debug/images`, `/debug/stats` on agent's local port
+- [x] Agent HTTP debug API: `/debug/containers`, `/debug/images`, `/debug/stats` on agent's local port
 - [ ] `cca node-inspect <node-id>` CLI: queries agent API, shows live runtime containers, images, resource usage
 - [ ] `cca agent debug` local command: talks directly to containerd, bypasses control plane
 - [ ] `cca exec <instance-id> -- <command>` CLI: exec into a running container via agent relay
