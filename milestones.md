@@ -1171,9 +1171,22 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 - [x] `cca exec <instance-id> -- <command>` CLI: exec into a running container via agent relay
 - [x] Image management: `cca images list`, `cca images pull <image>`
 
+### Phase 70 — Transaction Budgeting & Controller Batching (M70)
+
+- [ ] Runner safety net: add `maxTransactionChanges = 60` constant, truncate oversized change sets before building transactions, log warning when truncation fires
+- [ ] FailureController rate-limiting: add `maxReplacementsPerCycle = 10` (10 × 4 ops = 40, follows DrainController pattern), remaining failures converge in subsequent cycles via watch re-trigger
+- [ ] NodeFailureController rate-limiting: add `maxInstanceStateChangesPerCycle = 50`, truncate instance state changes per cycle
+- [ ] MemoryStore enforces 128-op transaction limit: add `ErrTransactionTooLarge`, reject oversized transactions so tests surface overflow bugs before production
+- [ ] Convergence regression test: 50 nodes, 1000 instances, 5 failed nodes, 128-op limit enforced, assert all replacements land with 0 abandoned reconciliations
+- [ ] Chaos benchmark 1000/5000 workloads passes with transaction batching
+
+Plan: `.claude/plans/graceful-brewing-whale.md`
+Analysis: `chat-06oct.md`
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
+- [ ] Separate controller intent from `observed/instance/*` via `derived/` markers (extends M64 drain pattern)
 - [ ] VS Code extension: DSL syntax highlighting for `.cca` files
 
 ### Milestones
@@ -1245,5 +1258,7 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 | M66 — Stateful Workloads | 66 | Ordinal instance IDs (`postgres-0/1/2`), ordered startup, reverse scale-down, per-ordinal volumes, stable DNS |
 | M67 — Production Readiness Validation | 67 | Controller isolation, HA resilience (etcd down, split-brain, disaster recovery, storage failure, rolling upgrade), chaos benchmark at 100/1K/5K scale, autoscaler oscillation, security evidence, runtime edge cases (OOM, image pull, graceful shutdown), observability audit trail, API stability fixtures, ecosystem SDK plugin test, `cca readiness` report |
 | M68 — Scheduler Scale | 68 | NodeCapacityCache, batch placement, hot-path fixes, 200n/5000i benchmark (28× faster), 200-node load test |
+| M69 — Node Runtime Inspection | 69 | Agent debug API, `cca node-inspect`, `cca agent debug`, `cca exec`, `cca images list/pull` |
+| M70 — Transaction Budgeting | 70 | Runner caps transactions at 128 ops, FailureController batches replacements (10/cycle), NodeFailureController batches instance changes (50/cycle), MemoryStore enforces etcd limit, chaos benchmarks converge at 50+ node scale |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.
