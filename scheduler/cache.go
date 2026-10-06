@@ -77,13 +77,8 @@ func (cache *NodeCapacityCache) RecordPlacement(nodeID string, cpuCost int64, me
 	entry.node.availMemory -= memoryCost
 	entry.loadScore++
 
-	exhausted := false
-	if cache.minimumCPU > 0 && entry.node.availCPU < cache.minimumCPU {
-		exhausted = true
-	}
-	if cache.minimumMemory > 0 && entry.node.availMemory < cache.minimumMemory {
-		exhausted = true
-	}
+	exhausted := (cache.minimumCPU > 0 && entry.node.availCPU < cache.minimumCPU) ||
+		(cache.minimumMemory > 0 && entry.node.availMemory < cache.minimumMemory)
 
 	if exhausted {
 		heap.Remove(&cache.heapData, entry.heapIndex)

@@ -207,24 +207,24 @@ group frontend {
 
 		observedInstances, _ := factStore.Scan(ctx, types.ScanObservedInstances)
 		serviceByInstance := make(map[string]string)
-	for _, fact := range observedInstances {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		if len(parts) == 2 && parts[1] == "service" {
-			serviceByInstance[parts[0]] = string(fact.Value)
+		for _, fact := range observedInstances {
+			relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedInstances)
+			parts := strings.SplitN(relativePath, "/", 2)
+			if len(parts) == 2 && parts[1] == "service" {
+				serviceByInstance[parts[0]] = string(fact.Value)
+			}
 		}
-	}
 
-	var proxyNode, webNode string
-	for instanceID, serviceName := range serviceByInstance {
-		switch serviceName {
-		case "proxy":
-			proxyNode = nodesByInstance[instanceID]
-		case "web":
-			webNode = nodesByInstance[instanceID]
+		var proxyNode, webNode string
+		for instanceID, serviceName := range serviceByInstance {
+			switch serviceName {
+			case "proxy":
+				proxyNode = nodesByInstance[instanceID]
+			case "web":
+				webNode = nodesByInstance[instanceID]
+			}
 		}
-	}
 
-	return proxyNode != "" && webNode != "" && proxyNode == webNode
+		return proxyNode != "" && webNode != "" && proxyNode == webNode
 	})
 }

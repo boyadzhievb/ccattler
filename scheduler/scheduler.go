@@ -216,33 +216,6 @@ func findMinZones(candidates []candidateNode, serviceName string, serviceZoneCou
 	return acceptableZones
 }
 
-// placeSingleInstance selects the best node for a single instance and returns
-// the placement change, or nil if no suitable node is available. Used by the
-// grouped placement path where instances target a pre-selected node.
-func placeSingleInstance(instanceID string, state *placementState) *controllers.Change {
-	instanceInfo := state.instances[instanceID]
-	serviceName, reqCPU, reqMemory := resolveInstanceResourceNeeds(instanceInfo, state.serviceResources)
-
-	candidates := filterByConstraints(state.alive, serviceName, state.placementConstraints)
-	constraint := state.placementConstraints[serviceName]
-	if constraint != nil && constraint.zonePolicy == "spread" {
-		candidates = selectZoneSpreadCandidates(candidates, serviceName, state.serviceZoneCounts)
-	}
-	if constraint != nil && len(constraint.prefer) > 0 {
-		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
-	}
-
-	best := selectLeastLoadedNode(candidates, state.loadPerNode, reqCPU, reqMemory)
-	if best == "" {
-		return nil
-	}
-	state.loadPerNode[best]++
-	updateNodeResourcesAfterPlacement(state.alive, best, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
-	return &controllers.Change{
-		Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(best),
-	}
-}
-
 // resolveInstanceResourceNeeds extracts the service name and resource
 // requirements for an instance.
 func resolveInstanceResourceNeeds(
@@ -732,47 +705,6 @@ func rankByPreferences(candidates []candidateNode, preferLabels map[string]strin
 		reordered[index] = entry.candidate
 	}
 	return reordered
-}
-
-// selectZoneSpreadCandidates filters candidates to prefer nodes in the zone
-// with the fewest existing instances for this service.
-func selectZoneSpreadCandidates(candidates []candidateNode, serviceName string, serviceZoneCounts map[string]map[string]int) []candidateNode {
-	if len(candidates) == 0 {
-		return candidates
-	}
-
-	zoneCounts := serviceZoneCounts[serviceName]
-	if zoneCounts == nil {
-		zoneCounts = make(map[string]int)
-	}
-
-	minZoneCount := math.MaxInt
-	for _, candidate := range candidates {
-		zone := candidate.zone
-		if zone == "" {
-			zone = "_default"
-		}
-		count := zoneCounts[zone]
-		if count < minZoneCount {
-			minZoneCount = count
-		}
-	}
-
-	var preferred []candidateNode
-	for _, candidate := range candidates {
-		zone := candidate.zone
-		if zone == "" {
-			zone = "_default"
-		}
-		if zoneCounts[zone] == minZoneCount {
-			preferred = append(preferred, candidate)
-		}
-	}
-
-	if len(preferred) == 0 {
-		return candidates
-	}
-	return preferred
 }
 
 // extractServiceGroupMemberships parses desired/group/ facts and returns a map
