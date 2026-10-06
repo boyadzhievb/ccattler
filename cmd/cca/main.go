@@ -68,6 +68,10 @@ func main() {
 		}
 		executeJoinCommand(parsedJoinConfig)
 	case "agent":
+		if len(os.Args) >= 3 && os.Args[2] == "debug" {
+			executeAgentDebugCommand()
+			return
+		}
 		parsedAgentConfig := parseAgentCommandArgs(os.Args[2:])
 		if parsedAgentConfig.nodeID == "" {
 			fmt.Fprintln(os.Stderr, "error: --node-id is required for agent mode")
@@ -207,6 +211,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "multi-process mode (distributed):")
 	fmt.Fprintln(os.Stderr, "  server [flags]               run control plane (controllers + API)")
 	fmt.Fprintln(os.Stderr, "  agent [flags]                run node agent (watches store, runs workloads)")
+	fmt.Fprintln(os.Stderr, "  agent debug                  inspect local container runtime (bypasses control plane)")
 	fmt.Fprintln(os.Stderr, "  apply --store etcd <file>    write facts to shared store")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "node enrollment:")

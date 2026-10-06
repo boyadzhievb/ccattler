@@ -597,6 +597,122 @@ func (containerRuntime *ContainerRuntime) ListImages(ctx context.Context) ([]Ima
 	return images, nil
 }
 
+// DiscoveredContainer describes a container found by scanning the local
+// container runtime directly via nerdctl/docker ps, without requiring
+// an agent or tracked state.
+type DiscoveredContainer struct {
+	Name    string // Name is the container name assigned at creation.
+	ID      string // ID is the container's short identifier.
+	Image   string // Image is the OCI image reference the container was started from.
+	Status  string // Status is the human-readable status string (e.g. "Up 2 hours").
+	Running bool   // Running is true when the status indicates the container is up.
+}
+
+// ContainerResourceUsage describes resource consumption for a single container
+// as reported by nerdctl/docker stats.
+type ContainerResourceUsage struct {
+	Name          string // Name is the container name.
+	CPUMillicores int64  // CPUMillicores is the current CPU usage (percent * 10).
+	MemoryBytes   int64  // MemoryBytes is the current resident memory in bytes.
+}
+
+// DetectedCommand returns the container CLI binary that this runtime uses
+// (e.g. "nerdctl", "docker", "lima").
+func (containerRuntime *ContainerRuntime) DetectedCommand() string {
+	return containerRuntime.containerCommand
+}
+
+// DiscoverAllContainers scans the local container runtime for all containers
+// (running and stopped) by shelling out to nerdctl/docker ps -a. This
+// bypasses the in-memory tracking and shows ground-truth container state.
+func (containerRuntime *ContainerRuntime) DiscoverAllContainers(ctx context.Context) ([]DiscoveredContainer, error) {
+	listCommand := containerRuntime.buildExecCommand(ctx, "ps", "-a",
+		"--format", "{{.Names}}\t{{.ID}}\t{{.Image}}\t{{.Status}}")
+	var commandOutput bytes.Buffer
+	listCommand.Stdout = &commandOutput
+	var stderrOutput bytes.Buffer
+	listCommand.Stderr = &stderrOutput
+	if runError := listCommand.Run(); runError != nil {
+		return nil, fmt.Errorf("listing containers: %v: %s", runError, stderrOutput.String())
+	}
+	return parseContainerListOutput(commandOutput.String()), nil
+}
+
+// parseContainerListOutput parses tab-separated nerdctl/docker ps output into
+// DiscoveredContainer entries. Each line has the format:
+// Name\tID\tImage\tStatus
+func parseContainerListOutput(output string) []DiscoveredContainer {
+	var containers []DiscoveredContainer
+	for _, outputLine := range strings.Split(output, "\n") {
+		outputLine = strings.TrimSpace(outputLine)
+		if outputLine == "" {
+			continue
+		}
+		fields := strings.SplitN(outputLine, "\t", 4)
+		if len(fields) < 4 {
+			continue
+		}
+		running := strings.HasPrefix(strings.ToLower(strings.TrimSpace(fields[3])), "up")
+		containers = append(containers, DiscoveredContainer{
+			Name:    strings.TrimSpace(fields[0]),
+			ID:      strings.TrimSpace(fields[1]),
+			Image:   strings.TrimSpace(fields[2]),
+			Running: running,
+			Status:  strings.TrimSpace(fields[3]),
+		})
+	}
+	return containers
+}
+
+// DiscoverAllContainerStats queries nerdctl/docker stats for all running
+// containers and returns their resource usage. This reads from the real
+// cgroup metrics, bypassing agent tracking.
+func (containerRuntime *ContainerRuntime) DiscoverAllContainerStats(ctx context.Context) ([]ContainerResourceUsage, error) {
+	statsCommand := containerRuntime.buildExecCommand(ctx, "stats", "--no-stream",
+		"--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}")
+	var commandOutput bytes.Buffer
+	statsCommand.Stdout = &commandOutput
+	var stderrOutput bytes.Buffer
+	statsCommand.Stderr = &stderrOutput
+	if runError := statsCommand.Run(); runError != nil {
+		return nil, fmt.Errorf("querying container stats: %v: %s", runError, stderrOutput.String())
+	}
+	return parseContainerStatsOutput(commandOutput.String()), nil
+}
+
+// parseContainerStatsOutput parses tab-separated nerdctl/docker stats output
+// into ContainerResourceUsage entries. Each line has the format:
+// Name\tCPUPerc\tMemUsage (e.g. "web-abc\t1.23%\t45.6MiB / 7.8GiB")
+func parseContainerStatsOutput(output string) []ContainerResourceUsage {
+	var usages []ContainerResourceUsage
+	for _, outputLine := range strings.Split(output, "\n") {
+		outputLine = strings.TrimSpace(outputLine)
+		if outputLine == "" {
+			continue
+		}
+		fields := strings.SplitN(outputLine, "\t", 3)
+		if len(fields) < 3 {
+			continue
+		}
+
+		var cpuMillicores int64
+		cpuPercent := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(fields[1]), "%"))
+		if parsedCPU, parseError := parseFloat64Safe(cpuPercent); parseError == nil {
+			cpuMillicores = int64(parsedCPU * 10)
+		}
+
+		memoryParts := strings.SplitN(strings.TrimSpace(fields[2]), " / ", 2)
+		memoryBytes := parseMemoryValue(strings.TrimSpace(memoryParts[0]))
+
+		usages = append(usages, ContainerResourceUsage{
+			Name:          strings.TrimSpace(fields[0]),
+			CPUMillicores: cpuMillicores,
+			MemoryBytes:   memoryBytes,
+		})
+	}
+	return usages
+}
+
 // buildContainerName generates a deterministic nerdctl container name
 // from a service name and instance ID, following the Kubernetes pattern of
 // {resource}-{hash}. For example, "web-a8f31bc2" instead of "cca-a8f31bc2".
