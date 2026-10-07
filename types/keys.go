@@ -1242,6 +1242,14 @@ func KeyDerivedInstanceDrainSince(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/drain_since", PrefixDerived, instanceID)
 }
 
+// KeyDerivedInstanceDrainReadiness returns the store path for a controller-derived
+// drain readiness override. Written by the FailureController when draining an
+// instance, separate from the agent-owned observed probe readiness key.
+// Path: derived/instance/{instanceID}/drain_readiness
+func KeyDerivedInstanceDrainReadiness(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/drain_readiness", PrefixDerived, instanceID)
+}
+
 // KeyDerivedNodeDrainStarted returns the path for a node's drain start timestamp.
 // The value is a Unix-millisecond timestamp recorded when the drain was initiated.
 // Path: derived/node/{nodeID}/drain/started

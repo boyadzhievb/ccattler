@@ -193,8 +193,8 @@ func TestFailureLivenessUnhealthyBeginsDrain(t *testing.T) {
 		t.Fatalf("expected 2 changes (readiness + drain_since), got %d", len(changes))
 	}
 
-	if changes[0].Key != types.KeyObservedInstanceProbeState("aaa", "readiness") {
-		t.Errorf("first change should set readiness, got key %s", changes[0].Key)
+	if changes[0].Key != types.KeyDerivedInstanceDrainReadiness("aaa") {
+		t.Errorf("first change should set drain_readiness, got key %s", changes[0].Key)
 	}
 	if string(changes[0].Value) != string(types.ReadinessProbeNotReady) {
 		t.Errorf("readiness should be not-ready, got %s", changes[0].Value)
@@ -378,5 +378,78 @@ func TestFailureDefaultMaxReplacements(t *testing.T) {
 	failureController := NewFailureController()
 	if failureController.MaxReplacementsPerCycle != defaultMaxReplacementsPerCycle {
 		t.Fatalf("expected default %d, got %d", defaultMaxReplacementsPerCycle, failureController.MaxReplacementsPerCycle)
+	}
+}
+
+// TestFailureControllerCapsDrainsPerCycle verifies that the FailureController
+// begins draining at most MaxDrainsPerCycle instances per reconciliation cycle.
+func TestFailureControllerCapsDrainsPerCycle(t *testing.T) {
+	fixedTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NowFunc = func() time.Time { return fixedTime }
+	failureController.MaxDrainsPerCycle = 5
+
+	// Create 50 running instances with liveness=unhealthy and no drain_since.
+	var entries []struct{ k, v string }
+	for i := 0; i < 50; i++ {
+		instanceID := fmt.Sprintf("drain-%03d", i)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "running"),
+			kv(types.KeyObservedInstanceProbeState(instanceID, "liveness"), string(types.LivenessProbeUnhealthy)),
+		)
+	}
+	facts := buildFacts(entries...)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each drain produces 2 changes (readiness + drain_since).
+	expectedMaxChanges := failureController.MaxDrainsPerCycle * 2
+	if len(changes) > expectedMaxChanges {
+		t.Fatalf("expected at most %d drain changes (cap=%d), got %d",
+			expectedMaxChanges, failureController.MaxDrainsPerCycle, len(changes))
+	}
+	if len(changes) != expectedMaxChanges {
+		t.Errorf("expected exactly %d drain changes, got %d", expectedMaxChanges, len(changes))
+	}
+}
+
+// TestFailureDefaultMaxDrains verifies the default drain cap.
+func TestFailureDefaultMaxDrains(t *testing.T) {
+	failureController := NewFailureController()
+	if failureController.MaxDrainsPerCycle != defaultMaxDrainsPerCycle {
+		t.Fatalf("expected default %d, got %d", defaultMaxDrainsPerCycle, failureController.MaxDrainsPerCycle)
+	}
+}
+
+// TestFailureClearsDrainOnRecovery verifies that when an instance's liveness
+// recovers (no longer unhealthy) while drain state exists, the controller
+// emits delete changes to clear drain_readiness and drain_since.
+func TestFailureClearsDrainOnRecovery(t *testing.T) {
+	fixedTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NowFunc = func() time.Time { return fixedTime }
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyDerivedInstanceDrainSince("aaa"), "1726000000000"),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 delete changes, got %d", len(changes))
+	}
+	for _, change := range changes {
+		if change.Type != store.OpDelete {
+			t.Errorf("expected delete, got type %d for key %s", change.Type, change.Key)
+		}
 	}
 }

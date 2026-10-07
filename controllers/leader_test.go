@@ -186,3 +186,96 @@ func TestLeaderElectionReleasesOnShutdown(t *testing.T) {
 		t.Error("should not be leader after shutdown")
 	}
 }
+
+// TestLeaderRenewDetectsStaleHolder verifies that if another node overwrites
+// the holder key, the original leader loses leadership on its next renew tick.
+func TestLeaderRenewDetectsStaleHolder(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	lost := make(chan struct{}, 1)
+	acquired := make(chan struct{}, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	election := NewLeaderElection(memoryStore, LeaderElectionConfig{
+		NodeID:        "node-1",
+		LeaseDuration: 5 * time.Second,
+		RenewInterval: 50 * time.Millisecond,
+		OnAcquired:    func() { acquired <- struct{}{} },
+		OnLost:        func() { lost <- struct{}{} },
+	})
+
+	go election.Run(ctx)
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for leadership")
+	}
+
+	// Simulate another node taking over by overwriting the holder key.
+	memoryStore.Put(ctx, leaderLeaseHolderKey, []byte("node-2"))
+
+	select {
+	case <-lost:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for node-1 to lose leadership")
+	}
+
+	if election.IsLeader() {
+		t.Error("node-1 should not be leader after holder was overwritten")
+	}
+}
+
+// TestLeaderReleaseDoesNotDeleteOthersLease verifies that if another node
+// acquired the lease, release() does not delete the other node's keys.
+func TestLeaderReleaseDoesNotDeleteOthersLease(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	acquired := make(chan struct{}, 1)
+	ctx := context.Background()
+
+	election := NewLeaderElection(memoryStore, LeaderElectionConfig{
+		NodeID:        "node-1",
+		LeaseDuration: 5 * time.Second,
+		RenewInterval: 1 * time.Hour,
+		OnAcquired:    func() { acquired <- struct{}{} },
+	})
+
+	runCtx, runCancel := context.WithCancel(ctx)
+	go election.Run(runCtx)
+
+	select {
+	case <-acquired:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for leadership")
+	}
+
+	// Simulate another node stealing the lease.
+	memoryStore.Put(ctx, leaderLeaseHolderKey, []byte("node-2"))
+	memoryStore.Put(ctx, leaderLeaseKey, []byte("999999999999"))
+
+	// Cancel triggers release().
+	runCancel()
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the other node's keys still exist.
+	holderFact, err := memoryStore.Get(ctx, leaderLeaseHolderKey)
+	if err != nil {
+		t.Fatal("holder key was deleted — release() should not delete another node's lease")
+	}
+	if string(holderFact.Value) != "node-2" {
+		t.Errorf("holder: got %s, want node-2", holderFact.Value)
+	}
+
+	leaseFact, err := memoryStore.Get(ctx, leaderLeaseKey)
+	if err != nil {
+		t.Fatal("lease key was deleted — release() should not delete another node's lease")
+	}
+	if string(leaseFact.Value) != "999999999999" {
+		t.Errorf("lease: got %s, want 999999999999", leaseFact.Value)
+	}
+}

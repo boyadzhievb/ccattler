@@ -132,10 +132,7 @@ func (election *LeaderElection) tryAcquireOrRenew(ctx context.Context) {
 	nowStr := fmt.Sprintf("%d", now.UnixMilli())
 
 	if election.isLeader {
-		// Renew: update the lease timestamp.
-		if _, putError := election.factStore.Put(ctx, leaderLeaseKey, []byte(nowStr)); putError != nil {
-			logging.Default().Error("failed to renew leader lease", "error", putError.Error())
-		}
+		election.renewLeaseWithCAS(ctx, nowStr)
 		return
 	}
 
@@ -196,7 +193,36 @@ func (election *LeaderElection) acquireLease(ctx context.Context, nowStr string)
 	}
 }
 
-// release gives up leadership on shutdown.
+// renewLeaseWithCAS renews the leader lease using compare-and-swap to detect
+// if another node has taken over. If the holder key no longer matches this
+// node, leadership is relinquished.
+func (election *LeaderElection) renewLeaseWithCAS(ctx context.Context, nowStr string) {
+	holderFact, getErr := election.factStore.Get(ctx, leaderLeaseHolderKey)
+	if getErr != nil || string(holderFact.Value) != election.nodeID {
+		election.isLeader = false
+		logging.Default().Warn("lost leadership during renewal (holder changed)", "node", election.nodeID)
+		if election.onLost != nil {
+			election.onLost()
+		}
+		return
+	}
+	renewed, txnErr := election.factStore.Transaction(ctx,
+		[]store.Compare{{Key: leaderLeaseHolderKey, Revision: holderFact.Revision}},
+		[]store.Op{{Type: store.OpPut, Key: leaderLeaseKey, Value: []byte(nowStr)}},
+		nil,
+	)
+	if txnErr != nil || !renewed {
+		election.isLeader = false
+		logging.Default().Warn("lost leadership during renewal (CAS failed)", "node", election.nodeID)
+		if election.onLost != nil {
+			election.onLost()
+		}
+	}
+}
+
+// release gives up leadership on shutdown. Uses compare-and-swap to verify
+// this node is still the holder before deleting — avoids accidentally
+// deleting another node's valid lease.
 func (election *LeaderElection) release(ctx context.Context) {
 	election.mutex.Lock()
 	defer election.mutex.Unlock()
@@ -205,11 +231,22 @@ func (election *LeaderElection) release(ctx context.Context) {
 		return
 	}
 
-	if deleteError := election.factStore.Delete(ctx, leaderLeaseKey); deleteError != nil {
-		logging.Default().Error("failed to delete leader lease key", "error", deleteError.Error())
+	holderFact, getErr := election.factStore.Get(ctx, leaderLeaseHolderKey)
+	if getErr != nil || string(holderFact.Value) != election.nodeID {
+		election.isLeader = false
+		logging.Default().Warn("skipped lease cleanup (no longer holder)", "node", election.nodeID)
+		return
 	}
-	if deleteError := election.factStore.Delete(ctx, leaderLeaseHolderKey); deleteError != nil {
-		logging.Default().Error("failed to delete leader holder key", "error", deleteError.Error())
+
+	if _, txnErr := election.factStore.Transaction(ctx,
+		[]store.Compare{{Key: leaderLeaseHolderKey, Revision: holderFact.Revision}},
+		[]store.Op{
+			{Type: store.OpDelete, Key: leaderLeaseKey},
+			{Type: store.OpDelete, Key: leaderLeaseHolderKey},
+		},
+		nil,
+	); txnErr != nil {
+		logging.Default().Error("failed to release leader lease", "node", election.nodeID, "error", txnErr.Error())
 	}
 	election.isLeader = false
 	logging.Default().Info("released leadership", "node", election.nodeID)

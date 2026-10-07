@@ -124,6 +124,9 @@ func buildDesiredEndpoints(
 		if len(exposedPorts) == 0 {
 			continue
 		}
+		if fields["drain_readiness"] == string(types.ReadinessProbeNotReady) {
+			continue
+		}
 		if serviceHasReadinessProbe[serviceName] {
 			readinessState := fields["probe/readiness"]
 			if readinessState != string(types.ReadinessProbeReady) {

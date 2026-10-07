@@ -41,11 +41,11 @@ const (
 	etcdTransactionOperationLimit = 128
 
 	// maxTransactionChanges is the maximum number of fact changes the runner
-	// will include in a single transaction. Each change produces roughly two
+	// will commit in a single transaction. Each change produces roughly two
 	// transaction items (one compare + one operation), so 60 changes yields
 	// ~120 items — safely under the 128-op etcd limit. Oversized change sets
-	// are truncated and a warning is logged; remaining changes converge in
-	// subsequent reconciliation cycles via watch re-trigger.
+	// are rejected (not truncated) to avoid splitting atomic operation groups;
+	// the controller retries on the next reconciliation cycle.
 	maxTransactionChanges = 60
 )
 
@@ -88,9 +88,9 @@ var (
 		"Changes rejected because the key fell outside the controller's declared write domain",
 		"controller",
 	)
-	transactionTruncations = metrics.DefaultRegistry.RegisterCounter(
-		"ccattler_transaction_truncations_total",
-		"Number of times a change set was truncated to fit the transaction budget",
+	transactionRejections = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_transaction_rejections_total",
+		"Number of times a change set was rejected for exceeding the transaction budget",
 		"controller",
 	)
 )
@@ -261,6 +261,7 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 // periodic resync timer fires.
 func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controller Controller) error {
 	reconcileTrigger := make(chan struct{}, 1)
+	watchLost := make(chan struct{}, 1)
 
 	for _, prefix := range controller.Watch() {
 		watchEventChannel, err := controllerRunner.store.Watch(ctx, prefix, store.WatchOption{Prefix: true})
@@ -274,6 +275,11 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 					return
 				case watchEvent, ok := <-watchEventChannel:
 					if !ok {
+						logging.Default().Warn("watch channel closed, signaling restart", "controller", controllerName)
+						select {
+						case watchLost <- struct{}{}:
+						default:
+						}
 						return
 					}
 					if watchEvent.Type == store.EventOverflow {
@@ -307,6 +313,8 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-watchLost:
+			return fmt.Errorf("watch channel closed for controller %s, restarting", controller.Name())
 		case <-resyncChannel:
 			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
 				logging.Default().Error("resync error", "controller", controller.Name(), "error", err.Error())
@@ -421,12 +429,12 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	sortChangesByKey(changes)
 
 	if len(changes) > maxTransactionChanges {
-		logging.Default().Warn("change set truncated to fit transaction budget",
+		logging.Default().Error("change set exceeds transaction budget, skipping cycle",
 			"controller", controller.Name(),
-			"original_changes", fmt.Sprintf("%d", len(changes)),
+			"change_count", fmt.Sprintf("%d", len(changes)),
 			"max_changes", fmt.Sprintf("%d", maxTransactionChanges))
-		transactionTruncations.Inc(controller.Name())
-		changes = changes[:maxTransactionChanges]
+		transactionRejections.Inc(controller.Name())
+		return false, nil
 	}
 
 	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(changes, allFacts)

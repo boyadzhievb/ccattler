@@ -241,3 +241,80 @@ func TestEachReconciliationCycleGetsUniqueTraceID(t *testing.T) {
 		t.Errorf("expected different trace IDs per reconciliation cycle, both were %s", firstTraceID)
 	}
 }
+
+// oversizedController returns more changes than maxTransactionChanges.
+type oversizedController struct {
+	changeCount int
+}
+
+func (controller *oversizedController) Name() string    { return "oversized-test" }
+func (controller *oversizedController) Watch() []string { return []string{"desired/"} }
+func (controller *oversizedController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
+	changes := make([]Change, controller.changeCount)
+	for i := range changes {
+		changes[i] = Change{
+			Type:  store.OpPut,
+			Key:   fmt.Sprintf("test/key/%04d", i),
+			Value: []byte("v"),
+		}
+	}
+	return changes, nil
+}
+
+// TestRunnerRejectsOversizedChangeSets verifies that the runner skips a
+// reconciliation cycle instead of committing a partial transaction when the
+// controller produces more changes than the transaction budget allows.
+func TestRunnerRejectsOversizedChangeSets(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	controller := &oversizedController{changeCount: 200}
+	runner := NewRunner(factStore, controller)
+
+	ctx := context.Background()
+
+	// Seed a fact so the store is non-empty for the scan.
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	if reconcileError != nil {
+		t.Fatalf("expected no error, got %v", reconcileError)
+	}
+	if conflictDetected {
+		t.Fatal("expected no conflict, got conflict")
+	}
+
+	// Verify no facts were written by the transaction (the only fact should be
+	// the one we seeded above).
+	allFacts, _ := factStore.Scan(ctx, "test/")
+	if len(allFacts) > 0 {
+		t.Fatalf("expected zero test facts committed, got %d", len(allFacts))
+	}
+}
+
+// TestRunnerCommitsWithinBudgetChangeSets verifies that change sets at or
+// below the transaction budget are committed normally.
+func TestRunnerCommitsWithinBudgetChangeSets(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	controller := &oversizedController{changeCount: maxTransactionChanges}
+	runner := NewRunner(factStore, controller)
+
+	ctx := context.Background()
+
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	if reconcileError != nil {
+		t.Fatalf("expected no error, got %v", reconcileError)
+	}
+	if conflictDetected {
+		t.Fatal("expected no conflict")
+	}
+
+	allFacts, _ := factStore.Scan(ctx, "test/key/")
+	if len(allFacts) != maxTransactionChanges {
+		t.Fatalf("expected %d facts committed, got %d", maxTransactionChanges, len(allFacts))
+	}
+}

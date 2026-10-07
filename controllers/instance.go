@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -81,6 +82,9 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 		haveCount := len(activeIDs)
 
 		if statefulServices[serviceName] {
+			if creationsRemaining <= 0 {
+				continue
+			}
 			serviceChanges := instanceController.reconcileStatefulService(
 				serviceName, wantCount, activeIDs, stateByInstanceID,
 			)
@@ -122,7 +126,11 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 		}
 		switch suffix {
 		case "instances":
-			parsedCount, _ := strconv.Atoi(string(fact.Value))
+			parsedCount, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt instance count fact", "key", fact.Key, "value", string(fact.Value))
+				continue
+			}
 			desiredCounts[serviceName] = parsedCount
 		case "stateful":
 			statefulServices[serviceName] = string(fact.Value) == "true"

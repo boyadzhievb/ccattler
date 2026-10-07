@@ -1183,10 +1183,26 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 Plan: `.claude/plans/graceful-brewing-whale.md`
 Analysis: `chat-06oct.md`
 
+### Phase 71 — Post-Review Correctness Fixes (M71)
+
+- [x] Runner rejects oversized change sets instead of truncating (prevents splitting atomic operation groups)
+- [x] FailureController drain cap: `MaxDrainsPerCycle = 10` (20 drain ops + 40 replacement ops = 60, at budget)
+- [x] Remove heartbeat from agent watch handler (eliminates N² write amplification)
+- [x] Leader election fencing: CAS-guarded renewal detects stale holder, release verifies ownership before delete
+- [x] Stateful service respects creation budget, missed parse error at instance.go:125 fixed
+- [x] Agent skips failed instances (prevents race with FailureController replacements)
+- [x] Drain readiness moved to `derived/` prefix (eliminates two-writer conflict with agent probe state)
+- [x] Stale drain_since cleared on liveness recovery (prevents premature replacement on next failure)
+- [x] Endpoint controller checks derived drain_readiness to gate endpoints during drain
+- [x] Watch compaction resilience: agent returns error on channel close, runner signals controller restart
+
+Plan: `.claude/plans/jolly-booping-blanket.md`
+Review: `chat-07oct.md`
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
-- [ ] Separate controller intent from `observed/instance/*` via `derived/` markers (extends M64 drain pattern)
+- [x] Separate controller intent from `observed/instance/*` via `derived/` markers (extends M64 drain pattern)
 - [x] VS Code extension: DSL syntax highlighting for `.cca` files
 
 ### Milestones
@@ -1260,5 +1276,6 @@ Analysis: `chat-06oct.md`
 | M68 — Scheduler Scale | 68 | NodeCapacityCache, batch placement, hot-path fixes, 200n/5000i benchmark (28× faster), 200-node load test |
 | M69 — Node Runtime Inspection | 69 | Agent debug API, `cca node-inspect`, `cca agent debug`, `cca exec`, `cca images list/pull` |
 | M70 — Transaction Budgeting | 70 | Runner caps transactions at 128 ops, FailureController batches replacements (10/cycle), NodeFailureController batches instance changes (50/cycle), MemoryStore enforces etcd limit, chaos benchmarks converge at 50+ node scale |
+| M71 — Post-Review Correctness | 71 | Runner rejects (not truncates) oversized change sets, drain cap (10/cycle), heartbeat N² fix, leader CAS fencing, agent skips failed instances, drain readiness moved to derived/, watch compaction resilience |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

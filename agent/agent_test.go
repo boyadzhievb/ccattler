@@ -1598,3 +1598,37 @@ func (noResize *noResizeRuntime) Logs(ctx context.Context, instanceID string, fo
 func (noResize *noResizeRuntime) Resize(_ context.Context, _ string, _ int64, _ int64) error {
 	return runtime.ErrResizeUnsupported
 }
+
+// TestAgentSkipsFailedInstances verifies that the agent does not attempt to
+// start instances in the "failed" state — the FailureController is responsible
+// for replacing those.
+func TestAgentSkipsFailedInstances(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+
+	// Place two instances on our node: one pending (should be started),
+	// one failed (should be skipped).
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "ok-1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "ok-1", NodeID: "node-1"})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "bad-1", Service: "web", State: types.InstanceFailed})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "bad-1", NodeID: "node-1"})
+
+	instances, err := nodeAgent.findInstancesPlacedOnThisNode(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance (pending only), got %d", len(instances))
+	}
+	if instances[0].id != "ok-1" {
+		t.Errorf("expected instance ok-1, got %s", instances[0].id)
+	}
+}

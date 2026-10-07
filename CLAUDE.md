@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M70 — Phase 70 Transaction Budgeting & Controller Batching. M1–M70 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M71 — Phase 71 Post-Review Correctness Fixes. M1–M71 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

@@ -163,7 +163,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 		case watchEvent, ok := <-placementCh:
 			if !ok {
-				return nil
+				return fmt.Errorf("watch channel closed (compaction or store shutdown)")
 			}
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -174,7 +174,6 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			if watchEvent.Type == store.EventCompacted {
 				logging.Default().Warn("watch revision compacted, triggering full resync", "agent", nodeAgent.nodeID)
 			}
-			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}
@@ -276,10 +275,14 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 		}
 		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
 
-		// Check instance isn't stopped.
+		// Skip instances that are stopped or failed — the FailureController
+		// handles replacement of failed instances.
 		stateFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceState(instanceID))
-		if err == nil && types.InstanceState(stateFact.Value) == types.InstanceStopped {
-			continue
+		if err == nil {
+			instanceState := types.InstanceState(stateFact.Value)
+			if instanceState == types.InstanceStopped || instanceState == types.InstanceFailed {
+				continue
+			}
 		}
 
 		// Check for drain eviction marker written by the DrainController.

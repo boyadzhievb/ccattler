@@ -24,6 +24,13 @@ const DefaultDrainGracePeriod = 5 * time.Second
 // converge in subsequent cycles via watch re-trigger.
 const defaultMaxReplacementsPerCycle = 10
 
+// defaultMaxDrainsPerCycle limits how many instances the FailureController
+// begins draining in a single reconciliation cycle. Each drain emits 2
+// store operations (readiness + drain_since), so 10 drains = 20 ops.
+// Combined with max replacements (40 ops), the total stays within the
+// runner's 60-change transaction budget.
+const defaultMaxDrainsPerCycle = 10
+
 // FailureController watches for instances that need replacement and
 // handles three failure scenarios:
 //   - Instance state is "failed" (runtime crash) — immediate replacement
@@ -54,6 +61,12 @@ type FailureController struct {
 	// prevents transaction overflow under mass-failure scenarios. Remaining
 	// failures converge in subsequent cycles via watch re-trigger.
 	MaxReplacementsPerCycle int
+
+	// MaxDrainsPerCycle limits how many instances can begin draining in a
+	// single reconciliation cycle. Each drain emits 2 store operations
+	// (readiness + drain_since). Combined with MaxReplacementsPerCycle,
+	// this keeps the total change count within the runner's transaction budget.
+	MaxDrainsPerCycle int
 }
 
 // NewFailureController returns a FailureController wired to the default
@@ -64,6 +77,7 @@ func NewFailureController() *FailureController {
 		NowFunc:                 time.Now,
 		DrainGracePeriod:        DefaultDrainGracePeriod,
 		MaxReplacementsPerCycle: defaultMaxReplacementsPerCycle,
+		MaxDrainsPerCycle:       defaultMaxDrainsPerCycle,
 	}
 }
 
@@ -92,6 +106,7 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	now := failureController.NowFunc()
 	var changes []Change
 	replacementCount := 0
+	drainCount := 0
 
 	// Iterate instances in sorted order for deterministic output.
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
@@ -128,11 +143,21 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 			continue
 		}
 
-		// Case 3: liveness unhealthy — graceful drain.
+		// Case 3: liveness recovered while draining — clear stale drain state.
+		drainSince := fields["drain_since"]
+		if drainSince != "" && fields["probe/liveness"] != string(types.LivenessProbeUnhealthy) {
+			changes = append(changes, failureController.clearDrainState(instanceID)...)
+			continue
+		}
+
+		// Case 4: liveness unhealthy — graceful drain.
 		if fields["probe/liveness"] == string(types.LivenessProbeUnhealthy) {
-			drainSince := fields["drain_since"]
 			if drainSince == "" {
+				if drainCount >= failureController.MaxDrainsPerCycle {
+					continue
+				}
 				changes = append(changes, failureController.beginDrain(instanceID, now)...)
+				drainCount++
 			} else {
 				drainStartMillis, parseErr := strconv.ParseInt(drainSince, 10, 64)
 				if parseErr != nil {
@@ -164,7 +189,7 @@ func (failureController *FailureController) beginDrain(instanceID string, now ti
 	return []Change{
 		{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness),
+			Key:   types.KeyDerivedInstanceDrainReadiness(instanceID),
 			Value: []byte(string(types.ReadinessProbeNotReady)),
 		},
 		{
@@ -172,6 +197,15 @@ func (failureController *FailureController) beginDrain(instanceID string, now ti
 			Key:   types.KeyDerivedInstanceDrainSince(instanceID),
 			Value: []byte(fmt.Sprintf("%d", now.UnixMilli())),
 		},
+	}
+}
+
+// clearDrainState emits delete changes for drain_readiness and drain_since,
+// cleaning up stale drain state when an instance's liveness recovers.
+func (failureController *FailureController) clearDrainState(instanceID string) []Change {
+	return []Change{
+		{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainReadiness(instanceID)},
+		{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainSince(instanceID)},
 	}
 }
 
