@@ -6,20 +6,21 @@ package security
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
 )
+
+// secretPathPattern matches /secret/ and everything after it for redaction.
+var secretPathPattern = regexp.MustCompile(`/secret/.*`)
 
 // sanitizeForAudit removes newlines and control characters from a string and
 // redacts secret-related paths to prevent log injection and sensitive data
 // exposure when recording audit entries.
 func sanitizeForAudit(input string) string {
 	sanitized := strings.NewReplacer("\n", "\\n", "\r", "\\r", "\t", "\\t").Replace(input)
-	if strings.Contains(sanitized, "/secret/") {
-		parts := strings.SplitN(sanitized, "/secret/", 2)
-		sanitized = parts[0] + "/secret/[REDACTED]"
-	}
+	sanitized = secretPathPattern.ReplaceAllString(sanitized, "/secret/[REDACTED]")
 	return sanitized
 }
 

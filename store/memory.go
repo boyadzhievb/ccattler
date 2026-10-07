@@ -9,9 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"sync"
 )
+
+// secretKeyPattern matches /secret/ and everything after it for redaction in log messages.
+var secretKeyPattern = regexp.MustCompile(`/secret/.*`)
 
 // ErrKeyNotFound is returned when a Get or Delete targets a key that does not exist in the store.
 var ErrKeyNotFound = errors.New("key not found")
@@ -604,9 +608,7 @@ func (memStore *MemoryStore) broadcastEventToWatchers(event Event) {
 		default:
 			if !activeWatcher.overflowDetected {
 				sanitizedKey := strings.NewReplacer("\n", "\\n", "\r", "\\r").Replace(event.Fact.Key)
-				if strings.Contains(sanitizedKey, "/secret/") {
-					sanitizedKey = strings.SplitN(sanitizedKey, "/secret/", 2)[0] + "/secret/[REDACTED]"
-				}
+				sanitizedKey = secretKeyPattern.ReplaceAllString(sanitizedKey, "/secret/[REDACTED]")
 				log.Printf("WARNING: watch event dropped for key %s (channel buffer full)", sanitizedKey)
 			}
 			activeWatcher.overflowDetected = true

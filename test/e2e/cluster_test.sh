@@ -252,7 +252,7 @@ fi
 
 # ---- Step 1: Start VMs (reuse existing or provision new) ----
 cd "$ANSIBLE_DIR"
-VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision
+VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision --no-parallel
 
 log "Waiting for SSH on all VMs..."
 for ip in "${ALL_IPS[@]}"; do
