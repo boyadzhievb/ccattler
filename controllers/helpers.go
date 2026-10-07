@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -46,14 +47,17 @@ func collectStringValuesBySuffix(facts []store.Fact, prefix string, matchSuffix 
 // each key into entity name and suffix via splitFactKeyIntoEntityAndSuffix,
 // and parses the value as an integer for entries whose suffix matches exactly.
 // Returns a map from entity name to the parsed integer value. Values that
-// cannot be parsed as integers are silently stored as zero, matching the
-// existing convention used throughout the controllers package.
+// cannot be parsed as integers are logged as warnings and stored as zero.
 func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]int {
 	collectedValues := make(map[string]int)
 	for _, fact := range store.FactsWithPrefix(facts, prefix) {
 		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
 		if hasSuffix && suffix == matchSuffix {
-			collectedValues[entityName], _ = strconv.Atoi(string(fact.Value))
+			parsedValue, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt integer fact", "key", fact.Key, "value", string(fact.Value))
+			}
+			collectedValues[entityName] = parsedValue
 		}
 	}
 	return collectedValues

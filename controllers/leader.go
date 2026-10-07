@@ -221,6 +221,8 @@ func (election *LeaderElection) release(ctx context.Context) {
 // parseLeaseTimestamp parses a millisecond Unix timestamp string.
 func parseLeaseTimestamp(value string) time.Time {
 	var millis int64
-	_, _ = fmt.Sscanf(value, "%d", &millis)
+	if _, scanErr := fmt.Sscanf(value, "%d", &millis); scanErr != nil {
+		logging.Default().Warn("corrupt lease timestamp", "value", value)
+	}
 	return time.UnixMilli(millis)
 }

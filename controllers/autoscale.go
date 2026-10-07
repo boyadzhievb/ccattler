@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -600,12 +601,23 @@ func extractScalePolicies(facts []store.Fact) map[string]*extractedScalePolicy {
 
 		switch {
 		case scaleField == "min":
-			policy.min, _ = strconv.Atoi(string(fact.Value))
+			parsedMin, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt scale min fact", "service", serviceName, "value", string(fact.Value))
+			}
+			policy.min = parsedMin
 		case scaleField == "max":
-			policy.max, _ = strconv.Atoi(string(fact.Value))
+			parsedMax, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt scale max fact", "service", serviceName, "value", string(fact.Value))
+			}
+			policy.max = parsedMax
 		case strings.HasPrefix(scaleField, "target/"):
 			metricName := strings.TrimPrefix(scaleField, "target/")
-			targetValue, _ := strconv.Atoi(string(fact.Value))
+			targetValue, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt scale target fact", "service", serviceName, "metric", metricName, "value", string(fact.Value))
+			}
 			policy.targets[metricName] = targetValue
 		}
 	}
@@ -679,7 +691,11 @@ func extractScheduleRules(facts []store.Fact) map[string]*extractedScheduleRule 
 		case "end":
 			rules[serviceName].end = normalizeHHMM(string(fact.Value))
 		case "minimum":
-			rules[serviceName].minimum, _ = strconv.Atoi(string(fact.Value))
+			parsedMinimum, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt schedule minimum fact", "service", serviceName, "value", string(fact.Value))
+			}
+			rules[serviceName].minimum = parsedMinimum
 		}
 	}
 	return rules

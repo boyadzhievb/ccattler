@@ -104,7 +104,11 @@ func collectDesiredVolumes(facts []store.Fact) map[string]desiredVolumeInfo {
 			case "persistent":
 				info.persistent = string(fact.Value) == "true"
 			case "replicas":
-				info.replicas, _ = strconv.Atoi(string(fact.Value))
+				parsedReplicas, parseErr := strconv.Atoi(string(fact.Value))
+				if parseErr != nil {
+					logging.Default().Warn("corrupt volume replicas fact", "volume", volumeName, "value", string(fact.Value))
+				}
+				info.replicas = parsedReplicas
 			}
 			desiredVolumes[volumeName] = info
 		}
@@ -140,7 +144,11 @@ func collectObservedVolumes(facts []store.Fact) map[string]observedVolumeInfo {
 			case "migration_source":
 				info.migrationSource = string(fact.Value)
 			case "replica_count":
-				info.replicaCount, _ = strconv.Atoi(string(fact.Value))
+				parsedReplicaCount, parseErr := strconv.Atoi(string(fact.Value))
+				if parseErr != nil {
+					logging.Default().Warn("corrupt volume replica_count fact", "volume", volumeName, "value", string(fact.Value))
+				}
+				info.replicaCount = parsedReplicaCount
 			case "replica_state":
 				info.replicaState = types.ReplicaState(fact.Value)
 			}

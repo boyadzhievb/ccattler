@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -216,9 +217,17 @@ func parseDisruptionBudgets(facts []store.Fact) map[string]disruptionBudget {
 		budget := budgetsByService[serviceName]
 		switch suffix {
 		case "disruption/min_available":
-			budget.minAvailable, _ = strconv.Atoi(string(factEntry.Value))
+			parsedMinAvailable, parseErr := strconv.Atoi(string(factEntry.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt disruption min_available fact", "service", serviceName, "value", string(factEntry.Value))
+			}
+			budget.minAvailable = parsedMinAvailable
 		case "disruption/max_unavailable":
-			budget.maxUnavailable, _ = strconv.Atoi(string(factEntry.Value))
+			parsedMaxUnavailable, parseErr := strconv.Atoi(string(factEntry.Value))
+			if parseErr != nil {
+				logging.Default().Warn("corrupt disruption max_unavailable fact", "service", serviceName, "value", string(factEntry.Value))
+			}
+			budget.maxUnavailable = parsedMaxUnavailable
 		default:
 			continue
 		}

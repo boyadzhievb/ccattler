@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -112,7 +113,9 @@ func parseIdentityPolicyRuleValue(ruleName, ruleValue string) (identityPolicyRul
 		return identityPolicyRule{}, fmt.Errorf("invalid rule format: %s", ruleValue)
 	}
 	port := 0
-	_, _ = fmt.Sscanf(parts[2], "%d", &port)
+	if _, scanErr := fmt.Sscanf(parts[2], "%d", &port); scanErr != nil {
+		logging.Default().Warn("corrupt network policy port", "rule", ruleName, "value", parts[2])
+	}
 	return identityPolicyRule{
 		name:          ruleName,
 		sourceService: parts[0],

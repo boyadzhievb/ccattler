@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -278,7 +279,9 @@ func collectNetworkingStatusFromStore(ctx context.Context, factStore store.State
 			vipByService[pathParts[0]] = string(vipFact.Value)
 		} else if len(pathParts) == 2 && pathParts[1] == "port" {
 			portValue := 0
-			_, _ = fmt.Sscanf(string(vipFact.Value), "%d", &portValue)
+			if _, scanErr := fmt.Sscanf(string(vipFact.Value), "%d", &portValue); scanErr != nil {
+				logging.Default().Warn("corrupt VIP port fact", "service", pathParts[0], "value", string(vipFact.Value))
+			}
 			vipPortByService[pathParts[0]] = portValue
 		}
 	}
