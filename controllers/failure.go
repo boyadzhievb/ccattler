@@ -31,6 +31,19 @@ const defaultMaxReplacementsPerCycle = 10
 // runner's 60-change transaction budget.
 const defaultMaxDrainsPerCycle = 10
 
+// defaultMaxRecoveriesPerCycle limits how many drain-recovery cleanups the
+// FailureController emits per cycle. Each recovery emits 2 delete operations
+// (drain_readiness + drain_since). Without a cap, mass recovery (e.g. 200
+// instances simultaneously regaining liveness) would exceed the transaction
+// budget and cause permanent rejection stalls.
+const defaultMaxRecoveriesPerCycle = 10
+
+// maxFailureControllerChangesPerCycle is the hard total output cap. The
+// per-type caps (replacements, drains, recoveries) are independent and
+// their worst-case sum can exceed 60. This final guard truncates the
+// combined output to fit the runner's transaction budget.
+const maxFailureControllerChangesPerCycle = 58
+
 // FailureController watches for instances that need replacement and
 // handles three failure scenarios:
 //   - Instance state is "failed" (runtime crash) — immediate replacement
@@ -67,6 +80,11 @@ type FailureController struct {
 	// (readiness + drain_since). Combined with MaxReplacementsPerCycle,
 	// this keeps the total change count within the runner's transaction budget.
 	MaxDrainsPerCycle int
+
+	// MaxRecoveriesPerCycle limits how many drain-recovery cleanups are
+	// emitted per cycle. Each recovery deletes drain_readiness + drain_since
+	// (2 ops). Prevents transaction overflow during mass recovery events.
+	MaxRecoveriesPerCycle int
 }
 
 // NewFailureController returns a FailureController wired to the default
@@ -78,6 +96,7 @@ func NewFailureController() *FailureController {
 		DrainGracePeriod:        DefaultDrainGracePeriod,
 		MaxReplacementsPerCycle: defaultMaxReplacementsPerCycle,
 		MaxDrainsPerCycle:       defaultMaxDrainsPerCycle,
+		MaxRecoveriesPerCycle:   defaultMaxRecoveriesPerCycle,
 	}
 }
 
@@ -107,6 +126,7 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	var changes []Change
 	replacementCount := 0
 	drainCount := 0
+	recoveryCount := 0
 
 	// Iterate instances in sorted order for deterministic output.
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
@@ -146,7 +166,11 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 		// Case 3: liveness recovered while draining — clear stale drain state.
 		drainSince := fields["drain_since"]
 		if drainSince != "" && fields["probe/liveness"] != string(types.LivenessProbeUnhealthy) {
+			if recoveryCount >= failureController.MaxRecoveriesPerCycle {
+				continue
+			}
 			changes = append(changes, failureController.clearDrainState(instanceID)...)
+			recoveryCount++
 			continue
 		}
 
@@ -178,6 +202,10 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 				}
 			}
 		}
+	}
+
+	if len(changes) > maxFailureControllerChangesPerCycle {
+		changes = changes[:maxFailureControllerChangesPerCycle]
 	}
 
 	return changes, nil

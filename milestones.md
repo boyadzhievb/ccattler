@@ -1199,6 +1199,22 @@ Analysis: `chat-06oct.md`
 Plan: `.claude/plans/jolly-booping-blanket.md`
 Review: `chat-07oct.md`
 
+### Phase 72 — Correctness II: Budget Alignment, HA Fencing, Agent Resilience (M72)
+
+- [x] FailureController recovery cap: `defaultMaxRecoveriesPerCycle = 10` prevents unbounded drain-clear changes
+- [x] NodeFailureController single budget: compute instance budget after node state changes, total ≤ 60
+- [x] InstanceController output guard: cap total changes per cycle to prevent creation + scale-down overflow
+- [x] Audit all controllers for worst-case output exceeding 60 changes; add budget contract comment in runner.go
+- [x] EndpointController watches `derived/instance/` prefix for drain readiness events
+- [x] NodeFailureController warns on corrupt heartbeat timestamps instead of silently dropping
+- [x] Runner validates no duplicate keys in transaction (etcd requires unique mutation keys)
+- [x] Runner clamps MaxReconciliationAttempts to minimum 1
+- [x] Agent watch resilience: internal retry loop with backoff on watch closure instead of permanent death
+- [x] HA runner awaits controller shutdown before allowing new leader's controllers to start
+
+Plan: `.claude/plans/jolly-booping-blanket.md`
+Review: `chat-07oct-1.md`
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1277,5 +1293,6 @@ Review: `chat-07oct.md`
 | M69 — Node Runtime Inspection | 69 | Agent debug API, `cca node-inspect`, `cca agent debug`, `cca exec`, `cca images list/pull` |
 | M70 — Transaction Budgeting | 70 | Runner caps transactions at 128 ops, FailureController batches replacements (10/cycle), NodeFailureController batches instance changes (50/cycle), MemoryStore enforces etcd limit, chaos benchmarks converge at 50+ node scale |
 | M71 — Post-Review Correctness | 71 | Runner rejects (not truncates) oversized change sets, drain cap (10/cycle), heartbeat N² fix, leader CAS fencing, agent skips failed instances, drain readiness moved to derived/, watch compaction resilience |
+| M72 — Correctness II | 72 | Controller budget alignment (all ≤60 changes/cycle), HA runner awaits shutdown, agent watch retry loop, endpoint watches derived/, duplicate-key validation, heartbeat parse warning |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

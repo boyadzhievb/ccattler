@@ -39,6 +39,7 @@ func (endpointController *EndpointController) Watch() []string {
 		types.ScanObservedNodes,
 		types.ScanEndpoints,
 		types.ScanDesiredServices,
+		types.ScanDerivedInstances,
 	}
 }
 

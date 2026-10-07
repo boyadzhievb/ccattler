@@ -1,8 +1,5 @@
 /cca
 /cca-linux*
-/mcp
-/ccattler-mcp
-.mcp.json
 deploy/ansible/cca-linux-*
 deploy/ansible/inventory.ini
 deploy/lima/cca-linux-*

@@ -79,6 +79,51 @@ func TestHARunnerMetricsWrapping(t *testing.T) {
 	}
 }
 
+// TestHARunnerAwaitsShutdown verifies that stopControllers blocks until the
+// runner goroutine actually exits, preventing split-brain where the old
+// leader's controllers commit transactions after the new leader starts.
+func TestHARunnerAwaitsShutdown(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	memoryStore.Put(ctx, "effective/service/web/instances", []byte("2"))
+
+	metrics := NewMetricsCollector()
+	instanceController := NewInstanceController()
+	haRunner := NewHARunner(memoryStore, "cp-1", metrics, instanceController)
+
+	go haRunner.Run(ctx)
+	time.Sleep(300 * time.Millisecond)
+
+	if !haRunner.IsLeader() {
+		t.Fatal("should be leader before stop")
+	}
+
+	// Directly call stopControllers and verify it completes (doesn't hang).
+	done := make(chan struct{})
+	go func() {
+		haRunner.stopControllers()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// stopControllers returned — runner goroutine was awaited.
+	case <-time.After(stopControllersTimeout + 2*time.Second):
+		t.Fatal("stopControllers did not return within timeout — runner was not awaited")
+	}
+
+	// After stop, runner should be nil.
+	haRunner.mutex.Lock()
+	runnerIsNil := haRunner.runner == nil
+	haRunner.mutex.Unlock()
+	if !runnerIsNil {
+		t.Error("runner should be nil after stopControllers")
+	}
+}
+
 func TestHARunnerFailoverTransfersControllers(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()

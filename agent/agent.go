@@ -26,6 +26,10 @@ import (
 // cycles when no explicit interval is set via SetInterval.
 const defaultAgentReconcileInterval = 1 * time.Second
 
+// watchReconnectDelay is the pause before re-establishing a watch after the
+// watch channel closes (e.g. due to etcd compaction or store shutdown).
+const watchReconnectDelay = 2 * time.Second
+
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
 // Delegates to three sub-components:
@@ -135,7 +139,29 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	// Start the independent probe scheduler goroutine.
 	go nodeAgent.probeScheduler.Run(ctx, nodeAgent.findInstancesPlacedOnThisNode)
 
-	// Watch for placement changes and reconcile periodically.
+	// Retry loop: re-establish watch on channel closure.
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		watchLoopError := nodeAgent.runWatchLoop(ctx)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		logging.Default().Warn("watch loop exited, reconnecting",
+			"agent", nodeAgent.nodeID, "error", watchLoopError.Error())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(watchReconnectDelay):
+		}
+	}
+}
+
+// runWatchLoop establishes a placement watch and runs the reconciliation
+// select loop. Returns an error when the watch channel closes, allowing
+// the caller to reconnect.
+func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 	ticker := time.NewTicker(nodeAgent.interval)
 	defer ticker.Stop()
 
@@ -149,15 +175,13 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			// Guard against select starvation: under heavy load the ticker
-			// and watch channels are always ready, so ctx.Done may not win.
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			nodeAgent.nodeReporter.PublishAliveState(ctx)
 			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
-			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
-				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
+			if reconcileErr := nodeAgent.executeReconciliationCycle(ctx); reconcileErr != nil {
+				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
 			nodeAgent.nodeReporter.CollectAndReportTelemetry(ctx)
 			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
@@ -174,8 +198,8 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			if watchEvent.Type == store.EventCompacted {
 				logging.Default().Warn("watch revision compacted, triggering full resync", "agent", nodeAgent.nodeID)
 			}
-			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
-				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
+			if reconcileErr := nodeAgent.executeReconciliationCycle(ctx); reconcileErr != nil {
+				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
 		}
 	}

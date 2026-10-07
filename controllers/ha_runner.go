@@ -12,6 +12,10 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 )
 
+// stopControllersTimeout is how long stopControllers waits for the runner
+// to shut down before giving up. Prevents deadlock if a controller hangs.
+const stopControllersTimeout = 10 * time.Second
+
 // HARunner is a high-availability controller runner that integrates leader
 // election with the reconciliation loop. Multiple HARunner instances can run
 // on different control-plane nodes — only the elected leader actively
@@ -34,7 +38,10 @@ type HARunner struct {
 	runner *Runner
 	// cancelRunner stops the active controller runner.
 	cancelRunner context.CancelFunc
-	mutex        sync.Mutex
+	// runnerDone is closed when the runner goroutine exits, signaling
+	// that all controller goroutines have terminated.
+	runnerDone chan struct{}
+	mutex      sync.Mutex
 }
 
 // NewHARunner creates a high-availability runner for the given controllers.
@@ -98,7 +105,9 @@ func (haRunner *HARunner) startControllers() {
 	}
 
 	haRunner.runner = NewRunner(haRunner.factStore, wrappedControllers...)
+	haRunner.runnerDone = make(chan struct{})
 	go func() {
+		defer close(haRunner.runnerDone)
 		if err := haRunner.runner.Run(controllerCtx); err != nil && controllerCtx.Err() == nil {
 			logging.Default().Error("controller error", "component", "ha-runner", "error", err.Error())
 		}
@@ -108,16 +117,25 @@ func (haRunner *HARunner) startControllers() {
 }
 
 // stopControllers is called when this node loses leadership. It cancels
-// the active controller runner.
+// the active controller runner and waits for all controller goroutines to
+// terminate before returning. This prevents split-brain where the old
+// leader's controllers are still committing transactions when the new
+// leader starts its own.
 func (haRunner *HARunner) stopControllers() {
 	haRunner.mutex.Lock()
 	defer haRunner.mutex.Unlock()
 
 	if haRunner.cancelRunner != nil {
 		haRunner.cancelRunner()
+		select {
+		case <-haRunner.runnerDone:
+			logging.Default().Info("controllers stopped (lost leadership)", "component", "ha-runner")
+		case <-time.After(stopControllersTimeout):
+			logging.Default().Error("runner shutdown timed out, forcing stop", "component", "ha-runner")
+		}
 		haRunner.cancelRunner = nil
 		haRunner.runner = nil
-		logging.Default().Info("controllers stopped (lost leadership)", "component", "ha-runner")
+		haRunner.runnerDone = nil
 	}
 }
 

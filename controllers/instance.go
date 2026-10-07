@@ -17,10 +17,16 @@ import (
 
 // defaultMaxInstanceCreationsPerCycle limits how many new instances the
 // InstanceController creates per reconciliation cycle. Each creation
-// emits 3 store operations, so 20 creations = 60 ops — safely under the
-// runner's 60-change transaction budget. Remaining deficit converges in
-// subsequent cycles via watch re-trigger.
-const defaultMaxInstanceCreationsPerCycle = 20
+// emits 3 store operations, so 18 creations = 54 ops — leaving room for
+// scale-down changes in the same cycle within the runner's 60-change
+// transaction budget. Remaining deficit converges in subsequent cycles.
+const defaultMaxInstanceCreationsPerCycle = 18
+
+// maxInstanceControllerChangesPerCycle is the hard output cap. If creations
+// plus scale-down changes exceed this, excess changes are deferred to the
+// next cycle. This guarantees the runner's transaction budget is never
+// exceeded regardless of how many services need simultaneous adjustment.
+const maxInstanceControllerChangesPerCycle = 58
 
 // InstanceController reconciles the desired instance count for each service
 // against the actually observed instances. For stateless services it creates
@@ -108,6 +114,13 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 		if creationsRemaining <= 0 {
 			creationsRemaining = 0
 		}
+	}
+
+	if len(changes) > maxInstanceControllerChangesPerCycle {
+		logging.Default().Warn("instance controller output capped",
+			"total_changes", fmt.Sprintf("%d", len(changes)),
+			"cap", fmt.Sprintf("%d", maxInstanceControllerChangesPerCycle))
+		changes = changes[:maxInstanceControllerChangesPerCycle]
 	}
 
 	return changes, nil

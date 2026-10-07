@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -20,11 +21,18 @@ import (
 // network configuration, and cgroup setup that can take tens of seconds.
 const defaultNodeFailureLeaseTimeout = 30 * time.Second
 
-// defaultMaxInstanceStateChangesPerCycle limits how many instance state
-// changes the NodeFailureController emits per reconciliation cycle. This
-// prevents transaction overflow when many nodes fail simultaneously.
-// Remaining instances converge in subsequent cycles via watch re-trigger.
-const defaultMaxInstanceStateChangesPerCycle = 50
+// defaultMaxTotalChangesPerCycle is the total change budget for the
+// NodeFailureController. Node state changes are emitted first (capped at
+// defaultMaxNodeStateChangesPerCycle), and the remaining budget is used
+// for instance state changes. This ensures the combined output never
+// exceeds the runner's 60-change transaction limit.
+const defaultMaxTotalChangesPerCycle = 58
+
+// defaultMaxNodeStateChangesPerCycle limits how many node state transitions
+// (alive→unreachable) the controller emits per cycle. Node state changes
+// take priority because detecting unreachable nodes is prerequisite to
+// marking their instances as failed.
+const defaultMaxNodeStateChangesPerCycle = 12
 
 // NodeFailureController watches node heartbeat leases and marks nodes as
 // unreachable when their lease expires. It also marks all instances placed
@@ -38,19 +46,25 @@ type NodeFailureController struct {
 	// in tests for deterministic behavior.
 	Now func() time.Time
 
-	// MaxInstanceStateChangesPerCycle limits how many instance state changes
-	// are emitted per reconciliation cycle. Prevents transaction overflow
-	// when many nodes fail simultaneously.
-	MaxInstanceStateChangesPerCycle int
+	// MaxTotalChangesPerCycle is the total change budget for this controller.
+	// Node state changes consume from this budget first, and the remainder
+	// is available for instance state changes.
+	MaxTotalChangesPerCycle int
+
+	// MaxNodeStateChangesPerCycle limits how many node state transitions
+	// are emitted per cycle. Excess unreachable nodes are detected on the
+	// next cycle via watch re-trigger.
+	MaxNodeStateChangesPerCycle int
 }
 
 // NewNodeFailureController returns a NodeFailureController with a 30-second
 // default lease timeout and time.Now as the clock source.
 func NewNodeFailureController() *NodeFailureController {
 	return &NodeFailureController{
-		LeaseTimeout:                    defaultNodeFailureLeaseTimeout,
-		Now:                             time.Now,
-		MaxInstanceStateChangesPerCycle: defaultMaxInstanceStateChangesPerCycle,
+		LeaseTimeout:                defaultNodeFailureLeaseTimeout,
+		Now:                         time.Now,
+		MaxTotalChangesPerCycle:     defaultMaxTotalChangesPerCycle,
+		MaxNodeStateChangesPerCycle: defaultMaxNodeStateChangesPerCycle,
 	}
 }
 
@@ -84,8 +98,18 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		currentTime, lastHeartbeatMillisByNode, currentNodeStates,
 	)
 
+	// Cap node state changes to their budget.
+	if len(nodeStateChanges) > nodeFailureController.MaxNodeStateChangesPerCycle {
+		nodeStateChanges = nodeStateChanges[:nodeFailureController.MaxNodeStateChangesPerCycle]
+	}
+
+	// Remaining budget goes to instance state changes.
+	instanceBudget := nodeFailureController.MaxTotalChangesPerCycle - len(nodeStateChanges)
+	if instanceBudget < 0 {
+		instanceBudget = 0
+	}
 	instanceFailureChanges := markInstancesOnUnreachableNodesAsFailed(
-		facts, unreachableNodeSet, nodeFailureController.MaxInstanceStateChangesPerCycle,
+		facts, unreachableNodeSet, instanceBudget,
 	)
 
 	return append(nodeStateChanges, instanceFailureChanges...), nil
@@ -97,9 +121,13 @@ func parseNodeLeaseTimestamps(facts []store.Fact) map[string]int64 {
 	lastHeartbeatMillisByNode := make(map[string]int64)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanLeaseNodes) {
 		nodeID := strings.TrimPrefix(factEntry.Key, types.ScanLeaseNodes)
-		if milliTimestamp, parseErr := strconv.ParseInt(string(factEntry.Value), 10, 64); parseErr == nil {
-			lastHeartbeatMillisByNode[nodeID] = milliTimestamp
+		milliTimestamp, parseErr := strconv.ParseInt(string(factEntry.Value), 10, 64)
+		if parseErr != nil {
+			logging.Default().Warn("corrupt lease timestamp, node invisible to failure detection",
+				"node", nodeID, "value", string(factEntry.Value))
+			continue
 		}
+		lastHeartbeatMillisByNode[nodeID] = milliTimestamp
 	}
 	return lastHeartbeatMillisByNode
 }

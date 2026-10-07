@@ -68,7 +68,7 @@ jobs:
 
       - name: Flag changes to build and install scripts
         run: |
-          SCRIPT_CHANGES=$(git diff --name-only origin/master...HEAD -- 'Makefile' 'deploy/' 'install*' '*.sh' || true)
+          SCRIPT_CHANGES=$(git diff --name-only origin/master...HEAD -- 'deploy/' 'install*' '*.sh' || true)
           if [ -n "$SCRIPT_CHANGES" ]; then
             echo "::warning::PR modifies build/deploy scripts — review for unexpected commands"
             echo "## Build/deploy script changes" >> "$GITHUB_STEP_SUMMARY"

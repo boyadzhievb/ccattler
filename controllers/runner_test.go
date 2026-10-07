@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -261,10 +262,10 @@ func (controller *oversizedController) Reconcile(_ context.Context, _ []store.Fa
 	return changes, nil
 }
 
-// TestRunnerRejectsOversizedChangeSets verifies that the runner skips a
-// reconciliation cycle instead of committing a partial transaction when the
-// controller produces more changes than the transaction budget allows.
-func TestRunnerRejectsOversizedChangeSets(t *testing.T) {
+// TestRunnerCapsOversizedChangeSets verifies that the runner truncates
+// oversized change sets to the transaction budget and commits the capped
+// set rather than rejecting the entire cycle.
+func TestRunnerCapsOversizedChangeSets(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -284,11 +285,10 @@ func TestRunnerRejectsOversizedChangeSets(t *testing.T) {
 		t.Fatal("expected no conflict, got conflict")
 	}
 
-	// Verify no facts were written by the transaction (the only fact should be
-	// the one we seeded above).
+	// Verify exactly maxTransactionChanges facts were committed (capped, not rejected).
 	allFacts, _ := factStore.Scan(ctx, "test/")
-	if len(allFacts) > 0 {
-		t.Fatalf("expected zero test facts committed, got %d", len(allFacts))
+	if len(allFacts) != maxTransactionChanges {
+		t.Fatalf("expected %d facts committed (capped), got %d", maxTransactionChanges, len(allFacts))
 	}
 }
 
@@ -316,5 +316,69 @@ func TestRunnerCommitsWithinBudgetChangeSets(t *testing.T) {
 	allFacts, _ := factStore.Scan(ctx, "test/key/")
 	if len(allFacts) != maxTransactionChanges {
 		t.Fatalf("expected %d facts committed, got %d", maxTransactionChanges, len(allFacts))
+	}
+}
+
+// duplicateKeyController returns changes with duplicate keys, which etcd
+// would reject.
+type duplicateKeyController struct{}
+
+func (controller *duplicateKeyController) Name() string    { return "duplicate-key-test" }
+func (controller *duplicateKeyController) Watch() []string { return []string{"desired/"} }
+func (controller *duplicateKeyController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
+	return []Change{
+		{Type: store.OpPut, Key: "test/dup", Value: []byte("first")},
+		{Type: store.OpPut, Key: "test/dup", Value: []byte("second")},
+		{Type: store.OpPut, Key: "test/unique", Value: []byte("ok")},
+	}, nil
+}
+
+// TestRunnerRejectsDuplicateKeys verifies that the runner catches duplicate
+// keys in a change set before attempting to commit. etcd requires unique
+// mutation keys per transaction.
+func TestRunnerRejectsDuplicateKeys(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	controller := &duplicateKeyController{}
+	runner := NewRunner(factStore, controller)
+
+	ctx := context.Background()
+
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+
+	_, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	if reconcileError == nil {
+		t.Fatal("expected error for duplicate keys, got nil")
+	}
+	if !strings.Contains(reconcileError.Error(), "duplicate key") {
+		t.Fatalf("expected 'duplicate key' in error, got: %s", reconcileError.Error())
+	}
+
+	// No facts should have been committed.
+	allFacts, _ := factStore.Scan(ctx, "test/")
+	if len(allFacts) != 0 {
+		t.Fatalf("expected zero facts committed after duplicate key rejection, got %d", len(allFacts))
+	}
+}
+
+// TestRunnerClampsMinAttempts verifies that SetMaxReconciliationAttempts
+// clamps values below 1 to prevent silent no-op reconciliation.
+func TestRunnerClampsMinAttempts(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	runner := NewRunner(factStore)
+	runner.SetMaxReconciliationAttempts(0)
+	if runner.maxReconciliationAttempts != 1 {
+		t.Fatalf("expected clamped to 1, got %d", runner.maxReconciliationAttempts)
+	}
+	runner.SetMaxReconciliationAttempts(-5)
+	if runner.maxReconciliationAttempts != 1 {
+		t.Fatalf("expected clamped to 1 for negative, got %d", runner.maxReconciliationAttempts)
+	}
+	runner.SetMaxReconciliationAttempts(10)
+	if runner.maxReconciliationAttempts != 10 {
+		t.Fatalf("expected 10, got %d", runner.maxReconciliationAttempts)
 	}
 }

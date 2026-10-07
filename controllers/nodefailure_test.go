@@ -170,12 +170,14 @@ func TestNodeFailureControllerName(t *testing.T) {
 }
 
 // TestNodeFailureRateLimitsInstanceStateChanges verifies that the controller
-// caps instance state changes per cycle to MaxInstanceStateChangesPerCycle.
+// caps instance state changes per cycle within the total budget.
 func TestNodeFailureRateLimitsInstanceStateChanges(t *testing.T) {
 	nodeFailureController := NewNodeFailureController()
 	nodeFailureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
 	nodeFailureController.Now = func() time.Time { return time.Unix(1000, 0) }
-	nodeFailureController.MaxInstanceStateChangesPerCycle = 5
+	// Total budget 6: 1 node state change leaves 5 for instances.
+	nodeFailureController.MaxTotalChangesPerCycle = 6
+	nodeFailureController.MaxNodeStateChangesPerCycle = 12
 
 	var inputFacts []store.Fact
 	// One unreachable node with 20 running instances.
@@ -208,11 +210,53 @@ func TestNodeFailureRateLimitsInstanceStateChanges(t *testing.T) {
 	}
 }
 
-// TestNodeFailureDefaultMaxInstanceChanges verifies the default is 50.
-func TestNodeFailureDefaultMaxInstanceChanges(t *testing.T) {
+// TestNodeFailureTotalOutputWithinBudget verifies that the total output
+// (node state + instance state changes) stays within the budget when many
+// nodes fail simultaneously with many instances each.
+func TestNodeFailureTotalOutputWithinBudget(t *testing.T) {
 	nodeFailureController := NewNodeFailureController()
-	if nodeFailureController.MaxInstanceStateChangesPerCycle != defaultMaxInstanceStateChangesPerCycle {
-		t.Fatalf("expected default %d, got %d",
-			defaultMaxInstanceStateChangesPerCycle, nodeFailureController.MaxInstanceStateChangesPerCycle)
+	nodeFailureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
+	nodeFailureController.Now = func() time.Time { return time.Unix(1000, 0) }
+	// Use defaults — total budget should cap the combined output.
+
+	var inputFacts []store.Fact
+	// 15 unreachable nodes with 10 running instances each.
+	for nodeIndex := 0; nodeIndex < 15; nodeIndex++ {
+		nodeID := fmt.Sprintf("node-%02d", nodeIndex)
+		inputFacts = append(inputFacts,
+			store.Fact{Key: types.KeyLeaseNode(nodeID), Value: millis(960)},
+			store.Fact{Key: types.KeyObservedNodeState(nodeID), Value: []byte("alive")},
+		)
+		for instanceIndex := 0; instanceIndex < 10; instanceIndex++ {
+			instanceID := fmt.Sprintf("inst-%02d-%03d", nodeIndex, instanceIndex)
+			inputFacts = append(inputFacts,
+				store.Fact{Key: types.KeyPlacementInstance(instanceID), Value: []byte(nodeID)},
+				store.Fact{Key: types.KeyObservedInstanceState(instanceID), Value: []byte("running")},
+			)
+		}
+	}
+
+	store.SortFacts(inputFacts)
+	proposedChanges, err := nodeFailureController.Reconcile(context.Background(), inputFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(proposedChanges) > nodeFailureController.MaxTotalChangesPerCycle {
+		t.Fatalf("total changes %d exceeds budget %d",
+			len(proposedChanges), nodeFailureController.MaxTotalChangesPerCycle)
+	}
+}
+
+// TestNodeFailureDefaultBudgets verifies the default budget constants.
+func TestNodeFailureDefaultBudgets(t *testing.T) {
+	nodeFailureController := NewNodeFailureController()
+	if nodeFailureController.MaxTotalChangesPerCycle != defaultMaxTotalChangesPerCycle {
+		t.Fatalf("expected default total %d, got %d",
+			defaultMaxTotalChangesPerCycle, nodeFailureController.MaxTotalChangesPerCycle)
+	}
+	if nodeFailureController.MaxNodeStateChangesPerCycle != defaultMaxNodeStateChangesPerCycle {
+		t.Fatalf("expected default node state %d, got %d",
+			defaultMaxNodeStateChangesPerCycle, nodeFailureController.MaxNodeStateChangesPerCycle)
 	}
 }

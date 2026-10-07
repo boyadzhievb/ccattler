@@ -1599,6 +1599,105 @@ func (noResize *noResizeRuntime) Resize(_ context.Context, _ string, _ int64, _ 
 	return runtime.ErrResizeUnsupported
 }
 
+// watchClosingStore wraps a MemoryStore and closes the first N watch channels
+// immediately after creation, simulating etcd compaction or connection loss.
+// Subsequent Watch calls delegate normally to the inner store.
+type watchClosingStore struct {
+	inner          *store.MemoryStore
+	closuresLeft   int
+	watchCallCount int
+	mu             sync.Mutex
+}
+
+func (watchStore *watchClosingStore) Get(ctx context.Context, key string) (*store.Fact, error) {
+	return watchStore.inner.Get(ctx, key)
+}
+func (watchStore *watchClosingStore) Put(ctx context.Context, key string, value []byte) (int64, error) {
+	return watchStore.inner.Put(ctx, key, value)
+}
+func (watchStore *watchClosingStore) Delete(ctx context.Context, key string) error {
+	return watchStore.inner.Delete(ctx, key)
+}
+func (watchStore *watchClosingStore) Scan(ctx context.Context, prefix string) ([]store.Fact, error) {
+	return watchStore.inner.Scan(ctx, prefix)
+}
+func (watchStore *watchClosingStore) ScanWithRevision(ctx context.Context, prefix string) (*store.ScanResult, error) {
+	return watchStore.inner.ScanWithRevision(ctx, prefix)
+}
+func (watchStore *watchClosingStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
+	return watchStore.inner.Transaction(ctx, compares, onSuccess, onFailure)
+}
+func (watchStore *watchClosingStore) Revision(ctx context.Context) (int64, error) {
+	return watchStore.inner.Revision(ctx)
+}
+func (watchStore *watchClosingStore) Close() error {
+	return watchStore.inner.Close()
+}
+
+// Watch either immediately closes the channel (simulating disconnection)
+// or delegates to the inner store for normal operation.
+func (watchStore *watchClosingStore) Watch(ctx context.Context, key string, opts store.WatchOption) (<-chan store.Event, error) {
+	watchStore.mu.Lock()
+	watchStore.watchCallCount++
+	shouldClose := watchStore.closuresLeft > 0
+	if shouldClose {
+		watchStore.closuresLeft--
+	}
+	watchStore.mu.Unlock()
+
+	if shouldClose {
+		closedChannel := make(chan store.Event)
+		close(closedChannel)
+		return closedChannel, nil
+	}
+	return watchStore.inner.Watch(ctx, key, opts)
+}
+
+// WatchCallCount returns how many times Watch was called.
+func (watchStore *watchClosingStore) WatchCallCount() int {
+	watchStore.mu.Lock()
+	defer watchStore.mu.Unlock()
+	return watchStore.watchCallCount
+}
+
+// TestAgentRestartsOnWatchClosure verifies that the agent's retry loop
+// re-establishes the watch when the watch channel is closed (e.g. due
+// to etcd compaction or store shutdown).
+func TestAgentRestartsOnWatchClosure(t *testing.T) {
+	innerStore := store.NewMemoryStore()
+	defer innerStore.Close()
+	closingStore := &watchClosingStore{inner: innerStore, closuresLeft: 1}
+
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", closingStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	// Write facts so the agent has something to reconcile.
+	innerStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, innerStore, types.Instance{ID: "web-1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, innerStore, types.Placement{InstanceID: "web-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// Wait for the agent to hit the closed watch, reconnect, and reconcile.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if closingStore.WatchCallCount() >= 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if closingStore.WatchCallCount() < 2 {
+		t.Fatalf("expected at least 2 Watch calls (initial + reconnect), got %d",
+			closingStore.WatchCallCount())
+	}
+}
+
 // TestAgentSkipsFailedInstances verifies that the agent does not attempt to
 // start instances in the "failed" state — the FailureController is responsible
 // for replacing those.

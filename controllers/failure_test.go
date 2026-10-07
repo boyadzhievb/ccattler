@@ -425,6 +425,97 @@ func TestFailureDefaultMaxDrains(t *testing.T) {
 	}
 }
 
+// TestFailureCapsRecoveriesPerCycle verifies that the controller limits how
+// many drain-recovery cleanups it emits in a single cycle, preventing
+// transaction overflow during mass-recovery events.
+func TestFailureCapsRecoveriesPerCycle(t *testing.T) {
+	fixedTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NowFunc = func() time.Time { return fixedTime }
+	failureController.MaxRecoveriesPerCycle = 5
+
+	// Create 20 running instances with drain state but healthy liveness
+	// (i.e. liveness recovered while draining).
+	var entries []struct{ k, v string }
+	for instanceIndex := 0; instanceIndex < 20; instanceIndex++ {
+		instanceID := fmt.Sprintf("recover-%03d", instanceIndex)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "running"),
+			kv(types.KeyDerivedInstanceDrainSince(instanceID), "1726000000000"),
+		)
+	}
+	facts := buildFacts(entries...)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Each recovery emits 2 deletes. Capped at 5 recoveries = 10 changes.
+	expectedMaxChanges := failureController.MaxRecoveriesPerCycle * 2
+	if len(changes) > expectedMaxChanges {
+		t.Fatalf("expected at most %d recovery changes (cap=%d), got %d",
+			expectedMaxChanges, failureController.MaxRecoveriesPerCycle, len(changes))
+	}
+	if len(changes) != expectedMaxChanges {
+		t.Errorf("expected exactly %d recovery changes, got %d", expectedMaxChanges, len(changes))
+	}
+
+	// All emitted changes should be deletes (clearing drain state).
+	for _, change := range changes {
+		if change.Type != store.OpDelete {
+			t.Errorf("expected delete change, got type %d for key %s", change.Type, change.Key)
+		}
+	}
+}
+
+// TestFailureTotalOutputWithinBudget verifies that the hard cap prevents
+// combined output from exceeding the transaction budget even when per-type
+// caps allow it.
+func TestFailureTotalOutputWithinBudget(t *testing.T) {
+	fixedTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	drainStart := fixedTime.Add(-10 * time.Second)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.NowFunc = func() time.Time { return fixedTime }
+	failureController.DrainGracePeriod = 5 * time.Second
+	// Set per-type caps high enough that their sum can exceed the hard limit.
+	failureController.MaxReplacementsPerCycle = 30
+	failureController.MaxDrainsPerCycle = 30
+	failureController.MaxRecoveriesPerCycle = 30
+
+	var entries []struct{ k, v string }
+	// 15 failed instances → 15 replacements × 4 = 60 changes.
+	for instanceIndex := 0; instanceIndex < 15; instanceIndex++ {
+		instanceID := fmt.Sprintf("fail-%03d", instanceIndex)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "failed"),
+		)
+	}
+	// 10 liveness-unhealthy draining instances past grace → 10 replacements × 4 = 40 more.
+	for instanceIndex := 0; instanceIndex < 10; instanceIndex++ {
+		instanceID := fmt.Sprintf("drain-%03d", instanceIndex)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "running"),
+			kv(types.KeyObservedInstanceProbeState(instanceID, "liveness"), string(types.LivenessProbeUnhealthy)),
+			kv(types.KeyDerivedInstanceDrainSince(instanceID), fmt.Sprintf("%d", drainStart.UnixMilli())),
+		)
+	}
+	facts := buildFacts(entries...)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) > maxFailureControllerChangesPerCycle {
+		t.Fatalf("total changes %d exceeds hard cap %d", len(changes), maxFailureControllerChangesPerCycle)
+	}
+}
+
 // TestFailureClearsDrainOnRecovery verifies that when an instance's liveness
 // recovers (no longer unhealthy) while drain state exists, the controller
 // emits delete changes to clear drain_readiness and drain_since.

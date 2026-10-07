@@ -44,8 +44,13 @@ const (
 	// will commit in a single transaction. Each change produces roughly two
 	// transaction items (one compare + one operation), so 60 changes yields
 	// ~120 items — safely under the 128-op etcd limit. Oversized change sets
-	// are rejected (not truncated) to avoid splitting atomic operation groups;
-	// the controller retries on the next reconciliation cycle.
+	// are truncated (capped) to this limit and committed; remaining changes
+	// converge on subsequent cycles via watch re-trigger.
+	//
+	// CONTRACT: Every built-in controller MUST produce ≤ maxTransactionChanges
+	// per Reconcile call. Controllers with variable output must cap internally
+	// (e.g. FailureController.MaxReplacementsPerCycle, NodeFailureController
+	// .MaxTotalChangesPerCycle). The runner logs a warning for any violation.
 	maxTransactionChanges = 60
 )
 
@@ -156,8 +161,12 @@ func (controllerRunner *Runner) SetDebounce(debounceInterval time.Duration) {
 }
 
 // SetMaxReconciliationAttempts overrides the default number of optimistic
-// concurrency retries per reconciliation cycle.
+// concurrency retries per reconciliation cycle. Values below 1 are clamped
+// to 1 to prevent silent no-op reconciliation.
 func (controllerRunner *Runner) SetMaxReconciliationAttempts(maxAttempts int) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
 	controllerRunner.maxReconciliationAttempts = maxAttempts
 }
 
@@ -428,13 +437,18 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	sortChangesByKey(changes)
 
+	if duplicateKey := findDuplicateChangeKey(changes); duplicateKey != "" {
+		return false, fmt.Errorf("controller %s produced duplicate key in single transaction: %s",
+			controller.Name(), duplicateKey)
+	}
+
 	if len(changes) > maxTransactionChanges {
-		logging.Default().Error("change set exceeds transaction budget, skipping cycle",
+		logging.Default().Warn("change set exceeds transaction budget, capping to fit",
 			"controller", controller.Name(),
 			"change_count", fmt.Sprintf("%d", len(changes)),
 			"max_changes", fmt.Sprintf("%d", maxTransactionChanges))
 		transactionRejections.Inc(controller.Name())
-		return false, nil
+		changes = changes[:maxTransactionChanges]
 	}
 
 	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(changes, allFacts)
@@ -585,4 +599,17 @@ func sortChangesByKey(changes []Change) {
 		}
 		return changes[i].Type < changes[j].Type
 	})
+}
+
+// findDuplicateChangeKey scans a sorted change list for adjacent entries
+// with the same key. etcd requires unique mutation keys per transaction,
+// so duplicates must be caught before commit. Returns the first duplicate
+// key found, or empty string if none.
+func findDuplicateChangeKey(changes []Change) string {
+	for changeIndex := 1; changeIndex < len(changes); changeIndex++ {
+		if changes[changeIndex].Key == changes[changeIndex-1].Key {
+			return changes[changeIndex].Key
+		}
+	}
+	return ""
 }
