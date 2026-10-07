@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,12 @@ import (
 // network configuration, and cgroup setup that can take tens of seconds.
 const defaultNodeFailureLeaseTimeout = 30 * time.Second
 
+// defaultMaxInstanceStateChangesPerCycle limits how many instance state
+// changes the NodeFailureController emits per reconciliation cycle. This
+// prevents transaction overflow when many nodes fail simultaneously.
+// Remaining instances converge in subsequent cycles via watch re-trigger.
+const defaultMaxInstanceStateChangesPerCycle = 50
+
 // NodeFailureController watches node heartbeat leases and marks nodes as
 // unreachable when their lease expires. It also marks all instances placed
 // on unreachable nodes as failed, so the failure controller can reschedule them.
@@ -30,14 +37,20 @@ type NodeFailureController struct {
 	// Now returns the current time. Defaults to time.Now but can be overridden
 	// in tests for deterministic behavior.
 	Now func() time.Time
+
+	// MaxInstanceStateChangesPerCycle limits how many instance state changes
+	// are emitted per reconciliation cycle. Prevents transaction overflow
+	// when many nodes fail simultaneously.
+	MaxInstanceStateChangesPerCycle int
 }
 
 // NewNodeFailureController returns a NodeFailureController with a 30-second
 // default lease timeout and time.Now as the clock source.
 func NewNodeFailureController() *NodeFailureController {
 	return &NodeFailureController{
-		LeaseTimeout: defaultNodeFailureLeaseTimeout,
-		Now:          time.Now,
+		LeaseTimeout:                    defaultNodeFailureLeaseTimeout,
+		Now:                             time.Now,
+		MaxInstanceStateChangesPerCycle: defaultMaxInstanceStateChangesPerCycle,
 	}
 }
 
@@ -71,7 +84,9 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		currentTime, lastHeartbeatMillisByNode, currentNodeStates,
 	)
 
-	instanceFailureChanges := markInstancesOnUnreachableNodesAsFailed(facts, unreachableNodeSet)
+	instanceFailureChanges := markInstancesOnUnreachableNodesAsFailed(
+		facts, unreachableNodeSet, nodeFailureController.MaxInstanceStateChangesPerCycle,
+	)
 
 	return append(nodeStateChanges, instanceFailureChanges...), nil
 }
@@ -136,8 +151,9 @@ func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
 
 // markInstancesOnUnreachableNodesAsFailed scans placement and instance state
 // facts, and for any running, pending, or starting instance placed on an
-// unreachable node, emits a change to mark it as failed.
-func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNodeSet map[string]bool) []Change {
+// unreachable node, emits a change to mark it as failed. The maxChanges
+// parameter caps the number of instance state changes per cycle.
+func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNodeSet map[string]bool, maxChanges int) []Change {
 	instancePlacementNode := make(map[string]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanPlacements) {
 		instanceID := strings.TrimPrefix(factEntry.Key, types.ScanPlacements)
@@ -146,19 +162,30 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 
 	currentInstanceStates := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
 
-	var instanceFailureChanges []Change
+	// Collect affected instance IDs and sort for deterministic output.
+	var affectedInstanceIDs []string
 	for instanceID, placedNodeID := range instancePlacementNode {
 		if !unreachableNodeSet[placedNodeID] {
 			continue
 		}
 		instanceState := types.InstanceState(currentInstanceStates[instanceID])
 		if instanceState == types.InstanceRunning || instanceState == types.InstancePending || instanceState == types.InstanceStarting {
-			instanceFailureChanges = append(instanceFailureChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedInstanceState(instanceID),
-				Value: []byte(string(types.InstanceFailed)),
-			})
+			affectedInstanceIDs = append(affectedInstanceIDs, instanceID)
 		}
+	}
+	sort.Strings(affectedInstanceIDs)
+
+	if len(affectedInstanceIDs) > maxChanges {
+		affectedInstanceIDs = affectedInstanceIDs[:maxChanges]
+	}
+
+	instanceFailureChanges := make([]Change, 0, len(affectedInstanceIDs))
+	for _, instanceID := range affectedInstanceIDs {
+		instanceFailureChanges = append(instanceFailureChanges, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyObservedInstanceState(instanceID),
+			Value: []byte(string(types.InstanceFailed)),
+		})
 	}
 
 	return instanceFailureChanges

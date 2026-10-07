@@ -17,6 +17,13 @@ import (
 // from endpoints) before it is stopped and replaced.
 const DefaultDrainGracePeriod = 5 * time.Second
 
+// defaultMaxReplacementsPerCycle limits how many failed instances the
+// FailureController replaces in a single reconciliation cycle. Each
+// replacement emits 4 store operations, so 10 replacements = 40 ops —
+// safely under the 128-op etcd transaction limit. Remaining failures
+// converge in subsequent cycles via watch re-trigger.
+const defaultMaxReplacementsPerCycle = 10
+
 // FailureController watches for instances that need replacement and
 // handles three failure scenarios:
 //   - Instance state is "failed" (runtime crash) — immediate replacement
@@ -40,15 +47,23 @@ type FailureController struct {
 	// DrainGracePeriod is how long to wait after marking an instance as
 	// draining before stopping it. Defaults to DefaultDrainGracePeriod.
 	DrainGracePeriod time.Duration
+
+	// MaxReplacementsPerCycle limits how many failed instances are replaced
+	// in a single reconciliation cycle. Each replacement emits 4 store
+	// operations (stop old + create new root/service/state), so this cap
+	// prevents transaction overflow under mass-failure scenarios. Remaining
+	// failures converge in subsequent cycles via watch re-trigger.
+	MaxReplacementsPerCycle int
 }
 
 // NewFailureController returns a FailureController wired to the default
 // ID generator and clock.
 func NewFailureController() *FailureController {
 	return &FailureController{
-		NewID:            types.NewInstanceID,
-		NowFunc:          time.Now,
-		DrainGracePeriod: DefaultDrainGracePeriod,
+		NewID:                   types.NewInstanceID,
+		NowFunc:                 time.Now,
+		DrainGracePeriod:        DefaultDrainGracePeriod,
+		MaxReplacementsPerCycle: defaultMaxReplacementsPerCycle,
 	}
 }
 
@@ -76,8 +91,12 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 
 	now := failureController.NowFunc()
 	var changes []Change
+	replacementCount := 0
 
-	for instanceID, fields := range instanceFields {
+	// Iterate instances in sorted order for deterministic output.
+	sortedInstanceIDs := sortedMapKeys(instanceFields)
+	for _, instanceID := range sortedInstanceIDs {
+		fields := instanceFields[instanceID]
 		instanceState := types.InstanceState(fields["state"])
 		serviceName := fields["service"]
 		if serviceName == "" {
@@ -86,7 +105,11 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 
 		// Case 1: instance already failed — immediate replacement.
 		if instanceState == types.InstanceFailed {
+			if replacementCount >= failureController.MaxReplacementsPerCycle {
+				continue
+			}
 			changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
+			replacementCount++
 			continue
 		}
 
@@ -97,7 +120,11 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 		// Case 2: startup failed — immediate replacement (no drain needed,
 		// the instance never served traffic).
 		if fields["probe/startup"] == string(types.StartupProbeFailed) {
+			if replacementCount >= failureController.MaxReplacementsPerCycle {
+				continue
+			}
 			changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
+			replacementCount++
 			continue
 		}
 
@@ -109,12 +136,20 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 			} else {
 				drainStartMillis, parseErr := strconv.ParseInt(drainSince, 10, 64)
 				if parseErr != nil {
+					if replacementCount >= failureController.MaxReplacementsPerCycle {
+						continue
+					}
 					changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
+					replacementCount++
 					continue
 				}
 				drainStartTime := time.UnixMilli(drainStartMillis)
 				if now.Sub(drainStartTime) >= failureController.DrainGracePeriod {
+					if replacementCount >= failureController.MaxReplacementsPerCycle {
+						continue
+					}
 					changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
+					replacementCount++
 				}
 			}
 		}

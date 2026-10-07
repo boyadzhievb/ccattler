@@ -181,10 +181,10 @@ func scaleConfigForNodeCount(nodeCount int) scaleConfig {
 		}
 	case nodeCount <= 100:
 		return scaleConfig{
-			agentInterval:        500 * time.Millisecond,
+			agentInterval:        200 * time.Millisecond,
 			controllerDebounce:   100 * time.Millisecond,
 			maxReconcileAttempts: 15,
-			leaseTimeout:         30 * time.Second,
+			leaseTimeout:         5 * time.Minute,
 			convergenceHeadroom:  15 * time.Second,
 			chaosDuration:        270 * time.Second,
 		}

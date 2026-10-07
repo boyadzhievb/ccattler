@@ -149,6 +149,11 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
+			// Guard against select starvation: under heavy load the ticker
+			// and watch channels are always ready, so ctx.Done may not win.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			nodeAgent.nodeReporter.PublishAliveState(ctx)
 			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
@@ -160,12 +165,16 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if watchEvent.Type == store.EventOverflow {
 				logging.Default().Warn("watch events dropped, triggering full resync", "agent", nodeAgent.nodeID)
 			}
 			if watchEvent.Type == store.EventCompacted {
 				logging.Default().Warn("watch revision compacted, triggering full resync", "agent", nodeAgent.nodeID)
 			}
+			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 			if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", err.Error())
 			}

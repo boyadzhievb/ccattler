@@ -14,6 +14,13 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// defaultMaxInstanceCreationsPerCycle limits how many new instances the
+// InstanceController creates per reconciliation cycle. Each creation
+// emits 3 store operations, so 20 creations = 60 ops — safely under the
+// runner's 60-change transaction budget. Remaining deficit converges in
+// subsequent cycles via watch re-trigger.
+const defaultMaxInstanceCreationsPerCycle = 20
+
 // InstanceController reconciles the desired instance count for each service
 // against the actually observed instances. For stateless services it creates
 // new instances with random IDs and stops excess instances (pending first).
@@ -25,12 +32,20 @@ type InstanceController struct {
 	// stateless services. It defaults to types.NewInstanceID but can be
 	// replaced in tests for deterministic output.
 	NewID types.IDFunc
+
+	// MaxCreationsPerCycle limits how many new instances are created in a
+	// single reconciliation cycle across all services. This prevents
+	// transaction overflow under mass-scale-up scenarios.
+	MaxCreationsPerCycle int
 }
 
 // NewInstanceController returns an InstanceController wired to the default
 // ID generator.
 func NewInstanceController() *InstanceController {
-	return &InstanceController{NewID: types.NewInstanceID}
+	return &InstanceController{
+		NewID:                types.NewInstanceID,
+		MaxCreationsPerCycle: defaultMaxInstanceCreationsPerCycle,
+	}
 }
 
 // Name returns "instance", identifying this controller in logs and runner
@@ -57,6 +72,7 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
 
 	var changes []Change
+	creationsRemaining := instanceController.MaxCreationsPerCycle
 	sortedServiceNames := sortedMapKeys(desiredCounts)
 
 	for _, serviceName := range sortedServiceNames {
@@ -65,13 +81,28 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 		haveCount := len(activeIDs)
 
 		if statefulServices[serviceName] {
-			changes = append(changes, instanceController.reconcileStatefulService(
+			serviceChanges := instanceController.reconcileStatefulService(
 				serviceName, wantCount, activeIDs, stateByInstanceID,
-			)...)
+			)
+			changes = append(changes, serviceChanges...)
+			creationsRemaining -= countInstanceCreations(serviceChanges)
 		} else {
-			changes = append(changes, instanceController.reconcileStatelessService(
-				serviceName, wantCount, haveCount, activeIDs, stateByInstanceID,
-			)...)
+			deficit := wantCount - haveCount
+			if deficit > 0 && deficit > creationsRemaining {
+				deficit = creationsRemaining
+			}
+			if deficit > 0 {
+				changes = append(changes, instanceController.createPendingInstances(serviceName, deficit)...)
+				creationsRemaining -= deficit
+			} else if haveCount > wantCount {
+				changes = append(changes, markExcessStatelessInstancesAsStopped(
+					activeIDs, stateByInstanceID, haveCount-wantCount,
+				)...)
+			}
+		}
+
+		if creationsRemaining <= 0 {
+			creationsRemaining = 0
 		}
 	}
 
@@ -143,19 +174,16 @@ func buildActiveInstanceIDsByService(
 	return activeInstanceIDs
 }
 
-// reconcileStatelessService handles instance count reconciliation for
-// stateless services using random IDs and pending-first removal.
-func (instanceController *InstanceController) reconcileStatelessService(
-	serviceName string, wantCount int, haveCount int,
-	activeIDs []string, stateByInstanceID map[string]types.InstanceState,
-) []Change {
-	if haveCount < wantCount {
-		return instanceController.createPendingInstances(serviceName, wantCount-haveCount)
+// countInstanceCreations counts how many new instance creations are in a
+// change set by looking for pending-state writes (each creation has one).
+func countInstanceCreations(changes []Change) int {
+	creationCount := 0
+	for _, change := range changes {
+		if change.Type == store.OpPut && string(change.Value) == string(types.InstancePending) {
+			creationCount++
+		}
 	}
-	if haveCount > wantCount {
-		return markExcessStatelessInstancesAsStopped(activeIDs, stateByInstanceID, haveCount-wantCount)
-	}
-	return nil
+	return creationCount
 }
 
 // reconcileStatefulService handles instance count reconciliation for stateful

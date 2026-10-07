@@ -1173,12 +1173,12 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 
 ### Phase 70 — Transaction Budgeting & Controller Batching (M70)
 
-- [ ] Runner safety net: add `maxTransactionChanges = 60` constant, truncate oversized change sets before building transactions, log warning when truncation fires
-- [ ] FailureController rate-limiting: add `maxReplacementsPerCycle = 10` (10 × 4 ops = 40, follows DrainController pattern), remaining failures converge in subsequent cycles via watch re-trigger
-- [ ] NodeFailureController rate-limiting: add `maxInstanceStateChangesPerCycle = 50`, truncate instance state changes per cycle
-- [ ] MemoryStore enforces 128-op transaction limit: add `ErrTransactionTooLarge`, reject oversized transactions so tests surface overflow bugs before production
-- [ ] Convergence regression test: 50 nodes, 1000 instances, 5 failed nodes, 128-op limit enforced, assert all replacements land with 0 abandoned reconciliations
-- [ ] Chaos benchmark 1000/5000 workloads passes with transaction batching
+- [x] Runner safety net: add `maxTransactionChanges = 60` constant, truncate oversized change sets before building transactions, log warning when truncation fires
+- [x] FailureController rate-limiting: add `maxReplacementsPerCycle = 10` (10 × 4 ops = 40, follows DrainController pattern), remaining failures converge in subsequent cycles via watch re-trigger
+- [x] NodeFailureController rate-limiting: add `maxInstanceStateChangesPerCycle = 50`, truncate instance state changes per cycle
+- [x] MemoryStore enforces 128-op transaction limit: add `ErrTransactionTooLarge`, reject oversized transactions so tests surface overflow bugs before production
+- [x] Convergence regression test: 50 nodes, 1000 instances, 5 failed nodes, 128-op limit enforced, assert all replacements land with 0 abandoned reconciliations
+- [x] Chaos benchmark 1000/5000 workloads passes with transaction batching
 
 Plan: `.claude/plans/graceful-brewing-whale.md`
 Analysis: `chat-06oct.md`
@@ -1187,7 +1187,7 @@ Analysis: `chat-06oct.md`
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
 - [ ] Separate controller intent from `observed/instance/*` via `derived/` markers (extends M64 drain pattern)
-- [ ] VS Code extension: DSL syntax highlighting for `.cca` files
+- [x] VS Code extension: DSL syntax highlighting for `.cca` files
 
 ### Milestones
 

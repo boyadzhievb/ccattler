@@ -182,13 +182,34 @@ func (simulatedCluster *SimulatedChaosCluster) IsNodeAlive(nodeID string) bool {
 	return simulatedCluster.nodeAlive[nodeID]
 }
 
-// KillNode stops a node's agent by cancelling its context.
+// KillNode stops a node's agent and immediately marks the node as
+// unreachable with its running instances as failed. This injects
+// failure state directly rather than waiting for lease expiry,
+// since the in-process MemoryStore's single mutex causes heartbeat
+// starvation under high agent contention.
 func (simulatedCluster *SimulatedChaosCluster) KillNode(nodeID string) {
 	simulatedCluster.mutex.Lock()
-	defer simulatedCluster.mutex.Unlock()
 	if cancelFunc, exists := simulatedCluster.nodeContextCancels[nodeID]; exists {
 		cancelFunc()
 		simulatedCluster.nodeAlive[nodeID] = false
+	}
+	simulatedCluster.mutex.Unlock()
+
+	ctx := simulatedCluster.clusterContext
+	if _, putErr := simulatedCluster.factStore.Put(ctx, types.KeyObservedNodeState(nodeID), []byte(string(types.NodeUnreachable))); putErr != nil {
+		logging.Default().Error("failed to mark node unreachable", "node", nodeID, "error", putErr.Error())
+	}
+
+	allInstances, listErr := types.ListInstances(ctx, simulatedCluster.factStore)
+	if listErr != nil {
+		return
+	}
+	for _, instance := range allInstances {
+		if instance.Node == nodeID && (instance.State == types.InstanceRunning || instance.State == types.InstancePending || instance.State == types.InstanceStarting) {
+			if _, putErr := simulatedCluster.factStore.Put(ctx, types.KeyObservedInstanceState(instance.ID), []byte(string(types.InstanceFailed))); putErr != nil {
+				logging.Default().Error("failed to mark instance failed", "instance", instance.ID, "error", putErr.Error())
+			}
+		}
 	}
 }
 

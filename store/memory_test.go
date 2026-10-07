@@ -5,6 +5,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -884,5 +885,56 @@ func TestScanValueDeepCopy(t *testing.T) {
 	factsAgain, _ := memoryStore.Scan(testContext, "/prefix/")
 	if string(factsAgain[0].Value) != "hello" {
 		t.Fatalf("Scan must deep-copy values; mutating returned slice corrupted store: got %s", factsAgain[0].Value)
+	}
+}
+
+// TestTransactionTooLargeIsRejected verifies that MemoryStore rejects
+// transactions exceeding the 128-operation limit, matching etcd behavior.
+func TestTransactionTooLargeIsRejected(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	// Build a transaction with 65 compares + 65 success ops = 130 total.
+	var compares []Compare
+	var successOps []Op
+	for operationIndex := 0; operationIndex < 65; operationIndex++ {
+		key := fmt.Sprintf("/key/%03d", operationIndex)
+		compares = append(compares, Compare{Key: key, Revision: 0})
+		successOps = append(successOps, Op{Type: OpPut, Key: key, Value: []byte("v")})
+	}
+
+	succeeded, transactionError := memoryStore.Transaction(testContext, compares, successOps, nil)
+	if transactionError == nil {
+		t.Fatal("expected ErrTransactionTooLarge, got nil")
+	}
+	if succeeded {
+		t.Fatal("expected transaction to fail, got success")
+	}
+	if !errors.Is(transactionError, ErrTransactionTooLarge) {
+		t.Fatalf("expected ErrTransactionTooLarge, got: %v", transactionError)
+	}
+}
+
+// TestTransactionAtLimitSucceeds verifies that a transaction with exactly 128
+// operations is accepted.
+func TestTransactionAtLimitSucceeds(t *testing.T) {
+	memoryStore := NewMemoryStore()
+	defer memoryStore.Close()
+
+	// Build a transaction with 64 compares + 64 success ops = 128 total.
+	var compares []Compare
+	var successOps []Op
+	for operationIndex := 0; operationIndex < 64; operationIndex++ {
+		key := fmt.Sprintf("/key/%03d", operationIndex)
+		compares = append(compares, Compare{Key: key, Revision: 0})
+		successOps = append(successOps, Op{Type: OpPut, Key: key, Value: []byte("v")})
+	}
+
+	succeeded, transactionError := memoryStore.Transaction(testContext, compares, successOps, nil)
+	if transactionError != nil {
+		t.Fatalf("expected no error for 128-op transaction, got: %v", transactionError)
+	}
+	if !succeeded {
+		t.Fatal("expected transaction to succeed at exactly 128 ops")
 	}
 }

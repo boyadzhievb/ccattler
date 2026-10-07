@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -17,6 +18,17 @@ var ErrKeyNotFound = errors.New("key not found")
 
 // ErrStoreClosed is returned when an operation is attempted on a store that has been closed.
 var ErrStoreClosed = errors.New("store closed")
+
+// ErrTransactionTooLarge is returned when a transaction exceeds the maximum
+// number of operations allowed by the backend. etcd enforces a 128-operation
+// limit; MemoryStore enforces the same limit so tests surface overflow bugs
+// before production.
+var ErrTransactionTooLarge = errors.New("transaction too large")
+
+// memoryStoreTransactionOperationLimit mirrors etcd's default 128-operation
+// transaction cap so that tests using MemoryStore surface the same overflow
+// failures that would occur in production with etcd.
+const memoryStoreTransactionOperationLimit = 128
 
 // factWatcher represents an active watch subscription on the store. Each watcher
 // monitors either a single exact key or all keys sharing a common prefix and
@@ -392,6 +404,12 @@ func (memStore *MemoryStore) Transaction(_ context.Context, compares []Compare, 
 
 	if memStore.isClosed {
 		return false, ErrStoreClosed
+	}
+
+	totalTransactionOperations := len(compares) + len(onSuccess) + len(onFailure)
+	if totalTransactionOperations > memoryStoreTransactionOperationLimit {
+		return false, fmt.Errorf("%w: %d operations exceeds limit of %d",
+			ErrTransactionTooLarge, totalTransactionOperations, memoryStoreTransactionOperationLimit)
 	}
 
 	allPreconditionsMet := memStore.evaluateTransactionPreconditions(compares)

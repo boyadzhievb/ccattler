@@ -39,6 +39,14 @@ const (
 	// etcdTransactionOperationLimit is the maximum number of operations
 	// (compares + success ops + failure ops) in a single etcd transaction.
 	etcdTransactionOperationLimit = 128
+
+	// maxTransactionChanges is the maximum number of fact changes the runner
+	// will include in a single transaction. Each change produces roughly two
+	// transaction items (one compare + one operation), so 60 changes yields
+	// ~120 items — safely under the 128-op etcd limit. Oversized change sets
+	// are truncated and a warning is logged; remaining changes converge in
+	// subsequent reconciliation cycles via watch re-trigger.
+	maxTransactionChanges = 60
 )
 
 // controllerRestartBackoffDelays is the sequence of delays used when a
@@ -78,6 +86,11 @@ var (
 	writeDomainViolations = metrics.DefaultRegistry.RegisterCounter(
 		"ccattler_write_domain_violations_total",
 		"Changes rejected because the key fell outside the controller's declared write domain",
+		"controller",
+	)
+	transactionTruncations = metrics.DefaultRegistry.RegisterCounter(
+		"ccattler_transaction_truncations_total",
+		"Number of times a change set was truncated to fit the transaction budget",
 		"controller",
 	)
 )
@@ -406,6 +419,15 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	}
 
 	sortChangesByKey(changes)
+
+	if len(changes) > maxTransactionChanges {
+		logging.Default().Warn("change set truncated to fit transaction budget",
+			"controller", controller.Name(),
+			"original_changes", fmt.Sprintf("%d", len(changes)),
+			"max_changes", fmt.Sprintf("%d", maxTransactionChanges))
+		transactionTruncations.Inc(controller.Name())
+		changes = changes[:maxTransactionChanges]
+	}
 
 	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(changes, allFacts)
 

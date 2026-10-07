@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M69 — Phase 69 Node Runtime Inspection. M1–M69 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M70 — Phase 70 Transaction Budgeting & Controller Batching. M1–M70 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

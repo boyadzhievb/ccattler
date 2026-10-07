@@ -168,3 +168,51 @@ func TestNodeFailureControllerName(t *testing.T) {
 		t.Errorf("name: got %s, want node-failure", failureController.Name())
 	}
 }
+
+// TestNodeFailureRateLimitsInstanceStateChanges verifies that the controller
+// caps instance state changes per cycle to MaxInstanceStateChangesPerCycle.
+func TestNodeFailureRateLimitsInstanceStateChanges(t *testing.T) {
+	nodeFailureController := NewNodeFailureController()
+	nodeFailureController.LeaseTimeout = defaultNodeFailureLeaseTimeout
+	nodeFailureController.Now = func() time.Time { return time.Unix(1000, 0) }
+	nodeFailureController.MaxInstanceStateChangesPerCycle = 5
+
+	var inputFacts []store.Fact
+	// One unreachable node with 20 running instances.
+	inputFacts = append(inputFacts,
+		store.Fact{Key: types.KeyLeaseNode("node-1"), Value: millis(960)},
+		store.Fact{Key: types.KeyObservedNodeState("node-1"), Value: []byte("alive")},
+	)
+	for instanceIndex := 0; instanceIndex < 20; instanceIndex++ {
+		instanceID := fmt.Sprintf("inst-%03d", instanceIndex)
+		inputFacts = append(inputFacts,
+			store.Fact{Key: types.KeyPlacementInstance(instanceID), Value: []byte("node-1")},
+			store.Fact{Key: types.KeyObservedInstanceState(instanceID), Value: []byte("running")},
+		)
+	}
+
+	store.SortFacts(inputFacts)
+	proposedChanges, err := nodeFailureController.Reconcile(context.Background(), inputFacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	instanceFailedCount := 0
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceFailed) {
+			instanceFailedCount++
+		}
+	}
+	if instanceFailedCount != 5 {
+		t.Fatalf("expected 5 instance state changes (rate-limited), got %d", instanceFailedCount)
+	}
+}
+
+// TestNodeFailureDefaultMaxInstanceChanges verifies the default is 50.
+func TestNodeFailureDefaultMaxInstanceChanges(t *testing.T) {
+	nodeFailureController := NewNodeFailureController()
+	if nodeFailureController.MaxInstanceStateChangesPerCycle != defaultMaxInstanceStateChangesPerCycle {
+		t.Fatalf("expected default %d, got %d",
+			defaultMaxInstanceStateChangesPerCycle, nodeFailureController.MaxInstanceStateChangesPerCycle)
+	}
+}

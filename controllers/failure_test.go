@@ -339,3 +339,44 @@ func TestFailureControllerInterface(t *testing.T) {
 		t.Fatalf("name: got %s, want failure", failureController.Name())
 	}
 }
+
+// TestFailureRateLimitsReplacements verifies that the FailureController caps
+// the number of replacements per cycle to MaxReplacementsPerCycle.
+func TestFailureRateLimitsReplacements(t *testing.T) {
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.MaxReplacementsPerCycle = 3
+
+	var entries []struct{ k, v string }
+	for instanceIndex := 0; instanceIndex < 10; instanceIndex++ {
+		instanceID := fmt.Sprintf("inst-%03d", instanceIndex)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "failed"),
+		)
+	}
+	facts := buildFacts(entries...)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacementCount := 0
+	for _, change := range changes {
+		if string(change.Value) == "pending" {
+			replacementCount++
+		}
+	}
+	if replacementCount != 3 {
+		t.Fatalf("expected 3 replacements (rate-limited), got %d", replacementCount)
+	}
+}
+
+// TestFailureDefaultMaxReplacements verifies the default is 10.
+func TestFailureDefaultMaxReplacements(t *testing.T) {
+	failureController := NewFailureController()
+	if failureController.MaxReplacementsPerCycle != defaultMaxReplacementsPerCycle {
+		t.Fatalf("expected default %d, got %d", defaultMaxReplacementsPerCycle, failureController.MaxReplacementsPerCycle)
+	}
+}
