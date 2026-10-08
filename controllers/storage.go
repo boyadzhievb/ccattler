@@ -180,21 +180,11 @@ func reconcileVolumeCreation(desiredVolumes map[string]desiredVolumeInfo, observ
 	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
 		if _, alreadyObserved := observedVolumes[volumeName]; !alreadyObserved {
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedVolume(volumeName),
-				Value: []byte(""),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedVolumeState(volumeName),
-				Value: []byte(string(types.VolumeAvailable)),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedVolumeSize(volumeName),
-				Value: []byte(desiredInfo.size),
-			})
+			changes = append(changes, groupedChanges("vol-create/"+volumeName,
+				Change{Type: store.OpPut, Key: types.KeyObservedVolume(volumeName), Value: []byte("")},
+				Change{Type: store.OpPut, Key: types.KeyObservedVolumeState(volumeName), Value: []byte(string(types.VolumeAvailable))},
+				Change{Type: store.OpPut, Key: types.KeyObservedVolumeSize(volumeName), Value: []byte(desiredInfo.size)},
+			)...)
 		}
 	}
 	return changes
@@ -245,16 +235,10 @@ func reconcileVolumeReplication(desiredVolumes map[string]desiredVolumeInfo, obs
 			continue
 		}
 		if observedInfo.replicaCount != desiredInfo.replicas {
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedVolumeReplicaCount(volumeName),
-				Value: []byte(strconv.Itoa(desiredInfo.replicas)),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedVolumeReplicaState(volumeName),
-				Value: []byte(string(types.ReplicaSyncing)),
-			})
+			changes = append(changes, groupedChanges("vol-replicate/"+volumeName,
+				Change{Type: store.OpPut, Key: types.KeyObservedVolumeReplicaCount(volumeName), Value: []byte(strconv.Itoa(desiredInfo.replicas))},
+				Change{Type: store.OpPut, Key: types.KeyObservedVolumeReplicaState(volumeName), Value: []byte(string(types.ReplicaSyncing))},
+			)...)
 		}
 	}
 	return changes
@@ -276,42 +260,29 @@ func (storageController *StorageController) reconcileVolumeMigration(ctx context
 			continue
 		}
 
+		groupID := "vol-migrate/" + volumeName
+		var migrationChanges []Change
 		if storageController.storageProvider != nil {
 			snapshotName := fmt.Sprintf("%s-pre-migration-%d", volumeName, time.Now().UnixMilli())
 			snapshotErr := storageController.storageProvider.SnapshotVolume(ctx, volumeName, snapshotName)
 			if snapshotErr != nil {
 				logging.Default().Error("pre-migration snapshot failed", "volume", volumeName, "error", snapshotErr.Error())
 			} else {
-				changes = append(changes, Change{
+				migrationChanges = append(migrationChanges, Change{
 					Type:  store.OpPut,
 					Key:   types.KeyObservedVolumeLastSnapshot(volumeName),
 					Value: []byte(snapshotName),
 				})
 			}
 		}
-
-		changes = append(changes, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyObservedVolumeState(volumeName),
-			Value: []byte(string(types.VolumeMigrating)),
-		})
-		changes = append(changes, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyObservedVolumeMigrationSource(volumeName),
-			Value: []byte(observedInfo.node),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeNode(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeInstance(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeMountPath(volumeName),
-		})
+		migrationChanges = append(migrationChanges,
+			Change{Type: store.OpPut, Key: types.KeyObservedVolumeState(volumeName), Value: []byte(string(types.VolumeMigrating))},
+			Change{Type: store.OpPut, Key: types.KeyObservedVolumeMigrationSource(volumeName), Value: []byte(observedInfo.node)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeNode(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeInstance(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeMountPath(volumeName)},
+		)
+		changes = append(changes, groupedChanges(groupID, migrationChanges...)...)
 	}
 	return changes
 }
@@ -326,54 +297,20 @@ func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observe
 		if _, stillDesired := desiredVolumes[volumeName]; stillDesired {
 			continue
 		}
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolume(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeState(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeSize(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeNode(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeInstance(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeMountPath(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeMigrationSource(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeLastSnapshot(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeUsedBytes(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeCapacityBytes(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeReplicaCount(volumeName),
-		})
-		changes = append(changes, Change{
-			Type: store.OpDelete,
-			Key:  types.KeyObservedVolumeReplicaState(volumeName),
-		})
+		changes = append(changes, groupedChanges("vol-cleanup/"+volumeName,
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolume(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeState(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeSize(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeNode(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeInstance(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeMountPath(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeMigrationSource(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeLastSnapshot(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeUsedBytes(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeCapacityBytes(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeReplicaCount(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeReplicaState(volumeName)},
+		)...)
 	}
 	return changes
 }

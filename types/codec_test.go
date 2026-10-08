@@ -166,6 +166,64 @@ func TestListInstances(t *testing.T) {
 	}
 }
 
+func TestReadInstanceReflectsDerivedMarkers(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	// Write an instance that is observed as "running".
+	writeErr := WriteInstance(ctx, stateStore, Instance{
+		ID: "xyz", Service: "web", State: InstanceRunning,
+	})
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	// Mark it as controller_stopped via derived marker.
+	stateStore.Put(ctx, KeyDerivedInstanceControllerStopped("xyz"), []byte("true"))
+
+	// ReadInstance should return "stopped" (matching ListInstances behavior).
+	readResult, readErr := ReadInstance(ctx, stateStore, "xyz")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if readResult.State != InstanceStopped {
+		t.Fatalf("ReadInstance: expected state stopped, got %s", readResult.State)
+	}
+
+	// ListInstances should agree.
+	allInstances, listErr := ListInstances(ctx, stateStore)
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	for _, instance := range allInstances {
+		if instance.ID == "xyz" && instance.State != InstanceStopped {
+			t.Fatalf("ListInstances: expected stopped for xyz, got %s", instance.State)
+		}
+	}
+}
+
+func TestReadInstanceReflectsNodeFailureMarker(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+
+	writeErr := WriteInstance(ctx, stateStore, Instance{
+		ID: "nf1", Service: "api", State: InstanceRunning,
+	})
+	if writeErr != nil {
+		t.Fatal(writeErr)
+	}
+
+	stateStore.Put(ctx, KeyDerivedInstanceNodeFailure("nf1"), []byte("true"))
+
+	readResult, readErr := ReadInstance(ctx, stateStore, "nf1")
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if readResult.State != InstanceFailed {
+		t.Fatalf("expected state failed, got %s", readResult.State)
+	}
+}
+
 func TestNodeRoundTrip(t *testing.T) {
 	stateStore := store.NewMemoryStore()
 	defer stateStore.Close()

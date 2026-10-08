@@ -286,3 +286,148 @@ func TestControllerInterface(t *testing.T) {
 		t.Fatalf("expected 3 watch prefixes, got %d", len(instanceController.Watch()))
 	}
 }
+
+func TestStatefulOrdinalReusedAfterControllerStopped(t *testing.T) {
+	instanceController := NewInstanceController()
+
+	// Setup: stateful service "db" wants 2 instances. db-0 is running.
+	// db-1 was replaced (controller_stopped=true) and its observed state is
+	// still "running" (agent hasn't cleaned it up yet). The ordinal gap at 1
+	// should trigger recreation, and the stale controller_stopped marker
+	// must be deleted in the same atomic group.
+	facts := buildFacts(
+		kv(types.KeyEffectiveServiceInstances("db"), "2"),
+		kv(types.KeyEffectiveServiceStateful("db"), "true"),
+		// db-0: running and healthy
+		kv(types.KeyObservedInstance("db-0"), ""),
+		kv(types.KeyObservedInstanceService("db-0"), "db"),
+		kv(types.KeyObservedInstanceState("db-0"), string(types.InstanceRunning)),
+		kv(types.KeyObservedInstanceOrdinal("db-0"), "0"),
+		// db-1: observed running but controller_stopped marker makes effective state "stopped"
+		kv(types.KeyObservedInstance("db-1"), ""),
+		kv(types.KeyObservedInstanceService("db-1"), "db"),
+		kv(types.KeyObservedInstanceState("db-1"), string(types.InstanceRunning)),
+		kv(types.KeyObservedInstanceOrdinal("db-1"), "1"),
+		kv(types.KeyDerivedInstanceControllerStopped("db-1"), "true"),
+	)
+
+	changes, reconcileErr := instanceController.Reconcile(context.Background(), facts)
+	if reconcileErr != nil {
+		t.Fatalf("unexpected error: %v", reconcileErr)
+	}
+
+	// Expect: recreation of db-1 (4 put keys) + deletion of stale marker (1 delete).
+	if len(changes) == 0 {
+		t.Fatal("expected changes to recreate db-1, got none")
+	}
+
+	// All changes must share the same group.
+	groupID := changes[0].Group
+	if groupID == "" {
+		t.Fatal("expected grouped changes, got ungrouped")
+	}
+	for _, change := range changes {
+		if change.Group != groupID {
+			t.Fatalf("expected all changes in group %s, got %s", groupID, change.Group)
+		}
+	}
+
+	// Must include a delete for the stale controller_stopped marker.
+	hasMarkerDelete := false
+	hasStateWrite := false
+	for _, change := range changes {
+		if change.Type == store.OpDelete && change.Key == types.KeyDerivedInstanceControllerStopped("db-1") {
+			hasMarkerDelete = true
+		}
+		if change.Key == types.KeyObservedInstanceState("db-1") && string(change.Value) == string(types.InstancePending) {
+			hasStateWrite = true
+		}
+	}
+	if !hasMarkerDelete {
+		t.Fatal("expected delete of stale controller_stopped marker for db-1")
+	}
+	if !hasStateWrite {
+		t.Fatal("expected state=pending write for db-1 recreation")
+	}
+}
+
+func TestStatefulOrdinalReusedClearsBothMarkers(t *testing.T) {
+	instanceController := NewInstanceController()
+
+	// db-1 was on a failed node: NodeFailureController wrote node_failure=true,
+	// FailureController wrote controller_stopped=true. Both markers exist.
+	// The InstanceController should recreate db-1 and delete both markers
+	// atomically.
+	facts := buildFacts(
+		kv(types.KeyEffectiveServiceInstances("db"), "2"),
+		kv(types.KeyEffectiveServiceStateful("db"), "true"),
+		kv(types.KeyObservedInstance("db-0"), ""),
+		kv(types.KeyObservedInstanceService("db-0"), "db"),
+		kv(types.KeyObservedInstanceState("db-0"), string(types.InstanceRunning)),
+		kv(types.KeyObservedInstanceOrdinal("db-0"), "0"),
+		kv(types.KeyObservedInstance("db-1"), ""),
+		kv(types.KeyObservedInstanceService("db-1"), "db"),
+		kv(types.KeyObservedInstanceState("db-1"), string(types.InstanceRunning)),
+		kv(types.KeyObservedInstanceOrdinal("db-1"), "1"),
+		kv(types.KeyDerivedInstanceControllerStopped("db-1"), "true"),
+		kv(types.KeyDerivedInstanceNodeFailure("db-1"), "true"),
+	)
+
+	changes, reconcileErr := instanceController.Reconcile(context.Background(), facts)
+	if reconcileErr != nil {
+		t.Fatalf("unexpected error: %v", reconcileErr)
+	}
+
+	hasStoppedDelete := false
+	hasFailureDelete := false
+	for _, change := range changes {
+		if change.Type == store.OpDelete && change.Key == types.KeyDerivedInstanceControllerStopped("db-1") {
+			hasStoppedDelete = true
+		}
+		if change.Type == store.OpDelete && change.Key == types.KeyDerivedInstanceNodeFailure("db-1") {
+			hasFailureDelete = true
+		}
+	}
+	if !hasStoppedDelete {
+		t.Fatal("expected delete of stale controller_stopped marker for db-1")
+	}
+	if !hasFailureDelete {
+		t.Fatal("expected delete of stale node_failure marker for db-1")
+	}
+}
+
+func TestStatelessCreationsAreGrouped(t *testing.T) {
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
+
+	facts := buildFacts(
+		kv(types.KeyEffectiveServiceInstances("web"), "3"),
+	)
+
+	changes, reconcileErr := instanceController.Reconcile(context.Background(), facts)
+	if reconcileErr != nil {
+		t.Fatalf("unexpected error: %v", reconcileErr)
+	}
+
+	// 3 instances × 3 keys each = 9 changes.
+	if len(changes) != 9 {
+		t.Fatalf("expected 9 changes, got %d", len(changes))
+	}
+
+	// Each group of 3 should share a group ID.
+	groups := make(map[string]int)
+	for _, change := range changes {
+		if change.Group == "" {
+			t.Fatal("expected all changes to have a group ID")
+		}
+		groups[change.Group]++
+	}
+	if len(groups) != 3 {
+		t.Fatalf("expected 3 groups, got %d", len(groups))
+	}
+	for groupID, keyCount := range groups {
+		if keyCount != 3 {
+			t.Fatalf("group %s has %d keys, expected 3", groupID, keyCount)
+		}
+	}
+}

@@ -131,36 +131,43 @@ func WriteInstance(ctx context.Context, stateStore store.StateStore, instance In
 }
 
 // ReadInstance assembles an Instance struct by reading flat keys under
-// observed/instance/{id}/ from the fact store. It returns an error if the
-// instance's root marker key does not exist.
+// observed/instance/{id}/ and derived/instance/{id}/ from the fact store.
+// It uses effectiveInstanceStateFromFields so state reflects derived markers
+// (controller_stopped, node_failure), consistent with ListInstances.
 func ReadInstance(ctx context.Context, stateStore store.StateStore, id string) (*Instance, error) {
 	if _, err := stateStore.Get(ctx, KeyObservedInstance(id)); err != nil {
 		return nil, err
 	}
-	prefix := KeyObservedInstance(id) + "/"
-	facts, err := stateStore.Scan(ctx, prefix)
-	if err != nil {
-		return nil, err
+
+	fields := make(map[string]string)
+	observedPrefix := KeyObservedInstance(id) + "/"
+	observedFacts, observedErr := stateStore.Scan(ctx, observedPrefix)
+	if observedErr != nil {
+		return nil, observedErr
+	}
+	for _, factEntry := range observedFacts {
+		suffix := strings.TrimPrefix(factEntry.Key, observedPrefix)
+		fields[suffix] = string(factEntry.Value)
 	}
 
-	instance := &Instance{ID: id}
-	for _, factEntry := range facts {
-		suffix := strings.TrimPrefix(factEntry.Key, KeyObservedInstance(id)+"/")
-		fieldValue := string(factEntry.Value)
-		switch suffix {
-		case "service":
-			instance.Service = fieldValue
-		case "node":
-			instance.Node = fieldValue
-		case "state":
-			instance.State = InstanceState(fieldValue)
-		case "image":
-			instance.Image = fieldValue
-		case "ip":
-			instance.IP = fieldValue
-		case "health":
-			instance.Health = HealthStatus(fieldValue)
-		}
+	derivedPrefix := ScanDerivedInstances + id + "/"
+	derivedFacts, derivedErr := stateStore.Scan(ctx, derivedPrefix)
+	if derivedErr != nil {
+		return nil, derivedErr
+	}
+	for _, factEntry := range derivedFacts {
+		suffix := strings.TrimPrefix(factEntry.Key, derivedPrefix)
+		fields[suffix] = string(factEntry.Value)
+	}
+
+	instance := &Instance{
+		ID:      id,
+		Service: fields["service"],
+		Node:    fields["node"],
+		State:   effectiveInstanceStateFromFields(fields),
+		Image:   fields["image"],
+		IP:      fields["ip"],
+		Health:  HealthStatus(fields["health"]),
 	}
 	return instance, nil
 }

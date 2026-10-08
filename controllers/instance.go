@@ -76,7 +76,8 @@ func (instanceController *InstanceController) Watch() []string {
 // ordinal IDs and ordered startup; stateless services use random IDs.
 func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	desiredCounts, statefulServices := parseEffectiveServiceFacts(facts)
-	stateByInstanceID, serviceByInstanceID := parseObservedInstanceFacts(facts)
+	fieldsByInstanceID := parseInstanceFieldsFromFacts(facts)
+	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
 
 	var changes []Change
@@ -93,7 +94,7 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 				continue
 			}
 			serviceChanges := instanceController.reconcileStatefulService(
-				serviceName, wantCount, activeIDs, stateByInstanceID,
+				serviceName, wantCount, activeIDs, stateByInstanceID, fieldsByInstanceID,
 			)
 			changes = append(changes, serviceChanges...)
 			creationsRemaining -= countInstanceCreations(serviceChanges)
@@ -118,10 +119,13 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	}
 
 	if len(changes) > maxInstanceControllerChangesPerCycle {
-		logging.Default().Warn("instance controller output capped",
-			"total_changes", fmt.Sprintf("%d", len(changes)),
-			"cap", fmt.Sprintf("%d", maxInstanceControllerChangesPerCycle))
-		changes = changes[:maxInstanceControllerChangesPerCycle]
+		var deferredCount int
+		changes, deferredCount = takeWholeGroups(changes, maxInstanceControllerChangesPerCycle)
+		if deferredCount > 0 {
+			logging.Default().Warn("instance controller output capped",
+				"committed_changes", fmt.Sprintf("%d", len(changes)),
+				"deferred_changes", fmt.Sprintf("%d", deferredCount))
+		}
 	}
 
 	return changes, nil
@@ -154,14 +158,13 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 	return desiredCounts, statefulServices
 }
 
-// parseObservedInstanceFacts extracts effective instance states and service
-// associations from observed and derived instance facts.
-func parseObservedInstanceFacts(facts []store.Fact) (map[string]types.InstanceState, map[string]string) {
-	instanceFields := parseInstanceFieldsFromFacts(facts)
-	stateByInstanceID := make(map[string]types.InstanceState, len(instanceFields))
-	serviceByInstanceID := make(map[string]string, len(instanceFields))
+// buildInstanceMapsFromFields derives effective instance states and service
+// associations from pre-parsed instance field maps.
+func buildInstanceMapsFromFields(fieldsByInstanceID map[string]map[string]string) (map[string]types.InstanceState, map[string]string) {
+	stateByInstanceID := make(map[string]types.InstanceState, len(fieldsByInstanceID))
+	serviceByInstanceID := make(map[string]string, len(fieldsByInstanceID))
 
-	for instanceID, fields := range instanceFields {
+	for instanceID, fields := range fieldsByInstanceID {
 		stateByInstanceID[instanceID] = effectiveInstanceState(fields)
 		if serviceName := fields["service"]; serviceName != "" {
 			serviceByInstanceID[instanceID] = serviceName
@@ -211,12 +214,13 @@ func countInstanceCreations(changes []Change) int {
 func (instanceController *InstanceController) reconcileStatefulService(
 	serviceName string, wantCount int,
 	activeIDs []string, stateByInstanceID map[string]types.InstanceState,
+	fieldsByInstanceID map[string]map[string]string,
 ) []Change {
 	existingOrdinals := parseExistingOrdinals(serviceName, activeIDs)
 	haveCount := len(existingOrdinals)
 
 	if haveCount < wantCount {
-		return createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID)
+		return createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID, fieldsByInstanceID)
 	}
 	if haveCount > wantCount {
 		return stopHighestOrdinalInstances(serviceName, existingOrdinals, haveCount-wantCount)
@@ -249,9 +253,12 @@ func parseExistingOrdinals(serviceName string, activeIDs []string) []int {
 // ordinal position if all lower ordinals are running. Stateful services
 // enforce ordered startup: instance N+1 is only created when instance N is
 // running. Returns at most one instance creation per reconciliation cycle.
+// Stale derived markers (controller_stopped, node_failure) from a previous
+// incarnation of the same ordinal ID are deleted atomically with recreation.
 func createNextStatefulInstance(
 	serviceName string, wantCount int,
 	existingOrdinals []int, stateByInstanceID map[string]types.InstanceState,
+	fieldsByInstanceID map[string]map[string]string,
 ) []Change {
 	ordinalSet := make(map[int]bool, len(existingOrdinals))
 	for _, ordinal := range existingOrdinals {
@@ -267,12 +274,25 @@ func createNextStatefulInstance(
 			continue
 		}
 		instanceID := fmt.Sprintf("%s-%d", serviceName, nextOrdinal)
-		return []Change{
-			{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
-			{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(serviceName)},
-			{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
-			{Type: store.OpPut, Key: types.KeyObservedInstanceOrdinal(instanceID), Value: []byte(strconv.Itoa(nextOrdinal))},
+		groupID := "instance-create/" + instanceID
+		changes := groupedChanges(groupID,
+			Change{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
+			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(serviceName)},
+			Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
+			Change{Type: store.OpPut, Key: types.KeyObservedInstanceOrdinal(instanceID), Value: []byte(strconv.Itoa(nextOrdinal))},
+		)
+		previousFields := fieldsByInstanceID[instanceID]
+		if previousFields["controller_stopped"] == "true" {
+			changes = append(changes, Change{
+				Type: store.OpDelete, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Group: groupID,
+			})
 		}
+		if previousFields["node_failure"] == "true" {
+			changes = append(changes, Change{
+				Type: store.OpDelete, Key: types.KeyDerivedInstanceNodeFailure(instanceID), Group: groupID,
+			})
+		}
+		return changes
 	}
 	return nil
 }
@@ -295,17 +315,17 @@ func stopHighestOrdinalInstances(serviceName string, existingOrdinals []int, cou
 
 // createPendingInstances generates Change entries that create the given number
 // of new instances for a stateless service, each in the "pending" state.
-// Every new instance gets three facts: a marker key, a service association,
-// and a state.
+// Every new instance gets three grouped facts: a marker key, a service
+// association, and a state.
 func (instanceController *InstanceController) createPendingInstances(service string, count int) []Change {
 	var changes []Change
 	for range count {
 		instanceID := instanceController.NewID()
-		changes = append(changes,
+		changes = append(changes, groupedChanges("instance-create/"+instanceID,
 			Change{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(service)},
 			Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
-		)
+		)...)
 	}
 	return changes
 }

@@ -1234,6 +1234,22 @@ Move failure-path writes from `observed/instance/*` to `derived/instance/*` mark
 - [x] Chaos test diagnostics: DiagnosticDump, per-event logging, convergence timeout details
 - [x] All chaos tests pass (including 3x repeat): full chaos, partition+heal, matrix combinations
 
+### Phase 74 — Atomic Change Groups & Stateful Marker Lifecycle (M74)
+
+Prevent budget truncation from splitting multi-key atomic operations and fix stale derived marker poisoning of reusable stateful ordinals. Design: [design/m74-atomic-change-groups.md](design/m74-atomic-change-groups.md).
+
+- [x] Add `Group string` field to `Change` struct and `groupedChanges` helper
+- [x] Replace runner `[:maxTransactionChanges]` with group-aware `takeWholeGroups`
+- [x] Sort changes by `(Group, Key)` to keep groups contiguous
+- [x] InstanceController: group 3-key stateless creations and 4-key stateful creations
+- [x] FailureController: group 4-key replacements, 2-key drains, 2-key recoveries
+- [x] Other multi-key controllers: group endpoint, network, storage, rollout operations
+- [x] Stateful marker cleanup: `createNextStatefulInstance` deletes stale `controller_stopped` and `node_failure` markers on ordinal recreation
+- [x] `ReadInstance` uses `effectiveInstanceStateFromFields` (matches `ListInstances`)
+- [x] Watch context leak: per-loop child context in `runControllerLoop`
+- [x] Tests: stateful ordinal reuse regression, group-aware truncation, ReadInstance consistency
+- [x] Loadtest: `TestTransactionBudgetingConvergence` passes (recovery in ~5m)
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1314,5 +1330,6 @@ Move failure-path writes from `observed/instance/*` to `derived/instance/*` mark
 | M71 — Post-Review Correctness | 71 | Runner rejects (not truncates) oversized change sets, drain cap (10/cycle), heartbeat N² fix, leader CAS fencing, agent skips failed instances, drain readiness moved to derived/, watch compaction resilience |
 | M72 — Correctness II | 72 | Controller budget alignment (all ≤60 changes/cycle), HA runner awaits shutdown, agent watch retry loop, endpoint watches derived/, duplicate-key validation, heartbeat parse warning |
 | M73 — Derived Failure Markers | 73 | Failure/node-failure writes moved to `derived/instance/`, runner input key guards scoped to write domain, loadtest converges at 50+ nodes |
+| M74 — Atomic Change Groups | 74 | Group-aware `takeWholeGroups` prevents budget truncation from splitting multi-key ops, stateful marker cleanup on ordinal reuse, ReadInstance API consistency, watch context leak fix, loadtest convergence verified |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

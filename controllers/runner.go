@@ -269,18 +269,21 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 // re-reconciles each time a watched fact changes (with debouncing) or the
 // periodic resync timer fires.
 func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controller Controller) error {
+	watchCtx, watchCancel := context.WithCancel(ctx)
+	defer watchCancel()
+
 	reconcileTrigger := make(chan struct{}, 1)
 	watchLost := make(chan struct{}, 1)
 
 	for _, prefix := range controller.Watch() {
-		watchEventChannel, err := controllerRunner.store.Watch(ctx, prefix, store.WatchOption{Prefix: true})
+		watchEventChannel, err := controllerRunner.store.Watch(watchCtx, prefix, store.WatchOption{Prefix: true})
 		if err != nil {
 			return err
 		}
 		go func(watchEventChannel <-chan store.Event, controllerName string) {
 			for {
 				select {
-				case <-ctx.Done():
+				case <-watchCtx.Done():
 					return
 				case watchEvent, ok := <-watchEventChannel:
 					if !ok {
@@ -435,7 +438,7 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		return false, nil
 	}
 
-	sortChangesByKey(changes)
+	sortChangesByGroupAndKey(changes)
 
 	if duplicateKey := findDuplicateChangeKey(changes); duplicateKey != "" {
 		return false, fmt.Errorf("controller %s produced duplicate key in single transaction: %s",
@@ -443,12 +446,15 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	}
 
 	if len(changes) > maxTransactionChanges {
-		logging.Default().Warn("change set exceeds transaction budget, capping to fit",
-			"controller", controller.Name(),
-			"change_count", fmt.Sprintf("%d", len(changes)),
-			"max_changes", fmt.Sprintf("%d", maxTransactionChanges))
-		transactionRejections.Inc(controller.Name())
-		changes = changes[:maxTransactionChanges]
+		var deferredChangeCount int
+		changes, deferredChangeCount = takeWholeGroups(changes, maxTransactionChanges)
+		if deferredChangeCount > 0 {
+			logging.Default().Warn("deferred atomic change groups to fit transaction budget",
+				"controller", controller.Name(),
+				"committed_changes", fmt.Sprintf("%d", len(changes)),
+				"deferred_changes", fmt.Sprintf("%d", deferredChangeCount))
+			transactionRejections.Inc(controller.Name())
+		}
 	}
 
 	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(controller.Name(), changes, allFacts)
@@ -594,11 +600,15 @@ func isKeyWithinWriteDomain(key string, allowedPrefixes []string) bool {
 	return false
 }
 
-// sortChangesByKey sorts a slice of changes by key in lexicographic order.
-// This guarantees deterministic transaction commit order regardless of map
-// iteration ordering inside controller Reconcile methods.
-func sortChangesByKey(changes []Change) {
-	sort.Slice(changes, func(i, j int) bool {
+// sortChangesByGroupAndKey sorts changes so that members of the same group
+// are contiguous, with groups ordered by their first key. Within a group,
+// changes are ordered by key. Ungrouped changes (empty Group) sort by key
+// and are each treated as their own single-change group.
+func sortChangesByGroupAndKey(changes []Change) {
+	sort.SliceStable(changes, func(i, j int) bool {
+		if changes[i].Group != changes[j].Group {
+			return changes[i].Group < changes[j].Group
+		}
 		if changes[i].Key != changes[j].Key {
 			return changes[i].Key < changes[j].Key
 		}
@@ -606,15 +616,54 @@ func sortChangesByKey(changes []Change) {
 	})
 }
 
-// findDuplicateChangeKey scans a sorted change list for adjacent entries
-// with the same key. etcd requires unique mutation keys per transaction,
-// so duplicates must be caught before commit. Returns the first duplicate
-// key found, or empty string if none.
-func findDuplicateChangeKey(changes []Change) string {
-	for changeIndex := 1; changeIndex < len(changes); changeIndex++ {
-		if changes[changeIndex].Key == changes[changeIndex-1].Key {
-			return changes[changeIndex].Key
+// takeWholeGroups selects complete atomic groups from a sorted change list
+// up to the given limit. Returns the selected changes and the number of
+// changes that were deferred because they would exceed the limit.
+func takeWholeGroups(changes []Change, limit int) ([]Change, int) {
+	selected := make([]Change, 0, min(len(changes), limit))
+	deferred := 0
+
+	for scanIndex := 0; scanIndex < len(changes); {
+		groupID := changes[scanIndex].Group
+		groupEnd := scanIndex + 1
+
+		if groupID != "" {
+			for groupEnd < len(changes) && changes[groupEnd].Group == groupID {
+				groupEnd++
+			}
 		}
+
+		groupSize := groupEnd - scanIndex
+
+		if groupSize > limit {
+			deferred += groupSize
+			scanIndex = groupEnd
+			continue
+		}
+
+		if len(selected)+groupSize > limit {
+			deferred += len(changes) - scanIndex
+			break
+		}
+
+		selected = append(selected, changes[scanIndex:groupEnd]...)
+		scanIndex = groupEnd
+	}
+
+	return selected, deferred
+}
+
+// findDuplicateChangeKey checks for any duplicate keys in the change list.
+// etcd requires unique mutation keys per transaction, so duplicates must be
+// caught before commit. Returns the first duplicate key found, or empty
+// string if none.
+func findDuplicateChangeKey(changes []Change) string {
+	seenKeys := make(map[string]bool, len(changes))
+	for _, change := range changes {
+		if seenKeys[change.Key] {
+			return change.Key
+		}
+		seenKeys[change.Key] = true
 	}
 	return ""
 }

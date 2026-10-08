@@ -156,11 +156,13 @@ func reconcilePerOrdinalVolumes(
 				continue
 			}
 			template := volumeTemplates[mount.volumeName]
-			changes = append(changes,
+			groupID := "vol-ordinal/" + perOrdinalVolumeName
+			var volumeChanges []Change
+			volumeChanges = append(volumeChanges,
 				Change{Type: store.OpPut, Key: types.KeyDesiredVolume(perOrdinalVolumeName), Value: []byte("")},
 			)
 			if template.size != "" {
-				changes = append(changes,
+				volumeChanges = append(volumeChanges,
 					Change{Type: store.OpPut, Key: types.KeyDesiredVolumeSize(perOrdinalVolumeName), Value: []byte(template.size)},
 				)
 			}
@@ -168,9 +170,10 @@ func reconcilePerOrdinalVolumes(
 			if persistentValue == "" {
 				persistentValue = "true"
 			}
-			changes = append(changes,
+			volumeChanges = append(volumeChanges,
 				Change{Type: store.OpPut, Key: types.KeyDesiredVolumePersistent(perOrdinalVolumeName), Value: []byte(persistentValue)},
 			)
+			changes = append(changes, groupedChanges(groupID, volumeChanges...)...)
 		}
 	}
 

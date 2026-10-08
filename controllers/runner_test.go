@@ -382,3 +382,130 @@ func TestRunnerClampsMinAttempts(t *testing.T) {
 		t.Fatalf("expected 10, got %d", runner.maxReconciliationAttempts)
 	}
 }
+
+// takeWholeGroups tests
+
+func TestTakeWholeGroupsPreservesAtomicGroups(t *testing.T) {
+	changes := []Change{
+		{Type: store.OpPut, Key: "a/1", Value: []byte("v"), Group: "g1"},
+		{Type: store.OpPut, Key: "a/2", Value: []byte("v"), Group: "g1"},
+		{Type: store.OpPut, Key: "a/3", Value: []byte("v"), Group: "g1"},
+		{Type: store.OpPut, Key: "b/1", Value: []byte("v"), Group: "g2"},
+		{Type: store.OpPut, Key: "b/2", Value: []byte("v"), Group: "g2"},
+	}
+
+	selected, deferred := takeWholeGroups(changes, 4)
+	if len(selected) != 3 {
+		t.Fatalf("expected 3 selected (one complete group), got %d", len(selected))
+	}
+	if deferred != 2 {
+		t.Fatalf("expected 2 deferred, got %d", deferred)
+	}
+	for _, change := range selected {
+		if change.Group != "g1" {
+			t.Fatalf("expected all selected from g1, got %s", change.Group)
+		}
+	}
+}
+
+func TestTakeWholeGroupsHandlesUngroupedChanges(t *testing.T) {
+	changes := make([]Change, 10)
+	for changeIndex := range changes {
+		changes[changeIndex] = Change{
+			Type: store.OpPut, Key: fmt.Sprintf("k/%d", changeIndex), Value: []byte("v"),
+		}
+	}
+
+	selected, deferred := takeWholeGroups(changes, 7)
+	if len(selected) != 7 {
+		t.Fatalf("expected 7 standalone changes, got %d", len(selected))
+	}
+	if deferred != 3 {
+		t.Fatalf("expected 3 deferred, got %d", deferred)
+	}
+}
+
+func TestTakeWholeGroupsSkipsOversizedGroup(t *testing.T) {
+	changes := []Change{
+		{Type: store.OpPut, Key: "big/1", Value: []byte("v"), Group: "toobig"},
+		{Type: store.OpPut, Key: "big/2", Value: []byte("v"), Group: "toobig"},
+		{Type: store.OpPut, Key: "big/3", Value: []byte("v"), Group: "toobig"},
+		{Type: store.OpPut, Key: "small/1", Value: []byte("v"), Group: "fits"},
+	}
+
+	selected, deferred := takeWholeGroups(changes, 2)
+	if len(selected) != 1 {
+		t.Fatalf("expected 1 selected (small group), got %d", len(selected))
+	}
+	if selected[0].Group != "fits" {
+		t.Fatalf("expected the 'fits' group, got %s", selected[0].Group)
+	}
+	if deferred != 3 {
+		t.Fatalf("expected 3 deferred (oversized group), got %d", deferred)
+	}
+}
+
+// groupedController produces changes with explicit atomic groups.
+type groupedController struct {
+	groups [][]Change
+}
+
+func (controller *groupedController) Name() string    { return "grouped-test" }
+func (controller *groupedController) Watch() []string { return []string{"desired/"} }
+func (controller *groupedController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
+	var allChanges []Change
+	for _, groupChanges := range controller.groups {
+		allChanges = append(allChanges, groupChanges...)
+	}
+	return allChanges, nil
+}
+
+func TestRunnerGroupAwareTruncation(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	// Create 20 groups of 4 changes each = 80 total, exceeds 60 budget.
+	var groups [][]Change
+	for groupIndex := range 20 {
+		groupID := fmt.Sprintf("grp-%02d", groupIndex)
+		group := groupedChanges(groupID,
+			Change{Type: store.OpPut, Key: fmt.Sprintf("test/%02d/a", groupIndex), Value: []byte("v")},
+			Change{Type: store.OpPut, Key: fmt.Sprintf("test/%02d/b", groupIndex), Value: []byte("v")},
+			Change{Type: store.OpPut, Key: fmt.Sprintf("test/%02d/c", groupIndex), Value: []byte("v")},
+			Change{Type: store.OpPut, Key: fmt.Sprintf("test/%02d/d", groupIndex), Value: []byte("v")},
+		)
+		groups = append(groups, group)
+	}
+
+	controller := &groupedController{groups: groups}
+	runner := NewRunner(factStore, controller)
+
+	ctx := context.Background()
+	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
+
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	if reconcileError != nil {
+		t.Fatalf("expected no error, got %v", reconcileError)
+	}
+	if conflictDetected {
+		t.Fatal("expected no conflict")
+	}
+
+	allFacts, _ := factStore.Scan(ctx, "test/")
+	// 60 / 4 = 15 complete groups = 60 changes committed.
+	if len(allFacts) != 60 {
+		t.Fatalf("expected 60 facts (15 complete groups × 4), got %d", len(allFacts))
+	}
+
+	// Verify no partial group: every committed group should have all 4 keys.
+	groupCounts := make(map[string]int)
+	for _, fact := range allFacts {
+		parts := strings.SplitN(strings.TrimPrefix(fact.Key, "test/"), "/", 2)
+		groupCounts[parts[0]]++
+	}
+	for groupKey, keyCount := range groupCounts {
+		if keyCount != 4 {
+			t.Fatalf("group %s has %d keys, expected 4 (partial group committed)", groupKey, keyCount)
+		}
+	}
+}

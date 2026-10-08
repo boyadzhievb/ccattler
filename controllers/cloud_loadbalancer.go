@@ -72,16 +72,10 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 
 		previousAddress := existingLoadBalancers[serviceName]
 		if previousAddress != externalAddress {
-			proposedChanges = append(proposedChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedCloudLoadBalancerAddress(serviceName),
-				Value: []byte(externalAddress),
-			})
-			proposedChanges = append(proposedChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedCloudLoadBalancerState(serviceName),
-				Value: []byte(string(cloud.LoadBalancerStateActive)),
-			})
+			proposedChanges = append(proposedChanges, groupedChanges("lb-upsert/"+serviceName,
+				Change{Type: store.OpPut, Key: types.KeyObservedCloudLoadBalancerAddress(serviceName), Value: []byte(externalAddress)},
+				Change{Type: store.OpPut, Key: types.KeyObservedCloudLoadBalancerState(serviceName), Value: []byte(string(cloud.LoadBalancerStateActive))},
+			)...)
 		}
 	}
 
@@ -91,14 +85,10 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 			if deleteError != nil {
 				continue
 			}
-			proposedChanges = append(proposedChanges, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedCloudLoadBalancerAddress(serviceName),
-			})
-			proposedChanges = append(proposedChanges, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyObservedCloudLoadBalancerState(serviceName),
-			})
+			proposedChanges = append(proposedChanges, groupedChanges("lb-delete/"+serviceName,
+				Change{Type: store.OpDelete, Key: types.KeyObservedCloudLoadBalancerAddress(serviceName)},
+				Change{Type: store.OpDelete, Key: types.KeyObservedCloudLoadBalancerState(serviceName)},
+			)...)
 		}
 	}
 

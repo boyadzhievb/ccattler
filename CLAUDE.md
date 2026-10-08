@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M73 — Phase 73 Derived Failure Markers & CAS Decoupling. M1–M73 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M74 — Phase 74 Atomic Change Groups & Stateful Marker Lifecycle. M1–M74 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

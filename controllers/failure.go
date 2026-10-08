@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -205,46 +206,53 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	}
 
 	if len(changes) > maxFailureControllerChangesPerCycle {
-		changes = changes[:maxFailureControllerChangesPerCycle]
+		var deferredCount int
+		changes, deferredCount = takeWholeGroups(changes, maxFailureControllerChangesPerCycle)
+		if deferredCount > 0 {
+			logging.Default().Warn("failure controller output capped",
+				"committed_changes", fmt.Sprintf("%d", len(changes)),
+				"deferred_changes", fmt.Sprintf("%d", deferredCount))
+		}
 	}
 
 	return changes, nil
 }
 
-// beginDrain emits changes that mark an instance as draining: sets readiness
-// to not-ready (removing it from endpoints) and records the drain start time.
+// beginDrain emits grouped changes that mark an instance as draining: sets
+// readiness to not-ready (removing it from endpoints) and records the drain
+// start time.
 func (failureController *FailureController) beginDrain(instanceID string, now time.Time) []Change {
-	return []Change{
-		{
+	return groupedChanges("drain/"+instanceID,
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedInstanceDrainReadiness(instanceID),
 			Value: []byte(string(types.ReadinessProbeNotReady)),
 		},
-		{
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedInstanceDrainSince(instanceID),
 			Value: []byte(fmt.Sprintf("%d", now.UnixMilli())),
 		},
-	}
+	)
 }
 
-// clearDrainState emits delete changes for drain_readiness and drain_since,
-// cleaning up stale drain state when an instance's liveness recovers.
+// clearDrainState emits grouped delete changes for drain_readiness and
+// drain_since, cleaning up stale drain state when liveness recovers.
 func (failureController *FailureController) clearDrainState(instanceID string) []Change {
-	return []Change{
-		{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainReadiness(instanceID)},
-		{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainSince(instanceID)},
-	}
+	return groupedChanges("drain-clear/"+instanceID,
+		Change{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainReadiness(instanceID)},
+		Change{Type: store.OpDelete, Key: types.KeyDerivedInstanceDrainSince(instanceID)},
+	)
 }
 
-// stopAndReplace marks a failed instance via derived/ and creates a
+// stopAndReplace marks a failed instance via derived/ and creates a grouped
 // pending replacement in observed/ for the same service.
 func (failureController *FailureController) stopAndReplace(instanceID string, serviceName string) []Change {
 	replacementID := failureController.NewID()
-	return []Change{
-		{Type: store.OpPut, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Value: []byte("true")},
-		{Type: store.OpPut, Key: types.KeyObservedInstance(replacementID), Value: []byte("")},
-		{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},
-		{Type: store.OpPut, Key: types.KeyObservedInstanceState(replacementID), Value: []byte(string(types.InstancePending))},
-	}
+	return groupedChanges("replace/"+instanceID,
+		Change{Type: store.OpPut, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Value: []byte("true")},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstance(replacementID), Value: []byte("")},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(replacementID), Value: []byte(string(types.InstancePending))},
+	)
 }

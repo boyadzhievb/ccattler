@@ -69,16 +69,10 @@ func (nodeLifecycleController *NodeLifecycleController) Reconcile(ctx context.Co
 		previousCloudState := observedCloudStates[providerInstanceID]
 		currentCloudState := string(cloudInstance.State)
 		if previousCloudState != currentCloudState {
-			proposedChanges = append(proposedChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedCloudInstanceState(providerInstanceID),
-				Value: []byte(currentCloudState),
-			})
-			proposedChanges = append(proposedChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyObservedCloudInstanceNodeID(providerInstanceID),
-				Value: []byte(nodeID),
-			})
+			proposedChanges = append(proposedChanges, groupedChanges("cloud-state/"+providerInstanceID,
+				Change{Type: store.OpPut, Key: types.KeyObservedCloudInstanceState(providerInstanceID), Value: []byte(currentCloudState)},
+				Change{Type: store.OpPut, Key: types.KeyObservedCloudInstanceNodeID(providerInstanceID), Value: []byte(nodeID)},
+			)...)
 		}
 
 		if cloudInstance.State == cloud.InstanceStateTerminated {

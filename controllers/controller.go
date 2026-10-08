@@ -15,7 +15,7 @@ import (
 
 // Change represents a single proposed mutation to the fact store. Controllers
 // return slices of Change from their Reconcile methods; the Runner applies
-// them sequentially.
+// them transactionally.
 type Change struct {
 	// Type indicates the operation: put (create/update) or delete.
 	Type store.OpType
@@ -23,6 +23,19 @@ type Change struct {
 	Key string
 	// Value is the new value for put operations; ignored for deletes.
 	Value []byte
+	// Group identifies a logical atomic operation. Changes sharing the same
+	// non-empty Group value must be committed together — the runner will never
+	// split a group during budget truncation. Empty means standalone.
+	Group string
+}
+
+// groupedChanges assigns the same group identifier to all provided changes,
+// marking them as a single atomic operation that must not be split.
+func groupedChanges(groupID string, changes ...Change) []Change {
+	for changeIndex := range changes {
+		changes[changeIndex].Group = groupID
+	}
+	return changes
 }
 
 // Controller is the interface that every reconciliation controller must

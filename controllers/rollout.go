@@ -129,18 +129,18 @@ func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rollout
 	if previousImage != "" {
 		return nil
 	}
-	return []Change{
-		{
+	return groupedChanges("rollout-track/"+serviceName,
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutImage(serviceName),
 			Value: []byte(oldImageInstances[0].image),
 		},
-		{
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutState(serviceName),
 			Value: []byte("rolling"),
 		},
-	}
+	)
 }
 
 // shouldTriggerRollback returns true when the number of failed new-image
@@ -154,18 +154,18 @@ func shouldTriggerRollback(newImageFailedCount int, previousImage string) bool {
 // buildRollbackChanges returns changes that revert the desired service image
 // to the previous image and set the rollout state to "rollback".
 func buildRollbackChanges(serviceName string, previousImage string) []Change {
-	return []Change{
-		{
+	return groupedChanges("rollout-rollback/"+serviceName,
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDesiredServiceImage(serviceName),
 			Value: []byte(previousImage),
 		},
-		{
+		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutState(serviceName),
 			Value: []byte("rollback"),
 		},
-	}
+	)
 }
 
 // buildOldInstanceStopChanges determines how many old-image instances can be

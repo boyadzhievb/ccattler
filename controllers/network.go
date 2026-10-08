@@ -85,21 +85,23 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 			)
 			nextVIPFourthOctet++
 
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyNetworkVIPService(serviceName),
-				Value: []byte(vipAddress),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyNetworkVIPServicePort(serviceName),
-				Value: []byte(strconv.Itoa(exposedPort)),
-			})
-			changes = append(changes, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyNetworkDNS(serviceName),
-				Value: []byte(vipAddress),
-			})
+			changes = append(changes, groupedChanges("vip-create/"+serviceName,
+				Change{
+					Type:  store.OpPut,
+					Key:   types.KeyNetworkVIPService(serviceName),
+					Value: []byte(vipAddress),
+				},
+				Change{
+					Type:  store.OpPut,
+					Key:   types.KeyNetworkVIPServicePort(serviceName),
+					Value: []byte(strconv.Itoa(exposedPort)),
+				},
+				Change{
+					Type:  store.OpPut,
+					Key:   types.KeyNetworkDNS(serviceName),
+					Value: []byte(vipAddress),
+				},
+			)...)
 		}
 	}
 
@@ -173,14 +175,10 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 	var changes []Change
 	for serviceName := range existingVIPs {
 		if !servicesWithEndpoints[serviceName] {
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyNetworkVIPService(serviceName),
-			})
-			changes = append(changes, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyNetworkVIPServicePort(serviceName),
-			})
+			changes = append(changes, groupedChanges("vip-remove/"+serviceName,
+				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPService(serviceName)},
+				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPServicePort(serviceName)},
+			)...)
 		}
 	}
 	for serviceName := range existingDNS {
