@@ -43,6 +43,7 @@ func NewEventProjector(factStore store.StateStore, eventLog *types.EventLog) *Ev
 func (eventProjector *EventProjector) Run(ctx context.Context) error {
 	watchPrefixes := []string{
 		types.PrefixObserved + "/instance/",
+		types.PrefixDerived + "/instance/",
 		types.PrefixObserved + "/node/",
 		types.PrefixPlacement + "/instance/",
 		types.PrefixEffective + "/service/",
@@ -120,6 +121,21 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 			return "instance.starting", "instance/" + instanceID, fmt.Sprintf("instance %s is starting", instanceID)
 		case string(types.InstanceStopped):
 			return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped", instanceID)
+		}
+	}
+
+	derivedInstancePrefix := types.PrefixDerived + "/instance/"
+	if strings.HasPrefix(factKey, derivedInstancePrefix) {
+		rest := strings.TrimPrefix(factKey, derivedInstancePrefix)
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) == 2 {
+			instanceID := parts[0]
+			switch parts[1] {
+			case "node_failure":
+				return "instance.failed", "instance/" + instanceID, fmt.Sprintf("instance %s marked failed (node unreachable)", instanceID)
+			case "controller_stopped":
+				return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped by controller", instanceID)
+			}
 		}
 	}
 

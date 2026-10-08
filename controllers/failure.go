@@ -132,7 +132,7 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
 	for _, instanceID := range sortedInstanceIDs {
 		fields := instanceFields[instanceID]
-		instanceState := types.InstanceState(fields["state"])
+		instanceState := effectiveInstanceState(fields)
 		serviceName := fields["service"]
 		if serviceName == "" {
 			continue
@@ -237,12 +237,12 @@ func (failureController *FailureController) clearDrainState(instanceID string) [
 	}
 }
 
-// stopAndReplace emits changes that mark a failed instance as stopped and
-// create a new pending replacement instance for the same service.
+// stopAndReplace marks a failed instance via derived/ and creates a
+// pending replacement in observed/ for the same service.
 func (failureController *FailureController) stopAndReplace(instanceID string, serviceName string) []Change {
 	replacementID := failureController.NewID()
 	return []Change{
-		{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstanceStopped))},
+		{Type: store.OpPut, Key: types.KeyDerivedInstanceControllerStopped(instanceID), Value: []byte("true")},
 		{Type: store.OpPut, Key: types.KeyObservedInstance(replacementID), Value: []byte("")},
 		{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},
 		{Type: store.OpPut, Key: types.KeyObservedInstanceState(replacementID), Value: []byte(string(types.InstancePending))},

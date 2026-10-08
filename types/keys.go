@@ -1250,6 +1250,18 @@ func KeyDerivedInstanceDrainReadiness(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/drain_readiness", PrefixDerived, instanceID)
 }
 
+// KeyDerivedInstanceNodeFailure returns the derived node-failure marker path.
+// Path: derived/instance/{instanceID}/node_failure
+func KeyDerivedInstanceNodeFailure(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/node_failure", PrefixDerived, instanceID)
+}
+
+// KeyDerivedInstanceControllerStopped returns the derived stopped marker path.
+// Path: derived/instance/{instanceID}/controller_stopped
+func KeyDerivedInstanceControllerStopped(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/controller_stopped", PrefixDerived, instanceID)
+}
+
 // KeyDerivedNodeDrainStarted returns the path for a node's drain start timestamp.
 // The value is a Unix-millisecond timestamp recorded when the drain was initiated.
 // Path: derived/node/{nodeID}/drain/started

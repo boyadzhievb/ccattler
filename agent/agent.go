@@ -299,8 +299,12 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 		}
 		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
 
-		// Skip instances that are stopped or failed — the FailureController
-		// handles replacement of failed instances.
+		// Skip instances marked by controllers via derived/ markers.
+		if nodeAgent.isInstanceMarkedForSkip(ctx, instanceID) {
+			continue
+		}
+
+		// Skip instances that are stopped or failed in observed state.
 		stateFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceState(instanceID))
 		if err == nil {
 			instanceState := types.InstanceState(stateFact.Value)
@@ -733,9 +737,20 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 }
 
 // observeInstanceState queries the runtime for the actual state of an instance
-// and returns the corresponding InstanceState. This ensures state reporting is
-// based on runtime observation rather than treating a successful Start() call
-// as proof of liveness.
+// isInstanceMarkedForSkip checks derived/ markers (node_failure,
+// controller_stopped) that signal the agent to skip this instance.
+func (nodeAgent *Agent) isInstanceMarkedForSkip(ctx context.Context, instanceID string) bool {
+	if _, err := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceNodeFailure(instanceID)); err == nil {
+		return true
+	}
+	if _, err := nodeAgent.store.Get(ctx, types.KeyDerivedInstanceControllerStopped(instanceID)); err == nil {
+		return true
+	}
+	return false
+}
+
+// observeInstanceState queries the runtime for the current state of an instance
+// and returns the corresponding InstanceState.
 func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) types.InstanceState {
 	observedStatus, statusError := nodeAgent.runtime.Status(ctx, instanceID)
 	if statusError != nil {

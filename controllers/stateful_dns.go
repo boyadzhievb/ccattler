@@ -90,7 +90,7 @@ func buildDesiredStatefulDNSEntries(
 		if !statefulServices[serviceName] {
 			continue
 		}
-		if types.InstanceState(fields["state"]) != types.InstanceRunning {
+		if effectiveInstanceState(fields) != types.InstanceRunning {
 			continue
 		}
 		instanceIP := fields["ip"]

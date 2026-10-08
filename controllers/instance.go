@@ -66,6 +66,7 @@ func (instanceController *InstanceController) Watch() []string {
 	return []string{
 		types.ScanEffectiveServices,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 	}
 }
 
@@ -153,22 +154,17 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 	return desiredCounts, statefulServices
 }
 
-// parseObservedInstanceFacts extracts instance states and service associations
-// from observed instance facts.
+// parseObservedInstanceFacts extracts effective instance states and service
+// associations from observed and derived instance facts.
 func parseObservedInstanceFacts(facts []store.Fact) (map[string]types.InstanceState, map[string]string) {
-	stateByInstanceID := make(map[string]types.InstanceState)
-	serviceByInstanceID := make(map[string]string)
+	instanceFields := parseInstanceFieldsFromFacts(facts)
+	stateByInstanceID := make(map[string]types.InstanceState, len(instanceFields))
+	serviceByInstanceID := make(map[string]string, len(instanceFields))
 
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
-		if !hasSuffix {
-			continue
-		}
-		switch suffix {
-		case "state":
-			stateByInstanceID[instanceID] = types.InstanceState(fact.Value)
-		case "service":
-			serviceByInstanceID[instanceID] = string(fact.Value)
+	for instanceID, fields := range instanceFields {
+		stateByInstanceID[instanceID] = effectiveInstanceState(fields)
+		if serviceName := fields["service"]; serviceName != "" {
+			serviceByInstanceID[instanceID] = serviceName
 		}
 	}
 

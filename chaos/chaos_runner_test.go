@@ -212,6 +212,13 @@ func TestChaosRunnerFullChaosConverges(t *testing.T) {
 		RandSource: rand.New(rand.NewSource(123)), //nolint:gosec // test uses deterministic random seed
 	}, cluster)
 
+	chaosRunner.SetEventCallback(func(event ChaosEvent) {
+		t.Logf("[CHAOS] @%s %s target=%s converged=%v took=%s",
+			event.Elapsed.Truncate(time.Millisecond),
+			event.Scenario, event.Target,
+			event.Converged, event.ConvergenceTime.Truncate(time.Millisecond))
+	})
+
 	ctx := context.Background()
 	events := chaosRunner.Run(ctx)
 
@@ -220,14 +227,19 @@ func TestChaosRunnerFullChaosConverges(t *testing.T) {
 	}
 
 	convergedCount := 0
-	for _, event := range events {
+	for eventIndex, event := range events {
 		if event.Converged {
 			convergedCount++
+		} else {
+			t.Logf("[FAIL] event %d: %s target=%s did not converge (took %s)",
+				eventIndex, event.Scenario, event.Target,
+				event.ConvergenceTime.Truncate(time.Millisecond))
 		}
 	}
 
 	convergenceRate := float64(convergedCount) / float64(len(events))
 	if convergenceRate < 0.8 {
+		t.Logf("[DIAGNOSTIC DUMP]\n%s", cluster.DiagnosticDump(ctx))
 		t.Errorf("convergence rate %.0f%% (%d/%d) is below 80%% threshold",
 			convergenceRate*100, convergedCount, len(events))
 	}

@@ -3,7 +3,7 @@
 ### Phase 0 — Foundation
 - [x] Language: **Go**
 - [x] Backing store: **etcd**
-- [x] etcd key layout & consistency model → see [etcd-schema.md](etcd-schema.md)
+- [x] etcd key layout & consistency model → see [etcd-schema.md](design/etcd-schema.md)
 - [x] Set up repo: `lang/`, `store/`, `scheduler/`, `controllers/`, `agent/`, `api/`, `cli/`, `types/`
 - [x] Add: `runtime/` (simulator, process, container adapters), `security/` (authZ, quota, network), `identity/` (local, mTLS, OIDC)
 
@@ -425,7 +425,7 @@
 - [x] Dead letter queue for failed events — DLQ under dlq/ prefix with deduplication, retry counting, age-based cleanup
 - [x] Change data capture stream from fact store — CDC built on Watch infrastructure, multi-subscriber, prefix-filtered
 
-### Architecture Review Gates (from chat-plan20sep.md)
+### Architecture Review Gates (from design/chat-plan20sep.md)
 
 #### Gate A — Store Correctness (resolved: Phases 26, 35a, 42)
 - [x] StateStore semantics documented
@@ -1084,7 +1084,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 
 ### Phase 67 — Production Readiness Validation (M67)
 
-Motivated by external review from a principal K8s engineer (chat-03oct-1.md). Goal: build measurable evidence for the reviewer's test matrix — controller failure isolation, HA resilience, chaos recovery metrics, and security test evidence.
+Motivated by external review from a principal K8s engineer (design/chat-03oct-1.md). Goal: build measurable evidence for the reviewer's test matrix — controller failure isolation, HA resilience, chaos recovery metrics, and security test evidence.
 
 #### 67a — Controller Failure Isolation Tests
 
@@ -1181,7 +1181,7 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 - [x] Chaos benchmark 1000/5000 workloads passes with transaction batching
 
 Plan: `.claude/plans/graceful-brewing-whale.md`
-Analysis: `chat-06oct.md`
+Analysis: `design/chat-06oct.md`
 
 ### Phase 71 — Post-Review Correctness Fixes (M71)
 
@@ -1197,7 +1197,7 @@ Analysis: `chat-06oct.md`
 - [x] Watch compaction resilience: agent returns error on channel close, runner signals controller restart
 
 Plan: `.claude/plans/jolly-booping-blanket.md`
-Review: `chat-07oct.md`
+Review: `design/chat-07oct.md`
 
 ### Phase 72 — Correctness II: Budget Alignment, HA Fencing, Agent Resilience (M72)
 
@@ -1213,7 +1213,26 @@ Review: `chat-07oct.md`
 - [x] HA runner awaits controller shutdown before allowing new leader's controllers to start
 
 Plan: `.claude/plans/jolly-booping-blanket.md`
-Review: `chat-07oct-1.md`
+Review: `design/chat-07oct-1.md`
+
+### Phase 73 — Derived Failure Markers & CAS Decoupling (M73)
+
+Move failure-path writes from `observed/instance/*` to `derived/instance/*` markers and decouple input key guards from read-only prefixes. Eliminates shared-key CAS contention between controllers and agents — root cause of loadtest livelock at 50+ nodes.
+
+- [x] New key helpers: `KeyDerivedInstanceNodeFailure(id)` → `derived/instance/{id}/node_failure`, `KeyDerivedInstanceControllerStopped(id)` → `derived/instance/{id}/controller_stopped`
+- [x] NodeFailureController: write `derived/instance/{id}/node_failure = true` instead of `observed/instance/{id}/state = failed`
+- [x] FailureController `stopAndReplace`: write `derived/instance/{oldID}/controller_stopped = true` instead of `observed/instance/{oldID}/state = stopped`
+- [x] `effectiveInstanceState(fields)` helper: merges observed state with derived markers (`controller_stopped` → stopped, `node_failure` → failed)
+- [x] Update all instance-state consumers to use effective state: InstanceController, EndpointController, RolloutController, AutoscaleController, ClusterScaleController, DrainController, EventProjector, StatefulDNSController
+- [x] Runner `appendInputKeyGuards`: only guard on facts within the controller's declared write domain
+- [x] Agent reconciliation: check derived markers in skip logic
+- [x] Update write domains in `topological_sort.go`: node-failure → `{"observed/node/", "derived/instance/"}`
+- [x] Marker priority: `controller_stopped` takes priority over `node_failure` — prevents replacement cascade livelock
+- [x] Node recovery: `identifyUnreachableNodes` checks heartbeat even for "unreachable" nodes — enables recovery after partition healing
+- [x] Stale marker cleanup: `cleanupStaleNodeFailureMarkers` deletes `node_failure` markers when nodes recover
+- [x] Update unit tests: failure_test.go, nodefailure_test.go verify derived/ writes; node recovery test added
+- [x] Chaos test diagnostics: DiagnosticDump, per-event logging, convergence timeout details
+- [x] All chaos tests pass (including 3x repeat): full chaos, partition+heal, matrix combinations
 
 ### Backlog
 
@@ -1294,5 +1313,6 @@ Review: `chat-07oct-1.md`
 | M70 — Transaction Budgeting | 70 | Runner caps transactions at 128 ops, FailureController batches replacements (10/cycle), NodeFailureController batches instance changes (50/cycle), MemoryStore enforces etcd limit, chaos benchmarks converge at 50+ node scale |
 | M71 — Post-Review Correctness | 71 | Runner rejects (not truncates) oversized change sets, drain cap (10/cycle), heartbeat N² fix, leader CAS fencing, agent skips failed instances, drain readiness moved to derived/, watch compaction resilience |
 | M72 — Correctness II | 72 | Controller budget alignment (all ≤60 changes/cycle), HA runner awaits shutdown, agent watch retry loop, endpoint watches derived/, duplicate-key validation, heartbeat parse warning |
+| M73 — Derived Failure Markers | 73 | Failure/node-failure writes moved to `derived/instance/`, runner input key guards scoped to write domain, loadtest converges at 50+ nodes |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

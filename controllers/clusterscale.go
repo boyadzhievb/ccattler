@@ -42,6 +42,7 @@ func (clusterAutoscaleController *ClusterAutoscaleController) Name() string {
 func (clusterAutoscaleController *ClusterAutoscaleController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 		types.ScanObservedNodes,
 		types.ScanPlacements,
 		types.ScanDesiredServices,
@@ -177,11 +178,7 @@ func extractClusterNodeStates(facts []store.Fact) map[string]types.NodeState {
 
 // countInstancesPerNode counts the number of active placed instances per node.
 func countInstancesPerNode(facts []store.Fact) map[string]int {
-	stateStrings := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
-	instanceStates := make(map[string]types.InstanceState, len(stateStrings))
-	for instanceID, stateValue := range stateStrings {
-		instanceStates[instanceID] = types.InstanceState(stateValue)
-	}
+	instanceFields := parseInstanceFieldsFromFacts(facts)
 
 	counts := make(map[string]int)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanPlacements) {
@@ -189,7 +186,11 @@ func countInstancesPerNode(facts []store.Fact) map[string]int {
 		if strings.Contains(instanceID, "/") {
 			continue
 		}
-		state := instanceStates[instanceID]
+		fields := instanceFields[instanceID]
+		if fields == nil {
+			continue
+		}
+		state := effectiveInstanceState(fields)
 		if state != types.InstanceStopped && state != "" {
 			counts[string(fact.Value)]++
 		}

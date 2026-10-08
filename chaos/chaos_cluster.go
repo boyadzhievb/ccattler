@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -317,6 +318,67 @@ func (simulatedCluster *SimulatedChaosCluster) CheckConvergence(ctx context.Cont
 	}
 
 	return allConverged, description
+}
+
+// DiagnosticDump returns a detailed string showing every instance's state,
+// derived markers, node states, and placements. Used for debugging convergence
+// failures in chaos tests.
+func (simulatedCluster *SimulatedChaosCluster) DiagnosticDump(ctx context.Context) string {
+	var result strings.Builder
+
+	result.WriteString("=== NODE STATES ===\n")
+	for _, nodeID := range simulatedCluster.nodeIDs {
+		nodeStateFact, nodeErr := simulatedCluster.factStore.Get(ctx, types.KeyObservedNodeState(nodeID))
+		stateLabel := "(missing)"
+		if nodeErr == nil {
+			stateLabel = string(nodeStateFact.Value)
+		}
+		agentAlive := simulatedCluster.IsNodeAlive(nodeID)
+		partitioned := simulatedCluster.IsNodePartitioned(nodeID)
+		fmt.Fprintf(&result, "  %s: state=%s alive=%v partitioned=%v\n",
+			nodeID, stateLabel, agentAlive, partitioned)
+	}
+
+	result.WriteString("\n=== INSTANCES ===\n")
+	allInstances, listErr := types.ListInstances(ctx, simulatedCluster.factStore)
+	if listErr != nil {
+		fmt.Fprintf(&result, "  ERROR listing instances: %v\n", listErr)
+		return result.String()
+	}
+
+	stateCounts := make(map[string]int)
+	for _, instance := range allInstances {
+		stateCounts[string(instance.State)]++
+		fmt.Fprintf(&result, "  %s: svc=%s state=%s node=%s\n",
+			instance.ID, instance.Service, instance.State, instance.Node)
+	}
+
+	result.WriteString("\n=== STATE SUMMARY ===\n")
+	for state, count := range stateCounts {
+		fmt.Fprintf(&result, "  %s: %d\n", state, count)
+	}
+
+	result.WriteString("\n=== DERIVED MARKERS ===\n")
+	derivedFacts, derivedErr := simulatedCluster.factStore.Scan(ctx, types.ScanDerivedInstances)
+	if derivedErr != nil {
+		fmt.Fprintf(&result, "  ERROR scanning derived: %v\n", derivedErr)
+	} else {
+		for _, factEntry := range derivedFacts {
+			fmt.Fprintf(&result, "  %s = %s\n", factEntry.Key, string(factEntry.Value))
+		}
+		if len(derivedFacts) == 0 {
+			result.WriteString("  (none)\n")
+		}
+	}
+
+	result.WriteString("\n=== DESIRED COUNTS ===\n")
+	simulatedCluster.mutex.Lock()
+	for name, count := range simulatedCluster.services {
+		fmt.Fprintf(&result, "  %s: %d\n", name, count)
+	}
+	simulatedCluster.mutex.Unlock()
+
+	return result.String()
 }
 
 // startControllers creates and starts all controllers on a new Runner.

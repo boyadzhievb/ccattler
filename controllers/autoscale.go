@@ -100,6 +100,7 @@ func (autoscaleController *AutoscaleController) Watch() []string {
 		types.ScanDesiredServices,
 		types.ScanObservedMetrics,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 		types.ScanIntentAutoscalerServices,
 		types.ScanDerivedServices,
 	}
@@ -793,28 +794,18 @@ func extractObservedMetrics(facts []store.Fact) map[string]int {
 	return metrics
 }
 
-// extractActiveInstanceCounts scans observed instance facts and returns a map
-// of service name to the number of non-stopped instances.
+// extractActiveInstanceCounts returns a map of service name to the number
+// of non-stopped instances, using effective state from derived markers.
 func extractActiveInstanceCounts(facts []store.Fact) map[string]int {
-	serviceByID := make(map[string]string)
-	stateByID := make(map[string]types.InstanceState)
-
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
-		if !hasSuffix {
+	instanceFields := parseInstanceFieldsFromFacts(facts)
+	counts := make(map[string]int)
+	for _, fields := range instanceFields {
+		serviceName := fields["service"]
+		if serviceName == "" {
 			continue
 		}
-		switch suffix {
-		case "service":
-			serviceByID[instanceID] = string(fact.Value)
-		case "state":
-			stateByID[instanceID] = types.InstanceState(fact.Value)
-		}
-	}
-
-	counts := make(map[string]int)
-	for instanceID, serviceName := range serviceByID {
-		if stateByID[instanceID] != types.InstanceStopped {
+		state := effectiveInstanceState(fields)
+		if state != types.InstanceStopped {
 			counts[serviceName]++
 		}
 	}

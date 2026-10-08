@@ -90,7 +90,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"scheduler":            {"placement/"},
 		"endpoint":             {"endpoint/"},
 		"failure":              {"observed/instance/", "derived/instance/"},
-		"node-failure":         {"observed/node/", "observed/instance/"},
+		"node-failure":         {"observed/node/", "derived/instance/"},
 		"network":              {"network/vip/", "network/dns/"},
 		"autoscale":            {"intent/autoscaler/"},
 		"rollout":              {"observed/instance/", "derived/service/", "desired/service/"},

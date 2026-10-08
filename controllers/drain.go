@@ -39,6 +39,7 @@ func (drainController *DrainController) Watch() []string {
 		types.ScanObservedNodes,
 		types.ScanPlacements,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 		types.ScanDesiredServices,
 		types.ScanDerivedNodes,
 	}
@@ -172,10 +173,15 @@ func parsePlacementsByNode(facts []store.Fact) map[string]string {
 	return instancePlacementNode
 }
 
-// parseInstanceStates scans observed instance facts and returns a map from
-// instance ID to its current lifecycle state string.
+// parseInstanceStates returns a map from instance ID to effective state string,
+// merging observed state with derived markers.
 func parseInstanceStates(facts []store.Fact) map[string]string {
-	return collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
+	instanceFields := parseInstanceFieldsFromFacts(facts)
+	statesByID := make(map[string]string, len(instanceFields))
+	for instanceID, fields := range instanceFields {
+		statesByID[instanceID] = string(effectiveInstanceState(fields))
+	}
+	return statesByID
 }
 
 // parseInstanceServices scans observed instance facts and returns a map from

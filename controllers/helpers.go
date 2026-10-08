@@ -90,6 +90,19 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 	return instanceFields
 }
 
+// effectiveInstanceState merges observed state with derived markers.
+// controller_stopped takes priority: once replaced, the instance is stopped
+// even if a node_failure marker also exists.
+func effectiveInstanceState(instanceFields map[string]string) types.InstanceState {
+	if instanceFields["controller_stopped"] == "true" {
+		return types.InstanceStopped
+	}
+	if instanceFields["node_failure"] == "true" {
+		return types.InstanceFailed
+	}
+	return types.InstanceState(instanceFields["state"])
+}
+
 // extractServiceExposedPorts scans desired service facts and returns a map from
 // service name to all exposed port numbers. Services without an expose
 // declaration are omitted from the result.

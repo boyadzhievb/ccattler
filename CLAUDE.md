@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M72 — Phase 72 Correctness II: Budget Alignment, HA Fencing, Agent Resilience. M1–M72 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M73 — Phase 73 Derived Failure Markers & CAS Decoupling. M1–M73 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -18,7 +18,7 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 
 ## Code Style Rules
 
-- **Comment every function.** Every exported and unexported function must have a doc comment explaining what it does.
+- **Comment every function.** Every exported and unexported function must have a doc comment explaining what it does. Comments must be at most 4 lines — keep them concise. If more context is needed, add it to a design doc and reference it.
 - **Use long descriptive variable names.** No single-letter or cryptic abbreviations. Examples: `factStore` not `s`, `instanceController` not `ic`, `nodeAgent` not `ag`, `simulatorRuntime` not `rt`, `serviceName` not `svc`, `factEntry` not `f`.
 - **Document variables.** Struct fields must have inline comments explaining their purpose. Named constants and map variables should have comments when their role isn't obvious from the name alone.
 - **Descriptive function names.** Prefer `executeReconciliationCycle` over `reconcileOnce`, `buildClusterStatusJSON` over `buildStatusJSON`, `findInstancesPlacedOnThisNode` over `desiredInstances`.

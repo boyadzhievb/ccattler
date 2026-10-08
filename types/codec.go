@@ -169,21 +169,34 @@ func ReadInstance(ctx context.Context, stateStore store.StateStore, id string) (
 // It groups flat keys by instance ID and reconstructs each Instance struct from
 // its constituent fields.
 func ListInstances(ctx context.Context, stateStore store.StateStore) ([]Instance, error) {
-	facts, err := stateStore.Scan(ctx, ScanObservedInstances)
-	if err != nil {
-		return nil, err
+	observedFacts, observedErr := stateStore.Scan(ctx, ScanObservedInstances)
+	if observedErr != nil {
+		return nil, observedErr
+	}
+	derivedFacts, derivedErr := stateStore.Scan(ctx, ScanDerivedInstances)
+	if derivedErr != nil {
+		return nil, derivedErr
 	}
 
 	grouped := make(map[string]map[string]string)
-	for _, factEntry := range facts {
-		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedInstances)
-		parts := strings.SplitN(relativePath, "/", 2)
-		id := parts[0]
-		if _, ok := grouped[id]; !ok {
-			grouped[id] = make(map[string]string)
-		}
-		if len(parts) == 2 {
-			grouped[id][parts[1]] = string(factEntry.Value)
+	scanPrefixes := []struct {
+		prefix string
+		facts  []store.Fact
+	}{
+		{ScanObservedInstances, observedFacts},
+		{ScanDerivedInstances, derivedFacts},
+	}
+	for _, scan := range scanPrefixes {
+		for _, factEntry := range scan.facts {
+			relativePath := strings.TrimPrefix(factEntry.Key, scan.prefix)
+			parts := strings.SplitN(relativePath, "/", 2)
+			id := parts[0]
+			if grouped[id] == nil {
+				grouped[id] = make(map[string]string)
+			}
+			if len(parts) == 2 {
+				grouped[id][parts[1]] = string(factEntry.Value)
+			}
 		}
 	}
 
@@ -192,13 +205,26 @@ func ListInstances(ctx context.Context, stateStore store.StateStore) ([]Instance
 		instance := Instance{ID: id}
 		instance.Service = fields["service"]
 		instance.Node = fields["node"]
-		instance.State = InstanceState(fields["state"])
+		instance.State = effectiveInstanceStateFromFields(fields)
 		instance.Image = fields["image"]
 		instance.IP = fields["ip"]
 		instance.Health = HealthStatus(fields["health"])
 		instances = append(instances, instance)
 	}
 	return instances, nil
+}
+
+// effectiveInstanceStateFromFields merges observed state with derived markers.
+// controller_stopped takes priority: once replaced, the instance is stopped
+// even if a node_failure marker also exists.
+func effectiveInstanceStateFromFields(fields map[string]string) InstanceState {
+	if fields["controller_stopped"] == "true" {
+		return InstanceStopped
+	}
+	if fields["node_failure"] == "true" {
+		return InstanceFailed
+	}
+	return InstanceState(fields["state"])
 }
 
 // WriteNode writes a node's observed state as flat key-value pairs under

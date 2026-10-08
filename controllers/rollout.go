@@ -33,6 +33,7 @@ func (rolloutController *RolloutController) Watch() []string {
 	return []string{
 		types.ScanDesiredServices,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 		types.ScanDerivedServices,
 		types.ScanPlacements,
 	}
@@ -274,33 +275,22 @@ func extractUpdatePolicies(facts []store.Fact) map[string]extractedUpdatePolicy 
 	return policies
 }
 
-// extractInstancesByService returns all instances grouped by service name.
+// extractInstancesByService returns all instances grouped by service name,
+// with effective state from both observed and derived facts.
 func extractInstancesByService(facts []store.Fact) map[string][]rolloutInstanceInfo {
-	instanceMap := make(map[string]*rolloutInstanceInfo)
-
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedInstances) {
-		instanceID, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedInstances)
-		if !hasSuffix {
+	instanceFields := parseInstanceFieldsFromFacts(facts)
+	result := make(map[string][]rolloutInstanceInfo)
+	for instanceID, fields := range instanceFields {
+		serviceName := fields["service"]
+		if serviceName == "" {
 			continue
 		}
-		if instanceMap[instanceID] == nil {
-			instanceMap[instanceID] = &rolloutInstanceInfo{id: instanceID}
-		}
-		switch suffix {
-		case "service":
-			instanceMap[instanceID].service = string(fact.Value)
-		case "state":
-			instanceMap[instanceID].state = types.InstanceState(fact.Value)
-		case "image":
-			instanceMap[instanceID].image = string(fact.Value)
-		}
-	}
-
-	result := make(map[string][]rolloutInstanceInfo)
-	for _, instanceInfo := range instanceMap {
-		if instanceInfo.service != "" {
-			result[instanceInfo.service] = append(result[instanceInfo.service], *instanceInfo)
-		}
+		result[serviceName] = append(result[serviceName], rolloutInstanceInfo{
+			id:      instanceID,
+			service: serviceName,
+			state:   effectiveInstanceState(fields),
+			image:   fields["image"],
+		})
 	}
 	return result
 }

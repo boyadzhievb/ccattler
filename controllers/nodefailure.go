@@ -73,12 +73,13 @@ func NewNodeFailureController() *NodeFailureController {
 func (nodeFailureController *NodeFailureController) Name() string { return "node-failure" }
 
 // Watch returns the fact prefixes this controller needs: lease timestamps,
-// observed node states, observed instance states, and scheduler placements.
+// observed node states, observed and derived instance facts, and placements.
 func (nodeFailureController *NodeFailureController) Watch() []string {
 	return []string{
 		types.ScanLeaseNodes,
 		types.ScanObservedNodes,
 		types.ScanObservedInstances,
+		types.ScanDerivedInstances,
 		types.ScanPlacements,
 	}
 }
@@ -103,16 +104,27 @@ func (nodeFailureController *NodeFailureController) Reconcile(_ context.Context,
 		nodeStateChanges = nodeStateChanges[:nodeFailureController.MaxNodeStateChangesPerCycle]
 	}
 
-	// Remaining budget goes to instance state changes.
-	instanceBudget := nodeFailureController.MaxTotalChangesPerCycle - len(nodeStateChanges)
-	if instanceBudget < 0 {
-		instanceBudget = 0
+	// Remaining budget: failure markers + cleanup of stale markers.
+	remainingBudget := nodeFailureController.MaxTotalChangesPerCycle - len(nodeStateChanges)
+	if remainingBudget < 0 {
+		remainingBudget = 0
 	}
+
 	instanceFailureChanges := markInstancesOnUnreachableNodesAsFailed(
-		facts, unreachableNodeSet, instanceBudget,
+		facts, unreachableNodeSet, remainingBudget,
 	)
 
-	return append(nodeStateChanges, instanceFailureChanges...), nil
+	cleanupBudget := remainingBudget - len(instanceFailureChanges)
+	if cleanupBudget < 0 {
+		cleanupBudget = 0
+	}
+	cleanupChanges := cleanupStaleNodeFailureMarkers(facts, unreachableNodeSet, cleanupBudget)
+
+	var allChanges []Change
+	allChanges = append(allChanges, nodeStateChanges...)
+	allChanges = append(allChanges, instanceFailureChanges...)
+	allChanges = append(allChanges, cleanupChanges...)
+	return allChanges, nil
 }
 
 // parseNodeLeaseTimestamps extracts the last heartbeat unix-millisecond
@@ -147,8 +159,17 @@ func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
 	currentNodeStates map[string]string,
 ) (map[string]bool, []Change) {
 	unreachableNodeSet := make(map[string]bool)
+	var recoveredNodeIDs []string
 	for nodeID, heartbeatMillis := range lastHeartbeatMillisByNode {
 		nodeState := currentNodeStates[nodeID]
+		heartbeatTime := time.UnixMilli(heartbeatMillis)
+		timeSinceLastHeartbeat := currentTime.Sub(heartbeatTime)
+		heartbeatIsFresh := timeSinceLastHeartbeat <= nodeFailureController.LeaseTimeout
+
+		if nodeState == string(types.NodeUnreachable) && heartbeatIsFresh {
+			recoveredNodeIDs = append(recoveredNodeIDs, nodeID)
+			continue
+		}
 		if nodeState == string(types.NodeUnreachable) {
 			unreachableNodeSet[nodeID] = true
 			continue
@@ -156,14 +177,20 @@ func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
 		if nodeState != string(types.NodeAlive) {
 			continue
 		}
-		heartbeatTime := time.UnixMilli(heartbeatMillis)
-		timeSinceLastHeartbeat := currentTime.Sub(heartbeatTime)
-		if timeSinceLastHeartbeat > nodeFailureController.LeaseTimeout {
+		if !heartbeatIsFresh {
 			unreachableNodeSet[nodeID] = true
 		}
 	}
 
+	sort.Strings(recoveredNodeIDs)
 	var nodeStateChanges []Change
+	for _, nodeID := range recoveredNodeIDs {
+		nodeStateChanges = append(nodeStateChanges, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyObservedNodeState(nodeID),
+			Value: []byte(string(types.NodeAlive)),
+		})
+	}
 	for nodeID := range unreachableNodeSet {
 		if currentNodeStates[nodeID] != string(types.NodeUnreachable) {
 			nodeStateChanges = append(nodeStateChanges, Change{
@@ -177,10 +204,9 @@ func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
 	return unreachableNodeSet, nodeStateChanges
 }
 
-// markInstancesOnUnreachableNodesAsFailed scans placement and instance state
-// facts, and for any running, pending, or starting instance placed on an
-// unreachable node, emits a change to mark it as failed. The maxChanges
-// parameter caps the number of instance state changes per cycle.
+// markInstancesOnUnreachableNodesAsFailed emits derived/instance/{id}/node_failure
+// markers for running/pending/starting instances on unreachable nodes.
+// maxChanges caps the number of markers per cycle.
 func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNodeSet map[string]bool, maxChanges int) []Change {
 	instancePlacementNode := make(map[string]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanPlacements) {
@@ -188,7 +214,7 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 		instancePlacementNode[instanceID] = string(factEntry.Value)
 	}
 
-	currentInstanceStates := collectStringValuesBySuffix(facts, types.ScanObservedInstances, "state")
+	instanceFields := parseInstanceFieldsFromFacts(facts)
 
 	// Collect affected instance IDs and sort for deterministic output.
 	var affectedInstanceIDs []string
@@ -196,7 +222,11 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 		if !unreachableNodeSet[placedNodeID] {
 			continue
 		}
-		instanceState := types.InstanceState(currentInstanceStates[instanceID])
+		fields := instanceFields[instanceID]
+		if fields == nil {
+			continue
+		}
+		instanceState := effectiveInstanceState(fields)
 		if instanceState == types.InstanceRunning || instanceState == types.InstancePending || instanceState == types.InstanceStarting {
 			affectedInstanceIDs = append(affectedInstanceIDs, instanceID)
 		}
@@ -211,10 +241,48 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 	for _, instanceID := range affectedInstanceIDs {
 		instanceFailureChanges = append(instanceFailureChanges, Change{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceState(instanceID),
-			Value: []byte(string(types.InstanceFailed)),
+			Key:   types.KeyDerivedInstanceNodeFailure(instanceID),
+			Value: []byte("true"),
 		})
 	}
 
 	return instanceFailureChanges
+}
+
+// cleanupStaleNodeFailureMarkers deletes derived/instance/{id}/node_failure
+// markers for instances whose node is no longer unreachable.
+func cleanupStaleNodeFailureMarkers(facts []store.Fact, unreachableNodeSet map[string]bool, maxChanges int) []Change {
+	instancePlacementNode := make(map[string]string)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanPlacements) {
+		instanceID := strings.TrimPrefix(factEntry.Key, types.ScanPlacements)
+		instancePlacementNode[instanceID] = string(factEntry.Value)
+	}
+
+	var staleInstanceIDs []string
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDerivedInstances) {
+		relativePath := strings.TrimPrefix(factEntry.Key, types.ScanDerivedInstances)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) != 2 || parts[1] != "node_failure" {
+			continue
+		}
+		instanceID := parts[0]
+		placedNode := instancePlacementNode[instanceID]
+		if placedNode != "" && !unreachableNodeSet[placedNode] {
+			staleInstanceIDs = append(staleInstanceIDs, instanceID)
+		}
+	}
+	sort.Strings(staleInstanceIDs)
+
+	if len(staleInstanceIDs) > maxChanges {
+		staleInstanceIDs = staleInstanceIDs[:maxChanges]
+	}
+
+	changes := make([]Change, 0, len(staleInstanceIDs))
+	for _, instanceID := range staleInstanceIDs {
+		changes = append(changes, Change{
+			Type: store.OpDelete,
+			Key:  types.KeyDerivedInstanceNodeFailure(instanceID),
+		})
+	}
+	return changes
 }

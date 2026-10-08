@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,11 +33,11 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 	if len(changes) != 4 {
 		t.Fatalf("expected 4 changes, got %d", len(changes))
 	}
-	if changes[0].Key != types.KeyObservedInstanceState("aaa") {
-		t.Errorf("expected state key for aaa, got %s", changes[0].Key)
+	if changes[0].Key != types.KeyDerivedInstanceControllerStopped("aaa") {
+		t.Errorf("expected controller_stopped key for aaa, got %s", changes[0].Key)
 	}
-	if string(changes[0].Value) != "stopped" {
-		t.Errorf("expected stopped, got %s", changes[0].Value)
+	if string(changes[0].Value) != "true" {
+		t.Errorf("expected true, got %s", changes[0].Value)
 	}
 	if string(changes[2].Value) != "web" {
 		t.Errorf("replacement service: got %s, want web", changes[2].Value)
@@ -124,18 +125,18 @@ func TestFailureMultipleFailed(t *testing.T) {
 		t.Fatalf("expected 8 changes (2 replacements), got %d", len(changes))
 	}
 
-	stopped := 0
+	controllerStoppedCount := 0
 	pending := 0
 	for _, ch := range changes {
-		if ch.Type == store.OpPut && string(ch.Value) == "stopped" {
-			stopped++
+		if ch.Type == store.OpPut && strings.HasSuffix(ch.Key, "/controller_stopped") && string(ch.Value) == "true" {
+			controllerStoppedCount++
 		}
 		if ch.Type == store.OpPut && string(ch.Value) == "pending" {
 			pending++
 		}
 	}
-	if stopped != 2 {
-		t.Errorf("expected 2 stopped, got %d", stopped)
+	if controllerStoppedCount != 2 {
+		t.Errorf("expected 2 controller_stopped markers, got %d", controllerStoppedCount)
 	}
 	if pending != 2 {
 		t.Errorf("expected 2 pending replacements, got %d", pending)
@@ -162,8 +163,8 @@ func TestFailureReplacesStartupFailed(t *testing.T) {
 	if len(changes) != 4 {
 		t.Fatalf("expected 4 changes (immediate stop + replacement), got %d", len(changes))
 	}
-	if string(changes[0].Value) != "stopped" {
-		t.Errorf("expected stopped, got %s", changes[0].Value)
+	if string(changes[0].Value) != "true" || !strings.HasSuffix(changes[0].Key, "/controller_stopped") {
+		t.Errorf("expected controller_stopped=true, got key=%s value=%s", changes[0].Key, changes[0].Value)
 	}
 	if string(changes[2].Value) != "api" {
 		t.Errorf("replacement service: got %s, want api", changes[2].Value)
@@ -235,8 +236,8 @@ func TestFailureLivenessDrainCompletesAfterGracePeriod(t *testing.T) {
 	if len(changes) != 4 {
 		t.Fatalf("expected 4 changes (stop + replacement), got %d", len(changes))
 	}
-	if string(changes[0].Value) != "stopped" {
-		t.Errorf("expected stopped, got %s", changes[0].Value)
+	if string(changes[0].Value) != "true" || !strings.HasSuffix(changes[0].Key, "/controller_stopped") {
+		t.Errorf("expected controller_stopped=true, got key=%s value=%s", changes[0].Key, changes[0].Value)
 	}
 	if string(changes[3].Value) != "pending" {
 		t.Errorf("replacement state: got %s, want pending", changes[3].Value)

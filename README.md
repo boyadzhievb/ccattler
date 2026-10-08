@@ -176,7 +176,7 @@ Full documentation at **[ccattler.org](https://ccattler.org)** — getting start
 ## Design documents
 
 - [CLAUDE.md](CLAUDE.md) — Complete architecture, design philosophy, and phased implementation plan
-- [etcd-schema.md](etcd-schema.md) — etcd key layout, consistency model, and worked examples
+- [etcd-schema.md](design/etcd-schema.md) — etcd key layout, consistency model, and worked examples
 
 ## License
 

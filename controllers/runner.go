@@ -451,7 +451,7 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		changes = changes[:maxTransactionChanges]
 	}
 
-	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(changes, allFacts)
+	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(controller.Name(), changes, allFacts)
 
 	transactionSucceeded, transactionError := controllerRunner.store.Transaction(
 		ctx, transactionCompares, transactionOperations, nil,
@@ -487,7 +487,7 @@ func (controllerRunner *Runner) scanFactsForController(ctx context.Context, cont
 // gets a revision guard (or a create-only guard for new keys). Input keys that
 // were read but not written are also guarded up to the etcd transaction
 // operation limit and the configured maxInputKeyGuards cap.
-func (controllerRunner *Runner) buildReconciliationTransaction(changes []Change, allFacts []store.Fact) ([]store.Compare, []store.Op) {
+func (controllerRunner *Runner) buildReconciliationTransaction(controllerName string, changes []Change, allFacts []store.Fact) ([]store.Compare, []store.Op) {
 	scannedFactRevisions := make(map[string]int64, len(allFacts))
 	for _, scannedFact := range allFacts {
 		scannedFactRevisions[scannedFact.Key] = scannedFact.Revision
@@ -516,20 +516,21 @@ func (controllerRunner *Runner) buildReconciliationTransaction(changes []Change,
 		}
 	}
 
-	controllerRunner.appendInputKeyGuards(&transactionCompares, transactionOperations, changeKeySet, allFacts)
+	controllerRunner.appendInputKeyGuards(controllerName, &transactionCompares, transactionOperations, changeKeySet, allFacts)
 
 	return transactionCompares, transactionOperations
 }
 
-// appendInputKeyGuards adds revision guards for input keys that the controller
-// read but did not write. If any such fact changed since the scan, the
-// transaction will fail, preventing commits based on stale state. The number
-// of guards is capped by the etcd 128-operation transaction limit and the
-// configured maxInputKeyGuards setting.
-func (controllerRunner *Runner) appendInputKeyGuards(transactionCompares *[]store.Compare, transactionOperations []store.Op, changeKeySet map[string]bool, allFacts []store.Fact) {
+// appendInputKeyGuards adds revision guards for input keys within the
+// controller's write domain. Only facts whose prefix matches the controller's
+// declared output are guarded — read-only prefixes are excluded to prevent
+// CAS contention with other writers (e.g. agents writing observed/instance/).
+func (controllerRunner *Runner) appendInputKeyGuards(controllerName string, transactionCompares *[]store.Compare, transactionOperations []store.Op, changeKeySet map[string]bool, allFacts []store.Fact) {
 	if controllerRunner.maxInputKeyGuards == 0 {
 		return
 	}
+
+	writePrefixes := controllerOutputPrefixes()[controllerName]
 
 	etcdCapacity := etcdTransactionOperationLimit - len(transactionOperations)
 	inputKeyLimit := etcdCapacity
@@ -544,12 +545,16 @@ func (controllerRunner *Runner) appendInputKeyGuards(transactionCompares *[]stor
 		if len(*transactionCompares) >= inputKeyLimit {
 			break
 		}
-		if !changeKeySet[scannedFact.Key] {
-			*transactionCompares = append(*transactionCompares, store.Compare{
-				Key:      scannedFact.Key,
-				Revision: scannedFact.Revision,
-			})
+		if changeKeySet[scannedFact.Key] {
+			continue
 		}
+		if !isKeyWithinWriteDomain(scannedFact.Key, writePrefixes) {
+			continue
+		}
+		*transactionCompares = append(*transactionCompares, store.Compare{
+			Key:      scannedFact.Key,
+			Revision: scannedFact.Revision,
+		})
 	}
 }
 

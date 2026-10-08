@@ -7,6 +7,8 @@ import (
 	"context"
 	"math/rand"
 	"time"
+
+	"github.com/boyadzhievb/ccattler/logging"
 )
 
 // FailureScenario identifies the type of failure that can be injected.
@@ -279,6 +281,7 @@ func (chaosRunner *ChaosRunner) waitForConvergence(ctx context.Context) (bool, t
 	convergenceStart := time.Now()
 	convergenceDeadline := convergenceStart.Add(chaosRunner.config.ConvergenceTimeout)
 
+	var lastStatus string
 	for time.Now().Before(convergenceDeadline) {
 		select {
 		case <-ctx.Done():
@@ -286,12 +289,16 @@ func (chaosRunner *ChaosRunner) waitForConvergence(ctx context.Context) (bool, t
 		default:
 		}
 
-		converged, _ := chaosRunner.cluster.CheckConvergence(ctx)
+		converged, status := chaosRunner.cluster.CheckConvergence(ctx)
+		lastStatus = status
 		if converged {
 			return true, time.Since(convergenceStart)
 		}
 		time.Sleep(chaosConvergencePollInterval)
 	}
+	logging.Default().Warn("convergence timeout",
+		"elapsed", time.Since(convergenceStart).String(),
+		"lastStatus", lastStatus)
 	return false, time.Since(convergenceStart)
 }
 
