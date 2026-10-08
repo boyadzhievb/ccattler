@@ -90,6 +90,7 @@ func helperSetupIsolationCluster(testHandle *testing.T, groups []controllerGroup
 
 		nodeAgent := agent.New(nodeID, partitionedStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(nodeContext)
 	}
 

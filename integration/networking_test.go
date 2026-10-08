@@ -59,6 +59,7 @@ func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Cance
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(ctx)
 	}
 
@@ -278,6 +279,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		if nodeID == "node-1" {
 			go nodeAgent.Run(node1Context)
 		} else {

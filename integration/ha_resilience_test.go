@@ -107,6 +107,7 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 		agentRuntimes[nodeID] = simulatorRuntime
 		nodeAgent := agent.New(nodeID, partitionedStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(clusterContext)
 	}
 
@@ -238,6 +239,7 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, partitionedStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(clusterContext)
 	}
 
@@ -294,6 +296,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", partitionedStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(clusterContext)
 
 	helperDeployService(clusterContext, originalStore, "web", "nginx:1.28", "3")
@@ -333,6 +336,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 	restoredRuntime := runtime.NewSimulatorRuntime()
 	restoredAgent := agent.New("node-1", restoredPartitioned, restoredRuntime)
 	restoredAgent.SetInterval(50 * time.Millisecond)
+	restoredAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go restoredAgent.Run(restoreContext)
 
 	waitFor(testHandle, 5*time.Second, "restored cluster converges", func() bool {
@@ -540,6 +544,7 @@ func TestStorageFailure_SlowStore(testHandle *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", partitionedStore, simulatorRuntime)
 	nodeAgent.SetInterval(100 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(clusterContext)
 
 	memStore.Put(clusterContext, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))

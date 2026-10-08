@@ -77,6 +77,7 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 5*time.Second, "instance reported as failed", func() bool {
@@ -109,6 +110,7 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	helperDeployService(ctx, factStore, "memhog", "memhog:latest", "1")
@@ -168,6 +170,7 @@ func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	helperDeployService(ctx, factStore, "graceful", "app:v1", "2")
@@ -226,6 +229,7 @@ func TestObservability_DecisionAuditTrail(t *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	helperDeployService(ctx, factStore, "web", "nginx:1.28", "2")
@@ -335,6 +339,7 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 		agentCancels[nodeID] = nodeCancel
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(nodeCtx)
 	}
 

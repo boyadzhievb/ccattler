@@ -75,6 +75,7 @@ func helperSetupResilienceCluster(t *testing.T) *resilienceCluster {
 
 		nodeAgent := agent.New(nodeID, partitionedStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(nodeContext)
 	}
 
@@ -136,6 +137,7 @@ func (cluster *resilienceCluster) restartAgentForNode(nodeID string) {
 
 	nodeAgent := agent.New(nodeID, cluster.partitionedStores[nodeID], cluster.agentRuntimes[nodeID])
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(nodeContext)
 }
 

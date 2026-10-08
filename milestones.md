@@ -1250,6 +1250,18 @@ Prevent budget truncation from splitting multi-key atomic operations and fix sta
 - [x] Tests: stateful ordinal reuse regression, group-aware truncation, ReadInstance consistency
 - [x] Loadtest: `TestTransactionBudgetingConvergence` passes (recovery in ~5m)
 
+### Phase 75 — Post-Review Correctness III (M75)
+
+Fixes from ChatGPT review `chat-08oct-2.md`: VIP deletion atomicity, agent node resurrection race, oversized group hard error, telemetry prefix separation, independent heartbeat goroutine.
+
+- [x] VIP deletion: include DNS delete in `vip-remove/` group (network.go)
+- [x] Agent `PublishAliveState`: skip `NodeUnreachable` in addition to draining/disabled
+- [x] Runner `takeWholeGroups`: return error for groups exceeding transaction budget
+- [x] Telemetry prefix: move agent telemetry writes to `observed/telemetry/` prefix
+- [x] Heartbeat goroutine: decouple heartbeat from main reconciliation ticker
+- [x] Tests: VIP deletion grouping, agent skip-unreachable, oversized group error, telemetry prefix isolation
+- [x] Loadtest: `TestTransactionBudgetingConvergence` still passes
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1331,5 +1343,6 @@ Prevent budget truncation from splitting multi-key atomic operations and fix sta
 | M72 — Correctness II | 72 | Controller budget alignment (all ≤60 changes/cycle), HA runner awaits shutdown, agent watch retry loop, endpoint watches derived/, duplicate-key validation, heartbeat parse warning |
 | M73 — Derived Failure Markers | 73 | Failure/node-failure writes moved to `derived/instance/`, runner input key guards scoped to write domain, loadtest converges at 50+ nodes |
 | M74 — Atomic Change Groups | 74 | Group-aware `takeWholeGroups` prevents budget truncation from splitting multi-key ops, stateful marker cleanup on ordinal reuse, ReadInstance API consistency, watch context leak fix, loadtest convergence verified |
+| M75 — Post-Review Correctness III | 75 | VIP DNS deletion atomic, agent skips NodeUnreachable in PublishAliveState, oversized group hard error, telemetry prefix separation, independent heartbeat goroutine |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

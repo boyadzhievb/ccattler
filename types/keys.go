@@ -61,6 +61,11 @@ const (
 
 	// PrefixAudit holds persisted authorization audit log entries.
 	PrefixAudit = "audit"
+
+	// PrefixObservedTelemetry holds high-frequency resource telemetry reported
+	// by node agents. Separated from PrefixObserved so that controllers watching
+	// observed/instance/ are not triggered by per-instance CPU/memory updates.
+	PrefixObservedTelemetry = PrefixObserved + "/telemetry"
 )
 
 const (
@@ -695,26 +700,29 @@ func KeyObservedNodeUtilizationMemory(nodeID string) string {
 }
 
 // KeyObservedNodeWorkloadCount returns the store path for the number of workloads
-// running on a node.
-// Path: observed/node/{nodeID}/workloads
+// running on a node. Stored under the telemetry prefix to avoid triggering
+// controller watches on observed/node/.
+// Path: observed/telemetry/node/{nodeID}/workloads
 func KeyObservedNodeWorkloadCount(nodeID string) string {
-	return fmt.Sprintf("%s/node/%s/workloads", PrefixObserved, nodeID)
+	return fmt.Sprintf("%s/node/%s/workloads", PrefixObservedTelemetry, nodeID)
 }
 
-// Workload utilization keys. The agent reports per-instance resource usage.
+// Workload utilization keys. The agent reports per-instance resource usage
+// under the telemetry prefix so controllers watching observed/instance/ are
+// not triggered by high-frequency telemetry updates.
 
-// KeyObservedInstanceCPU returns the store path for an instance's current CPU usage
-// in millicores.
-// Path: observed/instance/{instanceID}/cpu
+// KeyObservedInstanceCPU returns the store path for an instance's current CPU
+// usage in millicores.
+// Path: observed/telemetry/instance/{instanceID}/cpu
 func KeyObservedInstanceCPU(instanceID string) string {
-	return fmt.Sprintf("%s/instance/%s/cpu", PrefixObserved, instanceID)
+	return fmt.Sprintf("%s/instance/%s/cpu", PrefixObservedTelemetry, instanceID)
 }
 
-// KeyObservedInstanceMemory returns the store path for an instance's current memory
-// usage in bytes.
-// Path: observed/instance/{instanceID}/memory
+// KeyObservedInstanceMemory returns the store path for an instance's current
+// memory usage in bytes.
+// Path: observed/telemetry/instance/{instanceID}/memory
 func KeyObservedInstanceMemory(instanceID string) string {
-	return fmt.Sprintf("%s/instance/%s/memory", PrefixObserved, instanceID)
+	return fmt.Sprintf("%s/instance/%s/memory", PrefixObservedTelemetry, instanceID)
 }
 
 // KeyObservedInstanceRestarts returns the store path for an instance's restart count.

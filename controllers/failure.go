@@ -207,7 +207,11 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 
 	if len(changes) > maxFailureControllerChangesPerCycle {
 		var deferredCount int
-		changes, deferredCount = takeWholeGroups(changes, maxFailureControllerChangesPerCycle)
+		var groupError error
+		changes, deferredCount, groupError = takeWholeGroups(changes, maxFailureControllerChangesPerCycle)
+		if groupError != nil {
+			return nil, groupError
+		}
 		if deferredCount > 0 {
 			logging.Default().Warn("failure controller output capped",
 				"committed_changes", fmt.Sprintf("%d", len(changes)),

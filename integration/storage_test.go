@@ -70,6 +70,7 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetStorageProvider(simulatorStorageProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(nodeContext)
 	}
 

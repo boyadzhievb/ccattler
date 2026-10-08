@@ -111,6 +111,7 @@ func TestSlowStartDoesNotCauseNodeUnreachable(t *testing.T) {
 
 	nodeAgent := agent.New("slow-node", memStore, agentRuntime)
 	nodeAgent.SetInterval(500 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	// Deploy a service — the agent will try to start instances, each taking 3s.
@@ -168,6 +169,7 @@ func TestMemoryBytesPassedDirectlyToRuntime(t *testing.T) {
 
 	nodeAgent := agent.New("mem-node", memStore, simulatorRuntime)
 	nodeAgent.SetInterval(200 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	instanceController := controllers.NewInstanceController()

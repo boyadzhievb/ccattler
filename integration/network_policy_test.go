@@ -56,6 +56,7 @@ func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, context.Ca
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go func() {
 			_ = nodeAgent.Run(ctx)
 		}()

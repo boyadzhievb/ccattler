@@ -49,13 +49,13 @@ func (nodeReporter *NodeReporter) WriteHeartbeat(ctx context.Context) {
 
 // PublishAliveState writes the NodeAlive state to the store, indicating that
 // this node is healthy and ready to accept workloads. It skips the write if
-// the node is in a draining or disabled state, since those are intentionally
-// set by operators or controllers and must not be overwritten by the agent.
+// the node is draining, disabled, or unreachable — those states are set by
+// operators or controllers and must not be overwritten by the agent.
 func (nodeReporter *NodeReporter) PublishAliveState(ctx context.Context) {
 	currentState, getError := nodeReporter.factStore.Get(ctx, types.KeyObservedNodeState(nodeReporter.nodeID))
 	if getError == nil {
 		existingState := types.NodeState(currentState.Value)
-		if existingState == types.NodeDraining || existingState == types.NodeDisabled {
+		if existingState == types.NodeDraining || existingState == types.NodeDisabled || existingState == types.NodeUnreachable {
 			return
 		}
 	}

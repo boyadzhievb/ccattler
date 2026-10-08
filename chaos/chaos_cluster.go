@@ -422,6 +422,7 @@ func (simulatedCluster *SimulatedChaosCluster) startAgent(ctx context.Context, n
 
 	nodeAgent := agent.New(nodeID, simulatedCluster.partitionedStores[nodeID], simulatedCluster.agentRuntimes[nodeID])
 	nodeAgent.SetInterval(simulatedCluster.agentInterval)
+	nodeAgent.SetHeartbeatInterval(simulatedCluster.agentInterval * 2)
 	go func() {
 		if runError := nodeAgent.Run(nodeContext); runError != nil {
 			logging.Default().Error("node agent exited with error", "error", runError.Error())

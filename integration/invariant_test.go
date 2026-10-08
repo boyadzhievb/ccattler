@@ -84,6 +84,7 @@ func setupInvariantCluster(testContext *testing.T, nodeCount int) *invariantClus
 		nodeAgent := agent.New(nodeIdentifier, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(clusterContext)
 	}
 
@@ -287,6 +288,7 @@ func TestInvariantInstanceCountMatchesDesired(t *testing.T) {
 		nodeAgent := agent.New(extraNodeID, cluster.factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(cluster.clusterContext)
 	}
 

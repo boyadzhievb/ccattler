@@ -394,7 +394,10 @@ func TestTakeWholeGroupsPreservesAtomicGroups(t *testing.T) {
 		{Type: store.OpPut, Key: "b/2", Value: []byte("v"), Group: "g2"},
 	}
 
-	selected, deferred := takeWholeGroups(changes, 4)
+	selected, deferred, groupErr := takeWholeGroups(changes, 4)
+	if groupErr != nil {
+		t.Fatalf("unexpected error: %v", groupErr)
+	}
 	if len(selected) != 3 {
 		t.Fatalf("expected 3 selected (one complete group), got %d", len(selected))
 	}
@@ -416,7 +419,10 @@ func TestTakeWholeGroupsHandlesUngroupedChanges(t *testing.T) {
 		}
 	}
 
-	selected, deferred := takeWholeGroups(changes, 7)
+	selected, deferred, groupErr := takeWholeGroups(changes, 7)
+	if groupErr != nil {
+		t.Fatalf("unexpected error: %v", groupErr)
+	}
 	if len(selected) != 7 {
 		t.Fatalf("expected 7 standalone changes, got %d", len(selected))
 	}
@@ -425,7 +431,7 @@ func TestTakeWholeGroupsHandlesUngroupedChanges(t *testing.T) {
 	}
 }
 
-func TestTakeWholeGroupsSkipsOversizedGroup(t *testing.T) {
+func TestTakeWholeGroupsRejectsOversizedGroup(t *testing.T) {
 	changes := []Change{
 		{Type: store.OpPut, Key: "big/1", Value: []byte("v"), Group: "toobig"},
 		{Type: store.OpPut, Key: "big/2", Value: []byte("v"), Group: "toobig"},
@@ -433,15 +439,12 @@ func TestTakeWholeGroupsSkipsOversizedGroup(t *testing.T) {
 		{Type: store.OpPut, Key: "small/1", Value: []byte("v"), Group: "fits"},
 	}
 
-	selected, deferred := takeWholeGroups(changes, 2)
-	if len(selected) != 1 {
-		t.Fatalf("expected 1 selected (small group), got %d", len(selected))
+	_, _, groupErr := takeWholeGroups(changes, 2)
+	if groupErr == nil {
+		t.Fatal("expected error for oversized atomic group, got nil")
 	}
-	if selected[0].Group != "fits" {
-		t.Fatalf("expected the 'fits' group, got %s", selected[0].Group)
-	}
-	if deferred != 3 {
-		t.Fatalf("expected 3 deferred (oversized group), got %d", deferred)
+	if !strings.Contains(groupErr.Error(), "toobig") {
+		t.Fatalf("expected error to mention group ID 'toobig', got: %v", groupErr)
 	}
 }
 

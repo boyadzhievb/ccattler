@@ -447,7 +447,11 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	if len(changes) > maxTransactionChanges {
 		var deferredChangeCount int
-		changes, deferredChangeCount = takeWholeGroups(changes, maxTransactionChanges)
+		var groupError error
+		changes, deferredChangeCount, groupError = takeWholeGroups(changes, maxTransactionChanges)
+		if groupError != nil {
+			return false, fmt.Errorf("controller %s: %w", controller.Name(), groupError)
+		}
 		if deferredChangeCount > 0 {
 			logging.Default().Warn("deferred atomic change groups to fit transaction budget",
 				"controller", controller.Name(),
@@ -617,9 +621,10 @@ func sortChangesByGroupAndKey(changes []Change) {
 }
 
 // takeWholeGroups selects complete atomic groups from a sorted change list
-// up to the given limit. Returns the selected changes and the number of
-// changes that were deferred because they would exceed the limit.
-func takeWholeGroups(changes []Change, limit int) ([]Change, int) {
+// up to the given limit. Returns an error if any single group exceeds the
+// limit, since such a group can never be committed. Returns the selected
+// changes and the number of changes deferred to the next cycle.
+func takeWholeGroups(changes []Change, limit int) ([]Change, int, error) {
 	selected := make([]Change, 0, min(len(changes), limit))
 	deferred := 0
 
@@ -636,9 +641,9 @@ func takeWholeGroups(changes []Change, limit int) ([]Change, int) {
 		groupSize := groupEnd - scanIndex
 
 		if groupSize > limit {
-			deferred += groupSize
-			scanIndex = groupEnd
-			continue
+			return nil, 0, fmt.Errorf(
+				"atomic change group %q has %d changes, exceeds transaction budget %d",
+				groupID, groupSize, limit)
 		}
 
 		if len(selected)+groupSize > limit {
@@ -650,7 +655,7 @@ func takeWholeGroups(changes []Change, limit int) ([]Change, int) {
 		scanIndex = groupEnd
 	}
 
-	return selected, deferred
+	return selected, deferred, nil
 }
 
 // findDuplicateChangeKey checks for any duplicate keys in the change list.

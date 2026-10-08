@@ -591,6 +591,7 @@ func TestVerticalAutoscaleAgentResizesOnEffectiveChange(t *testing.T) {
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 
 	go runner.Run(ctx)
 	go nodeAgent.Run(ctx)
@@ -672,6 +673,7 @@ func startTestAgents(ctx context.Context, factStore store.StateStore, count int)
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(ctx)
 	}
 }

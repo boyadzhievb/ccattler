@@ -53,6 +53,7 @@ func helperSetupServiceGroupCluster(t *testing.T) (store.StateStore, context.Can
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go func() {
 			_ = nodeAgent.Run(ctx)
 		}()

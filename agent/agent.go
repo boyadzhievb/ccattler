@@ -30,6 +30,12 @@ const defaultAgentReconcileInterval = 1 * time.Second
 // watch channel closes (e.g. due to etcd compaction or store shutdown).
 const watchReconnectDelay = 2 * time.Second
 
+// heartbeatInterval is the period between independent heartbeat writes. The
+// heartbeat goroutine is decoupled from the main reconciliation ticker so
+// that long reconciliation cycles (e.g. slow container operations) cannot
+// delay heartbeats and cause false node-failure detection.
+const heartbeatInterval = 5 * time.Second
+
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
 // Delegates to three sub-components:
@@ -46,6 +52,7 @@ type Agent struct {
 	materializedSecrets      []MaterializedSecret                 // materializedSecrets tracks secrets written for running instances.
 	advertiseAddress         string                               // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
 	interval                 time.Duration                        // interval is the period between periodic reconciliation cycles.
+	heartbeatFrequency       time.Duration                        // heartbeatFrequency is the period between independent heartbeat writes.
 	appliedInstanceResources map[string]appliedResourceAllocation // appliedInstanceResources tracks the resources last applied to each running instance for resize detection.
 	probeScheduler           *ProbeScheduler                      // probeScheduler runs health checks and probes independently of reconciliation.
 	nodeReporter             *NodeReporter                        // nodeReporter collects telemetry and publishes node state to the store.
@@ -62,6 +69,7 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		store:                    stateStore,
 		runtime:                  runtimeAdapter,
 		interval:                 defaultAgentReconcileInterval,
+		heartbeatFrequency:       heartbeatInterval,
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
 		nodeReporter:             NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
@@ -119,6 +127,14 @@ func (nodeAgent *Agent) SetInterval(reconciliationInterval time.Duration) {
 	nodeAgent.interval = reconciliationInterval
 }
 
+// SetHeartbeatInterval overrides the default heartbeat interval. The heartbeat
+// runs in its own goroutine, independent of the reconciliation ticker. Must be
+// called before Run. For integration tests with short lease timeouts, set this
+// proportionally shorter.
+func (nodeAgent *Agent) SetHeartbeatInterval(heartbeatFrequency time.Duration) {
+	nodeAgent.heartbeatFrequency = heartbeatFrequency
+}
+
 // Run starts the agent loop. It blocks until ctx is cancelled.
 //
 // On startup it registers the node as alive in the store, performs an initial
@@ -138,6 +154,10 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 
 	// Start the independent probe scheduler goroutine.
 	go nodeAgent.probeScheduler.Run(ctx, nodeAgent.findInstancesPlacedOnThisNode)
+
+	// Start the independent heartbeat goroutine so that long reconciliation
+	// cycles cannot delay heartbeats and cause false node-failure detection.
+	go nodeAgent.heartbeatLoop(ctx)
 
 	// Retry loop: re-establish watch on channel closure.
 	for {
@@ -178,8 +198,6 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			nodeAgent.nodeReporter.PublishAliveState(ctx)
-			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 			if reconcileErr := nodeAgent.executeReconciliationCycle(ctx); reconcileErr != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
@@ -201,6 +219,24 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 			if reconcileErr := nodeAgent.executeReconciliationCycle(ctx); reconcileErr != nil {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
+		}
+	}
+}
+
+// heartbeatLoop runs independently of the main reconciliation ticker, writing
+// heartbeat and alive state at a fixed interval. This ensures heartbeats are
+// not delayed by long reconciliation cycles (e.g. slow container operations).
+func (nodeAgent *Agent) heartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(nodeAgent.heartbeatFrequency)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nodeAgent.nodeReporter.PublishAliveState(ctx)
+			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 		}
 	}
 }

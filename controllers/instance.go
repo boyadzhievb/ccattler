@@ -120,7 +120,11 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 
 	if len(changes) > maxInstanceControllerChangesPerCycle {
 		var deferredCount int
-		changes, deferredCount = takeWholeGroups(changes, maxInstanceControllerChangesPerCycle)
+		var groupError error
+		changes, deferredCount, groupError = takeWholeGroups(changes, maxInstanceControllerChangesPerCycle)
+		if groupError != nil {
+			return nil, groupError
+		}
 		if deferredCount > 0 {
 			logging.Default().Warn("instance controller output capped",
 				"committed_changes", fmt.Sprintf("%d", len(changes)),

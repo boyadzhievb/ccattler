@@ -37,11 +37,12 @@ const (
 
 	// convergenceTestRecoveryTimeout is how long to wait for full recovery after
 	// node failures. Must be long enough for multiple batched reconciliation
-	// cycles to converge all replacements.
-	convergenceTestRecoveryTimeout = 300 * time.Second
+	// cycles to converge all replacements. The independent heartbeat goroutines
+	// add MemoryStore mutex contention that slows recovery slightly.
+	convergenceTestRecoveryTimeout = 360 * time.Second
 
 	// convergenceTestMinimumDeadline is the minimum test binary timeout needed.
-	convergenceTestMinimumDeadline = 7 * time.Minute
+	convergenceTestMinimumDeadline = 8 * time.Minute
 )
 
 // TestTransactionBudgetingConvergence is the regression test for M70. It

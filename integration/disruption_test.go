@@ -159,6 +159,7 @@ func TestDrainNodeMigratesInstances(t *testing.T) {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(clusterContext)
 	}
 

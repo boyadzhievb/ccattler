@@ -175,14 +175,22 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 	var changes []Change
 	for serviceName := range existingVIPs {
 		if !servicesWithEndpoints[serviceName] {
-			changes = append(changes, groupedChanges("vip-remove/"+serviceName,
+			removalChanges := groupedChanges("vip-remove/"+serviceName,
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPService(serviceName)},
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPServicePort(serviceName)},
-			)...)
+			)
+			if existingDNS[serviceName] != "" {
+				removalChanges = append(removalChanges, Change{
+					Type:  store.OpDelete,
+					Key:   types.KeyNetworkDNS(serviceName),
+					Group: "vip-remove/" + serviceName,
+				})
+			}
+			changes = append(changes, removalChanges...)
 		}
 	}
 	for serviceName := range existingDNS {
-		if !servicesWithEndpoints[serviceName] {
+		if !servicesWithEndpoints[serviceName] && existingVIPs[serviceName] == "" {
 			changes = append(changes, Change{
 				Type: store.OpDelete,
 				Key:  types.KeyNetworkDNS(serviceName),

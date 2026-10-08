@@ -114,6 +114,7 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	nodeAgent.SetInterval(100 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	// Define the custom HTML content for the nginx index page.

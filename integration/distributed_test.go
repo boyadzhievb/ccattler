@@ -51,6 +51,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(ctx)
 	}
 
@@ -121,6 +122,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 		agentRuntimes[nodeID] = simulatorRuntime
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		if nodeID == "node-1" {
 			go nodeAgent.Run(node1Context)
 		} else {
@@ -189,6 +191,7 @@ func TestDistributedHeartbeatsVisibleInStore(t *testing.T) {
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go nodeAgent.Run(ctx)
 
 	// Verify heartbeat lease appears in the store.
@@ -234,6 +237,7 @@ func TestDistributedMultiServiceSpread(t *testing.T) {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
 		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
 		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 		go nodeAgent.Run(ctx)
 	}
 
