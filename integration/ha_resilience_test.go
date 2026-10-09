@@ -455,7 +455,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 // controller Reconcile calls to prove the controller logic handles missing
 // observed state by re-creating it.
 func TestStorageFailure_VolumeDisappears(testHandle *testing.T) {
-	storageController := controllers.NewStorageController()
+	storageController := controllers.NewStorageController(store.NewMemoryStore())
 	ctx := context.Background()
 
 	desiredFacts := []store.Fact{

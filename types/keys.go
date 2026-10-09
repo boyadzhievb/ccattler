@@ -340,6 +340,10 @@ const (
 	// ScanDerivedNodes scans all controller-derived node-level facts
 	// (drain coordination: started timestamp, initiator, complete marker).
 	ScanDerivedNodes = PrefixDerived + "/node/"
+
+	// ScanDerivedVolumes scans all controller-derived volume-level facts
+	// (pending operations, last completed operation).
+	ScanDerivedVolumes = PrefixDerived + "/volume/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -1021,6 +1025,22 @@ func KeyObservedVolumeReplicaCount(volumeName string) string {
 // Path: observed/volume/{name}/replica_state
 func KeyObservedVolumeReplicaState(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/replica_state", PrefixObserved, volumeName)
+}
+
+// KeyDerivedVolumePendingOperation returns the store path for a volume's
+// pending storage operation (resize or snapshot). Written by the storage
+// controller during Reconcile; executed post-commit by the executor.
+// Path: derived/volume/{name}/pending_operation
+func KeyDerivedVolumePendingOperation(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/pending_operation", PrefixDerived, volumeName)
+}
+
+// KeyDerivedVolumeLastOperation returns the store path for a volume's most
+// recently completed storage operation. Used for idempotency — if the
+// pending operation ID matches the last operation ID, execution is skipped.
+// Path: derived/volume/{name}/last_operation
+func KeyDerivedVolumeLastOperation(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/last_operation", PrefixDerived, volumeName)
 }
 
 // ---------------------------------------------------------------------------

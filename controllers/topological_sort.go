@@ -94,7 +94,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"network":              {"network/vip/", "network/dns/"},
 		"autoscale":            {"intent/autoscaler/"},
 		"rollout":              {"observed/instance/", "derived/service/", "desired/service/"},
-		"storage":              {"observed/volume/"},
+		"storage":              {"observed/volume/", "derived/volume/"},
 		"warm-zero":            {"derived/service/"},
 		"init":                 {"derived/instance/"},
 		"credential-broker":    {"derived/credential/"},

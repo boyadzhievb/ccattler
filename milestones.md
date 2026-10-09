@@ -1266,16 +1266,16 @@ Fixes from ChatGPT review `chat-08oct-2.md`: VIP deletion atomicity, agent node 
 
 Fixes from ChatGPT review `chat-08oct-3.md`: CAS liveness race, storage pre-commit side effects, heartbeat guard, projector reconnect, production heartbeat stress test. Design: [design/m76-correctness-iv.md](design/m76-correctness-iv.md).
 
-- [ ] `SetHeartbeatInterval` / `SetInterval`: guard against zero/negative durations
-- [ ] `PublishAliveState`: remove from heartbeat loop, make startup-only with CAS transaction
-- [ ] `NodeFailureController` owns all `unreachable→alive` recovery (already does — just confirm no regression)
-- [ ] Event projector: per-prefix reconnect loop replacing `mergeWatchChannels`
-- [ ] Storage intent/executor: `reconcileVolumeResize` and `reconcileVolumeMigration` emit pending-operation facts instead of calling provider directly
-- [ ] Storage executor: post-commit method reads pending ops, calls provider idempotently, writes completion
-- [ ] Volume operation keys: `KeyDerivedVolumePendingOperation`, `KeyDerivedVolumeLastOperation`
-- [ ] Snapshot names: deterministic IDs instead of `time.Now().UnixMilli()`
-- [ ] Production heartbeat stress test: 50 agents, default guards, slow reconciliation, zero false failures
-- [ ] Loadtest: `TestTransactionBudgetingConvergence` still passes
+- [x] `SetHeartbeatInterval` / `SetInterval`: guard against zero/negative durations
+- [x] `PublishAliveState`: remove from heartbeat loop, make startup-only with CAS transaction
+- [x] `NodeFailureController` owns all `unreachable→alive` recovery (confirmed — no regression)
+- [x] Event projector: per-prefix reconnect loop replacing `mergeWatchChannels`
+- [x] Storage intent/executor: `reconcileVolumeResize` and `reconcileVolumeMigration` emit pending-operation facts instead of calling provider directly
+- [x] Storage executor: post-commit method reads pending ops, calls provider idempotently, writes completion
+- [x] Volume operation keys: `KeyDerivedVolumePendingOperation`, `KeyDerivedVolumeLastOperation`
+- [x] Snapshot names: deterministic IDs instead of `time.Now().UnixMilli()`
+- [x] Production heartbeat stress test: 50 agents, default guards, slow reconciliation, zero false failures
+- [x] Loadtest: `TestTransactionBudgetingConvergence` still passes
 
 ### Backlog
 

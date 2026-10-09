@@ -55,3 +55,12 @@ type Controller interface {
 	// (or convergent) changes.
 	Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error)
 }
+
+// PostCommitController is an optional interface that controllers may implement
+// to execute side effects after a successful transaction commit. This is used
+// by controllers that need to call external systems (e.g. storage provider
+// resize/snapshot) only after the store transaction succeeds, avoiding
+// duplicate external calls on CAS retry.
+type PostCommitController interface {
+	ExecutePostCommitOperations(ctx context.Context) error
+}

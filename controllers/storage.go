@@ -5,10 +5,11 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/storage"
@@ -19,16 +20,19 @@ import (
 // StorageController watches desired volume declarations and observed volume
 // state to manage the volume lifecycle. It ensures desired volumes exist in
 // the observed state, and force-detaches volumes from unreachable nodes so
-// they can be reattached elsewhere.
+// they can be reattached elsewhere. Implements PostCommitController to execute
+// storage provider operations (resize, snapshot) only after the store
+// transaction succeeds.
 type StorageController struct {
-	storageProvider storage.StorageProvider
+	storageProvider storage.StorageProvider // storageProvider is the backend for resize/snapshot calls.
+	factStore       store.StateStore        // factStore is used by the post-commit executor to read pending operations and write completion markers.
 }
 
 // NewStorageController returns a StorageController ready for registration
 // with the controller runner. The storageProvider is optional — when present
 // the controller takes snapshots before migrating volumes.
-func NewStorageController() *StorageController {
-	return &StorageController{}
+func NewStorageController(factStore store.StateStore) *StorageController {
+	return &StorageController{factStore: factStore}
 }
 
 // SetStorageProvider configures the storage backend used for snapshots during
@@ -42,13 +46,15 @@ func (storageController *StorageController) SetStorageProvider(storageProvider s
 func (storageController *StorageController) Name() string { return "storage" }
 
 // Watch returns the fact prefixes the storage controller monitors: desired
-// volume declarations, observed volume state, and observed node state (for
-// detecting unreachable nodes that hold volumes).
+// volume declarations, observed volume state, observed node state (for
+// detecting unreachable nodes that hold volumes), and derived volume
+// operations (for post-commit execution).
 func (storageController *StorageController) Watch() []string {
 	return []string{
 		types.ScanDesiredVolumes,
 		types.ScanObservedVolumes,
 		types.ScanObservedNodes,
+		types.ScanDerivedVolumes,
 	}
 }
 
@@ -192,8 +198,9 @@ func reconcileVolumeCreation(desiredVolumes map[string]desiredVolumeInfo, observ
 
 // reconcileVolumeResize returns changes that update the observed size of
 // volumes whose desired size differs from the currently observed size. When
-// a storage provider is configured, the resize is performed through the
-// provider before emitting the state change.
+// a storage provider is configured, a pending resize operation fact is
+// emitted instead of calling the provider directly — the actual resize
+// executes post-commit via ExecutePostCommitOperations.
 func (storageController *StorageController) reconcileVolumeResize(ctx context.Context, desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
 	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
@@ -202,11 +209,23 @@ func (storageController *StorageController) reconcileVolumeResize(ctx context.Co
 			continue
 		}
 		if storageController.storageProvider != nil {
-			resizeErr := storageController.storageProvider.ResizeVolume(ctx, volumeName, parseSizeToBytes(desiredInfo.size))
-			if resizeErr != nil {
-				logging.Default().Error("volume resize failed", "volume", volumeName, "error", resizeErr.Error())
+			operationID := buildDeterministicOperationID("resize", volumeName, desiredInfo.size)
+			pendingOp := pendingVolumeOperation{
+				ID:         operationID,
+				Kind:       "resize",
+				VolumeName: volumeName,
+				TargetSize: desiredInfo.size,
+			}
+			pendingJSON, marshalErr := json.Marshal(pendingOp)
+			if marshalErr != nil {
+				logging.Default().Error("failed to marshal pending operation", "volume", volumeName, "error", marshalErr.Error())
 				continue
 			}
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyDerivedVolumePendingOperation(volumeName),
+				Value: pendingJSON,
+			})
 		}
 		changes = append(changes, Change{
 			Type:  store.OpPut,
@@ -248,7 +267,8 @@ func reconcileVolumeReplication(desiredVolumes map[string]desiredVolumeInfo, obs
 // attached to unreachable nodes. The volume transitions to VolumeMigrating
 // state, records the original node as migration source, and clears node,
 // instance, and mount-path bindings. When a storage provider is available, a
-// pre-migration snapshot is taken first.
+// pending snapshot operation is emitted — the actual snapshot executes
+// post-commit via ExecutePostCommitOperations.
 func (storageController *StorageController) reconcileVolumeMigration(ctx context.Context, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
 	var changes []Change
 	for volumeName, observedInfo := range observedVolumes {
@@ -263,16 +283,21 @@ func (storageController *StorageController) reconcileVolumeMigration(ctx context
 		groupID := "vol-migrate/" + volumeName
 		var migrationChanges []Change
 		if storageController.storageProvider != nil {
-			snapshotName := fmt.Sprintf("%s-pre-migration-%d", volumeName, time.Now().UnixMilli())
-			snapshotErr := storageController.storageProvider.SnapshotVolume(ctx, volumeName, snapshotName)
-			if snapshotErr != nil {
-				logging.Default().Error("pre-migration snapshot failed", "volume", volumeName, "error", snapshotErr.Error())
+			operationID := buildDeterministicOperationID("snapshot", volumeName, observedInfo.node)
+			snapshotName := fmt.Sprintf("%s-pre-migration-%s", volumeName, operationID)
+			pendingOp := pendingVolumeOperation{
+				ID:           operationID,
+				Kind:         "snapshot",
+				VolumeName:   volumeName,
+				SnapshotName: snapshotName,
+			}
+			pendingJSON, marshalErr := json.Marshal(pendingOp)
+			if marshalErr != nil {
+				logging.Default().Error("failed to marshal pending operation", "volume", volumeName, "error", marshalErr.Error())
 			} else {
-				migrationChanges = append(migrationChanges, Change{
-					Type:  store.OpPut,
-					Key:   types.KeyObservedVolumeLastSnapshot(volumeName),
-					Value: []byte(snapshotName),
-				})
+				migrationChanges = append(migrationChanges,
+					Change{Type: store.OpPut, Key: types.KeyDerivedVolumePendingOperation(volumeName), Value: pendingJSON},
+				)
 			}
 		}
 		migrationChanges = append(migrationChanges,
@@ -359,4 +384,94 @@ func parseSizeToBytes(sizeString string) int64 {
 		return 0
 	}
 	return numericValue * multiplier
+}
+
+// pendingVolumeOperation describes a storage provider call that must execute
+// after a successful CAS commit. Serialized as JSON into the derived/volume/
+// pending_operation key.
+type pendingVolumeOperation struct {
+	ID           string `json:"id"`            // ID is a deterministic identifier for idempotency checking.
+	Kind         string `json:"kind"`          // Kind is "resize" or "snapshot".
+	VolumeName   string `json:"volume_name"`   // VolumeName is the target volume.
+	TargetSize   string `json:"target_size"`   // TargetSize is the desired size (resize only).
+	SnapshotName string `json:"snapshot_name"` // SnapshotName is the deterministic snapshot name (snapshot only).
+}
+
+// buildDeterministicOperationID produces a stable, short hash from the
+// operation kind, volume name, and a distinguishing parameter (target size
+// for resize, source node for snapshot). The same inputs always produce the
+// same ID, preventing duplicate external calls on CAS retry.
+func buildDeterministicOperationID(kind string, volumeName string, parameter string) string {
+	hashInput := fmt.Sprintf("%s:%s:%s", kind, volumeName, parameter)
+	hashBytes := sha256.Sum256([]byte(hashInput))
+	return fmt.Sprintf("%x", hashBytes[:8])
+}
+
+// ExecutePostCommitOperations reads pending volume operations from the store
+// and calls the storage provider to execute them. Each operation is checked
+// for idempotency against the last-operation key — if the IDs match, the
+// operation is skipped. On success the pending key is deleted and the
+// last-operation key is updated. On failure the pending key is left in place
+// for the next reconciliation cycle to retry.
+func (storageController *StorageController) ExecutePostCommitOperations(ctx context.Context) error {
+	if storageController.storageProvider == nil {
+		return nil
+	}
+
+	pendingFacts, scanError := storageController.factStore.Scan(ctx, types.ScanDerivedVolumes)
+	if scanError != nil {
+		return fmt.Errorf("scanning pending volume operations: %w", scanError)
+	}
+
+	for _, pendingFact := range pendingFacts {
+		if !strings.HasSuffix(pendingFact.Key, "/pending_operation") {
+			continue
+		}
+
+		var pendingOp pendingVolumeOperation
+		if unmarshalErr := json.Unmarshal(pendingFact.Value, &pendingOp); unmarshalErr != nil {
+			logging.Default().Error("corrupt pending operation", "key", pendingFact.Key, "error", unmarshalErr.Error())
+			continue
+		}
+
+		lastOpFact, lastOpErr := storageController.factStore.Get(ctx, types.KeyDerivedVolumeLastOperation(pendingOp.VolumeName))
+		if lastOpErr == nil && string(lastOpFact.Value) == pendingOp.ID {
+			if deleteErr := storageController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
+				logging.Default().Error("failed to clean up duplicate pending operation", "volume", pendingOp.VolumeName, "error", deleteErr.Error())
+			}
+			continue
+		}
+
+		var executeError error
+		switch pendingOp.Kind {
+		case "resize":
+			executeError = storageController.storageProvider.ResizeVolume(ctx, pendingOp.VolumeName, parseSizeToBytes(pendingOp.TargetSize))
+		case "snapshot":
+			executeError = storageController.storageProvider.SnapshotVolume(ctx, pendingOp.VolumeName, pendingOp.SnapshotName)
+		default:
+			logging.Default().Error("unknown pending operation kind", "volume", pendingOp.VolumeName, "kind", pendingOp.Kind)
+			continue
+		}
+
+		if executeError != nil {
+			logging.Default().Error("volume operation failed, will retry",
+				"volume", pendingOp.VolumeName, "kind", pendingOp.Kind, "error", executeError.Error())
+			continue
+		}
+
+		if _, putErr := storageController.factStore.Put(ctx, types.KeyDerivedVolumeLastOperation(pendingOp.VolumeName), []byte(pendingOp.ID)); putErr != nil {
+			logging.Default().Error("failed to write last-operation marker", "volume", pendingOp.VolumeName, "error", putErr.Error())
+		}
+		if deleteErr := storageController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
+			logging.Default().Error("failed to clean up pending operation", "volume", pendingOp.VolumeName, "error", deleteErr.Error())
+		}
+
+		if pendingOp.Kind == "snapshot" {
+			if _, putErr := storageController.factStore.Put(ctx, types.KeyObservedVolumeLastSnapshot(pendingOp.VolumeName), []byte(pendingOp.SnapshotName)); putErr != nil {
+				logging.Default().Error("failed to write snapshot name", "volume", pendingOp.VolumeName, "error", putErr.Error())
+			}
+		}
+	}
+
+	return nil
 }

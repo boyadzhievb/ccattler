@@ -377,7 +377,7 @@ func TestDeterministicPlanVerification(t *testing.T) {
 		{
 			controllerName: "storage",
 			controllerFactory: func() Controller {
-				return NewStorageController()
+				return NewStorageController(store.NewMemoryStore())
 			},
 			inputFacts: buildFacts(
 				kv("desired/volume/dbvol/size", "100Gi"),

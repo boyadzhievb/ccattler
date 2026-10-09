@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 )
 
 // ErrNotFound is returned when a workload lookup fails because the requested
@@ -24,12 +25,13 @@ var ErrResizeUnsupported = errors.New("live resize not supported")
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
 type SimulatorRuntime struct {
-	mutex         sync.Mutex                    // mutex guards concurrent access to the workloads map.
-	workloads     map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
-	ExecFailures  map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
-	StartFailures map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
-	ExecInitCalls []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
-	PulledImages  []string                      // PulledImages records image references passed to PullImage for test verification.
+	mutex          sync.Mutex                    // mutex guards concurrent access to the workloads map.
+	workloads      map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
+	ExecFailures   map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
+	StartFailures  map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
+	ExecInitCalls  []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
+	PulledImages   []string                      // PulledImages records image references passed to PullImage for test verification.
+	ReconcileDelay time.Duration                 // ReconcileDelay adds artificial latency to Start and List to simulate slow operations.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by
@@ -55,6 +57,9 @@ func NewSimulatorRuntime() *SimulatorRuntime {
 // workload ID, Start returns a StartError instead (simulating image pull failure
 // or other start-time errors).
 func (simulator *SimulatorRuntime) Start(_ context.Context, spec Spec) error {
+	if simulator.ReconcileDelay > 0 {
+		time.Sleep(simulator.ReconcileDelay)
+	}
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 
@@ -237,6 +242,9 @@ func (simulator *SimulatorRuntime) Resize(_ context.Context, id string, cpuMilli
 // List returns the status of every workload the simulator has ever seen,
 // including those that have been stopped.
 func (simulator *SimulatorRuntime) List(_ context.Context) ([]Status, error) {
+	if simulator.ReconcileDelay > 0 {
+		time.Sleep(simulator.ReconcileDelay)
+	}
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 

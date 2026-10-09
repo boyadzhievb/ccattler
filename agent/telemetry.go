@@ -47,20 +47,51 @@ func (nodeReporter *NodeReporter) WriteHeartbeat(ctx context.Context) {
 	}
 }
 
-// PublishAliveState writes the NodeAlive state to the store, indicating that
-// this node is healthy and ready to accept workloads. It skips the write if
-// the node is draining, disabled, or unreachable — those states are set by
-// operators or controllers and must not be overwritten by the agent.
+// PublishAliveState atomically writes the NodeAlive state to the store at
+// startup. This is called once during agent startup — the heartbeat loop
+// only writes timestamps, and the NodeFailureController owns all subsequent
+// state transitions (including unreachable→alive recovery).
+//
+// Uses CAS transactions to avoid a race where a controller sets
+// unreachable between the agent's read and write:
+//   - Key absent: create-only (revision-0 guard)
+//   - Key exists with alive: CAS with revision guard
+//   - Key exists with draining/disabled/unreachable: skip
 func (nodeReporter *NodeReporter) PublishAliveState(ctx context.Context) {
-	currentState, getError := nodeReporter.factStore.Get(ctx, types.KeyObservedNodeState(nodeReporter.nodeID))
-	if getError == nil {
-		existingState := types.NodeState(currentState.Value)
-		if existingState == types.NodeDraining || existingState == types.NodeDisabled || existingState == types.NodeUnreachable {
-			return
+	stateKey := types.KeyObservedNodeState(nodeReporter.nodeID)
+	aliveValue := []byte(string(types.NodeAlive))
+
+	currentState, getError := nodeReporter.factStore.Get(ctx, stateKey)
+	if getError != nil {
+		committed, txnError := nodeReporter.factStore.Transaction(ctx,
+			[]store.Compare{{Key: stateKey, Revision: 0}},
+			[]store.Op{{Type: store.OpPut, Key: stateKey, Value: aliveValue}},
+			nil,
+		)
+		if txnError != nil {
+			logging.Default().Error("failed to publish alive state", "node", nodeReporter.nodeID, "error", txnError.Error())
 		}
+		if !committed {
+			logging.Default().Info("alive state already set by another writer", "node", nodeReporter.nodeID)
+		}
+		return
 	}
-	if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedNodeState(nodeReporter.nodeID), []byte(string(types.NodeAlive))); putError != nil {
-		logging.Default().Error("failed to publish alive state", "node", nodeReporter.nodeID, "error", putError.Error())
+
+	existingState := types.NodeState(currentState.Value)
+	if existingState == types.NodeDraining || existingState == types.NodeDisabled || existingState == types.NodeUnreachable {
+		return
+	}
+
+	committed, txnError := nodeReporter.factStore.Transaction(ctx,
+		[]store.Compare{{Key: stateKey, Revision: currentState.Revision}},
+		[]store.Op{{Type: store.OpPut, Key: stateKey, Value: aliveValue}},
+		nil,
+	)
+	if txnError != nil {
+		logging.Default().Error("failed to publish alive state", "node", nodeReporter.nodeID, "error", txnError.Error())
+	}
+	if !committed {
+		logging.Default().Info("alive state changed since read, skipping", "node", nodeReporter.nodeID)
 	}
 }
 

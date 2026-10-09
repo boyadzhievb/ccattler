@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
@@ -37,9 +38,14 @@ func NewEventProjector(factStore store.StateStore, eventLog *types.EventLog) *Ev
 	}
 }
 
+// watchReconnectBackoff is the pause before re-establishing a watch after
+// the watch channel closes (e.g. due to etcd compaction).
+const watchReconnectBackoff = 2 * time.Second
+
 // Run starts the event projector. It watches observed instance state, node
 // state, placements, and effective service counts, emitting events for each
-// committed state transition. Blocks until the context is cancelled.
+// committed state transition. Each prefix gets its own goroutine with
+// automatic reconnect on channel closure. Blocks until ctx is cancelled.
 func (eventProjector *EventProjector) Run(ctx context.Context) error {
 	watchPrefixes := []string{
 		types.PrefixObserved + "/instance/",
@@ -49,26 +55,71 @@ func (eventProjector *EventProjector) Run(ctx context.Context) error {
 		types.PrefixEffective + "/service/",
 	}
 
-	watchChannels := make([]<-chan store.Event, 0, len(watchPrefixes))
-	for _, watchPrefix := range watchPrefixes {
-		watchChannel, watchError := eventProjector.factStore.Watch(ctx, watchPrefix, store.WatchOption{Prefix: true})
-		if watchError != nil {
-			return fmt.Errorf("event projector watch %s: %w", watchPrefix, watchError)
-		}
-		watchChannels = append(watchChannels, watchChannel)
-	}
+	mergedChannel := make(chan store.Event, defaultMergedEventBuffer)
 
-	mergedChannel := mergeWatchChannels(ctx, watchChannels)
+	for _, watchPrefix := range watchPrefixes {
+		go eventProjector.watchPrefixWithReconnect(ctx, watchPrefix, mergedChannel)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case watchEvent, channelOpen := <-mergedChannel:
-			if !channelOpen {
-				return nil
-			}
+		case watchEvent := <-mergedChannel:
 			eventProjector.projectEvent(ctx, watchEvent)
+		}
+	}
+}
+
+// watchPrefixWithReconnect watches a single store prefix, forwarding events
+// to the merged channel. When the watch channel closes (etcd compaction,
+// store shutdown), it waits briefly and re-establishes the watch. Only
+// exits when ctx is cancelled.
+func (eventProjector *EventProjector) watchPrefixWithReconnect(
+	ctx context.Context,
+	watchPrefix string,
+	mergedChannel chan<- store.Event,
+) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		watchChannel, watchError := eventProjector.factStore.Watch(ctx, watchPrefix, store.WatchOption{Prefix: true})
+		if watchError != nil {
+			logging.Default().Error("event projector watch failed",
+				"prefix", watchPrefix, "error", watchError.Error())
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(watchReconnectBackoff):
+				continue
+			}
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case watchEvent, channelOpen := <-watchChannel:
+				if !channelOpen {
+					logging.Default().Warn("event projector watch closed, reconnecting",
+						"prefix", watchPrefix)
+					break
+				}
+				select {
+				case mergedChannel <- watchEvent:
+				case <-ctx.Done():
+					return
+				}
+				continue
+			}
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(watchReconnectBackoff):
 		}
 	}
 }
@@ -160,42 +211,4 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 	}
 
 	return "", "", ""
-}
-
-// mergeWatchChannels fans in multiple watch channels into a single output
-// channel. One goroutine per input channel forwards events to the merged
-// output. The output channel is closed when all input channels are closed.
-func mergeWatchChannels(ctx context.Context, channels []<-chan store.Event) <-chan store.Event {
-	mergedOutput := make(chan store.Event, defaultMergedEventBuffer)
-	pendingCount := make(chan struct{}, len(channels))
-
-	for _, inputChannel := range channels {
-		go func(source <-chan store.Event) {
-			defer func() { pendingCount <- struct{}{} }()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case watchEvent, channelOpen := <-source:
-					if !channelOpen {
-						return
-					}
-					select {
-					case mergedOutput <- watchEvent:
-					case <-ctx.Done():
-						return
-					}
-				}
-			}
-		}(inputChannel)
-	}
-
-	go func() {
-		for range len(channels) {
-			<-pendingCount
-		}
-		close(mergedOutput)
-	}()
-
-	return mergedOutput
 }

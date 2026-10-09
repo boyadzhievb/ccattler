@@ -588,7 +588,7 @@ func executeStorageDemoCommand() {
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
 		controllers.NewDrainController(),
-		controllers.NewStorageController(),
+		controllers.NewStorageController(factStore),
 		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 

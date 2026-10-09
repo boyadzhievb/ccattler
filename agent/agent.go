@@ -122,16 +122,25 @@ func (nodeAgent *Agent) DataPlaneProvider() network.DataPlaneProvider {
 }
 
 // SetInterval overrides the default periodic reconciliation interval.
-// This is typically used in tests to speed up convergence.
+// This is typically used in tests to speed up convergence. Zero or
+// negative values are replaced with the default to avoid a panic in
+// time.NewTicker.
 func (nodeAgent *Agent) SetInterval(reconciliationInterval time.Duration) {
+	if reconciliationInterval <= 0 {
+		reconciliationInterval = defaultAgentReconcileInterval
+	}
 	nodeAgent.interval = reconciliationInterval
 }
 
 // SetHeartbeatInterval overrides the default heartbeat interval. The heartbeat
 // runs in its own goroutine, independent of the reconciliation ticker. Must be
 // called before Run. For integration tests with short lease timeouts, set this
-// proportionally shorter.
+// proportionally shorter. Zero or negative values are replaced with the default
+// to avoid a panic in time.NewTicker.
 func (nodeAgent *Agent) SetHeartbeatInterval(heartbeatFrequency time.Duration) {
+	if heartbeatFrequency <= 0 {
+		heartbeatFrequency = heartbeatInterval
+	}
 	nodeAgent.heartbeatFrequency = heartbeatFrequency
 }
 
@@ -224,8 +233,10 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 }
 
 // heartbeatLoop runs independently of the main reconciliation ticker, writing
-// heartbeat and alive state at a fixed interval. This ensures heartbeats are
-// not delayed by long reconciliation cycles (e.g. slow container operations).
+// heartbeat timestamps at a fixed interval. This ensures heartbeats are not
+// delayed by long reconciliation cycles (e.g. slow container operations).
+// Only the heartbeat timestamp is written here — the NodeFailureController
+// owns all node state transitions (unreachable→alive recovery included).
 func (nodeAgent *Agent) heartbeatLoop(ctx context.Context) {
 	ticker := time.NewTicker(nodeAgent.heartbeatFrequency)
 	defer ticker.Stop()
@@ -235,7 +246,6 @@ func (nodeAgent *Agent) heartbeatLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			nodeAgent.nodeReporter.PublishAliveState(ctx)
 			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 		}
 	}

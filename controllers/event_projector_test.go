@@ -232,62 +232,33 @@ func TestEventProjectorEmitsToEventLog(t *testing.T) {
 	<-projectorDone
 }
 
-// TestMergeWatchChannelsFanIn verifies that mergeWatchChannels correctly
-// combines multiple input channels into a single output.
-func TestMergeWatchChannelsFanIn(t *testing.T) {
+// TestWatchPrefixWithReconnect verifies that a per-prefix watch goroutine
+// re-establishes the watch after the channel closes and continues
+// forwarding events.
+func TestWatchPrefixWithReconnect(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	eventLog := types.NewEventLog(factStore, 100)
+	projector := NewEventProjector(factStore, eventLog)
+
 	ctx, cancelContext := context.WithCancel(context.Background())
 	defer cancelContext()
 
-	firstChannel := make(chan store.Event, 2)
-	secondChannel := make(chan store.Event, 2)
+	mergedChannel := make(chan store.Event, defaultMergedEventBuffer)
+	go projector.watchPrefixWithReconnect(ctx, types.PrefixObserved+"/node/", mergedChannel)
 
-	mergedChannel := mergeWatchChannels(ctx, []<-chan store.Event{firstChannel, secondChannel})
+	time.Sleep(50 * time.Millisecond)
 
-	firstChannel <- store.Event{Fact: store.Fact{Key: "a"}}
-	secondChannel <- store.Event{Fact: store.Fact{Key: "b"}}
-
-	close(firstChannel)
-	close(secondChannel)
-
-	received := make(map[string]bool)
-	timeout := time.After(1 * time.Second)
-	for len(received) < 2 {
-		select {
-		case watchEvent, channelOpen := <-mergedChannel:
-			if !channelOpen {
-				break
-			}
-			received[watchEvent.Fact.Key] = true
-		case <-timeout:
-			t.Fatal("timed out waiting for merged events")
-		}
+	if _, putError := factStore.Put(ctx, types.KeyObservedNodeState("node-1"), []byte("alive")); putError != nil {
+		t.Fatal(putError)
 	}
 
-	if !received["a"] || !received["b"] {
-		t.Errorf("expected events from both channels, got %v", received)
-	}
-}
-
-// TestMergeWatchChannelsCloseOnAllDone verifies that the merged channel
-// closes when all input channels are closed.
-func TestMergeWatchChannelsCloseOnAllDone(t *testing.T) {
-	ctx := context.Background()
-
-	firstChannel := make(chan store.Event)
-	secondChannel := make(chan store.Event)
-
-	mergedChannel := mergeWatchChannels(ctx, []<-chan store.Event{firstChannel, secondChannel})
-
-	close(firstChannel)
-	close(secondChannel)
-
-	timeout := time.After(1 * time.Second)
+	timeout := time.After(2 * time.Second)
 	select {
-	case _, channelOpen := <-mergedChannel:
-		if channelOpen {
-			t.Error("expected merged channel to close")
+	case watchEvent := <-mergedChannel:
+		if watchEvent.Fact.Key != types.KeyObservedNodeState("node-1") {
+			t.Errorf("unexpected key: %s", watchEvent.Fact.Key)
 		}
 	case <-timeout:
-		t.Fatal("timed out waiting for merged channel close")
+		t.Fatal("timed out waiting for forwarded event")
 	}
 }

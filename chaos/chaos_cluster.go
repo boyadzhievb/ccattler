@@ -72,6 +72,10 @@ type SimulatedChaosCluster struct {
 	services map[string]int
 	// clusterContext is the parent context for everything in this cluster.
 	clusterContext context.Context
+	// agentReconcileDelay adds artificial latency to each agent's runtime
+	// operations (Start, List), simulating slow container operations for
+	// heartbeat stress testing.
+	agentReconcileDelay time.Duration
 	// mutex guards concurrent access to cluster state.
 	mutex sync.Mutex
 }
@@ -130,6 +134,13 @@ func (simulatedCluster *SimulatedChaosCluster) SetLeaseTimeout(timeout time.Dura
 	simulatedCluster.leaseTimeout = timeout
 }
 
+// SetAgentReconcileDelay adds artificial latency to each agent's runtime
+// operations (Start, List) to simulate slow container operations. Must be
+// called before Start.
+func (simulatedCluster *SimulatedChaosCluster) SetAgentReconcileDelay(delay time.Duration) {
+	simulatedCluster.agentReconcileDelay = delay
+}
+
 // Start initializes and starts all agents and the controller runner.
 func (simulatedCluster *SimulatedChaosCluster) Start(ctx context.Context) {
 	simulatedCluster.clusterContext = ctx
@@ -151,6 +162,7 @@ func (simulatedCluster *SimulatedChaosCluster) Start(ctx context.Context) {
 		simulatedCluster.partitionedStores[nodeID] = partitionedStore
 
 		simulatorRuntime := runtime.NewSimulatorRuntime()
+		simulatorRuntime.ReconcileDelay = simulatedCluster.agentReconcileDelay
 		simulatedCluster.agentRuntimes[nodeID] = simulatorRuntime
 
 		simulatedCluster.startAgent(ctx, nodeID)

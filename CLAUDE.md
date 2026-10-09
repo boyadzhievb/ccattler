@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M75 — Phase 75 Post-Review Correctness III. M1–M75 complete (DeltaController deferred). Gates A–I resolved. **Next:** M76 — Correctness IV: Atomic Liveness, Storage Idempotency, Projector Resilience. Design: [design/m76-correctness-iv.md](design/m76-correctness-iv.md).
+**Completed through:** M76 — Phase 76 Correctness IV. M1–M76 complete (DeltaController deferred). Gates A–I resolved. **Next:** Backlog items or next review-driven phase.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

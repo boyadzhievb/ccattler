@@ -475,6 +475,14 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	reconciliationChanges.Add(int64(len(changes)), controller.Name())
 
+	if postCommitController, hasPostCommit := controller.(PostCommitController); hasPostCommit {
+		if postCommitError := postCommitController.ExecutePostCommitOperations(ctx); postCommitError != nil {
+			logging.Default().Error("post-commit operations failed",
+				"controller", controller.Name(),
+				"error", postCommitError.Error())
+		}
+	}
+
 	return false, nil
 }
 
