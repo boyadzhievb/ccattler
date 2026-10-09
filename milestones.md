@@ -1295,6 +1295,26 @@ Fixes from ChatGPT review `chat-09oct.md`: storage operations stuck after provid
 - [x] Test: cloud route post-commit execution
 - [x] All tests pass, lint clean
 
+### Phase 78 — Durable Capacity Request State Machine (M78)
+
+Converts ClusterAutoscaleController from direct provider calls to durable-intent/post-commit pattern. Scheduler emits structured unplaced-demand facts so the autoscaler can distinguish capacity shortages from unsatisfiable constraints. Borrows lifecycle model from Karpenter. Design: [design/m78-capacity-state-machine.md](design/m78-capacity-state-machine.md).
+
+- [x] `CapacityRequestState` and `UnplacedReason` typed enums
+- [x] Capacity request and unplaced-demand key functions in `types/keys.go`
+- [x] `RequestNodeWithRequirements(ctx, requestID, requirements)` on InfrastructureProvider
+- [x] SimulatorInfraProvider implements new interface with idempotency
+- [x] Scheduler emits `derived/scheduler/unplaced/` facts with reason and requirements
+- [x] Scheduler cleans up stale unplaced facts when instances get placed
+- [x] Write domains registered for scheduler and cluster-autoscale
+- [x] ClusterAutoscaleController rewritten: Reconcile returns `[]Change`
+- [x] Scale-up via durable capacity request facts (pending → launching → ready)
+- [x] Scale-down via durable removal request facts (post-commit pattern)
+- [x] `ExecutePostCommitOperations` calls provider, transitions state machine
+- [x] Unit tests: autoscaler Reconcile, post-commit, provider failure retry
+- [x] Unit tests: scheduler unplaced-demand emission and cleanup
+- [x] Integration test updated for new constructor and full pipeline
+- [x] All tests pass, lint clean
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1379,5 +1399,6 @@ Fixes from ChatGPT review `chat-09oct.md`: storage operations stuck after provid
 | M75 — Post-Review Correctness III | 75 | VIP DNS deletion atomic, agent skips NodeUnreachable in PublishAliveState, oversized group hard error, telemetry prefix separation, independent heartbeat goroutine |
 | M76 — Correctness IV | 76 | Atomic liveness CAS, storage intent/executor, event projector per-prefix reconnect, heartbeat stress test |
 | M77 — Correctness V | 77 | Storage retry on provider failure, per-type pending keys, revision-aware projector reconnect, cloud post-commit |
+| M78 — Capacity State Machine | 78 | Durable capacity requests, scheduler unplaced-demand signaling, autoscaler post-commit pattern, constraint-aware provisioning |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

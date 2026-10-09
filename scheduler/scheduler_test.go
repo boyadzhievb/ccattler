@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -39,6 +40,30 @@ func buildFacts(entries ...struct{ k, v string }) []store.Fact {
 
 func kv(k, v string) struct{ k, v string } {
 	return struct{ k, v string }{k, v}
+}
+
+// filterPlacementChanges returns only changes that write to the placement/
+// prefix, filtering out unplaced-demand facts.
+func filterPlacementChanges(changes []controllers.Change) []controllers.Change {
+	var placements []controllers.Change
+	for _, change := range changes {
+		if strings.HasPrefix(change.Key, types.ScanPlacements) {
+			placements = append(placements, change)
+		}
+	}
+	return placements
+}
+
+// filterUnplacedDemandChanges returns only changes that write to the
+// derived/scheduler/unplaced/ prefix.
+func filterUnplacedDemandChanges(changes []controllers.Change) []controllers.Change {
+	var unplacedChanges []controllers.Change
+	for _, change := range changes {
+		if strings.HasPrefix(change.Key, types.ScanDerivedSchedulerUnplaced) {
+			unplacedChanges = append(unplacedChanges, change)
+		}
+	}
+	return unplacedChanges
 }
 
 func TestPlacePendingInstance(t *testing.T) {
@@ -202,8 +227,13 @@ func TestNoAliveNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 0 {
-		t.Fatalf("expected 0 placements with no alive nodes, got %d", len(changes))
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 0 {
+		t.Fatalf("expected 0 placements with no alive nodes, got %d", len(placements))
+	}
+	unplacedChanges := filterUnplacedDemandChanges(changes)
+	if len(unplacedChanges) != 2 {
+		t.Fatalf("expected 2 unplaced-demand facts (reason+requirements), got %d", len(unplacedChanges))
 	}
 }
 
@@ -276,8 +306,13 @@ func TestResourceExhaustion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(changes) != 2 {
-		t.Fatalf("expected 2 placements (node full after 2), got %d", len(changes))
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 2 {
+		t.Fatalf("expected 2 placements (node full after 2), got %d", len(placements))
+	}
+	unplacedChanges := filterUnplacedDemandChanges(changes)
+	if len(unplacedChanges) != 2 {
+		t.Fatalf("expected 2 unplaced-demand facts for 1 remaining instance, got %d", len(unplacedChanges))
 	}
 }
 
@@ -787,8 +822,8 @@ func TestControllerInterface(t *testing.T) {
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(placementScheduler.Watch()) != 5 {
-		t.Fatalf("expected 5 watch prefixes, got %d", len(placementScheduler.Watch()))
+	if len(placementScheduler.Watch()) != 6 {
+		t.Fatalf("expected 6 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 
@@ -1026,5 +1061,154 @@ func TestDrainingNodeExcludedFromScheduler(t *testing.T) {
 	}
 	if string(proposedChanges[0].Value) != "node-2" {
 		t.Errorf("expected placement on node-2, got %s", string(proposedChanges[0].Value))
+	}
+}
+
+func TestUnplacedDemandEmittedForInsufficientCapacity(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000"),
+		// Node has 4000 CPU — not enough for 8000 requirement.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "16384"),
+	)
+
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 0 {
+		t.Fatalf("expected 0 placements (insufficient capacity), got %d", len(placements))
+	}
+
+	unplacedChanges := filterUnplacedDemandChanges(changes)
+	if len(unplacedChanges) != 2 {
+		t.Fatalf("expected 2 unplaced-demand facts, got %d", len(unplacedChanges))
+	}
+
+	foundReason := false
+	for _, change := range unplacedChanges {
+		if change.Key == types.KeyDerivedSchedulerUnplacedReason("aaa") {
+			foundReason = true
+			if string(change.Value) != string(types.UnplacedInsufficientCapacity) {
+				t.Errorf("expected reason %s, got %s", types.UnplacedInsufficientCapacity, change.Value)
+			}
+		}
+	}
+	if !foundReason {
+		t.Error("expected unplaced reason fact for instance aaa")
+	}
+}
+
+func TestUnplacedDemandEmittedForUnsatisfiableConstraint(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	// Instance requires arm64 and 8000 CPU (more than the node has). The node
+	// is amd64. The scheduler's constraint filter falls back when no candidates
+	// match, so CPU exhaustion prevents placement. The unplaced classifier
+	// then detects the architecture mismatch and reports unsatisfiable_constraint.
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyDesiredServicePlacementArchitecture("web"), "arm64"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "8000"),
+		// Node is amd64 with only 4000 CPU.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "16384"),
+		kv(types.KeyObservedNodeArchitecture("node-1"), "amd64"),
+	)
+
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 0 {
+		t.Fatalf("expected 0 placements (unsatisfiable constraint + insufficient CPU), got %d", len(placements))
+	}
+
+	unplacedChanges := filterUnplacedDemandChanges(changes)
+	foundReason := false
+	for _, change := range unplacedChanges {
+		if change.Key == types.KeyDerivedSchedulerUnplacedReason("aaa") {
+			foundReason = true
+			if string(change.Value) != string(types.UnplacedUnsatisfiableConstraint) {
+				t.Errorf("expected reason %s, got %s", types.UnplacedUnsatisfiableConstraint, change.Value)
+			}
+		}
+	}
+	if !foundReason {
+		t.Error("expected unplaced reason fact for instance aaa")
+	}
+}
+
+func TestUnplacedDemandCleanedUpWhenInstancePlaced(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "4000"),
+		kv(types.KeyObservedNodeAvailableMemory("node-1"), "16384"),
+		// Stale unplaced fact from a previous cycle — aaa is now placeable.
+		kv(types.KeyDerivedSchedulerUnplacedReason("aaa"), string(types.UnplacedInsufficientCapacity)),
+		kv(types.KeyDerivedSchedulerUnplacedRequirements("aaa"), `{"cpu":1000}`),
+	)
+
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(placements))
+	}
+
+	deleteCount := 0
+	for _, change := range changes {
+		if change.Type == store.OpDelete && strings.HasPrefix(change.Key, types.ScanDerivedSchedulerUnplaced) {
+			deleteCount++
+		}
+	}
+	if deleteCount != 2 {
+		t.Fatalf("expected 2 delete changes for stale unplaced facts, got %d", deleteCount)
+	}
+}
+
+func TestNoNodesEmitsUnplacedDemand(t *testing.T) {
+	placementScheduler := NewScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+	)
+
+	changes, reconcileError := placementScheduler.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	unplacedChanges := filterUnplacedDemandChanges(changes)
+	foundReason := false
+	for _, change := range unplacedChanges {
+		if change.Key == types.KeyDerivedSchedulerUnplacedReason("aaa") {
+			foundReason = true
+			if string(change.Value) != string(types.UnplacedNoNodes) {
+				t.Errorf("expected reason %s, got %s", types.UnplacedNoNodes, change.Value)
+			}
+		}
+	}
+	if !foundReason {
+		t.Error("expected unplaced reason fact for instance aaa with no_nodes")
 	}
 }

@@ -16,39 +16,64 @@ import (
 // SimulatorInfraProvider is an in-memory infrastructure provider for testing.
 // It creates simulated nodes in the fact store without provisioning real machines.
 type SimulatorInfraProvider struct {
-	factStore     store.StateStore
-	nodeCounter   atomic.Int64
-	managedNodes  map[string]bool
-	providerMutex sync.Mutex
+	factStore       store.StateStore
+	nodeCounter     atomic.Int64
+	managedNodes    map[string]bool
+	requestToNodeID map[string]string // maps requestID → nodeID for idempotency
+	providerMutex   sync.Mutex
 }
 
 // NewSimulatorInfraProvider creates a SimulatorInfraProvider backed by the given store.
 func NewSimulatorInfraProvider(factStore store.StateStore) *SimulatorInfraProvider {
 	return &SimulatorInfraProvider{
-		factStore:    factStore,
-		managedNodes: make(map[string]bool),
+		factStore:       factStore,
+		managedNodes:    make(map[string]bool),
+		requestToNodeID: make(map[string]string),
 	}
 }
 
-// RequestNode creates a new simulated node in the fact store with default capacity.
-func (simulatorInfraProvider *SimulatorInfraProvider) RequestNode(ctx context.Context) (string, error) {
+// RequestNodeWithRequirements creates a new simulated node in the fact store
+// matching the given requirements. If a node was already provisioned for the
+// given requestID, the existing node ID is returned without creating a duplicate.
+func (simulatorInfraProvider *SimulatorInfraProvider) RequestNodeWithRequirements(ctx context.Context, requestID string, requirements CapacityRequestRequirements) (string, error) {
+	simulatorInfraProvider.providerMutex.Lock()
+	if existingNodeID, alreadyProvisioned := simulatorInfraProvider.requestToNodeID[requestID]; alreadyProvisioned {
+		simulatorInfraProvider.providerMutex.Unlock()
+		return existingNodeID, nil
+	}
+	simulatorInfraProvider.providerMutex.Unlock()
+
 	nodeNumber := simulatorInfraProvider.nodeCounter.Add(1)
 	nodeID := fmt.Sprintf("auto-node-%d", nodeNumber)
+
+	var capacityCPU int64 = types.DefaultSimulatedNodeCPU
+	if requirements.CPU > capacityCPU {
+		capacityCPU = requirements.CPU
+	}
+	var capacityMemory int64 = types.DefaultSimulatedNodeMemory
+	if requirements.Memory > capacityMemory {
+		capacityMemory = requirements.Memory
+	}
+	architecture := "amd64"
+	if requirements.Architecture != "" {
+		architecture = requirements.Architecture
+	}
 
 	if writeError := types.WriteNode(ctx, simulatorInfraProvider.factStore, types.Node{
 		ID:              nodeID,
 		State:           types.NodeAlive,
-		CapacityCPU:     types.DefaultSimulatedNodeCPU,
-		CapacityMemory:  types.DefaultSimulatedNodeMemory,
-		AvailableCPU:    types.DefaultSimulatedNodeCPU,
-		AvailableMemory: types.DefaultSimulatedNodeMemory,
-		Architecture:    "amd64",
+		CapacityCPU:     capacityCPU,
+		CapacityMemory:  capacityMemory,
+		AvailableCPU:    capacityCPU,
+		AvailableMemory: capacityMemory,
+		Architecture:    architecture,
 	}); writeError != nil {
 		return "", fmt.Errorf("failed to write simulated node %s: %w", nodeID, writeError)
 	}
 
 	simulatorInfraProvider.providerMutex.Lock()
 	simulatorInfraProvider.managedNodes[nodeID] = true
+	simulatorInfraProvider.requestToNodeID[requestID] = nodeID
 	simulatorInfraProvider.providerMutex.Unlock()
 
 	return nodeID, nil

@@ -220,3 +220,44 @@ const (
 // AllProbeTypes lists every probe type for iteration in probe scheduling and
 // cleanup loops.
 var AllProbeTypes = []ProbeType{ProbeStartup, ProbeLiveness, ProbeReadiness}
+
+// CapacityRequestState represents the lifecycle of a durable capacity request
+// managed by the ClusterAutoscaleController.
+type CapacityRequestState string
+
+const (
+	// CapacityRequestPending means the request has been committed to the store
+	// but the infrastructure provider has not yet been called.
+	CapacityRequestPending CapacityRequestState = "pending"
+
+	// CapacityRequestLaunching means the provider accepted the request and a
+	// node is being provisioned. Waiting for the node to appear in observed state.
+	CapacityRequestLaunching CapacityRequestState = "launching"
+
+	// CapacityRequestReady means the provisioned node is alive and registered.
+	CapacityRequestReady CapacityRequestState = "ready"
+
+	// CapacityRequestFailed means the provider call failed. The request remains
+	// for the autoscaler to evaluate for retry or cleanup.
+	CapacityRequestFailed CapacityRequestState = "failed"
+
+	// CapacityRequestRemoving means a scale-down removal request has been
+	// committed and the provider call is pending.
+	CapacityRequestRemoving CapacityRequestState = "removing"
+)
+
+// UnplacedReason describes why the scheduler could not place an instance.
+type UnplacedReason string
+
+const (
+	// UnplacedInsufficientCapacity means candidate nodes exist but none has
+	// enough CPU or memory to fit the instance.
+	UnplacedInsufficientCapacity UnplacedReason = "insufficient_capacity"
+
+	// UnplacedUnsatisfiableConstraint means no alive node matches the
+	// instance's placement constraints (architecture, labels, restrict/accept).
+	UnplacedUnsatisfiableConstraint UnplacedReason = "unsatisfiable_constraint"
+
+	// UnplacedNoNodes means there are no alive nodes in the cluster at all.
+	UnplacedNoNodes UnplacedReason = "no_nodes"
+)

@@ -280,7 +280,7 @@ func executeDemoCommand() {
 	registerLocalNode(ctx, factStore, localNodeID)
 
 	controllerList := append(coreControllers(),
-		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Node agent with simulator runtime — no real processes, just state tracking.
@@ -335,7 +335,7 @@ func executeDistributedDemoCommand() {
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
 		controllers.NewDrainController(),
-		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	// Start 3 agents, each with its own simulator runtime.
@@ -422,7 +422,7 @@ func setupNetworkDemoNodesAndAgents(ctx context.Context, factStore store.StateSt
 		controllers.NewDrainController(),
 		controllers.NewNetworkController(),
 		controllers.NewNetworkPolicyController(),
-		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	for _, nodeID := range nodeIDs {
@@ -589,7 +589,7 @@ func executeStorageDemoCommand() {
 		controllers.NewNodeFailureController(),
 		controllers.NewDrainController(),
 		controllers.NewStorageController(factStore),
-		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore))
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
 	nodeAgentContexts := startStorageDemoAgentsWithNodeContexts(ctx, factStore, nodeIDs, simulatorStorageProvider)

@@ -296,7 +296,7 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
-	clusterAutoscaleController := controllers.NewClusterAutoscaleController(simulatorInfraProvider)
+	clusterAutoscaleController := controllers.NewClusterAutoscaleController(simulatorInfraProvider, factStore)
 
 	runner := controllers.NewRunner(factStore,
 		instanceController, schedulerController, clusterAutoscaleController,

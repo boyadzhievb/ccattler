@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M77 — Phase 77 Correctness V. M1–M77 complete (DeltaController deferred). Gates A–I resolved. **Next:** Backlog items or next review-driven phase.
+**Completed through:** M78 — Phase 78 Durable Capacity Request State Machine. M1–M78 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

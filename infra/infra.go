@@ -8,13 +8,27 @@ package infra
 
 import "context"
 
+// CapacityRequestRequirements describes the resource and constraint requirements
+// for a capacity request. The infrastructure provider uses these to select an
+// appropriate node type and configuration.
+type CapacityRequestRequirements struct {
+	// CPU is the minimum CPU capacity needed in millicores.
+	CPU int64
+	// Memory is the minimum memory capacity needed in MiB.
+	Memory int64
+	// Architecture is the required CPU architecture (e.g. "amd64", "arm64").
+	Architecture string
+}
+
 // InfrastructureProvider provisions and decommissions cluster nodes. The cluster
-// autoscaler calls RequestNode when scheduling demand cannot be satisfied by
-// existing nodes, and RemoveNode when nodes are idle and can be drained.
+// autoscaler calls RequestNodeWithRequirements when scheduling demand cannot be
+// satisfied by existing nodes, and RemoveNode when nodes are idle and can be drained.
 type InfrastructureProvider interface {
-	// RequestNode provisions a new node and returns its ID. The node should
-	// register itself with the fact store once it's ready.
-	RequestNode(ctx context.Context) (string, error)
+	// RequestNodeWithRequirements provisions a new node matching the given
+	// requirements and returns its ID. The requestID enables provider-level
+	// idempotency — repeated calls with the same requestID return the same
+	// node without provisioning a duplicate.
+	RequestNodeWithRequirements(ctx context.Context, requestID string, requirements CapacityRequestRequirements) (string, error)
 
 	// RemoveNode decommissions an existing node by ID. The provider should
 	// drain and terminate the node.

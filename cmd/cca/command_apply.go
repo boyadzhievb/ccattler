@@ -185,7 +185,7 @@ func setupLocalSimulationEnvironment(ctx context.Context, factStore store.StateS
 
 	controllerList := append(coreControllers(),
 		controllers.NewWarmZeroController(),
-		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore)))
+		controllers.NewClusterAutoscaleController(infra.NewSimulatorInfraProvider(factStore), factStore))
 
 	return controllers.NewRunner(factStore, controllerList...)
 }

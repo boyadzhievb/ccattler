@@ -352,6 +352,14 @@ const (
 	// ScanDerivedCloudRoutes scans all controller-derived cloud route
 	// facts (pending ensure/delete operations).
 	ScanDerivedCloudRoutes = PrefixDerived + "/cloud/route/"
+
+	// ScanDerivedCapacityRequests scans all durable capacity request facts
+	// written by the ClusterAutoscaleController.
+	ScanDerivedCapacityRequests = PrefixDerived + "/capacity/request/"
+
+	// ScanDerivedSchedulerUnplaced scans all scheduler unplaced-demand facts
+	// explaining why instances could not be placed.
+	ScanDerivedSchedulerUnplaced = PrefixDerived + "/scheduler/unplaced/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -1610,4 +1618,50 @@ func KeyDesiredGroupShareNetwork(groupName string) string {
 // Path: desired/group/{name}/share/volume/{volumeName}
 func KeyDesiredGroupShareVolume(groupName string, volumeName string) string {
 	return fmt.Sprintf("%s/group/%s/share/volume/%s", PrefixDesired, groupName, volumeName)
+}
+
+// --- Capacity request keys ---
+
+// KeyDerivedCapacityRequestState returns the store path for a capacity
+// request's lifecycle state.
+// Path: derived/capacity/request/{requestID}/state
+func KeyDerivedCapacityRequestState(requestID string) string {
+	return fmt.Sprintf("%s/capacity/request/%s/state", PrefixDerived, requestID)
+}
+
+// KeyDerivedCapacityRequestRequirements returns the store path for a capacity
+// request's resource requirements (JSON-encoded).
+// Path: derived/capacity/request/{requestID}/requirements
+func KeyDerivedCapacityRequestRequirements(requestID string) string {
+	return fmt.Sprintf("%s/capacity/request/%s/requirements", PrefixDerived, requestID)
+}
+
+// KeyDerivedCapacityRequestReason returns the store path for a capacity
+// request's human-readable reason.
+// Path: derived/capacity/request/{requestID}/reason
+func KeyDerivedCapacityRequestReason(requestID string) string {
+	return fmt.Sprintf("%s/capacity/request/%s/reason", PrefixDerived, requestID)
+}
+
+// KeyDerivedCapacityRequestNodeID returns the store path for the node ID
+// assigned by the infrastructure provider after a successful launch.
+// Path: derived/capacity/request/{requestID}/node_id
+func KeyDerivedCapacityRequestNodeID(requestID string) string {
+	return fmt.Sprintf("%s/capacity/request/%s/node_id", PrefixDerived, requestID)
+}
+
+// --- Scheduler unplaced-demand keys ---
+
+// KeyDerivedSchedulerUnplacedReason returns the store path for the reason
+// the scheduler could not place an instance.
+// Path: derived/scheduler/unplaced/{instanceID}/reason
+func KeyDerivedSchedulerUnplacedReason(instanceID string) string {
+	return fmt.Sprintf("%s/scheduler/unplaced/%s/reason", PrefixDerived, instanceID)
+}
+
+// KeyDerivedSchedulerUnplacedRequirements returns the store path for the
+// resource requirements of an unplaced instance (JSON-encoded).
+// Path: derived/scheduler/unplaced/{instanceID}/requirements
+func KeyDerivedSchedulerUnplacedRequirements(instanceID string) string {
+	return fmt.Sprintf("%s/scheduler/unplaced/%s/requirements", PrefixDerived, instanceID)
 }

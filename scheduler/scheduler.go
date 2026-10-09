@@ -10,6 +10,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"sort"
 	"strconv"
@@ -41,6 +42,7 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanObservedInstances,
 		types.ScanDesiredServices,
 		types.ScanDesiredGroups,
+		types.ScanDerivedSchedulerUnplaced,
 	}
 }
 
@@ -48,7 +50,8 @@ func (placementScheduler *Scheduler) Watch() []string {
 // placement, then assigns each one to the alive node with the lowest load and
 // sufficient available resources. Placement constraints (architecture, zone
 // spread) are applied as filters before selecting the least-loaded node.
-// Service group members are co-scheduled onto the same node.
+// Service group members are co-scheduled onto the same node. Instances that
+// cannot be placed emit unplaced-demand facts for the cluster autoscaler.
 func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
@@ -58,14 +61,39 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	serviceToGroup := extractServiceGroupMemberships(facts)
 
 	unplaced := findUnplacedPendingInstances(instances, placements)
-	if len(unplaced) == 0 {
-		return nil, nil
+	var changes []controllers.Change
+
+	if len(unplaced) > 0 {
+		changes = append(changes, attemptPlacements(
+			unplaced, nodes, instances, placements, serviceResources,
+			placementConstraints, serviceToGroup,
+		)...)
 	}
 
+	placedInThisCycle := collectPlacedInstanceIDs(changes)
+	unplacedChanges := emitUnplacedDemandFacts(
+		unplaced, placedInThisCycle, nodes, instances,
+		serviceResources, placementConstraints,
+	)
+	changes = append(changes, unplacedChanges...)
+	changes = append(changes, cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)...)
+	return changes, nil
+}
+
+// attemptPlacements runs the full placement pipeline for unplaced instances.
+func attemptPlacements(
+	unplaced []string,
+	nodes map[string]*schedulerNodeInfo,
+	instances map[string]*schedulerInstanceInfo,
+	placements map[string]string,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+	serviceToGroup map[string]string,
+) []controllers.Change {
 	loadPerNode, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
 	alive := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
 	if len(alive) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	nodeIndexMap := buildNodeIndexMap(alive)
@@ -79,11 +107,224 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	}
 
 	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
-
 	var changes []controllers.Change
 	changes = append(changes, placeGroupedInstances(groupedUnplaced, serviceToGroup, schedulingState)...)
 	changes = append(changes, placeUngroupedInstances(ungroupedUnplaced, schedulingState)...)
-	return changes, nil
+	return changes
+}
+
+// unplacedDemandRequirements is the JSON-serializable structure written to
+// the scheduler unplaced-demand requirements fact.
+type unplacedDemandRequirements struct {
+	Service      string `json:"service"`
+	CPU          int64  `json:"cpu"`
+	Memory       int64  `json:"memory"`
+	Architecture string `json:"architecture"`
+}
+
+// collectPlacedInstanceIDs extracts the set of instance IDs that received a
+// placement in the current reconciliation cycle from the emitted changes.
+func collectPlacedInstanceIDs(changes []controllers.Change) map[string]bool {
+	placed := make(map[string]bool)
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) {
+			instanceID := strings.TrimPrefix(change.Key, types.ScanPlacements)
+			if !strings.Contains(instanceID, "/") {
+				placed[instanceID] = true
+			}
+		}
+	}
+	return placed
+}
+
+// emitUnplacedDemandFacts produces unplaced-demand facts for instances that
+// could not be placed in this cycle, categorizing each by why placement failed.
+func emitUnplacedDemandFacts(
+	unplaced []string,
+	placedInThisCycle map[string]bool,
+	nodes map[string]*schedulerNodeInfo,
+	instances map[string]*schedulerInstanceInfo,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+) []controllers.Change {
+	aliveCount := countAliveNodes(nodes)
+	var changes []controllers.Change
+	for _, instanceID := range unplaced {
+		if placedInThisCycle[instanceID] {
+			continue
+		}
+		instanceInfo := instances[instanceID]
+		reason := classifyUnplacedReason(instanceInfo, aliveCount, nodes, placementConstraints)
+		changes = append(changes, buildUnplacedFactChanges(instanceID, instanceInfo, reason, serviceResources, placementConstraints)...)
+	}
+	return changes
+}
+
+// countAliveNodes returns the number of nodes in alive state.
+func countAliveNodes(nodes map[string]*schedulerNodeInfo) int {
+	count := 0
+	for _, node := range nodes {
+		if node.state == types.NodeAlive {
+			count++
+		}
+	}
+	return count
+}
+
+// classifyUnplacedReason determines why an instance could not be placed.
+func classifyUnplacedReason(
+	instanceInfo *schedulerInstanceInfo,
+	aliveCount int,
+	nodes map[string]*schedulerNodeInfo,
+	placementConstraints map[string]*servicePlacementConstraint,
+) types.UnplacedReason {
+	if aliveCount == 0 {
+		return types.UnplacedNoNodes
+	}
+	if instanceInfo == nil {
+		return types.UnplacedInsufficientCapacity
+	}
+	serviceName := instanceInfo.service
+	constraint := placementConstraints[serviceName]
+	if constraint == nil {
+		return types.UnplacedInsufficientCapacity
+	}
+	matchCount := countConstraintMatchingNodes(nodes, constraint)
+	if matchCount == 0 {
+		return types.UnplacedUnsatisfiableConstraint
+	}
+	return types.UnplacedInsufficientCapacity
+}
+
+// countConstraintMatchingNodes counts alive nodes that match a service's
+// architecture, require, and restrict/accept constraints.
+func countConstraintMatchingNodes(
+	nodes map[string]*schedulerNodeInfo,
+	constraint *servicePlacementConstraint,
+) int {
+	matchCount := 0
+	for _, node := range nodes {
+		if node.state != types.NodeAlive {
+			continue
+		}
+		if constraint.architecture != "" && node.architecture != "" && node.architecture != constraint.architecture {
+			continue
+		}
+		if !satisfiesRequireLabelsForNode(node, constraint.require) {
+			continue
+		}
+		if !toleratesRestrictionsForNode(node, constraint.accept) {
+			continue
+		}
+		matchCount++
+	}
+	return matchCount
+}
+
+// satisfiesRequireLabelsForNode checks if a node has all required labels.
+func satisfiesRequireLabelsForNode(node *schedulerNodeInfo, requireLabels map[string]string) bool {
+	for label, requiredValue := range requireLabels {
+		nodeValue, hasLabel := node.labels[label]
+		if !hasLabel || nodeValue != requiredValue {
+			return false
+		}
+	}
+	return true
+}
+
+// toleratesRestrictionsForNode checks if a service accepts all of a node's
+// restrictions.
+func toleratesRestrictionsForNode(node *schedulerNodeInfo, acceptLabels map[string]bool) bool {
+	for restrictLabel := range node.restrictions {
+		if !acceptLabels[restrictLabel] {
+			return false
+		}
+	}
+	return true
+}
+
+// buildUnplacedFactChanges creates the store changes for a single unplaced
+// instance's reason and requirements facts.
+func buildUnplacedFactChanges(
+	instanceID string,
+	instanceInfo *schedulerInstanceInfo,
+	reason types.UnplacedReason,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+) []controllers.Change {
+	requirements := buildUnplacedRequirements(instanceInfo, serviceResources, placementConstraints)
+	requirementsJSON, marshalError := json.Marshal(requirements)
+	if marshalError != nil {
+		logging.Default().Error("failed to marshal unplaced requirements", "instance", instanceID, "error", marshalError.Error())
+		requirementsJSON = []byte("{}")
+	}
+	return []controllers.Change{
+		{Type: store.OpPut, Key: types.KeyDerivedSchedulerUnplacedReason(instanceID), Value: []byte(string(reason))},
+		{Type: store.OpPut, Key: types.KeyDerivedSchedulerUnplacedRequirements(instanceID), Value: requirementsJSON},
+	}
+}
+
+// buildUnplacedRequirements constructs the requirements struct for an unplaced
+// instance from its service's resource and constraint declarations.
+func buildUnplacedRequirements(
+	instanceInfo *schedulerInstanceInfo,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+) unplacedDemandRequirements {
+	if instanceInfo == nil {
+		return unplacedDemandRequirements{}
+	}
+	serviceName := instanceInfo.service
+	requirements := unplacedDemandRequirements{Service: serviceName}
+	if resource, hasResource := serviceResources[serviceName]; hasResource {
+		requirements.CPU = resource.cpu
+		requirements.Memory = resource.memory
+	}
+	if constraint, hasConstraint := placementConstraints[serviceName]; hasConstraint {
+		requirements.Architecture = constraint.architecture
+	}
+	return requirements
+}
+
+// cleanupStaleUnplacedFacts removes unplaced-demand facts for instances that
+// now have a placement (either from a prior cycle or from this one).
+func cleanupStaleUnplacedFacts(
+	facts []store.Fact,
+	existingPlacements map[string]string,
+	placedInThisCycle map[string]bool,
+) []controllers.Change {
+	var changes []controllers.Change
+	existingUnplaced := extractExistingUnplacedInstanceIDs(facts)
+	for _, instanceID := range existingUnplaced {
+		if existingPlacements[instanceID] != "" || placedInThisCycle[instanceID] {
+			changes = append(changes, controllers.Change{
+				Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedReason(instanceID),
+			})
+			changes = append(changes, controllers.Change{
+				Type: store.OpDelete, Key: types.KeyDerivedSchedulerUnplacedRequirements(instanceID),
+			})
+		}
+	}
+	return changes
+}
+
+// extractExistingUnplacedInstanceIDs returns the deduplicated sorted list of
+// instance IDs that currently have unplaced-demand facts in the store.
+func extractExistingUnplacedInstanceIDs(facts []store.Fact) []string {
+	seen := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedSchedulerUnplaced) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedSchedulerUnplaced)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) > 0 && parts[0] != "" {
+			seen[parts[0]] = true
+		}
+	}
+	instanceIDs := make([]string, 0, len(seen))
+	for instanceID := range seen {
+		instanceIDs = append(instanceIDs, instanceID)
+	}
+	sort.Strings(instanceIDs)
+	return instanceIDs
 }
 
 // placementState bundles the mutable scheduling state passed between the
