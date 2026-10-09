@@ -402,7 +402,7 @@ log "Pre-pulling container images on all nodes..."
 IMAGES=("tomcat:11-jre21" "postgres:16" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
 for vm in "${VM_NAMES[@]}"; do
     for image in "${IMAGES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl pull $image" &
+        ssh_vm "$vm" "sudo nerdctl pull -q $image" &
     done
 done
 log "Waiting for all image pulls to complete..."
