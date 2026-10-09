@@ -2,7 +2,49 @@
 
 All notable releases of CCattler are documented here.
 
-## v1.6.0-beta <Badge type="tip" text="latest" /> {#v1-6-0-beta}
+## v1.14.1-beta <Badge type="tip" text="latest" /> {#v1-14-1-beta}
+
+**2026-10-09** — Phases 72–78 complete. Five correctness review passes, durable capacity state machine.
+
+- **Durable capacity request state machine** (M78) — autoscaler uses post-commit pattern with explicit `pending → launching → ready | failed` lifecycle; scheduler emits structured unplaced-demand facts distinguishing `insufficient_capacity` from `unsatisfiable_constraint`
+- **Correctness V** (M77) — storage operation retry after provider failure, duplicate pending-operation key collision fix, event projector watch gap on reconnect, cloud controllers converted to post-commit
+- **Correctness IV** (M76) — CAS liveness race fix, storage pre-commit side effects eliminated, heartbeat guard, projector reconnect resilience
+- **Correctness III** (M75) — VIP deletion atomicity, agent node resurrection race, oversized group hard error, independent heartbeat goroutine
+- **Atomic change groups** (M74) — budget truncation respects multi-key atomic operations, stale derived marker poisoning fixed for stateful ordinals
+- **Derived failure markers** (M73) — failure-path writes moved to `derived/instance/*`, CAS decoupling eliminates controller/agent shared-key contention (root cause of 50+ node livelock)
+- **Correctness II** (M72) — failure controller recovery cap, node failure controller single budget, HA fencing, agent resilience
+- **Race condition fix** — `SimulatorRuntime.InjectStartFailure` for concurrent-safe test failure injection
+
+### What's new since v1.8.3
+
+| Version | Phase | Summary |
+|---|---|---|
+| v1.14.0 | 78 | Durable capacity request state machine, scheduler unplaced-demand signaling |
+| v1.13.0 | 77 | Correctness V: storage retry, operation isolation, watch continuity |
+| v1.12.0 | 76 | Correctness IV: atomic liveness, storage idempotency, projector resilience |
+| v1.11.0 | 75 | Correctness III: VIP atomicity, agent resurrection, heartbeat decoupling |
+| v1.10.1 | 74 | Atomic change groups, stateful marker lifecycle, API consistency |
+| v1.10.0 | 73 | Derived failure markers, CAS decoupling, node recovery |
+| v1.9.9 | 72 | Budget alignment, HA fencing, agent resilience |
+| v1.9.7 | 71 | Post-review correctness fixes |
+| v1.9.1 | 69 | Node runtime inspection: agent debug API, `cca node-inspect`, `cca exec` |
+| v1.9.0 | 68–69 | Scheduler scale (NodeCapacityCache min-heap), agent debug API |
+
+---
+
+## v1.8.3-beta {#v1-8-3-beta}
+
+**2026-10-04** — Phase 67 complete plus CI hardening.
+
+- **Production readiness validation** (M67) — controller failure isolation, HA resilience, chaos recovery metrics, runtime evidence, observability audit trail
+- **`cca readiness` CLI** — pre-flight cluster health check
+- **DSL enhancements** — triple-quote strings, `from` file inclusion, `equals` syntax
+- **CI hardening** — PR security checks, license headers, CodeQL alerts resolved, E2E Vagrant parallel race fix
+- **Bugfixes** — container memory double-conversion, lease timeout, agent TLS loading regression
+
+---
+
+## v1.6.0-beta {#v1-6-0-beta}
 
 **2026-10-03** — Phase 67c: chaos benchmark with recovery metrics.
 

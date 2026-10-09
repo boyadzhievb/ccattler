@@ -160,14 +160,23 @@ ccattler/
   scheduler/      Pure scheduling function
   controllers/    Instance, endpoint, failure, autoscale, network, storage
   agent/          Node agent (observer, reconciler, reporter)
-  api/            HTTP/gRPC server
-  cli/            CLI tool
-  types/          Shared fact types and constants
+  runtime/        Pluggable runtimes (simulator, process, container)
+  api/            HTTP server and status endpoints
+  cmd/cca/        CLI commands
+  types/          Shared fact types, keys, and constants
+  infra/          Infrastructure provider interface (cloud node lifecycle)
+  cloud/          AWS and GCP cloud controller managers
+  network/        VIP data plane, DNS, proxy
+  security/       mTLS, RBAC, ABAC, credential broker
+  tenant/         Multi-tenancy, quotas, fair scheduling
+  storage/        Persistent volume controllers
+  chaos/          Chaos testing and benchmarks
+  integration/    End-to-end integration tests
 ```
 
 ## Status
 
-20 milestones complete — from the core fact store through distributed state, multi-host deployment, VIP data plane, node enrollment, and service networking with DNS and placement constraints. 516+ tests across 14 packages. Deployed and tested on real multi-host clusters.
+78 milestones complete — from the core fact store through distributed state, multi-host deployment, authorization, cloud provider integration, stateful workloads, and five correctness review passes. 1595+ tests across 21 packages. Deployed and tested on real multi-host clusters with 3-VM E2E validation.
 
 ## Documentation
 
