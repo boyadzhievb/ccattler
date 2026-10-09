@@ -1277,6 +1277,24 @@ Fixes from ChatGPT review `chat-08oct-3.md`: CAS liveness race, storage pre-comm
 - [x] Production heartbeat stress test: 50 agents, default guards, slow reconciliation, zero false failures
 - [x] Loadtest: `TestTransactionBudgetingConvergence` still passes
 
+### Phase 77 — Correctness V: Storage Retry, Operation Isolation, Watch Continuity, Cloud Post-Commit (M77)
+
+Fixes from ChatGPT review `chat-09oct.md`: storage operations stuck after provider failure, duplicate pending-operation key collision, event projector watch gap on reconnect, cloud controllers pre-commit side effects. Design: [design/m77-correctness-v.md](design/m77-correctness-v.md).
+
+- [x] Runner calls `ExecutePostCommitOperations` on every cycle (not just non-empty txn)
+- [x] Resize: defer observed size update to post-commit after provider success
+- [x] Distinct pending keys: `pending_resize` and `pending_snapshot` (no duplicate-key collision)
+- [x] Test: resize retry after provider failure
+- [x] Test: simultaneous resize + migration produces no duplicate key
+- [x] Event projector: revision-aware reconnect with `StartRevision`
+- [x] Event projector: handle `EventCompacted` with full resync
+- [x] Test: event projector reconnection with actual channel closure
+- [x] Cloud LB controller: durable-intent/post-commit pattern
+- [x] Cloud route controller: durable-intent/post-commit pattern
+- [x] Test: cloud LB post-commit execution
+- [x] Test: cloud route post-commit execution
+- [x] All tests pass, lint clean
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1359,5 +1377,7 @@ Fixes from ChatGPT review `chat-08oct-3.md`: CAS liveness race, storage pre-comm
 | M73 — Derived Failure Markers | 73 | Failure/node-failure writes moved to `derived/instance/`, runner input key guards scoped to write domain, loadtest converges at 50+ nodes |
 | M74 — Atomic Change Groups | 74 | Group-aware `takeWholeGroups` prevents budget truncation from splitting multi-key ops, stateful marker cleanup on ordinal reuse, ReadInstance API consistency, watch context leak fix, loadtest convergence verified |
 | M75 — Post-Review Correctness III | 75 | VIP DNS deletion atomic, agent skips NodeUnreachable in PublishAliveState, oversized group hard error, telemetry prefix separation, independent heartbeat goroutine |
+| M76 — Correctness IV | 76 | Atomic liveness CAS, storage intent/executor, event projector per-prefix reconnect, heartbeat stress test |
+| M77 — Correctness V | 77 | Storage retry on provider failure, per-type pending keys, revision-aware projector reconnect, cloud post-commit |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

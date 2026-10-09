@@ -73,18 +73,28 @@ func (eventProjector *EventProjector) Run(ctx context.Context) error {
 
 // watchPrefixWithReconnect watches a single store prefix, forwarding events
 // to the merged channel. When the watch channel closes (etcd compaction,
-// store shutdown), it waits briefly and re-establishes the watch. Only
+// store shutdown), it waits briefly and re-establishes the watch from the
+// last processed revision to avoid gaps in event history. Handles
+// EventCompacted and EventOverflow by performing a full resync scan. Only
 // exits when ctx is cancelled.
 func (eventProjector *EventProjector) watchPrefixWithReconnect(
 	ctx context.Context,
 	watchPrefix string,
 	mergedChannel chan<- store.Event,
 ) {
+	var lastProcessedRevision int64
+
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		watchChannel, watchError := eventProjector.factStore.Watch(ctx, watchPrefix, store.WatchOption{Prefix: true})
+
+		watchOptions := store.WatchOption{Prefix: true}
+		if lastProcessedRevision > 0 {
+			watchOptions.StartRevision = lastProcessedRevision + 1
+		}
+
+		watchChannel, watchError := eventProjector.factStore.Watch(ctx, watchPrefix, watchOptions)
 		if watchError != nil {
 			logging.Default().Error("event projector watch failed",
 				"prefix", watchPrefix, "error", watchError.Error())
@@ -103,8 +113,22 @@ func (eventProjector *EventProjector) watchPrefixWithReconnect(
 			case watchEvent, channelOpen := <-watchChannel:
 				if !channelOpen {
 					logging.Default().Warn("event projector watch closed, reconnecting",
-						"prefix", watchPrefix)
+						"prefix", watchPrefix,
+						"last_revision", fmt.Sprintf("%d", lastProcessedRevision))
 					break
+				}
+				if watchEvent.Type == store.EventCompacted || watchEvent.Type == store.EventOverflow {
+					logging.Default().Warn("event projector resync required",
+						"prefix", watchPrefix,
+						"event_type", fmt.Sprintf("%d", watchEvent.Type))
+					resyncRevision := eventProjector.resyncFromScan(ctx, watchPrefix)
+					if resyncRevision > lastProcessedRevision {
+						lastProcessedRevision = resyncRevision
+					}
+					break
+				}
+				if watchEvent.Fact.Revision > lastProcessedRevision {
+					lastProcessedRevision = watchEvent.Fact.Revision
 				}
 				select {
 				case mergedChannel <- watchEvent:
@@ -122,6 +146,19 @@ func (eventProjector *EventProjector) watchPrefixWithReconnect(
 		case <-time.After(watchReconnectBackoff):
 		}
 	}
+}
+
+// resyncFromScan performs a full prefix scan and returns the store revision
+// at which the scan was performed. This establishes a baseline after watch
+// compaction or overflow so the next watch can resume without gaps.
+func (eventProjector *EventProjector) resyncFromScan(ctx context.Context, prefix string) int64 {
+	scanResult, scanError := eventProjector.factStore.ScanWithRevision(ctx, prefix)
+	if scanError != nil {
+		logging.Default().Error("event projector resync scan failed",
+			"prefix", prefix, "error", scanError.Error())
+		return 0
+	}
+	return scanResult.Revision
 }
 
 // projectEvent examines a single watch event and emits a semantic event if

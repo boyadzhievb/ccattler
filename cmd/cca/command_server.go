@@ -318,8 +318,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		if cloudProviderInstance != nil {
 			controllerList = append(controllerList,
 				controllers.NewNodeLifecycleController(cloudProviderInstance),
-				controllers.NewCloudLoadBalancerController(cloudProviderInstance),
-				controllers.NewCloudRouteController(cloudProviderInstance),
+				controllers.NewCloudLoadBalancerController(cloudProviderInstance, factStore),
+				controllers.NewCloudRouteController(cloudProviderInstance, factStore),
 			)
 			fmt.Printf("Cloud controllers enabled (provider: %s)\n", parsedConfig.cloudProviderName)
 		}

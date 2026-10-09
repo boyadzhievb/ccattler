@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M76 — Phase 76 Correctness IV. M1–M76 complete (DeltaController deferred). Gates A–I resolved. **Next:** Backlog items or next review-driven phase.
+**Completed through:** M77 — Phase 77 Correctness V. M1–M77 complete (DeltaController deferred). Gates A–I resolved. **Next:** Backlog items or next review-driven phase.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

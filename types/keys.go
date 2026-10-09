@@ -344,6 +344,14 @@ const (
 	// ScanDerivedVolumes scans all controller-derived volume-level facts
 	// (pending operations, last completed operation).
 	ScanDerivedVolumes = PrefixDerived + "/volume/"
+
+	// ScanDerivedCloudLoadBalancers scans all controller-derived cloud
+	// load balancer facts (pending ensure/delete operations).
+	ScanDerivedCloudLoadBalancers = PrefixDerived + "/cloud/loadbalancer/"
+
+	// ScanDerivedCloudRoutes scans all controller-derived cloud route
+	// facts (pending ensure/delete operations).
+	ScanDerivedCloudRoutes = PrefixDerived + "/cloud/route/"
 )
 
 // KeyPlacementInstance returns the store path for the scheduler's placement decision
@@ -1030,9 +1038,26 @@ func KeyObservedVolumeReplicaState(volumeName string) string {
 // KeyDerivedVolumePendingOperation returns the store path for a volume's
 // pending storage operation (resize or snapshot). Written by the storage
 // controller during Reconcile; executed post-commit by the executor.
+//
+// Deprecated: use KeyDerivedVolumePendingResize or KeyDerivedVolumePendingSnapshot.
 // Path: derived/volume/{name}/pending_operation
 func KeyDerivedVolumePendingOperation(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/pending_operation", PrefixDerived, volumeName)
+}
+
+// KeyDerivedVolumePendingResize returns the store path for a volume's pending
+// resize operation. Separate from snapshot to avoid duplicate-key collision
+// when a volume needs both resize and migration simultaneously.
+// Path: derived/volume/{name}/pending_resize
+func KeyDerivedVolumePendingResize(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/pending_resize", PrefixDerived, volumeName)
+}
+
+// KeyDerivedVolumePendingSnapshot returns the store path for a volume's pending
+// snapshot operation. Separate from resize to avoid duplicate-key collision.
+// Path: derived/volume/{name}/pending_snapshot
+func KeyDerivedVolumePendingSnapshot(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/pending_snapshot", PrefixDerived, volumeName)
 }
 
 // KeyDerivedVolumeLastOperation returns the store path for a volume's most
@@ -1469,6 +1494,22 @@ func KeyObservedCloudLoadBalancerState(serviceName string) string {
 // Path: observed/cloud/route/{destinationCIDR}
 func KeyObservedCloudRoute(destinationCIDR string) string {
 	return fmt.Sprintf("%s/cloud/route/%s", PrefixObserved, destinationCIDR)
+}
+
+// KeyDerivedCloudLBPendingOperation returns the store path for a cloud load
+// balancer's pending operation (ensure or delete). Written by the LB
+// controller during Reconcile; executed post-commit by the executor.
+// Path: derived/cloud/loadbalancer/{serviceName}/pending_operation
+func KeyDerivedCloudLBPendingOperation(serviceName string) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/pending_operation", PrefixDerived, serviceName)
+}
+
+// KeyDerivedCloudRoutePendingOperation returns the store path for a cloud
+// route's pending operation (ensure or delete). Written by the route
+// controller during Reconcile; executed post-commit by the executor.
+// Path: derived/cloud/route/{cidr}/pending_operation
+func KeyDerivedCloudRoutePendingOperation(cidr string) string {
+	return fmt.Sprintf("%s/cloud/route/%s/pending_operation", PrefixDerived, cidr)
 }
 
 // KeyAuthRoleCapability returns the store path for a capability granted by a role.

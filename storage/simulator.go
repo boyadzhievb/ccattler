@@ -31,7 +31,10 @@ type SimulatorStorageProvider struct {
 	volumes map[string]*simulatedVolume
 	// snapshots maps snapshot name to its metadata.
 	snapshots map[string]*simulatedSnapshot
-	// mutex protects the volumes and snapshots maps for concurrent access.
+	// injectedResizeError, when non-nil, is returned by the next ResizeVolume
+	// call and then cleared. Used for testing retry-after-failure paths.
+	injectedResizeError error
+	// mutex protects all mutable fields for concurrent access.
 	mutex sync.Mutex
 }
 
@@ -193,10 +196,26 @@ func (simulatorStorageProvider *SimulatorStorageProvider) SetVolumeUsage(volumeN
 	}
 }
 
+// InjectResizeError causes the next ResizeVolume call to return the given
+// error and then clears the injection. Subsequent calls proceed normally.
+func (simulatorStorageProvider *SimulatorStorageProvider) InjectResizeError(injectedError error) {
+	simulatorStorageProvider.mutex.Lock()
+	defer simulatorStorageProvider.mutex.Unlock()
+	simulatorStorageProvider.injectedResizeError = injectedError
+}
+
 // ResizeVolume changes the capacity of a volume. Only expansion is supported.
+// If an error was injected via InjectResizeError, it is returned once and
+// cleared before the real resize logic runs.
 func (simulatorStorageProvider *SimulatorStorageProvider) ResizeVolume(_ context.Context, volumeName string, newSizeBytes int64) error {
 	simulatorStorageProvider.mutex.Lock()
 	defer simulatorStorageProvider.mutex.Unlock()
+
+	if simulatorStorageProvider.injectedResizeError != nil {
+		injectedError := simulatorStorageProvider.injectedResizeError
+		simulatorStorageProvider.injectedResizeError = nil
+		return injectedError
+	}
 
 	existingVolume, volumeExists := simulatorStorageProvider.volumes[volumeName]
 	if !volumeExists {

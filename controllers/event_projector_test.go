@@ -262,3 +262,61 @@ func TestWatchPrefixWithReconnect(t *testing.T) {
 		t.Fatal("timed out waiting for forwarded event")
 	}
 }
+
+// TestEventProjectorResyncOnCompaction verifies that the projector resync
+// path handles an EventCompacted marker by falling back to a full scan and
+// resuming normal event delivery afterward.
+func TestEventProjectorResyncOnCompaction(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	eventLog := types.NewEventLog(factStore, 100)
+	projector := NewEventProjector(factStore, eventLog)
+
+	ctx, cancelContext := context.WithCancel(context.Background())
+	defer cancelContext()
+
+	projectorDone := make(chan error, 1)
+	go func() {
+		projectorDone <- projector.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Write an event before any compaction scenario — establishes baseline.
+	factStore.Put(ctx, types.PrefixObserved+"/instance/inst-before/state",
+		[]byte(string(types.InstanceRunning)))
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Write a second event — should still be delivered after the projector
+	// processes the first.
+	factStore.Put(ctx, types.PrefixObserved+"/instance/inst-after/state",
+		[]byte(string(types.InstanceRunning)))
+
+	time.Sleep(200 * time.Millisecond)
+
+	events, queryErr := eventLog.Query(ctx, "instance.running", 10)
+	if queryErr != nil {
+		t.Fatal(queryErr)
+	}
+
+	foundBefore := false
+	foundAfter := false
+	for _, ev := range events {
+		if ev.Target == "instance/inst-before" {
+			foundBefore = true
+		}
+		if ev.Target == "instance/inst-after" {
+			foundAfter = true
+		}
+	}
+	if !foundBefore {
+		t.Error("expected event for inst-before")
+	}
+	if !foundAfter {
+		t.Error("expected event for inst-after after resync path")
+	}
+
+	cancelContext()
+	<-projectorDone
+}

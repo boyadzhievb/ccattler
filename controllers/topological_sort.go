@@ -99,8 +99,8 @@ func controllerOutputPrefixes() map[string][]string {
 		"init":                 {"derived/instance/"},
 		"credential-broker":    {"derived/credential/"},
 		"cloud-node-lifecycle": {"observed/cloud/instance/", "observed/node/"},
-		"cloud-loadbalancer":   {"observed/cloud/loadbalancer/"},
-		"cloud-routes":         {"observed/cloud/route/"},
+		"cloud-loadbalancer":   {"observed/cloud/loadbalancer/", "derived/cloud/loadbalancer/"},
+		"cloud-routes":         {"observed/cloud/route/", "derived/cloud/route/"},
 		"drain":                {"derived/node/"},
 		"auth":                 {},
 	}

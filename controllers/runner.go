@@ -427,6 +427,7 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		return false, reconcileError
 	}
 	if len(changes) == 0 {
+		controllerRunner.executePendingPostCommitOperations(ctx, controller)
 		return false, nil
 	}
 
@@ -475,15 +476,25 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	reconciliationChanges.Add(int64(len(changes)), controller.Name())
 
-	if postCommitController, hasPostCommit := controller.(PostCommitController); hasPostCommit {
-		if postCommitError := postCommitController.ExecutePostCommitOperations(ctx); postCommitError != nil {
-			logging.Default().Error("post-commit operations failed",
-				"controller", controller.Name(),
-				"error", postCommitError.Error())
-		}
-	}
+	controllerRunner.executePendingPostCommitOperations(ctx, controller)
 
 	return false, nil
+}
+
+// executePendingPostCommitOperations calls ExecutePostCommitOperations on a
+// controller that implements PostCommitController. Called both after a
+// successful transaction commit and when Reconcile produces no changes, so
+// that pending operations from previous failed provider calls get retried.
+func (controllerRunner *Runner) executePendingPostCommitOperations(ctx context.Context, controller Controller) {
+	postCommitController, hasPostCommit := controller.(PostCommitController)
+	if !hasPostCommit {
+		return
+	}
+	if postCommitError := postCommitController.ExecutePostCommitOperations(ctx); postCommitError != nil {
+		logging.Default().Error("post-commit operations failed",
+			"controller", controller.Name(),
+			"error", postCommitError.Error())
+	}
 }
 
 // scanFactsForController scans all fact prefixes declared in the controller's

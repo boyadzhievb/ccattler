@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -351,7 +352,7 @@ func TestStorageControllerSnapshotBeforeMigration(t *testing.T) {
 	// Reconcile no longer calls the provider directly — it emits a
 	// pending-operation fact. Verify the pending op is in the changes.
 	changeMap := changesByKey(changes)
-	pendingChange, hasPending := changeMap[types.KeyDerivedVolumePendingOperation("pgdata")]
+	pendingChange, hasPending := changeMap[types.KeyDerivedVolumePendingSnapshot("pgdata")]
 	if !hasPending {
 		t.Fatal("expected pending_operation change for snapshot")
 	}
@@ -474,16 +475,15 @@ func TestStorageControllerResizesVolume(t *testing.T) {
 	}
 
 	changeMap := changesByKey(changes)
-	sizeChange, hasSizeChange := changeMap[types.KeyObservedVolumeSize("pgdata")]
-	if !hasSizeChange {
-		t.Fatal("expected size change")
-	}
-	if string(sizeChange.Value) != "200Gi" {
-		t.Errorf("observed size = %s, want 200Gi", sizeChange.Value)
+
+	// With a provider configured, the observed size is NOT updated during
+	// Reconcile — it is deferred to post-commit after the provider call.
+	if _, hasSizeChange := changeMap[types.KeyObservedVolumeSize("pgdata")]; hasSizeChange {
+		t.Error("observed size should NOT be updated during Reconcile when provider is set")
 	}
 
-	if _, hasPending := changeMap[types.KeyDerivedVolumePendingOperation("pgdata")]; !hasPending {
-		t.Fatal("expected pending_operation change for resize")
+	if _, hasPending := changeMap[types.KeyDerivedVolumePendingResize("pgdata")]; !hasPending {
+		t.Fatal("expected pending_resize change for resize")
 	}
 
 	// Commit changes, then execute post-commit.
@@ -502,6 +502,15 @@ func TestStorageControllerResizesVolume(t *testing.T) {
 	_, capacityBytes, _ := simulatorStorageProvider.VolumeUsage(ctx, "pgdata")
 	if capacityBytes != 200*1024*1024*1024 {
 		t.Errorf("provider volume capacity = %d, want %d", capacityBytes, 200*1024*1024*1024)
+	}
+
+	// Verify the observed size was updated by the post-commit executor.
+	sizeFact, getErr := stateStore.Get(ctx, types.KeyObservedVolumeSize("pgdata"))
+	if getErr != nil {
+		t.Fatal("expected observed size updated after post-commit")
+	}
+	if string(sizeFact.Value) != "200Gi" {
+		t.Errorf("observed size after post-commit = %s, want 200Gi", sizeFact.Value)
 	}
 }
 
@@ -651,6 +660,195 @@ func TestStorageControllerVolumeUsageCleanedOnRemoval(t *testing.T) {
 	}
 	if !deletedKeys[types.KeyObservedVolumeCapacityBytes("pgdata")] {
 		t.Error("expected capacity_bytes deleted")
+	}
+}
+
+// TestStorageControllerResizeRetryAfterProviderFailure verifies that when the
+// provider fails a resize, the pending operation remains in the store and
+// succeeds on the next post-commit execution.
+func TestStorageControllerResizeRetryAfterProviderFailure(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+	ctx := context.Background()
+
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
+
+	storageController := NewStorageController(stateStore)
+	storageController.SetStorageProvider(simulatorStorageProvider)
+
+	types.WriteDesiredVolume(ctx, stateStore, "pgdata", "200Gi", true)
+	types.WriteObservedVolume(ctx, stateStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAttached,
+		Node: "node-1", Instance: "aaa",
+	})
+	types.WriteNode(ctx, stateStore, types.Node{
+		ID: "node-1", State: types.NodeAlive,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	var allFacts []store.Fact
+	for _, prefix := range storageController.Watch() {
+		facts, scanErr := stateStore.Scan(ctx, prefix)
+		if scanErr != nil {
+			t.Fatal(scanErr)
+		}
+		allFacts = append(allFacts, facts...)
+	}
+	store.SortFacts(allFacts)
+
+	changes, reconcileErr := storageController.Reconcile(ctx, allFacts)
+	if reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+
+	for _, change := range changes {
+		if change.Type == store.OpPut {
+			if _, putErr := stateStore.Put(ctx, change.Key, change.Value); putErr != nil {
+				t.Fatal(putErr)
+			}
+		}
+	}
+
+	simulatorStorageProvider.InjectResizeError(fmt.Errorf("simulated cloud provider timeout"))
+
+	if postCommitErr := storageController.ExecutePostCommitOperations(ctx); postCommitErr != nil {
+		t.Fatal(postCommitErr)
+	}
+
+	// Pending operation should still exist after failure.
+	_, pendingGetErr := stateStore.Get(ctx, types.KeyDerivedVolumePendingResize("pgdata"))
+	if pendingGetErr != nil {
+		t.Fatal("pending_resize should remain after provider failure")
+	}
+
+	// Observed size should NOT have been updated.
+	sizeFact, sizeGetErr := stateStore.Get(ctx, types.KeyObservedVolumeSize("pgdata"))
+	if sizeGetErr != nil {
+		t.Fatal("observed size should still exist")
+	}
+	if string(sizeFact.Value) != "100Gi" {
+		t.Errorf("observed size should remain 100Gi after failed resize, got %s", sizeFact.Value)
+	}
+
+	// Retry: this time the provider succeeds.
+	if postCommitErr := storageController.ExecutePostCommitOperations(ctx); postCommitErr != nil {
+		t.Fatal(postCommitErr)
+	}
+
+	// Pending operation should be cleaned up.
+	if _, getErr := stateStore.Get(ctx, types.KeyDerivedVolumePendingResize("pgdata")); getErr == nil {
+		t.Error("pending_resize should be deleted after successful retry")
+	}
+
+	// Observed size should now reflect the resize.
+	sizeFact, sizeGetErr = stateStore.Get(ctx, types.KeyObservedVolumeSize("pgdata"))
+	if sizeGetErr != nil {
+		t.Fatal("expected observed size after retry")
+	}
+	if string(sizeFact.Value) != "200Gi" {
+		t.Errorf("observed size after retry = %s, want 200Gi", sizeFact.Value)
+	}
+
+	// Provider should have the new capacity.
+	_, capacityBytes, _ := simulatorStorageProvider.VolumeUsage(ctx, "pgdata")
+	if capacityBytes != 200*1024*1024*1024 {
+		t.Errorf("provider capacity = %d, want %d", capacityBytes, 200*1024*1024*1024)
+	}
+}
+
+// TestStorageControllerSimultaneousResizeAndMigration verifies that a volume
+// that needs both resize and migration produces two distinct pending keys
+// (pending_resize and pending_snapshot) without key collision.
+func TestStorageControllerSimultaneousResizeAndMigration(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+	ctx := context.Background()
+
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
+
+	storageController := NewStorageController(stateStore)
+	storageController.SetStorageProvider(simulatorStorageProvider)
+
+	types.WriteDesiredVolume(ctx, stateStore, "pgdata", "200Gi", true)
+	types.WriteObservedVolume(ctx, stateStore, types.Volume{
+		Name: "pgdata", Size: "100Gi", State: types.VolumeAttached,
+		Node: "node-1", Instance: "aaa", MountPath: "/mnt/volumes/pgdata",
+	})
+	types.WriteNode(ctx, stateStore, types.Node{
+		ID: "node-1", State: types.NodeUnreachable,
+		CapacityCPU: 4000, CapacityMemory: 8192,
+		AvailableCPU: 4000, AvailableMemory: 8192,
+	})
+
+	var allFacts []store.Fact
+	for _, prefix := range storageController.Watch() {
+		facts, scanErr := stateStore.Scan(ctx, prefix)
+		if scanErr != nil {
+			t.Fatal(scanErr)
+		}
+		allFacts = append(allFacts, facts...)
+	}
+	store.SortFacts(allFacts)
+
+	changes, reconcileErr := storageController.Reconcile(ctx, allFacts)
+	if reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+
+	changeMap := changesByKey(changes)
+
+	resizeKey := types.KeyDerivedVolumePendingResize("pgdata")
+	snapshotKey := types.KeyDerivedVolumePendingSnapshot("pgdata")
+
+	if _, hasResize := changeMap[resizeKey]; !hasResize {
+		t.Fatal("expected pending_resize change")
+	}
+	if _, hasSnapshot := changeMap[snapshotKey]; !hasSnapshot {
+		t.Fatal("expected pending_snapshot change")
+	}
+
+	if resizeKey == snapshotKey {
+		t.Fatal("resize and snapshot pending keys must be distinct")
+	}
+
+	// Commit all changes and execute post-commit.
+	for _, change := range changes {
+		switch change.Type {
+		case store.OpPut:
+			if _, putErr := stateStore.Put(ctx, change.Key, change.Value); putErr != nil {
+				t.Fatal(putErr)
+			}
+		case store.OpDelete:
+			_ = stateStore.Delete(ctx, change.Key)
+		}
+	}
+
+	if postCommitErr := storageController.ExecutePostCommitOperations(ctx); postCommitErr != nil {
+		t.Fatal(postCommitErr)
+	}
+
+	// Both operations should have completed.
+	if _, getErr := stateStore.Get(ctx, resizeKey); getErr == nil {
+		t.Error("pending_resize should be cleaned up after execution")
+	}
+	if _, getErr := stateStore.Get(ctx, snapshotKey); getErr == nil {
+		t.Error("pending_snapshot should be cleaned up after execution")
+	}
+
+	// Provider should reflect both operations.
+	_, capacityBytes, _ := simulatorStorageProvider.VolumeUsage(ctx, "pgdata")
+	if capacityBytes != 200*1024*1024*1024 {
+		t.Errorf("provider capacity = %d, want %d", capacityBytes, 200*1024*1024*1024)
+	}
+	snapshots := simulatorStorageProvider.Snapshots()
+	if len(snapshots) != 1 {
+		t.Fatalf("expected 1 snapshot, got %d", len(snapshots))
+	}
+	if !strings.HasPrefix(snapshots[0], "pgdata-pre-migration-") {
+		t.Errorf("snapshot name %q missing expected prefix", snapshots[0])
 	}
 }
 

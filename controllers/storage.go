@@ -223,15 +223,16 @@ func (storageController *StorageController) reconcileVolumeResize(ctx context.Co
 			}
 			changes = append(changes, Change{
 				Type:  store.OpPut,
-				Key:   types.KeyDerivedVolumePendingOperation(volumeName),
+				Key:   types.KeyDerivedVolumePendingResize(volumeName),
 				Value: pendingJSON,
 			})
+		} else {
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyObservedVolumeSize(volumeName),
+				Value: []byte(desiredInfo.size),
+			})
 		}
-		changes = append(changes, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyObservedVolumeSize(volumeName),
-			Value: []byte(desiredInfo.size),
-		})
 	}
 	return changes
 }
@@ -296,7 +297,7 @@ func (storageController *StorageController) reconcileVolumeMigration(ctx context
 				logging.Default().Error("failed to marshal pending operation", "volume", volumeName, "error", marshalErr.Error())
 			} else {
 				migrationChanges = append(migrationChanges,
-					Change{Type: store.OpPut, Key: types.KeyDerivedVolumePendingOperation(volumeName), Value: pendingJSON},
+					Change{Type: store.OpPut, Key: types.KeyDerivedVolumePendingSnapshot(volumeName), Value: pendingJSON},
 				)
 			}
 		}
@@ -424,7 +425,9 @@ func (storageController *StorageController) ExecutePostCommitOperations(ctx cont
 	}
 
 	for _, pendingFact := range pendingFacts {
-		if !strings.HasSuffix(pendingFact.Key, "/pending_operation") {
+		if !strings.HasSuffix(pendingFact.Key, "/pending_resize") &&
+			!strings.HasSuffix(pendingFact.Key, "/pending_snapshot") &&
+			!strings.HasSuffix(pendingFact.Key, "/pending_operation") {
 			continue
 		}
 
@@ -464,6 +467,12 @@ func (storageController *StorageController) ExecutePostCommitOperations(ctx cont
 		}
 		if deleteErr := storageController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
 			logging.Default().Error("failed to clean up pending operation", "volume", pendingOp.VolumeName, "error", deleteErr.Error())
+		}
+
+		if pendingOp.Kind == "resize" && pendingOp.TargetSize != "" {
+			if _, putErr := storageController.factStore.Put(ctx, types.KeyObservedVolumeSize(pendingOp.VolumeName), []byte(pendingOp.TargetSize)); putErr != nil {
+				logging.Default().Error("failed to update observed volume size after resize", "volume", pendingOp.VolumeName, "error", putErr.Error())
+			}
 		}
 
 		if pendingOp.Kind == "snapshot" {
