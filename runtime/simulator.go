@@ -113,6 +113,19 @@ func (simulator *SimulatorRuntime) Status(_ context.Context, id string) (Status,
 	}, nil
 }
 
+// InjectStartFailure registers a start failure for the given workload ID so
+// that subsequent Start calls return a StartError with the given reason. This
+// method is safe to call while the runtime is being used concurrently by an
+// agent goroutine.
+func (simulator *SimulatorRuntime) InjectStartFailure(instanceID string, reason string) {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	if simulator.StartFailures == nil {
+		simulator.StartFailures = make(map[string]string)
+	}
+	simulator.StartFailures[instanceID] = reason
+}
+
 // KillWorkload simulates a workload being killed (e.g. OOM kill with exit code
 // 137). The workload is marked as not running with the given exit code and error
 // message, which the agent's observeInstanceState will detect and report as

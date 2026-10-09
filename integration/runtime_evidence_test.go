@@ -133,10 +133,9 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 	}
 
 	// Kill the workload and block restarts so the failed state persists.
+	// InjectStartFailure is mutex-safe for concurrent use with the agent goroutine.
 	simulatorRuntime.KillWorkload(killedInstanceID, 137, "OOMKilled")
-	simulatorRuntime.StartFailures = map[string]string{
-		killedInstanceID: "OOMKilled",
-	}
+	simulatorRuntime.InjectStartFailure(killedInstanceID, "OOMKilled")
 
 	waitFor(t, 5*time.Second, "OOM-killed instance detected as failed", func() bool {
 		fact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(killedInstanceID))
