@@ -31,6 +31,21 @@ func skipWithoutAWSCredentials(testHandle *testing.T) {
 	}
 }
 
+// skipOnAWSAuthorizationError skips the test if the error is an AWS
+// authorization/permission failure (e.g. SCP deny, missing IAM policy).
+func skipOnAWSAuthorizationError(testHandle *testing.T, operationName string, operationError error) {
+	testHandle.Helper()
+	if operationError == nil {
+		return
+	}
+	errorMessage := operationError.Error()
+	if strings.Contains(errorMessage, "UnauthorizedOperation") ||
+		strings.Contains(errorMessage, "AccessDenied") ||
+		strings.Contains(errorMessage, "not authorized") {
+		testHandle.Skipf("skipping: %s returned authorization error: %v", operationName, operationError)
+	}
+}
+
 // lookupLatestAmazonLinuxAMI finds the latest Amazon Linux 2023 AMI for the
 // given region using DescribeImages with owner and name filters.
 func lookupLatestAmazonLinuxAMI(testHandle *testing.T, ctx context.Context, region string) string {
@@ -49,6 +64,7 @@ func lookupLatestAmazonLinuxAMI(testHandle *testing.T, ctx context.Context, regi
 		},
 	})
 	if describeError != nil {
+		skipOnAWSAuthorizationError(testHandle, "DescribeImages", describeError)
 		testHandle.Fatalf("DescribeImages failed: %v", describeError)
 	}
 	if len(describeOutput.Images) == 0 {
@@ -92,6 +108,7 @@ func TestAWSIntegrationInstanceLifecycle(testHandle *testing.T) {
 		},
 	})
 	if createError != nil {
+		skipOnAWSAuthorizationError(testHandle, "CreateInstance", createError)
 		testHandle.Fatalf("CreateInstance failed: %v", createError)
 	}
 	testHandle.Logf("created instance %s", instanceID)
@@ -109,6 +126,7 @@ func TestAWSIntegrationInstanceLifecycle(testHandle *testing.T) {
 
 	instanceList, listError := awsProvider.ListInstances(ctx)
 	if listError != nil {
+		skipOnAWSAuthorizationError(testHandle, "ListInstances", listError)
 		testHandle.Fatalf("ListInstances failed: %v", listError)
 	}
 
@@ -172,6 +190,7 @@ func TestAWSIntegrationListInstancesEmpty(testHandle *testing.T) {
 
 	instanceList, listError := awsProvider.ListInstances(ctx)
 	if listError != nil {
+		skipOnAWSAuthorizationError(testHandle, "ListInstances", listError)
 		testHandle.Fatalf("ListInstances failed: %v", listError)
 	}
 	testHandle.Logf("ListInstances returned %d CCattler-managed instances", len(instanceList))
@@ -194,5 +213,7 @@ func TestAWSIntegrationListRoutesRequiresConfig(testHandle *testing.T) {
 	_, listError := awsProvider.ListRoutes(ctx)
 	if listError == nil {
 		testHandle.Error("expected error from ListRoutes without route table configured")
+	} else {
+		skipOnAWSAuthorizationError(testHandle, "ListRoutes", listError)
 	}
 }
