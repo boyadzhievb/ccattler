@@ -5,7 +5,11 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -73,10 +77,19 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 	externalServices := extractExternalServicePorts(facts)
 	existingLoadBalancers := extractExistingLoadBalancers(facts)
 	pendingEnsureServices := extractPendingEnsureServices(facts)
+	appliedConfigHashes := collectStringValuesBySuffix(facts, types.ScanDerivedCloudLoadBalancers, "applied_hash")
+	endpointAddresses := extractEndpointAddressesPerService(facts)
 
 	var proposedChanges []Change
 
 	for serviceName, externalConfig := range externalServices {
+		currentAddresses := endpointAddresses[serviceName]
+		configHash := computeLoadBalancerConfigHash(
+			serviceName, externalConfig.port, externalConfig.protocol, currentAddresses)
+		if appliedHash, hashExists := appliedConfigHashes[serviceName]; hashExists && appliedHash == configHash {
+			continue
+		}
+
 		pendingOp := pendingCloudLBOperation{
 			Kind:        "ensure",
 			ServiceName: serviceName,
@@ -208,6 +221,19 @@ func (loadBalancerController *CloudLoadBalancerController) executeEnsureLoadBala
 		[]byte(string(cloud.LoadBalancerStateActive))); putErr != nil {
 		logging.Default().Error("failed to write LB state", "service", pendingOp.ServiceName, "error", putErr.Error())
 	}
+
+	// Persist the applied config hash so Reconcile can skip unchanged configurations.
+	endpointAddressesByService := extractEndpointAddressesPerService(endpointFacts)
+	appliedConfigHash := computeLoadBalancerConfigHash(
+		pendingOp.ServiceName, pendingOp.Port, pendingOp.Protocol,
+		endpointAddressesByService[pendingOp.ServiceName])
+	if _, putErr := loadBalancerController.factStore.Put(ctx,
+		types.KeyDerivedCloudLBAppliedHash(pendingOp.ServiceName),
+		[]byte(appliedConfigHash)); putErr != nil {
+		logging.Default().Error("failed to write LB applied config hash",
+			"service", pendingOp.ServiceName, "error", putErr.Error())
+	}
+
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, pendingKey); deleteErr != nil {
 		logging.Default().Error("failed to delete pending LB op", "service", pendingOp.ServiceName, "error", deleteErr.Error())
 	}
@@ -231,6 +257,9 @@ func (loadBalancerController *CloudLoadBalancerController) executeDeleteLoadBala
 	}
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, types.KeyObservedCloudLoadBalancerState(pendingOp.ServiceName)); deleteErr != nil {
 		logging.Default().Error("failed to delete LB state", "service", pendingOp.ServiceName, "error", deleteErr.Error())
+	}
+	if deleteErr := loadBalancerController.factStore.Delete(ctx, types.KeyDerivedCloudLBAppliedHash(pendingOp.ServiceName)); deleteErr != nil {
+		logging.Default().Error("failed to delete LB applied config hash", "service", pendingOp.ServiceName, "error", deleteErr.Error())
 	}
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, pendingKey); deleteErr != nil {
 		logging.Default().Error("failed to delete pending LB op", "service", pendingOp.ServiceName, "error", deleteErr.Error())
@@ -358,4 +387,32 @@ func extractPendingEnsureServices(facts []store.Fact) map[string]bool {
 		}
 	}
 	return pendingServices
+}
+
+// computeLoadBalancerConfigHash computes a stable SHA-256 hash of the load
+// balancer configuration for a service. The hash covers service name, port,
+// protocol, and sorted backend addresses, enabling change detection across
+// reconciliation cycles.
+func computeLoadBalancerConfigHash(serviceName string, servicePort int, serviceProtocol string, backendAddresses []string) string {
+	sortedAddresses := make([]string, len(backendAddresses))
+	copy(sortedAddresses, backendAddresses)
+	sort.Strings(sortedAddresses)
+	hashInput := fmt.Sprintf("%s:%d:%s:%s", serviceName, servicePort, serviceProtocol, strings.Join(sortedAddresses, ","))
+	hashDigest := sha256.Sum256([]byte(hashInput))
+	return hex.EncodeToString(hashDigest[:])
+}
+
+// extractEndpointAddressesPerService collects all endpoint address:port values
+// from endpoint facts, grouped by service name. Used to compute the load
+// balancer config hash for change detection.
+func extractEndpointAddressesPerService(facts []store.Fact) map[string][]string {
+	addressesByService := make(map[string][]string)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
+		serviceName, _, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanEndpoints)
+		if !hasSuffix {
+			continue
+		}
+		addressesByService[serviceName] = append(addressesByService[serviceName], string(factEntry.Value))
+	}
+	return addressesByService
 }

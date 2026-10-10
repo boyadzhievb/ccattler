@@ -538,7 +538,7 @@ func TestSyntheticCluster200Nodes5000Workloads(testHandle *testing.T) {
 		testHandle.Logf("Phase 2 NOTE — max instances per node (%d) exceeds 3× ideal (%.0f)", maxPerNode, idealPerNode)
 	}
 
-	// ── Phase 3: Kill 20 nodes, measure recovery ────────────────────────
+	// ── Phase 3: Kill 10 nodes, measure recovery ────────────────────────
 	nodesToKill := 10
 	testHandle.Logf("Phase 3: killing %d nodes, measuring recovery", nodesToKill)
 	for killIndex := 0; killIndex < nodesToKill; killIndex++ {

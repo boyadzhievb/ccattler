@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
@@ -256,6 +257,8 @@ func TestCloudRouteControllerCreatesRoutes(testing *testing.T) {
 		}
 	}
 
+	stateStore.Put(ctx, types.KeyObservedNodeState("worker-1"), []byte(string(types.NodeAlive)))
+
 	if postCommitErr := cloudRouteController.ExecutePostCommitOperations(ctx); postCommitErr != nil {
 		testing.Fatal(postCommitErr)
 	}
@@ -360,6 +363,83 @@ func TestCloudLoadBalancerControllerNameAndWatch(testing *testing.T) {
 	}
 	if len(loadBalancerController.Watch()) == 0 {
 		testing.Error("expected non-empty watch prefixes")
+	}
+}
+
+// TestCloudRouteControllerCancelsPendingEnsureForDeadNode verifies that a
+// pending route ensure is canceled when the target node becomes unreachable
+// and no observed route exists yet.
+func TestCloudRouteControllerCancelsPendingEnsureForDeadNode(testHandle *testing.T) {
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	cloudRouteController := NewCloudRouteController(simulatorProvider, factStore)
+
+	pendingOp := pendingCloudRouteOperation{
+		Kind:             "ensure",
+		DestinationCIDR:  "10.244.1.0/24",
+		TargetNodeID:     "worker-1",
+		TargetInstanceID: "i-abc123",
+	}
+	pendingJSON, _ := json.Marshal(pendingOp)
+	factStore.Put(ctx, types.KeyDerivedCloudRoutePendingOperation("10.244.1.0/24"), pendingJSON)
+
+	facts := []store.Fact{
+		{Key: types.KeyDerivedCloudRoutePendingOperation("10.244.1.0/24"), Value: pendingJSON},
+		{Key: types.KeyObservedNodeState("worker-1"), Value: []byte(string(types.NodeUnreachable))},
+	}
+	store.SortFacts(facts)
+
+	changes, reconcileError := cloudRouteController.Reconcile(ctx, facts)
+	if reconcileError != nil {
+		testHandle.Fatalf("Reconcile failed: %v", reconcileError)
+	}
+
+	foundDelete := false
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedCloudRoutePendingOperation("10.244.1.0/24") && change.Type == store.OpDelete {
+			foundDelete = true
+		}
+	}
+	if !foundDelete {
+		testHandle.Fatal("expected delete of orphaned pending route ensure for unreachable node")
+	}
+}
+
+// TestCloudRouteControllerPostCommitSkipsDeadNode verifies that the executor
+// cancels a pending route ensure when the node is no longer alive in the store.
+func TestCloudRouteControllerPostCommitSkipsDeadNode(testHandle *testing.T) {
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	cloudRouteController := NewCloudRouteController(simulatorProvider, factStore)
+
+	pendingOp := pendingCloudRouteOperation{
+		Kind:             "ensure",
+		DestinationCIDR:  "10.244.1.0/24",
+		TargetNodeID:     "worker-1",
+		TargetInstanceID: "i-abc123",
+	}
+	pendingJSON, _ := json.Marshal(pendingOp)
+	factStore.Put(ctx, types.KeyDerivedCloudRoutePendingOperation("10.244.1.0/24"), pendingJSON)
+	factStore.Put(ctx, types.KeyObservedNodeState("worker-1"), []byte(string(types.NodeUnreachable)))
+
+	executeError := cloudRouteController.ExecutePostCommitOperations(ctx)
+	if executeError != nil {
+		testHandle.Fatalf("ExecutePostCommitOperations failed: %v", executeError)
+	}
+
+	if len(simulatorProvider.EnsureRouteCalls) != 0 {
+		testHandle.Fatalf("expected 0 EnsureRoute calls for dead node, got %d", len(simulatorProvider.EnsureRouteCalls))
+	}
+
+	_, getError := factStore.Get(ctx, types.KeyDerivedCloudRoutePendingOperation("10.244.1.0/24"))
+	if getError == nil {
+		testHandle.Fatal("expected pending route to be cleaned up for dead node")
 	}
 }
 

@@ -131,6 +131,19 @@ func (cloudRouteController *CloudRouteController) Reconcile(ctx context.Context,
 		}
 	}
 
+	pendingEnsureRoutes := extractPendingEnsureRoutes(facts)
+	for cidr := range pendingEnsureRoutes {
+		if _, stillDesired := desiredRoutes[cidr]; !stillDesired {
+			if _, hasObservedRoute := existingRoutes[cidr]; hasObservedRoute {
+				continue
+			}
+			proposedChanges = append(proposedChanges, Change{
+				Type: store.OpDelete,
+				Key:  types.KeyDerivedCloudRoutePendingOperation(cidr),
+			})
+		}
+	}
+
 	return proposedChanges, nil
 }
 
@@ -157,6 +170,15 @@ func (cloudRouteController *CloudRouteController) ExecutePostCommitOperations(ct
 
 		switch pendingOp.Kind {
 		case "ensure":
+			nodeStateFact, nodeStateErr := cloudRouteController.factStore.Get(ctx, types.KeyObservedNodeState(pendingOp.TargetNodeID))
+			if nodeStateErr != nil || string(nodeStateFact.Value) != string(types.NodeAlive) {
+				logging.Default().Warn("canceling pending route for non-alive node",
+					"cidr", pendingOp.DestinationCIDR, "node", pendingOp.TargetNodeID)
+				if deleteErr := cloudRouteController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
+					logging.Default().Error("failed to clean up stale pending route", "cidr", pendingOp.DestinationCIDR, "error", deleteErr.Error())
+				}
+				continue
+			}
 			ensureError := cloudRouteController.cloudProvider.EnsureRoute(ctx, cloud.RouteConfig{
 				DestinationCIDR:  pendingOp.DestinationCIDR,
 				TargetNodeID:     pendingOp.TargetNodeID,
@@ -197,6 +219,26 @@ func (cloudRouteController *CloudRouteController) ExecutePostCommitOperations(ct
 	}
 
 	return nil
+}
+
+// extractPendingEnsureRoutes returns the set of destination CIDRs that have a
+// pending "ensure" operation in the derived cloud route prefix. Used to detect
+// orphaned pending operations for routes whose target node is no longer alive.
+func extractPendingEnsureRoutes(facts []store.Fact) map[string]bool {
+	pendingRoutes := make(map[string]bool)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDerivedCloudRoutes) {
+		if !strings.HasSuffix(factEntry.Key, "/pending_operation") {
+			continue
+		}
+		var pendingOp pendingCloudRouteOperation
+		if unmarshalErr := json.Unmarshal(factEntry.Value, &pendingOp); unmarshalErr != nil {
+			continue
+		}
+		if pendingOp.Kind == "ensure" {
+			pendingRoutes[pendingOp.DestinationCIDR] = true
+		}
+	}
+	return pendingRoutes
 }
 
 // extractNodeSubnetsForRoutes builds a map from node ID to assigned subnet CIDR.

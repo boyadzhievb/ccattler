@@ -6,10 +6,10 @@ CCattler is a fact-based container orchestrator — a Kubernetes alternative bui
 
 ### Prerequisites
 
-- **Go 1.22+** — the project uses modern Go features
+- **Go 1.26+** — see `go.mod` for the exact version
 - **etcd** (optional) — for distributed store testing; memory store works for development
 - **Docker/nerdctl** (optional) — only needed for container runtime testing
-- **golangci-lint** — for linting (`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`)
+- **golangci-lint v2** — for linting (`go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`)
 
 ### Clone and Build
 

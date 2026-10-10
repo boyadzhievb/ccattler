@@ -318,40 +318,6 @@ func buildActiveInstanceIDsByService(
 	return activeInstanceIDs
 }
 
-// countInstanceCreations counts how many new instance creations are in a
-// change set by looking for pending-state writes (each creation has one).
-func countInstanceCreations(changes []Change) int {
-	creationCount := 0
-	for _, change := range changes {
-		if change.Type == store.OpPut && string(change.Value) == string(types.InstancePending) {
-			creationCount++
-		}
-	}
-	return creationCount
-}
-
-// reconcileStatefulService handles instance count reconciliation for stateful
-// services. It uses ordinal IDs ({service}-0, {service}-1, ...), creates at
-// most one new instance per reconciliation cycle (the next ordinal in sequence,
-// only if all lower ordinals are running), and removes the highest ordinal
-// first on scale-down.
-func (instanceController *InstanceController) reconcileStatefulService(
-	serviceName string, wantCount int,
-	activeIDs []string, stateByInstanceID map[string]types.InstanceState,
-	fieldsByInstanceID map[string]map[string]string,
-) []Change {
-	existingOrdinals := parseExistingOrdinals(serviceName, activeIDs)
-	haveCount := len(existingOrdinals)
-
-	if haveCount < wantCount {
-		return createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID, fieldsByInstanceID)
-	}
-	if haveCount > wantCount {
-		return stopHighestOrdinalInstances(serviceName, existingOrdinals, haveCount-wantCount)
-	}
-	return nil
-}
-
 // parseExistingOrdinals extracts and returns the sorted ordinal indices for
 // active instances of a stateful service. Instances whose ID does not follow
 // the "{service}-{ordinal}" pattern are ignored.

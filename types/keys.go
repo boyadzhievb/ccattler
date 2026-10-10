@@ -1512,6 +1512,14 @@ func KeyDerivedCloudLBPendingOperation(serviceName string) string {
 	return fmt.Sprintf("%s/cloud/loadbalancer/%s/pending_operation", PrefixDerived, serviceName)
 }
 
+// KeyDerivedCloudLBAppliedHash returns the store path for the hash of the
+// last successfully applied cloud load balancer configuration. Used to skip
+// redundant ensure calls when the configuration has not changed.
+// Path: derived/cloud/loadbalancer/{serviceName}/applied_hash
+func KeyDerivedCloudLBAppliedHash(serviceName string) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/applied_hash", PrefixDerived, serviceName)
+}
+
 // KeyDerivedCloudRoutePendingOperation returns the store path for a cloud
 // route's pending operation (ensure or delete). Written by the route
 // controller during Reconcile; executed post-commit by the executor.

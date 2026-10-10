@@ -66,6 +66,42 @@ func TestCloudLBEmitsEnsureForExistingLoadBalancer(testHandle *testing.T) {
 	}
 }
 
+// TestCloudLBSkipsEnsureWhenConfigUnchanged verifies that Reconcile does not
+// emit an ensure operation when the applied config hash matches the current
+// configuration, breaking the feedback loop of unnecessary cloud API calls.
+func TestCloudLBSkipsEnsureWhenConfigUnchanged(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	loadBalancerController := NewCloudLoadBalancerController(simulatorProvider, factStore)
+
+	// Set up desired external service and observed LB.
+	factStore.Put(ctx, types.KeyDesiredServiceExposeExternal("web", 443), []byte("http"))
+	factStore.Put(ctx, types.KeyObservedCloudLoadBalancerAddress("web"), []byte("1.2.3.4"))
+
+	// Set up an endpoint for the service.
+	factStore.Put(ctx, types.ScanEndpoints+"web/inst-1", []byte("10.0.0.1:8080"))
+
+	// Compute and store the applied hash matching the current configuration.
+	configHash := computeLoadBalancerConfigHash("web", 443, "http", []string{"10.0.0.1:8080"})
+	factStore.Put(ctx, types.KeyDerivedCloudLBAppliedHash("web"), []byte(configHash))
+
+	changes := helperReconcileCloudLB(testHandle, loadBalancerController, factStore)
+
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedCloudLBPendingOperation("web") && change.Type == store.OpPut {
+			var pendingOp pendingCloudLBOperation
+			if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
+				testHandle.Fatalf("failed to unmarshal pending op: %v", unmarshalErr)
+			}
+			if pendingOp.Kind == "ensure" {
+				testHandle.Fatal("expected no ensure operation when config hash is unchanged")
+			}
+		}
+	}
+}
+
 // TestCloudLBCancelsPendingEnsureWhenServiceDeleted verifies that an orphaned
 // pending "ensure" operation is deleted when the service is no longer external.
 func TestCloudLBCancelsPendingEnsureWhenServiceDeleted(testHandle *testing.T) {
