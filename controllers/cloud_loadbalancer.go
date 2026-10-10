@@ -65,19 +65,18 @@ type pendingCloudLBOperation struct {
 }
 
 // Reconcile compares desired external services against existing cloud load
-// balancers and emits pending operations for the post-commit executor.
+// balancers and emits pending operations for the post-commit executor. Always
+// emits "ensure" for active external services so that backend changes propagate
+// to the cloud provider. Cancels orphaned pending "ensure" operations for
+// services that are no longer externally exposed.
 func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	externalServices := extractExternalServicePorts(facts)
 	existingLoadBalancers := extractExistingLoadBalancers(facts)
+	pendingEnsureServices := extractPendingEnsureServices(facts)
 
 	var proposedChanges []Change
 
 	for serviceName, externalConfig := range externalServices {
-		previousAddress := existingLoadBalancers[serviceName]
-		if previousAddress != "" {
-			continue
-		}
-
 		pendingOp := pendingCloudLBOperation{
 			Kind:        "ensure",
 			ServiceName: serviceName,
@@ -114,6 +113,18 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 				Type:  store.OpPut,
 				Key:   types.KeyDerivedCloudLBPendingOperation(serviceName),
 				Value: pendingJSON,
+			})
+		}
+	}
+
+	for serviceName := range pendingEnsureServices {
+		if _, stillExternal := externalServices[serviceName]; !stillExternal {
+			if _, hasObservedLB := existingLoadBalancers[serviceName]; hasObservedLB {
+				continue
+			}
+			proposedChanges = append(proposedChanges, Change{
+				Type: store.OpDelete,
+				Key:  types.KeyDerivedCloudLBPendingOperation(serviceName),
 			})
 		}
 	}
@@ -327,4 +338,24 @@ func buildLoadBalancerBackends(endpoints []endpointBackend, nodeAddresses map[st
 // address for all load balancers currently tracked in the store.
 func extractExistingLoadBalancers(facts []store.Fact) map[string]string {
 	return collectStringValuesBySuffix(facts, types.ScanObservedCloudLoadBalancers, "address")
+}
+
+// extractPendingEnsureServices returns the set of service names that have a
+// pending "ensure" operation in the derived cloud LB prefix. Used to detect
+// orphaned pending operations for services that have been deleted.
+func extractPendingEnsureServices(facts []store.Fact) map[string]bool {
+	pendingServices := make(map[string]bool)
+	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDerivedCloudLoadBalancers) {
+		if !strings.HasSuffix(factEntry.Key, "/pending_operation") {
+			continue
+		}
+		var pendingOp pendingCloudLBOperation
+		if unmarshalErr := json.Unmarshal(factEntry.Value, &pendingOp); unmarshalErr != nil {
+			continue
+		}
+		if pendingOp.Kind == "ensure" {
+			pendingServices[pendingOp.ServiceName] = true
+		}
+	}
+	return pendingServices
 }

@@ -860,3 +860,69 @@ func changesByKey(changes []Change) map[string]Change {
 	}
 	return result
 }
+
+// TestStorageControllerCleanupDeletesDerivedKeys verifies that volume cleanup
+// deletes pending_resize, pending_snapshot, and last_operation derived keys
+// so the post-commit executor does not process operations for deleted volumes.
+func TestStorageControllerCleanupDeletesDerivedKeys(testHandle *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+	ctx := context.Background()
+
+	types.WriteObservedVolume(ctx, stateStore, types.Volume{
+		Name:  "pgdata",
+		Size:  "100Gi",
+		State: types.VolumeAvailable,
+	})
+	stateStore.Put(ctx, types.KeyDerivedVolumePendingResize("pgdata"), []byte(`{"kind":"resize","volume_name":"pgdata"}`))
+	stateStore.Put(ctx, types.KeyDerivedVolumePendingSnapshot("pgdata"), []byte(`{"kind":"snapshot","volume_name":"pgdata"}`))
+	stateStore.Put(ctx, types.KeyDerivedVolumeLastOperation("pgdata"), []byte("op-123"))
+
+	changes := helperCollectStorageControllerChanges(testHandle, stateStore)
+
+	deletedKeys := make(map[string]bool)
+	for _, change := range changes {
+		if change.Type == store.OpDelete {
+			deletedKeys[change.Key] = true
+		}
+	}
+
+	derivedKeys := []string{
+		types.KeyDerivedVolumePendingResize("pgdata"),
+		types.KeyDerivedVolumePendingSnapshot("pgdata"),
+		types.KeyDerivedVolumeLastOperation("pgdata"),
+	}
+	for _, expectedKey := range derivedKeys {
+		if !deletedKeys[expectedKey] {
+			testHandle.Errorf("expected cleanup to delete %s", expectedKey)
+		}
+	}
+}
+
+// TestStorageControllerPostCommitSkipsDeletedVolume verifies that the
+// post-commit executor skips pending operations for volumes that have been
+// removed from the desired set.
+func TestStorageControllerPostCommitSkipsDeletedVolume(testHandle *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+	ctx := context.Background()
+
+	simulatorStorageProvider := storage.NewSimulatorStorageProvider()
+	simulatorStorageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
+
+	storageController := NewStorageController(stateStore)
+	storageController.SetStorageProvider(simulatorStorageProvider)
+
+	stateStore.Put(ctx, types.KeyDerivedVolumePendingResize("pgdata"),
+		[]byte(`{"id":"op-1","kind":"resize","volume_name":"pgdata","target_size":"200Gi"}`))
+
+	executeError := storageController.ExecutePostCommitOperations(ctx)
+	if executeError != nil {
+		testHandle.Fatalf("ExecutePostCommitOperations failed: %v", executeError)
+	}
+
+	_, getError := stateStore.Get(ctx, types.KeyDerivedVolumePendingResize("pgdata"))
+	if getError == nil {
+		testHandle.Fatal("expected pending resize to be cleaned up for deleted volume")
+	}
+}

@@ -308,6 +308,47 @@ func TestClusterAutoscalePostCommitExecutesRemoval(t *testing.T) {
 	}
 }
 
+func TestClusterAutoscaleNoDuplicateKeysWhenFailedRequestAndPersistentDemand(t *testing.T) {
+	factStore := storelib.NewMemoryStore()
+	simulatorProvider := infra.NewSimulatorInfraProvider(factStore)
+	autoscaleController := NewClusterAutoscaleController(simulatorProvider, factStore)
+
+	facts := []storelib.Fact{
+		{Key: types.KeyDerivedSchedulerUnplacedReason("inst-1"), Value: []byte(string(types.UnplacedInsufficientCapacity))},
+		{Key: types.KeyDerivedSchedulerUnplacedRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
+		{Key: types.KeyDerivedCapacityRequestState("inst-1"), Value: []byte(string(types.CapacityRequestFailed))},
+		{Key: types.KeyDerivedCapacityRequestRequirements("inst-1"), Value: []byte(`{"cpu":1000}`)},
+		{Key: types.KeyObservedNodeState("node-1"), Value: []byte(string(types.NodeAlive))},
+	}
+	storelib.SortFacts(facts)
+
+	changes, reconcileError := autoscaleController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatalf("Reconcile failed: %v", reconcileError)
+	}
+
+	keyOccurrences := make(map[string]int)
+	for _, change := range changes {
+		keyOccurrences[change.Key]++
+	}
+	for key, count := range keyOccurrences {
+		if count > 1 {
+			t.Fatalf("duplicate key in change set: %s (appeared %d times)", key, count)
+		}
+	}
+
+	newPendingCount := 0
+	for _, change := range changes {
+		if change.Type == storelib.OpPut && strings.HasSuffix(change.Key, "/state") &&
+			string(change.Value) == string(types.CapacityRequestPending) {
+			newPendingCount++
+		}
+	}
+	if newPendingCount != 0 {
+		t.Fatal("expected no new pending request in same cycle as failed request cleanup")
+	}
+}
+
 func TestClusterAutoscaleHandlesNoNodesReason(t *testing.T) {
 	factStore := storelib.NewMemoryStore()
 	simulatorProvider := infra.NewSimulatorInfraProvider(factStore)

@@ -260,14 +260,14 @@ func filterInsufficientCapacityDemand(demand map[string]*unplacedDemandEntry) ma
 }
 
 // collectCoveredInstances returns a set of instance IDs that already have
-// an in-flight or ready capacity request (based on the request reason field
-// containing the instance ID).
+// a capacity request in any state. Including terminal states (ready, failed)
+// prevents duplicate-key conflicts when cleanup deletes and new-request puts
+// target the same keys in a single transaction. The next cycle after cleanup
+// commits will create a fresh request if the instance is still unplaced.
 func collectCoveredInstances(existingRequests map[string]*capacityRequestInfo) map[string]bool {
 	covered := make(map[string]bool)
-	for requestID, request := range existingRequests {
-		if request.state == types.CapacityRequestPending || request.state == types.CapacityRequestLaunching {
-			covered[requestID] = true
-		}
+	for requestID := range existingRequests {
+		covered[requestID] = true
 	}
 	return covered
 }

@@ -313,10 +313,11 @@ func (storageController *StorageController) reconcileVolumeMigration(ctx context
 	return changes
 }
 
-// reconcileVolumeCleanup returns changes that delete all observed-state keys
-// for volumes which are no longer present in the desired set. Every observed
-// sub-key (state, size, node, instance, mount path, migration source,
-// snapshot, usage, capacity, replica count, replica state) is removed.
+// reconcileVolumeCleanup returns changes that delete all observed-state and
+// derived-state keys for volumes which are no longer present in the desired
+// set. Derived keys (pending_resize, pending_snapshot, last_operation) must
+// be cleaned up alongside observed keys to prevent the post-commit executor
+// from processing operations for deleted volumes.
 func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
 	var changes []Change
 	for volumeName := range observedVolumes {
@@ -336,6 +337,9 @@ func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observe
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeCapacityBytes(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeReplicaCount(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeReplicaState(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyDerivedVolumePendingResize(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyDerivedVolumePendingSnapshot(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyDerivedVolumeLastOperation(volumeName)},
 		)...)
 	}
 	return changes
@@ -441,6 +445,15 @@ func (storageController *StorageController) ExecutePostCommitOperations(ctx cont
 		if lastOpErr == nil && string(lastOpFact.Value) == pendingOp.ID {
 			if deleteErr := storageController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
 				logging.Default().Error("failed to clean up duplicate pending operation", "volume", pendingOp.VolumeName, "error", deleteErr.Error())
+			}
+			continue
+		}
+
+		if _, desiredErr := storageController.factStore.Get(ctx, types.KeyDesiredVolume(pendingOp.VolumeName)); desiredErr != nil {
+			logging.Default().Warn("skipping pending operation for deleted volume",
+				"volume", pendingOp.VolumeName, "kind", pendingOp.Kind)
+			if deleteErr := storageController.factStore.Delete(ctx, pendingFact.Key); deleteErr != nil {
+				logging.Default().Error("failed to clean up orphaned pending operation", "volume", pendingOp.VolumeName, "error", deleteErr.Error())
 			}
 			continue
 		}
