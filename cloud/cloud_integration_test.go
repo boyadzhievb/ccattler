@@ -132,17 +132,18 @@ func TestAWSIntegrationInstanceLifecycle(testHandle *testing.T) {
 
 	foundInstance := false
 	for _, cloudInstance := range instanceList {
-		if cloudInstance.ProviderInstanceID == instanceID {
-			foundInstance = true
-			if cloudInstance.State != InstanceStateRunning && cloudInstance.State != InstanceStatePending {
-				testHandle.Errorf("expected instance state running or pending, got %q", cloudInstance.State)
-			}
-			if cloudInstance.InstanceType != awsIntegrationTestInstanceType {
-				testHandle.Errorf("expected instance type %s, got %q", awsIntegrationTestInstanceType, cloudInstance.InstanceType)
-			}
-			testHandle.Logf("instance %s found in state %q", instanceID, cloudInstance.State)
-			break
+		if cloudInstance.ProviderInstanceID != instanceID {
+			continue
 		}
+		foundInstance = true
+		if cloudInstance.State != InstanceStateRunning && cloudInstance.State != InstanceStatePending {
+			testHandle.Errorf("expected instance state running or pending, got %q", cloudInstance.State)
+		}
+		if cloudInstance.InstanceType != awsIntegrationTestInstanceType {
+			testHandle.Errorf("expected instance type %s, got %q", awsIntegrationTestInstanceType, cloudInstance.InstanceType)
+		}
+		testHandle.Logf("instance %s found in state %q", instanceID, cloudInstance.State)
+		break
 	}
 	if !foundInstance {
 		testHandle.Fatalf("created instance %s not found in ListInstances", instanceID)
