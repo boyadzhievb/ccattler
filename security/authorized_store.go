@@ -124,7 +124,7 @@ func (authorizedStore *AuthorizedStore) Watch(ctx context.Context, key string, o
 }
 
 // Transaction delegates to the inner store. Authorization is checked per-key
-// in the compare and operation lists.
+// in the compare list and in both the success and failure operation lists.
 func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
 	principal := PrincipalFromContext(ctx)
 	for _, compareItem := range compares {
@@ -143,7 +143,18 @@ func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compare
 			return false, err
 		}
 	}
-	authorizedStore.logAllowed(principal, "transaction", fmt.Sprintf("%d ops", len(onSuccess)))
+	for _, failureBranchOp := range onFailure {
+		permission := PermissionWrite
+		if failureBranchOp.Type == store.OpDelete {
+			permission = PermissionDelete
+		}
+		if err := authorizedStore.authorizer.Authorize(principal, permission, failureBranchOp.Key); err != nil {
+			authorizedStore.logDenied(principal, "transaction-op", failureBranchOp.Key)
+			return false, err
+		}
+	}
+	totalOperations := len(onSuccess) + len(onFailure)
+	authorizedStore.logAllowed(principal, "transaction", fmt.Sprintf("%d ops", totalOperations))
 	return authorizedStore.inner.Transaction(ctx, compares, onSuccess, onFailure)
 }
 

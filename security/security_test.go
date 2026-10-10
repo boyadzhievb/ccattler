@@ -2023,6 +2023,42 @@ func TestAuthorizedStoreTransactionDenied(t *testing.T) {
 	}
 }
 
+func TestAuthorizedStoreTransactionFailureBranchDenied(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	authorizer := NewRBACAuthorizer()
+	for _, role := range BuiltinRoles() {
+		authorizer.AddRole(role)
+	}
+	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
+
+	protectedKey := types.KeyDesiredServiceImage("web")
+	originalValue := []byte("nginx:1.27")
+	adminContext := context.Background()
+	memoryStore.Put(adminContext, protectedKey, originalValue)
+
+	authorizedStore := NewAuthorizedStore(memoryStore, authorizer, nil)
+	nodeContext := WithPrincipal(context.Background(), "node:n1")
+
+	_, transactionError := authorizedStore.Transaction(nodeContext,
+		[]store.Compare{{Key: "observed/instance/i1/state", Revision: 9999}},
+		nil,
+		[]store.Op{{Type: store.OpPut, Key: protectedKey, Value: []byte("hacked")}},
+	)
+	if transactionError == nil {
+		t.Fatal("unauthorized write in transaction failure branch should be rejected")
+	}
+
+	protectedFact, readError := memoryStore.Get(adminContext, protectedKey)
+	if readError != nil {
+		t.Fatalf("protected key should still exist: %v", readError)
+	}
+	if string(protectedFact.Value) != string(originalValue) {
+		t.Fatalf("protected key was modified: got %q, want %q", string(protectedFact.Value), string(originalValue))
+	}
+}
+
 func TestAuditLogJSONSerialization(t *testing.T) {
 	auditLog := NewInMemoryAuditLog(10)
 	auditLog.Log(AuditEntry{
