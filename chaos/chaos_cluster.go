@@ -76,6 +76,9 @@ type SimulatedChaosCluster struct {
 	// operations (Start, List), simulating slow container operations for
 	// heartbeat stress testing.
 	agentReconcileDelay time.Duration
+	// maxCreationsPerCycle overrides the InstanceController's per-cycle
+	// creation budget. Zero uses the controller's default.
+	maxCreationsPerCycle int
 	// mutex guards concurrent access to cluster state.
 	mutex sync.Mutex
 }
@@ -125,6 +128,13 @@ func (simulatedCluster *SimulatedChaosCluster) SetMaxReconciliationAttempts(maxA
 // before Start.
 func (simulatedCluster *SimulatedChaosCluster) SetMaxInputKeyGuards(maxGuards int) {
 	simulatedCluster.maxInputKeyGuards = maxGuards
+}
+
+// SetMaxCreationsPerCycle overrides the InstanceController's per-cycle
+// creation budget. Must be called before Start. Higher values increase
+// convergence throughput at the cost of larger transactions.
+func (simulatedCluster *SimulatedChaosCluster) SetMaxCreationsPerCycle(maxCreations int) {
+	simulatedCluster.maxCreationsPerCycle = maxCreations
 }
 
 // SetLeaseTimeout overrides the default node failure lease timeout. Must be
@@ -402,6 +412,9 @@ func (simulatedCluster *SimulatedChaosCluster) startControllers(ctx context.Cont
 	simulatedCluster.mutex.Unlock()
 
 	instanceController := controllers.NewInstanceController()
+	if simulatedCluster.maxCreationsPerCycle > 0 {
+		instanceController.MaxCreationsPerCycle = simulatedCluster.maxCreationsPerCycle
+	}
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()

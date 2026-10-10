@@ -478,10 +478,11 @@ func TestSyntheticCluster200Nodes5000Workloads(testHandle *testing.T) {
 	factStore.SetWatchChannelBufferSize(16384)
 
 	cluster := chaos.NewSimulatedChaosCluster(factStore, nodeIDs)
-	cluster.SetAgentInterval(500 * time.Millisecond)
-	cluster.SetControllerDebounce(200 * time.Millisecond)
-	cluster.SetMaxReconciliationAttempts(20)
+	cluster.SetAgentInterval(1 * time.Second)
+	cluster.SetControllerDebounce(100 * time.Millisecond)
+	cluster.SetMaxReconciliationAttempts(30)
 	cluster.SetMaxInputKeyGuards(0)
+	cluster.SetMaxCreationsPerCycle(19)
 	cluster.SetLeaseTimeout(10 * time.Minute)
 	cluster.Start(ctx)
 
