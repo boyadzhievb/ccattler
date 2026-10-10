@@ -79,6 +79,7 @@ func TestPlacePendingInstance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -104,6 +105,7 @@ func TestSkipAlreadyPlaced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 0 {
 		t.Fatalf("expected 0 changes for already-placed instance, got %d", len(changes))
 	}
@@ -122,6 +124,7 @@ func TestSkipRunningInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 0 {
 		t.Fatalf("expected 0 changes for running instance, got %d", len(changes))
 	}
@@ -148,6 +151,7 @@ func TestSpreadAcrossNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 3 {
 		t.Fatalf("expected 3 placements, got %d", len(changes))
 	}
@@ -184,6 +188,7 @@ func TestSpreadWithExistingLoad(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -206,6 +211,7 @@ func TestSkipUnreachableNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -223,15 +229,15 @@ func TestNoAliveNodes(t *testing.T) {
 		kv(types.KeyObservedNodeState("node-1"), "unreachable"),
 	)
 
-	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	allChanges, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	placements := filterPlacementChanges(changes)
+	placements := filterPlacementChanges(allChanges)
 	if len(placements) != 0 {
 		t.Fatalf("expected 0 placements with no alive nodes, got %d", len(placements))
 	}
-	unplacedChanges := filterUnplacedDemandChanges(changes)
+	unplacedChanges := filterUnplacedDemandChanges(allChanges)
 	if len(unplacedChanges) != 2 {
 		t.Fatalf("expected 2 unplaced-demand facts (reason+requirements), got %d", len(unplacedChanges))
 	}
@@ -248,6 +254,7 @@ func TestNoInstancesToPlace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 0 {
 		t.Fatalf("expected 0 changes with no pending instances, got %d", len(changes))
 	}
@@ -276,6 +283,7 @@ func TestResourceFit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -302,15 +310,15 @@ func TestResourceExhaustion(t *testing.T) {
 		kv(types.KeyObservedNodeAvailableMemory("node-1"), "16384"),
 	)
 
-	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	allChanges, err := placementScheduler.Reconcile(context.Background(), facts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	placements := filterPlacementChanges(changes)
+	placements := filterPlacementChanges(allChanges)
 	if len(placements) != 2 {
 		t.Fatalf("expected 2 placements (node full after 2), got %d", len(placements))
 	}
-	unplacedChanges := filterUnplacedDemandChanges(changes)
+	unplacedChanges := filterUnplacedDemandChanges(allChanges)
 	if len(unplacedChanges) != 2 {
 		t.Fatalf("expected 2 unplaced-demand facts for 1 remaining instance, got %d", len(unplacedChanges))
 	}
@@ -339,6 +347,7 @@ func TestResourceSpreadWithAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 2 {
 		t.Fatalf("expected 2 placements, got %d", len(changes))
 	}
@@ -368,6 +377,7 @@ func TestNoResourceRequirements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement (no requirements = fits anywhere), got %d", len(changes))
 	}
@@ -392,6 +402,7 @@ func TestRequireLabelPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -419,6 +430,7 @@ func TestRequireLabelMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	// No node satisfies require — falls back to all candidates.
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement (fallback), got %d", len(changes))
@@ -447,6 +459,7 @@ func TestMultipleRequireLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -475,6 +488,7 @@ func TestPreferLabelScoring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -500,6 +514,7 @@ func TestPreferFallsBackToLeastLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -526,6 +541,7 @@ func TestRestrictedNodeExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -553,6 +569,7 @@ func TestAcceptRestrictedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -581,6 +598,7 @@ func TestAcceptMissingRestrictionLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -615,6 +633,7 @@ func TestRequireAndPreferCombined(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -645,6 +664,7 @@ func TestRestrictAndRequireCombined(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -678,6 +698,7 @@ func TestZoneSpreadPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 3 {
 		t.Fatalf("expected 3 placements, got %d", len(changes))
 	}
@@ -720,6 +741,7 @@ func TestZoneSpreadUnbalanced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -750,6 +772,7 @@ func TestArchitectureFilterAmd64(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -781,6 +804,7 @@ func TestArchitectureFilterArm64(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -809,6 +833,7 @@ func TestArchitectureEmptyPassesAny(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement, got %d", len(changes))
 	}
@@ -853,6 +878,7 @@ func TestGroupCoSchedulingSameNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 2 {
 		t.Fatalf("expected 2 placements, got %d", len(changes))
 	}
@@ -892,6 +918,7 @@ func TestGroupCoSchedulingJoinsExistingPlacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 1 {
 		t.Fatalf("expected 1 placement (web-1 only), got %d", len(changes))
 	}
@@ -929,6 +956,7 @@ func TestGroupDoesNotAffectUngroupedInstances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	changes = filterPlacementChanges(changes)
 	if len(changes) != 3 {
 		t.Fatalf("expected 3 placements, got %d", len(changes))
 	}
@@ -1024,11 +1052,12 @@ func TestDisabledNodeExcludedFromScheduler(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	if len(proposedChanges) != 1 {
-		t.Fatalf("expected 1 placement, got %d", len(proposedChanges))
+	placements := filterPlacementChanges(proposedChanges)
+	if len(placements) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(placements))
 	}
-	if string(proposedChanges[0].Value) != "node-2" {
-		t.Errorf("expected placement on node-2, got %s", string(proposedChanges[0].Value))
+	if string(placements[0].Value) != "node-2" {
+		t.Errorf("expected placement on node-2, got %s", string(placements[0].Value))
 	}
 }
 
@@ -1056,11 +1085,12 @@ func TestDrainingNodeExcludedFromScheduler(t *testing.T) {
 		t.Fatalf("unexpected error: %v", reconcileError)
 	}
 
-	if len(proposedChanges) != 1 {
-		t.Fatalf("expected 1 placement, got %d", len(proposedChanges))
+	placements := filterPlacementChanges(proposedChanges)
+	if len(placements) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(placements))
 	}
-	if string(proposedChanges[0].Value) != "node-2" {
-		t.Errorf("expected placement on node-2, got %s", string(proposedChanges[0].Value))
+	if string(placements[0].Value) != "node-2" {
+		t.Errorf("expected placement on node-2, got %s", string(placements[0].Value))
 	}
 }
 

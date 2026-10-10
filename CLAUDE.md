@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M80 — Phase 80 Transaction Authorization Fix & Cloud Provider CI. M1–M80 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M86 — Phase 86 Store Performance & Per-Node Placement Index. M1–M86 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

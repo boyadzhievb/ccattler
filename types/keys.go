@@ -369,6 +369,20 @@ func KeyPlacementInstance(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s", PrefixPlacement, instanceID)
 }
 
+// KeyPlacementNodeInstance returns the per-node reverse index for a placement.
+// Agents scan this prefix to find their assigned instances without reading all
+// placements. The value is empty — the key existence is the signal.
+// Path: placement/node/{nodeID}/{instanceID}
+func KeyPlacementNodeInstance(nodeID string, instanceID string) string {
+	return fmt.Sprintf("%s/node/%s/%s", PrefixPlacement, nodeID, instanceID)
+}
+
+// ScanPlacementsForNode returns the prefix to scan for all instances placed
+// on a specific node.
+func ScanPlacementsForNode(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/", PrefixPlacement, nodeID)
+}
+
 // KeyEndpoint returns the store path for a service instance's network endpoint
 // on a specific port. The value stored at this key is the IP:port pair.
 // Path: endpoint/service/{serviceName}/{instanceID}/{port}

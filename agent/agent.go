@@ -194,7 +194,7 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 	ticker := time.NewTicker(nodeAgent.interval)
 	defer ticker.Stop()
 
-	placementCh, err := nodeAgent.store.Watch(ctx, types.ScanPlacements, store.WatchOption{Prefix: true})
+	placementCh, err := nodeAgent.store.Watch(ctx, types.ScanPlacementsForNode(nodeAgent.nodeID), store.WatchOption{Prefix: true})
 	if err != nil {
 		return err
 	}
@@ -328,22 +328,19 @@ type appliedResourceAllocation struct {
 	memoryBytes   int64 // memoryBytes is the memory allocation in bytes last applied to this instance.
 }
 
-// findInstancesPlacedOnThisNode scans all placement facts in the store and
-// returns the subset whose target node matches this agent's nodeID. Instances
+// findInstancesPlacedOnThisNode scans the per-node placement index for this
+// agent's nodeID, returning only instances assigned to this node. Instances
 // that are in the "stopped" state or marked for drain eviction are excluded.
 func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]placedInstanceInfo, error) {
-	placements, err := nodeAgent.store.Scan(ctx, types.ScanPlacements)
+	scanPrefix := types.ScanPlacementsForNode(nodeAgent.nodeID)
+	placements, err := nodeAgent.store.Scan(ctx, scanPrefix)
 	if err != nil {
 		return nil, err
 	}
 
 	var result []placedInstanceInfo
 	for _, placementFact := range placements {
-		nodeID := string(placementFact.Value)
-		if nodeID != nodeAgent.nodeID {
-			continue
-		}
-		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
+		instanceID := strings.TrimPrefix(placementFact.Key, scanPrefix)
 
 		// Skip instances marked by controllers via derived/ markers.
 		if nodeAgent.isInstanceMarkedForSkip(ctx, instanceID) {

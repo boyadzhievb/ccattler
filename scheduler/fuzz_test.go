@@ -42,17 +42,15 @@ func FuzzSchedulerReconcile(f *testing.F) {
 			t.Fatalf("Reconcile returned unexpected error: %v", reconcileError)
 		}
 
-		// Every returned change must be a placement put operation with a
-		// non-empty key and non-empty value (the target node ID).
+		// Every returned change must be a put operation with a non-empty key.
+		// Primary placement keys have a non-empty value (the target node ID);
+		// per-node index keys have an empty value (existence is the signal).
 		for changeIndex, change := range changes {
 			if change.Type != store.OpPut {
 				t.Errorf("change[%d]: expected OpPut, got %d", changeIndex, change.Type)
 			}
 			if change.Key == "" {
 				t.Errorf("change[%d]: placement key must not be empty", changeIndex)
-			}
-			if len(change.Value) == 0 {
-				t.Errorf("change[%d]: placement value (node ID) must not be empty", changeIndex)
 			}
 		}
 	})

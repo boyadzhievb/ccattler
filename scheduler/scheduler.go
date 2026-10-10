@@ -418,9 +418,11 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 		cache.RecordPlacement(bestNode, reqCPU, reqMemory)
 		updateNodeResourcesAfterPlacement(state.alive, bestNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
 
-		changes = append(changes, controllers.Change{
-			Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(bestNode),
-		})
+		groupID := "placement/" + instanceID
+		changes = append(changes,
+			controllers.Change{Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(bestNode), Group: groupID},
+			controllers.Change{Type: store.OpPut, Key: types.KeyPlacementNodeInstance(bestNode, instanceID), Value: []byte(""), Group: groupID},
+		)
 	}
 	return changes
 }
@@ -1046,11 +1048,11 @@ func placeOneGroup(
 			serviceName = instanceInfo.service
 		}
 		updateNodeResourcesAfterPlacement(state.alive, targetNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
-		changes = append(changes, controllers.Change{
-			Type:  store.OpPut,
-			Key:   types.KeyPlacementInstance(instanceID),
-			Value: []byte(targetNode),
-		})
+		groupID := "placement/" + instanceID
+		changes = append(changes,
+			controllers.Change{Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(targetNode), Group: groupID},
+			controllers.Change{Type: store.OpPut, Key: types.KeyPlacementNodeInstance(targetNode, instanceID), Value: []byte(""), Group: groupID},
+		)
 	}
 	return changes
 }

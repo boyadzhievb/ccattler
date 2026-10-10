@@ -318,6 +318,7 @@ func TestAWSIntegrationLoadBalancerLifecycle(testHandle *testing.T) {
 	externalAddress, ensureError := awsProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{
 		ServiceName: serviceName,
 		Port:        8080,
+		TargetPort:  8080,
 		Protocol:    "tcp",
 		Backends:    []LoadBalancerBackend{},
 	})
@@ -396,6 +397,34 @@ func TestAWSIntegrationRouteLifecycle(testHandle *testing.T) {
 		_ = awsProvider.TerminateInstance(cleanupCtx, instanceID)
 		testHandle.Logf("cleaned up route and instance %s", instanceID)
 	})
+
+	testHandle.Logf("waiting for instance %s to reach running state", instanceID)
+	waitDeadline := time.After(3 * time.Minute)
+	for {
+		instanceList, listError := awsProvider.ListInstances(ctx)
+		if listError != nil {
+			testHandle.Fatalf("ListInstances while waiting for running: %v", listError)
+		}
+		instanceRunning := false
+		for _, cloudInstance := range instanceList {
+			if cloudInstance.ProviderInstanceID == instanceID && cloudInstance.State == InstanceStateRunning {
+				instanceRunning = true
+				break
+			}
+		}
+		if instanceRunning {
+			testHandle.Logf("instance %s is running", instanceID)
+			break
+		}
+		select {
+		case <-waitDeadline:
+			testHandle.Fatalf("instance %s did not reach running state within 3 minutes", instanceID)
+		case <-ctx.Done():
+			testHandle.Fatalf("context cancelled waiting for instance: %v", ctx.Err())
+		default:
+			time.Sleep(5 * time.Second)
+		}
+	}
 
 	testDestinationCIDR := "10.200.0.0/24"
 	ensureError := awsProvider.EnsureRoute(ctx, RouteConfig{

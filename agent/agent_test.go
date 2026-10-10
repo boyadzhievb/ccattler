@@ -225,7 +225,7 @@ func TestAgentStopsRemovedInstance(t *testing.T) {
 	})
 
 	// Remove the placement.
-	factStore.Delete(ctx, types.KeyPlacementInstance("ccc"))
+	types.DeletePlacement(ctx, factStore, "node-1", "ccc")
 
 	// Agent should stop the process.
 	waitFor(t, 2*time.Second, "instance stopped in runtime", func() bool {
@@ -508,7 +508,7 @@ func TestAgentReleasesIPOnInstanceStop(t *testing.T) {
 	})
 
 	// Remove the placement to trigger stop.
-	factStore.Delete(ctx, types.KeyPlacementInstance("net-ddd"))
+	types.DeletePlacement(ctx, factStore, "node-1", "net-ddd")
 
 	// Wait for the allocation fact to be cleaned up.
 	waitFor(t, 2*time.Second, "network allocation fact deleted", func() bool {
@@ -683,7 +683,7 @@ func TestAgentDetachesVolumeOnStop(t *testing.T) {
 		return err == nil && string(stateFact.Value) == string(types.VolumeAttached)
 	})
 
-	factStore.Delete(ctx, types.KeyPlacementInstance("vol-ccc"))
+	types.DeletePlacement(ctx, factStore, "node-1", "vol-ccc")
 
 	waitFor(t, 2*time.Second, "volume detached after instance stop", func() bool {
 		stateFact, err := factStore.Get(ctx, types.KeyObservedVolumeState("pgdata"))
@@ -935,7 +935,7 @@ func TestAgentCleansUpSecretsOnStop(t *testing.T) {
 	}
 
 	// Remove the placement to trigger a stop.
-	factStore.Delete(ctx, types.KeyPlacementInstance("sec-bbb"))
+	types.DeletePlacement(ctx, factStore, "node-1", "sec-bbb")
 
 	waitFor(t, 2*time.Second, "secret cleaned up after stop", func() bool {
 		_, err := os.Stat(secretMountPath)
@@ -1411,7 +1411,7 @@ func TestAgentCleanupUndesiredInstanceStopsStale(t *testing.T) {
 	})
 
 	// Remove the placement — the instance should no longer be desired on node-1.
-	factStore.Delete(ctx, types.KeyPlacementInstance(instanceID))
+	types.DeletePlacement(ctx, factStore, "node-1", instanceID)
 
 	waitFor(t, 2*time.Second, "instance stopped after placement removed", func() bool {
 		runtimeStatus, statusError := simulatorRuntime.Status(ctx, instanceID)

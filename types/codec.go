@@ -359,9 +359,26 @@ func ListNodes(ctx context.Context, stateStore store.StateStore) ([]Node, error)
 }
 
 // WritePlacement writes a scheduler placement decision to the fact store.
-// It stores the target node ID at the placement key for the given instance.
+// It stores the target node ID at the primary placement key and writes a
+// per-node reverse index key so agents can scan only their own placements.
 func WritePlacement(ctx context.Context, stateStore store.StateStore, placement Placement) (int64, error) {
-	return stateStore.Put(ctx, KeyPlacementInstance(placement.InstanceID), []byte(placement.NodeID))
+	revision, err := stateStore.Put(ctx, KeyPlacementInstance(placement.InstanceID), []byte(placement.NodeID))
+	if err != nil {
+		return 0, err
+	}
+	_, indexErr := stateStore.Put(ctx, KeyPlacementNodeInstance(placement.NodeID, placement.InstanceID), []byte(""))
+	if indexErr != nil {
+		return 0, indexErr
+	}
+	return revision, nil
+}
+
+// DeletePlacement removes a placement decision and its per-node reverse index.
+func DeletePlacement(ctx context.Context, stateStore store.StateStore, nodeID string, instanceID string) error {
+	if err := stateStore.Delete(ctx, KeyPlacementInstance(instanceID)); err != nil {
+		return err
+	}
+	return stateStore.Delete(ctx, KeyPlacementNodeInstance(nodeID, instanceID))
 }
 
 // WriteEndpoint writes a derived endpoint fact for a running service instance
