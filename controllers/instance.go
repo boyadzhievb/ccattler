@@ -84,39 +84,18 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	creationsRemaining := instanceController.MaxCreationsPerCycle
 	sortedServiceNames := sortedMapKeys(desiredCounts)
 
-	for _, serviceName := range sortedServiceNames {
-		wantCount := desiredCounts[serviceName]
-		activeIDs := activeInstanceIDs[serviceName]
-		haveCount := len(activeIDs)
+	scaleDownChanges := instanceController.reconcileScaleDowns(
+		sortedServiceNames, desiredCounts, activeInstanceIDs, stateByInstanceID, statefulServices,
+	)
+	changes = append(changes, scaleDownChanges...)
 
-		if statefulServices[serviceName] {
-			if creationsRemaining <= 0 {
-				continue
-			}
-			serviceChanges := instanceController.reconcileStatefulService(
-				serviceName, wantCount, activeIDs, stateByInstanceID, fieldsByInstanceID,
-			)
-			changes = append(changes, serviceChanges...)
-			creationsRemaining -= countInstanceCreations(serviceChanges)
-		} else {
-			deficit := wantCount - haveCount
-			if deficit > 0 && deficit > creationsRemaining {
-				deficit = creationsRemaining
-			}
-			if deficit > 0 {
-				changes = append(changes, instanceController.createPendingInstances(serviceName, deficit)...)
-				creationsRemaining -= deficit
-			} else if haveCount > wantCount {
-				changes = append(changes, markExcessStatelessInstancesAsStopped(
-					activeIDs, stateByInstanceID, haveCount-wantCount,
-				)...)
-			}
-		}
-
-		if creationsRemaining <= 0 {
-			creationsRemaining = 0
-		}
-	}
+	serviceDeficits := computeServiceDeficits(
+		sortedServiceNames, desiredCounts, activeInstanceIDs, stateByInstanceID, fieldsByInstanceID, statefulServices,
+	)
+	fairShareChanges := instanceController.allocateCreationsFairly(
+		serviceDeficits, statefulServices, stateByInstanceID, fieldsByInstanceID, &creationsRemaining,
+	)
+	changes = append(changes, fairShareChanges...)
 
 	if len(changes) > maxInstanceControllerChangesPerCycle {
 		var deferredCount int
@@ -133,6 +112,147 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 	}
 
 	return changes, nil
+}
+
+// serviceDeficit tracks the remaining creation demand for a single service.
+type serviceDeficit struct {
+	serviceName string
+	deficit     int
+}
+
+// reconcileScaleDowns collects stop-changes for all services where the active
+// count exceeds the desired count. Scale-downs are not subject to the creation
+// budget and are processed in full each cycle.
+func (instanceController *InstanceController) reconcileScaleDowns(
+	sortedServiceNames []string,
+	desiredCounts map[string]int,
+	activeInstanceIDs map[string][]string,
+	stateByInstanceID map[string]types.InstanceState,
+	statefulServices map[string]bool,
+) []Change {
+	var changes []Change
+	for _, serviceName := range sortedServiceNames {
+		wantCount := desiredCounts[serviceName]
+		activeIDs := activeInstanceIDs[serviceName]
+		haveCount := len(activeIDs)
+		if haveCount > wantCount {
+			if statefulServices[serviceName] {
+				changes = append(changes, stopHighestOrdinalInstances(
+					serviceName, parseExistingOrdinals(serviceName, activeIDs), haveCount-wantCount,
+				)...)
+			} else {
+				changes = append(changes, markExcessStatelessInstancesAsStopped(
+					activeIDs, stateByInstanceID, haveCount-wantCount,
+				)...)
+			}
+		}
+	}
+	return changes
+}
+
+// computeServiceDeficits returns a list of services that need more instances
+// along with their deficit counts. Services with zero or negative deficit are
+// excluded. Stateful services contribute at most 1 per cycle (ordered startup).
+func computeServiceDeficits(
+	sortedServiceNames []string,
+	desiredCounts map[string]int,
+	activeInstanceIDs map[string][]string,
+	stateByInstanceID map[string]types.InstanceState,
+	fieldsByInstanceID map[string]map[string]string,
+	statefulServices map[string]bool,
+) []serviceDeficit {
+	var deficits []serviceDeficit
+	for _, serviceName := range sortedServiceNames {
+		wantCount := desiredCounts[serviceName]
+		activeIDs := activeInstanceIDs[serviceName]
+		haveCount := len(activeIDs)
+		if haveCount >= wantCount {
+			continue
+		}
+		if statefulServices[serviceName] {
+			existingOrdinals := parseExistingOrdinals(serviceName, activeIDs)
+			nextChanges := createNextStatefulInstance(serviceName, wantCount, existingOrdinals, stateByInstanceID, fieldsByInstanceID)
+			if len(nextChanges) > 0 {
+				deficits = append(deficits, serviceDeficit{serviceName: serviceName, deficit: 1})
+			}
+		} else {
+			deficits = append(deficits, serviceDeficit{serviceName: serviceName, deficit: wantCount - haveCount})
+		}
+	}
+	return deficits
+}
+
+// allocateCreationsFairly distributes the per-cycle creation budget across all
+// services with outstanding deficits using round-robin. Each round gives one
+// creation slot to every service that still has unmet demand, preventing
+// alphabetical starvation of later services.
+func (instanceController *InstanceController) allocateCreationsFairly(
+	deficits []serviceDeficit,
+	statefulServices map[string]bool,
+	stateByInstanceID map[string]types.InstanceState,
+	fieldsByInstanceID map[string]map[string]string,
+	creationsRemaining *int,
+) []Change {
+	var changes []Change
+	allocated := make([]int, len(deficits))
+
+	for *creationsRemaining > 0 {
+		progressMade := false
+		for deficitIndex := range deficits {
+			if allocated[deficitIndex] >= deficits[deficitIndex].deficit {
+				continue
+			}
+			if *creationsRemaining <= 0 {
+				break
+			}
+			allocated[deficitIndex]++
+			*creationsRemaining--
+			progressMade = true
+		}
+		if !progressMade {
+			break
+		}
+	}
+
+	for deficitIndex, entry := range deficits {
+		if allocated[deficitIndex] <= 0 {
+			continue
+		}
+		if statefulServices[entry.serviceName] {
+			activeIDs := buildActiveIDsFromFields(entry.serviceName, fieldsByInstanceID, stateByInstanceID)
+			existingOrdinals := parseExistingOrdinals(entry.serviceName, activeIDs)
+			nextChanges := createNextStatefulInstance(entry.serviceName,
+				len(existingOrdinals)+allocated[deficitIndex],
+				existingOrdinals, stateByInstanceID, fieldsByInstanceID)
+			changes = append(changes, nextChanges...)
+		} else {
+			changes = append(changes, instanceController.createPendingInstances(
+				entry.serviceName, allocated[deficitIndex],
+			)...)
+		}
+	}
+	return changes
+}
+
+// buildActiveIDsFromFields reconstructs the sorted active instance IDs for a
+// service from the fields map, used when the pre-computed map is not available.
+func buildActiveIDsFromFields(
+	serviceName string,
+	fieldsByInstanceID map[string]map[string]string,
+	stateByInstanceID map[string]types.InstanceState,
+) []string {
+	var activeIDs []string
+	for instanceID, fields := range fieldsByInstanceID {
+		if fields["service"] != serviceName {
+			continue
+		}
+		state := stateByInstanceID[instanceID]
+		if state != types.InstanceStopped {
+			activeIDs = append(activeIDs, instanceID)
+		}
+	}
+	sort.Strings(activeIDs)
+	return activeIDs
 }
 
 // parseEffectiveServiceFacts extracts desired instance counts and stateful

@@ -431,3 +431,68 @@ func TestStatelessCreationsAreGrouped(t *testing.T) {
 		}
 	}
 }
+
+func TestFairShareCreationAcrossServices(testHandle *testing.T) {
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
+	instanceController.MaxCreationsPerCycle = 6
+
+	facts := buildFacts(
+		kv(types.KeyEffectiveServiceInstances("svc-a"), "10"),
+		kv(types.KeyEffectiveServiceInstances("svc-b"), "10"),
+		kv(types.KeyEffectiveServiceInstances("svc-c"), "10"),
+	)
+
+	changes, reconcileError := instanceController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		testHandle.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	creationsByService := make(map[string]int)
+	for _, change := range changes {
+		if change.Type == store.OpPut && string(change.Value) == string(types.InstancePending) {
+			serviceName := extractServiceFromInstanceChanges(change.Key, changes)
+			creationsByService[serviceName]++
+		}
+	}
+
+	for _, serviceName := range []string{"svc-a", "svc-b", "svc-c"} {
+		if creationsByService[serviceName] != 2 {
+			testHandle.Errorf("expected 2 creations for %s, got %d (fair share of 6 across 3 services)",
+				serviceName, creationsByService[serviceName])
+		}
+	}
+}
+
+// extractServiceFromInstanceChanges finds the service association change for
+// an instance whose state change key is provided.
+func extractServiceFromInstanceChanges(stateKey string, changes []Change) string {
+	for _, change := range changes {
+		if change.Type == store.OpPut && change.Group != "" {
+			for _, other := range changes {
+				if other.Group == change.Group && other.Key == stateKey {
+					if len(change.Value) > 0 && change.Key != stateKey {
+						keyParts := change.Key
+						if idx := len(types.ScanObservedInstances); idx < len(keyParts) {
+							remainder := keyParts[idx:]
+							slashIndex := 0
+							for i, char := range remainder {
+								if char == '/' {
+									slashIndex = i
+									break
+								}
+							}
+							if slashIndex > 0 {
+								suffix := remainder[slashIndex+1:]
+								if suffix == "service" {
+									return string(change.Value)
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
