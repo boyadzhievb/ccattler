@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M78 — Phase 78 Durable Capacity Request State Machine. M1–M78 complete (DeltaController deferred). Gates A–I resolved.
+**Completed through:** M80 — Phase 80 Transaction Authorization Fix & Cloud Provider CI. M1–M80 complete (DeltaController deferred). Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

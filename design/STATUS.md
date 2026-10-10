@@ -2,31 +2,35 @@
 
 ## Current Milestone
 
-M30 — Identity RBAC & CLI (Phase 33)
+M80 — Transaction Authorization Fix & Cloud Provider CI (Phase 80)
 
-- 7/7 items done
 - Status: complete
-- Items: credential-broker RBAC role, node-agent credential read access, CloudIdentityStatus in API, cca get cloud-identities, RBAC tests, API status test, deterministic lifecycle tests
+- Items: fix AuthorizedStore.Transaction failure-branch authorization bypass, regression test, cloud provider CI workflow (AWS keys + GCP Workload Identity Federation)
 
 ## Recent Completions
 
-- [2026-09-19] M30 Phase 33 — Identity RBAC & CLI: credential-broker role, node-agent credential access, cca get cloud-identities, CloudIdentityStatus in API, 3 new tests
-- [2026-09-19] M29 Phase 32 — Agent Credential Materialization: CredentialProvider interface, AWS/GCP/Azure file formats, token projection mode, TrackedCredential, 6 tests
-- [2026-09-19] M28 Phase 31 — Credential Broker: CredentialBrokerController issues/refreshes/garbage-collects cloud credentials, reads broker config from facts, 8 tests
-- [2026-09-19] M27 Phase 30 — Cloud Provider Adapters: CloudProviderAdapter interface, AWS/GCP/Azure adapters with validation stubs, SimulatorCloudAdapter, CredentialStore with AES-256-GCM, 11 tests
-- [2026-09-19] M26 Phase 29 — OIDC Infrastructure: WorkloadTokenIssuer with ECDSA P-256 signing, MintWorkloadToken, OIDC discovery + JWKS endpoints, 10 tests
-- [2026-09-19] M25 Phase 28 — Identity DSL & Facts: cloud_identity and credential_broker AST nodes, parsers, compiler with provider validation (aws/gcp/azure), fact keys, scan prefixes, 16 tests
-- [2026-09-19] M24 Phase 27 — Storage Resilience: VolumeMigrating state, pre-migration snapshots, usage monitoring, online resize, replication state tracking
-- [2026-09-19] M23 Phase 26 — P0 Correctness: observation-based state, no 127.0.0.1 fallback, watch overflow handling, init restart-safety, decoupled probes, race/restart tests
+- [2026-10-10] M80 Phase 80 — Security: fix transaction authorization bypass in AuthorizedStore (onFailure branch unchecked), cloud provider CI workflow with AWS and GCP
+- [2026-10-10] M79 Phase 79 — Correctness VI: capacity request duplicate-key conflict, cloud LB backend update for existing LBs, orphaned pending ensure cleanup, storage volume deletion with pending operations
+- [2026-10-09] M78 Phase 78 — Durable Capacity Request State Machine: capacity lifecycle states, request tracking, state transitions
+- [2026-10-09] M77 Phase 77 — Cluster Autoscaling Controller: capacity demand detection, scale-up/scale-down decisions, infrastructure provider integration
+- [2026-09-19] M30 Phase 33 — Identity RBAC & CLI: credential-broker role, node-agent credential access, cca get cloud-identities
+- [2026-09-19] M29 Phase 32 — Agent Credential Materialization: CredentialProvider interface, AWS/GCP/Azure file formats
+- [2026-09-19] M28 Phase 31 — Credential Broker: CredentialBrokerController issues/refreshes/garbage-collects cloud credentials
+- [2026-09-19] M27 Phase 30 — Cloud Provider Adapters: CloudProviderAdapter interface, AWS/GCP/Azure adapters, CredentialStore AES-256-GCM
+- [2026-09-19] M26 Phase 29 — OIDC Infrastructure: WorkloadTokenIssuer ECDSA P-256, OIDC discovery + JWKS endpoints
+- [2026-09-19] M25 Phase 28 — Identity DSL & Facts: cloud_identity and credential_broker AST/parser/compiler
 
 ## Known Issues
 
-(none currently tracked)
+- Load test: 200-node/5000-workload test times out at Phase 1 (~2400/5000 in 30 min). Reconciliation throughput bottleneck under investigation.
+- Azure cloud provider: stub implementation only (all methods return "not implemented").
+- Cloud autoscaling: infrastructure interface is simulator-backed; real provider implementations deferred.
 
 ## Metrics
 
-- Source files: 92
-- Test files: 51
-- Total Go lines: ~46K
-- Latest release: v0.20.1
-- Milestones complete: M1–M30
+- Source files: 158
+- Test files: 131
+- Total Go lines: ~94K
+- Test count: 1,602 across 20 packages
+- Latest release: v1.14.2-beta
+- Milestones complete: M1–M80

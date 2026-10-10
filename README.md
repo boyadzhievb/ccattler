@@ -176,7 +176,7 @@ ccattler/
 
 ## Status
 
-78 milestones complete — from the core fact store through distributed state, multi-host deployment, authorization, cloud provider integration, stateful workloads, and five correctness review passes. 1595+ tests across 21 packages. Deployed and tested on real multi-host clusters with 3-VM E2E validation.
+80 milestones complete — from the core fact store through distributed state, multi-host deployment, authorization, cloud provider integration, stateful workloads, six correctness review passes, and cloud provider CI. 1602+ tests across 20 packages. Deployed and tested on real multi-host clusters with 3-VM E2E validation.
 
 ## Documentation
 

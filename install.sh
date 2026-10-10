@@ -90,7 +90,32 @@ log_info "Installing CCattler $version (${operating_system}/${architecture})"
 temp_dir=$(mktemp -d)
 trap 'rm -rf "$temp_dir"' EXIT
 
+checksum_file="checksums.txt"
 curl -fsSL "${release_url}/${archive_name}" -o "${temp_dir}/${archive_name}"
+curl -fsSL "${release_url}/${checksum_file}" -o "${temp_dir}/${checksum_file}"
+
+log_info "Verifying checksum..."
+expected_checksum=$(grep "${archive_name}" "${temp_dir}/${checksum_file}" | awk '{print $1}')
+if [ -z "$expected_checksum" ]; then
+    log_error "Checksum entry not found for ${archive_name} in ${checksum_file}"
+    exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+    actual_checksum=$(sha256sum "${temp_dir}/${archive_name}" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+    actual_checksum=$(shasum -a 256 "${temp_dir}/${archive_name}" | awk '{print $1}')
+else
+    log_error "No sha256sum or shasum found — cannot verify archive integrity"
+    exit 1
+fi
+if [ "$actual_checksum" != "$expected_checksum" ]; then
+    log_error "Checksum mismatch!"
+    log_error "  Expected: $expected_checksum"
+    log_error "  Actual:   $actual_checksum"
+    exit 1
+fi
+log_ok "Checksum verified"
+
 tar -xzf "${temp_dir}/${archive_name}" -C "$temp_dir"
 
 # --- Install binary ---
