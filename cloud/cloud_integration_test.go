@@ -19,7 +19,7 @@ import (
 const (
 	awsIntegrationTestRegion       = "us-east-1"
 	awsIntegrationTestInstanceType = "t2.micro"
-	awsIntegrationTestWaitTimeout  = 3 * time.Minute
+	awsIntegrationTestWaitTimeout  = 5 * time.Minute
 	awsIntegrationTestPollInterval = 5 * time.Second
 )
 
@@ -216,4 +216,222 @@ func TestAWSIntegrationListRoutesRequiresConfig(testHandle *testing.T) {
 	} else {
 		skipOnAWSAuthorizationError(testHandle, "ListRoutes", listError)
 	}
+}
+
+// discoverDefaultVPC finds the default VPC, its subnets, and main route table
+// in the test region. Skips the test if no default VPC exists.
+func discoverDefaultVPC(testHandle *testing.T, ctx context.Context, ec2Client *ec2.Client) (string, []string, string) {
+	testHandle.Helper()
+
+	vpcOutput, vpcError := ec2Client.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("is-default"), Values: []string{"true"}},
+		},
+	})
+	if vpcError != nil {
+		skipOnAWSAuthorizationError(testHandle, "DescribeVpcs", vpcError)
+		testHandle.Fatalf("DescribeVpcs failed: %v", vpcError)
+	}
+	if len(vpcOutput.Vpcs) == 0 {
+		testHandle.Skip("skipping: no default VPC in region")
+	}
+	vpcID := aws.ToString(vpcOutput.Vpcs[0].VpcId)
+	testHandle.Logf("default VPC: %s", vpcID)
+
+	subnetOutput, subnetError := ec2Client.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("vpc-id"), Values: []string{vpcID}},
+			{Name: aws.String("default-for-az"), Values: []string{"true"}},
+		},
+	})
+	if subnetError != nil {
+		testHandle.Fatalf("DescribeSubnets failed: %v", subnetError)
+	}
+	if len(subnetOutput.Subnets) == 0 {
+		testHandle.Skip("skipping: no default subnets found")
+	}
+	subnetIDs := make([]string, len(subnetOutput.Subnets))
+	for index, subnet := range subnetOutput.Subnets {
+		subnetIDs[index] = aws.ToString(subnet.SubnetId)
+	}
+	testHandle.Logf("subnets: %v", subnetIDs)
+
+	routeTableOutput, routeTableError := ec2Client.DescribeRouteTables(ctx, &ec2.DescribeRouteTablesInput{
+		Filters: []ec2types.Filter{
+			{Name: aws.String("vpc-id"), Values: []string{vpcID}},
+			{Name: aws.String("association.main"), Values: []string{"true"}},
+		},
+	})
+	if routeTableError != nil {
+		testHandle.Fatalf("DescribeRouteTables failed: %v", routeTableError)
+	}
+	if len(routeTableOutput.RouteTables) == 0 {
+		testHandle.Skip("skipping: no main route table found")
+	}
+	routeTableID := aws.ToString(routeTableOutput.RouteTables[0].RouteTableId)
+	testHandle.Logf("route table: %s", routeTableID)
+
+	return vpcID, subnetIDs, routeTableID
+}
+
+// buildAWSProviderWithVPC creates an AWSCloudProvider configured with the
+// default VPC, subnets, route table, and latest AMI. Skips if discovery fails.
+func buildAWSProviderWithVPC(testHandle *testing.T, ctx context.Context) *AWSCloudProvider {
+	testHandle.Helper()
+
+	awsProvider, constructionError := NewAWSCloudProvider(ctx, awsIntegrationTestRegion)
+	if constructionError != nil {
+		testHandle.Fatalf("NewAWSCloudProvider failed: %v", constructionError)
+	}
+
+	sdkConfig, configError := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(awsIntegrationTestRegion))
+	if configError != nil {
+		testHandle.Fatalf("failed to load AWS config: %v", configError)
+	}
+	ec2Client := ec2.NewFromConfig(sdkConfig)
+
+	vpcID, subnetIDs, routeTableID := discoverDefaultVPC(testHandle, ctx, ec2Client)
+	awsProvider.SetVPCID(vpcID)
+	awsProvider.SetSubnetIDs(subnetIDs)
+	awsProvider.SetVPCRouteTableID(routeTableID)
+
+	imageID := lookupLatestAmazonLinuxAMI(testHandle, ctx, awsIntegrationTestRegion)
+	awsProvider.SetDefaultImageID(imageID)
+
+	return awsProvider
+}
+
+// TestAWSIntegrationLoadBalancerLifecycle creates a real NLB, verifies it
+// appears in ListLoadBalancers, then deletes it. Uses the default VPC.
+func TestAWSIntegrationLoadBalancerLifecycle(testHandle *testing.T) {
+	if testing.Short() {
+		testHandle.Skip("skipping AWS integration test in short mode")
+	}
+	skipWithoutAWSCredentials(testHandle)
+
+	ctx, cancel := context.WithTimeout(context.Background(), awsIntegrationTestWaitTimeout)
+	defer cancel()
+
+	awsProvider := buildAWSProviderWithVPC(testHandle, ctx)
+
+	serviceName := "cca-integ-test"
+	externalAddress, ensureError := awsProvider.EnsureLoadBalancer(ctx, LoadBalancerConfig{
+		ServiceName: serviceName,
+		Port:        8080,
+		Protocol:    "tcp",
+		Backends:    []LoadBalancerBackend{},
+	})
+	if ensureError != nil {
+		skipOnAWSAuthorizationError(testHandle, "EnsureLoadBalancer", ensureError)
+		testHandle.Fatalf("EnsureLoadBalancer failed: %v", ensureError)
+	}
+	testHandle.Logf("load balancer external address: %s", externalAddress)
+
+	testHandle.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cleanupCancel()
+		deleteError := awsProvider.DeleteLoadBalancer(cleanupCtx, serviceName)
+		if deleteError != nil {
+			testHandle.Logf("WARNING: failed to delete LB %s: %v", serviceName, deleteError)
+		} else {
+			testHandle.Logf("deleted load balancer for %s", serviceName)
+		}
+	})
+
+	loadBalancerList, listError := awsProvider.ListLoadBalancers(ctx)
+	if listError != nil {
+		skipOnAWSAuthorizationError(testHandle, "ListLoadBalancers", listError)
+		testHandle.Fatalf("ListLoadBalancers failed: %v", listError)
+	}
+
+	foundLoadBalancer := false
+	for _, loadBalancer := range loadBalancerList {
+		if loadBalancer.ServiceName == serviceName {
+			foundLoadBalancer = true
+			testHandle.Logf("LB for %s found in state %q", serviceName, loadBalancer.State)
+			break
+		}
+	}
+	if !foundLoadBalancer {
+		testHandle.Fatalf("load balancer for service %s not found in ListLoadBalancers", serviceName)
+	}
+
+	deleteError := awsProvider.DeleteLoadBalancer(ctx, serviceName)
+	if deleteError != nil {
+		testHandle.Fatalf("DeleteLoadBalancer failed: %v", deleteError)
+	}
+	testHandle.Logf("deleted load balancer for %s", serviceName)
+}
+
+// TestAWSIntegrationRouteLifecycle creates a VPC route, verifies it appears
+// in ListRoutes, then deletes it. Uses the default VPC's main route table.
+func TestAWSIntegrationRouteLifecycle(testHandle *testing.T) {
+	if testing.Short() {
+		testHandle.Skip("skipping AWS integration test in short mode")
+	}
+	skipWithoutAWSCredentials(testHandle)
+
+	ctx, cancel := context.WithTimeout(context.Background(), awsIntegrationTestWaitTimeout)
+	defer cancel()
+
+	awsProvider := buildAWSProviderWithVPC(testHandle, ctx)
+
+	imageID := lookupLatestAmazonLinuxAMI(testHandle, ctx, awsIntegrationTestRegion)
+	awsProvider.SetDefaultImageID(imageID)
+
+	instanceID, createError := awsProvider.CreateInstance(ctx, InstanceConfig{
+		InstanceType: awsIntegrationTestInstanceType,
+		Labels:       map[string]string{"ccattler:test": "route-integration"},
+	})
+	if createError != nil {
+		skipOnAWSAuthorizationError(testHandle, "CreateInstance", createError)
+		testHandle.Fatalf("CreateInstance for route target failed: %v", createError)
+	}
+	testHandle.Logf("created route target instance %s", instanceID)
+
+	testHandle.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = awsProvider.DeleteRoute(cleanupCtx, "10.200.0.0/24")
+		_ = awsProvider.TerminateInstance(cleanupCtx, instanceID)
+		testHandle.Logf("cleaned up route and instance %s", instanceID)
+	})
+
+	testDestinationCIDR := "10.200.0.0/24"
+	ensureError := awsProvider.EnsureRoute(ctx, RouteConfig{
+		DestinationCIDR:  testDestinationCIDR,
+		TargetNodeID:     "integ-test-node",
+		TargetInstanceID: instanceID,
+	})
+	if ensureError != nil {
+		skipOnAWSAuthorizationError(testHandle, "EnsureRoute", ensureError)
+		testHandle.Fatalf("EnsureRoute failed: %v", ensureError)
+	}
+	testHandle.Logf("created route %s -> %s", testDestinationCIDR, instanceID)
+
+	routeList, listError := awsProvider.ListRoutes(ctx)
+	if listError != nil {
+		testHandle.Fatalf("ListRoutes failed: %v", listError)
+	}
+
+	foundRoute := false
+	for _, routeEntry := range routeList {
+		if routeEntry.DestinationCIDR == testDestinationCIDR {
+			foundRoute = true
+			testHandle.Logf("route %s found targeting instance %s", testDestinationCIDR, routeEntry.TargetInstanceID)
+			if routeEntry.TargetInstanceID != instanceID {
+				testHandle.Errorf("expected target instance %s, got %s", instanceID, routeEntry.TargetInstanceID)
+			}
+			break
+		}
+	}
+	if !foundRoute {
+		testHandle.Fatalf("route %s not found in ListRoutes", testDestinationCIDR)
+	}
+
+	deleteError := awsProvider.DeleteRoute(ctx, testDestinationCIDR)
+	if deleteError != nil {
+		testHandle.Fatalf("DeleteRoute failed: %v", deleteError)
+	}
+	testHandle.Logf("deleted route %s", testDestinationCIDR)
 }
