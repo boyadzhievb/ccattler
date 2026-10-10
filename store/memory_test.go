@@ -432,9 +432,9 @@ func TestWatchContextCancellationUnregisters(t *testing.T) {
 	}
 
 	// Verify watcher count is 1.
-	memoryStore.mutex.RLock()
+	memoryStore.eventMutex.Lock()
 	watcherCount := len(memoryStore.activeWatchers)
-	memoryStore.mutex.RUnlock()
+	memoryStore.eventMutex.Unlock()
 	if watcherCount != 1 {
 		t.Fatalf("expected 1 watcher, got %d", watcherCount)
 	}
@@ -450,9 +450,9 @@ func TestWatchContextCancellationUnregisters(t *testing.T) {
 	}
 
 	// Watcher should be unregistered.
-	memoryStore.mutex.RLock()
+	memoryStore.eventMutex.Lock()
 	watcherCount = len(memoryStore.activeWatchers)
-	memoryStore.mutex.RUnlock()
+	memoryStore.eventMutex.Unlock()
 	if watcherCount != 0 {
 		t.Fatalf("expected 0 watchers after cancel, got %d", watcherCount)
 	}
