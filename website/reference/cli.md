@@ -95,6 +95,8 @@ cca agent --node-id worker-1 --advertise-address 192.168.1.11
 | `--runtime` | `container` | Runtime adapter: `container` or `process` |
 | `--proxy` | off | Enable HTTP reverse proxy on this node |
 | `--advertise-address` | | LAN IP for cross-host traffic resolution |
+| `--kms-provider` | | KMS backend for secret decryption: `aws-kms` or `gcp-kms` |
+| `--kms-key` | | KMS key ARN (AWS) or resource name (GCP) |
 | `--cert` | | Path to PEM client certificate |
 | `--key` | | Path to PEM client private key |
 | `--ca` | | Path to PEM CA certificate |
@@ -165,6 +167,41 @@ List all nodes with capacity, utilization, and state.
 ### `cca get secrets`
 
 List secrets and their grants (which services can access them).
+
+### `cca secret set <name> <value>`
+
+Store an encrypted secret.
+
+```bash
+cca secret set database-password 'hunter2'
+cca secret set fernet-key "$(openssl rand -base64 32)"
+```
+
+The value is encrypted at rest using AES-256-GCM envelope encryption. The master key is stored at `.ccattler/secret-master.key` on the server, or delegated to cloud KMS (see [agent KMS flags](#cca-agent)).
+
+### `cca secret get <name>`
+
+Retrieve a decrypted secret value.
+
+```bash
+cca secret get database-password
+```
+
+### `cca secret list`
+
+List all stored secret names (values are not shown).
+
+```bash
+cca secret list
+```
+
+### `cca secret delete <name>`
+
+Remove a secret from the encrypted store.
+
+```bash
+cca secret delete database-password
+```
 
 ### `cca get config`
 

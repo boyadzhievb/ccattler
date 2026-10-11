@@ -124,14 +124,54 @@ Stored as:
 
 Actual secret values live in an encrypted store (AES-256-GCM envelope encryption with KMS integration). File-mounted secrets are preferred over environment variables — avoids accidental logging and makes rotation easier.
 
+### Storing secrets
+
+```bash
+# Store a secret (encrypted at rest)
+cca secret set database-password 'hunter2'
+
+# Generate and store a random key
+cca secret set fernet-key "$(openssl rand -base64 32)"
+
+# List stored secrets (values not shown)
+cca secret list
+
+# Retrieve a secret value
+cca secret get database-password
+
+# Remove a secret
+cca secret delete database-password
+```
+
+### Encryption
+
+By default, the server generates a 32-byte master key at `.ccattler/secret-master.key`. Each secret is encrypted with a unique data encryption key (DEK), which is itself wrapped by the master key — standard envelope encryption.
+
+For production, delegate key management to a cloud KMS by configuring the agent:
+
+```bash
+# AWS KMS
+cca agent --node-id worker-1 \
+  --kms-provider aws-kms \
+  --kms-key arn:aws:kms:us-east-1:123456789:key/abcd-1234
+
+# GCP Cloud KMS
+cca agent --node-id worker-1 \
+  --kms-provider gcp-kms \
+  --kms-key projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key
+```
+
+With cloud KMS, the master key never exists in plaintext on disk — it is unwrapped by the KMS at agent startup.
+
 ### Secret lifecycle
 
 Secret access is tied to container lifecycle:
 
 1. Instance assigned to node → node obtains authorized secret copy
-2. Secret materialized locally → container starts
-3. Container stops → secret material removed
-4. Instance moves to another node → new node gets fresh copy, old node removes its copy
+2. Agent decrypts the secret using the local master key or cloud KMS
+3. Secret materialized as a file on the host → bind-mounted read-only into the container
+4. Container stops → secret material removed from the host
+5. Instance moves to another node → new node gets fresh copy, old node removes its copy
 
 ## Audit logging
 
