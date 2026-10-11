@@ -1,6 +1,6 @@
 # DSL Grammar
 
-CCattler uses a purpose-built declarative language instead of YAML. Configuration files have the `.ccattler` extension.
+CCattler uses a purpose-built declarative language instead of YAML. Configuration files have the `.cca` extension.
 
 ## Overview
 
@@ -362,7 +362,7 @@ export platform/dns {
 
 ## Templates
 
-Any `.cca` or `.ccattler` file can use Go template syntax to parameterize values. Templates are rendered before parsing, so the output must be valid CCattler DSL.
+Any `.cca` file can use Go template syntax to parameterize values. Templates are rendered before parsing, so the output must be valid CCattler DSL.
 
 ### Values files (`.ccv`)
 

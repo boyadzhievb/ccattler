@@ -69,7 +69,7 @@ cca logs web
 
 **Check:**
 1. Is the application actually serving on the configured port and path?
-2. Are probes configured correctly? Verify port, path, and interval in the `.ccattler` file
+2. Are probes configured correctly? Verify port, path, and interval in the `.cca` file
 3. Check instance logs for application errors
 
 ### VIPs not working

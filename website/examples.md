@@ -1,6 +1,6 @@
 # Examples
 
-Complete `.ccattler` configuration files demonstrating different capabilities. Each example can be run directly with the CLI.
+Complete `.cca` configuration files demonstrating different capabilities. Each example can be run directly with the CLI.
 
 ## Basic service
 
@@ -19,9 +19,9 @@ service web {
 ```
 
 ```bash
-cca apply examples/basic.ccattler       # simulated
-cca run examples/basic.ccattler          # real OS processes
-cca run-container examples/basic.ccattler # OCI containers (nerdctl/containerd)
+cca apply examples/basic.cca       # simulated
+cca run examples/basic.cca          # real OS processes
+cca run-container examples/basic.cca # OCI containers (nerdctl/containerd)
 ```
 
 ## Multiple services
@@ -187,7 +187,7 @@ service web {
 ```
 
 ```bash
-cca run-container examples/web-container.ccattler
+cca run-container examples/web-container.cca
 ```
 
 ## Zabbix monitoring stack
@@ -246,7 +246,7 @@ service zabbix-web {
 ```
 
 ```bash
-cca run-container examples/zabbix.ccattler
+cca run-container examples/zabbix.cca
 # Access Zabbix web UI at http://localhost:8080
 # Default credentials: Admin / zabbix
 ```

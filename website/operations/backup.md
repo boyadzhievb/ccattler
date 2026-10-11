@@ -52,7 +52,7 @@ If certificates are lost, you'll need to re-enroll nodes with `cca join`.
 
 ## Configuration files
 
-Back up your `.ccattler` configuration files separately — they are the source of truth for desired state. Store them in version control.
+Back up your `.cca` configuration files separately — they are the source of truth for desired state. Store them in version control.
 
 ## Automated backups
 

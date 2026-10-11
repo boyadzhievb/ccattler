@@ -4,7 +4,7 @@ This guide walks through deploying a service from scratch — starting simple an
 
 ## Step 1: Basic service
 
-Create `myapp.ccattler`:
+Create `myapp.cca`:
 
 ```hcl
 service web {
@@ -28,10 +28,10 @@ Each keyword:
 
 ```bash
 # Simulated (no containers needed)
-cca apply myapp.ccattler
+cca apply myapp.cca
 
 # Real containers
-cca run-container myapp.ccattler
+cca run-container myapp.cca
 ```
 
 ### Check status
@@ -181,7 +181,7 @@ cca logs web    # filtered by service
 
 ## Step 7: Update
 
-Change the image in your `.ccattler` file and re-apply:
+Change the image in your `.cca` file and re-apply:
 
 ```hcl
 service web {
@@ -196,7 +196,7 @@ service web {
 ```
 
 ```bash
-cca apply myapp.ccattler
+cca apply myapp.cca
 ```
 
 The rolling update controller starts new instances, waits for them to become healthy, then stops old instances — one at a time with `max_unavailable 1`.

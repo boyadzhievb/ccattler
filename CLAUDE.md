@@ -399,7 +399,7 @@ Nodes cache last known desired state. If the control plane dies for 10 minutes, 
                   │
                   ▼
           ┌──────────────┐
-          │ DOMAIN LANG. │    .ccattler files
+          │ DOMAIN LANG. │    .cca files
           └──────┬───────┘
                  │
                  ▼

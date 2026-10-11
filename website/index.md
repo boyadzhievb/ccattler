@@ -38,7 +38,7 @@ features:
           |
           v
   +---------------+
-  | DOMAIN LANG.  |    .ccattler files
+  | DOMAIN LANG.  |    .cca files
   +-------+-------+
           |
           v

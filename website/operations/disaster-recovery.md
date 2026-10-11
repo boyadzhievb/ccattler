@@ -65,7 +65,7 @@ sudo systemctl start cca-server
 
 ### Without a snapshot
 
-This is the worst-case scenario. All cluster state must be rebuilt from your `.ccattler` configuration files and current node state.
+This is the worst-case scenario. All cluster state must be rebuilt from your `.cca` configuration files and current node state.
 
 1. Stop all control plane components:
 
@@ -111,8 +111,8 @@ sudo systemctl start cca-agent
 6. Re-apply all service definitions from your configuration files:
 
 ```bash
-cca apply services.ccattler
-cca apply network.ccattler
+cca apply services.cca
+cca apply network.cca
 # Apply all configuration files from version control
 ```
 
@@ -120,7 +120,7 @@ cca apply network.ccattler
 
 8. Run [post-incident verification](#post-incident-verification).
 
-**Prevention:** Automate etcd snapshots (see [Backup & Restore](/operations/backup)) and store snapshots off-host. Keep all `.ccattler` files in version control.
+**Prevention:** Automate etcd snapshots (see [Backup & Restore](/operations/backup)) and store snapshots off-host. Keep all `.cca` files in version control.
 
 ## Split-brain and network partition
 
@@ -297,7 +297,7 @@ Agents re-register, report capacity, and the scheduler begins placing pending in
 6. Once all nodes are back and instances are running, restore the original scaling targets:
 
 ```bash
-cca apply services.ccattler
+cca apply services.cca
 ```
 
 7. Run [post-incident verification](#post-incident-verification).

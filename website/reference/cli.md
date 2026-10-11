@@ -42,8 +42,8 @@ Accepts the same `--values`, `--set`, and `--set-from-env` flags as `cca apply`.
 Start real OS processes managed by the reconciler.
 
 ```bash
-cca run web.ccattler            # run and exit
-cca run --watch web.ccattler    # run with live status updates
+cca run web.cca            # run and exit
+cca run --watch web.cca    # run with live status updates
 ```
 
 ### `cca run-container [--watch] <file>`
@@ -51,8 +51,8 @@ cca run --watch web.ccattler    # run with live status updates
 Start real OCI containers via nerdctl/containerd, managed by the reconciler.
 
 ```bash
-cca run-container web.ccattler
-cca run-container --watch web.ccattler
+cca run-container web.cca
+cca run-container --watch web.cca
 ```
 
 ## Cluster operations
