@@ -276,6 +276,16 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/ >/dev/null 2>&1 || true"
+    log "Truncating old service logs..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
+    done
+    wait
+    log "Restarting systemd-resolved on all VMs..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo systemctl restart systemd-resolved 2>/dev/null || true" &
+    done
+    wait
     log "Previous workloads cleaned"
 fi
 
@@ -398,7 +408,22 @@ if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
 fi
 log "All $EXPECTED_NODES nodes registered and alive"
 
-# ---- Step 3.5: Pre-pull container images on all nodes ----
+# ---- Step 3.5: Verify DNS resolution before image pulls ----
+log "Checking DNS resolution on all VMs..."
+for vm in "${VM_NAMES[@]}"; do
+    if ! ssh_vm "$vm" "dig +short registry-1.docker.io @127.0.0.53 2>/dev/null | grep -q ." 2>/dev/null; then
+        log "DNS broken on $vm — restarting systemd-resolved..."
+        ssh_vm "$vm" "sudo systemctl restart systemd-resolved"
+        sleep 2
+        if ! ssh_vm "$vm" "dig +short registry-1.docker.io @127.0.0.53 2>/dev/null | grep -q ." 2>/dev/null; then
+            log "DNS still broken on $vm after restart — falling back to 8.8.8.8"
+            ssh_vm "$vm" "echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null"
+        fi
+    fi
+done
+log "DNS resolution OK"
+
+# ---- Step 3.6: Pre-pull container images on all nodes ----
 log "Pre-pulling container images on all nodes..."
 IMAGES=("apache/airflow:2.10.5" "postgres:16" "redis:7" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
 for vm in "${VM_NAMES[@]}"; do
