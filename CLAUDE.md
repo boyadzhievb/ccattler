@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M89 — Phase 89 Template Conventions & Auto-Loading Values. M1–M89 complete. Gates A–I resolved.
+**Completed through:** M90 — Phase 90 Deploy Testbed & Doc Cleanup. M1–M90 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

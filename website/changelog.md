@@ -1,8 +1,16 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
+## v1.18.0-beta <Badge type="tip" text="latest" /> {#v1-18-0-beta}
 
-## v1.17.0-beta <Badge type="tip" text="latest" /> {#v1-17-0-beta}
+**2026-10-11** — Deploy Testbed & Doc Cleanup.
+
+- **Deploy Testbed & Doc Cleanup** (M90) — Replace Java with Airflow across all deploy targets (E2E, Ansible, Lima), rename `.ccattler` → `.cca` in deploy/test files, website docs updated to `.cca` extension, release bookkeeping script (`scripts/release.sh`), e2e Airflow workload
+
+---
+
+
+## v1.17.0-beta {#v1-17-0-beta}
 
 **2026-10-11** — Template conventions, command directive, Airflow deployment.
 
