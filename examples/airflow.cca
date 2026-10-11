@@ -4,15 +4,18 @@
 # broker, webserver, scheduler, and workers. Mirrors the official Helm
 # chart architecture (https://airflow.apache.org/docs/helm-chart/stable/).
 #
+# Before deploying, create the required secrets:
+#   cca secret set airflow.db-password <database-password>
+#   cca secret set airflow.admin-password <admin-password>
+#
 # Run with:  cca run-container examples/airflow.cca
 #
 # After startup, access Airflow web UI at http://localhost:8080
-# Default credentials: airflow / airflow
 #
 # Components:
 #   metadata-db     PostgreSQL 16 — metadata store
 #   redis           Redis 7 — Celery broker
-#   webserver       Airflow webserver — UI + REST API
+#   webserver       Airflow webserver — UI + REST API (runs db migrate on start)
 #   scheduler       Airflow scheduler — DAG parsing + task scheduling
 #   worker          Airflow Celery worker — task execution (scalable)
 
@@ -48,8 +51,9 @@ service metadata-db {
     config {
         env POSTGRES_DB "airflow"
         env POSTGRES_USER "airflow"
-        env POSTGRES_PASSWORD "airflow"
+        env POSTGRES_PASSWORD_FILE "/run/secrets/db-password"
     }
+    secret airflow.db-password "/run/secrets/db-password"
     health {
         tcp
         every 10s
@@ -78,7 +82,7 @@ service redis {
 
 service webserver {
     image "apache/airflow:2.10.5"
-    command "airflow webserver"
+    command "bash -c 'airflow db migrate && airflow users create --username admin --password \"$(cat /run/secrets/admin-password)\" --firstname Admin --lastname User --role Admin --email admin@localhost; exec airflow webserver'"
     instances 1
     expose 8080
     resources {
@@ -89,29 +93,21 @@ service webserver {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN "postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND "db+postgresql://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__WEBSERVER__EXPOSE_CONFIG "false"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
+    secret airflow.db-password "/run/secrets/db-password"
+    secret airflow.admin-password "/run/secrets/admin-password"
     secret fernet-key "/opt/airflow/fernet-key"
     secret webserver-secret-key "/opt/airflow/webserver-secret-key"
     health {
         http /health
         every 15s
-    }
-    init {
-        exec "airflow db migrate"
-        timeout 120s
-        retry 5
-    }
-    init {
-        exec "airflow users create --username airflow --password airflow --firstname Admin --lastname User --role Admin --email admin@example.com"
-        timeout 30s
-        retry 3
     }
 }
 
@@ -127,12 +123,13 @@ service scheduler {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN "postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND "db+postgresql://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
+    secret airflow.db-password "/run/secrets/db-password"
     secret fernet-key "/opt/airflow/fernet-key"
     health {
         tcp
@@ -153,12 +150,13 @@ service worker {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN "postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND "db+postgresql://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
+    secret airflow.db-password "/run/secrets/db-password"
     secret fernet-key "/opt/airflow/fernet-key"
     health {
         tcp

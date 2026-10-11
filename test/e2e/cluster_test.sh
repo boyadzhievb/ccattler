@@ -412,6 +412,10 @@ wait
 log "Image pre-pull complete"
 
 # ---- Step 4: Deploy Airflow test app ----
+log "Creating secrets for Airflow deployment..."
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.db-password airflow-e2e-pass --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.admin-password admin-e2e-pass --store etcd --endpoints $ETCD_ENDPOINTS"
+
 log "Applying Airflow test workload..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
