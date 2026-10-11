@@ -26,8 +26,38 @@
       - curl
       - ca-certificates
       - gnupg
+      - dnsmasq
     state: present
     update_cache: true
+
+- name: Disable systemd-resolved
+  systemd:
+    name: systemd-resolved
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: Configure dnsmasq upstream servers
+  copy:
+    dest: /etc/dnsmasq.d/upstream.conf
+    content: |
+      server=8.8.8.8
+      server=1.1.1.1
+      cache-size=1000
+    mode: "0644"
+  notify: restart dnsmasq
+
+- name: Point resolv.conf at dnsmasq
+  copy:
+    dest: /etc/resolv.conf
+    content: "nameserver 127.0.0.1\n"
+    mode: "0644"
+
+- name: Enable and start dnsmasq
+  systemd:
+    name: dnsmasq
+    state: started
+    enabled: true
 
 - name: Install containerd
   apt:

@@ -259,6 +259,24 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
+# Replace systemd-resolved with dnsmasq — the stub resolver at 127.0.0.53
+# flakes under concurrent image-pull load in libvirt VMs. dnsmasq provides
+# a local caching resolver that handles concurrent queries reliably.
+log "Installing dnsmasq on all VMs (replacing systemd-resolved)..."
+for vm in "${VM_NAMES[@]}"; do
+    ssh_vm "$vm" "
+        if ! command -v dnsmasq >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq >/dev/null
+        fi
+        sudo systemctl disable --now systemd-resolved 2>/dev/null || true
+        sudo rm -f /etc/resolv.conf
+        printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolv.conf > /dev/null
+        printf 'server=8.8.8.8\nserver=1.1.1.1\ncache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
+        sudo systemctl enable --now dnsmasq
+    " &
+done
+wait
+
 # Check if cluster is already provisioned by testing for the cca binary.
 ALREADY_PROVISIONED=false
 if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
@@ -279,11 +297,6 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
     log "Truncating old service logs..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
-    done
-    wait
-    log "Restarting systemd-resolved on all VMs..."
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo systemctl restart systemd-resolved 2>/dev/null || true" &
     done
     wait
     log "Previous workloads cleaned"
@@ -411,14 +424,10 @@ log "All $EXPECTED_NODES nodes registered and alive"
 # ---- Step 3.5: Verify DNS resolution before image pulls ----
 log "Checking DNS resolution on all VMs..."
 for vm in "${VM_NAMES[@]}"; do
-    if ! ssh_vm "$vm" "dig +short registry-1.docker.io @127.0.0.53 2>/dev/null | grep -q ." 2>/dev/null; then
-        log "DNS broken on $vm — restarting systemd-resolved..."
-        ssh_vm "$vm" "sudo systemctl restart systemd-resolved"
+    if ! ssh_vm "$vm" "dig +short registry-1.docker.io 2>/dev/null | grep -q ." 2>/dev/null; then
+        log "DNS broken on $vm — restarting dnsmasq..."
+        ssh_vm "$vm" "sudo systemctl restart dnsmasq"
         sleep 2
-        if ! ssh_vm "$vm" "dig +short registry-1.docker.io @127.0.0.53 2>/dev/null | grep -q ." 2>/dev/null; then
-            log "DNS still broken on $vm after restart — falling back to 8.8.8.8"
-            ssh_vm "$vm" "echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf > /dev/null"
-        fi
     fi
 done
 log "DNS resolution OK"
