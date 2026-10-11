@@ -49,10 +49,11 @@ type agentCommandConfig struct {
 // flag-to-field switch statement — each case is a simple one-liner assignment.
 // Extracting sub-groups would add indirection without improving clarity.
 func parseAgentCommandArgs(args []string) agentCommandConfig {
+	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := agentCommandConfig{
-		storeBackend:   "etcd",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 		runtimeBackend: "container",
 	}
 
@@ -68,6 +69,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {

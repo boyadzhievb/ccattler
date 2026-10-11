@@ -61,10 +61,11 @@ type runCommandConfig struct {
 // backend flags from the arguments following "run" or "run-container". Uses an
 // index-based loop so paired flags (--store <value>) can consume the next argument.
 func parseRunCommandArgs(args []string) runCommandConfig {
+	defaults := resolveStoreDefaults()
 	parsedConfig := runCommandConfig{
-		storeBackend:   "memory",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -81,6 +82,7 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {

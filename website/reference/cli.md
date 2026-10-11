@@ -2,6 +2,32 @@
 
 The `cca` command-line tool manages CCattler clusters and workloads.
 
+## Store auto-detection
+
+Commands that connect to the fact store (apply, server, agent, token, etc.) resolve the etcd endpoint automatically — no `--store` or `--endpoints` flags needed on joined nodes.
+
+**Resolution order** (first match wins):
+
+1. `--endpoints` flag (explicit override)
+2. `CCA_ENDPOINTS` environment variable
+3. `/etc/ccattler/endpoints` file (written by `cca join` and Ansible)
+4. Falls back to local simulation (memory store)
+
+```bash
+# On a joined node — endpoints auto-detected:
+cca apply airflow.cca
+cca secret set db-password mypass
+
+# On a developer machine — env var:
+export CCA_ENDPOINTS=http://192.168.124.10:2379
+cca apply airflow.cca
+
+# Explicit override (still works):
+cca apply airflow.cca --endpoints http://10.0.0.1:2379
+```
+
+The `--store` flag is no longer required. When endpoints are available (from any source), the store backend is automatically set to `etcd`. Without endpoints, commands run in local simulation mode with an in-memory store.
+
 ## Configuration management
 
 ### `cca apply <file>`
@@ -76,8 +102,7 @@ cca server --listen 0.0.0.0:9770 --tls --dns  # enable DNS server
 | `--key` | | Path to PEM server private key |
 | `--ca` | | Path to PEM CA certificate |
 | `--dns` | off | Enable DNS server for `*.ccattler.local` resolution |
-| `--store` | `memory` | Store backend: `memory` or `etcd` |
-| `--endpoints` | `localhost:2379` | etcd endpoints (when `--store etcd`) |
+| `--endpoints` | auto-detected | etcd endpoints (override auto-detection) |
 
 ### `cca agent`
 

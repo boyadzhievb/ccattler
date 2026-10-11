@@ -301,6 +301,7 @@ else
             -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
             "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${local_ip}:/tmp/cca-linux-amd64"
         ssh_vm "$vm" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
+        ssh_vm "$vm" "sudo mkdir -p /etc/ccattler && echo '${ETCD_ENDPOINTS}' | sudo tee /etc/ccattler/endpoints > /dev/null"
         # Regenerate agent service file to pick up new flags (e.g. --debug-listen).
         cat > /tmp/cca-agent-${vm}.service <<SVCEOF
 [Unit]
@@ -312,8 +313,6 @@ Requires=containerd.service
 Type=simple
 ExecStart=/usr/local/bin/cca agent \\
   --node-id ${node_id} \\
-  --store etcd \\
-  --endpoints ${ETCD_ENDPOINTS} \\
   --advertise-address ${local_ip} \\
   --proxy --proxy-listen ${local_ip}:80 \\
   --debug-listen ${local_ip}:9771 \\
@@ -413,15 +412,15 @@ log "Image pre-pull complete"
 
 # ---- Step 4: Deploy Airflow test app ----
 log "Creating secrets for Airflow deployment..."
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.db-password airflow-e2e-pass --store etcd --endpoints $ETCD_ENDPOINTS"
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.admin-password admin-e2e-pass --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.db-password airflow-e2e-pass"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca secret set airflow.admin-password admin-e2e-pass"
 
 log "Applying Airflow test workload..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
     "$WORKLOADS_DIR/airflow.cca" "vagrant@${CTRL_IP}:/tmp/airflow.cca"
 
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/airflow.cca --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/airflow.cca"
 
 log "Waiting for Airflow containers to start (6 services)..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))
@@ -445,7 +444,7 @@ scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERRO
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
     "$WORKLOADS_DIR/zabbix.cca" "vagrant@${CTRL_IP}:/tmp/zabbix.cca"
 
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/zabbix.cca --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/zabbix.cca"
 
 log "Waiting for Zabbix containers (3 services)..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))

@@ -125,10 +125,7 @@
       until: server_ready.rc == 0
 
     - name: Apply Airflow deployment
-      command: >
-        /usr/local/bin/cca apply /tmp/airflow-test-app.cca
-        --store etcd
-        --endpoints {{ etcd_endpoints }}
+      command: /usr/local/bin/cca apply /tmp/airflow-test-app.cca
 
     - name: Wait for Airflow containers to start
       pause:

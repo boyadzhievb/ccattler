@@ -6,8 +6,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/cca server \
-  --store etcd \
-  --endpoints {{ etcd_endpoints }} \
   --listen {{ ansible_host }}:9770 \
   --dns --dns-listen {{ ansible_host }}:15353 \
   --cert {{ cca_cert_dir }}/node.pem \

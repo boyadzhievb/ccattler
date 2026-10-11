@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -53,10 +54,11 @@ type diffCommandConfig struct {
 // parseDiffCommandArgs extracts the config file path and optional store flags
 // from the arguments following "diff".
 func parseDiffCommandArgs(args []string) diffCommandConfig {
+	defaults := resolveStoreDefaults()
 	parsedConfig := diffCommandConfig{
-		storeBackend:   "memory",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 	}
 	for argIndex := 0; argIndex < len(args); argIndex++ {
 		currentArg := args[argIndex]
@@ -70,6 +72,7 @@ func parseDiffCommandArgs(args []string) diffCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {
@@ -266,10 +269,11 @@ type tokenCommandConfig struct {
 // parseTokenCommandArgs extracts the subcommand and flags from the arguments
 // following "token".
 func parseTokenCommandArgs(args []string) tokenCommandConfig {
+	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := tokenCommandConfig{
-		storeBackend:   "etcd",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 		tokenTTL:       "15m",
 	}
 
@@ -299,6 +303,7 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {
@@ -510,6 +515,16 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 
 	writeEnrollmentCredentials(parsedConfig.dataDirectory,
 		enrollmentResponse.CertificatePEM, enrollmentResponse.PrivateKeyPEM, enrollmentResponse.CACertPEM)
+
+	serverHost, _, splitError := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(parsedConfig.serverAddress, "https://"), "http://"))
+	if splitError == nil {
+		etcdEndpoints := "http://" + serverHost + ":2379"
+		if writeError := writeEndpointsConfig(etcdEndpoints); writeError != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", endpointsConfigPath, writeError)
+		} else {
+			fmt.Printf("  Endpoints:   %s → %s\n", etcdEndpoints, endpointsConfigPath)
+		}
+	}
 
 	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
 	fmt.Println()

@@ -87,3 +87,9 @@
     - /etc/ccattler/pki
     - /var/lib/ccattler
     - /var/log/ccattler
+
+- name: Write etcd endpoints config
+  copy:
+    dest: /etc/ccattler/endpoints
+    content: "{{ etcd_endpoints }}\n"
+    mode: "0644"

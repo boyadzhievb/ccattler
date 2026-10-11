@@ -205,7 +205,7 @@ log "Scenario 1: require gpu=true (hard label filter)"
 cleanup_scenario
 set_node_label deploy-node-2 gpu true
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-require-gpu.cca" >/dev/null 2>&1
 
 if wait_for_placements gpu-worker 1; then
@@ -226,7 +226,7 @@ TOTAL=$((TOTAL + 1))
 log "Scenario 2: require gpu=true, no node has gpu (fallback)"
 cleanup_scenario
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-require-gpu.cca" >/dev/null 2>&1
 
 if wait_for_placements gpu-worker 1; then
@@ -243,7 +243,7 @@ log "Scenario 3: prefer ssd=true (soft scoring)"
 cleanup_scenario
 set_node_label deploy-node-1 ssd true
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-prefer-ssd.cca" >/dev/null 2>&1
 
 if wait_for_placements ssd-preferred 3 45; then
@@ -265,7 +265,7 @@ log "Scenario 4: restrict dedicated-compute on node-1 (no accept)"
 cleanup_scenario
 set_node_restrict deploy-node-1 dedicated-compute
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-no-accept.cca" >/dev/null 2>&1
 
 if wait_for_placements no-toleration 1; then
@@ -287,7 +287,7 @@ log "Scenario 5: accept dedicated-compute (tolerates restriction)"
 cleanup_scenario
 set_node_restrict deploy-node-1 dedicated-compute
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-restrict-accept.cca" >/dev/null 2>&1
 
 if wait_for_placements ml-job 1; then
@@ -306,7 +306,7 @@ set_node_zone deploy-node-1 zone-a
 set_node_zone deploy-node-2 zone-b
 set_node_zone deploy-node-3 zone-c
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-zone-spread.cca" >/dev/null 2>&1
 
 if wait_for_placements zone-spread-svc 3 45; then
@@ -331,7 +331,7 @@ set_node_arch deploy-node-1 amd64
 set_node_arch deploy-node-2 arm64
 set_node_arch deploy-node-3 amd64
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-architecture.cca" >/dev/null 2>&1
 
 if wait_for_placements amd64-only 1; then
@@ -364,7 +364,7 @@ set_node_zone deploy-node-2 zone-b
 set_node_arch deploy-node-3 arm64
 set_node_zone deploy-node-3 zone-c
 
-ssh_ctrl "/usr/local/bin/cca apply /dev/stdin --store etcd --endpoints http://${CTRL_IP}:2379" \
+ssh_ctrl "/usr/local/bin/cca apply /dev/stdin" \
     < "$WORKLOADS_DIR/placement-combined.cca" >/dev/null 2>&1
 
 if wait_for_placements combined-placement 2 45; then

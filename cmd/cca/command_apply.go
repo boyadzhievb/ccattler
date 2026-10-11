@@ -50,10 +50,11 @@ type applyCommandConfig struct {
 // parseApplyCommandArgs extracts the config file path and optional store flags
 // from the arguments following "apply".
 func parseApplyCommandArgs(args []string) applyCommandConfig {
+	defaults := resolveStoreDefaults()
 	parsedConfig := applyCommandConfig{
-		storeBackend:   "memory",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -68,6 +69,7 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {

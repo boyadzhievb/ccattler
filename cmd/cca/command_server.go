@@ -99,10 +99,11 @@ type serverCommandConfig struct {
 // flag-to-field switch statement — each case is a simple one-liner assignment.
 // Extracting sub-groups would add indirection without improving clarity.
 func parseServerCommandArgs(args []string) serverCommandConfig {
+	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := serverCommandConfig{
-		storeBackend:   "etcd",
-		etcdEndpoints:  "localhost:2379",
-		storeKeyPrefix: "/ccattler/",
+		storeBackend:   defaults.storeBackend,
+		etcdEndpoints:  defaults.etcdEndpoints,
+		storeKeyPrefix: defaults.storeKeyPrefix,
 		listenAddress:  "0.0.0.0:" + defaultAPIListenPort,
 	}
 	explicitListenProvided := false
@@ -119,6 +120,7 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.etcdEndpoints = args[argIndex]
+				parsedConfig.storeBackend = "etcd"
 			}
 		case "--store-prefix":
 			if argIndex+1 < len(args) {

@@ -249,6 +249,12 @@
   vars:
     cca_cert_dir: /etc/ccattler/pki
   tasks:
+    - name: Write etcd endpoints config
+      copy:
+        dest: /etc/ccattler/endpoints
+        content: "http://127.0.0.1:2379\n"
+        mode: "0644"
+
     - name: Install cca-server systemd unit
       copy:
         dest: /etc/systemd/system/cca-server.service
@@ -261,8 +267,6 @@
           [Service]
           Type=simple
           ExecStart=/usr/local/bin/cca server \
-            --store etcd \
-            --endpoints http://127.0.0.1:2379 \
             --listen 127.0.0.1:9770 \
             --cert {{ cca_cert_dir }}/node.pem \
             --key {{ cca_cert_dir }}/node-key.pem \
@@ -318,8 +322,6 @@
           Type=simple
           ExecStart=/usr/local/bin/cca agent \
             --node-id node-1 \
-            --store etcd \
-            --endpoints http://127.0.0.1:2379 \
             --cert {{ cca_cert_dir }}/node.pem \
             --key {{ cca_cert_dir }}/node-key.pem \
             --ca {{ cca_cert_dir }}/ca.pem
@@ -360,9 +362,7 @@
         mode: "0644"
 
     - name: Apply Airflow test app
-      command: >
-        /usr/local/bin/cca apply /tmp/airflow-test-app.cca
-        --store etcd --endpoints http://127.0.0.1:2379
+      command: /usr/local/bin/cca apply /tmp/airflow-test-app.cca
 
     - name: Wait for containers to start
       pause:
