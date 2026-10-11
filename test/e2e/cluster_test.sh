@@ -415,6 +415,15 @@ log "Creating secrets for Airflow deployment..."
 ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set airflow.db-password airflow-e2e-pass"
 ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set airflow.admin-password admin-e2e-pass"
 
+log "Distributing secret master key to worker nodes..."
+SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /.ccattler/secret-master.key | base64")
+for vm in "${VM_NAMES[@]}"; do
+    [[ "$vm" == *-ctrl ]] && continue
+    ssh_vm "$vm" "sudo mkdir -p /.ccattler && echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /.ccattler/secret-master.key > /dev/null && sudo chmod 600 /.ccattler/secret-master.key"
+    ssh_vm "$vm" "sudo systemctl restart cca-agent"
+done
+sleep 2
+
 log "Applying Airflow test workload..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
