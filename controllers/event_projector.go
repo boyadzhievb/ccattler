@@ -121,7 +121,7 @@ func (eventProjector *EventProjector) watchPrefixWithReconnect(
 					logging.Default().Warn("event projector resync required",
 						"prefix", watchPrefix,
 						"event_type", fmt.Sprintf("%d", watchEvent.Type))
-					resyncRevision := eventProjector.resyncFromScan(ctx, watchPrefix)
+					resyncRevision := eventProjector.resyncFromScan(ctx, watchPrefix, lastProcessedRevision)
 					if resyncRevision > lastProcessedRevision {
 						lastProcessedRevision = resyncRevision
 					}
@@ -150,14 +150,23 @@ func (eventProjector *EventProjector) watchPrefixWithReconnect(
 
 // resyncFromScan performs a full prefix scan and returns the store revision
 // at which the scan was performed. This establishes a baseline after watch
-// compaction or overflow so the next watch can resume without gaps.
-func (eventProjector *EventProjector) resyncFromScan(ctx context.Context, prefix string) int64 {
+// compaction or overflow so the next watch can resume without gaps. A gap
+// marker event is emitted so consumers know the event history is discontinuous.
+func (eventProjector *EventProjector) resyncFromScan(ctx context.Context, prefix string, lastProcessedRevision int64) int64 {
 	scanResult, scanError := eventProjector.factStore.ScanWithRevision(ctx, prefix)
 	if scanError != nil {
 		logging.Default().Error("event projector resync scan failed",
 			"prefix", prefix, "error", scanError.Error())
 		return 0
 	}
+
+	gapDetail := fmt.Sprintf("event history gap for prefix %s: last processed revision %d, resumed at revision %d",
+		prefix, lastProcessedRevision, scanResult.Revision)
+	if _, emitError := eventProjector.eventLog.Emit(ctx, "projector.resync", "projector/"+prefix,
+		gapDetail, "event-projector"); emitError != nil {
+		logging.Default().Error("failed to emit gap marker", "error", emitError.Error())
+	}
+
 	return scanResult.Revision
 }
 

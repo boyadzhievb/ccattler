@@ -277,7 +277,7 @@ func TestRunnerCapsOversizedChangeSets(t *testing.T) {
 	// Seed a fact so the store is non-empty for the scan.
 	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
 
-	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller, nil)
 	if reconcileError != nil {
 		t.Fatalf("expected no error, got %v", reconcileError)
 	}
@@ -305,7 +305,7 @@ func TestRunnerCommitsWithinBudgetChangeSets(t *testing.T) {
 
 	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
 
-	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller, nil)
 	if reconcileError != nil {
 		t.Fatalf("expected no error, got %v", reconcileError)
 	}
@@ -347,7 +347,7 @@ func TestRunnerRejectsDuplicateKeys(t *testing.T) {
 
 	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
 
-	_, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	_, reconcileError := runner.attemptSingleReconciliation(ctx, controller, nil)
 	if reconcileError == nil {
 		t.Fatal("expected error for duplicate keys, got nil")
 	}
@@ -486,7 +486,7 @@ func TestRunnerGroupAwareTruncation(t *testing.T) {
 	ctx := context.Background()
 	factStore.Put(ctx, "desired/service/web/instances", []byte("1"))
 
-	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller)
+	conflictDetected, reconcileError := runner.attemptSingleReconciliation(ctx, controller, nil)
 	if reconcileError != nil {
 		t.Fatalf("expected no error, got %v", reconcileError)
 	}

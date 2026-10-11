@@ -1158,7 +1158,7 @@ Extend `chaos/` and `loadtest/` to produce a structured report comparing recover
 
 - [x] `NodeCapacityCache` in `scheduler/cache.go` — persistent min-heap, incremental updates via `heap.Fix` (O(log n))
 - [x] Batch placement: group unplaced instances by service, cache filtered candidates per service
-- [ ] Optional `DeltaController` interface: `ReconcileDelta(facts, changedKeys)` for incremental cache (deferred — gains marginal after batch + cache)
+- [x] Optional `DeltaController` interface: `ReconcileDelta(allFacts, changedEvents)` with delta buffer, coalescing, overflow fallback (Phase 87)
 - [x] Extended load test: `TestSyntheticCluster100Nodes2000Workloads` in `loadtest/loadtest_test.go` (100 nodes, 10 services, 2000 instances)
 - [x] Benchmark: 200n/5000i — 3.2ms/2.8MB (was 90ms/340MB) = 28× faster, 121× less memory
 - [x] Hot-path fixes: pointer-based node info map, O(1) node index map, O(1) zone map
@@ -1400,5 +1400,7 @@ Converts ClusterAutoscaleController from direct provider calls to durable-intent
 | M76 — Correctness IV | 76 | Atomic liveness CAS, storage intent/executor, event projector per-prefix reconnect, heartbeat stress test |
 | M77 — Correctness V | 77 | Storage retry on provider failure, per-type pending keys, revision-aware projector reconnect, cloud post-commit |
 | M78 — Capacity State Machine | 78 | Durable capacity requests, scheduler unplaced-demand signaling, autoscaler post-commit pattern, constraint-aware provisioning |
+
+| M87 — Fair Allocation, Gap Markers & DeltaController | 87 | Fair allocation in InstanceController (arithmetic base+remainder, no alphabetical starvation), event projector gap markers on compaction/overflow, DeltaController interface with delta buffer coalescing and overflow fallback |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

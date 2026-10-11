@@ -9,9 +9,15 @@ package controllers
 
 import (
 	"context"
+	"errors"
 
 	"github.com/boyadzhievb/ccattler/store"
 )
+
+// ErrDeltaFallback is returned by DeltaController.ReconcileDelta to signal
+// that the delta is too large or complex and the runner should fall back to
+// a full Reconcile call.
+var ErrDeltaFallback = errors.New("delta fallback requested")
 
 // Change represents a single proposed mutation to the fact store. Controllers
 // return slices of Change from their Reconcile methods; the Runner applies
@@ -54,6 +60,24 @@ type Controller interface {
 	// idempotent: calling it with the same facts must produce the same
 	// (or convergent) changes.
 	Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error)
+}
+
+// DeltaController is an optional interface that controllers may implement to
+// receive incremental change sets instead of re-scanning full prefixes. The
+// runner accumulates watch events between cycles and passes them to
+// ReconcileDelta on the first attempt. Full reconciliation via Reconcile is
+// used for periodic resyncs, watch overflow/compaction, and CAS retries.
+type DeltaController interface {
+	Controller
+
+	// ReconcileDelta processes incremental changes since the last successful
+	// reconciliation. allFacts is the full fact snapshot (same as Reconcile
+	// receives). changedEvents contains coalesced store events since the
+	// last cycle. Prev values reflect the store state at event time and may
+	// predate the most recent successful reconciliation. Return
+	// ErrDeltaFallback to signal that the runner should fall back to a full
+	// Reconcile call.
+	ReconcileDelta(ctx context.Context, allFacts []store.Fact, changedEvents []store.Event) ([]Change, error)
 }
 
 // PostCommitController is an optional interface that controllers may implement

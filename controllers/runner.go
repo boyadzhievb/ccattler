@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"sort"
@@ -267,13 +268,20 @@ func (controllerRunner *Runner) runSingleController(ctx context.Context, control
 // runControllerLoop sets up watches on all prefixes returned by the
 // controller's Watch method, performs an initial reconciliation, and then
 // re-reconciles each time a watched fact changes (with debouncing) or the
-// periodic resync timer fires.
+// periodic resync timer fires. If the controller implements DeltaController,
+// watch events are accumulated and passed to ReconcileDelta on the first
+// attempt of each cycle.
 func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controller Controller) error {
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	defer watchCancel()
 
 	reconcileTrigger := make(chan struct{}, 1)
 	watchLost := make(chan struct{}, 1)
+
+	var watchEventBuffer *deltaBuffer
+	if _, isDeltaController := controller.(DeltaController); isDeltaController {
+		watchEventBuffer = newDeltaBuffer()
+	}
 
 	for _, prefix := range controller.Watch() {
 		watchEventChannel, err := controllerRunner.store.Watch(watchCtx, prefix, store.WatchOption{Prefix: true})
@@ -296,9 +304,18 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 					}
 					if watchEvent.Type == store.EventOverflow {
 						logging.Default().Warn("watch events dropped, triggering resync", "controller", controllerName)
+						if watchEventBuffer != nil {
+							watchEventBuffer.markOverflow()
+						}
 					}
 					if watchEvent.Type == store.EventCompacted {
 						logging.Default().Warn("watch revision compacted, triggering resync", "controller", controllerName)
+						if watchEventBuffer != nil {
+							watchEventBuffer.markOverflow()
+						}
+					}
+					if watchEventBuffer != nil && (watchEvent.Type == store.EventPut || watchEvent.Type == store.EventDelete) {
+						watchEventBuffer.appendEvent(watchEvent)
 					}
 					select {
 					case reconcileTrigger <- struct{}{}:
@@ -309,7 +326,7 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 		}(watchEventChannel, controller.Name())
 	}
 
-	if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
+	if err := controllerRunner.executeReconciliationCycle(ctx, controller, nil); err != nil {
 		return err
 	}
 
@@ -328,7 +345,10 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 		case <-watchLost:
 			return fmt.Errorf("watch channel closed for controller %s, restarting", controller.Name())
 		case <-resyncChannel:
-			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
+			if watchEventBuffer != nil {
+				watchEventBuffer.drain()
+			}
+			if err := controllerRunner.executeReconciliationCycle(ctx, controller, nil); err != nil {
 				logging.Default().Error("resync error", "controller", controller.Name(), "error", err.Error())
 			}
 		case <-reconcileTrigger:
@@ -345,7 +365,11 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 				default:
 				}
 			}
-			if err := controllerRunner.executeReconciliationCycle(ctx, controller); err != nil {
+			var deltaEvents []store.Event
+			if watchEventBuffer != nil {
+				deltaEvents = watchEventBuffer.drain()
+			}
+			if err := controllerRunner.executeReconciliationCycle(ctx, controller, deltaEvents); err != nil {
 				logging.Default().Error("reconcile error", "controller", controller.Name(), "error", err.Error())
 			}
 		}
@@ -359,8 +383,10 @@ const defaultMaxReconciliationAttempts = 5
 
 // executeReconciliationCycle performs a single reconciliation pass with
 // optimistic concurrency. It retries up to maxReconciliationAttempts times
-// if the store revision changes between the scan and the commit.
-func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, controller Controller) error {
+// if the store revision changes between the scan and the commit. When
+// deltaEvents is non-nil and the controller implements DeltaController,
+// the first attempt uses ReconcileDelta; retries always use full Reconcile.
+func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, controller Controller, deltaEvents []store.Event) error {
 	startTime := metrics.Timer()
 	controllerName := controller.Name()
 
@@ -368,7 +394,11 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 	ctx = tracing.ContextWithTrace(ctx, reconcileTrace)
 
 	for attemptIndex := 0; attemptIndex < controllerRunner.maxReconciliationAttempts; attemptIndex++ {
-		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller)
+		var eventsForAttempt []store.Event
+		if attemptIndex == 0 {
+			eventsForAttempt = deltaEvents
+		}
+		conflictDetected, reconcileError := controllerRunner.attemptSingleReconciliation(ctx, controller, eventsForAttempt)
 		if reconcileError != nil {
 			reconciliationTotal.Inc(controllerName, "error")
 			reconciliationDuration.ObserveSince(startTime, controllerName)
@@ -413,8 +443,10 @@ func (controllerRunner *Runner) executeReconciliationCycle(ctx context.Context, 
 // attemptSingleReconciliation performs one scan-reconcile-commit cycle using
 // revision-aware optimistic concurrency. It snapshots the store at a known
 // revision, computes changes, checks for revision drift, and applies changes
-// via a transaction with per-key revision guards.
-func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context, controller Controller) (conflictDetected bool, reconcileError error) {
+// via a transaction with per-key revision guards. When deltaEvents is non-nil
+// and the controller implements DeltaController, ReconcileDelta is tried first;
+// ErrDeltaFallback causes a fallback to the full Reconcile path.
+func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context, controller Controller, deltaEvents []store.Event) (conflictDetected bool, reconcileError error) {
 	allFacts, scanError := controllerRunner.scanFactsForController(ctx, controller)
 	if scanError != nil {
 		return false, scanError
@@ -422,9 +454,30 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	store.SortFacts(allFacts)
 
-	changes, reconcileError := controller.Reconcile(ctx, allFacts)
-	if reconcileError != nil {
-		return false, reconcileError
+	var changes []Change
+	usedDeltaPath := false
+
+	if len(deltaEvents) > 0 {
+		if deltaController, isDelta := controller.(DeltaController); isDelta {
+			deltaChanges, deltaError := deltaController.ReconcileDelta(ctx, allFacts, deltaEvents)
+			switch {
+			case errors.Is(deltaError, ErrDeltaFallback):
+				logging.Default().Info("delta fallback requested", "controller", controller.Name())
+			case deltaError != nil:
+				return false, deltaError
+			default:
+				changes = deltaChanges
+				usedDeltaPath = true
+			}
+		}
+	}
+
+	if !usedDeltaPath {
+		var fullReconcileError error
+		changes, fullReconcileError = controller.Reconcile(ctx, allFacts)
+		if fullReconcileError != nil {
+			return false, fullReconcileError
+		}
 	}
 	if len(changes) == 0 {
 		controllerRunner.executePendingPostCommitOperations(ctx, controller)

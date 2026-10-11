@@ -464,6 +464,55 @@ func TestFairShareCreationAcrossServices(testHandle *testing.T) {
 	}
 }
 
+func TestFairShareNoStarvationWithUnevenBudget(testHandle *testing.T) {
+	instanceController := NewInstanceController()
+	instanceController.NewID = seqIDGen()
+	instanceController.MaxCreationsPerCycle = 18
+
+	var facts []store.Fact
+	serviceCount := 10
+	for serviceIndex := range serviceCount {
+		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
+		facts = append(facts, store.Fact{
+			Key:   types.KeyEffectiveServiceInstances(serviceName),
+			Value: []byte("100"),
+		})
+	}
+	sort.Slice(facts, func(i, j int) bool { return facts[i].Key < facts[j].Key })
+
+	changes, reconcileError := instanceController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		testHandle.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	creationsByService := make(map[string]int)
+	for _, change := range changes {
+		if change.Type == store.OpPut && string(change.Value) == string(types.InstancePending) {
+			serviceName := extractServiceFromInstanceChanges(change.Key, changes)
+			creationsByService[serviceName]++
+		}
+	}
+
+	expectedBase := 18 / serviceCount
+	expectedCeil := expectedBase + 1
+	for serviceIndex := range serviceCount {
+		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
+		count := creationsByService[serviceName]
+		if count < expectedBase || count > expectedCeil {
+			testHandle.Errorf("%s got %d creations, expected %d or %d (budget=18, services=%d)",
+				serviceName, count, expectedBase, expectedCeil, serviceCount)
+		}
+	}
+
+	totalCreations := 0
+	for _, count := range creationsByService {
+		totalCreations += count
+	}
+	if totalCreations != 18 {
+		testHandle.Errorf("total creations = %d, expected 18", totalCreations)
+	}
+}
+
 // extractServiceFromInstanceChanges finds the service association change for
 // an instance whose state change key is provided.
 func extractServiceFromInstanceChanges(stateKey string, changes []Change) string {

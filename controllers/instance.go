@@ -183,9 +183,11 @@ func computeServiceDeficits(
 }
 
 // allocateCreationsFairly distributes the per-cycle creation budget across all
-// services with outstanding deficits using round-robin. Each round gives one
-// creation slot to every service that still has unmet demand, preventing
-// alphabetical starvation of later services.
+// services with outstanding deficits. Each service receives an equal base share
+// (budget / serviceCount), capped at its deficit. Remainder slots are assigned
+// one at a time to the service with the largest unmet demand; ties are broken
+// by highest index so lower-indexed services receive fewer slots in one cycle
+// but accumulate larger deficits that earn them priority in subsequent cycles.
 func (instanceController *InstanceController) allocateCreationsFairly(
 	deficits []serviceDeficit,
 	statefulServices map[string]bool,
@@ -194,25 +196,51 @@ func (instanceController *InstanceController) allocateCreationsFairly(
 	creationsRemaining *int,
 ) []Change {
 	var changes []Change
-	allocated := make([]int, len(deficits))
+	if len(deficits) == 0 || *creationsRemaining <= 0 {
+		return changes
+	}
 
-	for *creationsRemaining > 0 {
-		progressMade := false
-		for deficitIndex := range deficits {
-			if allocated[deficitIndex] >= deficits[deficitIndex].deficit {
-				continue
-			}
-			if *creationsRemaining <= 0 {
-				break
-			}
-			allocated[deficitIndex]++
-			*creationsRemaining--
-			progressMade = true
-		}
-		if !progressMade {
-			break
+	allocated := make([]int, len(deficits))
+	budget := *creationsRemaining
+	serviceCount := len(deficits)
+
+	baseShare := budget / serviceCount
+	for deficitIndex, entry := range deficits {
+		if baseShare > entry.deficit {
+			allocated[deficitIndex] = entry.deficit
+		} else {
+			allocated[deficitIndex] = baseShare
 		}
 	}
+
+	budgetUsed := 0
+	for _, allocationCount := range allocated {
+		budgetUsed += allocationCount
+	}
+	remainingBudget := budget - budgetUsed
+
+	for remainingBudget > 0 {
+		bestIndex := -1
+		bestUnmetDemand := 0
+		for deficitIndex, entry := range deficits {
+			unmetDemand := entry.deficit - allocated[deficitIndex]
+			if unmetDemand > bestUnmetDemand || (unmetDemand == bestUnmetDemand && unmetDemand > 0) {
+				bestUnmetDemand = unmetDemand
+				bestIndex = deficitIndex
+			}
+		}
+		if bestIndex < 0 {
+			break
+		}
+		allocated[bestIndex]++
+		remainingBudget--
+	}
+
+	totalUsed := 0
+	for _, allocationCount := range allocated {
+		totalUsed += allocationCount
+	}
+	*creationsRemaining = budget - totalUsed
 
 	for deficitIndex, entry := range deficits {
 		if allocated[deficitIndex] <= 0 {

@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -260,6 +261,45 @@ func TestWatchPrefixWithReconnect(t *testing.T) {
 		}
 	case <-timeout:
 		t.Fatal("timed out waiting for forwarded event")
+	}
+}
+
+// TestResyncFromScanEmitsGapMarker verifies that a resync emits a
+// projector.resync event containing the revision range of the gap.
+func TestResyncFromScanEmitsGapMarker(testHandle *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	eventLog := types.NewEventLog(factStore, 100)
+	projector := NewEventProjector(factStore, eventLog)
+
+	factStore.Put(ctx, types.PrefixObserved+"/instance/x/state", []byte("running"))
+
+	resyncRevision := projector.resyncFromScan(ctx, types.PrefixObserved+"/instance/", 42)
+	if resyncRevision <= 0 {
+		testHandle.Fatalf("expected positive resync revision, got %d", resyncRevision)
+	}
+
+	events, queryError := eventLog.Query(ctx, "projector.resync", 10)
+	if queryError != nil {
+		testHandle.Fatal(queryError)
+	}
+	if len(events) != 1 {
+		testHandle.Fatalf("expected 1 gap marker event, got %d", len(events))
+	}
+
+	gapEvent := events[0]
+	if gapEvent.Source != "event-projector" {
+		testHandle.Errorf("source: got %q, want event-projector", gapEvent.Source)
+	}
+	if gapEvent.Target != "projector/"+types.PrefixObserved+"/instance/" {
+		testHandle.Errorf("target: got %q, want projector/%s", gapEvent.Target, types.PrefixObserved+"/instance/")
+	}
+
+	wantSubstring := "last processed revision 42"
+	if !strings.Contains(gapEvent.Detail, wantSubstring) {
+		testHandle.Errorf("detail %q should contain %q", gapEvent.Detail, wantSubstring)
 	}
 }
 
