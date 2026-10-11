@@ -253,7 +253,7 @@
       copy:
         dest: /etc/ccattler/endpoints
         content: "http://127.0.0.1:2379\n"
-        mode: "0644"
+        mode: "0600"
 
     - name: Install cca-server systemd unit
       copy:

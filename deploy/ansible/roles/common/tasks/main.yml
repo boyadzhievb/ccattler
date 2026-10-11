@@ -92,4 +92,4 @@
   copy:
     dest: /etc/ccattler/endpoints
     content: "{{ etcd_endpoints }}\n"
-    mode: "0644"
+    mode: "0600"

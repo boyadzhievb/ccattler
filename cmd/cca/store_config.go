@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	endpointsConfigPath    = "/etc/ccattler/endpoints"
-	endpointsEnvVariable   = "CCA_ENDPOINTS"
-	defaultEtcdEndpoints   = "localhost:2379"
-	defaultStoreKeyPrefix  = "/ccattler/"
+	endpointsConfigPath   = "/etc/ccattler/endpoints"
+	endpointsEnvVariable  = "CCA_ENDPOINTS"
+	defaultEtcdEndpoints  = "localhost:2379"
+	defaultStoreKeyPrefix = "/ccattler/"
 )
 
 // storeDefaults holds resolved store configuration that can be used as defaults
@@ -74,8 +74,8 @@ func resolveStoreDefaultsForDaemon() storeDefaults {
 // writeEndpointsConfig writes the etcd endpoints to the system-wide config file
 // so subsequent CLI commands can auto-detect the store without flags.
 func writeEndpointsConfig(endpoints string) error {
-	if mkdirError := os.MkdirAll("/etc/ccattler", 0755); mkdirError != nil {
+	if mkdirError := os.MkdirAll("/etc/ccattler", 0750); mkdirError != nil {
 		return mkdirError
 	}
-	return os.WriteFile(endpointsConfigPath, []byte(endpoints+"\n"), 0644)
+	return os.WriteFile(endpointsConfigPath, []byte(endpoints+"\n"), 0600)
 }
