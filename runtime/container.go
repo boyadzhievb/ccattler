@@ -232,7 +232,11 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 			args = append(args, "--ip", spec.IP)
 		}
 		if spec.ServiceName != "" {
-			args = append(args, "--network-alias", spec.ServiceName)
+			if containerRuntime.containerCommand == "docker" {
+				args = append(args, "--network-alias", spec.ServiceName)
+			} else {
+				args = append(args, "--hostname", spec.ServiceName)
+			}
 		}
 	}
 
