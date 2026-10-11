@@ -622,12 +622,12 @@ func (nodeAgent *Agent) materializeSecretsForInstance(ctx context.Context, insta
 		}
 
 		parentDirectory := filepath.Dir(mountPath)
-		if err := os.MkdirAll(parentDirectory, 0700); err != nil {
+		if err := os.MkdirAll(parentDirectory, 0755); err != nil {
 			logging.Default().Error("mkdir failed", "agent", nodeAgent.nodeID, "path", parentDirectory, "error", err.Error())
 			continue
 		}
 
-		if err := os.WriteFile(mountPath, plaintext, 0600); err != nil {
+		if err := os.WriteFile(mountPath, plaintext, 0444); err != nil {
 			logging.Default().Error("write secret failed", "agent", nodeAgent.nodeID, "secret", secretName, "path", mountPath, "error", err.Error())
 			continue
 		}
@@ -676,7 +676,8 @@ func (nodeAgent *Agent) refreshMaterializedSecrets(ctx context.Context) {
 
 		existingContent, readErr := os.ReadFile(materializedSecret.MountPath)
 		if readErr != nil || string(existingContent) != string(plaintext) {
-			if writeError := os.WriteFile(materializedSecret.MountPath, plaintext, 0600); writeError != nil {
+			_ = os.Remove(materializedSecret.MountPath)
+			if writeError := os.WriteFile(materializedSecret.MountPath, plaintext, 0444); writeError != nil {
 				logging.Default().Error("failed to rotate secret file", "path", materializedSecret.MountPath, "error", writeError.Error())
 			}
 			logging.Default().Info("rotated secret", "agent", nodeAgent.nodeID, "secret", materializedSecret.SecretName, "instance", materializedSecret.InstanceID)
