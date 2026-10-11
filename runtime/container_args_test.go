@@ -185,3 +185,72 @@ func TestBuildRunArgumentsNetworkFlags(t *testing.T) {
 		t.Error("missing --network-alias flag")
 	}
 }
+
+func TestBuildRunArgumentsCommandAppendedAfterImage(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:      "test-cmd",
+		Image:   "apache/airflow:2.10.5",
+		Command: []string{"sh", "-c", "airflow webserver"},
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	imageIndex := -1
+	for argIndex, argValue := range args {
+		if argValue == "apache/airflow:2.10.5" {
+			imageIndex = argIndex
+			break
+		}
+	}
+	if imageIndex < 0 {
+		t.Fatal("image not found in args")
+	}
+	if imageIndex+3 >= len(args) {
+		t.Fatalf("not enough args after image: %v", args)
+	}
+	if args[imageIndex+1] != "sh" || args[imageIndex+2] != "-c" || args[imageIndex+3] != "airflow webserver" {
+		t.Errorf("command not appended as sh -c after image: got %v", args[imageIndex+1:])
+	}
+}
+
+func TestBuildRunArgumentsShellCommandPreservesFullString(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	complexCommand := "source /init/secrets-store/envfile && java -jar -Dspring.profiles.active=default app.jar --spring.config.location=/opt/app.yaml"
+	spec := Spec{
+		ID:      "test-shell-cmd",
+		Image:   "openjdk:21",
+		Command: []string{"sh", "-c", complexCommand},
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	lastArg := args[len(args)-1]
+	if lastArg != complexCommand {
+		t.Errorf("shell command was split or modified: got %q, want %q", lastArg, complexCommand)
+	}
+}
+
+func TestBuildRunArgumentsEmptyCommandOmitted(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:    "test-no-cmd",
+		Image: "nginx:1.27",
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	lastArg := args[len(args)-1]
+	if lastArg != "nginx:1.27" {
+		t.Errorf("last arg should be image when no command, got %q", lastArg)
+	}
+}

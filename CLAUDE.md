@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M87 — Phase 87 Fair Allocation, Event Gap Markers & DeltaController. M1–M87 complete. Gates A–I resolved.
+**Completed through:** M88 — Phase 88 Command Directive & Airflow Deployment. M1–M88 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

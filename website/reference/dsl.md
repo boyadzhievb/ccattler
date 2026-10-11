@@ -15,6 +15,7 @@ The primary workload declaration.
 ```hcl
 service web {
     image nginx:1.28
+    command "nginx -g 'daemon off;'"
     instances 3
     expose 8080
 
@@ -107,6 +108,59 @@ service web {
     volume pgdata /var/lib/postgresql/data
 }
 ```
+
+#### command
+
+The `command` directive overrides the container's default startup command. Write it as a plain shell string — exactly as you would type it in a terminal.
+
+```hcl
+# Simple command
+service webserver {
+    image "apache/airflow:2.10.5"
+    command "airflow webserver"
+    instances 1
+}
+
+# Complex command with shell features (pipes, &&, variables)
+service app {
+    image "openjdk:21"
+    command "source /init/envfile && exec java -jar -Dspring.profiles.active=ci app.jar --spring.config.location=/opt/app.yaml"
+    instances 2
+}
+
+# Script execution
+service init-worker {
+    image "python:3.12"
+    command "./scripts/init.py --type base --secrets /mnt/secrets-store/secret"
+    instances 1
+}
+```
+
+Commands are always executed through `sh -c`, so shell features like pipes (`|`), chaining (`&&`), variable expansion (`$VAR`), and subshells work out of the box. There is no array form and no separate `args` field — unlike Kubernetes, CCattler does not distinguish between ENTRYPOINT and CMD. If you omit `command`, the container runs its image default.
+
+For complex startup logic, mount a script and call it — keeps the .cca readable:
+
+```hcl
+service app {
+    image "openjdk:21"
+    command "/opt/scripts/start.sh"
+    instances 2
+    config {
+        file "/opt/scripts/start.sh" from "scripts/start-app.sh"
+    }
+}
+```
+
+Triple-quoted strings (`"""`) support multi-line commands as a fallback when a separate script is overkill:
+
+```hcl
+command """
+source /init/envfile && \
+exec java -jar -Dspring.profiles.active=ci app.jar
+"""
+```
+
+**Signal handling:** Since commands run inside `sh`, the shell process is PID 1. For clean shutdown, prefix long-running processes with `exec` (e.g., `command "exec java -jar app.jar"`) so the process replaces the shell and receives SIGTERM directly.
 
 ### volume
 
@@ -248,6 +302,7 @@ export platform/dns {
 |---|---|---|
 | `service` | top-level | Declare a workload |
 | `image` | service | Container image reference |
+| `command` | service | Container command override (shell string) |
 | `instances` | service | Desired instance count |
 | `expose` | service | Port to expose |
 | `resources` | service | Resource constraints block |

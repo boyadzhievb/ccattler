@@ -21,6 +21,7 @@ import (
 type ServiceDescribe struct {
 	Name             string                    `json:"name"`
 	Image            string                    `json:"image"`
+	Command          string                    `json:"command,omitempty"`
 	DesiredInstances int                       `json:"desired_instances"`
 	RunningInstances int                       `json:"running_instances"`
 	ExposedPorts     []int                     `json:"ports,omitempty"`
@@ -197,6 +198,7 @@ func buildServiceDescribe(ctx context.Context, factStore store.StateStore, event
 	describe := &ServiceDescribe{
 		Name:             service.Name,
 		Image:            service.Image,
+		Command:          service.Command,
 		DesiredInstances: service.Instances,
 		ExposedPorts:     service.Ports,
 	}

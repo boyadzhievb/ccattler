@@ -1402,5 +1402,6 @@ Converts ClusterAutoscaleController from direct provider calls to durable-intent
 | M78 — Capacity State Machine | 78 | Durable capacity requests, scheduler unplaced-demand signaling, autoscaler post-commit pattern, constraint-aware provisioning |
 
 | M87 — Fair Allocation, Gap Markers & DeltaController | 87 | Fair allocation in InstanceController (arithmetic base+remainder, no alphabetical starvation), event projector gap markers on compaction/overflow, DeltaController interface with delta buffer coalescing and overflow fallback |
+| M88 — Command Directive & Airflow Deployment | 88 | `command` DSL directive for container CMD override (parser→compiler→fact→agent→container runtime), shell metacharacter detection wraps in `sh -c`, Airflow CeleryExecutor multi-component example (postgres, redis, webserver, scheduler, worker) |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

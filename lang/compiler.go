@@ -259,6 +259,12 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		{Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
 	}
 
+	if serviceDecl.Command != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceCommand(serviceDecl.Name), Value: serviceDecl.Command,
+		})
+	}
+
 	ownerTenant := serviceDecl.Owner
 	if ownerTenant == "" {
 		ownerTenant = extractTenantFromHierarchicalName(serviceDecl.Name)

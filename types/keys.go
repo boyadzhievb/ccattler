@@ -94,6 +94,12 @@ func KeyDesiredServiceImage(name string) string {
 	return fmt.Sprintf("%s/service/%s/image", PrefixDesired, name)
 }
 
+// KeyDesiredServiceCommand returns the store path for a service's container command override.
+// Path: desired/service/{name}/command
+func KeyDesiredServiceCommand(name string) string {
+	return fmt.Sprintf("%s/service/%s/command", PrefixDesired, name)
+}
+
 // KeyDesiredServiceInstances returns the store path for a service's desired instance count.
 // Path: desired/service/{name}/instances
 func KeyDesiredServiceInstances(name string) string {

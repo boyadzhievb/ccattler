@@ -422,6 +422,7 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, instanceInfo.service)
 	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, instanceInfo.service)
 	cpuMillicores, memoryBytes := nodeAgent.nodeReporter.lookupServiceResourcesFromStore(ctx, instanceInfo.service)
+	commandArgs := nodeAgent.lookupServiceCommandFromStore(ctx, instanceInfo.service)
 
 	allocatedIP := ""
 	if nodeAgent.networkProvider != nil {
@@ -437,6 +438,7 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 		ID:          instanceInfo.id,
 		ServiceName: instanceInfo.service,
 		Image:       image,
+		Command:     commandArgs,
 		Env:         envVars,
 		ConfigFiles: configFiles,
 		Ports:       exposedPorts,
@@ -519,6 +521,19 @@ func (nodeAgent *Agent) lookupServiceImageFromStore(ctx context.Context, service
 		return ""
 	}
 	return string(factEntry.Value)
+}
+
+// lookupServiceCommandFromStore retrieves the container command override for the
+// given service from the desired-state section of the store. Returns nil if no
+// command is set (the image default CMD will be used). The command string is
+// always passed through "sh -c" so shell features (pipes, variables, compound
+// statements) work without the user having to think about exec vs shell form.
+func (nodeAgent *Agent) lookupServiceCommandFromStore(ctx context.Context, service string) []string {
+	factEntry, lookupError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceCommand(service))
+	if lookupError != nil || string(factEntry.Value) == "" {
+		return nil
+	}
+	return []string{"sh", "-c", string(factEntry.Value)}
 }
 
 // lookupServiceExposedPortsFromStore reads all exposed port declarations for

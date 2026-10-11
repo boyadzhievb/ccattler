@@ -340,6 +340,7 @@ func TestKeyPaths(t *testing.T) {
 	}{
 		{KeyDesiredService("web"), "desired/service/web"},
 		{KeyDesiredServiceImage("web"), "desired/service/web/image"},
+		{KeyDesiredServiceCommand("web"), "desired/service/web/command"},
 		{KeyDesiredServiceInstances("web"), "desired/service/web/instances"},
 		{KeyDesiredServiceExpose("web", 8080), "desired/service/web/expose/8080"},
 		{KeyEffectiveServiceInstances("web"), "effective/service/web/instances"},

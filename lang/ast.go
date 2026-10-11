@@ -42,6 +42,7 @@ type ServiceDecl struct {
 	Name            string                     // unique service identifier from the block header
 	Owner           string                     // owning tenant (empty = derived from hierarchical name)
 	Image           string                     // container image reference (e.g. "nginx:1.27")
+	Command         string                     // optional container command override (e.g. "airflow webserver")
 	Instances       int                        // desired number of running instances
 	Ports           []int                      // exposed port numbers declared via "expose"
 	ExternalPorts   []ExternalPortDecl         // ports exposed externally via cloud load balancer

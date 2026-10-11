@@ -9,6 +9,7 @@ package types
 type Service struct {
 	Name      string // Name is the unique identifier for the service (e.g. "web", "api").
 	Image     string // Image is the container image reference (e.g. "nginx:1.28").
+	Command   string // Command overrides the container's default CMD (e.g. "airflow webserver").
 	Instances int    // Instances is the desired number of running replicas.
 	Ports     []int  // Ports lists the network ports the service exposes to the outside.
 	CPU       string // CPU is the CPU resource request/limit (e.g. "500m" for half a core).

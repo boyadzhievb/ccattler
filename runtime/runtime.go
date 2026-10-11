@@ -33,6 +33,7 @@ type Spec struct {
 	ID          string            // ID is the unique identifier for this workload.
 	ServiceName string            // ServiceName is the name of the service this workload belongs to. Used by ContainerRuntime as a Docker network alias for DNS-based service discovery.
 	Image       string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
+	Command     []string          // Command overrides the container CMD. Empty means use the image default.
 	Env         map[string]string // Env holds environment variables to inject into the workload.
 	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
 	Ports       []int             // Ports to map from container to host (each port is mapped to a random host port).

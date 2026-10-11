@@ -484,6 +484,9 @@ func printServiceDescribe(serviceDetail api.ServiceDescribe) {
 func printServiceDescribeBasicInfo(serviceDetail api.ServiceDescribe) {
 	fmt.Printf("Name:       %s\n", serviceDetail.Name)
 	fmt.Printf("Image:      %s\n", serviceDetail.Image)
+	if serviceDetail.Command != "" {
+		fmt.Printf("Command:    %s\n", serviceDetail.Command)
+	}
 	fmt.Printf("Instances:  %d desired, %d running\n", serviceDetail.DesiredInstances, serviceDetail.RunningInstances)
 	if len(serviceDetail.ExposedPorts) > 0 {
 		portStrings := make([]string, len(serviceDetail.ExposedPorts))

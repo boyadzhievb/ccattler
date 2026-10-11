@@ -1047,6 +1047,46 @@ func TestCompileStatefulService(t *testing.T) {
 	}
 }
 
+func TestCompileServiceWithCommand(t *testing.T) {
+	file, parseErr := Parse(`service webserver {
+    image "apache/airflow:2.10.5"
+    command "airflow webserver"
+    instances 1
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	commandValue := compiledFactMap[types.KeyDesiredServiceCommand("webserver")]
+	if commandValue != "airflow webserver" {
+		t.Errorf("command: got %q, want %q", commandValue, "airflow webserver")
+	}
+}
+
+func TestCompileServiceWithoutCommandOmitsFact(t *testing.T) {
+	file, parseErr := Parse(`service web {
+    image nginx:1.28
+    instances 1
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if _, exists := compiledFactMap[types.KeyDesiredServiceCommand("web")]; exists {
+		t.Error("service without command should not emit command fact")
+	}
+}
+
 // TestCompileNonStatefulServiceOmitsStatefulFact verifies that services
 // without the stateful keyword do not emit stateful facts.
 func TestCompileNonStatefulServiceOmitsStatefulFact(t *testing.T) {

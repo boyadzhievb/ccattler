@@ -45,6 +45,11 @@ func WriteService(ctx context.Context, stateStore store.StateStore, service Serv
 		{KeyDesiredServiceResourcesCPU(service.Name), service.CPU},
 		{KeyDesiredServiceResourcesMemory(service.Name), service.Memory},
 	}
+	if service.Command != "" {
+		puts = append(puts, struct{ key, val string }{
+			KeyDesiredServiceCommand(service.Name), service.Command,
+		})
+	}
 	for _, port := range service.Ports {
 		puts = append(puts, struct{ key, val string }{
 			KeyDesiredServiceExpose(service.Name, port), "",
@@ -78,6 +83,8 @@ func ReadService(ctx context.Context, stateStore store.StateStore, name string) 
 		switch suffix {
 		case "image":
 			service.Image = fieldValue
+		case "command":
+			service.Command = fieldValue
 		case "instances":
 			parsedInstances, parseError := parseStoredInt(fieldValue)
 			if parseError != nil {

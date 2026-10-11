@@ -262,6 +262,7 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 	}
 
 	args = append(args, spec.Image)
+	args = append(args, spec.Command...)
 	return args, firstHostPort, nil
 }
 

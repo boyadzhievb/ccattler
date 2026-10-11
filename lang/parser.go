@@ -198,6 +198,8 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 	switch fieldName {
 	case "image":
 		serviceDecl.Image, err = parser.expectStringOrIdentifier()
+	case "command":
+		serviceDecl.Command, err = parser.expectStringOrIdentifier()
 	case "instances":
 		serviceDecl.Instances, err = parser.expectInteger()
 	case "expose":
