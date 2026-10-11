@@ -250,6 +250,10 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 
 	args = append(args, volumeMountArgs...)
 
+	for containerPath, hostPath := range spec.SecretMounts {
+		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", hostPath, containerPath))
+	}
+
 	for envKey, envValue := range spec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue

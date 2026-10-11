@@ -405,12 +405,19 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		}
 	}
 
+	var materialized []MaterializedSecret
 	if nodeAgent.secretProvider != nil {
-		materialized := nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
+		materialized = nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
 		nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
 	}
 
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
+	if len(materialized) > 0 {
+		runtimeSpec.SecretMounts = make(map[string]string, len(materialized))
+		for _, secretMount := range materialized {
+			runtimeSpec.SecretMounts[secretMount.MountPath] = secretMount.MountPath
+		}
+	}
 	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, runtimeSpec)
 }
 

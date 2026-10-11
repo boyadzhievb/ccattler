@@ -237,6 +237,55 @@ func TestBuildRunArgumentsShellCommandPreservesFullString(t *testing.T) {
 	}
 }
 
+func TestBuildRunArgumentsSecretMountsBindMounted(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:    "test-secrets",
+		Image: "postgres:16",
+		SecretMounts: map[string]string{ //nolint:gosec // test data, not credentials
+			"/run/secrets/db-password": "/run/secrets/db-password",
+		},
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	volumeArgs := []string{}
+	for argIndex, argValue := range args {
+		if argValue == "-v" && argIndex+1 < len(args) {
+			volumeArgs = append(volumeArgs, args[argIndex+1])
+		}
+	}
+
+	if len(volumeArgs) != 1 {
+		t.Fatalf("expected 1 secret bind-mount, got %d: %v", len(volumeArgs), volumeArgs)
+	}
+	if volumeArgs[0] != "/run/secrets/db-password:/run/secrets/db-password:ro" {
+		t.Errorf("secret mount: got %q, want %q", volumeArgs[0], "/run/secrets/db-password:/run/secrets/db-password:ro")
+	}
+}
+
+func TestBuildRunArgumentsNilSecretMountsNoVolumes(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:    "test-no-secrets",
+		Image: "nginx:1.27",
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	for argIndex, argValue := range args {
+		if argValue == "-v" && argIndex+1 < len(args) {
+			t.Errorf("unexpected -v flag when SecretMounts is nil: %s", args[argIndex+1])
+		}
+	}
+}
+
 func TestBuildRunArgumentsEmptyCommandOmitted(t *testing.T) {
 	containerRuntime := NewContainerRuntime()
 	spec := Spec{

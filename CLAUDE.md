@@ -218,7 +218,7 @@ service database {
 }
 ```
 
-Envelope encryption with KMS integration (AWS KMS, GCP KMS, Vault, HSM). Secrets scoped by service — the scheduler and network controller never see them.
+Envelope encryption with KMS integration (AWS KMS, GCP KMS, Vault, HSM). Secrets scoped by service — the scheduler and network controller never see them. The agent materializes secrets to the host filesystem and bind-mounts them read-only (`-v`) into containers at the declared path (e.g., `/run/secrets/db-password`).
 
 #### Workload-to-Workload Network Policy
 
