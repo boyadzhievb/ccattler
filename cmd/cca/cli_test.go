@@ -471,6 +471,64 @@ func TestCLIApplyTemplateError(testContext *testing.T) {
 	requireStderrContains(testContext, stderrContent, "image is needed")
 }
 
+// TestCLIApplyAutoLoadDefaults verifies that when a template "foo.cca" has a
+// sibling directory "foo/values.ccv", the defaults file is auto-loaded without
+// an explicit --values flag.
+func TestCLIApplyAutoLoadDefaults(testContext *testing.T) {
+	temporaryDirectory := testContext.TempDir()
+	templateFilePath := writeTempFile(testContext, temporaryDirectory, "myapp.cca", `service {{ .name }} {
+    image {{ .image }}
+    instances {{ .instances }}
+    expose {{ .port }}
+}
+`)
+	valuesDirectory := filepath.Join(temporaryDirectory, "myapp")
+	if mkdirError := os.Mkdir(valuesDirectory, 0750); mkdirError != nil {
+		testContext.Fatalf("failed to create values directory: %v", mkdirError)
+	}
+	writeTempFile(testContext, valuesDirectory, "values.ccv", `name: frontend
+image: react:18
+instances: 2
+port: 3000
+`)
+
+	stdoutContent, stderrContent, exitCode := runCCA(testContext,
+		"apply", templateFilePath)
+	requireExitCode(testContext, 0, exitCode, stderrContent)
+	requireStdoutContains(testContext, stdoutContent, "frontend")
+}
+
+// TestCLIRenderAutoLoadWithOverride verifies that auto-loaded defaults from
+// "foo/values.ccv" are overridden by explicit --values files.
+func TestCLIRenderAutoLoadWithOverride(testContext *testing.T) {
+	temporaryDirectory := testContext.TempDir()
+	templateFilePath := writeTempFile(testContext, temporaryDirectory, "myapp.cca", `service {{ .name }} {
+    image {{ .image }}
+    instances {{ .instances }}
+    expose {{ .port }}
+}
+`)
+	valuesDirectory := filepath.Join(temporaryDirectory, "myapp")
+	if mkdirError := os.Mkdir(valuesDirectory, 0750); mkdirError != nil {
+		testContext.Fatalf("failed to create values directory: %v", mkdirError)
+	}
+	writeTempFile(testContext, valuesDirectory, "values.ccv", `name: frontend
+image: react:18
+instances: 2
+port: 3000
+`)
+	overrideFilePath := writeTempFile(testContext, valuesDirectory, "values-prod.ccv", `instances: 10
+image: react:18-prod
+`)
+
+	stdoutContent, stderrContent, exitCode := runCCA(testContext,
+		"render", "--values", overrideFilePath, templateFilePath)
+	requireExitCode(testContext, 0, exitCode, stderrContent)
+	requireStdoutContains(testContext, stdoutContent, "instances 10")
+	requireStdoutContains(testContext, stdoutContent, "image react:18-prod")
+	requireStdoutContains(testContext, stdoutContent, "expose 3000")
+}
+
 // --- 57b/57c server-dependent tests ---
 
 // startCCARunServer starts a "cca run --watch" process in the background with

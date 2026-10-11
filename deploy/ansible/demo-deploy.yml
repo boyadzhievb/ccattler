@@ -87,7 +87,7 @@
         -keyout /tmp/airflow-certs/tls.key
         -out /tmp/airflow-certs/tls.crt
         -days 365
-        -subj "/CN=airflow.ccattler.local/O=CCattler"
+        -subj "/CN=airflow.home.arpa/O=CCattler"
       args:
         creates: /tmp/airflow-certs/tls.crt
 

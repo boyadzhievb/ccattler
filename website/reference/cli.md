@@ -6,11 +6,36 @@ The `cca` command-line tool manages CCattler clusters and workloads.
 
 ### `cca apply <file>`
 
-Parse and apply a `.ccattler` configuration file. Runs in simulated mode — compiles the config into facts, runs the reconciliation loop, prints the resulting state, and exits.
+Parse and apply a `.cca` configuration file. Runs in simulated mode — compiles the config into facts, runs the reconciliation loop, prints the resulting state, and exits. Supports template rendering with `--values`, `--set`, and `--set-from-env`. When a template `foo.cca` has a sibling directory `foo/values.ccv`, that file is auto-loaded as the defaults layer.
 
 ```bash
-cca apply web.ccattler
+cca apply web.cca
+cca apply airflow.cca                                       # auto-loads airflow/values.ccv
+cca apply --values airflow/values-prod.ccv airflow.cca      # defaults + prod overrides
+cca apply --set worker.instances=10 airflow.cca             # defaults + CLI override
+cca apply --set-from-env airflow.image=CI_TAG airflow.cca   # defaults + env var override
 ```
+
+| Flag | Description |
+|---|---|
+| `--values`, `-f` | Values file (`.ccv`), can be repeated — later files override earlier |
+| `--set` | Override a single value: `key=value`, dot paths supported |
+| `--set-from-env` | Read value from environment variable: `key=ENV_VAR` |
+| `--dry-run` | Print rendered DSL to stdout without applying |
+
+**Precedence** (lowest to highest): auto-loaded `values.ccv` < `--values` files (in order) < `--set` < `--set-from-env`.
+
+### `cca render <file>`
+
+Render a template with values and print the resulting DSL to stdout. Useful for debugging templates before applying. Same auto-loading behavior: `foo/values.ccv` is loaded automatically for `foo.cca`.
+
+```bash
+cca render airflow.cca                                      # auto-loads airflow/values.ccv
+cca render --values airflow/values-prod.ccv airflow.cca     # defaults + prod overrides
+cca render --set worker.instances=20 airflow.cca            # defaults + CLI override
+```
+
+Accepts the same `--values`, `--set`, and `--set-from-env` flags as `cca apply`.
 
 ### `cca run [--watch] <file>`
 

@@ -1,0 +1,6 @@
+# Staging environment: production-like but fewer instances.
+
+image: myapp:rc-42
+instances: 3
+cpu: 1000m
+memory: 1Gi

@@ -1,4 +1,5 @@
+# Dev environment: minimal resources.
+
 image: myapp:dev
-instances: 1
 cpu: 250m
 memory: 256Mi

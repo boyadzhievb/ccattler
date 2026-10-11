@@ -359,3 +359,128 @@ export platform/dns {
 | `network` | top-level | Network policy block |
 | `deny` | network | Deny traffic rule |
 | `export` | top-level | Cross-tenant service export |
+
+## Templates
+
+Any `.cca` or `.ccattler` file can use Go template syntax (`{{ }}`) to parameterize values. Templates are rendered before parsing, so the output must be valid CCattler DSL.
+
+### Values files (`.ccv`)
+
+Values files use CCattler's own `key: value` format (not YAML) — one entry per line, comments with `#`, dot notation for nesting:
+
+```
+# airflow/values.ccv
+airflow.image: apache/airflow:2.10.5
+worker.instances: 3
+worker.cpu: 1000m
+```
+
+Dot notation creates nested maps: `airflow.image` becomes `{{ .airflow.image }}` in the template.
+
+### Directory convention
+
+The template sits at the top level. A same-name subdirectory holds the values files. The `values.ccv` file inside the subdirectory is the defaults file — it is **auto-loaded** when rendering the template (no `--values` flag needed):
+
+```
+airflow.cca                            # template
+airflow/                               # values for this template
+├── values.ccv                         # defaults (auto-loaded)
+├── values-dev.ccv                     # dev overrides
+├── values-staging.ccv                 # staging overrides
+└── values-prod.ccv                    # production overrides
+```
+
+### Rendering
+
+```bash
+# Uses only defaults (auto-loaded from airflow/values.ccv)
+cca apply airflow.cca
+
+# Defaults + production overrides
+cca apply --values airflow/values-prod.ccv airflow.cca
+
+# Preview rendered output
+cca render --values airflow/values-prod.ccv airflow.cca
+
+# Override individual values from CLI
+cca apply --set worker.instances=10 airflow.cca
+
+# Read value from environment variable
+cca apply --values airflow/values-prod.ccv --set-from-env airflow.image=AIRFLOW_TAG airflow.cca
+```
+
+**Precedence** (lowest to highest): auto-loaded `values.ccv` < `--values` files (in order) < `--set` < `--set-from-env`.
+
+### Template functions
+
+| Function | Description | Example |
+|---|---|---|
+| `default` | Fallback if value is empty | `{{ default "3" .worker.instances }}` |
+| `required` | Fail if value is missing | `{{ required "image is required" .airflow.image }}` |
+| `quote` | Wrap in double quotes | `{{ .airflow.image \| quote }}` |
+| `upper` / `lower` | Case conversion | `{{ .env \| upper }}` |
+| `ternary` | Conditional value | `{{ ternary "true" "false" .debug }}` |
+| `toJson` | Serialize to JSON | `{{ .config \| toJson }}` |
+| `indent` / `nindent` | Indent text | `{{ indent 4 .block }}` |
+
+### Example: Airflow across environments
+
+Template at `examples/templates/airflow.cca` — all values come from `airflow/values.ccv` (auto-loaded defaults), environment files only override what differs:
+
+```hcl
+service worker {
+    image {{ .airflow.image | quote }}
+    command "airflow celery worker"
+    instances {{ .worker.instances }}
+    resources {
+        cpu {{ .worker.cpu }}
+        memory {{ .worker.memory }}
+    }
+    scale {
+        horizontal {
+            min {{ .worker.minInstances }}
+            max {{ .worker.maxInstances }}
+        }
+    }
+}
+```
+
+Default values in `airflow/values.ccv`:
+
+```
+airflow.image: apache/airflow:2.10.5
+worker.instances: 3
+worker.cpu: 1000m
+worker.memory: 2048Mi
+worker.minInstances: 1
+worker.maxInstances: 10
+```
+
+Production overrides in `airflow/values-prod.ccv`:
+
+```
+worker.instances: 5
+worker.cpu: 2000m
+worker.memory: 4096Mi
+worker.minInstances: 3
+worker.maxInstances: 20
+```
+
+Deploy to dev:
+
+```bash
+cca apply --values airflow/values-dev.ccv airflow.cca
+```
+
+Deploy to prod:
+
+```bash
+cca apply --values airflow/values-prod.ccv airflow.cca
+```
+
+Override image tag in CI:
+
+```bash
+cca apply --values airflow/values-prod.ccv \
+  --set-from-env airflow.image=CI_AIRFLOW_IMAGE airflow.cca
+```

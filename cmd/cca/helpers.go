@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -201,7 +202,8 @@ type renderedDSLContent struct {
 
 // resolveAndRenderDSLFiles resolves the config path (a single file or a directory)
 // into one or more DSL files, reads each, and applies template rendering when any
-// values flags are present. Returns a list of rendered contents ready for apply/diff.
+// values flags are present or a default values file exists. Returns a list of
+// rendered contents ready for apply/diff.
 func resolveAndRenderDSLFiles(
 	configPath string,
 	valuesFilePaths []string,
@@ -213,7 +215,6 @@ func resolveAndRenderDSLFiles(
 		return nil, resolveError
 	}
 
-	hasTemplateFlags := len(valuesFilePaths) > 0 || len(setOverrides) > 0 || len(setFromEnvOverrides) > 0
 	var renderedFiles []renderedDSLContent
 
 	for _, filePath := range filePaths {
@@ -223,9 +224,12 @@ func resolveAndRenderDSLFiles(
 		}
 		dslContent := string(fileData)
 
+		effectiveValuesPaths := prependDefaultValuesFile(filePath, valuesFilePaths)
+		hasTemplateFlags := len(effectiveValuesPaths) > 0 || len(setOverrides) > 0 || len(setFromEnvOverrides) > 0
+
 		if hasTemplateFlags {
 			renderedContent, renderError := lang.RenderWithValuesFiles(
-				dslContent, valuesFilePaths, setOverrides, setFromEnvOverrides)
+				dslContent, effectiveValuesPaths, setOverrides, setFromEnvOverrides)
 			if renderError != nil {
 				return nil, fmt.Errorf("template error in %s: %w", filePath, renderError)
 			}
@@ -239,6 +243,26 @@ func resolveAndRenderDSLFiles(
 	}
 
 	return renderedFiles, nil
+}
+
+// prependDefaultValuesFile checks for a convention-based default values file
+// alongside the DSL template. For a template named "airflow.cca", it looks for
+// "airflow/values.ccv" in the same directory. If found, it is prepended to the
+// values file list so that explicit --values flags override the defaults.
+func prependDefaultValuesFile(dslFilePath string, valuesFilePaths []string) []string {
+	directoryPath := filepath.Dir(dslFilePath)
+	baseName := filepath.Base(dslFilePath)
+	templateName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
+
+	defaultValuesPath := filepath.Join(directoryPath, templateName, "values.ccv")
+	if _, statError := os.Stat(defaultValuesPath); statError != nil {
+		return valuesFilePaths
+	}
+
+	effectivePaths := make([]string, 0, 1+len(valuesFilePaths))
+	effectivePaths = append(effectivePaths, defaultValuesPath)
+	effectivePaths = append(effectivePaths, valuesFilePaths...)
+	return effectivePaths
 }
 
 // resolveDSLFilePaths returns the list of DSL file paths to process. When the

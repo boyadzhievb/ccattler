@@ -125,7 +125,7 @@ All notable releases of CCattler are documented here.
 - **Anti-pattern remediation** — dead code removal, magic number extraction, function length enforcement, typed enums
 - **Authorization wiring** — capability-based permissions, per-controller least privilege, store prefix RBAC
 - **Authentication** — local token auth, mTLS cert auth, OIDC infrastructure
-- **DSL templating** — values files, `--set`, `--set-from-env`, `cca render` command
+- **DSL templating** — `.ccv` values files with auto-loading, `--set`, `--set-from-env`, `cca render` command
 - **CLI acceptance tests** — end-to-end CLI command validation
 
 | Milestone | Phase | Summary |

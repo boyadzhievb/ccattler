@@ -1,3 +1,10 @@
+# Simple API service template.
+#
+# Defaults auto-loaded from api/values.ccv.
+#
+# Deploy to dev:   cca apply --values api/values-dev.ccv api.cca
+# Deploy to prod:  cca apply --values api/values-prod.ccv api.cca
+
 service {{ .name }} {
     image {{ .image }}
     instances {{ .instances }}

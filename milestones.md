@@ -1403,5 +1403,6 @@ Converts ClusterAutoscaleController from direct provider calls to durable-intent
 
 | M87 — Fair Allocation, Gap Markers & DeltaController | 87 | Fair allocation in InstanceController (arithmetic base+remainder, no alphabetical starvation), event projector gap markers on compaction/overflow, DeltaController interface with delta buffer coalescing and overflow fallback |
 | M88 — Command Directive & Airflow Deployment | 88 | `command` DSL directive for container CMD override (parser→compiler→fact→agent→container runtime), shell metacharacter detection wraps in `sh -c`, Airflow CeleryExecutor multi-component example (postgres, redis, webserver, scheduler, worker) |
+| M89 — Template Conventions & Auto-Loading Values | 89 | `.ccv` extension for values files, `<name>/values.ccv` auto-loaded as defaults for `<name>.cca` templates, directory convention (template + same-name subdirectory for values), Airflow + API template examples, `airflow.home.arpa` TLS domain, precedence: auto-loaded < `--values` < `--set` < `--set-from-env` |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

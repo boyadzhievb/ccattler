@@ -1,0 +1,8 @@
+# Staging environment: production-like but smaller scale.
+
+airflow.loadExamples: false
+
+worker.instances: 2
+worker.cpu: 1000m
+worker.memory: 2048Mi
+worker.maxInstances: 5

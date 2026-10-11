@@ -151,19 +151,18 @@ func RenderTemplate(templateContent string, mergedValues map[string]any) (string
 	return renderedOutput.String(), nil
 }
 
-// LoadValuesFile reads a values file from disk and parses it into a nested
-// map[string]any suitable for template rendering. The file format is a simple
-// key-value format with one entry per line:
+// LoadValuesFile reads a .ccv (CCattler values) file from disk and parses it
+// into a nested map[string]any suitable for template rendering. The file
+// format is a simple key-value format with one entry per line:
 //
-//	image: nginx:1.27
-//	instances: 3
-//	cpu: 500m
-//	nested.key: value
+//	airflow.image: apache/airflow:2.10.5
+//	worker.instances: 3
+//	worker.cpu: 1000m
 //
 // Lines beginning with # are comments and blank lines are skipped. Dot
-// notation in keys creates nested maps: "web.image: nginx" becomes
-// {"web": {"image": "nginx"}}. All values are kept as strings since the
-// CCattler DSL uses string values throughout.
+// notation in keys creates nested maps: "airflow.image: nginx" becomes
+// {"airflow": {"image": "nginx"}}. All values are kept as strings since
+// the CCattler DSL uses string values throughout.
 func LoadValuesFile(filePath string) (map[string]any, error) {
 	fileHandle, openError := os.Open(filePath) //nolint:gosec // values file path comes from CLI --values flag
 	if openError != nil {

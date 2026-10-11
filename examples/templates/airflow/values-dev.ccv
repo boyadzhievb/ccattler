@@ -1,0 +1,12 @@
+# Dev environment: minimal resources, fewer workers, examples loaded.
+
+worker.instances: 1
+worker.cpu: 500m
+worker.memory: 1024Mi
+worker.maxInstances: 3
+
+webserver.cpu: 250m
+webserver.memory: 512Mi
+
+scheduler.cpu: 250m
+scheduler.memory: 512Mi

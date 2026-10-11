@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M88 — Phase 88 Command Directive & Airflow Deployment. M1–M88 complete. Gates A–I resolved.
+**Completed through:** M89 — Phase 89 Template Conventions & Auto-Loading Values. M1–M89 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

@@ -1,0 +1,172 @@
+# Apache Airflow: parameterized CeleryExecutor stack.
+#
+# Defaults auto-loaded from airflow/values.ccv — no flag needed.
+#
+# Deploy to dev:   cca apply --values airflow/values-dev.ccv airflow.cca
+# Deploy to prod:  cca apply --values airflow/values-prod.ccv airflow.cca
+# Preview render:  cca render --values airflow/values-prod.ccv airflow.cca
+
+volume metadata-db-data {
+    size {{ .db.volumeSize }}
+    persistent true
+}
+
+volume redis-data {
+    size 5Gi
+    persistent true
+}
+
+volume dags {
+    size {{ .dags.volumeSize }}
+    persistent true
+}
+
+volume logs {
+    size {{ .logs.volumeSize }}
+    persistent true
+}
+
+service metadata-db {
+    image {{ .db.image }}
+    instances 1
+    expose 5432
+    resources {
+        cpu {{ .db.cpu }}
+        memory {{ .db.memory }}
+    }
+    volume metadata-db-data /var/lib/postgresql/data
+    config {
+        env POSTGRES_DB "airflow"
+        env POSTGRES_USER "airflow"
+        env POSTGRES_PASSWORD "airflow"
+    }
+    health {
+        tcp
+        every 10s
+    }
+    init {
+        exec "pg_isready -U airflow"
+        timeout 60s
+        retry 10
+    }
+}
+
+service redis {
+    image {{ .redis.image }}
+    instances 1
+    expose 6379
+    resources {
+        cpu {{ .redis.cpu }}
+        memory {{ .redis.memory }}
+    }
+    volume redis-data /data
+    health {
+        tcp
+        every 10s
+    }
+}
+
+service webserver {
+    image {{ .airflow.image | quote }}
+    command "airflow webserver"
+    instances {{ .webserver.instances }}
+    expose {{ .webserver.port }}
+    resources {
+        cpu {{ .webserver.cpu }}
+        memory {{ .webserver.memory }}
+    }
+    volume dags /opt/airflow/dags
+    volume logs /opt/airflow/logs
+    config {
+        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN {{ .airflow.databaseUrl | quote }}
+        env AIRFLOW__CELERY__BROKER_URL {{ .airflow.brokerUrl | quote }}
+        env AIRFLOW__CELERY__RESULT_BACKEND {{ .airflow.resultBackend | quote }}
+        env AIRFLOW__WEBSERVER__EXPOSE_CONFIG {{ .webserver.exposeConfig | quote }}
+        env AIRFLOW__CORE__LOAD_EXAMPLES {{ .airflow.loadExamples | quote }}
+        env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
+        env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
+    }
+    secret fernet-key "/opt/airflow/fernet-key"
+    secret webserver-secret-key "/opt/airflow/webserver-secret-key"
+    health {
+        http /health
+        every 15s
+    }
+    init {
+        exec "airflow db migrate"
+        timeout 120s
+        retry 5
+    }
+    init {
+        exec {{ .airflow.createUserCommand | quote }}
+        timeout 30s
+        retry 3
+    }
+}
+
+service scheduler {
+    image {{ .airflow.image | quote }}
+    command "airflow scheduler"
+    instances 1
+    resources {
+        cpu {{ .scheduler.cpu }}
+        memory {{ .scheduler.memory }}
+    }
+    volume dags /opt/airflow/dags
+    volume logs /opt/airflow/logs
+    config {
+        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN {{ .airflow.databaseUrl | quote }}
+        env AIRFLOW__CELERY__BROKER_URL {{ .airflow.brokerUrl | quote }}
+        env AIRFLOW__CELERY__RESULT_BACKEND {{ .airflow.resultBackend | quote }}
+        env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
+        env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
+    }
+    secret fernet-key "/opt/airflow/fernet-key"
+    health {
+        tcp
+        every 30s
+    }
+}
+
+service worker {
+    image {{ .airflow.image | quote }}
+    command "airflow celery worker"
+    instances {{ .worker.instances }}
+    expose 8793
+    resources {
+        cpu {{ .worker.cpu }}
+        memory {{ .worker.memory }}
+    }
+    volume dags /opt/airflow/dags
+    volume logs /opt/airflow/logs
+    config {
+        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN {{ .airflow.databaseUrl | quote }}
+        env AIRFLOW__CELERY__BROKER_URL {{ .airflow.brokerUrl | quote }}
+        env AIRFLOW__CELERY__RESULT_BACKEND {{ .airflow.resultBackend | quote }}
+        env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
+        env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
+    }
+    secret fernet-key "/opt/airflow/fernet-key"
+    health {
+        tcp
+        every 15s
+    }
+    scale {
+        horizontal {
+            min {{ .worker.minInstances }}
+            max {{ .worker.maxInstances }}
+            target cpu = {{ .worker.cpuTarget }}
+        }
+    }
+}
+
+group airflow-stack {
+    process webserver
+    process scheduler
+    process worker
+    share volume dags
+    share volume logs
+}

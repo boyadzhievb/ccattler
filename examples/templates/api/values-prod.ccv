@@ -1,3 +1,5 @@
+# Production environment: full resources, high availability.
+
 image: myapp:v2.1.0
 instances: 10
 cpu: 2000m

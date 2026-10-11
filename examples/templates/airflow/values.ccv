@@ -1,0 +1,38 @@
+# Default values for Airflow CeleryExecutor stack.
+# Auto-loaded when rendering airflow.cca — no --values flag needed.
+# Override per-environment with values-dev.ccv, values-staging.ccv, values-prod.ccv.
+
+airflow.image: apache/airflow:2.10.5
+airflow.databaseUrl: postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow
+airflow.brokerUrl: redis://redis:6379/0
+airflow.resultBackend: db+postgresql://airflow:airflow@metadata-db:5432/airflow
+airflow.loadExamples: true
+airflow.createUserCommand: airflow users create --username airflow --password airflow --firstname Admin --lastname User --role Admin --email admin@example.com
+
+db.image: postgres:16
+db.cpu: 500m
+db.memory: 512Mi
+db.volumeSize: 20Gi
+
+redis.image: redis:7
+redis.cpu: 250m
+redis.memory: 256Mi
+
+dags.volumeSize: 10Gi
+logs.volumeSize: 20Gi
+
+webserver.port: 8080
+webserver.instances: 1
+webserver.cpu: 500m
+webserver.memory: 1024Mi
+webserver.exposeConfig: false
+
+scheduler.cpu: 500m
+scheduler.memory: 1024Mi
+
+worker.instances: 3
+worker.cpu: 1000m
+worker.memory: 2048Mi
+worker.minInstances: 1
+worker.maxInstances: 10
+worker.cpuTarget: 70

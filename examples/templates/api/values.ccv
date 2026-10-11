@@ -1,3 +1,6 @@
+# Default values for the API service template.
+# Auto-loaded when rendering api.cca.
+
 name: api
 image: myapp:latest
 instances: 1
