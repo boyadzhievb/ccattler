@@ -362,7 +362,7 @@ export platform/dns {
 
 ## Templates
 
-Any `.cca` or `.ccattler` file can use Go template syntax (`{{ }}`) to parameterize values. Templates are rendered before parsing, so the output must be valid CCattler DSL.
+Any `.cca` or `.ccattler` file can use Go template syntax to parameterize values. Templates are rendered before parsing, so the output must be valid CCattler DSL.
 
 ### Values files (`.ccv`)
 
@@ -375,7 +375,7 @@ worker.instances: 3
 worker.cpu: 1000m
 ```
 
-Dot notation creates nested maps: `airflow.image` becomes `{{ .airflow.image }}` in the template.
+Dot notation creates nested maps: `airflow.image` becomes <code v-pre>{{ .airflow.image }}</code> in the template.
 
 ### Directory convention
 
@@ -413,6 +413,8 @@ cca apply --values airflow/values-prod.ccv --set-from-env airflow.image=AIRFLOW_
 
 ### Template functions
 
+<div v-pre>
+
 | Function | Description | Example |
 |---|---|---|
 | `default` | Fallback if value is empty | `{{ default "3" .worker.instances }}` |
@@ -423,9 +425,13 @@ cca apply --values airflow/values-prod.ccv --set-from-env airflow.image=AIRFLOW_
 | `toJson` | Serialize to JSON | `{{ .config \| toJson }}` |
 | `indent` / `nindent` | Indent text | `{{ indent 4 .block }}` |
 
+</div>
+
 ### Example: Airflow across environments
 
 Template at `examples/templates/airflow.cca` — all values come from `airflow/values.ccv` (auto-loaded defaults), environment files only override what differs:
+
+<div v-pre>
 
 ```hcl
 service worker {
@@ -444,6 +450,8 @@ service worker {
     }
 }
 ```
+
+</div>
 
 Default values in `airflow/values.ccv`:
 
