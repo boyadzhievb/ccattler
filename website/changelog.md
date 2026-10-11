@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.18.0-beta <Badge type="tip" text="latest" /> {#v1-18-0-beta}
+## v1.19.0-beta <Badge type="tip" text="latest" /> {#v1-19-0-beta}
+
+**2026-10-11** — Networking Docs & eBPF Data Plane Plan.
+
+- **Networking Docs & eBPF Data Plane Plan** (M91) — Document networking architecture with honest trade-offs (iptables linear scaling, comparison table vs kube-proxy/IPVS/Cilium), plan eBPF `DataPlaneProvider` — BPF hash map VIP→backend lookups (O(1)), XDP/TC attachment, `cilium/ebpf` Go loader, kernel 5.10+ requirement
+
+---
+
+## v1.18.0-beta {#v1-18-0-beta}
 
 **2026-10-11** — Deploy Testbed & Doc Cleanup.
 

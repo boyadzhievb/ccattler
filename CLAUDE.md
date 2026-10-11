@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M90 — Phase 90 Deploy Testbed & Doc Cleanup. M1–M90 complete. Gates A–I resolved.
+**Completed through:** M91 — Phase 91 Networking Docs & eBPF Data Plane Plan. M1–M91 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
