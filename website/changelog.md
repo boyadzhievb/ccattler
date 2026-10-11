@@ -1,11 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.19.0-beta <Badge type="tip" text="latest" /> {#v1-19-0-beta}
+## v1.19.0 <Badge type="tip" text="latest" /> {#v1-19-0}
 
-**2026-10-11** — Networking Docs & eBPF Data Plane Plan.
+**2026-10-11** — Localhost admin listener, secret bind-mounts, local token auth.
 
-- **Networking Docs & eBPF Data Plane Plan** (M91) — Document networking architecture with honest trade-offs (iptables linear scaling, comparison table vs kube-proxy/IPVS/Cilium), plan eBPF `DataPlaneProvider` — BPF hash map VIP→backend lookups (O(1)), XDP/TC attachment, `cilium/ebpf` Go loader, kernel 5.10+ requirement
+- **Localhost admin listener** (M91) — When the server binds to an external IP with TLS, a plain-HTTP admin listener on `127.0.0.1:<port>` allows local CLI commands (`cca secret`, `cca status`) without mTLS certificates
+- **Secret bind-mounts** (M91) — Secrets materialized by the agent are now bind-mounted read-only (`-v`) into containers; previously they were written to the host but invisible inside containers, breaking `POSTGRES_PASSWORD_FILE` and similar patterns
+- **Local token authentication** (M91) — File-based bearer token at `/etc/ccattler/local-token` for system-wide CLI access in TLS mode; replaces the old header-based authenticator
+- **Secret master key distribution** (M91) — E2E test distributes the encryption key from the controller to worker nodes for multi-node secret decryption
+- **Networking docs & eBPF data plane plan** (M91) — Document networking architecture with honest trade-offs (iptables linear scaling, comparison table vs kube-proxy/IPVS/Cilium), plan eBPF `DataPlaneProvider` — BPF hash map VIP→backend lookups (O(1)), XDP/TC attachment, `cilium/ebpf` Go loader, kernel 5.10+ requirement
 
 ---
 
