@@ -52,7 +52,11 @@ The `--advertise-address` flag on the agent publishes the node's LAN IP for cros
 
 ## VIP data plane
 
-The data plane uses iptables DNAT rules with round-robin (via the `statistic` module):
+The data plane translates service VIPs into real backend addresses on each node. CCattler uses a **pluggable `DataPlaneProvider` interface** — the agent calls `ReconcileVIPDataPlane()` on every reconciliation cycle, and the provider programs the forwarding rules.
+
+### Current implementation: iptables
+
+The default provider uses iptables DNAT rules with round-robin (via the `statistic` module):
 
 ```
 VIP 10.200.0.1:80 → DNAT to:
@@ -62,6 +66,29 @@ VIP 10.200.0.1:80 → DNAT to:
 ```
 
 Per-service iptables chains (`CCA_SVC_*`) are managed by the agent. A `cca0` dummy interface holds VIP addresses.
+
+**Scale characteristics:** iptables rules grow linearly with service count — each service adds one chain with N rules (one per backend). This is the same approach Kubernetes' kube-proxy uses in iptables mode. At tens of services it's fine; at hundreds, the linear chain walk on every packet becomes a bottleneck.
+
+### How other systems solve this
+
+| System | Data plane | Lookup | Scaling |
+|---|---|---|---|
+| kube-proxy (iptables) | iptables DNAT chains | Linear chain walk | ~11 rules per service |
+| kube-proxy (IPVS) | IPVS kernel module | Hash table | O(1) per lookup |
+| Cilium | eBPF programs + maps | Hash map in kernel | O(1) per lookup, flat iptables |
+| **CCattler (current)** | iptables DNAT chains | Linear chain walk | ~N rules per service |
+| **CCattler (planned)** | eBPF programs + maps | Hash map in kernel | O(1) per lookup |
+
+### Future: eBPF data plane
+
+The `DataPlaneProvider` interface was designed to support alternative backends. An eBPF implementation would:
+
+- Attach a BPF program to each pod's network interface (or the host `cca0` interface)
+- Use a BPF hash map for VIP→backend lookups (O(1) regardless of service count)
+- Eliminate per-service iptables chains entirely
+- Require Linux kernel 5.10+ for full functionality
+
+The Go side would use the `cilium/ebpf` library to compile and load BPF programs, implementing the same `ReconcileVIPDataPlane` / `Cleanup` contract. The rest of CCattler (endpoint controller, DNS, proxy, policies) stays unchanged.
 
 ## Identity-based network policies
 
