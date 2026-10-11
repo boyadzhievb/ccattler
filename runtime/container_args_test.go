@@ -186,6 +186,35 @@ func TestBuildRunArgumentsNetworkFlags(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgumentsNetworkWithoutIPUsesDNSAlias verifies that containers
+// are placed on the named network with a DNS alias even when no specific IP is
+// allocated. This enables service-name resolution via embedded Docker/nerdctl DNS.
+func TestBuildRunArgumentsNetworkWithoutIPUsesDNSAlias(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	containerRuntime.networkName = "cca-net"
+	spec := Spec{
+		ID:          "test-dns-only",
+		Image:       "postgres:16",
+		ServiceName: "metadata-db",
+	}
+
+	args, _, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	argsJoined := strings.Join(args, " ")
+	if !strings.Contains(argsJoined, "--network cca-net") {
+		t.Error("missing --network flag when networkName is set without IP")
+	}
+	if strings.Contains(argsJoined, "--ip") {
+		t.Error("--ip flag should not be present when spec.IP is empty")
+	}
+	if !strings.Contains(argsJoined, "--network-alias metadata-db") {
+		t.Error("missing --network-alias for DNS service discovery")
+	}
+}
+
 func TestBuildRunArgumentsCommandAppendedAfterImage(t *testing.T) {
 	containerRuntime := NewContainerRuntime()
 	spec := Spec{

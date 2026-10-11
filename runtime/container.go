@@ -81,8 +81,9 @@ func NewContainerRuntime() *ContainerRuntime {
 }
 
 // SetNetwork configures the runtime to create and use a container network
-// with the given name and subnet CIDR. Containers started with a Spec.IP will
-// be connected to this network with the specified IP address.
+// with the given name and subnet CIDR. All containers are connected to this
+// network with a DNS alias matching their service name. When Spec.IP is also
+// set, the container receives that specific IP address.
 func (containerRuntime *ContainerRuntime) SetNetwork(networkName string, subnetCIDR string) {
 	containerRuntime.networkName = networkName
 	containerRuntime.networkCIDR = subnetCIDR
@@ -157,10 +158,11 @@ func (containerRuntime *ContainerRuntime) materializeConfigFilesToTempDirectory(
 // Start launches a nerdctl container for the workload described by spec. If the
 // workload is already tracked as running, this is a no-op (idempotent). The
 // container is started in detached mode with a deterministic name derived from
-// the workload ID. When a nerdctl network is configured and spec.IP is set, the
-// container is connected to that network with the specified IP address. Config
-// files from spec.ConfigFiles are materialized to a temp directory and
-// bind-mounted read-only into the container.
+// the workload ID. When a nerdctl network is configured, the container is
+// connected to it with a DNS alias matching the service name; if spec.IP is
+// also set, the container receives that specific IP. Config files from
+// spec.ConfigFiles are materialized to a temp directory and bind-mounted
+// read-only into the container.
 func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) error {
 	containerRuntime.mutex.Lock()
 	if containerRuntime.trackedContainers[spec.ID] {
@@ -169,7 +171,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 	containerRuntime.mutex.Unlock()
 
-	if spec.IP != "" && containerRuntime.networkName != "" {
+	if containerRuntime.networkName != "" {
 		if err := containerRuntime.ensureNetworkExists(ctx); err != nil {
 			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("network setup: %v", err)}
 		}
@@ -224,8 +226,11 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, containerName string, volumeMountArgs []string) ([]string, int, error) {
 	args := []string{"run", "-d", "--name", containerName}
 
-	if spec.IP != "" && containerRuntime.networkName != "" {
-		args = append(args, "--network", containerRuntime.networkName, "--ip", spec.IP)
+	if containerRuntime.networkName != "" {
+		args = append(args, "--network", containerRuntime.networkName)
+		if spec.IP != "" {
+			args = append(args, "--ip", spec.IP)
+		}
 		if spec.ServiceName != "" {
 			args = append(args, "--network-alias", spec.ServiceName)
 		}
