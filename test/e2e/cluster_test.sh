@@ -264,8 +264,15 @@ ALREADY_PROVISIONED=false
 if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
     ALREADY_PROVISIONED=true
     log "VMs already provisioned — skipping Ansible, cleaning previous workloads..."
+    log "Stopping agents to prevent reconciliation races..."
     for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+        ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+    log "Removing all containers and pruning name store..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true" &
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/ >/dev/null 2>&1 || true"
