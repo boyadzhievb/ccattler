@@ -431,9 +431,7 @@ func configureAndStartAPIServer(
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 	statusAPIServer.SetEventLog(eventLog)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
-	statusAPIServer.SetAuthenticatorChain(authenticatorChain)
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
-	statusAPIServer.SetRequirePrincipal(true)
 
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
@@ -754,6 +752,10 @@ func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 // Returns the api.Server so callers can attach optional components like EventLog.
 func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *security.AuthenticatorChain, listenAddress string, serverTLSConfig *tls.Config, enrollmentEnabled bool) *api.Server {
 	apiServer := api.NewServer(factStore)
+	if authenticatorChain != nil {
+		apiServer.SetAuthenticatorChain(authenticatorChain)
+		apiServer.SetRequirePrincipal(true)
+	}
 
 	httpMux := http.NewServeMux()
 	httpMux.Handle("/api/", apiServer.Handler())
