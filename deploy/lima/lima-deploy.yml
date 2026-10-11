@@ -348,25 +348,25 @@
       until: node_registered.stdout | length > 0
       changed_when: false
 
-- name: Deploy Java test app
+- name: Deploy Airflow test app
   hosts: all
   become: true
   tags: [testapp]
   tasks:
-    - name: Copy test app config
+    - name: Copy Airflow test app config
       copy:
-        src: "{{ playbook_dir }}/../ansible/java-test-app.ccattler"
-        dest: /tmp/java-test-app.ccattler
+        src: "{{ playbook_dir }}/../ansible/airflow-test-app.cca"
+        dest: /tmp/airflow-test-app.cca
         mode: "0644"
 
-    - name: Apply test app
+    - name: Apply Airflow test app
       command: >
-        /usr/local/bin/cca apply /tmp/java-test-app.ccattler
+        /usr/local/bin/cca apply /tmp/airflow-test-app.cca
         --store etcd --endpoints http://127.0.0.1:2379
 
     - name: Wait for containers to start
       pause:
-        seconds: 30
+        seconds: 45
 
     - name: Check running containers
       command: nerdctl ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
@@ -386,7 +386,13 @@
           etcd:     127.0.0.1:2379 (forwarded to localhost:2379)
           server:   127.0.0.1:9770 (forwarded to localhost:9770)
           agent:    node-1
-          webapp:   2 x tomcat:11-jre21
+
+          Services:
+            metadata-db  1 x postgres:16
+            redis        1 x redis:7
+            webserver    1 x apache/airflow:2.10.5 (:8080)
+            scheduler    1 x apache/airflow:2.10.5
+            worker       2 x apache/airflow:2.10.5
 
           Commands:
             limactl shell cca-ctrl                — SSH into the VM

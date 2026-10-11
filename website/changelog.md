@@ -2,7 +2,28 @@
 
 All notable releases of CCattler are documented here.
 
-## v1.14.1-beta <Badge type="tip" text="latest" /> {#v1-14-1-beta}
+## v1.17.0-beta <Badge type="tip" text="latest" /> {#v1-17-0-beta}
+
+**2026-10-11** — Template conventions, command directive, Airflow deployment.
+
+- **Template conventions** (M89) — `.ccv` extension for values files, `<name>/values.ccv` auto-loaded as defaults for `<name>.cca` templates, directory convention with same-name subdirectory for environment values, precedence chain: auto-loaded < `--values` < `--set` < `--set-from-env`
+- **`command` directive** (M88) — container CMD override as shell string, always passed through `sh -c`, full pipeline from parser → compiler → fact store → agent → container runtime
+- **Airflow deployment** (M88) — CeleryExecutor stack example (postgres, redis, webserver, scheduler, worker) with health checks, init steps, secrets, autoscaling, and HTTPS on port 443 with self-signed TLS (`airflow.home.arpa`)
+- **Fair allocation** (M87) — arithmetic base+remainder distribution in InstanceController eliminates alphabetical starvation across nodes
+- **Event projector gap markers** (M87) — compaction and watch overflow emit resync markers instead of silent data loss
+- **DeltaController** (M87) — watch-based controller interface with delta buffer coalescing and overflow fallback to full reconciliation
+
+### What's new since v1.14.1
+
+| Version | Phase | Summary |
+|---|---|---|
+| v1.17.0 | 89 | Template conventions: `.ccv` values, auto-loading defaults, directory convention |
+| v1.16.0 | 87–88 | Command directive, Airflow deployment, fair allocation, DeltaController |
+| v1.15.0 | 80–86 | MemoryStore rewrite, per-node index, etcd cleanup, cloud deletion, lint v2 |
+
+---
+
+## v1.14.1-beta {#v1-14-1-beta}
 
 **2026-10-09** — Phases 72–78 complete. Five correctness review passes, durable capacity state machine.
 

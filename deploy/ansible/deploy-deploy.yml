@@ -109,8 +109,8 @@
     - name: Copy Airflow deployment config to control plane
       become: true
       copy:
-        src: "{{ playbook_dir }}/airflow-test-app.ccattler"
-        dest: /tmp/airflow-test-app.ccattler
+        src: "{{ playbook_dir }}/airflow-test-app.cca"
+        dest: /tmp/airflow-test-app.cca
         mode: "0644"
 
     - name: Wait for CCattler server to be ready
@@ -126,7 +126,7 @@
 
     - name: Apply Airflow deployment
       command: >
-        /usr/local/bin/cca apply /tmp/airflow-test-app.ccattler
+        /usr/local/bin/cca apply /tmp/airflow-test-app.cca
         --store etcd
         --endpoints {{ etcd_endpoints }}
 

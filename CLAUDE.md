@@ -1108,6 +1108,42 @@ cca metric set <svc> <m> <v>  # inject simulated metric
 
 ---
 
+## Release Process
+
+Use `scripts/release.sh` for all releases. Never update changelog, CLAUDE.md status, or tags manually.
+
+```bash
+# After all code is committed and tests pass:
+scripts/release.sh M89 v1.17.0-beta
+
+# Review the bookkeeping commit:
+git log --oneline -2
+git diff HEAD~1
+
+# Push code and tag (triggers Release workflow → binaries, Pages → site):
+git push && git push origin v1.17.0-beta
+```
+
+The script:
+1. Validates the milestone exists in `milestones.md`
+2. Updates the `CLAUDE.md` status line
+3. Generates a changelog entry in `website/changelog.md` from the milestone summary
+4. Moves the `<Badge text="latest" />` marker to the new version
+5. Commits all bookkeeping as `M<N>: release bookkeeping for <tag>`
+6. Creates an annotated git tag
+
+**Prerequisites before running the script:**
+- All code changes committed (working tree must be clean)
+- Milestone row added to `milestones.md` with title and summary
+- Tests passing
+
+**After push, CI handles:**
+- `release.yml` — builds binaries and deploy tarball
+- `pages.yml` — deploys updated website with new changelog
+- `test.yml`, `codeql.yml`, `trivy.yml` — validate the release commit
+
+---
+
 ## Integration Testing Infrastructure
 
 End-to-end integration tests run on a dedicated Linux server (`testbed-100.43`) using libvirt VMs to validate real multi-node cluster deployments.

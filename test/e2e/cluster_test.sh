@@ -394,7 +394,7 @@ log "All $EXPECTED_NODES nodes registered and alive"
 
 # ---- Step 3.5: Pre-pull container images on all nodes ----
 log "Pre-pulling container images on all nodes..."
-IMAGES=("tomcat:11-jre21" "postgres:16" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
+IMAGES=("apache/airflow:2.10.5" "postgres:16" "redis:7" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
 for vm in "${VM_NAMES[@]}"; do
     for image in "${IMAGES[@]}"; do
         ssh_vm "$vm" "sudo nerdctl pull -q $image" &
@@ -404,15 +404,15 @@ log "Waiting for all image pulls to complete..."
 wait
 log "Image pre-pull complete"
 
-# ---- Step 4: Deploy Java test app ----
-log "Applying Java test workload..."
+# ---- Step 4: Deploy Airflow test app ----
+log "Applying Airflow test workload..."
 scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
     -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-    "$WORKLOADS_DIR/java-app.cca" "$WORKLOADS_DIR/index.jsp" "vagrant@${CTRL_IP}:/tmp/"
+    "$WORKLOADS_DIR/airflow.cca" "vagrant@${CTRL_IP}:/tmp/airflow.cca"
 
-ssh_vm "${VM_PREFIX}-ctrl" "cd /tmp && /usr/local/bin/cca apply /tmp/java-app.cca --store etcd --endpoints $ETCD_ENDPOINTS"
+ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/airflow.cca --store etcd --endpoints $ETCD_ENDPOINTS"
 
-log "Waiting for Java app containers to start..."
+log "Waiting for Airflow containers to start (6 services)..."
 deadline=$((SECONDS + CONTAINER_TIMEOUT))
 total_containers=0
 while [[ $SECONDS -lt $deadline ]]; do
@@ -422,11 +422,11 @@ while [[ $SECONDS -lt $deadline ]]; do
         c=$(count_containers "$vm")
         total_containers=$((total_containers + c))
     done
-    log "  Retry: $total_containers/2 containers (${SECONDS}s elapsed)"
-    if [[ "$total_containers" -ge 2 ]]; then break; fi
+    log "  Retry: $total_containers/6 containers (${SECONDS}s elapsed)"
+    if [[ "$total_containers" -ge 6 ]]; then break; fi
 done
-[[ "$total_containers" -ge 2 ]] || fail "Expected 2+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
-log "Java app running: $total_containers containers across ${#VM_NAMES[@]} nodes"
+[[ "$total_containers" -ge 6 ]] || fail "Expected 6+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
+log "Airflow running: $total_containers containers across ${#VM_NAMES[@]} nodes"
 
 # ---- Step 5: Deploy Zabbix stack ----
 log "Applying Zabbix test workload..."
@@ -445,11 +445,11 @@ while [[ $SECONDS -lt $deadline ]]; do
         c=$(count_containers "$vm")
         total_containers=$((total_containers + c))
     done
-    log "  Retry: $total_containers/5 containers (${SECONDS}s elapsed)"
-    # Java (2) + Zabbix (3) = 5 total
-    if [[ "$total_containers" -ge 5 ]]; then break; fi
+    log "  Retry: $total_containers/9 containers (${SECONDS}s elapsed)"
+    # Airflow (6) + Zabbix (3) = 9 total
+    if [[ "$total_containers" -ge 9 ]]; then break; fi
 done
-[[ "$total_containers" -ge 5 ]] || fail "Expected 5+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
+[[ "$total_containers" -ge 9 ]] || fail "Expected 9+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
 log "Zabbix stack running: $total_containers total containers"
 
 # ---- Step 5.5: Phase 69 — Node Runtime Inspection tests ----
