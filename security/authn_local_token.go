@@ -26,6 +26,10 @@ const localTokenDirectoryName = ".ccattler"
 // localTokenFileName is the name of the file containing the local auth token.
 const localTokenFileName = "local-token"
 
+// systemTokenFilePath is the well-known absolute path where daemon-mode
+// servers write the local token so CLI commands can find it regardless of CWD.
+const systemTokenFilePath = "/etc/ccattler/local-token" //nolint:gosec // path to token file, not a credential
+
 // localTokenPrincipal is the fixed principal identity returned when the local
 // token authenticates successfully. Unlike the old header-based authenticator,
 // this principal is not attacker-controlled.
@@ -67,6 +71,10 @@ func NewLocalTokenAuthenticator() (*LocalTokenAuthenticator, error) {
 	tokenFilePath := filepath.Join(tokenDirectory, localTokenFileName)
 	if writeError := os.WriteFile(tokenFilePath, []byte(tokenHex), 0600); writeError != nil {
 		return nil, fmt.Errorf("local token: write %s: %w", tokenFilePath, writeError)
+	}
+
+	if mkdirError := os.MkdirAll(filepath.Dir(systemTokenFilePath), 0750); mkdirError == nil {
+		_ = os.WriteFile(systemTokenFilePath, []byte(tokenHex), 0600)
 	}
 
 	return &LocalTokenAuthenticator{
@@ -130,14 +138,22 @@ func (authenticator *LocalTokenAuthenticator) TokenFilePath() string {
 	return authenticator.tokenFilePath
 }
 
-// ReadLocalToken reads the local authentication token from the default file
-// path (.ccattler/local-token). CLI commands call this to obtain the bearer
-// token for non-TLS server communication.
+// ReadLocalToken reads the local authentication token, checking the system-wide
+// path (/etc/ccattler/local-token) first, then the CWD-relative path
+// (.ccattler/local-token). CLI commands call this to obtain the bearer token.
 func ReadLocalToken() (string, error) {
-	tokenFilePath := filepath.Join(localTokenDirectoryName, localTokenFileName)
-	tokenBytes, readError := os.ReadFile(tokenFilePath) //nolint:gosec // reading the local auth token is intentional
-	if readError != nil {
-		return "", fmt.Errorf("read local token: %w (is the server running?)", readError)
+	for _, candidatePath := range []string{
+		systemTokenFilePath,
+		filepath.Join(localTokenDirectoryName, localTokenFileName),
+	} {
+		tokenBytes, readError := os.ReadFile(candidatePath) //nolint:gosec // reading the local auth token is intentional
+		if readError != nil {
+			continue
+		}
+		tokenValue := strings.TrimSpace(string(tokenBytes))
+		if tokenValue != "" {
+			return tokenValue, nil
+		}
 	}
-	return strings.TrimSpace(string(tokenBytes)), nil
+	return "", fmt.Errorf("read local token: no token file found (is the server running?)")
 }
