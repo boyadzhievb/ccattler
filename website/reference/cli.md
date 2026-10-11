@@ -92,7 +92,13 @@ cca server                                    # default: localhost:9770
 cca server --listen 0.0.0.0:9770              # bind to all interfaces
 cca server --listen 0.0.0.0:9770 --tls        # auto-generate CA + certs
 cca server --listen 0.0.0.0:9770 --tls --dns  # enable DNS server
+cca server --listen 192.168.1.10:9770 --tls   # external IP with localhost admin listener
 ```
+
+When `--listen` is set to a specific external IP with TLS enabled, the server
+also starts a plain-HTTP admin listener on `127.0.0.1:<port>`. This allows
+local CLI commands (`cca secret`, `cca status`, etc.) to reach the API without
+mTLS client certificates.
 
 | Flag | Default | Description |
 |---|---|---|

@@ -364,12 +364,18 @@ func resolveServerTLSConfiguration(ctx context.Context, parsedConfig serverComma
 // non-TLS mode).
 func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer) (*security.AuthenticatorChain, string) {
 	if serverTLSConfig != nil {
-		authenticatorChain := security.NewAuthenticatorChain(
+		chainAuthenticators := []security.Authenticator{
 			security.NewMTLSAuthenticator(),
-		)
-		// Bind the server's own certificate identity to cluster-admin so
-		// requests authenticated with this cert (including /status) pass RBAC.
-		// Enrolled nodes get their own node-agent binding via the enrollment flow.
+		}
+		localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
+		if tokenError == nil {
+			chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
+			rbacAuthorizer.BindRole(security.RoleBinding{
+				Principal: "user:local-admin",
+				RoleName:  "cluster-admin",
+			})
+		}
+		authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
 		var serverPrincipal string
 		if len(serverTLSConfig.Certificates) > 0 {
 			serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
@@ -417,9 +423,8 @@ func configureAndStartAPIServer(
 
 	// API-layer capability authorizer. Maps builtin roles to capability grants.
 	apiAuthorizer := security.NewAPIAuthorizer()
-	if serverTLSConfig == nil {
-		apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
-	} else if serverPrincipal != "" {
+	apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
+	if serverPrincipal != "" {
 		apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
 	}
 
@@ -820,7 +825,43 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 			fmt.Fprintf(os.Stderr, "status api server: %v\n", serveError)
 		}
 	}()
+
+	if serverTLSConfig != nil {
+		launchLocalhostAdminListener(httpMux, listenAddress)
+	}
+
 	return apiServer
+}
+
+// launchLocalhostAdminListener starts a plain-HTTP listener on 127.0.0.1 so
+// that local CLI commands (cca secret, cca status, etc.) can reach the API
+// without mTLS client certificates. Skipped when the main listener is already
+// on localhost.
+func launchLocalhostAdminListener(handler http.Handler, mainListenAddress string) {
+	mainHost, mainPort, splitError := net.SplitHostPort(mainListenAddress)
+	if splitError != nil {
+		return
+	}
+	if mainHost == "127.0.0.1" || mainHost == "localhost" || mainHost == "::1" || mainHost == "0.0.0.0" || mainHost == "::" {
+		return
+	}
+
+	localhostAddress := "127.0.0.1:" + mainPort
+	localhostListener, listenError := net.Listen("tcp", localhostAddress)
+	if listenError != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not start localhost admin listener on %s: %v\n", localhostAddress, listenError)
+		return
+	}
+	localhostServer := &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: types.DefaultReadHeaderTimeout,
+	}
+	go func() {
+		if serveError := localhostServer.Serve(localhostListener); serveError != nil {
+			fmt.Fprintf(os.Stderr, "localhost admin listener: %v\n", serveError)
+		}
+	}()
+	fmt.Printf("Local admin API on %s (http, no TLS)\n", localhostAddress)
 }
 
 // buildClusterStatusJSON collects the full cluster state from the fact store

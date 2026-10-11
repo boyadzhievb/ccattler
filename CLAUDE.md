@@ -1082,7 +1082,7 @@ Enabled via: `cca server --cloud-provider aws --cloud-region us-east-1`
 cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
-cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]  # control plane (--cloud-provider enables cloud controllers)
+cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]  # control plane (--cloud-provider enables cloud controllers; when --listen is an external IP with TLS, a localhost admin listener is started on 127.0.0.1:<port> for local CLI commands)
 cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>] [--debug-listen <addr>]  # node agent (mTLS, VIP data plane, debug API)
 cca token create [--node-id <id>] [--ttl 15m]  # generate join token
 cca token list                # list active join tokens
