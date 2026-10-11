@@ -20,11 +20,6 @@ service metadata-db {
         tcp
         every 10s
     }
-    init {
-        exec "pg_isready -U airflow"
-        timeout 60s
-        retry 10
-    }
 }
 
 service redis {
@@ -60,16 +55,6 @@ service webserver {
     health {
         tcp
         every 15s
-    }
-    init {
-        exec "airflow db migrate"
-        timeout 120s
-        retry 5
-    }
-    init {
-        exec "airflow users create --username airflow --password airflow --firstname Admin --lastname User --role Admin --email admin@example.com"
-        timeout 30s
-        retry 3
     }
 }
 

@@ -773,7 +773,7 @@ func extractVerticalPolicies(facts []store.Fact) map[string]*extractedVerticalPo
 
 // extractCurrentResources extracts current resource values per service.
 func extractCurrentResources(facts []store.Fact, resourceType string) map[string]int {
-	return collectIntValuesBySuffix(facts, types.ScanDesiredServices, "resources/"+resourceType)
+	return collectResourceValuesBySuffix(facts, types.ScanDesiredServices, "resources/"+resourceType)
 }
 
 // extractObservedMetrics scans observed metric facts and returns a map of

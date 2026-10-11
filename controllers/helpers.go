@@ -63,6 +63,60 @@ func collectIntValuesBySuffix(facts []store.Fact, prefix string, matchSuffix str
 	return collectedValues
 }
 
+// parseResourceQuantity parses a Kubernetes-style resource quantity string into
+// an integer. CPU values ending in "m" are treated as millicores (e.g. "500m" → 500).
+// Memory values with binary suffixes are converted to bytes (e.g. "512Mi" → 536870912).
+// Plain integers are returned as-is.
+func parseResourceQuantity(rawValue string) int {
+	if len(rawValue) == 0 {
+		return 0
+	}
+	if rawValue[len(rawValue)-1] == 'm' {
+		parsedValue, parseError := strconv.Atoi(rawValue[:len(rawValue)-1])
+		if parseError == nil {
+			return parsedValue
+		}
+	}
+	if len(rawValue) >= 3 {
+		suffix := rawValue[len(rawValue)-2:]
+		numberPart := rawValue[:len(rawValue)-2]
+		var multiplier int
+		switch suffix {
+		case "Ki":
+			multiplier = 1024
+		case "Mi":
+			multiplier = 1024 * 1024
+		case "Gi":
+			multiplier = 1024 * 1024 * 1024
+		}
+		if multiplier > 0 {
+			parsedValue, parseError := strconv.Atoi(numberPart)
+			if parseError == nil {
+				return parsedValue * multiplier
+			}
+		}
+	}
+	parsedValue, parseError := strconv.Atoi(rawValue)
+	if parseError != nil {
+		return 0
+	}
+	return parsedValue
+}
+
+// collectResourceValuesBySuffix is like collectIntValuesBySuffix but parses
+// Kubernetes-style resource quantities (e.g. "500m", "512Mi") instead of
+// plain integers.
+func collectResourceValuesBySuffix(facts []store.Fact, prefix string, matchSuffix string) map[string]int {
+	collectedValues := make(map[string]int)
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
+		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, prefix)
+		if hasSuffix && suffix == matchSuffix {
+			collectedValues[entityName] = parseResourceQuantity(string(fact.Value))
+		}
+	}
+	return collectedValues
+}
+
 // parseInstanceFieldsFromFacts scans observed and derived instance facts and
 // returns a nested map keyed by instance ID, where each inner map holds field
 // name to value pairs (e.g. "state" -> "running", "service" -> "web",
