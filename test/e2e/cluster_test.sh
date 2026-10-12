@@ -652,38 +652,38 @@ done
 log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINERS containers"
 
 # ---- Step 4.5: Configure Caddy reverse proxy on testbed host ----
-# Caddy runs on the testbed host (192.168.100.43) and proxies external traffic
-# to CCattler services inside the libvirt VMs. Each workload manifest declares
-# WORKLOAD_EXPOSE entries as "domain:service_name".
+# Only for the deploy environment (long-lived cluster). The test environment is
+# ephemeral and halted after tests — no point exposing it.
 #
-# All services are exposed on port 443 with domain-based routing (SNI) and
-# self-signed TLS certificates via Caddy's internal CA. Requires DNS for
-# *.home.arpa pointing to the testbed host (e.g. /etc/hosts or dnsmasq).
+# Caddy runs on the testbed host and proxies external traffic to CCattler
+# services inside the libvirt VMs. Each workload manifest declares
+# WORKLOAD_EXPOSE entries as "domain:service_name".
 #
 # VIPs (10.100.x.x) are only routable inside the VMs where agent iptables DNAT
 # rules translate them. From the testbed host we proxy through the agent's HTTP
 # proxy (port 80 on each VM) which routes by Host header to the correct service.
 
-CADDY_CONFIG=""
-EXPOSE_SUMMARY=""
-TESTBED_HOST_IP="192.168.100.43"
+if [[ "$CLUSTER_ENV" == "deploy" ]]; then
+    CADDY_CONFIG=""
+    EXPOSE_SUMMARY=""
+    TESTBED_HOST_IP="192.168.100.43"
 
-# Build upstream list: all VM IPs on port 80 (agent HTTP proxy).
-PROXY_UPSTREAMS=""
-for ip in "${ALL_IPS[@]}"; do
-    PROXY_UPSTREAMS+=" ${ip}:80"
-done
+    # Build upstream list: all VM IPs on port 80 (agent HTTP proxy).
+    PROXY_UPSTREAMS=""
+    for ip in "${ALL_IPS[@]}"; do
+        PROXY_UPSTREAMS+=" ${ip}:80"
+    done
 
-for workload_name in "${WORKLOAD_NAMES[@]}"; do
-    # shellcheck source=/dev/null
-    source "$WORKLOADS_DIR/${workload_name}.workload"
-    if [[ -z "${WORKLOAD_EXPOSE+x}" ]] || [[ ${#WORKLOAD_EXPOSE[@]} -eq 0 ]]; then
-        continue
-    fi
-    for expose_entry in "${WORKLOAD_EXPOSE[@]}"; do
-        domain="${expose_entry%%:*}"
-        service_name="${expose_entry#*:}"
-        CADDY_CONFIG+="
+    for workload_name in "${WORKLOAD_NAMES[@]}"; do
+        # shellcheck source=/dev/null
+        source "$WORKLOADS_DIR/${workload_name}.workload"
+        if [[ -z "${WORKLOAD_EXPOSE+x}" ]] || [[ ${#WORKLOAD_EXPOSE[@]} -eq 0 ]]; then
+            continue
+        fi
+        for expose_entry in "${WORKLOAD_EXPOSE[@]}"; do
+            domain="${expose_entry%%:*}"
+            service_name="${expose_entry#*:}"
+            CADDY_CONFIG+="
 ${domain} {
     tls internal
     reverse_proxy${PROXY_UPSTREAMS} {
@@ -691,19 +691,18 @@ ${domain} {
     }
 }
 "
-        EXPOSE_SUMMARY+="  https://${domain} → ${service_name} (via agent proxy)\n"
+            EXPOSE_SUMMARY+="  https://${domain} → ${service_name} (via agent proxy)\n"
+        done
     done
-done
 
-if [[ -n "$CADDY_CONFIG" ]]; then
-    log "Configuring Caddy reverse proxy on testbed host..."
-    CADDY_FILE="/etc/caddy/Caddyfile"
-    echo "$CADDY_CONFIG" | sudo tee "$CADDY_FILE" > /dev/null
-    sudo systemctl reload caddy 2>/dev/null || sudo systemctl restart caddy 2>/dev/null || log "WARNING: Caddy not available on host"
-    log "Caddy configured — services accessible from:"
-    echo -e "$EXPOSE_SUMMARY"
-else
-    log "No workloads declared WORKLOAD_EXPOSE — skipping Caddy configuration"
+    if [[ -n "$CADDY_CONFIG" ]]; then
+        log "Configuring Caddy reverse proxy on testbed host..."
+        CADDY_FILE="/etc/caddy/Caddyfile"
+        echo "$CADDY_CONFIG" | sudo tee "$CADDY_FILE" > /dev/null
+        sudo systemctl restart caddy 2>/dev/null || log "WARNING: Caddy not available on host"
+        log "Caddy configured — services accessible from:"
+        echo -e "$EXPOSE_SUMMARY"
+    fi
 fi
 
 # ---- Step 5.5: Phase 69 — Node Runtime Inspection tests ----
