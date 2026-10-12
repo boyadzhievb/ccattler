@@ -594,10 +594,10 @@ done
 
 if [[ "$NEEDS_SECRET_KEY" == "true" ]]; then
     log "Distributing secret master key to worker nodes..."
-    SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /.ccattler/secret-master.key | base64")
+    SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/secret-master.key | base64")
     for vm in "${VM_NAMES[@]}"; do
         [[ "$vm" == *-ctrl ]] && continue
-        ssh_vm "$vm" "sudo mkdir -p /.ccattler && echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /.ccattler/secret-master.key > /dev/null && sudo chmod 600 /.ccattler/secret-master.key"
+        ssh_vm "$vm" "echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /etc/ccattler/secret-master.key > /dev/null && sudo chmod 600 /etc/ccattler/secret-master.key"
         ssh_vm "$vm" "sudo systemctl restart cca-agent"
     done
     sleep 2
