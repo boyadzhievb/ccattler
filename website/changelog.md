@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.19.0 <Badge type="tip" text="latest" /> {#v1-19-0}
+## v1.20.0-beta <Badge type="tip" text="latest" /> {#v1-20-0-beta}
+
+**2026-10-12** — Rolling Updates & Rollback Docs.
+
+- **Rolling Updates & Rollback Docs** (M93) — Rolling updates guide (`website/guides/rolling-updates.md`), rollback documentation (automatic threshold-3 + manual re-apply), disruption budget interaction, `rolling-update.cca` example, website examples/guides index updated
+
+---
+
+## v1.19.0 {#v1-19-0}
 
 **2026-10-11** — Localhost admin listener, secret bind-mounts, local token auth.
 

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M91 — Phase 91 Networking Docs & eBPF Data Plane Plan. M1–M91 complete. Gates A–I resolved.
+**Completed through:** M93 — Phase 93 Rolling Updates & Rollback Docs. M1–M93 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
