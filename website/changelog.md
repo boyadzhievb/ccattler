@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.21.0-beta <Badge type="tip" text="latest" /> {#v1-21-0-beta}
+## v1.22.0-beta <Badge type="tip" text="latest" /> {#v1-22-0-beta}
+
+**2026-10-12** — K8s Comparison & Deploy Fixes.
+
+- **K8s Comparison & Deploy Fixes** (M95) — Kubernetes production tooling comparison page (K9s, Argo CD, KEDA, Karpenter, Istio, Secrets Store CSI, Kyverno, Prometheus, Jaeger mapped to CCattler equivalents), Caddy deploy-only (skip test env), IPv4 preference for image pulls, secret master key path fix, deploy workflow workload selector
+
+---
+
+## v1.21.0-beta {#v1-21-0-beta}
 
 **2026-10-12** — E2E Workload Selection & Caddy Proxy.
 
