@@ -398,7 +398,7 @@ for vm in "${VM_NAMES[@]}"; do
         printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
         sudo systemctl enable dnsmasq
         sudo systemctl restart dnsmasq
-        grep -q 'precedence ::ffff:0:0/96 100' /etc/gai.conf 2>/dev/null || printf 'precedence ::ffff:0:0/96 100\n' | sudo tee -a /etc/gai.conf > /dev/null
+        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 > /dev/null 2>&1 || true
     " &
 done
 wait
