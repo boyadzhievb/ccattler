@@ -410,20 +410,22 @@ func (containerRuntime *ContainerRuntime) ExecCapture(ctx context.Context, insta
 
 // ExecInit runs an initialization command by creating a temporary container
 // from the given image, executing the command, and removing the container.
-// Uses --entrypoint /bin/sh to bypass custom image entrypoints that reject
-// non-native commands (e.g. Airflow interprets "sh" as an airflow subcommand).
+// Uses bash instead of sh because the cca-secret shell function uses a hyphen
+// in its name, which POSIX sh (dash) rejects as a syntax error. bash supports
+// hyphens in function names. Common image entrypoints (Airflow, Postgres) also
+// recognise "bash" and pass through correctly.
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
 	if !validImageReferencePattern.MatchString(image) {
 		return fmt.Errorf("invalid image reference: %q", image)
 	}
-	args := []string{"run", "--rm", "--entrypoint", "/bin/sh"}
+	args := []string{"run", "--rm"}
 	for envKey, envValue := range execSpec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue
 		}
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
-	args = append(args, image, "-c", execSpec.Command)
+	args = append(args, image, "bash", "-c", execSpec.Command)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr
