@@ -1,0 +1,11 @@
+# Workload manifest for Airflow CeleryExecutor stack.
+# Sourced by cluster_test.sh to discover deployment requirements.
+
+WORKLOAD_DESCRIPTION="Airflow CeleryExecutor (postgres + redis + webserver + scheduler + 2 workers)"
+WORKLOAD_IMAGES=("apache/airflow:2.10.5" "postgres:16" "redis:7")
+WORKLOAD_EXPECTED_CONTAINERS=6
+WORKLOAD_SECRETS=("airflow.db-password=airflow-e2e-pass" "airflow.admin-password=admin-e2e-pass")
+
+# Caddy reverse proxy: external_port → service_name:internal_port
+# The service_name resolves via CCattler DNS on the VMs.
+WORKLOAD_EXPOSE=("8080:webserver:8080")

@@ -10,6 +10,14 @@
 #   --env test   (default): 2 VMs on 192.168.122.x, ephemeral (destroyed after)
 #   --env deploy:           3 VMs on 192.168.124.x, long-lived (--no-destroy implied)
 #
+# Workload selection (each workload has a .cca file and a .workload manifest):
+#   --workload airflow,zabbix   deploy specific workloads (comma-separated)
+#   --workload all              deploy every workload that has a .workload manifest
+#   (default: airflow,zabbix for backward compatibility)
+#
+# Available workloads are auto-discovered from test/e2e/workloads/*.workload files.
+# Each manifest declares: images to pre-pull, expected container count, secrets.
+#
 # Prerequisites:
 #   - Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
 #   - CCattler binary at deploy/ansible/cca-linux-amd64
@@ -22,11 +30,21 @@
 # CI checkout doesn't lose track of existing VMs.
 #
 # Usage:
-#   ./test/e2e/cluster_test.sh                       # 2-node e2e test, reuse VMs if available
-#   ./test/e2e/cluster_test.sh --clean               # destroy VMs + wipe persisted state (fresh start)
-#   ./test/e2e/cluster_test.sh --no-destroy          # keep VMs running after test (debugging)
-#   ./test/e2e/cluster_test.sh --from-release        # download latest release binary
-#   ./test/e2e/cluster_test.sh --env deploy --from-release  # 3-node deploy cluster
+#   ./test/e2e/cluster_test.sh                                 # default workloads (airflow,zabbix)
+#   ./test/e2e/cluster_test.sh --workload all                  # deploy all available workloads
+#   ./test/e2e/cluster_test.sh --workload whoami               # deploy only whoami
+#   ./test/e2e/cluster_test.sh --workload airflow,whoami       # deploy airflow + whoami
+#   ./test/e2e/cluster_test.sh --list-workloads                # list available workloads and exit
+#   ./test/e2e/cluster_test.sh --clear-workloads               # remove all workloads (agents reconcile)
+#   ./test/e2e/cluster_test.sh --clean                         # destroy VMs + wipe state (fresh start)
+#   ./test/e2e/cluster_test.sh --no-destroy                    # keep VMs running after test
+#   ./test/e2e/cluster_test.sh --from-release                  # download latest release binary
+#   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
+#
+# Caddy reverse proxy: after deployment, Caddy on the testbed host
+# (192.168.100.43) is configured to proxy traffic to deployed services.
+# Each workload manifest declares WORKLOAD_EXPOSE entries mapping
+# external_port → service VIP:internal_port.
 
 set -euo pipefail
 
@@ -38,17 +56,24 @@ DESTROY_ON_EXIT=halt
 BINARY_SOURCE=build
 CLUSTER_ENV=test
 CLEAN_START=false
+SELECTED_WORKLOADS=""
+LIST_WORKLOADS=false
+CLEAR_WORKLOADS_ONLY=false
 
 for arg in "$@"; do
     case "$arg" in
-        --no-destroy)   DESTROY_ON_EXIT=none ;;
-        --clean)        CLEAN_START=true; DESTROY_ON_EXIT=destroy ;;
-        --from-release) BINARY_SOURCE=release ;;
-        --env=*)        CLUSTER_ENV="${arg#--env=}" ;;
-        --env)          ;; # handled below with next arg
+        --no-destroy)        DESTROY_ON_EXIT=none ;;
+        --clean)             CLEAN_START=true; DESTROY_ON_EXIT=destroy ;;
+        --clear-workloads)   CLEAR_WORKLOADS_ONLY=true ;;
+        --from-release)      BINARY_SOURCE=release ;;
+        --list-workloads)    LIST_WORKLOADS=true ;;
+        --env=*)             CLUSTER_ENV="${arg#--env=}" ;;
+        --env)               ;; # handled below with next arg
+        --workload=*)        SELECTED_WORKLOADS="${arg#--workload=}" ;;
+        --workload)          ;; # handled below with next arg
     esac
 done
-# Handle --env <value> (two-arg form)
+# Handle two-arg forms: --env <value>, --workload <value>
 for ((i=1; i<=$#; i++)); do
     if [[ "${!i}" == "--env" ]]; then
         next=$((i+1))
@@ -56,7 +81,71 @@ for ((i=1; i<=$#; i++)); do
             CLUSTER_ENV="${!next}"
         fi
     fi
+    if [[ "${!i}" == "--workload" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            SELECTED_WORKLOADS="${!next}"
+        fi
+    fi
 done
+
+# ---- Workload discovery ----
+
+# discover_workloads lists all available workload names by scanning for .workload
+# manifest files. Each manifest must have a matching .cca file.
+discover_workloads() {
+    local manifests
+    manifests=$(find "$WORKLOADS_DIR" -maxdepth 1 -name "*.workload" -type f | sort)
+    for manifest in $manifests; do
+        local name
+        name="$(basename "$manifest" .workload)"
+        if [[ -f "$WORKLOADS_DIR/${name}.cca" ]]; then
+            echo "$name"
+        fi
+    done
+}
+
+if [[ "$LIST_WORKLOADS" == "true" ]]; then
+    echo "Available workloads:"
+    for workload_name in $(discover_workloads); do
+        # shellcheck source=/dev/null
+        source "$WORKLOADS_DIR/${workload_name}.workload"
+        printf "  %-16s %s\n" "$workload_name" "$WORKLOAD_DESCRIPTION"
+    done
+    exit 0
+fi
+
+# Resolve selected workloads into an ordered array.
+ALL_AVAILABLE_WORKLOADS=($(discover_workloads))
+
+if [[ -z "$SELECTED_WORKLOADS" ]]; then
+    SELECTED_WORKLOADS="airflow,zabbix"
+fi
+
+WORKLOAD_NAMES=()
+if [[ "$SELECTED_WORKLOADS" == "all" ]]; then
+    WORKLOAD_NAMES=("${ALL_AVAILABLE_WORKLOADS[@]}")
+else
+    IFS=',' read -ra WORKLOAD_NAMES <<< "$SELECTED_WORKLOADS"
+fi
+
+# Validate that every selected workload has a manifest and .cca file.
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    if [[ ! -f "$WORKLOADS_DIR/${workload_name}.workload" ]]; then
+        echo "ERROR: No manifest for workload '$workload_name' (expected $WORKLOADS_DIR/${workload_name}.workload)" >&2
+        echo "Available: ${ALL_AVAILABLE_WORKLOADS[*]}" >&2
+        exit 1
+    fi
+    if [[ ! -f "$WORKLOADS_DIR/${workload_name}.cca" ]]; then
+        echo "ERROR: No .cca file for workload '$workload_name' (expected $WORKLOADS_DIR/${workload_name}.cca)" >&2
+        exit 1
+    fi
+done
+
+log() { echo "==> [$(date +%H:%M:%S)] $*"; }
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 
 # Environment-specific configuration
 case "$CLUSTER_ENV" in
@@ -96,9 +185,6 @@ VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
 # Maximum seconds to wait for convergence checks.
 CONVERGE_TIMEOUT=120
 CONTAINER_TIMEOUT=180
-
-log() { echo "==> [$(date +%H:%M:%S)] $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
 
 collect_vm_logs() {
     log "Collecting VM logs before teardown..."
@@ -174,6 +260,43 @@ count_containers() {
     local vm_name="$1"
     ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
 }
+
+# ---- Clear workloads mode ----
+# Wipes desired state from etcd and lets agents reconcile (stop orphaned containers).
+# Faster and more principled than brute-force container removal: the agents handle
+# cleanup through their normal reconciliation loop. Falls back to nerdctl rm if
+# containers don't drain within the timeout.
+if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
+    # Restore Vagrant state if needed.
+    if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+        cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
+    fi
+    log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
+    log "Desired state cleared — agents will reconcile and stop containers..."
+    deadline=$((SECONDS + 60))
+    while [[ $SECONDS -lt $deadline ]]; do
+        sleep 5
+        total_containers=0
+        for vm in "${VM_NAMES[@]}"; do
+            c=$(count_containers "$vm")
+            total_containers=$((total_containers + c))
+        done
+        log "  Draining: $total_containers containers remaining..."
+        if [[ "$total_containers" -eq 0 ]]; then break; fi
+    done
+    if [[ "$total_containers" -gt 0 ]]; then
+        log "WARNING: $total_containers containers still running after 60s, force-removing..."
+        for vm in "${VM_NAMES[@]}"; do
+            ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+        done
+        wait
+    fi
+    log "Cluster cleared"
+    exit 0
+fi
 
 # ---- Prerequisites ----
 command -v vagrant >/dev/null 2>&1 || fail "vagrant not found in PATH"
@@ -434,11 +557,20 @@ for vm in "${VM_NAMES[@]}"; do
 done
 log "DNS resolution OK"
 
-# ---- Step 3.6: Pre-pull container images on all nodes ----
-log "Pre-pulling container images on all nodes..."
-IMAGES=("apache/airflow:2.10.5" "postgres:16" "redis:7" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
+# ---- Step 3.6: Pre-pull container images for selected workloads ----
+# Collect unique images from all selected workload manifests.
+declare -A UNIQUE_IMAGES
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    # shellcheck source=/dev/null
+    source "$WORKLOADS_DIR/${workload_name}.workload"
+    for image in "${WORKLOAD_IMAGES[@]}"; do
+        UNIQUE_IMAGES["$image"]=1
+    done
+done
+
+log "Pre-pulling ${#UNIQUE_IMAGES[@]} images for ${#WORKLOAD_NAMES[@]} workloads..."
 for vm in "${VM_NAMES[@]}"; do
-    for image in "${IMAGES[@]}"; do
+    for image in "${!UNIQUE_IMAGES[@]}"; do
         ssh_vm "$vm" "sudo nerdctl pull -q $image" &
     done
 done
@@ -446,66 +578,124 @@ log "Waiting for all image pulls to complete..."
 wait
 log "Image pre-pull complete"
 
-# ---- Step 4: Deploy Airflow test app ----
-log "Creating secrets for Airflow deployment..."
-ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set airflow.db-password airflow-e2e-pass"
-ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set airflow.admin-password admin-e2e-pass"
+# ---- Step 4: Deploy selected workloads ----
 
-log "Distributing secret master key to worker nodes..."
-SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /.ccattler/secret-master.key | base64")
-for vm in "${VM_NAMES[@]}"; do
-    [[ "$vm" == *-ctrl ]] && continue
-    ssh_vm "$vm" "sudo mkdir -p /.ccattler && echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /.ccattler/secret-master.key > /dev/null && sudo chmod 600 /.ccattler/secret-master.key"
-    ssh_vm "$vm" "sudo systemctl restart cca-agent"
+# Check if any workload needs secrets. If so, distribute the master key once.
+NEEDS_SECRET_KEY=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    # shellcheck source=/dev/null
+    source "$WORKLOADS_DIR/${workload_name}.workload"
+    if [[ ${#WORKLOAD_SECRETS[@]} -gt 0 ]]; then
+        NEEDS_SECRET_KEY=true
+        break
+    fi
 done
-sleep 2
 
-log "Applying Airflow test workload..."
-scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-    "$WORKLOADS_DIR/airflow.cca" "vagrant@${CTRL_IP}:/tmp/airflow.cca"
-
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/airflow.cca"
-
-log "Waiting for Airflow containers to start (6 services)..."
-deadline=$((SECONDS + CONTAINER_TIMEOUT))
-total_containers=0
-while [[ $SECONDS -lt $deadline ]]; do
-    sleep 5
-    total_containers=0
+if [[ "$NEEDS_SECRET_KEY" == "true" ]]; then
+    log "Distributing secret master key to worker nodes..."
+    SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /.ccattler/secret-master.key | base64")
     for vm in "${VM_NAMES[@]}"; do
-        c=$(count_containers "$vm")
-        total_containers=$((total_containers + c))
+        [[ "$vm" == *-ctrl ]] && continue
+        ssh_vm "$vm" "sudo mkdir -p /.ccattler && echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /.ccattler/secret-master.key > /dev/null && sudo chmod 600 /.ccattler/secret-master.key"
+        ssh_vm "$vm" "sudo systemctl restart cca-agent"
     done
-    log "  Retry: $total_containers/6 containers (${SECONDS}s elapsed)"
-    if [[ "$total_containers" -ge 6 ]]; then break; fi
-done
-[[ "$total_containers" -ge 6 ]] || fail "Expected 6+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
-log "Airflow running: $total_containers containers across ${#VM_NAMES[@]} nodes"
+    sleep 2
+fi
 
-# ---- Step 5: Deploy Zabbix stack ----
-log "Applying Zabbix test workload..."
-scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-    -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-    "$WORKLOADS_DIR/zabbix.cca" "vagrant@${CTRL_IP}:/tmp/zabbix.cca"
+CUMULATIVE_EXPECTED_CONTAINERS=0
 
-ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/zabbix.cca"
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    log "--- Deploying workload: $workload_name ---"
 
-log "Waiting for Zabbix containers (3 services)..."
-deadline=$((SECONDS + CONTAINER_TIMEOUT))
-while [[ $SECONDS -lt $deadline ]]; do
-    sleep 5
+    # Source the manifest to get WORKLOAD_* variables.
+    # shellcheck source=/dev/null
+    source "$WORKLOADS_DIR/${workload_name}.workload"
+
+    # Create secrets if the workload declares any.
+    if [[ ${#WORKLOAD_SECRETS[@]} -gt 0 ]]; then
+        log "Creating secrets for $workload_name..."
+        for secret_entry in "${WORKLOAD_SECRETS[@]}"; do
+            secret_name="${secret_entry%%=*}"
+            secret_value="${secret_entry#*=}"
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set $secret_name $secret_value"
+        done
+    fi
+
+    # Copy and apply the .cca file.
+    log "Applying $workload_name workload..."
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
+        "$WORKLOADS_DIR/${workload_name}.cca" "vagrant@${CTRL_IP}:/tmp/${workload_name}.cca"
+
+    ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/${workload_name}.cca"
+
+    # Wait for containers to converge.
+    CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS + WORKLOAD_EXPECTED_CONTAINERS))
+    log "Waiting for $workload_name containers ($WORKLOAD_EXPECTED_CONTAINERS new, $CUMULATIVE_EXPECTED_CONTAINERS total)..."
+    deadline=$((SECONDS + CONTAINER_TIMEOUT))
     total_containers=0
-    for vm in "${VM_NAMES[@]}"; do
-        c=$(count_containers "$vm")
-        total_containers=$((total_containers + c))
+    while [[ $SECONDS -lt $deadline ]]; do
+        sleep 5
+        total_containers=0
+        for vm in "${VM_NAMES[@]}"; do
+            c=$(count_containers "$vm")
+            total_containers=$((total_containers + c))
+        done
+        log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed)"
+        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
     done
-    log "  Retry: $total_containers/9 containers (${SECONDS}s elapsed)"
-    # Airflow (6) + Zabbix (3) = 9 total
-    if [[ "$total_containers" -ge 9 ]]; then break; fi
+    [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s (failed at $workload_name)"
+    log "$workload_name deployed: $total_containers containers across ${#VM_NAMES[@]} nodes"
 done
-[[ "$total_containers" -ge 9 ]] || fail "Expected 9+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s"
-log "Zabbix stack running: $total_containers total containers"
+
+log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINERS containers"
+
+# ---- Step 4.5: Configure Caddy reverse proxy on testbed host ----
+# Caddy runs on the testbed host (192.168.100.43) and proxies external traffic
+# to CCattler services inside the libvirt VMs. Each workload manifest declares
+# WORKLOAD_EXPOSE entries as "external_port:service_name:internal_port".
+# Caddy routes to the CCattler VIP (resolved via the cluster DNS on the ctrl VM).
+
+CADDY_CONFIG=""
+EXPOSE_SUMMARY=""
+TESTBED_HOST_IP="192.168.100.43"
+
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    # shellcheck source=/dev/null
+    source "$WORKLOADS_DIR/${workload_name}.workload"
+    if [[ -z "${WORKLOAD_EXPOSE+x}" ]] || [[ ${#WORKLOAD_EXPOSE[@]} -eq 0 ]]; then
+        continue
+    fi
+    for expose_entry in "${WORKLOAD_EXPOSE[@]}"; do
+        external_port="${expose_entry%%:*}"
+        remainder="${expose_entry#*:}"
+        service_name="${remainder%%:*}"
+        internal_port="${remainder#*:}"
+        # Resolve service VIP via CCattler DNS on the ctrl node.
+        service_vip=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short @127.0.0.1 -p 15353 ${service_name} 2>/dev/null" | head -1 | tr -d '\r\n') || true
+        if [[ -z "$service_vip" ]]; then
+            log "WARNING: Cannot resolve VIP for $service_name — skipping Caddy route for $workload_name"
+            continue
+        fi
+        CADDY_CONFIG+="
+:${external_port} {
+    reverse_proxy ${service_vip}:${internal_port}
+}
+"
+        EXPOSE_SUMMARY+="  http://${TESTBED_HOST_IP}:${external_port} → ${service_name} (${service_vip}:${internal_port})\n"
+    done
+done
+
+if [[ -n "$CADDY_CONFIG" ]]; then
+    log "Configuring Caddy reverse proxy on testbed host..."
+    CADDY_FILE="/etc/caddy/Caddyfile"
+    echo "$CADDY_CONFIG" | sudo tee "$CADDY_FILE" > /dev/null
+    sudo systemctl reload caddy 2>/dev/null || sudo systemctl restart caddy 2>/dev/null || log "WARNING: Caddy not available on host"
+    log "Caddy configured — services accessible from:"
+    echo -e "$EXPOSE_SUMMARY"
+else
+    log "No workloads declared WORKLOAD_EXPOSE — skipping Caddy configuration"
+fi
 
 # ---- Step 5.5: Phase 69 — Node Runtime Inspection tests ----
 # The CLI commands (node-inspect, exec, images) connect to the control plane

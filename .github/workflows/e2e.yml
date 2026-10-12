@@ -4,6 +4,33 @@ on:
   push:
     branches: [master]
   workflow_dispatch:
+    inputs:
+      workload:
+        description: "Workloads to deploy (comma-separated or 'all')"
+        required: false
+        default: "airflow,zabbix"
+        type: choice
+        options:
+          - "airflow,zabbix"
+          - "all"
+          - "airflow"
+          - "zabbix"
+          - "whoami"
+          - "airflow,whoami"
+          - "zabbix,whoami"
+      clear_first:
+        description: "Clear existing workloads before deploying"
+        required: false
+        default: false
+        type: boolean
+      binary_source:
+        description: "Binary source"
+        required: false
+        default: "build"
+        type: choice
+        options:
+          - "build"
+          - "release"
 
 concurrency:
   group: testbed-e2e
@@ -21,8 +48,18 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Run e2e cluster test (2-node)
-        run: ./test/e2e/cluster_test.sh
+      - name: Clear existing workloads
+        if: ${{ inputs.clear_first == true }}
+        run: ./test/e2e/cluster_test.sh --clear-workloads
+
+      - name: Run e2e cluster test
+        run: |
+          WORKLOAD="${{ inputs.workload || 'airflow,zabbix' }}"
+          BINARY_FLAG=""
+          if [[ "${{ inputs.binary_source }}" == "release" ]]; then
+            BINARY_FLAG="--from-release"
+          fi
+          ./test/e2e/cluster_test.sh --workload "$WORKLOAD" $BINARY_FLAG
 
       - name: Collect logs on failure
         if: failure()

@@ -1,0 +1,10 @@
+# Workload manifest for Zabbix monitoring stack.
+# Sourced by cluster_test.sh to discover deployment requirements.
+
+WORKLOAD_DESCRIPTION="Zabbix monitoring (postgres + server + web frontend)"
+WORKLOAD_IMAGES=("postgres:16" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "zabbix/zabbix-web-nginx-pgsql:alpine-7.4-latest")
+WORKLOAD_EXPECTED_CONTAINERS=3
+WORKLOAD_SECRETS=()
+
+# Caddy reverse proxy: external_port → service_name:internal_port
+WORKLOAD_EXPOSE=("8081:zabbix-web:8080")
