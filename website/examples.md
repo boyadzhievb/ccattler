@@ -167,6 +167,48 @@ service web {
 }
 ```
 
+## Rolling update with automatic rollback
+
+Health-gated rolling deployment with disruption budget. If 3+ new-image instances fail, the rollout controller reverts the desired image automatically.
+
+```hcl
+service web {
+    image nginx:1.27
+    instances 5
+    expose 8080
+
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+
+    health {
+        http /
+        every 10s
+    }
+
+    update {
+        max_unavailable 1
+        max_extra 1
+    }
+
+    disruption {
+        min_available 4
+    }
+}
+```
+
+```bash
+cca run-container examples/rolling-update.cca
+
+# Change image to nginx:1.28 and re-apply to trigger rollout:
+cca apply examples/rolling-update.cca
+
+# Monitor rollout:
+cca watch derived/service/web/rollout/
+cca get services web --describe
+```
+
 ## Container deployment with config
 
 Real OCI containers with a mounted configuration file.

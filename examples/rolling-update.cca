@@ -1,0 +1,41 @@
+# Rolling update with automatic rollback.
+#
+# Demonstrates: update strategy, disruption budget, health-gated rollout.
+#
+# Deploy v1:
+#   cca run-container examples/rolling-update.cca
+#
+# Trigger a rolling update by changing the image to nginx:1.28 and re-applying:
+#   cca apply examples/rolling-update.cca
+#
+# Monitor:
+#   cca watch derived/service/web/rollout/
+#   cca get services web --describe
+#
+# Automatic rollback triggers if 3+ new-image instances fail health checks.
+# Manual rollback: change the image back and re-apply.
+
+service web {
+    image nginx:1.27
+    instances 5
+    expose 8080
+
+    resources {
+        cpu 500m
+        memory 512Mi
+    }
+
+    health {
+        http /
+        every 10s
+    }
+
+    update {
+        max_unavailable 1
+        max_extra 1
+    }
+
+    disruption {
+        min_available 4
+    }
+}
