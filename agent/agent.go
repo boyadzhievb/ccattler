@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -57,6 +58,7 @@ type Agent struct {
 	probeScheduler           *ProbeScheduler                      // probeScheduler runs health checks and probes independently of reconciliation.
 	nodeReporter             *NodeReporter                        // nodeReporter collects telemetry and publishes node state to the store.
 	dataPlaneReconciler      *DataPlaneReconciler                 // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
+	secretAPIServer          *SecretAPIServer                     // secretAPIServer serves per-instance secret retrieval over HTTP; nil means secrets use file materialization.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -96,6 +98,19 @@ func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvid
 // them when instances stop.
 func (nodeAgent *Agent) SetSecretProvider(secretProvider SecretProvider) {
 	nodeAgent.secretProvider = secretProvider
+}
+
+// SecretProvider returns the agent's configured secret provider, or nil if
+// secret support is not enabled.
+func (nodeAgent *Agent) SecretProvider() SecretProvider {
+	return nodeAgent.secretProvider
+}
+
+// SetSecretAPIServer configures the agent to use an HTTP-based secret API
+// instead of file materialization. When set, the agent injects CCA_SECRET_URL
+// and CCA_SECRET_TOKEN env vars into containers and skips file-based secrets.
+func (nodeAgent *Agent) SetSecretAPIServer(secretAPIServer *SecretAPIServer) {
+	nodeAgent.secretAPIServer = secretAPIServer
 }
 
 // SetDataPlaneProvider configures the agent to program VIP DNAT forwarding
@@ -406,7 +421,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	}
 
 	var materialized []MaterializedSecret
-	if nodeAgent.secretProvider != nil {
+	if nodeAgent.secretProvider != nil && nodeAgent.secretAPIServer == nil {
 		materialized = nodeAgent.materializeSecretsForInstance(ctx, instanceInfo)
 		nodeAgent.materializedSecrets = append(nodeAgent.materializedSecrets, materialized...)
 	}
@@ -417,6 +432,9 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		for _, secretMount := range materialized {
 			runtimeSpec.SecretMounts[secretMount.MountPath] = secretMount.MountPath
 		}
+	}
+	if nodeAgent.secretAPIServer != nil {
+		nodeAgent.injectSecretAPIEnvVars(instanceInfo, &runtimeSpec)
 	}
 	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, runtimeSpec)
 }
@@ -463,7 +481,10 @@ func (nodeAgent *Agent) buildRuntimeSpecForInstance(ctx context.Context, instanc
 func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instanceInfo placedInstanceInfo, image string, runtimeSpec runtime.Spec) {
 	if startError := nodeAgent.runtime.Start(ctx, runtimeSpec); startError != nil {
 		logging.Default().Error("failed to start instance", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", startError.Error())
-		if nodeAgent.secretProvider != nil {
+		if nodeAgent.secretAPIServer != nil {
+			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
+		}
+		if nodeAgent.secretProvider != nil && nodeAgent.secretAPIServer == nil {
 			nodeAgent.cleanupSecretsForInstance(instanceInfo.id)
 		}
 		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
@@ -496,7 +517,10 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 // allocation fact, and removes the applied resource tracking entry.
 func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID string) {
 	delete(nodeAgent.appliedInstanceResources, instanceID)
-	if nodeAgent.secretProvider != nil {
+	if nodeAgent.secretAPIServer != nil {
+		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceID)
+	}
+	if nodeAgent.secretProvider != nil && nodeAgent.secretAPIServer == nil {
 		nodeAgent.cleanupSecretsForInstance(instanceID)
 	}
 	if nodeAgent.storageProvider != nil {
@@ -666,12 +690,12 @@ func (nodeAgent *Agent) materializeSecretsForInstance(ctx context.Context, insta
 		}
 
 		parentDirectory := filepath.Dir(mountPath)
-		if err := os.MkdirAll(parentDirectory, 0755); err != nil {
+		if err := os.MkdirAll(parentDirectory, 0755); err != nil { //nolint:gosec // secrets parent dir needs world-readable for bind-mount
 			logging.Default().Error("mkdir failed", "agent", nodeAgent.nodeID, "path", parentDirectory, "error", err.Error())
 			continue
 		}
 
-		if err := os.WriteFile(mountPath, plaintext, 0444); err != nil {
+		if err := os.WriteFile(mountPath, plaintext, 0444); err != nil { //nolint:gosec // read-only secret file, no write needed
 			logging.Default().Error("write secret failed", "agent", nodeAgent.nodeID, "secret", secretName, "path", mountPath, "error", err.Error())
 			continue
 		}
@@ -721,12 +745,38 @@ func (nodeAgent *Agent) refreshMaterializedSecrets(ctx context.Context) {
 		existingContent, readErr := os.ReadFile(materializedSecret.MountPath)
 		if readErr != nil || string(existingContent) != string(plaintext) {
 			_ = os.Remove(materializedSecret.MountPath)
-			if writeError := os.WriteFile(materializedSecret.MountPath, plaintext, 0444); writeError != nil {
+			if writeError := os.WriteFile(materializedSecret.MountPath, plaintext, 0444); writeError != nil { //nolint:gosec // read-only secret file
 				logging.Default().Error("failed to rotate secret file", "path", materializedSecret.MountPath, "error", writeError.Error())
 			}
 			logging.Default().Info("rotated secret", "agent", nodeAgent.nodeID, "secret", materializedSecret.SecretName, "instance", materializedSecret.InstanceID)
 		}
 	}
+}
+
+// injectSecretAPIEnvVars registers a bearer token for the instance and adds
+// CCA_SECRET_URL and CCA_SECRET_TOKEN to the runtime spec's environment. The
+// URL points to the node's secret API server. If token registration fails, the
+// env vars are not injected and the instance starts without secret API access.
+func (nodeAgent *Agent) injectSecretAPIEnvVars(instanceInfo placedInstanceInfo, runtimeSpec *runtime.Spec) {
+	tokenHex, registerError := nodeAgent.secretAPIServer.RegisterInstanceToken(instanceInfo.id, instanceInfo.service)
+	if registerError != nil {
+		logging.Default().Error("failed to register secret token", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", registerError.Error())
+		return
+	}
+
+	secretAPIAddress := nodeAgent.secretAPIServer.httpServer.Addr
+	if nodeAgent.advertiseAddress != "" {
+		_, port, splitError := net.SplitHostPort(secretAPIAddress)
+		if splitError == nil {
+			secretAPIAddress = net.JoinHostPort(nodeAgent.advertiseAddress, port)
+		}
+	}
+
+	if runtimeSpec.Env == nil {
+		runtimeSpec.Env = make(map[string]string)
+	}
+	runtimeSpec.Env["CCA_SECRET_URL"] = "http://" + secretAPIAddress
+	runtimeSpec.Env["CCA_SECRET_TOKEN"] = tokenHex
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a

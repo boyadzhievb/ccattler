@@ -23,25 +23,26 @@ import (
 // agentCommandConfig holds parsed flags for the "agent" command, which runs
 // the node agent against a shared state store.
 type agentCommandConfig struct {
-	storeBackend       string
-	etcdEndpoints      string
-	storeKeyPrefix     string
-	nodeID             string
-	runtimeBackend     string
-	advertiseAddress   string
-	tlsCertPath        string
-	tlsKeyPath         string
-	tlsCACertPath      string
-	etcdCertPath       string
-	etcdKeyPath        string
-	etcdCACertPath     string
-	proxyEnabled       bool
-	proxyListenAddress string
-	logLevel           string
-	logFormat          string
-	kmsProvider        string // kmsProvider selects the KMS backend for secret decryption ("aws-kms", "gcp-kms", or empty for local).
-	kmsKeyID           string // kmsKeyID is the KMS key ARN (AWS) or resource name (GCP) for secret decryption.
-	debugListenAddress string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
+	storeBackend           string
+	etcdEndpoints          string
+	storeKeyPrefix         string
+	nodeID                 string
+	runtimeBackend         string
+	advertiseAddress       string
+	tlsCertPath            string
+	tlsKeyPath             string
+	tlsCACertPath          string
+	etcdCertPath           string
+	etcdKeyPath            string
+	etcdCACertPath         string
+	proxyEnabled           bool
+	proxyListenAddress     string
+	logLevel               string
+	logFormat              string
+	kmsProvider            string // kmsProvider selects the KMS backend for secret decryption ("aws-kms", "gcp-kms", or empty for local).
+	kmsKeyID               string // kmsKeyID is the KMS key ARN (AWS) or resource name (GCP) for secret decryption.
+	debugListenAddress     string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
+	secretAPIListenAddress string // secretAPIListenAddress is the address for the per-instance secret HTTP API (e.g. "0.0.0.0:9772").
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -154,6 +155,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.debugListenAddress = args[argIndex]
 			}
+		case "--secret-api-listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.secretAPIListenAddress = args[argIndex]
+			}
 		}
 	}
 
@@ -227,6 +233,17 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 
 	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)
+
+	if parsedConfig.secretAPIListenAddress != "" && nodeAgent.SecretProvider() != nil {
+		secretAPIServer := agent.NewSecretAPIServer(parsedConfig.nodeID, parsedConfig.secretAPIListenAddress, nodeAgent.SecretProvider(), factStore)
+		nodeAgent.SetSecretAPIServer(secretAPIServer)
+		go func() {
+			if secretAPIError := secretAPIServer.Start(ctx); secretAPIError != nil {
+				logging.Default().Error("secret API server error", "node", parsedConfig.nodeID, "error", secretAPIError.Error())
+			}
+		}()
+		fmt.Printf("Agent %s: secret API listening on %s\n", parsedConfig.nodeID, parsedConfig.secretAPIListenAddress)
+	}
 
 	go func() {
 		if runError := nodeAgent.Run(ctx); runError != nil {
