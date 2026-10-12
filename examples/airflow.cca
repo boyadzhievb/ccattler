@@ -54,6 +54,11 @@ service metadata-db {
         env POSTGRES_PASSWORD_FILE "/run/secrets/db-password"
     }
     secret airflow.db-password "/run/secrets/db-password"
+    init {
+        exec "mkdir -p /run/secrets && cca-secret airflow.db-password > /run/secrets/db-password"
+        timeout 30s
+        retry 5
+    }
     health {
         tcp
         every 10s
@@ -88,16 +93,16 @@ service webserver {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__WEBSERVER__EXPOSE_CONFIG "false"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
         env _AIRFLOW_DB_MIGRATE "true"
         env _AIRFLOW_WWW_USER_CREATE "true"
-        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cat /run/secrets/admin-password"
+        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
     secret airflow.db-password "/run/secrets/db-password"
     secret airflow.admin-password "/run/secrets/admin-password"
@@ -121,9 +126,9 @@ service scheduler {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
@@ -153,9 +158,9 @@ service worker {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cat /run/secrets/db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }

@@ -30,10 +30,11 @@ type initStepDefinition struct {
 
 // executeInitializationSteps runs all init steps for an instance sequentially.
 // Each step is executed via the runtime's ExecInit method against the service
-// image. Step results are reported to the store as observed init step state
-// facts. Returns true if all steps succeeded, false if any step failed or the
-// instance has no init steps.
-func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instanceInfo placedInstanceInfo, image string) bool {
+// image. When secretAPIToken is non-empty, the cca-secret shell function and
+// secret API env vars are injected into each init container so init commands
+// can use `cca-secret <name>` to fetch secrets. Returns true if all steps
+// succeeded, false if any step failed or the instance has no init steps.
+func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instanceInfo placedInstanceInfo, image string, secretAPIToken string, secretAPIBaseURL string) bool {
 	stepDefinitions := nodeAgent.loadInitStepDefinitions(ctx, instanceInfo.service)
 	if len(stepDefinitions) == 0 {
 		return true
@@ -60,7 +61,7 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 			}
 		}
 
-		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image)
+		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image, secretAPIToken, secretAPIBaseURL)
 		if !succeeded {
 			return false
 		}
@@ -72,14 +73,14 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 // executeInitStep runs a single init step with retries and timeout. Reports step
 // state transitions (running → succeeded/failed) to the store. Returns true if
 // the step eventually succeeded.
-func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string) bool {
+func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string, secretAPIToken string, secretAPIBaseURL string) bool {
 	maxAttempts := 1 + stepDefinition.retry
 	for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning))); putError != nil {
 			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 		}
 
-		execError := nodeAgent.runInitCommand(ctx, image, stepDefinition)
+		execError := nodeAgent.runInitCommand(ctx, image, stepDefinition, secretAPIToken, secretAPIBaseURL)
 
 		if execError == nil {
 			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded))); putError != nil {
@@ -128,8 +129,11 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 // runInitCommand executes the init step's command via the runtime's ExecInit
 // method. For container runtimes, this runs the command in a temporary container
-// from the service image. Applies a timeout if configured.
-func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDefinition initStepDefinition) error {
+// from the service image. Applies a timeout if configured. When secretAPIToken
+// is non-empty, the cca-secret shell function is prepended to the command and
+// secret API env vars are passed through ExecSpec.Env so init commands can use
+// `cca-secret <name>` to fetch secrets.
+func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDefinition initStepDefinition, secretAPIToken string, secretAPIBaseURL string) error {
 	execCtx := ctx
 	var cancelFunc context.CancelFunc
 	if stepDefinition.timeout > 0 {
@@ -141,7 +145,20 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDe
 		return fmt.Errorf("empty init exec command for step %d", stepDefinition.index)
 	}
 
-	return nodeAgent.runtime.ExecInit(execCtx, image, goruntime.ExecSpec{Command: stepDefinition.exec})
+	initCommand := stepDefinition.exec
+	var initEnvVars map[string]string
+	if secretAPIToken != "" {
+		initCommand = ccaSecretShellFunction + initCommand
+		initEnvVars = map[string]string{
+			"CCA_SECRET_URL":   secretAPIBaseURL,
+			"CCA_SECRET_TOKEN": secretAPIToken,
+		}
+	}
+
+	return nodeAgent.runtime.ExecInit(execCtx, image, goruntime.ExecSpec{
+		Command: initCommand,
+		Env:     initEnvVars,
+	})
 }
 
 // loadInitStepDefinitions reads the desired init step configuration for a service

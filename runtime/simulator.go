@@ -195,14 +195,15 @@ func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference s
 func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, execSpec ExecSpec) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
-	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command})
+	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command, Env: execSpec.Env})
 	return nil
 }
 
 // ExecInitCall records a call to ExecInit for test verification.
 type ExecInitCall struct {
-	Image   string
-	Command string
+	Image   string            // Image is the OCI image reference passed to ExecInit.
+	Command string            // Command is the shell command passed to ExecInit.
+	Env     map[string]string // Env holds the environment variables passed to ExecInit.
 }
 
 // Stats returns simulated resource usage for the workload. For running

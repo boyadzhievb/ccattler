@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"testing"
@@ -109,6 +110,46 @@ func TestSecretAPIServerGetSecretAuthorized(testContext *testing.T) {
 	}
 	if secretResponse.Value != "s3cret123" {
 		testContext.Errorf("expected value s3cret123, got %s", secretResponse.Value)
+	}
+}
+
+func TestSecretAPIServerGetSecretRawFormat(testContext *testing.T) {
+	mockProvider := &mockSecretProvider{
+		secrets: map[string][]byte{
+			"db-password": []byte("s3cret123"),
+		},
+		grants: map[string]string{ //nolint:gosec // test grant map, not credentials
+			"web/db-password": "/run/secrets/db-password",
+		},
+	}
+	memoryStore := store.NewMemoryStore()
+
+	secretServer, baseURL, cancel := startTestSecretAPIServerWithServer(testContext, mockProvider, memoryStore)
+	defer cancel()
+
+	tokenHex, _ := secretServer.RegisterInstanceToken("instance-1", "web")
+
+	request, _ := http.NewRequest("GET", baseURL+"/v1/secrets/db-password?raw=true", nil)
+	request.Header.Set("Authorization", "Bearer "+tokenHex)
+
+	response, httpError := http.DefaultClient.Do(request)
+	if httpError != nil {
+		testContext.Fatal(httpError)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		testContext.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	contentType := response.Header.Get("Content-Type")
+	if contentType != "text/plain" {
+		testContext.Errorf("expected text/plain, got %s", contentType)
+	}
+
+	bodyBytes, _ := io.ReadAll(response.Body)
+	if string(bodyBytes) != "s3cret123" {
+		testContext.Errorf("expected raw value s3cret123, got %s", string(bodyBytes))
 	}
 }
 
@@ -272,9 +313,6 @@ func TestReconcileWithSecretAPIRegistersToken(testContext *testing.T) {
 		testContext.Errorf("expected token for webserver, got %s", foundService)
 	}
 
-	if len(nodeAgent.materializedSecrets) != 0 {
-		testContext.Errorf("expected no materialized secrets with API mode, got %d", len(nodeAgent.materializedSecrets))
-	}
 }
 
 // TestSecretAPITokenRevokedOnCleanup verifies that the bearer token is revoked

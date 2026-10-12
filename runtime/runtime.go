@@ -30,17 +30,16 @@ func isValidEnvVarName(name string) bool {
 // backend needs to start a process or container: the command/image, environment
 // variables, and resource hints.
 type Spec struct {
-	ID           string            // ID is the unique identifier for this workload.
-	ServiceName  string            // ServiceName is the name of the service this workload belongs to. Used by ContainerRuntime as a Docker network alias for DNS-based service discovery.
-	Image        string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
-	Command      []string          // Command overrides the container CMD. Empty means use the image default.
-	Env          map[string]string // Env holds environment variables to inject into the workload.
-	ConfigFiles  map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
-	Ports        []int             // Ports to map from container to host (each port is mapped to a random host port).
-	CPUm         int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
-	MemoryB      int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
-	IP           string            // IP is the cluster-network IP address allocated to this workload. Used by ContainerRuntime to assign a specific IP via --network/--ip.
-	SecretMounts map[string]string // SecretMounts maps container-absolute paths to host-absolute paths. The container runtime bind-mounts them read-only.
+	ID          string            // ID is the unique identifier for this workload.
+	ServiceName string            // ServiceName is the name of the service this workload belongs to. Used by ContainerRuntime as a Docker network alias for DNS-based service discovery.
+	Image       string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
+	Command     []string          // Command overrides the container CMD. Empty means use the image default.
+	Env         map[string]string // Env holds environment variables to inject into the workload.
+	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
+	Ports       []int             // Ports to map from container to host (each port is mapped to a random host port).
+	CPUm        int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
+	MemoryB     int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
+	IP          string            // IP is the cluster-network IP address allocated to this workload. Used by ContainerRuntime to assign a specific IP via --network/--ip.
 }
 
 // Status describes the current observed state of a running or stopped workload.
@@ -138,5 +137,6 @@ type ImagePuller interface {
 
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
-	Command string // Command is the shell command to execute.
+	Command string            // Command is the shell command to execute.
+	Env     map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
 }

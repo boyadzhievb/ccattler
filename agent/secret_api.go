@@ -159,7 +159,9 @@ func (secretAPIServer *SecretAPIServer) authenticateRequest(responseWriter http.
 }
 
 // handleGetSecret serves GET /v1/secrets/{name}. Authenticates the caller,
-// checks the service grant, and returns the decrypted secret value as JSON.
+// checks the service grant, and returns the decrypted secret value. With
+// ?raw=true the response is plain text (for curl in shell scripts); otherwise
+// the response is JSON {"name","value"}.
 func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		http.Error(responseWriter, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
@@ -185,6 +187,12 @@ func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.Resp
 		}
 		logging.Default().Error("secret retrieval failed", "node", secretAPIServer.nodeID, "secret", secretName, "service", callerMetadata.serviceName, "error", retrievalError.Error())
 		http.Error(responseWriter, `{"error":"internal error"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if request.URL.Query().Get("raw") == "true" {
+		responseWriter.Header().Set("Content-Type", "text/plain")
+		_, _ = responseWriter.Write(plaintext) //nolint:gosec // G705: plaintext is a secret value, not user-controlled HTML
 		return
 	}
 

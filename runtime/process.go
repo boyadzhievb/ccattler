@@ -244,6 +244,12 @@ func (processRuntime *ProcessRuntime) ExecInit(ctx context.Context, image string
 		return fmt.Errorf("empty init exec command")
 	}
 	command := exec.CommandContext(ctx, commandParts[0], commandParts[1:]...) //nolint:gosec // process runtime executes user-specified commands
+	if len(execSpec.Env) > 0 {
+		command.Env = os.Environ()
+		for envKey, envValue := range execSpec.Env {
+			command.Env = append(command.Env, envKey+"="+envValue)
+		}
+	}
 	return command.Run()
 }
 

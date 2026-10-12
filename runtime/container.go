@@ -153,7 +153,7 @@ func (containerRuntime *ContainerRuntime) materializeConfigFilesToTempDirectory(
 			_ = os.RemoveAll(configTempDirectory)
 			return nil, "", fmt.Errorf("creating parent directory for config file %s: %w", containerFilePath, err)
 		}
-		if err := os.WriteFile(hostFilePath, []byte(fileContent), 0600); err != nil {
+		if err := os.WriteFile(hostFilePath, []byte(fileContent), 0755); err != nil { //nolint:gosec // config files are bind-mounted :ro; 0755 allows scripts like cca-secret to be executable
 			_ = os.RemoveAll(configTempDirectory)
 			return nil, "", fmt.Errorf("writing config file %s: %w", containerFilePath, err)
 		}
@@ -270,10 +270,6 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 	}
 
 	args = append(args, volumeMountArgs...)
-
-	for containerPath, hostPath := range spec.SecretMounts {
-		args = append(args, "-v", fmt.Sprintf("%s:%s:ro", hostPath, containerPath))
-	}
 
 	for envKey, envValue := range spec.Env {
 		if !isValidEnvVarName(envKey) {
@@ -414,11 +410,20 @@ func (containerRuntime *ContainerRuntime) ExecCapture(ctx context.Context, insta
 
 // ExecInit runs an initialization command by creating a temporary container
 // from the given image, executing the command, and removing the container.
+// When execSpec.Env is non-empty, each entry is passed as a -e flag so the
+// init container inherits environment variables (e.g. CCA_SECRET_URL/TOKEN).
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
 	if !validImageReferencePattern.MatchString(image) {
 		return fmt.Errorf("invalid image reference: %q", image)
 	}
-	args := []string{"run", "--rm", image, "sh", "-c", execSpec.Command}
+	args := []string{"run", "--rm"}
+	for envKey, envValue := range execSpec.Env {
+		if !isValidEnvVarName(envKey) {
+			continue
+		}
+		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
+	}
+	args = append(args, image, "sh", "-c", execSpec.Command)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr
