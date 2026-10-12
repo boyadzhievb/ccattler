@@ -39,15 +39,14 @@ const heartbeatInterval = 5 * time.Second
 // is bind-mounted. Containers use this to fetch secrets from the agent's API.
 const ccaSecretHelperPath = "/usr/local/bin/cca-secret" //nolint:gosec // G101: not a credential, this is a filesystem path
 
-// ccaSecretHelperScript is the content of the cca-secret helper script injected
-// into containers via ConfigFiles. It wraps the secret API curl call so .cca
-// files can use `cca-secret <name>` instead of raw curl commands.
-const ccaSecretHelperScript = "#!/bin/sh\nexec curl -sf -H \"Authorization: Bearer $CCA_SECRET_TOKEN\" \"$CCA_SECRET_URL/v1/secrets/$1?raw=true\"\n" //nolint:gosec // G101: script template with env var references, not a credential
+// ccaSecretHelperScript reads the named secret from the materialized directory.
+// No curl or network tools needed — the agent bind-mounts decrypted secret
+// files at /run/cca-secrets/{name} before starting the container.
+const ccaSecretHelperScript = "#!/bin/sh\ncat \"/run/cca-secrets/$1\"\n" //nolint:gosec // G101: script template, not a credential
 
-// ccaSecretShellFunction is a shell function definition prepended to init
-// commands when the secret API is configured. Init containers don't have the
-// bind-mounted script, so this inline function provides the same interface.
-const ccaSecretShellFunction = `cca-secret(){ curl -sf -H "Authorization: Bearer $CCA_SECRET_TOKEN" "$CCA_SECRET_URL/v1/secrets/$1?raw=true"; }; ` //nolint:gosec // G101: shell function template, not a credential
+// ccaSecretMountPrefix is the container directory where all granted secrets are
+// materialized as individual files named by their secret key.
+const ccaSecretMountPrefix = "/run/cca-secrets/" //nolint:gosec // G101: not a credential, this is a filesystem path
 
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
@@ -424,7 +423,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	}
 
 	if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
-		initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo, image, secretAPIToken, secretAPIBaseURL)
+		initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo, image)
 		if !initSucceeded {
 			logging.Default().Warn("init failed, skipping workload start", "agent", nodeAgent.nodeID, "instance", instanceInfo.id)
 			if secretAPIToken != "" {
@@ -448,6 +447,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	}
 
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
+	nodeAgent.materializeSecretFiles(ctx, instanceInfo.service, &runtimeSpec)
 	if secretAPIToken != "" {
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
@@ -707,6 +707,43 @@ func (nodeAgent *Agent) injectSecretAPIIntoSpec(secretAPIToken string, secretAPI
 		runtimeSpec.ConfigFiles = make(map[string]string)
 	}
 	runtimeSpec.ConfigFiles[ccaSecretHelperPath] = ccaSecretHelperScript
+}
+
+// materializeSecretFiles decrypts all granted secrets for a service and adds
+// them to the runtime spec as bind-mounted files. Each secret is materialized
+// at /run/cca-secrets/{name} (for the cca-secret helper) and at the explicit
+// mount path from the secret directive (for apps like POSTGRES_PASSWORD_FILE).
+func (nodeAgent *Agent) materializeSecretFiles(ctx context.Context, serviceName string, runtimeSpec *runtime.Spec) {
+	if nodeAgent.secretProvider == nil {
+		return
+	}
+	grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
+	grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
+	if scanError != nil || len(grantFacts) == 0 {
+		return
+	}
+	if runtimeSpec.ConfigFiles == nil {
+		runtimeSpec.ConfigFiles = make(map[string]string)
+	}
+	for _, grantFact := range grantFacts {
+		secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
+		if secretName == "" {
+			continue
+		}
+		explicitMountPath := string(grantFact.Value)
+		plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, secretName)
+		if decryptError != nil {
+			logging.Default().Error("failed to decrypt secret for materialization",
+				"agent", nodeAgent.nodeID, "service", serviceName,
+				"secret", secretName, "error", decryptError.Error())
+			continue
+		}
+		secretValue := string(plaintext)
+		runtimeSpec.ConfigFiles[ccaSecretMountPrefix+secretName] = secretValue
+		if explicitMountPath != "" {
+			runtimeSpec.ConfigFiles[explicitMountPath] = secretValue
+		}
+	}
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a

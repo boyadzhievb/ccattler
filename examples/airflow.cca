@@ -54,11 +54,6 @@ service metadata-db {
         env POSTGRES_PASSWORD_FILE "/run/secrets/db-password"
     }
     secret airflow.db-password "/run/secrets/db-password"
-    init {
-        exec "mkdir -p /run/secrets && cca-secret airflow.db-password > /run/secrets/db-password"
-        timeout 30s
-        retry 5
-    }
     health {
         tcp
         every 10s
