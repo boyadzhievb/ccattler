@@ -53,3 +53,4 @@ If you know Kubernetes, here's how CCattler maps:
 - [Controllers](/concepts/controllers) — rule engines that close the gap
 - [Networking](/concepts/networking) — service discovery, VIPs, DNS
 - [Security](/concepts/security) — zero-trust security model
+- [Kubernetes Comparison](/concepts/kubernetes-comparison) — how CCattler replaces the K8s production tooling ecosystem
