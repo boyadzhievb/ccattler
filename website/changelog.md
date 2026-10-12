@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.20.0-beta <Badge type="tip" text="latest" /> {#v1-20-0-beta}
+## v1.21.0-beta <Badge type="tip" text="latest" /> {#v1-21-0-beta}
+
+**2026-10-12** — E2E Workload Selection & Caddy Proxy.
+
+- **E2E Workload Selection & Caddy Proxy** (M94) — Manifest-driven workload deployment (`.workload` files), `--workload` flag for `cluster_test.sh` (comma-separated or `all`), `--list-workloads`, `--clear-workloads` for agent-reconciled cleanup, Caddy reverse proxy auto-config on testbed host (192.168.100.43), GitHub workflow dispatch with workload/binary selector
+
+---
+
+## v1.20.0-beta {#v1-20-0-beta}
 
 **2026-10-12** — Rolling Updates & Rollback Docs.
 

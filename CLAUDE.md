@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M93 — Phase 93 Rolling Updates & Rollback Docs. M1–M93 complete. Gates A–I resolved.
+**Completed through:** M94 — Phase 94 E2E Workload Selection & Caddy Proxy. M1–M94 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
