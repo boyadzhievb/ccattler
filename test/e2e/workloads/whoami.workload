@@ -6,5 +6,5 @@ WORKLOAD_IMAGES=("traefik/whoami:latest")
 WORKLOAD_EXPECTED_CONTAINERS=2
 WORKLOAD_SECRETS=()
 
-# Caddy reverse proxy: external_port → service_name:internal_port
-WORKLOAD_EXPOSE=("8082:whoami:80")
+# Caddy reverse proxy: domain → service_name (all on port 443 with TLS).
+WORKLOAD_EXPOSE=("whoami.home.arpa:whoami")

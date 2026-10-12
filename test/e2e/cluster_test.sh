@@ -654,7 +654,11 @@ log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINE
 # ---- Step 4.5: Configure Caddy reverse proxy on testbed host ----
 # Caddy runs on the testbed host (192.168.100.43) and proxies external traffic
 # to CCattler services inside the libvirt VMs. Each workload manifest declares
-# WORKLOAD_EXPOSE entries as "external_port:service_name:internal_port".
+# WORKLOAD_EXPOSE entries as "domain:service_name".
+#
+# All services are exposed on port 443 with domain-based routing (SNI) and
+# self-signed TLS certificates via Caddy's internal CA. Requires DNS for
+# *.home.arpa pointing to the testbed host (e.g. /etc/hosts or dnsmasq).
 #
 # VIPs (10.100.x.x) are only routable inside the VMs where agent iptables DNAT
 # rules translate them. From the testbed host we proxy through the agent's HTTP
@@ -677,19 +681,17 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         continue
     fi
     for expose_entry in "${WORKLOAD_EXPOSE[@]}"; do
-        external_port="${expose_entry%%:*}"
-        remainder="${expose_entry#*:}"
-        service_name="${remainder%%:*}"
-        internal_port="${remainder#*:}"
+        domain="${expose_entry%%:*}"
+        service_name="${expose_entry#*:}"
         CADDY_CONFIG+="
-https://${TESTBED_HOST_IP}:${external_port} {
+${domain} {
     tls internal
     reverse_proxy${PROXY_UPSTREAMS} {
         header_up Host ${service_name}
     }
 }
 "
-        EXPOSE_SUMMARY+="  https://${TESTBED_HOST_IP}:${external_port} → ${service_name}:${internal_port} (via agent proxy)\n"
+        EXPOSE_SUMMARY+="  https://${domain} → ${service_name} (via agent proxy)\n"
     done
 done
 

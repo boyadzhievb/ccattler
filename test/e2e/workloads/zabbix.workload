@@ -6,5 +6,5 @@ WORKLOAD_IMAGES=("postgres:16" "zabbix/zabbix-server-pgsql:alpine-7.4-latest" "z
 WORKLOAD_EXPECTED_CONTAINERS=3
 WORKLOAD_SECRETS=()
 
-# Caddy reverse proxy: external_port → service_name:internal_port
-WORKLOAD_EXPOSE=("8081:zabbix-web:8080")
+# Caddy reverse proxy: domain → service_name (all on port 443 with TLS).
+WORKLOAD_EXPOSE=("zabbix.home.arpa:zabbix-web")
