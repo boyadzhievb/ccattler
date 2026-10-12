@@ -68,7 +68,7 @@ service redis {
 
 service webserver {
     image {{ .airflow.image | quote }}
-    command "airflow webserver"
+    command "webserver"
     instances {{ .webserver.instances }}
     expose {{ .webserver.port }}
     resources {
@@ -86,6 +86,9 @@ service webserver {
         env AIRFLOW__CORE__LOAD_EXAMPLES {{ .airflow.loadExamples | quote }}
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
+        env _AIRFLOW_DB_MIGRATE "true"
+        env _AIRFLOW_WWW_USER_CREATE "true"
+        env _AIRFLOW_WWW_USER_PASSWORD_CMD {{ .airflow.createUserCommand | quote }}
     }
     secret fernet-key "/opt/airflow/fernet-key"
     secret webserver-secret-key "/opt/airflow/webserver-secret-key"
@@ -93,21 +96,11 @@ service webserver {
         http /health
         every 15s
     }
-    init {
-        exec "airflow db migrate"
-        timeout 120s
-        retry 5
-    }
-    init {
-        exec {{ .airflow.createUserCommand | quote }}
-        timeout 30s
-        retry 3
-    }
 }
 
 service scheduler {
     image {{ .airflow.image | quote }}
-    command "airflow scheduler"
+    command "scheduler"
     instances 1
     resources {
         cpu {{ .scheduler.cpu }}
@@ -124,6 +117,11 @@ service scheduler {
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
     secret fernet-key "/opt/airflow/fernet-key"
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 20
+    }
     health {
         tcp
         every 30s
@@ -132,7 +130,7 @@ service scheduler {
 
 service worker {
     image {{ .airflow.image | quote }}
-    command "airflow celery worker"
+    command "celery worker"
     instances {{ .worker.instances }}
     expose 8793
     resources {
@@ -150,6 +148,11 @@ service worker {
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
     secret fernet-key "/opt/airflow/fernet-key"
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 20
+    }
     health {
         tcp
         every 15s
