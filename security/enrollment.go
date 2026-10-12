@@ -166,7 +166,7 @@ func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, requ
 
 	dnsNames := []string{
 		request.NodeID,
-		request.NodeID + ".ccattler.local",
+		request.NodeID + ".cca.local",
 	}
 
 	issuedCertificate, err := enrollmentService.certificateAuthority.IssueCertificate(IssueCertificateRequest{

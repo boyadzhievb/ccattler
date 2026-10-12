@@ -15,12 +15,12 @@ import (
 )
 
 // statefulDNSSuffix is the DNS suffix used for per-instance stable DNS names
-// in stateful services (e.g. "postgres-0.ccattler.local").
-const statefulDNSSuffix = ".ccattler.local"
+// in stateful services (e.g. "postgres-0.cca.local").
+const statefulDNSSuffix = ".cca.local"
 
 // StatefulDNSController creates per-instance DNS entries for stateful services.
 // Each running stateful instance with an IP address gets a stable DNS name of
-// the form "{service}-{ordinal}.ccattler.local" that resolves to its IP. This
+// the form "{service}-{ordinal}.cca.local" that resolves to its IP. This
 // enables clients to address specific ordinals by name.
 type StatefulDNSController struct{}
 
@@ -69,7 +69,7 @@ func parseExistingInstanceDNSEntries(facts []store.Fact) map[string]string {
 
 // buildDesiredStatefulDNSEntries determines which per-instance DNS entries
 // should exist. For each stateful service, running instances with an IP and an
-// ordinal get a DNS entry mapping "{service}-{ordinal}.ccattler.local" to their
+// ordinal get a DNS entry mapping "{service}-{ordinal}.cca.local" to their
 // IP. The map key is the instance ID; the value is the DNS record content
 // ("{dnsName}={ipAddress}").
 func buildDesiredStatefulDNSEntries(

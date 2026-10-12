@@ -44,7 +44,7 @@ var (
 
 // UserSpaceProxy is an HTTP reverse proxy that routes requests to service
 // backends using round-robin load balancing. It resolves service names from
-// the Host header (stripping the ".ccattler.local" suffix if present) and
+// the Host header (stripping the ".cca.local" suffix if present) and
 // forwards requests to healthy endpoints read from the store.
 //
 // When warm-zero is enabled for a service (min=0 with idle_timeout configured),
@@ -509,7 +509,7 @@ func (capture *statusCapture) WriteHeader(code int) {
 }
 
 // extractServiceName derives the service name from the Host header value.
-// It strips the port and the ".ccattler.local" domain suffix if present.
+// It strips the port and the ".cca.local" domain suffix if present.
 func extractServiceName(hostHeader string) string {
 	hostname := hostHeader
 	if colonIndex := strings.LastIndex(hostname, ":"); colonIndex >= 0 {

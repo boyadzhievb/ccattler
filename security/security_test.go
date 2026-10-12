@@ -52,7 +52,7 @@ func TestIssueCertificate(t *testing.T) {
 
 	issuedCertificate, err := certificateAuthority.IssueCertificate(IssueCertificateRequest{
 		CommonName:  "node-1",
-		DNSNames:    []string{"node-1.ccattler.local"},
+		DNSNames:    []string{"node-1.cca.local"},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 		TTL:         1 * time.Hour,
 	})

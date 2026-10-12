@@ -15,8 +15,8 @@ import (
 )
 
 // DefaultDNSDomain is the DNS suffix used for service discovery. Queries for
-// "<service>.ccattler.local" are resolved to the service's VIP.
-const DefaultDNSDomain = "ccattler.local"
+// "<service>.cca.local" are resolved to the service's VIP.
+const DefaultDNSDomain = "cca.local"
 
 // dnsReadBufferSize is the byte size of the UDP read buffer for incoming DNS
 // queries. 512 bytes is the standard maximum size for DNS messages over UDP
@@ -26,13 +26,13 @@ const dnsReadBufferSize = 512
 // DNSServer is a lightweight UDP DNS server that resolves service names to
 // their virtual IP addresses by reading VIP facts from the state store via
 // a ServiceResolver. It handles only A-record queries for the
-// *.ccattler.local domain; all other queries receive NXDOMAIN.
+// *.cca.local domain; all other queries receive NXDOMAIN.
 type DNSServer struct {
 	// resolver is used to look up VIP addresses for service names.
 	resolver ServiceResolver
 	// listenAddress is the UDP address the server binds to (e.g. ":15353").
 	listenAddress string
-	// domain is the DNS suffix to match (default "ccattler.local").
+	// domain is the DNS suffix to match (default "cca.local").
 	domain string
 	// mutex protects the connection during concurrent access and shutdown.
 	mutex sync.Mutex
@@ -99,7 +99,7 @@ func (dnsServer *DNSServer) ListenPort() int {
 }
 
 // handleDNSQuery processes a single DNS query packet. It extracts the query
-// name, checks if it matches a service in the ccattler.local domain, resolves
+// name, checks if it matches a service in the cca.local domain, resolves
 // the VIP, and sends back a DNS response with an A record.
 func (dnsServer *DNSServer) handleDNSQuery(ctx context.Context, connection *net.UDPConn, remoteAddress *net.UDPAddr, queryPacket []byte) {
 	if len(queryPacket) < 12 {

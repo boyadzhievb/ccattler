@@ -467,7 +467,7 @@ If services use DNS or VIPs, verify they resolve correctly:
 
 ```bash
 # DNS resolution
-dig <service-name>.ccattler.local @<server-ip> -p 15353
+dig <service-name>.cca.local @<server-ip> -p 15353
 
 # VIP connectivity
 curl http://<vip-address>:<port>/health

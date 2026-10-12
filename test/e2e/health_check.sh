@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# health_check.sh — Check health of a running CCattler test cluster
+# health_check.sh — Check health of a running CCattler deploy cluster
 #
-# Verifies: etcd health, API reachability, node count, container count,
-# service convergence. Designed for periodic cron execution against a
-# long-running test cluster.
+# Verifies: etcd health, API reachability, node count, service convergence,
+# container count, systemd services, HTTP endpoint reachability.
+# Designed for periodic cron execution against a long-running deploy cluster.
 #
 # Exit codes: 0 = healthy, 1 = unhealthy
 #
@@ -22,6 +22,9 @@ WORKER1_IP="192.168.124.20"
 WORKER2_IP="192.168.124.30"
 ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 
+ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
+ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
+
 # Restore persisted Vagrant state — CI checkout wipes .vagrant/ but the deploy
 # workflow saves keys and machine IDs to this directory.
 VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-deploy"
@@ -30,8 +33,15 @@ if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
 fi
 
 HEALTHY=true
+WARNINGS=0
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
+
+warn() {
+    log "  WARNING: $*"
+    HEALTHY=false
+    WARNINGS=$((WARNINGS + 1))
+}
 
 ssh_vm() {
     local vm_name="$1"; shift
@@ -54,27 +64,31 @@ count_containers() {
 }
 
 # ---- Check 1: VM reachability ----
-log "Checking VM reachability..."
-for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
+log "Check 1: VM reachability"
+REACHABLE_COUNT=0
+for vm in "${ALL_VM_NAMES[@]}"; do
     if ssh_vm "$vm" "true" 2>/dev/null; then
         log "  $vm: reachable"
+        REACHABLE_COUNT=$((REACHABLE_COUNT + 1))
     else
-        log "  $vm: UNREACHABLE"
-        HEALTHY=false
+        warn "$vm: UNREACHABLE"
     fi
 done
 
+if [[ "$REACHABLE_COUNT" -lt 3 ]]; then
+    log "Only $REACHABLE_COUNT/3 VMs reachable — remaining checks may fail"
+fi
+
 # ---- Check 2: etcd health ----
-log "Checking etcd health..."
+log "Check 2: etcd health"
 if ssh_vm cca-deploy-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" 2>/dev/null; then
     log "  etcd: healthy"
 else
-    log "  etcd: UNHEALTHY"
-    HEALTHY=false
+    warn "etcd: UNHEALTHY"
 fi
 
 # ---- Check 3: cca server API ----
-log "Checking cca server API..."
+log "Check 3: cca server API"
 CA_CERT="/tmp/cca-healthcheck-ca.pem"
 CLIENT_CERT="/tmp/cca-healthcheck-client.pem"
 CLIENT_KEY="/tmp/cca-healthcheck-client-key.pem"
@@ -95,52 +109,137 @@ CURL_TLS="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY"
 
 STATUS_JSON=""
 if [[ "$CERTS_FETCHED" != "true" ]]; then
-    log "  API /status: UNREACHABLE (could not fetch TLS certs from ctrl node)"
-    HEALTHY=false
+    warn "API: could not fetch TLS certs from ctrl node"
 elif STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null); then
     log "  API /status: reachable"
-    echo "$STATUS_JSON" | jq . 2>/dev/null || echo "$STATUS_JSON"
 else
-    log "  API /status: UNREACHABLE"
-    HEALTHY=false
+    warn "API /status: UNREACHABLE"
 fi
 
 # ---- Check 4: Node count ----
-log "Checking node count..."
+log "Check 4: Node count"
 if [[ -n "$STATUS_JSON" ]]; then
-    alive_count=$(echo "$STATUS_JSON" | grep -o '"state":"alive"' | wc -l | tr -d ' ')
+    alive_count=$(echo "$STATUS_JSON" | jq '[.nodes[] | select(.state == "alive")] | length')
     log "  Alive nodes: $alive_count/3"
     if [[ "$alive_count" -lt 3 ]]; then
-        log "  WARNING: expected 3 alive nodes"
-        HEALTHY=false
+        warn "expected 3 alive nodes, got $alive_count"
     fi
+else
+    log "  Skipped (no status JSON)"
 fi
 
-# ---- Check 5: Container count ----
-log "Checking containers on each node..."
+# ---- Check 5: Service convergence ----
+log "Check 5: Service convergence"
+if [[ -n "$STATUS_JSON" ]]; then
+    service_count=$(echo "$STATUS_JSON" | jq '.services | length')
+    log "  Deployed services: $service_count"
+
+    if [[ "$service_count" -eq 0 ]]; then
+        warn "no services deployed"
+    else
+        converged=true
+        echo "$STATUS_JSON" | jq -r '.services[] | "\(.name) \(.desired) \(.running)"' | while read -r svc_name svc_desired svc_running; do
+            if [[ "$svc_desired" -ne "$svc_running" ]]; then
+                log "  $svc_name: desired=$svc_desired running=$svc_running — NOT CONVERGED"
+                converged=false
+            else
+                log "  $svc_name: desired=$svc_desired running=$svc_running — ok"
+            fi
+        done
+
+        not_converged=$(echo "$STATUS_JSON" | jq '[.services[] | select(.desired != .running)] | length')
+        if [[ "$not_converged" -gt 0 ]]; then
+            warn "$not_converged service(s) not converged (desired != running)"
+        fi
+    fi
+else
+    log "  Skipped (no status JSON)"
+fi
+
+# ---- Check 6: Instance health ----
+log "Check 6: Instance health"
+if [[ -n "$STATUS_JSON" ]]; then
+    total_instances=$(echo "$STATUS_JSON" | jq '.instances | length')
+    running_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.state == "running")] | length')
+    failed_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.state == "failed")] | length')
+
+    log "  Total: $total_instances, Running: $running_instances, Failed: $failed_instances"
+
+    if [[ "$failed_instances" -gt 0 ]]; then
+        warn "$failed_instances instance(s) in failed state"
+        echo "$STATUS_JSON" | jq -r '.instances[] | select(.state == "failed") | "    \(.id) (\(.service)) on \(.node)"'
+    fi
+
+    unhealthy_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.health != null and .health != "" and .health != "healthy")] | length')
+    if [[ "$unhealthy_instances" -gt 0 ]]; then
+        warn "$unhealthy_instances instance(s) unhealthy"
+        echo "$STATUS_JSON" | jq -r '.instances[] | select(.health != null and .health != "" and .health != "healthy") | "    \(.id) (\(.service)) health=\(.health)"'
+    fi
+else
+    log "  Skipped (no status JSON)"
+fi
+
+# ---- Check 7: Container count ----
+log "Check 7: Container count"
 total_containers=0
-for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
+for vm in "${ALL_VM_NAMES[@]}"; do
     count=$(count_containers "$vm")
     log "  $vm: $count containers"
     total_containers=$((total_containers + count))
 done
 log "  Total containers: $total_containers"
-if [[ "$total_containers" -lt 5 ]]; then
-    log "  WARNING: expected at least 5 containers (2 Java + 3 Zabbix)"
-    HEALTHY=false
+
+expected_from_api=0
+if [[ -n "$STATUS_JSON" ]]; then
+    expected_from_api=$(echo "$STATUS_JSON" | jq '[.services[].desired] | add // 0')
 fi
 
-# ---- Check 6: systemd services ----
-log "Checking systemd services..."
-for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
+if [[ "$expected_from_api" -gt 0 ]]; then
+    if [[ "$total_containers" -lt "$expected_from_api" ]]; then
+        warn "expected at least $expected_from_api containers (from API desired count), found $total_containers"
+    fi
+elif [[ "$total_containers" -lt 1 ]]; then
+    warn "no containers running on any node"
+fi
+
+# ---- Check 8: systemd services ----
+log "Check 8: systemd services"
+for vm in "${ALL_VM_NAMES[@]}"; do
     server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null)
     agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null)
     log "  $vm: server=$server_active agent=$agent_active"
     if [[ "$agent_active" != "active" ]]; then
-        log "  WARNING: $vm agent not running"
-        HEALTHY=false
+        warn "$vm cca-agent not running"
     fi
 done
+
+# ---- Check 9: HTTP endpoint reachability ----
+log "Check 9: HTTP endpoint reachability"
+if [[ -n "$STATUS_JSON" ]]; then
+    networking_count=$(echo "$STATUS_JSON" | jq '.networking | length')
+    if [[ "$networking_count" -gt 0 ]]; then
+        echo "$STATUS_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' | while read -r svc_name svc_vip svc_port; do
+            if [[ -z "$svc_vip" ]] || [[ "$svc_vip" == "null" ]]; then
+                log "  $svc_name: no VIP assigned, skipping"
+                continue
+            fi
+            http_status=$(ssh_vm cca-deploy-ctrl \
+                "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null || echo 000" \
+                2>/dev/null | tr -d "'")
+            if [[ "$http_status" =~ ^[23] ]]; then
+                log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status — ok"
+            elif [[ "$http_status" == "000" ]]; then
+                log "  $svc_name (${svc_vip}:${svc_port}): connection failed"
+            else
+                log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status"
+            fi
+        done
+    else
+        log "  No networking entries in status"
+    fi
+else
+    log "  Skipped (no status JSON)"
+fi
 
 # ---- Cleanup temp files ----
 rm -f "$CA_CERT" "$CLIENT_CERT" "$CLIENT_KEY"
@@ -148,9 +247,9 @@ rm -f "$CA_CERT" "$CLIENT_CERT" "$CLIENT_KEY"
 # ---- Result ----
 echo ""
 if [[ "$HEALTHY" == "true" ]]; then
-    log "HEALTH CHECK: PASS"
+    log "HEALTH CHECK: PASS (0 warnings)"
     exit 0
 else
-    log "HEALTH CHECK: FAIL"
+    log "HEALTH CHECK: FAIL ($WARNINGS warning(s))"
     exit 1
 fi

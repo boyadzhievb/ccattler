@@ -339,6 +339,9 @@ func TestBuildRunArgumentsDNSFlagInjected(t *testing.T) {
 	if !strings.Contains(argsJoined, "--dns 192.168.124.10") {
 		t.Errorf("missing --dns flag in args: %v", args)
 	}
+	if !strings.Contains(argsJoined, "--dns-search "+defaultDNSSearchDomain) {
+		t.Errorf("missing --dns-search flag in args: %v", args)
+	}
 }
 
 // TestBuildRunArgumentsNoDNSFlagWhenUnset verifies that no --dns flag is added
@@ -358,6 +361,9 @@ func TestBuildRunArgumentsNoDNSFlagWhenUnset(t *testing.T) {
 	for _, argValue := range args {
 		if argValue == "--dns" {
 			t.Error("--dns flag should not be present when dnsAddress is empty")
+		}
+		if argValue == "--dns-search" {
+			t.Error("--dns-search flag should not be present when dnsAddress is empty")
 		}
 	}
 }

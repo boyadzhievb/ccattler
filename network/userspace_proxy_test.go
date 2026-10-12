@@ -58,7 +58,7 @@ func TestUserSpaceProxyRoutesToBackend(t *testing.T) {
 	defer proxyServer.Close()
 
 	request, _ := http.NewRequest("GET", proxyServer.URL+"/hello", nil)
-	request.Host = "web.ccattler.local"
+	request.Host = "web.cca.local"
 
 	response, requestError := http.DefaultClient.Do(request)
 	if requestError != nil {
@@ -160,11 +160,11 @@ func TestExtractServiceName(t *testing.T) {
 		hostHeader          string
 		expectedServiceName string
 	}{
-		{"web.ccattler.local", "web"},
-		{"web.ccattler.local:8080", "web"},
+		{"web.cca.local", "web"},
+		{"web.cca.local:8080", "web"},
 		{"web", "web"},
 		{"web:80", "web"},
-		{"java-webapp.ccattler.local", "java-webapp"},
+		{"java-webapp.cca.local", "java-webapp"},
 		{"api", "api"},
 	}
 
@@ -243,7 +243,7 @@ func TestProxyWarmZeroColdActivation(t *testing.T) {
 	}()
 
 	request, _ := http.NewRequest("GET", proxyServer.URL+"/hello", nil)
-	request.Host = "api.ccattler.local"
+	request.Host = "api.cca.local"
 
 	response, requestError := http.DefaultClient.Do(request)
 	if requestError != nil {

@@ -23,7 +23,7 @@ Each service gets a virtual IP from the `10.200.0.0/24` pool. VIPs are stable ac
 CCattler runs a DNS server (enabled with `cca server --dns`) that resolves service names:
 
 ```bash
-dig web.ccattler.local @localhost -p 15353
+dig web.cca.local @localhost -p 15353
 # Returns: 10.200.0.1 (the service VIP)
 ```
 

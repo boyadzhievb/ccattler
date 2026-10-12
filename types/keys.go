@@ -457,7 +457,7 @@ func KeyObservedInstanceOrdinal(instanceID string) string {
 
 // KeyNetworkDNSInstance returns the store path for a per-instance DNS name
 // used by stateful services. The name resolves to the instance's IP address
-// (e.g. "postgres-0.ccattler.local" → "10.0.1.4").
+// (e.g. "postgres-0.cca.local" → "10.0.1.4").
 // Path: network/dns/instance/{instanceID}
 func KeyNetworkDNSInstance(instanceID string) string {
 	return fmt.Sprintf("%s/dns/instance/%s", PrefixNetwork, instanceID)

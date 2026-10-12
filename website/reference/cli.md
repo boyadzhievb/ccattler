@@ -107,7 +107,7 @@ mTLS client certificates.
 | `--cert` | | Path to PEM server certificate (external PKI) |
 | `--key` | | Path to PEM server private key |
 | `--ca` | | Path to PEM CA certificate |
-| `--dns` | off | Enable DNS server for `*.ccattler.local` resolution |
+| `--dns` | off | Enable DNS server for `*.cca.local` resolution |
 | `--endpoints` | auto-detected | etcd endpoints (override auto-detection) |
 
 ### `cca agent`

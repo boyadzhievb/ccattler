@@ -14,11 +14,22 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 )
 
 var validImageReferencePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$`)
+
+// defaultDNSSearchDomain is the search domain added to container resolv.conf
+// so bare service names (e.g. "metadata-db") resolve via CCattler DNS.
+// Must match network.DefaultDNSDomain.
+const defaultDNSSearchDomain = "cca.local"
+
+// nerdctlCommandTimeout is the maximum time nerdctl inspect/stats commands are
+// allowed to run before being killed. Prevents the agent from blocking when
+// nerdctl hangs on exited containers.
+const nerdctlCommandTimeout = 10 * time.Second
 
 // ContainerRuntime runs workloads as OCI containers via the nerdctl or docker CLI.
 // Spec.Image is the OCI image reference (e.g., "nginx:1.28"). Resource limits
@@ -38,6 +49,7 @@ type ContainerRuntime struct {
 	networkCIDR               string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
 	networkReady              bool              // networkReady is true once the container network has been verified or created.
 	dnsAddress                string            // dnsAddress is the DNS server address passed to containers via --dns (empty = use runtime default).
+	dnsSearchDomain           string            // dnsSearchDomain is the search domain passed to containers via --dns-search (e.g. "cca.local").
 	containerCommand          string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
 }
 
@@ -90,11 +102,14 @@ func (containerRuntime *ContainerRuntime) SetNetwork(networkName string, subnetC
 	containerRuntime.networkCIDR = subnetCIDR
 }
 
-// SetDNS configures the DNS server address that containers will use for name
-// resolution. This overrides the runtime default (typically 8.8.8.8) so that
-// containers can resolve service names via the CCattler DNS server.
+// SetDNS configures the DNS server address and search domain that containers
+// will use for name resolution. The address overrides the runtime default so
+// that containers resolve service names via the CCattler DNS server. The search
+// domain allows bare service names like "metadata-db" to resolve as
+// "metadata-db.cca.local".
 func (containerRuntime *ContainerRuntime) SetDNS(dnsAddress string) {
 	containerRuntime.dnsAddress = dnsAddress
+	containerRuntime.dnsSearchDomain = defaultDNSSearchDomain
 }
 
 // ensureNetworkExists creates the nerdctl network if it does not already
@@ -174,8 +189,12 @@ func (containerRuntime *ContainerRuntime) materializeConfigFilesToTempDirectory(
 func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) error {
 	containerRuntime.mutex.Lock()
 	if containerRuntime.trackedContainers[spec.ID] {
-		containerRuntime.mutex.Unlock()
-		return nil
+		containerName := containerRuntime.resolveContainerName(spec.ID)
+		if containerRuntime.isContainerActuallyRunning(ctx, containerName) {
+			containerRuntime.mutex.Unlock()
+			return nil
+		}
+		containerRuntime.removeExitedContainerLocked(ctx, spec.ID, containerName)
 	}
 	containerRuntime.mutex.Unlock()
 
@@ -251,6 +270,9 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 	if containerRuntime.dnsAddress != "" {
 		args = append(args, "--dns", containerRuntime.dnsAddress)
 	}
+	if containerRuntime.dnsSearchDomain != "" {
+		args = append(args, "--dns-search", containerRuntime.dnsSearchDomain)
+	}
 
 	if spec.CPUm > 0 {
 		args = append(args, fmt.Sprintf("--cpus=%d.%03d", spec.CPUm/1000, spec.CPUm%1000))
@@ -320,6 +342,37 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 	return nil
 }
 
+// isContainerActuallyRunning checks if a container is truly running by calling
+// nerdctl inspect. Must be called with the mutex held.
+func (containerRuntime *ContainerRuntime) isContainerActuallyRunning(ctx context.Context, containerName string) bool {
+	inspectContext, cancelInspect := context.WithTimeout(ctx, nerdctlCommandTimeout)
+	defer cancelInspect()
+
+	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect", "--format", "{{.State.Running}}", containerName)
+	var inspectOutput bytes.Buffer
+	inspectCommand.Stdout = &inspectOutput
+	if inspectError := inspectCommand.Run(); inspectError != nil {
+		return false
+	}
+	return strings.TrimSpace(inspectOutput.String()) == "true"
+}
+
+// removeExitedContainerLocked removes a stopped container and clears all
+// tracking state so Start can create a fresh container. Must be called with
+// the mutex held.
+func (containerRuntime *ContainerRuntime) removeExitedContainerLocked(ctx context.Context, instanceID string, containerName string) {
+	removeCommand := containerRuntime.buildExecCommand(ctx, "rm", "-f", containerName)
+	_ = removeCommand.Run()
+
+	if configTempDir, hasConfigFiles := containerRuntime.configFileTempDirectories[instanceID]; hasConfigFiles {
+		_ = os.RemoveAll(configTempDir)
+		delete(containerRuntime.configFileTempDirectories, instanceID)
+	}
+	delete(containerRuntime.trackedContainers, instanceID)
+	delete(containerRuntime.containerNames, instanceID)
+	delete(containerRuntime.instanceHostPorts, instanceID)
+}
+
 // Status returns the current state of the nerdctl container for the workload
 // identified by id. It queries the container runtime via `nerdctl inspect` to
 // determine whether the container is running. Returns ErrNotFound if the
@@ -329,7 +382,11 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	defer containerRuntime.mutex.Unlock()
 
 	containerName := containerRuntime.resolveContainerName(id)
-	inspectCommand := containerRuntime.buildExecCommand(ctx, "inspect", "--format", "{{.State.Running}}", containerName)
+
+	inspectContext, cancelInspect := context.WithTimeout(ctx, nerdctlCommandTimeout)
+	defer cancelInspect()
+
+	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect", "--format", "{{.State.Running}}", containerName)
 	var inspectOutput bytes.Buffer
 	inspectCommand.Stdout = &inspectOutput
 	if err := inspectCommand.Run(); err != nil {
@@ -448,7 +505,10 @@ func (containerRuntime *ContainerRuntime) Stats(ctx context.Context, id string) 
 		return ResourceStats{}, ErrNotFound
 	}
 
-	statsCommand := containerRuntime.buildExecCommand(ctx, "stats", "--no-stream",
+	statsContext, cancelStats := context.WithTimeout(ctx, nerdctlCommandTimeout)
+	defer cancelStats()
+
+	statsCommand := containerRuntime.buildExecCommand(statsContext, "stats", "--no-stream",
 		"--format", "{{.CPUPerc}} {{.MemUsage}}", containerName)
 	var statsOutput bytes.Buffer
 	statsCommand.Stdout = &statsOutput

@@ -101,13 +101,13 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	})
 
 	dns0Fact, _ := factStore.Get(ctx, types.KeyNetworkDNSInstance("postgres-0"))
-	expectedDNS0 := "postgres-0.ccattler.local=10.0.1.4"
+	expectedDNS0 := "postgres-0.cca.local=10.0.1.4"
 	if string(dns0Fact.Value) != expectedDNS0 {
 		t.Errorf("DNS for postgres-0: got %q, want %q", dns0Fact.Value, expectedDNS0)
 	}
 
 	dns2Fact, _ := factStore.Get(ctx, types.KeyNetworkDNSInstance("postgres-2"))
-	expectedDNS2 := "postgres-2.ccattler.local=10.0.3.2"
+	expectedDNS2 := "postgres-2.cca.local=10.0.3.2"
 	if string(dns2Fact.Value) != expectedDNS2 {
 		t.Errorf("DNS for postgres-2: got %q, want %q", dns2Fact.Value, expectedDNS2)
 	}

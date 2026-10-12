@@ -231,7 +231,7 @@
 
 ### Phase 23 — Service Networking & Placement
 - [x] Cross-host endpoints — EndpointController uses nodeAddress:hostPort instead of 127.0.0.1 for remote instances
-- [x] DNS server wired to CLI — `cca server --dns` starts UDP DNS resolving `*.ccattler.local` → VIP (default `:15353`)
+- [x] DNS server wired to CLI — `cca server --dns` starts UDP DNS resolving `*.cca.local` → VIP (default `:15353`)
 - [x] UserSpaceProxy HTTP reverse proxy — routes by Host header with round-robin load balancing, replaces unreliable iptables DNAT
 - [x] Proxy wired to CLI — `cca agent --proxy` starts HTTP proxy on configurable address (default `0.0.0.0:80`)
 - [x] Placement fact keys — `placement/require/{label}`, `placement/prefer/{label}`, `placement/accept/{label}`, `observed/node/{id}/label/{label}`, `observed/node/{id}/restrict/{label}`
@@ -1076,7 +1076,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Ordered startup: instance N+1 only created when N is running
 - [x] Reverse scale-down: highest ordinal removed first
 - [x] Per-ordinal volumes: `postgres-0-pgdata` automatic naming (`controllers/stateful_volume.go`)
-- [x] Stable DNS: `postgres-0.ccattler.local` resolves to instance IP (`controllers/stateful_dns.go`)
+- [x] Stable DNS: `postgres-0.cca.local` resolves to instance IP (`controllers/stateful_dns.go`)
 - [x] Stateful volume controller: `controllers/stateful_volume.go`
 - [x] Stateful DNS controller: `controllers/stateful_dns.go`
 - [x] Unit tests: ordinal creation, ordering, reverse scale-down, per-ordinal volumes, DNS (19 tests)
@@ -1458,6 +1458,7 @@ Replace bind-mount secret delivery with an agent-side HTTP API. Containers fetch
 | M93 — Rolling Updates & Rollback Docs | 93 | Rolling updates guide (`website/guides/rolling-updates.md`), rollback documentation (automatic threshold-3 + manual re-apply), disruption budget interaction, `rolling-update.cca` example, website examples/guides index updated |
 | M94 — E2E Workload Selection & Caddy Proxy | 94 | Manifest-driven workload deployment (`.workload` files), `--workload` flag for `cluster_test.sh` (comma-separated or `all`), `--list-workloads`, `--clear-workloads` for agent-reconciled cleanup, Caddy reverse proxy auto-config on testbed host (192.168.100.43), GitHub workflow dispatch with workload/binary selector |
 | M95 — K8s Comparison & Deploy Fixes | 95 | Kubernetes production tooling comparison page (K9s, Argo CD, KEDA, Karpenter, Istio, Secrets Store CSI, Kyverno, Prometheus, Jaeger mapped to CCattler equivalents), Caddy deploy-only (skip test env), IPv4 preference for image pulls, secret master key path fix, deploy workflow workload selector |
+| M96 — Container DNS & Agent Livelock Fix | 96 | DNS domain shortened from `ccattler.local` to `cca.local`, `--dns-search cca.local` auto-injected so containers resolve bare service names, `nerdctl stats`/`inspect` commands use 10s context timeout to prevent agent livelock when containers exit mid-collection, `Start()` detects exited containers and restarts them, health check script updated for dynamic service verification via API |
 | *(future)* eBPF Data Plane | — | Implement `EbpfDataPlaneProvider`: BPF C DNAT program (TC ingress hook), `cilium/ebpf` bpf2go Go loader, VIP→backend hash map population from `ReconcileVIPDataPlane`, kernel conntrack for return path, network namespace + veth pair tests, kernel 5.10+ gate, iptables fallback preserved |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

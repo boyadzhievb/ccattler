@@ -84,7 +84,7 @@ cca logs web
 
 ### DNS not resolving
 
-**Symptom:** `dig web.ccattler.local @server-ip -p 15353` returns no answer.
+**Symptom:** `dig web.cca.local @server-ip -p 15353` returns no answer.
 
 **Check:**
 1. Is DNS enabled? `cca server --dns` must be set

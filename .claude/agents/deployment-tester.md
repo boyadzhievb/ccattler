@@ -89,7 +89,7 @@ vagrant ssh ctrl -c "cca status"
 vagrant ssh ctrl -c "curl -s -o /dev/null -w '%{http_code}' http://10.200.0.1:80 2>/dev/null || echo 'VIP not reachable'"
 
 # Test DNS (if DNS is configured)
-vagrant ssh ctrl -c "dig @127.0.0.1 -p 15353 web.ccattler.local 2>/dev/null || echo 'DNS not configured'"
+vagrant ssh ctrl -c "dig @127.0.0.1 -p 15353 web.cca.local 2>/dev/null || echo 'DNS not configured'"
 
 # Test proxy (if proxy is configured)
 vagrant ssh ctrl -c "curl -s -o /dev/null -w '%{http_code}' -H 'Host: web' http://localhost:80 2>/dev/null || echo 'proxy not configured'"

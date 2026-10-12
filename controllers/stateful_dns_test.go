@@ -38,9 +38,9 @@ func TestStatefulDNSCreatesPerOrdinalEntries(t *testing.T) {
 	}
 
 	assertChangeKey(t, changes[0], types.KeyNetworkDNSInstance("postgres-0"))
-	assertChangeValue(t, changes[0], "postgres-0.ccattler.local=10.0.1.4")
+	assertChangeValue(t, changes[0], "postgres-0.cca.local=10.0.1.4")
 	assertChangeKey(t, changes[1], types.KeyNetworkDNSInstance("postgres-1"))
-	assertChangeValue(t, changes[1], "postgres-1.ccattler.local=10.0.2.8")
+	assertChangeValue(t, changes[1], "postgres-1.cca.local=10.0.2.8")
 }
 
 // TestStatefulDNSSkipsNonStatefulInstances verifies that non-stateful service
@@ -97,7 +97,7 @@ func TestStatefulDNSDeletesStaleDNSEntries(t *testing.T) {
 		kv(types.KeyObservedInstanceState("postgres-0"), "stopped"),
 		kv(types.KeyObservedInstanceOrdinal("postgres-0"), "0"),
 		// Existing DNS entry for stopped instance
-		kv(types.KeyNetworkDNSInstance("postgres-0"), "postgres-0.ccattler.local=10.0.1.4"),
+		kv(types.KeyNetworkDNSInstance("postgres-0"), "postgres-0.cca.local=10.0.1.4"),
 	)
 
 	changes, reconcileErr := dnsController.Reconcile(context.Background(), facts)

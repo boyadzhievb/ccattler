@@ -40,7 +40,7 @@ func buildDNSARecordQuery(transactionID uint16, domainName string) []byte {
 	return append(header, questionSection...)
 }
 
-// splitDomainIntoLabels splits "web.ccattler.local" into ["web", "ccattler", "local"].
+// splitDomainIntoLabels splits "web.cca.local" into ["web", "ccattler", "local"].
 func splitDomainIntoLabels(domainName string) []string {
 	var labels []string
 	current := ""
@@ -85,7 +85,7 @@ func sendDNSQueryAndReadResponse(serverAddress string, queryPacket []byte) ([]by
 }
 
 // TestDNSServerResolvesServiceToVIP verifies that querying for
-// "web.ccattler.local" returns the service's VIP as an A record.
+// "web.cca.local" returns the service's VIP as an A record.
 func TestDNSServerResolvesServiceToVIP(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
@@ -101,7 +101,7 @@ func TestDNSServerResolvesServiceToVIP(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	serverAddress := "127.0.0.1:" + intToString(dnsServer.ListenPort())
-	queryPacket := buildDNSARecordQuery(0x1234, "web.ccattler.local")
+	queryPacket := buildDNSARecordQuery(0x1234, "web.cca.local")
 	responsePacket, err := sendDNSQueryAndReadResponse(serverAddress, queryPacket)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestDNSServerReturnsNXDOMAINForUnknownService(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	serverAddress := "127.0.0.1:" + intToString(dnsServer.ListenPort())
-	queryPacket := buildDNSARecordQuery(0x5678, "unknown.ccattler.local")
+	queryPacket := buildDNSARecordQuery(0x5678, "unknown.cca.local")
 	responsePacket, err := sendDNSQueryAndReadResponse(serverAddress, queryPacket)
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +162,7 @@ func TestDNSServerReturnsNXDOMAINForUnknownService(t *testing.T) {
 }
 
 // TestDNSServerReturnsNXDOMAINForWrongDomain verifies that queries for
-// domains outside *.ccattler.local return NXDOMAIN.
+// domains outside *.cca.local return NXDOMAIN.
 func TestDNSServerReturnsNXDOMAINForWrongDomain(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
