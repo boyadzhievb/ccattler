@@ -340,6 +340,7 @@ ExecStart=/usr/local/bin/cca agent \\
   --advertise-address ${local_ip} \\
   --proxy --proxy-listen ${local_ip}:80 \\
   --debug-listen ${local_ip}:9771 \\
+  --secret-api-listen ${local_ip}:9772 \\
   --cert /etc/ccattler/pki/node.pem \\
   --key /etc/ccattler/pki/node-key.pem \\
   --ca /etc/ccattler/pki/ca.pem
