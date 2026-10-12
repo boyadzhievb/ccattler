@@ -655,11 +655,20 @@ log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINE
 # Caddy runs on the testbed host (192.168.100.43) and proxies external traffic
 # to CCattler services inside the libvirt VMs. Each workload manifest declares
 # WORKLOAD_EXPOSE entries as "external_port:service_name:internal_port".
-# Caddy routes to the CCattler VIP (resolved via the cluster DNS on the ctrl VM).
+#
+# VIPs (10.100.x.x) are only routable inside the VMs where agent iptables DNAT
+# rules translate them. From the testbed host we proxy through the agent's HTTP
+# proxy (port 80 on each VM) which routes by Host header to the correct service.
 
 CADDY_CONFIG=""
 EXPOSE_SUMMARY=""
 TESTBED_HOST_IP="192.168.100.43"
+
+# Build upstream list: all VM IPs on port 80 (agent HTTP proxy).
+PROXY_UPSTREAMS=""
+for ip in "${ALL_IPS[@]}"; do
+    PROXY_UPSTREAMS+=" ${ip}:80"
+done
 
 for workload_name in "${WORKLOAD_NAMES[@]}"; do
     # shellcheck source=/dev/null
@@ -672,18 +681,14 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         remainder="${expose_entry#*:}"
         service_name="${remainder%%:*}"
         internal_port="${remainder#*:}"
-        # Resolve service VIP via CCattler DNS on the ctrl node.
-        service_vip=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short @127.0.0.1 -p 15353 ${service_name} 2>/dev/null" | head -1 | tr -d '\r\n') || true
-        if [[ -z "$service_vip" ]]; then
-            log "WARNING: Cannot resolve VIP for $service_name — skipping Caddy route for $workload_name"
-            continue
-        fi
         CADDY_CONFIG+="
 :${external_port} {
-    reverse_proxy ${service_vip}:${internal_port}
+    reverse_proxy${PROXY_UPSTREAMS} {
+        header_up Host ${service_name}
+    }
 }
 "
-        EXPOSE_SUMMARY+="  http://${TESTBED_HOST_IP}:${external_port} → ${service_name} (${service_vip}:${internal_port})\n"
+        EXPOSE_SUMMARY+="  http://${TESTBED_HOST_IP}:${external_port} → ${service_name}:${internal_port} (via agent proxy)\n"
     done
 done
 
