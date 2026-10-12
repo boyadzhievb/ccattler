@@ -410,13 +410,13 @@ func (containerRuntime *ContainerRuntime) ExecCapture(ctx context.Context, insta
 
 // ExecInit runs an initialization command by creating a temporary container
 // from the given image, executing the command, and removing the container.
-// When execSpec.Env is non-empty, each entry is passed as a -e flag so the
-// init container inherits environment variables (e.g. CCA_SECRET_URL/TOKEN).
+// Overrides the image entrypoint with --entrypoint "" so init commands run in
+// a clean shell, bypassing custom entrypoints that reject non-native commands.
 func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image string, execSpec ExecSpec) error {
 	if !validImageReferencePattern.MatchString(image) {
 		return fmt.Errorf("invalid image reference: %q", image)
 	}
-	args := []string{"run", "--rm"}
+	args := []string{"run", "--rm", "--entrypoint", ""}
 	for envKey, envValue := range execSpec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue
