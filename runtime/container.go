@@ -37,6 +37,7 @@ type ContainerRuntime struct {
 	networkName               string            // networkName is the container network to connect containers to for IP assignment.
 	networkCIDR               string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
 	networkReady              bool              // networkReady is true once the container network has been verified or created.
+	dnsAddress                string            // dnsAddress is the DNS server address passed to containers via --dns (empty = use runtime default).
 	containerCommand          string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
 }
 
@@ -87,6 +88,13 @@ func NewContainerRuntime() *ContainerRuntime {
 func (containerRuntime *ContainerRuntime) SetNetwork(networkName string, subnetCIDR string) {
 	containerRuntime.networkName = networkName
 	containerRuntime.networkCIDR = subnetCIDR
+}
+
+// SetDNS configures the DNS server address that containers will use for name
+// resolution. This overrides the runtime default (typically 8.8.8.8) so that
+// containers can resolve service names via the CCattler DNS server.
+func (containerRuntime *ContainerRuntime) SetDNS(dnsAddress string) {
+	containerRuntime.dnsAddress = dnsAddress
 }
 
 // ensureNetworkExists creates the nerdctl network if it does not already
@@ -238,6 +246,10 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 				args = append(args, "--hostname", spec.ServiceName)
 			}
 		}
+	}
+
+	if containerRuntime.dnsAddress != "" {
+		args = append(args, "--dns", containerRuntime.dnsAddress)
 	}
 
 	if spec.CPUm > 0 {

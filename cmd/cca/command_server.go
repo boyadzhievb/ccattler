@@ -446,6 +446,7 @@ func configureAndStartAPIServer(
 	}
 	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
 	statusAPIServer.SetSecretStore(secretStore)
+	statusAPIServer.SetSecretMasterKey(secretMasterKey)
 	fmt.Println("Secret store initialized (envelope encryption, local key)")
 
 	if parsedConfig.apiOnly {
@@ -634,20 +635,15 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 	}
 }
 
-// secretMasterKeyPath is the file where the secret store's 32-byte master key
-// is persisted between server restarts.
-const secretMasterKeyPath = ".ccattler/secret-master.key"
+// secretMasterKeyPath is the canonical location for the secret store's 32-byte
+// master key. Ansible provisions the same key to all nodes at this path.
+const secretMasterKeyPath = "/etc/ccattler/secret-master.key" //nolint:gosec // file path, not a credential
 
 // loadOrGenerateSecretMasterKey reads the master key from disk, or generates a
 // fresh one and writes it out. The key file is 32 bytes of raw binary data.
 func loadOrGenerateSecretMasterKey() []byte {
 	if existingKey, readErr := os.ReadFile(secretMasterKeyPath); readErr == nil && len(existingKey) == 32 {
 		return existingKey
-	}
-
-	if mkdirError := os.MkdirAll(".ccattler", 0700); mkdirError != nil {
-		fmt.Fprintf(os.Stderr, "create key directory: %v\n", mkdirError)
-		os.Exit(1)
 	}
 
 	freshKey, generateError := security.GenerateMasterKey()
@@ -838,17 +834,26 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 // launchLocalhostAdminListener starts a plain-HTTP listener on 127.0.0.1 so
 // that local CLI commands (cca secret, cca status, etc.) can reach the API
 // without mTLS client certificates. Skipped when the main listener is already
-// on localhost.
+// on localhost without TLS. When the main listener binds a wildcard address
+// (0.0.0.0, ::), the admin port is mainPort+1 to avoid conflicts.
 func launchLocalhostAdminListener(handler http.Handler, mainListenAddress string) {
 	mainHost, mainPort, splitError := net.SplitHostPort(mainListenAddress)
 	if splitError != nil {
 		return
 	}
-	if mainHost == "127.0.0.1" || mainHost == "localhost" || mainHost == "::1" || mainHost == "0.0.0.0" || mainHost == "::" {
+	if mainHost == "127.0.0.1" || mainHost == "localhost" || mainHost == "::1" {
 		return
 	}
 
-	localhostAddress := "127.0.0.1:" + mainPort
+	adminPort := mainPort
+	if mainHost == "0.0.0.0" || mainHost == "::" || mainHost == "" {
+		parsedPort, parseError := strconv.Atoi(mainPort)
+		if parseError != nil {
+			return
+		}
+		adminPort = strconv.Itoa(parsedPort + 1)
+	}
+	localhostAddress := "127.0.0.1:" + adminPort
 	localhostListener, listenError := net.Listen("tcp", localhostAddress)
 	if listenError != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not start localhost admin listener on %s: %v\n", localhostAddress, listenError)

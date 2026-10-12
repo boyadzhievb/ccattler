@@ -41,16 +41,23 @@
   copy:
     dest: /etc/dnsmasq.d/upstream.conf
     content: |
-      server=8.8.8.8
-      server=1.1.1.1
+      server={{ ansible_default_ipv4.gateway }}
       cache-size=1000
     mode: "0644"
   notify: restart dnsmasq
 
-- name: Point resolv.conf at dnsmasq
+- name: Forward service DNS to CCattler DNS server
+  copy:
+    dest: /etc/dnsmasq.d/ccattler-dns.conf
+    content: "server={{ hostvars[groups['controlplane'][0]].ansible_host }}#15353\n"
+    mode: "0644"
+  when: groups['controlplane'] is defined and groups['controlplane'] | length > 0
+  notify: restart dnsmasq
+
+- name: Point resolv.conf at dnsmasq and host gateway
   copy:
     dest: /etc/resolv.conf
-    content: "nameserver 127.0.0.1\n"
+    content: "nameserver 127.0.0.1\nnameserver {{ ansible_default_ipv4.gateway }}\n"
     mode: "0644"
 
 - name: Enable and start dnsmasq

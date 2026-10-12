@@ -367,3 +367,46 @@ func TestBuildRunArgumentsEmptyCommandOmitted(t *testing.T) {
 		t.Errorf("last arg should be image when no command, got %q", lastArg)
 	}
 }
+
+// TestBuildRunArgumentsDNSFlagInjected verifies that when SetDNS is called,
+// containers receive --dns pointing at the node's address for service name
+// resolution via the CCattler DNS server.
+func TestBuildRunArgumentsDNSFlagInjected(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	containerRuntime.SetDNS("192.168.124.10")
+	spec := Spec{
+		ID:    "test-dns",
+		Image: "nginx:1.27",
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	argsJoined := strings.Join(args, " ")
+	if !strings.Contains(argsJoined, "--dns 192.168.124.10") {
+		t.Errorf("missing --dns flag in args: %v", args)
+	}
+}
+
+// TestBuildRunArgumentsNoDNSFlagWhenUnset verifies that no --dns flag is added
+// when SetDNS has not been called, preserving the runtime's default behavior.
+func TestBuildRunArgumentsNoDNSFlagWhenUnset(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:    "test-no-dns",
+		Image: "nginx:1.27",
+	}
+
+	args, _, buildError := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if buildError != nil {
+		t.Fatal(buildError)
+	}
+
+	for _, argValue := range args {
+		if argValue == "--dns" {
+			t.Error("--dns flag should not be present when dnsAddress is empty")
+		}
+	}
+}

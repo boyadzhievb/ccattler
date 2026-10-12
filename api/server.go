@@ -106,7 +106,8 @@ type Server struct {
 	apiAuthorizer              *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
 	tenantAuditView            *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
 	serverMode                 ServerMode
-	requirePrincipal           bool // requirePrincipal enables 401 on requests without a principal in context.
+	secretMasterKey            []byte // secretMasterKey is the 32-byte key distributed to joining nodes.
+	requirePrincipal           bool   // requirePrincipal enables 401 on requests without a principal in context.
 	mux                        *http.ServeMux
 	rateLimiter                *RateLimiter
 	statusCache                *ResponseCache
@@ -123,6 +124,12 @@ func (apiServer *Server) SetEventLog(eventLog *types.EventLog) {
 // /api/secret endpoint for encrypted secret CRUD.
 func (apiServer *Server) SetSecretStore(secretStore *security.SecretStore) {
 	apiServer.secretStore = secretStore
+}
+
+// SetSecretMasterKey stores the 32-byte master key so the enrollment
+// endpoint can distribute it to joining nodes.
+func (apiServer *Server) SetSecretMasterKey(masterKey []byte) {
+	apiServer.secretMasterKey = masterKey
 }
 
 // SetTenantAuditView attaches a tenant-scoped audit view to the server,
@@ -1236,11 +1243,12 @@ type enrollmentRequestBody struct {
 
 // enrollmentResponseBody is the JSON response for POST /api/enroll.
 type enrollmentResponseBody struct {
-	CertificatePEM string `json:"certificate_pem,omitempty"`
-	PrivateKeyPEM  string `json:"private_key_pem,omitempty"`
-	CACertPEM      string `json:"ca_cert_pem,omitempty"`
-	Principal      string `json:"principal,omitempty"`
-	Error          string `json:"error,omitempty"`
+	CertificatePEM  string `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM   string `json:"private_key_pem,omitempty"`
+	CACertPEM       string `json:"ca_cert_pem,omitempty"`
+	SecretMasterKey string `json:"secret_master_key,omitempty"`
+	Principal       string `json:"principal,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 // handleEnroll serves POST /api/enroll for node enrollment. The joining node
@@ -1292,11 +1300,17 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		return
 	}
 
+	secretMasterKeyHex := ""
+	if len(apiServer.secretMasterKey) > 0 {
+		secretMasterKeyHex = fmt.Sprintf("%x", apiServer.secretMasterKey)
+	}
+
 	_ = json.NewEncoder(responseWriter).Encode(enrollmentResponseBody{
-		CertificatePEM: string(enrollmentResponse.CertificatePEM),
-		PrivateKeyPEM:  string(enrollmentResponse.PrivateKeyPEM),
-		CACertPEM:      string(enrollmentResponse.CACertPEM),
-		Principal:      enrollmentResponse.Principal,
+		CertificatePEM:  string(enrollmentResponse.CertificatePEM),
+		PrivateKeyPEM:   string(enrollmentResponse.PrivateKeyPEM),
+		CACertPEM:       string(enrollmentResponse.CACertPEM),
+		SecretMasterKey: secretMasterKeyHex,
+		Principal:       enrollmentResponse.Principal,
 	})
 }
 

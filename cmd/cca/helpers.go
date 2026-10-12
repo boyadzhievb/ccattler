@@ -26,9 +26,22 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// statusAPIListenAddress is the address the HTTP status API binds to when running
-// in live mode (run, run-container, demo). The status and metric commands query this.
-const statusAPIListenAddress = "127.0.0.1:9770"
+// defaultStatusAPIPort is the base port for the HTTP status API. When a TLS
+// server binds a wildcard address on this port, a plain-HTTP admin listener
+// starts on port+1 (9771) so local CLI commands work without mTLS certs.
+const defaultStatusAPIPort = "9770"
+
+// statusAPIListenAddress returns the localhost address the CLI should connect
+// to. It first tries the admin port (9771), and falls back to the main port
+// (9770) for non-TLS or explicit localhost servers.
+var statusAPIListenAddress = resolveStatusAPIListenAddress()
+
+func resolveStatusAPIListenAddress() string {
+	if envAddress := os.Getenv("CCA_API"); envAddress != "" {
+		return envAddress
+	}
+	return "127.0.0.1:" + defaultStatusAPIPort
+}
 
 // configureLogger sets up the process-wide structured logger from CLI flags.
 func configureLogger(logLevel string, logFormat string) {

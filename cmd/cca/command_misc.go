@@ -497,11 +497,12 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 
 	var enrollmentResponse struct {
-		CertificatePEM string `json:"certificate_pem"`
-		PrivateKeyPEM  string `json:"private_key_pem"`
-		CACertPEM      string `json:"ca_cert_pem"`
-		Principal      string `json:"principal"`
-		Error          string `json:"error"`
+		CertificatePEM  string `json:"certificate_pem"`
+		PrivateKeyPEM   string `json:"private_key_pem"`
+		CACertPEM       string `json:"ca_cert_pem"`
+		SecretMasterKey string `json:"secret_master_key"`
+		Principal       string `json:"principal"`
+		Error           string `json:"error"`
 	}
 	if jsonError := json.Unmarshal(responseBody, &enrollmentResponse); jsonError != nil {
 		fmt.Fprintf(os.Stderr, "error parsing response: %v\n", jsonError)
@@ -515,6 +516,17 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 
 	writeEnrollmentCredentials(parsedConfig.dataDirectory,
 		enrollmentResponse.CertificatePEM, enrollmentResponse.PrivateKeyPEM, enrollmentResponse.CACertPEM)
+
+	if enrollmentResponse.SecretMasterKey != "" {
+		decodedKey, decodeError := hex.DecodeString(enrollmentResponse.SecretMasterKey)
+		if decodeError != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not decode secret master key: %v\n", decodeError)
+		} else if writeError := os.WriteFile(secretMasterKeyPath, decodedKey, 0600); writeError != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", secretMasterKeyPath, writeError)
+		} else {
+			fmt.Printf("  Secret key:  %s\n", secretMasterKeyPath)
+		}
+	}
 
 	serverHost, _, splitError := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(parsedConfig.serverAddress, "https://"), "http://"))
 	if splitError == nil {

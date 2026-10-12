@@ -58,11 +58,6 @@ service metadata-db {
         tcp
         every 10s
     }
-    init {
-        exec "pg_isready -U airflow"
-        timeout 60s
-        retry 10
-    }
 }
 
 service redis {
@@ -82,7 +77,7 @@ service redis {
 
 service webserver {
     image "apache/airflow:2.10.5"
-    command """bash -c 'airflow db migrate && airflow users create --username admin --password "$(cat /run/secrets/admin-password)" --firstname Admin --lastname User --role Admin --email admin@localhost; exec airflow webserver'"""
+    command "webserver"
     instances 1
     expose 8080
     resources {
@@ -93,13 +88,16 @@ service webserver {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """bash -c 'printf postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """bash -c 'printf db+postgresql://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__WEBSERVER__EXPOSE_CONFIG "false"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
+        env _AIRFLOW_DB_MIGRATE "true"
+        env _AIRFLOW_WWW_USER_CREATE "true"
+        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cat /run/secrets/admin-password"
     }
     secret airflow.db-password "/run/secrets/db-password"
     secret airflow.admin-password "/run/secrets/admin-password"
@@ -113,7 +111,7 @@ service webserver {
 
 service scheduler {
     image "apache/airflow:2.10.5"
-    command "airflow scheduler"
+    command "scheduler"
     instances 1
     resources {
         cpu 500m
@@ -123,9 +121,9 @@ service scheduler {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """bash -c 'printf postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """bash -c 'printf db+postgresql://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
@@ -139,7 +137,7 @@ service scheduler {
 
 service worker {
     image "apache/airflow:2.10.5"
-    command "airflow celery worker"
+    command "celery worker"
     instances 3
     expose 8793
     resources {
@@ -150,9 +148,9 @@ service worker {
     volume logs /opt/airflow/logs
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """echo postgresql+psycopg2://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """bash -c 'printf postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """echo db+postgresql://airflow:$(cat /run/secrets/db-password)@metadata-db:5432/airflow"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """bash -c 'printf db+postgresql://airflow:%s@metadata-db:5432/airflow $(cat /run/secrets/db-password)'"""
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }

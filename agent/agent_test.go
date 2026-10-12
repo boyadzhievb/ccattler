@@ -1731,3 +1731,55 @@ func TestAgentSkipsFailedInstances(t *testing.T) {
 		t.Errorf("expected instance ok-1, got %s", instances[0].id)
 	}
 }
+
+func TestCommandRequiresShell(t *testing.T) {
+	tests := []struct {
+		command    string
+		needsShell bool
+	}{
+		{"airflow webserver", false},
+		{"airflow scheduler", false},
+		{"celery worker", false},
+		{"redis-server --appendonly yes", false},
+		{"nginx -g 'daemon off;'", true},
+		{"echo hello && echo world", true},
+		{"cat /run/secrets/db-password | tr -d '\\n'", true},
+		{"bash -c 'airflow db migrate; exec airflow webserver'", true},
+		{"echo $(cat /run/secrets/password)", true},
+		{"cmd > /dev/null", true},
+		{"cmd1 | cmd2", true},
+	}
+	for _, testCase := range tests {
+		result := commandRequiresShell(testCase.command)
+		if result != testCase.needsShell {
+			t.Errorf("commandRequiresShell(%q) = %v, want %v", testCase.command, result, testCase.needsShell)
+		}
+	}
+}
+
+func TestSplitSimpleCommand(t *testing.T) {
+	tests := []struct {
+		command  string
+		expected []string
+	}{
+		{"webserver", []string{"webserver"}},
+		{"airflow webserver", []string{"airflow", "webserver"}},
+		{"celery worker", []string{"celery", "worker"}},
+		{"redis-server --appendonly yes", []string{"redis-server", "--appendonly", "yes"}},
+		{`bash -c 'long command here'`, []string{"bash", "-c", "long command here"}},
+		{`echo "hello world"`, []string{"echo", "hello world"}},
+		{"cmd  with   multiple  spaces", []string{"cmd", "with", "multiple", "spaces"}},
+	}
+	for _, testCase := range tests {
+		result := splitSimpleCommand(testCase.command)
+		if len(result) != len(testCase.expected) {
+			t.Errorf("splitSimpleCommand(%q) = %v, want %v", testCase.command, result, testCase.expected)
+			continue
+		}
+		for index := range result {
+			if result[index] != testCase.expected[index] {
+				t.Errorf("splitSimpleCommand(%q)[%d] = %q, want %q", testCase.command, index, result[index], testCase.expected[index])
+			}
+		}
+	}
+}

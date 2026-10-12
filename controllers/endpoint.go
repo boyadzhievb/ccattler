@@ -15,10 +15,11 @@ import (
 
 // EndpointController creates and removes endpoint facts based on running
 // instances. An endpoint is the combination of a service identity, an
-// instance, and its reachable address (ip:port). The controller ensures
-// that every running instance with an IP and an exposed port has a
-// corresponding endpoint fact, and that endpoints for stopped or missing
-// instances are cleaned up.
+// instance, and its reachable address. The controller ensures that every
+// running instance with an exposed port and a reachable address (either
+// a container IP from overlay networking, or a node address + host port
+// mapping) has a corresponding endpoint fact, and that endpoints for
+// stopped or missing instances are cleaned up.
 type EndpointController struct{}
 
 // NewEndpointController returns a ready-to-use EndpointController.
@@ -46,7 +47,8 @@ func (endpointController *EndpointController) Watch() []string {
 // Reconcile examines observed instance facts, desired service port
 // configurations, and existing endpoints, then emits changes to create
 // missing endpoints and delete stale ones. An endpoint is desired when
-// an instance is running, has an IP, and its service exposes a port.
+// an instance is running, has a reachable address, and its service
+// exposes a port.
 func (endpointController *EndpointController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	instanceFields := parseInstanceFieldsFromFacts(facts)
 	servicePorts := extractServiceExposedPorts(facts)
@@ -95,9 +97,11 @@ func parseExistingEndpoints(facts []store.Fact) map[string]bool {
 
 // buildDesiredEndpoints determines which endpoints should exist based on running
 // instances, exposed ports, readiness probe state, and network addresses. For
-// each running instance with an IP and an exposed port, it produces an endpoint
-// entry. When a node advertise address and host port are available, those are
-// used for cross-host reachability instead of the container-local IP.
+// each running instance with an exposed port, it produces an endpoint entry
+// when a reachable address can be determined. When a node advertise address
+// and host port are available, those are used for cross-host reachability.
+// When only a container IP is available (overlay networking), that is used
+// with the exposed port directly.
 func buildDesiredEndpoints(
 	instanceFields map[string]map[string]string,
 	servicePorts map[string][]int,
@@ -117,9 +121,16 @@ func buildDesiredEndpoints(
 			continue
 		}
 		instanceIP := fields["ip"]
-		if instanceIP == "" {
+		hostPort := fields["hostport"]
+		nodeID := fields["node"]
+		nodeAddress := nodeAddresses[nodeID]
+
+		hasOverlayAddress := instanceIP != ""
+		hasHostAddress := hostPort != "" && nodeAddress != ""
+		if !hasOverlayAddress && !hasHostAddress {
 			continue
 		}
+
 		serviceName := fields["service"]
 		exposedPorts := servicePorts[serviceName]
 		if len(exposedPorts) == 0 {
@@ -135,13 +146,9 @@ func buildDesiredEndpoints(
 			}
 		}
 
-		hostPort := fields["hostport"]
-		nodeID := fields["node"]
-		nodeAddress := nodeAddresses[nodeID]
-
 		for _, exposedPort := range exposedPorts {
 			endpointKey := fmt.Sprintf("%s/%s/%d", serviceName, instanceID, exposedPort)
-			if hostPort != "" && nodeAddress != "" {
+			if hasHostAddress {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, hostPort)
 			} else {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)

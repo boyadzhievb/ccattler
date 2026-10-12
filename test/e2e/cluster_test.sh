@@ -272,6 +272,7 @@ for vm in "${VM_NAMES[@]}"; do
         sudo rm -f /etc/resolv.conf
         printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolv.conf > /dev/null
         printf 'server=8.8.8.8\nserver=1.1.1.1\ncache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
+        printf 'server=${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
         sudo systemctl enable --now dnsmasq
     " &
 done

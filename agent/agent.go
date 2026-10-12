@@ -532,15 +532,59 @@ func (nodeAgent *Agent) lookupServiceImageFromStore(ctx context.Context, service
 
 // lookupServiceCommandFromStore retrieves the container command override for the
 // given service from the desired-state section of the store. Returns nil if no
-// command is set (the image default CMD will be used). The command string is
-// always passed through "sh -c" so shell features (pipes, variables, compound
-// statements) work without the user having to think about exec vs shell form.
+// command is set (the image default CMD will be used). When the command string
+// contains shell metacharacters (pipes, redirects, variables, compound
+// statements), it is wrapped in "sh -c" for evaluation. Simple commands are
+// split into tokens and passed directly so they work with container images that
+// have custom entrypoints (e.g. Airflow checks $1 before delegating).
 func (nodeAgent *Agent) lookupServiceCommandFromStore(ctx context.Context, service string) []string {
 	factEntry, lookupError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceCommand(service))
 	if lookupError != nil || string(factEntry.Value) == "" {
 		return nil
 	}
-	return []string{"sh", "-c", string(factEntry.Value)}
+	commandString := string(factEntry.Value)
+	if commandRequiresShell(commandString) {
+		return []string{"sh", "-c", commandString}
+	}
+	return splitSimpleCommand(commandString)
+}
+
+// commandRequiresShell returns true when the command string contains shell
+// metacharacters that need interpretation by a shell (pipes, redirects,
+// variable expansion, compound statements, subshells, globbing).
+func commandRequiresShell(commandString string) bool {
+	return strings.ContainsAny(commandString, "|&;<>$`(){}*?!~")
+}
+
+// splitSimpleCommand splits a shell-style command string into tokens, respecting
+// single and double quotes. This handles commands like: airflow webserver,
+// bash -c 'long command', and redis-server --save "60 1000".
+func splitSimpleCommand(commandString string) []string {
+	var tokens []string
+	var currentToken strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+
+	for index := 0; index < len(commandString); index++ {
+		currentChar := commandString[index]
+		switch {
+		case currentChar == '\'' && !inDoubleQuote:
+			inSingleQuote = !inSingleQuote
+		case currentChar == '"' && !inSingleQuote:
+			inDoubleQuote = !inDoubleQuote
+		case currentChar == ' ' && !inSingleQuote && !inDoubleQuote:
+			if currentToken.Len() > 0 {
+				tokens = append(tokens, currentToken.String())
+				currentToken.Reset()
+			}
+		default:
+			currentToken.WriteByte(currentChar)
+		}
+	}
+	if currentToken.Len() > 0 {
+		tokens = append(tokens, currentToken.String())
+	}
+	return tokens
 }
 
 // lookupServiceExposedPortsFromStore reads all exposed port declarations for

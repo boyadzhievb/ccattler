@@ -215,7 +215,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	registerLocalNode(ctx, factStore, parsedConfig.nodeID)
 
-	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend)
+	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress)
 	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
 
 	if parsedConfig.advertiseAddress != "" {
@@ -283,8 +283,10 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 
 // createAgentRuntimeAdapter creates the appropriate runtime adapter based on
 // the configured backend. For "container" it creates a ContainerRuntime with
-// the cluster network configured; for "process" it creates a ProcessRuntime.
-func createAgentRuntimeAdapter(runtimeBackend string) runtime.Runtime {
+// the cluster network configured and DNS pointed at the node's advertise
+// address (where dnsmasq forwards to the CCattler DNS server). For "process"
+// it creates a ProcessRuntime.
+func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string) runtime.Runtime {
 	if runtimeBackend == "container" {
 		if _, lookupError := exec.LookPath("nerdctl"); lookupError != nil {
 			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
@@ -292,6 +294,9 @@ func createAgentRuntimeAdapter(runtimeBackend string) runtime.Runtime {
 		}
 		containerRuntime := runtime.NewContainerRuntime()
 		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+		if advertiseAddress != "" {
+			containerRuntime.SetDNS(advertiseAddress)
+		}
 		return containerRuntime
 	}
 	return runtime.NewProcessRuntime()

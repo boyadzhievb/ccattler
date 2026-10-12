@@ -1315,6 +1315,54 @@ Converts ClusterAutoscaleController from direct provider calls to durable-intent
 - [x] Integration test updated for new constructor and full pipeline
 - [x] All tests pass, lint clean
 
+### Phase 92 — Secret API (M92)
+
+Replace bind-mount secret delivery with an agent-side HTTP API. Containers fetch secrets at runtime from the local agent, authenticated by per-instance bearer tokens. No files on host disk, no bind-mounts, no permission issues.
+
+**Step 1 — SecretAPIServer** (`agent/secret_api.go`)
+- [ ] `SecretAPIServer` struct (mirrors `DebugServer` pattern): nodeID, secretProvider, store, httpServer, instanceTokens map
+- [ ] `NewSecretAPIServer(nodeID, listenAddress, secretProvider, store)` constructor
+- [ ] `Start(ctx)` method — same pattern as `DebugServer.Start`
+- [ ] `RegisterInstanceToken(instanceID, serviceName) string` — generates 32-byte random token, stores mapping
+- [ ] `RevokeInstanceToken(instanceID)` — removes token on instance cleanup
+- [ ] `authenticateRequest(r) (instanceID, serviceName, error)` — extracts `Authorization: Bearer <token>`, constant-time lookup
+- [ ] `GET /v1/secrets/{name}` handler — validates bearer, checks grant via `SecretStore.IsAuthorized`, returns JSON `{"name","value"}`
+- [ ] `GET /v1/secrets` handler — validates bearer, lists granted secret names for the service (no plaintext)
+
+**Step 2 — Agent wiring** (`cmd/cca/command_agent.go`)
+- [ ] Add `--secret-api-listen` flag to `agentCommandConfig` (default: `0.0.0.0:9772`)
+- [ ] Create and start `SecretAPIServer` alongside `DebugServer` in `executeAgentCommand`
+- [ ] Publish secret API address to fact store (same pattern as debug address)
+- [ ] Add `SetSecretAPIServer(server)` to `Agent` struct
+
+**Step 3 — Token lifecycle** (`agent/agent.go`)
+- [ ] In `reconcileDesiredInstance`: register token, inject `CCA_SECRET_URL` + `CCA_SECRET_TOKEN` into `runtimeSpec.Env`
+- [ ] In `cleanupUndesiredInstance`: revoke token
+- [ ] In `startInstanceAndPublishState` failure path: revoke token
+
+**Step 4 — Remove bind-mount path**
+- [ ] Remove `materializeSecretsForInstance`, `cleanupSecretsForInstance`, `refreshMaterializedSecrets` from `agent/agent.go`
+- [ ] Remove `MaterializedSecret` type and `materializedSecrets` field from agent
+- [ ] Remove `SecretMounts map[string]string` from `runtime.Spec`
+- [ ] Remove `-v host:container:ro` bind-mount generation from `buildRunArguments` in `runtime/container.go`
+- [ ] Remove related tests in `runtime/container_args_test.go` (`TestBuildRunArgumentsSecretMountsBindMounted`, `TestBuildRunArgumentsNilSecretMountsNoVolumes`)
+
+**Step 5 — Gateway IP helper**
+- [ ] `SecretAPIEndpointURL(gatewayIP, port)` helper in `agent/secret_api.go`
+- [ ] Derive gateway IP from node's bridge subnet (`.1` address) or from `--advertise-address`
+
+**Step 6 — Update workloads**
+- [ ] Update `examples/airflow.cca` — replace `POSTGRES_PASSWORD_FILE` / `cat /run/secrets/...` with `curl -sH "Authorization: Bearer $CCA_SECRET_TOKEN" $CCA_SECRET_URL/v1/secrets/db-password -o /dev/null` or shell substitution
+- [ ] Update `test/e2e/workloads/airflow.cca` to match
+
+**Step 7 — Tests** (`agent/secret_api_test.go`)
+- [ ] `TestSecretAPIServerRegistersAndRevokesTokens` — register, verify, revoke, verify gone
+- [ ] `TestSecretAPIServerGetSecretAuthorized` — mock SecretProvider, correct bearer → 200 + plaintext
+- [ ] `TestSecretAPIServerGetSecretUnauthorized` — invalid/missing token → 401
+- [ ] `TestSecretAPIServerGetSecretForbidden` — no grant → 403
+- [ ] `TestSecretAPIServerListSecrets` — returns only granted names
+- [ ] `TestReconcileWithSecretAPIInjectsEnvVars` — `CCA_SECRET_URL` + `CCA_SECRET_TOKEN` in spec.Env
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1406,6 +1454,7 @@ Converts ClusterAutoscaleController from direct provider calls to durable-intent
 | M89 — Template Conventions & Auto-Loading Values | 89 | `.ccv` extension for values files, `<name>/values.ccv` auto-loaded as defaults for `<name>.cca` templates, directory convention (template + same-name subdirectory for values), Airflow + API template examples, `airflow.home.arpa` TLS domain, precedence: auto-loaded < `--values` < `--set` < `--set-from-env` |
 | M90 — Deploy Testbed & Doc Cleanup | 90 | Replace Java with Airflow across all deploy targets (E2E, Ansible, Lima), rename `.ccattler` → `.cca` in deploy/test files, website docs updated to `.cca` extension, release bookkeeping script (`scripts/release.sh`), e2e Airflow workload |
 | M91 — Networking Docs & eBPF Data Plane Plan | 91 | Document networking architecture with honest trade-offs (iptables linear scaling, comparison table vs kube-proxy/IPVS/Cilium), plan eBPF `DataPlaneProvider` — BPF hash map VIP→backend lookups (O(1)), XDP/TC attachment, `cilium/ebpf` Go loader, kernel 5.10+ requirement |
+| M92 — Secret API | 92 | Replace bind-mount secret delivery with agent-side HTTP API. `SecretAPIServer` on port 9772 (gateway IP), per-instance bearer token auth, `GET /v1/secrets/{name}`, grant-checked via `SecretStore.IsAuthorized`. Remove `materializeSecretsForInstance`, `cleanupSecretsForInstance`, `refreshMaterializedSecrets`, `MaterializedSecret`, `SecretMounts` from runtime spec. Inject `CCA_SECRET_URL` + `CCA_SECRET_TOKEN` env vars. Update Airflow workload to curl secrets at runtime |
 | *(future)* eBPF Data Plane | — | Implement `EbpfDataPlaneProvider`: BPF C DNAT program (TC ingress hook), `cilium/ebpf` bpf2go Go loader, VIP→backend hash map population from `ReconcileVIPDataPlane`, kernel conntrack for return path, network namespace + veth pair tests, kernel 5.10+ gate, iptables fallback preserved |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

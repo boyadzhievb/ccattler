@@ -58,7 +58,7 @@ func TestEndpointNotCreatedForPending(t *testing.T) {
 	}
 }
 
-func TestEndpointNotCreatedWithoutIP(t *testing.T) {
+func TestEndpointNotCreatedWithoutReachableAddress(t *testing.T) {
 	endpointController := NewEndpointController()
 
 	facts := buildFacts(
@@ -72,7 +72,37 @@ func TestEndpointNotCreatedWithoutIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(changes) != 0 {
-		t.Fatalf("expected 0 endpoints without IP, got %d", len(changes))
+		t.Fatalf("expected 0 endpoints without reachable address, got %d", len(changes))
+	}
+}
+
+// TestEndpointCreatedWithHostPortOnly verifies that an instance without an
+// overlay IP but with a host port and node address still gets an endpoint
+// using the nodeAddress:hostPort combination.
+func TestEndpointCreatedWithHostPortOnly(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceHostPort("aaa"), "8080"),
+		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+	)
+
+	changes, err := endpointController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 endpoint from hostport, got %d", len(changes))
+	}
+	if changes[0].Type != store.OpPut {
+		t.Fatalf("expected OpPut, got %d", changes[0].Type)
+	}
+	if string(changes[0].Value) != "192.168.1.10:8080" {
+		t.Errorf("endpoint address: got %s, want 192.168.1.10:8080", changes[0].Value)
 	}
 }
 
