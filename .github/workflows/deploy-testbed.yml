@@ -2,6 +2,25 @@ name: Deploy Testbed Cluster
 
 on:
   workflow_dispatch:
+    inputs:
+      workload:
+        description: "Workloads to deploy (comma-separated or 'all')"
+        required: false
+        default: "airflow,zabbix"
+        type: choice
+        options:
+          - "airflow,zabbix"
+          - "all"
+          - "airflow"
+          - "zabbix"
+          - "whoami"
+          - "airflow,whoami"
+          - "zabbix,whoami"
+      clear_first:
+        description: "Clear existing workloads before deploying"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: testbed-deploy
@@ -14,8 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Clear existing workloads
+        if: ${{ inputs.clear_first == true }}
+        run: ./test/e2e/cluster_test.sh --env deploy --clear-workloads
+
       - name: Deploy cluster (3-node, no teardown, latest release binary)
-        run: ./test/e2e/cluster_test.sh --env deploy --from-release
+        run: |
+          WORKLOAD="${{ inputs.workload || 'airflow,zabbix' }}"
+          ./test/e2e/cluster_test.sh --env deploy --from-release --workload "$WORKLOAD"
 
       - name: Collect logs on failure
         if: failure()
