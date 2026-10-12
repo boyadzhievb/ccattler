@@ -682,13 +682,14 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         service_name="${remainder%%:*}"
         internal_port="${remainder#*:}"
         CADDY_CONFIG+="
-:${external_port} {
+https://${TESTBED_HOST_IP}:${external_port} {
+    tls internal
     reverse_proxy${PROXY_UPSTREAMS} {
         header_up Host ${service_name}
     }
 }
 "
-        EXPOSE_SUMMARY+="  http://${TESTBED_HOST_IP}:${external_port} → ${service_name}:${internal_port} (via agent proxy)\n"
+        EXPOSE_SUMMARY+="  https://${TESTBED_HOST_IP}:${external_port} → ${service_name}:${internal_port} (via agent proxy)\n"
     done
 done
 
