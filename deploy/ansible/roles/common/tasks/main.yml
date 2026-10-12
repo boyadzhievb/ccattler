@@ -49,7 +49,7 @@
 - name: Forward service DNS to CCattler DNS server
   copy:
     dest: /etc/dnsmasq.d/ccattler-dns.conf
-    content: "server={{ hostvars[groups['controlplane'][0]].ansible_host }}#15353\n"
+    content: "server=/cca.local/{{ hostvars[groups['controlplane'][0]].ansible_host }}#15353\n"
     mode: "0644"
   when: groups['controlplane'] is defined and groups['controlplane'] | length > 0
   notify: restart dnsmasq
