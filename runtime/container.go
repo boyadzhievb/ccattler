@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
@@ -73,11 +74,19 @@ func detectContainerCommand() string {
 // buildExecCommand creates an exec.Cmd for the detected container CLI. When
 // the container command is "lima", it wraps the call as "lima nerdctl <args>".
 func (containerRuntime *ContainerRuntime) buildExecCommand(ctx context.Context, args ...string) *exec.Cmd {
+	var command *exec.Cmd
 	if containerRuntime.containerCommand == "lima" {
 		limaArgs := append([]string{"nerdctl"}, args...)
-		return exec.CommandContext(ctx, "lima", limaArgs...) //nolint:gosec // container runtime executes docker commands
+		command = exec.CommandContext(ctx, "lima", limaArgs...) //nolint:gosec // container runtime executes docker commands
+	} else {
+		command = exec.CommandContext(ctx, containerRuntime.containerCommand, args...) //nolint:gosec // container runtime executes docker commands
 	}
-	return exec.CommandContext(ctx, containerRuntime.containerCommand, args...) //nolint:gosec // container runtime executes docker commands
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error {
+		return syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+	}
+	command.WaitDelay = 2 * time.Second
+	return command
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
@@ -783,7 +792,10 @@ func parseContainerListOutput(output string) []DiscoveredContainer {
 // containers and returns their resource usage. This reads from the real
 // cgroup metrics, bypassing agent tracking.
 func (containerRuntime *ContainerRuntime) DiscoverAllContainerStats(ctx context.Context) ([]ContainerResourceUsage, error) {
-	statsCommand := containerRuntime.buildExecCommand(ctx, "stats", "--no-stream",
+	statsContext, cancelStats := context.WithTimeout(ctx, nerdctlCommandTimeout)
+	defer cancelStats()
+
+	statsCommand := containerRuntime.buildExecCommand(statsContext, "stats", "--no-stream",
 		"--format", "{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}")
 	var commandOutput bytes.Buffer
 	statsCommand.Stdout = &commandOutput
