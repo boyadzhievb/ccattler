@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.22.0-beta <Badge type="tip" text="latest" /> {#v1-22-0-beta}
+## v1.26.0-beta <Badge type="tip" text="latest" /> {#v1-26-0-beta}
+
+**2026-10-12** — dnsmasq Domain-Scoped Forwarding.
+
+- **dnsmasq Domain-Scoped Forwarding** (M97) — Fix dnsmasq config to use domain-scoped forwarding (`server=/cca.local/...`) instead of unscoped `server=...#15353` — prevents CCattler DNS from racing the gateway on external queries like Docker Hub, fixing image pull DNS failures on deploy. Kill nerdctl process group on timeout via `Setpgid` + `Kill(-pid, SIGKILL)` + `WaitDelay` to fix agent livelock from stuck containerd I/O. Disable IPv6 via sysctl instead of gai.conf (Go DNS resolver ignores gai.conf).
+
+---
+
+## v1.22.0-beta {#v1-22-0-beta}
 
 **2026-10-12** — K8s Comparison & Deploy Fixes.
 

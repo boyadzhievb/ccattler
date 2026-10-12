@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M95 — Phase 95 K8s Comparison & Deploy Fixes. M1–M95 complete. Gates A–I resolved.
+**Completed through:** M97 — Phase 97 dnsmasq Domain-Scoped Forwarding. M1–M97 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
