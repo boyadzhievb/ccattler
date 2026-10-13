@@ -385,18 +385,24 @@ done
 # Replace systemd-resolved with dnsmasq — the stub resolver at 127.0.0.53
 # flakes under concurrent image-pull load in libvirt VMs. dnsmasq provides
 # a local caching resolver that handles concurrent queries reliably.
-# Upstream DNS servers are read from the host's resolv.conf so VMs use the
-# same resolvers the host does. Supports air-gapped deployments.
-HOST_UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | grep -v '127.0.0' | awk '{print $2}' | head -3)
-if [[ -z "$HOST_UPSTREAM_DNS" ]]; then
-    fail "No upstream DNS servers found in host /etc/resolv.conf"
+# Upstream DNS is derived from the host: if /etc/resolv.conf has a real
+# nameserver use it; if it points to localhost (NetworkManager/systemd-resolved)
+# use the default gateway which typically runs a DNS forwarder.
+UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -v '127.0.0' | head -1)
+if [[ -z "$UPSTREAM_DNS" ]]; then
+    DEFAULT_GW=$(ip route | awk '/default/ {print $3}' | head -1)
+    if [[ -n "$DEFAULT_GW" ]]; then
+        log "Host resolv.conf points to localhost, checking default gateway $DEFAULT_GW for DNS..."
+        if nslookup registry-1.docker.io "$DEFAULT_GW" >/dev/null 2>&1; then
+            UPSTREAM_DNS="$DEFAULT_GW"
+        fi
+    fi
 fi
-DNSMASQ_SERVERS=""
-for ns in $HOST_UPSTREAM_DNS; do
-    DNSMASQ_SERVERS="${DNSMASQ_SERVERS}server=${ns}\n"
-done
+if [[ -z "$UPSTREAM_DNS" ]]; then
+    fail "No usable upstream DNS server found (resolv.conf has only localhost, gateway does not serve DNS)"
+fi
 
-log "Installing dnsmasq on all VMs (upstream: $(echo $HOST_UPSTREAM_DNS | tr '\n' ' '))..."
+log "Installing dnsmasq on all VMs (upstream: $UPSTREAM_DNS)..."
 for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "
         if ! command -v dnsmasq >/dev/null 2>&1; then
@@ -405,7 +411,7 @@ for vm in "${VM_NAMES[@]}"; do
         sudo systemctl disable --now systemd-resolved 2>/dev/null || true
         sudo rm -f /etc/resolv.conf
         printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolv.conf > /dev/null
-        printf '${DNSMASQ_SERVERS}cache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
+        printf 'server=${UPSTREAM_DNS}\ncache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
         printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
         sudo systemctl enable dnsmasq
         sudo systemctl restart dnsmasq
