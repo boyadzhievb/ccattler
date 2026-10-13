@@ -392,10 +392,8 @@ UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -v 
 if [[ -z "$UPSTREAM_DNS" ]]; then
     DEFAULT_GW=$(ip route | awk '/default/ {print $3}' | head -1)
     if [[ -n "$DEFAULT_GW" ]]; then
-        log "Host resolv.conf points to localhost, checking default gateway $DEFAULT_GW for DNS..."
-        if nslookup registry-1.docker.io "$DEFAULT_GW" >/dev/null 2>&1; then
-            UPSTREAM_DNS="$DEFAULT_GW"
-        fi
+        log "Host resolv.conf points to localhost, using default gateway $DEFAULT_GW as upstream DNS"
+        UPSTREAM_DNS="$DEFAULT_GW"
     fi
 fi
 if [[ -z "$UPSTREAM_DNS" ]]; then
