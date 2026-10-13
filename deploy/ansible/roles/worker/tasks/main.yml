@@ -17,6 +17,26 @@
         enabled: true
         state: started
 
+- name: Create join token for this worker
+  command: >
+    /usr/local/bin/cca token create
+    --node-id {{ node_id | default(inventory_hostname) }}
+    --ttl 15m
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  register: join_token_output
+  changed_when: true
+
+- name: Join cluster via cca join
+  command: >
+    /usr/local/bin/cca join
+    https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770
+    {{ join_token_output.stdout | trim }}
+    --node-id {{ node_id | default(inventory_hostname) }}
+    --ca-cert {{ cca_cert_dir }}/ca.pem
+    --data-dir {{ cca_cert_dir }}
+  args:
+    creates: /etc/ccattler/secret-master.key
+
 - name: Install cca-agent systemd unit
   template:
     src: cca-agent.service.j2

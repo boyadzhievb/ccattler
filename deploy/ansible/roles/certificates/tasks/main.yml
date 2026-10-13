@@ -43,12 +43,15 @@
     mode: "0644"
   when: inventory_hostname != groups['controlplane'][0]
 
+# Workers get their certs from `cca join` — only generate certs for
+# control-plane and etcd nodes here.
 - name: Generate node private key
   command: >
     openssl ecparam -genkey -name prime256v1
     -out {{ cca_cert_dir }}/node-key.pem
   args:
     creates: "{{ cca_cert_dir }}/node-key.pem"
+  when: "'workers' not in group_names"
 
 - name: Build SAN list based on node roles
   set_fact:
@@ -60,11 +63,9 @@
       {%- if 'controlplane' in group_names -%}
         {%- set _ = sans.append('URI:spiffe://ccattler/controller/' + inventory_hostname) -%}
       {%- endif -%}
-      {%- if 'workers' in group_names -%}
-        {%- set _ = sans.append('URI:spiffe://ccattler/node/' + (node_id | default(inventory_hostname))) -%}
-      {%- endif -%}
       {%- set _ = sans.append('IP:' + ansible_host) -%}
       {{ sans | join(',') }}
+  when: "'workers' not in group_names"
 
 - name: Generate CSR with SPIFFE SANs
   command: >
@@ -75,8 +76,10 @@
     -addext "subjectAltName={{ node_san_list }}"
   args:
     creates: "{{ cca_cert_dir }}/node.csr"
+  when: "'workers' not in group_names"
 
 - name: Sign node certificate
+  when: "'workers' not in group_names"
   block:
     - name: Temporarily place CA key for signing
       copy:
@@ -111,3 +114,4 @@
   loop:
     - "{{ cca_cert_dir }}/node-key.pem"
     - "{{ cca_cert_dir }}/node.pem"
+  when: "'workers' not in group_names"

@@ -466,6 +466,23 @@ SVCEOF
     done
     # Restart services with new binary and service files.
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart cca-server" || true
+    sleep 2
+    # Re-join workers to distribute fresh secret master key and endpoints.
+    log "Re-joining worker nodes to cluster..."
+    for worker_ip in "${WORKER_IPS[@]}"; do
+        worker_vm=""
+        worker_node_id=""
+        case "$worker_ip" in
+            "${WORKER_IPS[0]}") worker_vm="${VM_PREFIX}-worker-1" ;;
+            "${WORKER_IPS[1]:-}") worker_vm="${VM_PREFIX}-worker-2" ;;
+        esac
+        case "$CLUSTER_ENV" in
+            test)   case "$worker_vm" in *-worker-1) worker_node_id="test-node-2" ;; esac ;;
+            deploy) case "$worker_vm" in *-worker-1) worker_node_id="deploy-node-2" ;; *-worker-2) worker_node_id="deploy-node-3" ;; esac ;;
+        esac
+        JOIN_TOKEN=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca token create --node-id $worker_node_id --ttl 5m" 2>/dev/null | tr -d '[:space:]')
+        ssh_vm "$worker_vm" "sudo /usr/local/bin/cca join https://${CTRL_IP}:9770 ${JOIN_TOKEN} --node-id $worker_node_id --ca-cert /etc/ccattler/pki/ca.pem --data-dir /etc/ccattler/pki"
+    done
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo systemctl restart cca-agent" 2>/dev/null || true
     done

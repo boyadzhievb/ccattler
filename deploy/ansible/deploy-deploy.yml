@@ -125,6 +125,7 @@
       until: server_ready.rc == 0
 
     - name: Apply Airflow deployment
+      become: true
       command: /usr/local/bin/cca apply /tmp/airflow-test-app.cca
 
     - name: Wait for Airflow containers to start
