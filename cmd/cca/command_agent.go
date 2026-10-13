@@ -293,7 +293,7 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 		}
 	}
 	if tlsCertPath != "" {
-		loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath)
+		loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath, false)
 		fmt.Printf("Agent %s TLS credentials loaded\n", nodeID)
 	}
 }

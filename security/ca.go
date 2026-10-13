@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -81,6 +82,44 @@ func NewCertificateAuthority(validityDuration time.Duration) (*CertificateAuthor
 		caCertificate:    caCertificate,
 		caPrivateKey:     caPrivateKey,
 		caCertificatePEM: caCertificatePEM,
+	}, nil
+}
+
+// LoadCertificateAuthorityFromFiles loads an existing CA from PEM-encoded
+// certificate and private key files on disk. Used when the server is started
+// with --cert/--key/--ca/--ca-key to enable node enrollment.
+func LoadCertificateAuthorityFromFiles(certPath, keyPath string) (*CertificateAuthority, error) {
+	certPEM, readError := os.ReadFile(certPath) //nolint:gosec // reads user-specified config file
+	if readError != nil {
+		return nil, fmt.Errorf("read CA certificate: %w", readError)
+	}
+	keyPEM, readError := os.ReadFile(keyPath) //nolint:gosec // reads user-specified config file
+	if readError != nil {
+		return nil, fmt.Errorf("read CA key: %w", readError)
+	}
+
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, fmt.Errorf("no PEM block found in CA certificate file")
+	}
+	parsedCertificate, parseError := x509.ParseCertificate(certBlock.Bytes)
+	if parseError != nil {
+		return nil, fmt.Errorf("parse CA certificate: %w", parseError)
+	}
+
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("no PEM block found in CA key file")
+	}
+	parsedKey, parseError := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if parseError != nil {
+		return nil, fmt.Errorf("parse CA private key: %w", parseError)
+	}
+
+	return &CertificateAuthority{
+		caCertificate:    parsedCertificate,
+		caPrivateKey:     parsedKey,
+		caCertificatePEM: certPEM,
 	}, nil
 }
 

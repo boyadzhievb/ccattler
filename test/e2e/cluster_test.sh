@@ -464,6 +464,40 @@ SVCEOF
         ssh_vm "$vm" "sudo mv /tmp/cca-agent.service /etc/systemd/system/cca-agent.service && sudo systemctl daemon-reload"
         rm -f "/tmp/cca-agent-${vm}.service"
     done
+    # Regenerate server service file with --ca-key for enrollment support.
+    ctrl_node_id=""
+    case "$CLUSTER_ENV" in
+        test)   ctrl_node_id="test-node-1" ;;
+        deploy) ctrl_node_id="deploy-node-1" ;;
+    esac
+    cat > /tmp/cca-server.service <<SVCEOF
+[Unit]
+Description=CCattler Server — controllers + API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca server \\
+  --listen ${CTRL_IP}:9770 \\
+  --dns --dns-listen ${CTRL_IP}:15353 \\
+  --cert /etc/ccattler/pki/node.pem \\
+  --key /etc/ccattler/pki/node-key.pem \\
+  --ca /etc/ccattler/pki/ca.pem \\
+  --ca-key /etc/ccattler/pki/ca-key.pem
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/server.log
+StandardError=append:/var/log/ccattler/server.log
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
+        "/tmp/cca-server.service" "vagrant@${CTRL_IP}:/tmp/cca-server.service"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo mv /tmp/cca-server.service /etc/systemd/system/cca-server.service && sudo systemctl daemon-reload"
+    rm -f /tmp/cca-server.service
     # Restart services with new binary and service files.
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart cca-server" || true
     sleep 2

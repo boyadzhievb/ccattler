@@ -67,6 +67,9 @@ type serverCommandConfig struct {
 	tlsKeyPath string
 	// tlsCACertPath is the path to a PEM-encoded CA certificate for verifying client certs.
 	tlsCACertPath string
+	// tlsCAKeyPath is the path to a PEM-encoded CA private key for signing enrollment certs.
+	// When provided alongside --cert/--key/--ca, enables node enrollment via cca join.
+	tlsCAKeyPath string
 	// etcdCertPath is the path to a PEM-encoded client certificate for etcd mTLS.
 	etcdCertPath string
 	// etcdKeyPath is the path to a PEM-encoded client private key for etcd mTLS.
@@ -157,6 +160,11 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.tlsCACertPath = args[argIndex]
+			}
+		case "--ca-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tlsCAKeyPath = args[argIndex]
 			}
 		case "--etcd-cert":
 			if argIndex+1 < len(args) {
@@ -369,7 +377,18 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 // enrollment is enabled.
 func resolveServerTLSConfiguration(ctx context.Context, parsedConfig serverCommandConfig) (*tls.Config, *security.CertificateAuthority, bool) {
 	if parsedConfig.tlsCertPath != "" {
-		return loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath), nil, false
+		enrollmentEnabled := parsedConfig.tlsCAKeyPath != ""
+		tlsConfig := loadServerTLSConfig(parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath, enrollmentEnabled)
+		var clusterCertificateAuthority *security.CertificateAuthority
+		if enrollmentEnabled {
+			var caError error
+			clusterCertificateAuthority, caError = security.LoadCertificateAuthorityFromFiles(parsedConfig.tlsCACertPath, parsedConfig.tlsCAKeyPath)
+			if caError != nil {
+				fmt.Fprintf(os.Stderr, "error loading CA for enrollment: %v\n", caError)
+				os.Exit(1)
+			}
+		}
+		return tlsConfig, clusterCertificateAuthority, enrollmentEnabled
 	}
 	if parsedConfig.tlsEnabled {
 		serverTLSConfig, clusterCertificateAuthority := buildServerTLSConfig(ctx, parsedConfig.listenAddress)
@@ -722,7 +741,9 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Confi
 // loadServerTLSConfig reads PEM-encoded certificate, key, and CA files from
 // disk and returns a tls.Config that serves mTLS using those credentials.
 // Used when --cert/--key/--ca flags are provided instead of --tls auto-generation.
-func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
+// When enrollmentEnabled is true, client certificates are optional at the TLS
+// layer (the HTTP middleware enforces them for non-enrollment paths).
+func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled bool) *tls.Config {
 	serverCertificate, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error loading server certificate: %v\n", err)
@@ -743,10 +764,15 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string) *tls.Config {
 
 	fmt.Printf("TLS: cert=%s key=%s ca=%s\n", certPath, keyPath, caCertPath)
 
+	clientAuthPolicy := tls.RequireAndVerifyClientCert
+	if enrollmentEnabled {
+		clientAuthPolicy = tls.VerifyClientCertIfGiven
+	}
+
 	return &tls.Config{
 		Certificates: []tls.Certificate{serverCertificate},
 		ClientCAs:    caCertPool,
-		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientAuth:   clientAuthPolicy,
 		MinVersion:   tls.VersionTLS13,
 	}
 }
