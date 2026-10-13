@@ -385,7 +385,18 @@ done
 # Replace systemd-resolved with dnsmasq — the stub resolver at 127.0.0.53
 # flakes under concurrent image-pull load in libvirt VMs. dnsmasq provides
 # a local caching resolver that handles concurrent queries reliably.
-log "Installing dnsmasq on all VMs (replacing systemd-resolved)..."
+# Upstream DNS servers are read from the host's resolv.conf so VMs use the
+# same resolvers the host does. Supports air-gapped deployments.
+HOST_UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | grep -v '127.0.0' | awk '{print $2}' | head -3)
+if [[ -z "$HOST_UPSTREAM_DNS" ]]; then
+    fail "No upstream DNS servers found in host /etc/resolv.conf"
+fi
+DNSMASQ_SERVERS=""
+for ns in $HOST_UPSTREAM_DNS; do
+    DNSMASQ_SERVERS="${DNSMASQ_SERVERS}server=${ns}\n"
+done
+
+log "Installing dnsmasq on all VMs (upstream: $(echo $HOST_UPSTREAM_DNS | tr '\n' ' '))..."
 for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "
         if ! command -v dnsmasq >/dev/null 2>&1; then
@@ -394,7 +405,7 @@ for vm in "${VM_NAMES[@]}"; do
         sudo systemctl disable --now systemd-resolved 2>/dev/null || true
         sudo rm -f /etc/resolv.conf
         printf 'nameserver 127.0.0.1\n' | sudo tee /etc/resolv.conf > /dev/null
-        printf 'server=8.8.8.8\nserver=1.1.1.1\ncache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
+        printf '${DNSMASQ_SERVERS}cache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
         printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
         sudo systemctl enable dnsmasq
         sudo systemctl restart dnsmasq
