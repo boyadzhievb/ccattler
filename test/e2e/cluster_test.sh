@@ -424,8 +424,8 @@ else
             *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
         esac
         case "$CLUSTER_ENV" in
-            test)   case "$vm" in *-ctrl) node_id="test-node-1" ;; *-worker-1) node_id="test-node-2" ;; esac ;;
-            deploy) case "$vm" in *-ctrl) node_id="deploy-node-1" ;; *-worker-1) node_id="deploy-node-2" ;; *-worker-2) node_id="deploy-node-3" ;; esac ;;
+            test)   case "$vm" in *-ctrl) node_id="cca-test-ctrl" ;; *-worker-1) node_id="cca-test-worker-1" ;; esac ;;
+            deploy) case "$vm" in *-ctrl) node_id="cca-deploy-ctrl" ;; *-worker-1) node_id="cca-deploy-worker-1" ;; *-worker-2) node_id="cca-deploy-worker-2" ;; esac ;;
         esac
         scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
             -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
@@ -467,8 +467,8 @@ SVCEOF
     # Regenerate server service file with --ca-key for enrollment support.
     ctrl_node_id=""
     case "$CLUSTER_ENV" in
-        test)   ctrl_node_id="test-node-1" ;;
-        deploy) ctrl_node_id="deploy-node-1" ;;
+        test)   ctrl_node_id="cca-test-ctrl" ;;
+        deploy) ctrl_node_id="cca-deploy-ctrl" ;;
     esac
     cat > /tmp/cca-server.service <<SVCEOF
 [Unit]
@@ -511,8 +511,8 @@ SVCEOF
             "${WORKER_IPS[1]:-}") worker_vm="${VM_PREFIX}-worker-2" ;;
         esac
         case "$CLUSTER_ENV" in
-            test)   case "$worker_vm" in *-worker-1) worker_node_id="test-node-2" ;; esac ;;
-            deploy) case "$worker_vm" in *-worker-1) worker_node_id="deploy-node-2" ;; *-worker-2) worker_node_id="deploy-node-3" ;; esac ;;
+            test)   case "$worker_vm" in *-worker-1) worker_node_id="cca-test-worker-1" ;; esac ;;
+            deploy) case "$worker_vm" in *-worker-1) worker_node_id="cca-deploy-worker-1" ;; *-worker-2) worker_node_id="cca-deploy-worker-2" ;; esac ;;
         esac
         JOIN_TOKEN=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca token create --node-id $worker_node_id --ttl 5m" 2>/dev/null | grep '^Token:' | awk '{print $2}')
         ssh_vm "$worker_vm" "sudo /usr/local/bin/cca join https://${CTRL_IP}:9770 ${JOIN_TOKEN} --node-id $worker_node_id"
@@ -769,8 +769,8 @@ log "'cca agent debug' OK — shows containers, resource usage, and images"
 log "Discovering agent debug addresses from etcd..."
 # The agent publishes its debug address under its node_id, not the VM name.
 case "$CLUSTER_ENV" in
-    test)   WORKER1_NODE_ID="test-node-2" ;;
-    deploy) WORKER1_NODE_ID="deploy-node-2" ;;
+    test)   WORKER1_NODE_ID="cca-test-worker-1" ;;
+    deploy) WORKER1_NODE_ID="cca-deploy-worker-1" ;;
 esac
 WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${WORKER1_NODE_ID}/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
 if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
