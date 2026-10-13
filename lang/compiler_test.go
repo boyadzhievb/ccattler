@@ -5,6 +5,7 @@ package lang
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -1105,5 +1106,133 @@ func TestCompileNonStatefulServiceOmitsStatefulFact(t *testing.T) {
 	compiledFactMap := factMap(facts)
 	if _, exists := compiledFactMap[types.KeyDesiredServiceStateful("web")]; exists {
 		t.Errorf("non-stateful service should not emit stateful fact")
+	}
+}
+
+func TestCompileConnectionDeclaration(t *testing.T) {
+	file, parseErr := Parse(`connection airflow-db {
+    driver "postgresql+psycopg2"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}
+
+service web {
+    image nginx:1.28
+    instances 1
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	connectionValue := compiledFactMap[types.KeyDesiredConnection("airflow-db")]
+	if connectionValue == "" {
+		t.Fatal("connection fact not found")
+	}
+	if !strings.Contains(connectionValue, `"driver":"postgresql+psycopg2"`) {
+		t.Errorf("connection JSON missing driver: %s", connectionValue)
+	}
+	if !strings.Contains(connectionValue, `"host":"metadata-db"`) {
+		t.Errorf("connection JSON missing host: %s", connectionValue)
+	}
+	if !strings.Contains(connectionValue, `"port":5432`) {
+		t.Errorf("connection JSON missing port: %s", connectionValue)
+	}
+	if !strings.Contains(connectionValue, `"secret":"airflow.db-password"`) {
+		t.Errorf("connection JSON missing secret: %s", connectionValue)
+	}
+	if !strings.Contains(connectionValue, `"database":"airflow"`) {
+		t.Errorf("connection JSON missing database: %s", connectionValue)
+	}
+}
+
+func TestCompileServiceWithConnectionRefs(t *testing.T) {
+	file, parseErr := Parse(`connection app-db {
+    driver "postgres"
+    host "database"
+}
+
+service api {
+    image my-api:v3
+    instances 3
+    connection app-db "/run/connections/app-db"
+    connection cache-conn
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	appDBMount := compiledFactMap[types.KeyDesiredServiceConnection("api", "app-db")]
+	if appDBMount != "/run/connections/app-db" {
+		t.Errorf("app-db mount: got %q, want %q", appDBMount, "/run/connections/app-db")
+	}
+	cacheConnMount := compiledFactMap[types.KeyDesiredServiceConnection("api", "cache-conn")]
+	if cacheConnMount != "/run/connections/cache-conn" {
+		t.Errorf("cache-conn default mount: got %q, want %q", cacheConnMount, "/run/connections/cache-conn")
+	}
+}
+
+func TestCompileInitStepWithConnection(t *testing.T) {
+	file, parseErr := Parse(`connection app-db {
+    driver "postgres"
+    host "database"
+}
+
+service api {
+    image my-api:v3
+    instances 1
+    init {
+        connection app-db
+        timeout 30s
+        retry 5
+    }
+    init {
+        exec "migrate-db"
+        timeout 60s
+    }
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	connectionInitValue := compiledFactMap[types.KeyDesiredServiceInitStepConnection("api", 0)]
+	if connectionInitValue != "app-db" {
+		t.Errorf("init step 0 connection: got %q, want %q", connectionInitValue, "app-db")
+	}
+
+	execInitValue := compiledFactMap[types.KeyDesiredServiceInitStepExec("api", 0)]
+	if execInitValue != "" {
+		t.Errorf("init step 0 should not have exec, got %q", execInitValue)
+	}
+
+	execStep1Value := compiledFactMap[types.KeyDesiredServiceInitStepExec("api", 1)]
+	if execStep1Value != "migrate-db" {
+		t.Errorf("init step 1 exec: got %q, want %q", execStep1Value, "migrate-db")
+	}
+
+	connectionStep1Value := compiledFactMap[types.KeyDesiredServiceInitStepConnection("api", 1)]
+	if connectionStep1Value != "" {
+		t.Errorf("init step 1 should not have connection, got %q", connectionStep1Value)
 	}
 }

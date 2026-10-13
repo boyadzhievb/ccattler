@@ -448,6 +448,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
 	nodeAgent.materializeSecretFiles(ctx, instanceInfo.service, &runtimeSpec)
+	nodeAgent.materializeConnectionFiles(ctx, instanceInfo.service, &runtimeSpec)
 	if secretAPIToken != "" {
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
@@ -744,6 +745,153 @@ func (nodeAgent *Agent) materializeSecretFiles(ctx context.Context, serviceName 
 			runtimeSpec.ConfigFiles[explicitMountPath] = secretValue
 		}
 	}
+}
+
+// materializeConnectionFiles reads all connection references for a service,
+// looks up each connection definition, retrieves the password from the secret
+// store, assembles the connection URL, and writes it to the mount path.
+func (nodeAgent *Agent) materializeConnectionFiles(ctx context.Context, serviceName string, runtimeSpec *runtime.Spec) {
+	connectionRefs, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConnections(serviceName))
+	if scanError != nil || len(connectionRefs) == 0 {
+		return
+	}
+	if runtimeSpec.ConfigFiles == nil {
+		runtimeSpec.ConfigFiles = make(map[string]string)
+	}
+	for _, connectionRef := range connectionRefs {
+		connectionName := strings.TrimPrefix(connectionRef.Key, types.ScanDesiredServiceConnections(serviceName))
+		if connectionName == "" {
+			continue
+		}
+		mountPath := string(connectionRef.Value)
+		connectionURL := nodeAgent.assembleConnectionURL(ctx, connectionName, serviceName)
+		if connectionURL == "" {
+			continue
+		}
+		runtimeSpec.ConfigFiles[mountPath] = connectionURL
+	}
+}
+
+// assembleConnectionURL reads a connection definition from the store, retrieves
+// the password from the secret provider, and builds a standard connection URL:
+// driver://user:password@host:port/database
+func (nodeAgent *Agent) assembleConnectionURL(ctx context.Context, connectionName string, serviceName string) string {
+	connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName))
+	if getError != nil {
+		logging.Default().Error("connection definition not found",
+			"agent", nodeAgent.nodeID, "connection", connectionName)
+		return ""
+	}
+	connectionDef := parseConnectionJSON(string(connectionFact.Value))
+	if connectionDef.driver == "" || connectionDef.host == "" {
+		logging.Default().Error("connection definition missing driver or host",
+			"agent", nodeAgent.nodeID, "connection", connectionName)
+		return ""
+	}
+
+	password := ""
+	if connectionDef.secret != "" && nodeAgent.secretProvider != nil {
+		plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, connectionDef.secret)
+		if decryptError != nil {
+			logging.Default().Error("failed to decrypt connection secret",
+				"agent", nodeAgent.nodeID, "connection", connectionName,
+				"secret", connectionDef.secret, "error", decryptError.Error())
+			return ""
+		}
+		password = string(plaintext)
+	}
+
+	return buildConnectionURL(connectionDef, password)
+}
+
+// connectionDefinition holds the parsed fields from a connection fact's JSON value.
+type connectionDefinition struct {
+	driver   string // driver/protocol prefix (e.g. "postgresql+psycopg2")
+	user     string // username for authentication
+	secret   string // secret name for the password
+	host     string // hostname to connect to
+	port     int    // port number (0 = omit from URL)
+	database string // database name
+}
+
+// parseConnectionJSON extracts connection fields from the JSON value stored in
+// the fact store. Uses simple string parsing to avoid a JSON library dependency.
+func parseConnectionJSON(jsonValue string) connectionDefinition {
+	var connectionDef connectionDefinition
+	connectionDef.driver = extractJSONStringField(jsonValue, "driver")
+	connectionDef.user = extractJSONStringField(jsonValue, "user")
+	connectionDef.secret = extractJSONStringField(jsonValue, "secret")
+	connectionDef.host = extractJSONStringField(jsonValue, "host")
+	connectionDef.database = extractJSONStringField(jsonValue, "database")
+	connectionDef.port = extractJSONIntField(jsonValue, "port")
+	return connectionDef
+}
+
+// extractJSONStringField extracts a quoted string value for a given key from a
+// flat JSON object. Returns empty string if not found.
+func extractJSONStringField(jsonValue string, fieldName string) string {
+	searchKey := fmt.Sprintf(`"%s":"`, fieldName)
+	keyIndex := strings.Index(jsonValue, searchKey)
+	if keyIndex < 0 {
+		return ""
+	}
+	valueStart := keyIndex + len(searchKey)
+	valueEnd := strings.Index(jsonValue[valueStart:], `"`)
+	if valueEnd < 0 {
+		return ""
+	}
+	return jsonValue[valueStart : valueStart+valueEnd]
+}
+
+// extractJSONIntField extracts an integer value for a given key from a flat
+// JSON object. Returns 0 if not found or not parseable.
+func extractJSONIntField(jsonValue string, fieldName string) int {
+	searchKey := fmt.Sprintf(`"%s":`, fieldName)
+	keyIndex := strings.Index(jsonValue, searchKey)
+	if keyIndex < 0 {
+		return 0
+	}
+	valueStart := keyIndex + len(searchKey)
+	remaining := jsonValue[valueStart:]
+	endIndex := strings.IndexAny(remaining, ",}")
+	if endIndex < 0 {
+		return 0
+	}
+	parsedValue, parseError := strconv.Atoi(strings.TrimSpace(remaining[:endIndex]))
+	if parseError != nil {
+		return 0
+	}
+	return parsedValue
+}
+
+// buildConnectionURL assembles a standard connection URL from the definition
+// fields and decrypted password: driver://user:password@host:port/database
+func buildConnectionURL(connectionDef connectionDefinition, password string) string {
+	var connectionURL strings.Builder
+	connectionURL.WriteString(connectionDef.driver)
+	connectionURL.WriteString("://")
+
+	if connectionDef.user != "" {
+		connectionURL.WriteString(connectionDef.user)
+		if password != "" {
+			connectionURL.WriteByte(':')
+			connectionURL.WriteString(password)
+		}
+		connectionURL.WriteByte('@')
+	}
+
+	connectionURL.WriteString(connectionDef.host)
+	if connectionDef.port > 0 {
+		connectionURL.WriteByte(':')
+		connectionURL.WriteString(strconv.Itoa(connectionDef.port))
+	}
+
+	if connectionDef.database != "" {
+		connectionURL.WriteByte('/')
+		connectionURL.WriteString(connectionDef.database)
+	}
+
+	return connectionURL.String()
 }
 
 // lookupServiceVolumeMountsFromStore reads the desired volume mounts for a

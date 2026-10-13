@@ -7,6 +7,7 @@ package lang
 type File struct {
 	Services         []ServiceDecl         // top-level service blocks in the source file
 	Volumes          []VolumeDecl          // top-level volume blocks in the source file
+	Connections      []ConnectionDecl      // top-level connection blocks defining structured connection strings
 	Tenants          []TenantDecl          // top-level tenant blocks in the source file
 	CloudIdentities  []CloudIdentityDecl   // top-level cloud_identity blocks in the source file
 	CredentialBroker *CredentialBrokerDecl // optional top-level credential_broker block
@@ -53,6 +54,7 @@ type ServiceDecl struct {
 	Update          *UpdateDecl                // optional rolling update strategy
 	Config          *ConfigDecl                // optional config block (env vars, config files)
 	Secrets         []SecretDecl               // optional secret mount declarations
+	Connections     []ConnectionRef            // optional connection mount references
 	VolumeMounts    []VolumeMountDecl          // optional volume mount bindings
 	CloudIdentities []CloudIdentityBindingDecl // optional cloud identity bindings
 	InitSteps       []InitStepDecl             // optional ordered initialization steps
@@ -203,11 +205,13 @@ type ConfigFileDecl struct {
 
 // InitStepDecl represents a single "init { ... }" block in a service declaration.
 // Init steps run sequentially before the main workload starts. Each step defines
-// an exec command with optional timeout and retry configuration.
+// either an exec command or a connection probe, with optional timeout and retry.
+// Exec and Connection are mutually exclusive — exactly one must be set.
 type InitStepDecl struct {
-	Exec    string // command to execute (e.g. "migrate-db")
-	Timeout string // maximum time for the step to complete (e.g. "30s")
-	Retry   int    // number of retry attempts on failure (0 = no retries)
+	Exec       string // command to execute (e.g. "migrate-db"), mutually exclusive with Connection
+	Connection string // connection name to probe (e.g. "airflow-db"), mutually exclusive with Exec
+	Timeout    string // maximum time for the step to complete (e.g. "30s")
+	Retry      int    // number of retry attempts on failure (0 = no retries)
 }
 
 // ProbeDecl holds configuration for a startup, liveness, or readiness probe.
@@ -228,6 +232,28 @@ type ProbeDecl struct {
 type SecretDecl struct {
 	Name      string // secret name in the encrypted store
 	MountPath string // filesystem path to mount the secret at (default: /run/secrets/{name})
+}
+
+// ConnectionDecl represents a top-level "connection" block that defines a
+// database or service connection using structured fields. The agent assembles
+// the connection URL at runtime and delivers it as a secret file.
+type ConnectionDecl struct {
+	Name     string // unique connection identifier (e.g. "airflow-db")
+	Driver   string // connection driver/protocol (e.g. "postgresql+psycopg2")
+	User     string // username for authentication (optional)
+	Secret   string // secret name for the password (optional, never stored in fact)
+	Host     string // hostname or service name to connect to
+	Port     int    // port number (0 = driver default)
+	Database string // database name (optional)
+	Line     int    // source line number for error reporting
+}
+
+// ConnectionRef holds a service-level reference to a named connection.
+// The agent resolves the connection definition, retrieves the password from
+// the secret store, assembles the URL, and writes it to the mount path.
+type ConnectionRef struct {
+	ConnectionName string // name of the top-level connection block to reference
+	MountPath      string // filesystem path to write the connection string (default: /run/connections/{name})
 }
 
 // CloudIdentityDecl represents a top-level "cloud_identity" block declaring a

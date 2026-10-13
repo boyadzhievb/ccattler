@@ -53,9 +53,9 @@ service webserver {
     }
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env _AIRFLOW_DB_MIGRATE "true"
         env _AIRFLOW_WWW_USER_CREATE "true"
@@ -79,9 +79,9 @@ service scheduler {
     }
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
     }
     secret airflow.db-password "/run/secrets/db-password"
     init {
@@ -106,9 +106,9 @@ service worker {
     }
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD """printf 'postgresql+psycopg2://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD """printf 'db+postgresql://airflow:%s@metadata-db:5432/airflow' $(cca-secret airflow.db-password)"""
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
     }
     secret airflow.db-password "/run/secrets/db-password"
     init {

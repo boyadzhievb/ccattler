@@ -102,6 +102,13 @@ func compileInfrastructureDeclarations(file *File, sourceLines []string) ([]Fact
 		}
 		facts = append(facts, cloudFacts...)
 	}
+	for _, connectionDecl := range file.Connections {
+		connectionFacts, err := compileConnectionDeclaration(connectionDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, connectionFacts...)
+	}
 	return facts, nil
 }
 
@@ -297,6 +304,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 	}
 	facts = append(facts, configFacts...)
 	facts = append(facts, compileServiceSecretFacts(serviceDecl.Name, serviceDecl.Secrets)...)
+	facts = append(facts, compileServiceConnectionRefFacts(serviceDecl.Name, serviceDecl.Connections)...)
 	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
 	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
@@ -652,6 +660,57 @@ func compileServiceSecretFacts(serviceName string, secretDecls []SecretDecl) []F
 	return secretFacts
 }
 
+// compileServiceConnectionRefFacts produces connection mount path facts for
+// each connection referenced by a service.
+func compileServiceConnectionRefFacts(serviceName string, connectionRefs []ConnectionRef) []Fact {
+	var connectionFacts []Fact
+	for _, connectionRef := range connectionRefs {
+		connectionFacts = append(connectionFacts, Fact{
+			Key:   types.KeyDesiredServiceConnection(serviceName, connectionRef.ConnectionName),
+			Value: connectionRef.MountPath,
+		})
+	}
+	return connectionFacts
+}
+
+// compileConnectionDeclaration validates and converts a top-level ConnectionDecl
+// into a JSON-encoded fact containing the connection definition.
+func compileConnectionDeclaration(connectionDecl ConnectionDecl, sourceLines []string) ([]Fact, error) {
+	if connectionDecl.Name == "" {
+		return nil, &ParseError{
+			Line: connectionDecl.Line, Message: "connection name is required",
+			SourceLine: sourceLineAt(sourceLines, connectionDecl.Line),
+		}
+	}
+
+	connectionJSON := buildConnectionJSON(connectionDecl)
+
+	return []Fact{
+		{Key: types.KeyDesiredConnection(connectionDecl.Name), Value: connectionJSON},
+	}, nil
+}
+
+// buildConnectionJSON serializes a ConnectionDecl's fields into a JSON string
+// suitable for storage as a fact value.
+func buildConnectionJSON(connectionDecl ConnectionDecl) string {
+	var parts []string
+	parts = append(parts, fmt.Sprintf(`"driver":%q`, connectionDecl.Driver))
+	if connectionDecl.User != "" {
+		parts = append(parts, fmt.Sprintf(`"user":%q`, connectionDecl.User))
+	}
+	if connectionDecl.Secret != "" {
+		parts = append(parts, fmt.Sprintf(`"secret":%q`, connectionDecl.Secret))
+	}
+	parts = append(parts, fmt.Sprintf(`"host":%q`, connectionDecl.Host))
+	if connectionDecl.Port > 0 {
+		parts = append(parts, fmt.Sprintf(`"port":%d`, connectionDecl.Port))
+	}
+	if connectionDecl.Database != "" {
+		parts = append(parts, fmt.Sprintf(`"database":%q`, connectionDecl.Database))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
 // compileServiceCloudIdentityFacts produces cloud identity binding facts for a
 // service, including optional mount path and delivery mode configuration.
 func compileServiceCloudIdentityFacts(serviceName string, cloudIdentityBindings []CloudIdentityBindingDecl) []Fact {
@@ -685,9 +744,15 @@ func compileServiceInitStepFacts(serviceName string, initSteps []InitStepDecl) [
 		initFacts = append(initFacts, Fact{
 			Key: types.KeyDesiredServiceInitStep(serviceName, stepIndex), Value: "",
 		})
-		initFacts = append(initFacts, Fact{
-			Key: types.KeyDesiredServiceInitStepExec(serviceName, stepIndex), Value: initStep.Exec,
-		})
+		if initStep.Connection != "" {
+			initFacts = append(initFacts, Fact{
+				Key: types.KeyDesiredServiceInitStepConnection(serviceName, stepIndex), Value: initStep.Connection,
+			})
+		} else {
+			initFacts = append(initFacts, Fact{
+				Key: types.KeyDesiredServiceInitStepExec(serviceName, stepIndex), Value: initStep.Exec,
+			})
+		}
 		if initStep.Timeout != "" {
 			initFacts = append(initFacts, Fact{
 				Key: types.KeyDesiredServiceInitStepTimeout(serviceName, stepIndex), Value: initStep.Timeout,

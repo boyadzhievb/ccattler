@@ -722,6 +722,34 @@ func ScanDesiredServiceSecrets(serviceName string) string {
 	return fmt.Sprintf("%s/service/%s/secret/", PrefixDesired, serviceName)
 }
 
+// Connection keys. Top-level connection definitions are stored as JSON under
+// desired/connection/{name}. Service-level connection references are stored
+// under desired/service/{svc}/connection/{name} with the mount path as value.
+
+// KeyDesiredConnection returns the store path for a top-level connection definition.
+// Path: desired/connection/{name}
+func KeyDesiredConnection(connectionName string) string {
+	return fmt.Sprintf("%s/connection/%s", PrefixDesired, connectionName)
+}
+
+// ScanDesiredConnections returns the scan prefix for all connection definitions.
+func ScanDesiredConnections() string {
+	return fmt.Sprintf("%s/connection/", PrefixDesired)
+}
+
+// KeyDesiredServiceConnection returns the store path for a service's connection
+// mount reference. The value is the mount path.
+// Path: desired/service/{name}/connection/{connectionName}
+func KeyDesiredServiceConnection(serviceName, connectionName string) string {
+	return fmt.Sprintf("%s/service/%s/connection/%s", PrefixDesired, serviceName, connectionName)
+}
+
+// ScanDesiredServiceConnections returns the scan prefix for all connection
+// references of a service.
+func ScanDesiredServiceConnections(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/connection/", PrefixDesired, serviceName)
+}
+
 // Node utilization keys. The agent reports current resource utilization as
 // observed facts, separate from capacity/allocated facts used by the scheduler.
 
@@ -796,6 +824,13 @@ func KeyDesiredServiceInitStepTimeout(serviceName string, stepIndex int) string 
 // Path: desired/service/{name}/init/{index}/retry
 func KeyDesiredServiceInitStepRetry(serviceName string, stepIndex int) string {
 	return fmt.Sprintf("%s/service/%s/init/%d/retry", PrefixDesired, serviceName, stepIndex)
+}
+
+// KeyDesiredServiceInitStepConnection returns the store path for an init step's
+// connection probe name. Mutually exclusive with the exec key for the same step.
+// Path: desired/service/{name}/init/{index}/connection
+func KeyDesiredServiceInitStepConnection(serviceName string, stepIndex int) string {
+	return fmt.Sprintf("%s/service/%s/init/%d/connection", PrefixDesired, serviceName, stepIndex)
 }
 
 // ScanDesiredServiceInitSteps returns the scan prefix for all init steps of a service.

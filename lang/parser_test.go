@@ -1450,3 +1450,207 @@ func TestParseDisruptionRejectsUnknownField(t *testing.T) {
 		t.Fatal("expected error for unknown disruption field")
 	}
 }
+
+func TestParseConnectionDeclaration(t *testing.T) {
+	input := `connection airflow-db {
+    driver "postgresql+psycopg2"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(file.Connections) != 1 {
+		t.Fatalf("expected 1 connection, got %d", len(file.Connections))
+	}
+
+	connectionDecl := file.Connections[0]
+	if connectionDecl.Name != "airflow-db" {
+		t.Errorf("name: got %q, want %q", connectionDecl.Name, "airflow-db")
+	}
+	if connectionDecl.Driver != "postgresql+psycopg2" {
+		t.Errorf("driver: got %q, want %q", connectionDecl.Driver, "postgresql+psycopg2")
+	}
+	if connectionDecl.User != "airflow" {
+		t.Errorf("user: got %q, want %q", connectionDecl.User, "airflow")
+	}
+	if connectionDecl.Secret != "airflow.db-password" {
+		t.Errorf("secret: got %q, want %q", connectionDecl.Secret, "airflow.db-password")
+	}
+	if connectionDecl.Host != "metadata-db" {
+		t.Errorf("host: got %q, want %q", connectionDecl.Host, "metadata-db")
+	}
+	if connectionDecl.Port != 5432 {
+		t.Errorf("port: got %d, want %d", connectionDecl.Port, 5432)
+	}
+	if connectionDecl.Database != "airflow" {
+		t.Errorf("database: got %q, want %q", connectionDecl.Database, "airflow")
+	}
+}
+
+func TestParseConnectionMinimalFields(t *testing.T) {
+	input := `connection redis-conn {
+    driver "redis"
+    host "redis"
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(file.Connections) != 1 {
+		t.Fatalf("expected 1 connection, got %d", len(file.Connections))
+	}
+
+	connectionDecl := file.Connections[0]
+	if connectionDecl.Driver != "redis" {
+		t.Errorf("driver: got %q, want %q", connectionDecl.Driver, "redis")
+	}
+	if connectionDecl.Host != "redis" {
+		t.Errorf("host: got %q, want %q", connectionDecl.Host, "redis")
+	}
+	if connectionDecl.User != "" {
+		t.Errorf("user should be empty, got %q", connectionDecl.User)
+	}
+	if connectionDecl.Port != 0 {
+		t.Errorf("port should be 0, got %d", connectionDecl.Port)
+	}
+}
+
+func TestParseConnectionMissingDriver(t *testing.T) {
+	input := `connection bad {
+    host "db-host"
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for connection without driver")
+	}
+}
+
+func TestParseConnectionMissingHost(t *testing.T) {
+	input := `connection bad {
+    driver "postgres"
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for connection without host")
+	}
+}
+
+func TestParseConnectionUnknownField(t *testing.T) {
+	input := `connection bad {
+    driver "postgres"
+    host "db"
+    flavor "vanilla"
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown connection field")
+	}
+}
+
+func TestParseServiceConnectionReference(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    connection airflow-db "/run/connections/airflow-db"
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Connections) != 1 {
+		t.Fatalf("expected 1 connection ref, got %d", len(serviceDecl.Connections))
+	}
+
+	connectionRef := serviceDecl.Connections[0]
+	if connectionRef.ConnectionName != "airflow-db" {
+		t.Errorf("connection name: got %q, want %q", connectionRef.ConnectionName, "airflow-db")
+	}
+	if connectionRef.MountPath != "/run/connections/airflow-db" {
+		t.Errorf("mount path: got %q, want %q", connectionRef.MountPath, "/run/connections/airflow-db")
+	}
+}
+
+func TestParseServiceConnectionDefaultMount(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    connection app-db
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	connectionRef := file.Services[0].Connections[0]
+	if connectionRef.MountPath != "/run/connections/app-db" {
+		t.Errorf("default mount: got %q, want %q", connectionRef.MountPath, "/run/connections/app-db")
+	}
+}
+
+func TestParseInitStepConnection(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    init {
+        connection airflow-db
+        timeout 30s
+        retry 5
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	initStep := file.Services[0].InitSteps[0]
+	if initStep.Connection != "airflow-db" {
+		t.Errorf("init connection: got %q, want %q", initStep.Connection, "airflow-db")
+	}
+	if initStep.Exec != "" {
+		t.Errorf("init exec should be empty, got %q", initStep.Exec)
+	}
+	if initStep.Timeout != "30s" {
+		t.Errorf("timeout: got %q, want %q", initStep.Timeout, "30s")
+	}
+	if initStep.Retry != 5 {
+		t.Errorf("retry: got %d, want %d", initStep.Retry, 5)
+	}
+}
+
+func TestParseInitStepBothExecAndConnection(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    init {
+        exec "migrate-db"
+        connection airflow-db
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for init with both exec and connection")
+	}
+}
+
+func TestParseInitStepNeitherExecNorConnection(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    init {
+        timeout 30s
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for init with neither exec nor connection")
+	}
+}

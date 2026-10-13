@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -20,12 +21,15 @@ import (
 const initStepBackoffBaseDelay = 1 * time.Second
 
 // initStepDefinition holds the parsed configuration for a single init step
-// read from the desired-state section of the fact store.
+// read from the desired-state section of the fact store. Exactly one of exec
+// or connection is set — exec runs a command, connection probes a named
+// connection for reachability and authentication.
 type initStepDefinition struct {
-	index   int           // index is the ordinal position of this step (0-based).
-	exec    string        // exec is the command to run.
-	timeout time.Duration // timeout is the maximum time for the step to complete (0 = no timeout).
-	retry   int           // retry is the number of retry attempts on failure (0 = no retries).
+	index      int           // index is the ordinal position of this step (0-based).
+	exec       string        // exec is the command to run (mutually exclusive with connection).
+	connection string        // connection is the named connection to probe (mutually exclusive with exec).
+	timeout    time.Duration // timeout is the maximum time for the step to complete (0 = no timeout).
+	retry      int           // retry is the number of retry attempts on failure (0 = no retries).
 }
 
 // executeInitializationSteps runs all init steps for an instance sequentially.
@@ -77,16 +81,25 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 		}
 
-		execError := nodeAgent.runInitCommand(ctx, image, stepDefinition)
+		var stepError error
+		if stepDefinition.connection != "" {
+			stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
+		} else {
+			stepError = nodeAgent.runInitCommand(ctx, image, stepDefinition)
+		}
+		stepLabel := stepDefinition.exec
+		if stepDefinition.connection != "" {
+			stepLabel = "connection:" + stepDefinition.connection
+		}
 
-		if execError == nil {
+		if stepError == nil {
 			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded))); putError != nil {
 				logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 			}
 			logging.Default().Info("init step succeeded",
 				"agent", nodeAgent.nodeID,
 				"step", fmt.Sprintf("%d", stepDefinition.index),
-				"exec", stepDefinition.exec,
+				"exec", stepLabel,
 				"instance", instanceInfo.id)
 			return true
 		}
@@ -94,10 +107,10 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 		logging.Default().Warn("init step failed",
 			"agent", nodeAgent.nodeID,
 			"step", fmt.Sprintf("%d", stepDefinition.index),
-			"exec", stepDefinition.exec,
+			"exec", stepLabel,
 			"instance", instanceInfo.id,
 			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, maxAttempts),
-			"error", execError.Error())
+			"error", stepError.Error())
 
 		if attemptIndex < maxAttempts-1 {
 			backoffDuration := initStepBackoffBaseDelay * time.Duration(1<<uint(attemptIndex))
@@ -173,6 +186,11 @@ func (nodeAgent *Agent) loadInitStepDefinitions(ctx context.Context, serviceName
 			stepDefinitions[stepIndex].exec = string(execFact.Value)
 		}
 
+		connectionFact, connectionError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceInitStepConnection(serviceName, stepIndex))
+		if connectionError == nil {
+			stepDefinitions[stepIndex].connection = string(connectionFact.Value)
+		}
+
 		timeoutFact, timeoutError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceInitStepTimeout(serviceName, stepIndex))
 		if timeoutError == nil {
 			parsedTimeout, parseError := time.ParseDuration(string(timeoutFact.Value))
@@ -209,6 +227,50 @@ func (nodeAgent *Agent) readInitStepState(ctx context.Context, instanceID string
 		return ""
 	}
 	return string(stateFact.Value)
+}
+
+// runConnectionProbe validates that a named connection is reachable by doing a
+// TCP dial to host:port. The connection definition is read from the store and
+// the URL is assembled (including secret resolution) to verify the full chain.
+// Applies the step timeout if configured.
+func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition initStepDefinition, serviceName string) error {
+	probeCtx := ctx
+	var cancelFunc context.CancelFunc
+	if stepDefinition.timeout > 0 {
+		probeCtx, cancelFunc = context.WithTimeout(ctx, stepDefinition.timeout)
+		defer cancelFunc()
+	}
+
+	connectionURL := nodeAgent.assembleConnectionURL(probeCtx, stepDefinition.connection, serviceName)
+	if connectionURL == "" {
+		return fmt.Errorf("connection %q: failed to assemble URL", stepDefinition.connection)
+	}
+
+	connectionFact, getError := nodeAgent.store.Get(probeCtx, types.KeyDesiredConnection(stepDefinition.connection))
+	if getError != nil {
+		return fmt.Errorf("connection %q: definition not found", stepDefinition.connection)
+	}
+	connectionDef := parseConnectionJSON(string(connectionFact.Value))
+
+	var dialAddress string
+	if connectionDef.port > 0 {
+		dialAddress = net.JoinHostPort(connectionDef.host, strconv.Itoa(connectionDef.port))
+	} else {
+		dialAddress = net.JoinHostPort(connectionDef.host, "0")
+	}
+
+	dialer := &net.Dialer{}
+	tcpConnection, dialError := dialer.DialContext(probeCtx, "tcp", dialAddress)
+	if dialError != nil {
+		return fmt.Errorf("connection %q: TCP dial to %s failed: %w", stepDefinition.connection, dialAddress, dialError)
+	}
+	_ = tcpConnection.Close()
+
+	logging.Default().Info("connection probe passed",
+		"agent", nodeAgent.nodeID,
+		"connection", stepDefinition.connection,
+		"address", dialAddress)
+	return nil
 }
 
 // hasInitSteps returns true if the named service has any desired init steps.

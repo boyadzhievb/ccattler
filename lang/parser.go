@@ -137,6 +137,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Networks = append(file.Networks, *networkDecl)
+		case "connection":
+			connectionDecl, err := parser.parseConnectionDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Connections = append(file.Connections, *connectionDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -235,6 +241,12 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 		secretDecl, err = parser.parseSecretDeclaration()
 		if err == nil {
 			serviceDecl.Secrets = append(serviceDecl.Secrets, secretDecl)
+		}
+	case "connection":
+		var connectionRef ConnectionRef
+		connectionRef, err = parser.parseConnectionReference()
+		if err == nil {
+			serviceDecl.Connections = append(serviceDecl.Connections, connectionRef)
 		}
 	case "startup":
 		serviceDecl.Startup, err = parser.parseProbeBlock()
@@ -1168,6 +1180,8 @@ func (parser *Parser) parseInitStepBlock() (InitStepDecl, error) {
 		switch key {
 		case "exec":
 			initStepDecl.Exec, err = parser.expectStringOrIdentifier()
+		case "connection":
+			initStepDecl.Connection, err = parser.expectIdentifier()
 		case "timeout":
 			token := parser.currentToken()
 			if token.Type != TokenNumber && token.Type != TokenIdent {
@@ -1191,8 +1205,11 @@ func (parser *Parser) parseInitStepBlock() (InitStepDecl, error) {
 		return InitStepDecl{}, err
 	}
 
-	if initStepDecl.Exec == "" {
-		return InitStepDecl{}, parser.parserErrorf("init block requires an exec command")
+	if initStepDecl.Exec == "" && initStepDecl.Connection == "" {
+		return InitStepDecl{}, parser.parserErrorf("init block requires an exec command or connection probe")
+	}
+	if initStepDecl.Exec != "" && initStepDecl.Connection != "" {
+		return InitStepDecl{}, parser.parserErrorf("init block cannot have both exec and connection")
 	}
 
 	return initStepDecl, nil
@@ -1215,6 +1232,92 @@ func (parser *Parser) parseSecretDeclaration() (SecretDecl, error) {
 	}
 
 	return SecretDecl{Name: secretName, MountPath: mountPath}, nil
+}
+
+// parseConnectionDeclaration parses a top-level connection block:
+//
+//	connection airflow-db {
+//	    driver "postgresql+psycopg2"
+//	    user "airflow"
+//	    secret airflow.db-password
+//	    host "metadata-db"
+//	    port 5432
+//	    database "airflow"
+//	}
+func (parser *Parser) parseConnectionDeclaration() (*ConnectionDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "connection"
+
+	connectionName, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if braceErr := parser.expectToken(TokenLBrace); braceErr != nil {
+		return nil, braceErr
+	}
+	parser.skipNewlineTokens()
+
+	connectionDecl := &ConnectionDecl{Name: connectionName, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, fieldErr := parser.expectIdentifier()
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+
+		switch key {
+		case "driver":
+			connectionDecl.Driver, err = parser.expectStringOrIdentifier()
+		case "user":
+			connectionDecl.User, err = parser.expectStringOrIdentifier()
+		case "secret":
+			connectionDecl.Secret, err = parser.expectIdentifier()
+		case "host":
+			connectionDecl.Host, err = parser.expectStringOrIdentifier()
+		case "port":
+			connectionDecl.Port, err = parser.expectInteger()
+		case "database":
+			connectionDecl.Database, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown connection field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if connectionDecl.Driver == "" {
+		return nil, parser.parserErrorf("connection %q requires a driver", connectionName)
+	}
+	if connectionDecl.Host == "" {
+		return nil, parser.parserErrorf("connection %q requires a host", connectionName)
+	}
+
+	return connectionDecl, nil
+}
+
+// parseConnectionReference parses a service-level connection reference:
+// connection <name> ["/mount/path"]
+func (parser *Parser) parseConnectionReference() (ConnectionRef, error) {
+	connectionName, err := parser.expectIdentifier()
+	if err != nil {
+		return ConnectionRef{}, err
+	}
+
+	mountPath := "/run/connections/" + connectionName
+	if parser.currentToken().Type == TokenString {
+		mountPath = parser.currentToken().Value
+		parser.advanceToken()
+	}
+
+	return ConnectionRef{ConnectionName: connectionName, MountPath: mountPath}, nil
 }
 
 // expectResourceValue consumes a token that can be a number with unit suffix
