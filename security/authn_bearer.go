@@ -13,6 +13,17 @@ import (
 // bearer token authentication.
 const bearerTokenPrefix = "Bearer "
 
+// minimumJWTSegments is the number of dot-separated segments in a valid JWT.
+const minimumJWTSegments = 3
+
+// looksLikeJWT returns true when the token has the three dot-separated segments
+// expected of a JWT (header.payload.signature). This check avoids sending
+// non-JWT bearer tokens (like hex local-tokens) into the OIDC validator, which
+// would return hard errors and short-circuit the authenticator chain.
+func looksLikeJWT(token string) bool {
+	return strings.Count(token, ".") == minimumJWTSegments-1
+}
+
 // BearerTokenAuthenticator reads an "Authorization: Bearer <token>" header and
 // delegates validation to an existing OIDCAuthenticator. This is a thin adapter
 // that bridges HTTP-layer credential extraction with the token-level OIDC
@@ -42,6 +53,12 @@ func (authenticator *BearerTokenAuthenticator) Authenticate(request *http.Reques
 	tokenString := strings.TrimPrefix(authorizationHeader, bearerTokenPrefix)
 	if tokenString == "" {
 		return nil, fmt.Errorf("bearer: empty token")
+	}
+	// Only attempt OIDC validation when the token looks like a JWT (three
+	// dot-separated segments). Non-JWT tokens (e.g. local-token hex strings)
+	// pass through so the next authenticator in the chain can handle them.
+	if !looksLikeJWT(tokenString) {
+		return nil, nil
 	}
 	result, validateError := authenticator.oidcAuthenticator.Authenticate(tokenString)
 	if validateError != nil {
