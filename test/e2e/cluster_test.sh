@@ -385,43 +385,24 @@ done
 # Replace systemd-resolved with dnsmasq — the stub resolver at 127.0.0.53
 # flakes under concurrent image-pull load in libvirt VMs. dnsmasq provides
 # a local caching resolver that handles concurrent queries reliably.
-# Upstream DNS is derived from the host: if /etc/resolv.conf has a real
-# nameserver use it; if it points to localhost (NetworkManager/systemd-resolved)
-# use the default gateway which typically runs a DNS forwarder.
-log "Host /etc/resolv.conf:"
-grep '^nameserver' /etc/resolv.conf || log "  (no nameserver lines)"
-log "Host default gateway: $(ip route | awk '/default/ {print $3}' | head -1)"
-
-UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | awk '{print $2}' | grep -v '127.0.0' | head -1)
-if [[ -z "$UPSTREAM_DNS" ]]; then
-    DEFAULT_GW=$(ip route | awk '/default/ {print $3}' | head -1)
-    if [[ -n "$DEFAULT_GW" ]]; then
-        log "Host resolv.conf points to localhost, using default gateway $DEFAULT_GW as upstream DNS"
-        UPSTREAM_DNS="$DEFAULT_GW"
-    fi
-fi
-if [[ -z "$UPSTREAM_DNS" ]]; then
-    fail "No usable upstream DNS server found (resolv.conf has only localhost, no default gateway)"
-fi
-
-log "Verifying upstream DNS $UPSTREAM_DNS resolves external names..."
-if nslookup registry-1.docker.io "$UPSTREAM_DNS" >/dev/null 2>&1 || \
-   dig +short @"$UPSTREAM_DNS" registry-1.docker.io 2>/dev/null | grep -q .; then
-    log "Upstream DNS $UPSTREAM_DNS is working"
-else
-    log "WARNING: upstream DNS $UPSTREAM_DNS did not resolve registry-1.docker.io (may be air-gapped)"
-fi
-
-log "Installing dnsmasq on all VMs (upstream: $UPSTREAM_DNS)..."
+# Each VM derives its upstream DNS from its own default gateway (the libvirt
+# bridge on the host), which is the only reliable resolver for VMs behind NAT.
+log "Installing dnsmasq on all VMs (upstream: VM default gateway)..."
 for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "
         if ! command -v dnsmasq >/dev/null 2>&1; then
             sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq >/dev/null
         fi
+        GATEWAY=\$(ip route | awk '/default/ {print \$3}' | head -1)
+        if [ -z \"\$GATEWAY\" ]; then
+            echo 'FATAL: no default gateway found' >&2
+            exit 1
+        fi
+        echo \"VM \$(hostname): upstream DNS = \$GATEWAY\"
         sudo systemctl disable --now systemd-resolved 2>/dev/null || true
         sudo rm -f /etc/resolv.conf
-        printf 'nameserver 127.0.0.1\nnameserver ${UPSTREAM_DNS}\n' | sudo tee /etc/resolv.conf > /dev/null
-        printf 'server=${UPSTREAM_DNS}\ncache-size=1000\n' | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
+        printf \"nameserver 127.0.0.1\nnameserver \${GATEWAY}\n\" | sudo tee /etc/resolv.conf > /dev/null
+        printf \"server=\${GATEWAY}\ncache-size=1000\n\" | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
         printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
         sudo systemctl enable dnsmasq
         sudo systemctl restart dnsmasq
