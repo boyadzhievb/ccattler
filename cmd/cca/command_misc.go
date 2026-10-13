@@ -261,6 +261,7 @@ type tokenCommandConfig struct {
 	nodeID         string // optional: scope token to a specific node
 	tokenTTL       string // default "15m"
 	tokenValue     string // for revoke: the token prefix to match
+	quietOutput    bool   // output only the raw token value (for scripting)
 	storeBackend   string
 	etcdEndpoints  string
 	storeKeyPrefix string
@@ -310,6 +311,8 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--quiet", "-q":
+			parsedConfig.quietOutput = true
 		default:
 			if parsedConfig.action == "revoke" && parsedConfig.tokenValue == "" {
 				parsedConfig.tokenValue = currentArg
@@ -351,6 +354,10 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 		}
 
 		compositeTokenValue := joinToken.CompositeTokenString()
+		if parsedConfig.quietOutput {
+			fmt.Print(compositeTokenValue)
+			return
+		}
 		fmt.Printf("Token:   %s\n", compositeTokenValue)
 		fmt.Printf("Expires: %s (in %s)\n", joinToken.ExpiresAt.Format("2006-01-02 15:04:05"), parsedConfig.tokenTTL)
 		if parsedConfig.nodeID != "" {
@@ -447,6 +454,20 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 				parsedConfig.joinToken = currentArg
 			}
 			positionalIndex++
+		}
+	}
+
+	// Use standard system paths when they exist and no explicit override was given.
+	const systemPKIDirectory = "/etc/ccattler/pki"
+	systemCACertPath := systemPKIDirectory + "/ca.pem"
+	if parsedConfig.caCertPath == "" {
+		if _, statError := os.Stat(systemCACertPath); statError == nil {
+			parsedConfig.caCertPath = systemCACertPath
+		}
+	}
+	if parsedConfig.dataDirectory == ".ccattler" {
+		if _, statError := os.Stat(systemPKIDirectory); statError == nil {
+			parsedConfig.dataDirectory = systemPKIDirectory
 		}
 	}
 
