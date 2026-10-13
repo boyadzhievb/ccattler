@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M100 — Phase 100 User Authentication & `cca login`. M1–M100 complete. Gates A–I resolved.
+**Completed through:** M101 — Phase 101 Bearer Auth Chain Fix. M1–M101 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.29.0-beta <Badge type="tip" text="latest" /> {#v1-29-0-beta}
+## v1.30.0-beta <Badge type="tip" text="latest" /> {#v1-30-0-beta}
+
+**2026-10-13** — Bearer Auth Chain Fix.
+
+- **Bearer Auth Chain Fix** (M101) — `BearerTokenAuthenticator` now skips non-JWT tokens (hex local-tokens) instead of rejecting them, preventing authenticator chain short-circuit that blocked local-token auth when InternalJWT authenticator was active. Remove redundant secret master key SCP from E2E deploy script — `cca join` enrollment already distributes it.
+
+---
+
+## v1.29.0-beta {#v1-29-0-beta}
 
 **2026-10-13** — User Authentication & `cca login`.
 
