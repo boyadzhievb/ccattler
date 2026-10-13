@@ -107,11 +107,18 @@ func LoadCertificateAuthorityFromFiles(certPath, keyPath string) (*CertificateAu
 		return nil, fmt.Errorf("parse CA certificate: %w", parseError)
 	}
 
-	keyBlock, _ := pem.Decode(keyPEM)
-	if keyBlock == nil {
-		return nil, fmt.Errorf("no PEM block found in CA key file")
+	var keyBlock *pem.Block
+	remainingKeyPEM := keyPEM
+	for {
+		keyBlock, remainingKeyPEM = pem.Decode(remainingKeyPEM)
+		if keyBlock == nil {
+			return nil, fmt.Errorf("no private key PEM block found in CA key file")
+		}
+		if keyBlock.Type == "EC PRIVATE KEY" || keyBlock.Type == "PRIVATE KEY" {
+			break
+		}
 	}
-	parsedKey, parseError := x509.ParseECPrivateKey(keyBlock.Bytes)
+	parsedKey, parseError := parseECPrivateKeyBlock(keyBlock)
 	if parseError != nil {
 		return nil, fmt.Errorf("parse CA private key: %w", parseError)
 	}
@@ -121,6 +128,23 @@ func LoadCertificateAuthorityFromFiles(certPath, keyPath string) (*CertificateAu
 		caPrivateKey:     parsedKey,
 		caCertificatePEM: certPEM,
 	}, nil
+}
+
+// parseECPrivateKeyBlock extracts an ECDSA private key from a PEM block.
+// Handles both SEC 1 (EC PRIVATE KEY) and PKCS#8 (PRIVATE KEY) encodings.
+func parseECPrivateKeyBlock(keyBlock *pem.Block) (*ecdsa.PrivateKey, error) {
+	if ecKey, ecError := x509.ParseECPrivateKey(keyBlock.Bytes); ecError == nil {
+		return ecKey, nil
+	}
+	genericKey, pkcs8Error := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
+	if pkcs8Error != nil {
+		return nil, fmt.Errorf("key is neither SEC1 nor PKCS#8 format")
+	}
+	ecKey, isEC := genericKey.(*ecdsa.PrivateKey)
+	if !isEC {
+		return nil, fmt.Errorf("PKCS#8 key is not ECDSA")
+	}
+	return ecKey, nil
 }
 
 // CACertificatePEM returns the PEM-encoded CA certificate for distribution
