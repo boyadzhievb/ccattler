@@ -42,7 +42,7 @@
   copy:
     dest: /etc/dnsmasq.d/upstream.conf
     content: |
-      server={{ ansible_default_ipv4.gateway }}
+      server={{ ansible_host | regex_replace('\.\d+$', '.1') }}
       cache-size=1000
     mode: "0644"
   notify: restart dnsmasq
@@ -57,10 +57,10 @@
   notify: restart dnsmasq
   tags: [dns]
 
-- name: Point resolv.conf at dnsmasq and host gateway
+- name: Point resolv.conf at dnsmasq and private network gateway
   copy:
     dest: /etc/resolv.conf
-    content: "nameserver 127.0.0.1\nnameserver {{ ansible_default_ipv4.gateway }}\n"
+    content: "nameserver 127.0.0.1\nnameserver {{ ansible_host | regex_replace('\\.\\d+$', '.1') }}\n"
     mode: "0644"
   tags: [dns]
 
