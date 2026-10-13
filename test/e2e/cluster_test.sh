@@ -582,28 +582,6 @@ log "Image pre-pull complete"
 
 # ---- Step 4: Deploy selected workloads ----
 
-# Check if any workload needs secrets. If so, distribute the master key once.
-NEEDS_SECRET_KEY=false
-for workload_name in "${WORKLOAD_NAMES[@]}"; do
-    # shellcheck source=/dev/null
-    source "$WORKLOADS_DIR/${workload_name}.workload"
-    if [[ ${#WORKLOAD_SECRETS[@]} -gt 0 ]]; then
-        NEEDS_SECRET_KEY=true
-        break
-    fi
-done
-
-if [[ "$NEEDS_SECRET_KEY" == "true" ]]; then
-    log "Distributing secret master key to worker nodes..."
-    SECRET_KEY_CONTENT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/secret-master.key | base64")
-    for vm in "${VM_NAMES[@]}"; do
-        [[ "$vm" == *-ctrl ]] && continue
-        ssh_vm "$vm" "echo '${SECRET_KEY_CONTENT}' | base64 -d | sudo tee /etc/ccattler/secret-master.key > /dev/null && sudo chmod 600 /etc/ccattler/secret-master.key"
-        ssh_vm "$vm" "sudo systemctl restart cca-agent"
-    done
-    sleep 2
-fi
-
 CUMULATIVE_EXPECTED_CONTAINERS=0
 
 for workload_name in "${WORKLOAD_NAMES[@]}"; do
