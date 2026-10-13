@@ -550,11 +550,23 @@ log "All $EXPECTED_NODES nodes registered and alive"
 
 # ---- Step 3.5: Verify DNS resolution before image pulls ----
 log "Checking DNS resolution on all VMs..."
+DNS_MAX_ATTEMPTS=5
 for vm in "${VM_NAMES[@]}"; do
-    if ! ssh_vm "$vm" "dig +short registry-1.docker.io 2>/dev/null | grep -q ." 2>/dev/null; then
-        log "DNS broken on $vm — restarting dnsmasq..."
-        ssh_vm "$vm" "sudo systemctl restart dnsmasq"
-        sleep 2
+    dns_ok=false
+    for attempt in $(seq 1 "$DNS_MAX_ATTEMPTS"); do
+        if ssh_vm "$vm" "dig +short registry-1.docker.io 2>/dev/null | grep -q ." 2>/dev/null; then
+            dns_ok=true
+            break
+        fi
+        if [[ "$attempt" -eq 1 ]]; then
+            log "DNS broken on $vm — restarting dnsmasq..."
+            ssh_vm "$vm" "sudo systemctl restart dnsmasq"
+        fi
+        log "  DNS retry $attempt/$DNS_MAX_ATTEMPTS on $vm..."
+        sleep 3
+    done
+    if [[ "$dns_ok" != "true" ]]; then
+        fail "DNS resolution failed on $vm after $DNS_MAX_ATTEMPTS attempts"
     fi
 done
 log "DNS resolution OK"
@@ -570,10 +582,23 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     done
 done
 
+PULL_MAX_ATTEMPTS=3
 log "Pre-pulling ${#UNIQUE_IMAGES[@]} images for ${#WORKLOAD_NAMES[@]} workloads..."
+pull_image_with_retry() {
+    local vm="$1" image="$2"
+    for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
+        if ssh_vm "$vm" "sudo nerdctl pull -q $image" 2>/dev/null; then
+            return 0
+        fi
+        log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm"
+        sleep 5
+    done
+    log "WARNING: failed to pull $image on $vm after $PULL_MAX_ATTEMPTS attempts"
+    return 1
+}
 for vm in "${VM_NAMES[@]}"; do
     for image in "${!UNIQUE_IMAGES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl pull -q $image" &
+        pull_image_with_retry "$vm" "$image" &
     done
 done
 log "Waiting for all image pulls to complete..."
