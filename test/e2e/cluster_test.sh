@@ -382,31 +382,13 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
-# Replace systemd-resolved with dnsmasq — the stub resolver at 127.0.0.53
-# flakes under concurrent image-pull load in libvirt VMs. dnsmasq provides
-# a local caching resolver that handles concurrent queries reliably.
-# Each VM derives its upstream DNS from its own default gateway (the libvirt
-# bridge on the host), which is the only reliable resolver for VMs behind NAT.
-log "Installing dnsmasq on all VMs (upstream: VM default gateway)..."
+# Ensure the CCattler DNS zone is configured on each VM so *.cca.local resolves
+# to the control-plane DNS server. VMs are expected to have working DNS already.
+log "Configuring CCattler DNS zone on all VMs..."
 for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "
-        if ! command -v dnsmasq >/dev/null 2>&1; then
-            sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq dnsmasq >/dev/null
-        fi
-        GATEWAY=\$(ip route | awk '/default/ {print \$3}' | head -1)
-        if [ -z \"\$GATEWAY\" ]; then
-            echo 'FATAL: no default gateway found' >&2
-            exit 1
-        fi
-        echo \"VM \$(hostname): upstream DNS = \$GATEWAY\"
-        sudo systemctl disable --now systemd-resolved 2>/dev/null || true
-        sudo rm -f /etc/resolv.conf
-        printf \"nameserver 127.0.0.1\nnameserver \${GATEWAY}\n\" | sudo tee /etc/resolv.conf > /dev/null
-        printf \"server=\${GATEWAY}\ncache-size=1000\n\" | sudo tee /etc/dnsmasq.d/upstream.conf > /dev/null
         printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
-        sudo systemctl enable dnsmasq
         sudo systemctl restart dnsmasq
-        sudo sysctl -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 > /dev/null 2>&1 || true
     " &
 done
 wait
