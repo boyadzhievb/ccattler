@@ -382,17 +382,6 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
-# Ensure the CCattler DNS zone is configured on each VM so *.cca.local resolves
-# to the control-plane DNS server. VMs are expected to have working DNS already.
-log "Configuring CCattler DNS zone on all VMs..."
-for vm in "${VM_NAMES[@]}"; do
-    ssh_vm "$vm" "
-        printf 'server=/cca.local/${CTRL_IP}#15353\n' | sudo tee /etc/dnsmasq.d/ccattler-dns.conf > /dev/null
-        sudo systemctl restart dnsmasq
-    " &
-done
-wait
-
 # Check if cluster is already provisioned by testing for the cca binary.
 ALREADY_PROVISIONED=false
 if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
@@ -423,6 +412,8 @@ if [[ "$ALREADY_PROVISIONED" == "false" ]]; then
     log "Running Ansible deployment (first-time provisioning)..."
     ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
 else
+    log "Ensuring DNS configuration is up to date..."
+    ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --tags dns
     log "Updating binary and service files on existing VMs..."
     for vm in "${VM_NAMES[@]}"; do
         local_ip=""

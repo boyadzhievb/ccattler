@@ -36,6 +36,7 @@
     state: stopped
     enabled: false
   ignore_errors: true
+  tags: [dns]
 
 - name: Configure dnsmasq upstream servers
   copy:
@@ -45,6 +46,7 @@
       cache-size=1000
     mode: "0644"
   notify: restart dnsmasq
+  tags: [dns]
 
 - name: Forward service DNS to CCattler DNS server
   copy:
@@ -53,12 +55,14 @@
     mode: "0644"
   when: groups['controlplane'] is defined and groups['controlplane'] | length > 0
   notify: restart dnsmasq
+  tags: [dns]
 
 - name: Point resolv.conf at dnsmasq and host gateway
   copy:
     dest: /etc/resolv.conf
     content: "nameserver 127.0.0.1\nnameserver {{ ansible_default_ipv4.gateway }}\n"
     mode: "0644"
+  tags: [dns]
 
 - name: Disable IPv6 to prevent AAAA lookups on IPv4-only networks
   sysctl:
