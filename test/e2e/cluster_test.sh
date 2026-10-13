@@ -577,14 +577,16 @@ PULL_MAX_ATTEMPTS=3
 log "Pre-pulling ${#UNIQUE_IMAGES[@]} images for ${#WORKLOAD_NAMES[@]} workloads..."
 pull_image_with_retry() {
     local vm="$1" image="$2"
+    local pull_output
     for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
-        if ssh_vm "$vm" "sudo nerdctl pull -q $image" 2>/dev/null; then
+        if pull_output=$(ssh_vm "$vm" "sudo nerdctl pull $image" 2>&1); then
             return 0
         fi
-        log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm"
+        log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm — ${pull_output##*$'\n'}"
         sleep 5
     done
     log "WARNING: failed to pull $image on $vm after $PULL_MAX_ATTEMPTS attempts"
+    log "  Last error: $pull_output"
     return 1
 }
 for vm in "${VM_NAMES[@]}"; do
