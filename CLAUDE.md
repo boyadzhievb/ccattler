@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M98 — Phase 98 Connection Block & Credential Probe. M1–M98 complete. Gates A–I resolved.
+**Completed through:** M99 — Phase 99 JSON API Error Responses. M1–M99 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

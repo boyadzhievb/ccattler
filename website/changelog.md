@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.27.0-beta <Badge type="tip" text="latest" /> {#v1-27-0-beta}
+## v1.28.0-beta <Badge type="tip" text="latest" /> {#v1-28-0-beta}
+
+**2026-10-13** — JSON API Error Responses.
+
+- **JSON API Error Responses** (M99) — Replace all `http.Error()` (plain text) with `writeJSONError()` across API server (49), agent debug API (15), agent secret API (8), rate limiter (1), server auth (2) — every error response returns `Content-Type: application/json` with `{"error":"message"}`. CLI `checkAPIResponseStatus()` helper validates HTTP status before `json.Decode` at all 10 call sites, preventing `invalid character` decode crashes on auth/rate-limit errors.
+
+---
+
+## v1.27.0-beta {#v1-27-0-beta}
 
 **2026-10-13** — Connection Block & Credential Probe.
 
