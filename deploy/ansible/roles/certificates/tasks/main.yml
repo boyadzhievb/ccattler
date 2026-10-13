@@ -51,7 +51,7 @@
     -out {{ cca_cert_dir }}/node-key.pem
   args:
     creates: "{{ cca_cert_dir }}/node-key.pem"
-  when: "'workers' not in group_names"
+  when: "'controlplane' in group_names or 'etcd' in group_names"
 
 - name: Build SAN list based on node roles
   set_fact:
@@ -65,7 +65,7 @@
       {%- endif -%}
       {%- set _ = sans.append('IP:' + ansible_host) -%}
       {{ sans | join(',') }}
-  when: "'workers' not in group_names"
+  when: "'controlplane' in group_names or 'etcd' in group_names"
 
 - name: Generate CSR with SPIFFE SANs
   command: >
@@ -76,10 +76,10 @@
     -addext "subjectAltName={{ node_san_list }}"
   args:
     creates: "{{ cca_cert_dir }}/node.csr"
-  when: "'workers' not in group_names"
+  when: "'controlplane' in group_names or 'etcd' in group_names"
 
 - name: Sign node certificate
-  when: "'workers' not in group_names"
+  when: "'controlplane' in group_names or 'etcd' in group_names"
   block:
     - name: Temporarily place CA key for signing
       copy:
@@ -114,4 +114,4 @@
   loop:
     - "{{ cca_cert_dir }}/node-key.pem"
     - "{{ cca_cert_dir }}/node.pem"
-  when: "'workers' not in group_names"
+  when: "'controlplane' in group_names or 'etcd' in group_names"
