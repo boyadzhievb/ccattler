@@ -80,6 +80,9 @@ const (
 
 	// ScanAuthPolicies scans ABAC policy definitions under auth/policy/.
 	ScanAuthPolicies = PrefixAuth + "/policy/"
+
+	// ScanAuthUsers scans user account definitions under auth/user/.
+	ScanAuthUsers = PrefixAuth + "/user/"
 )
 
 // KeyDesiredService returns the store path for a service's root marker key.
@@ -1629,6 +1632,13 @@ func KeyAuthPolicyConditionOperator(policyName string, conditionIndex int) strin
 // Path: auth/policy/{policyName}/condition/{index}/value
 func KeyAuthPolicyConditionValue(policyName string, conditionIndex int) string {
 	return fmt.Sprintf("%s/policy/%s/condition/%d/value", PrefixAuth, policyName, conditionIndex)
+}
+
+// KeyAuthUser returns the store path for a user account definition.
+// The value is JSON with team, groups, and created timestamp.
+// Path: auth/user/{name}
+func KeyAuthUser(userName string) string {
+	return fmt.Sprintf("%s/user/%s", PrefixAuth, userName)
 }
 
 // ScanNetworkPolicies scans all network policy rules under the policy/network/ prefix.

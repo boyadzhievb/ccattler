@@ -92,6 +92,14 @@ type serverCommandConfig struct {
 	cloudProviderName string
 	// cloudRegion is the cloud region for the provider (e.g. "us-east-1").
 	cloudRegion string
+	// oidcIssuerURL is the external OIDC provider's issuer URL (e.g. "https://accounts.google.com").
+	// When set, enables external OIDC authentication in the authenticator chain.
+	oidcIssuerURL string
+	// oidcClientID is the OAuth2 client ID for the external OIDC provider.
+	oidcClientID string
+	// oidcClaimTeam is the JWT claim name used to extract team membership from
+	// external OIDC tokens (default: "team").
+	oidcClaimTeam string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -201,6 +209,21 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.cloudRegion = args[argIndex]
+			}
+		case "--oidc-issuer":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.oidcIssuerURL = args[argIndex]
+			}
+		case "--oidc-client-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.oidcClientID = args[argIndex]
+			}
+		case "--oidc-claim-team":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.oidcClaimTeam = args[argIndex]
 			}
 		}
 	}
@@ -355,18 +378,35 @@ func resolveServerTLSConfiguration(ctx context.Context, parsedConfig serverComma
 	return nil, nil, false
 }
 
+// resolveServerIssuerURL derives the OIDC issuer URL from the server's listen
+// address. This URL appears in JWT "iss" claims and OIDC discovery documents.
+func resolveServerIssuerURL(parsedConfig serverCommandConfig) string {
+	scheme := "http"
+	if parsedConfig.tlsEnabled {
+		scheme = "https"
+	}
+	listenHost := parsedConfig.listenAddress
+	if strings.HasPrefix(listenHost, "0.0.0.0:") {
+		hostname, _ := os.Hostname()
+		if hostname == "" {
+			hostname = "localhost"
+		}
+		listenHost = hostname + ":" + strings.TrimPrefix(listenHost, "0.0.0.0:")
+	}
+	return scheme + "://" + listenHost
+}
+
 // buildServerAuthenticatorAndBindings creates the authenticator chain and
-// binds the server's own identity to the cluster-admin RBAC role. In TLS mode,
-// mTLS client certificates are used for authentication and the server's leaf
-// certificate CN becomes the server principal. In non-TLS mode, a local token
-// file authenticates the caller and the fixed local-admin principal is bound.
+// binds the server's own identity to the cluster-admin RBAC role. The chain
+// order is: mTLS → ExternalOIDC (if configured) → InternalJWT → LocalToken.
 // Returns the authenticator chain and the server principal string (empty in
 // non-TLS mode).
-func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer) (*security.AuthenticatorChain, string) {
+func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
 	if serverTLSConfig != nil {
 		chainAuthenticators := []security.Authenticator{
 			security.NewMTLSAuthenticator(),
 		}
+		chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, parsedConfig)
 		localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
 		if tokenError == nil {
 			chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
@@ -392,18 +432,83 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 
 	// Non-TLS mode: local token authentication with a fixed local-admin
 	// principal bound to cluster-admin for frictionless local development.
+	// Bearer token authenticators are still added so `cca login` works locally.
+	chainAuthenticators := appendBearerTokenAuthenticators(nil, workloadTokenIssuer, parsedConfig)
 	localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
 	if tokenError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
-	authenticatorChain := security.NewAuthenticatorChain(localTokenAuthenticator)
+	chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
+	authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
 	rbacAuthorizer.BindRole(security.RoleBinding{
 		Principal: "user:local-admin",
 		RoleName:  "cluster-admin",
 	})
 	return authenticatorChain, ""
+}
+
+// appendBearerTokenAuthenticators adds external OIDC and internal JWT bearer
+// token authenticators to the chain. External OIDC is added only when
+// --oidc-issuer is configured. Internal JWT is always added when a workload
+// token issuer is available, so admin-issued user tokens are validated.
+func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) []security.Authenticator {
+	if parsedConfig.oidcIssuerURL != "" {
+		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
+		if externalOIDCAuthenticator != nil {
+			chainAuthenticators = append(chainAuthenticators, externalOIDCAuthenticator)
+			fmt.Printf("External OIDC authentication enabled (issuer: %s)\n", parsedConfig.oidcIssuerURL)
+		}
+	}
+	if workloadTokenIssuer != nil {
+		internalOIDCConfig := security.OIDCConfig{
+			Issuer:   workloadTokenIssuer.IssuerURL(),
+			Audience: "ccattler",
+			ClaimMapping: security.ClaimMapping{
+				PrincipalClaim: "sub",
+				TeamClaim:      "team",
+			},
+		}
+		internalJWTAuthenticator := security.NewBearerTokenAuthenticator(
+			security.NewOIDCAuthenticator(internalOIDCConfig, workloadTokenIssuer.PublicKey()),
+		)
+		chainAuthenticators = append(chainAuthenticators, internalJWTAuthenticator)
+	}
+	return chainAuthenticators
+}
+
+// buildExternalOIDCAuthenticator creates a BearerTokenAuthenticator for an
+// external OIDC provider by fetching the provider's JWKS. Returns nil if the
+// JWKS fetch fails (the server still starts, but external OIDC auth is
+// unavailable).
+func buildExternalOIDCAuthenticator(parsedConfig serverCommandConfig) *security.BearerTokenAuthenticator {
+	discoveryClient := security.NewOIDCDiscoveryClient(parsedConfig.oidcIssuerURL)
+	fetchError := discoveryClient.FetchAndCacheKeys()
+	if fetchError != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to fetch external OIDC keys from %s: %v\n", parsedConfig.oidcIssuerURL, fetchError)
+		return nil
+	}
+	firstPublicKey := discoveryClient.FirstPublicKey()
+	if firstPublicKey == nil {
+		fmt.Fprintf(os.Stderr, "warning: external OIDC provider %s has no usable keys\n", parsedConfig.oidcIssuerURL)
+		return nil
+	}
+	teamClaim := parsedConfig.oidcClaimTeam
+	if teamClaim == "" {
+		teamClaim = "team"
+	}
+	externalOIDCConfig := security.OIDCConfig{
+		Issuer:   parsedConfig.oidcIssuerURL,
+		Audience: parsedConfig.oidcClientID,
+		ClaimMapping: security.ClaimMapping{
+			PrincipalClaim: "sub",
+			TeamClaim:      teamClaim,
+		},
+	}
+	return security.NewBearerTokenAuthenticator(
+		security.NewOIDCAuthenticator(externalOIDCConfig, firstPublicKey),
+	)
 }
 
 // configureAndStartAPIServer sets up the full API server stack: TLS, authentication,
@@ -419,7 +524,16 @@ func configureAndStartAPIServer(
 	parsedConfig serverCommandConfig,
 ) {
 	serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled := resolveServerTLSConfiguration(ctx, parsedConfig)
-	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer)
+
+	issuerURL := resolveServerIssuerURL(parsedConfig)
+	workloadTokenIssuer, issuerError := security.NewWorkloadTokenIssuer(issuerURL)
+	if issuerError != nil {
+		fmt.Fprintf(os.Stderr, "error creating token issuer: %v\n", issuerError)
+		os.Exit(1)
+	}
+	userTokenIssuer := security.NewUserTokenIssuer(workloadTokenIssuer)
+
+	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer, workloadTokenIssuer, parsedConfig)
 
 	// API-layer capability authorizer. Maps builtin roles to capability grants.
 	apiAuthorizer := security.NewAPIAuthorizer()
@@ -432,6 +546,8 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetEventLog(eventLog)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
+	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)
+	statusAPIServer.SetUserTokenIssuer(userTokenIssuer)
 
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)

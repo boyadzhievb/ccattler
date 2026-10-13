@@ -361,24 +361,55 @@ var cachedAuthenticatedClient *http.Client
 var authenticatedClientOnce sync.Once
 
 // buildAuthenticatedHTTPClient returns an *http.Client that automatically injects
-// the local bearer token into every request. If the token file does not exist
-// (e.g., server uses mTLS), falls back to http.DefaultClient. The client is
-// built once and cached for the process lifetime.
+// a bearer token into every request. The token is resolved in priority order:
+// 1. $CCA_TOKEN environment variable (explicit override, for CI/scripts)
+// 2. ~/.ccattler/credentials.json token field (user login)
+// 3. /etc/ccattler/local-token or .ccattler/local-token (operator on node)
+// Falls back to http.DefaultClient when no token source is available.
 func buildAuthenticatedHTTPClient() *http.Client {
 	authenticatedClientOnce.Do(func() {
-		localToken, readError := security.ReadLocalToken()
-		if readError != nil {
+		resolvedToken := resolveAuthenticationToken()
+		if resolvedToken == "" {
 			cachedAuthenticatedClient = http.DefaultClient
 			return
 		}
 		cachedAuthenticatedClient = &http.Client{
 			Transport: &localTokenRoundTripper{
 				baseTransport: http.DefaultTransport,
-				bearerToken:   localToken,
+				bearerToken:   resolvedToken,
 			},
 		}
 	})
 	return cachedAuthenticatedClient
+}
+
+// resolveAuthenticationToken checks each credential source in priority order
+// and returns the first available token, or empty string if none found.
+func resolveAuthenticationToken() string {
+	if envToken := os.Getenv("CCA_TOKEN"); envToken != "" {
+		return envToken
+	}
+	credential, loadError := loadCredentialFile()
+	if loadError == nil && credential.Token != "" {
+		return credential.Token
+	}
+	localToken, readError := security.ReadLocalToken()
+	if readError == nil {
+		return localToken
+	}
+	return ""
+}
+
+// buildBearerTokenHTTPClient returns an *http.Client that injects the given
+// bearer token into every request's Authorization header. Used by `cca login`
+// to validate a token against the server before storing it.
+func buildBearerTokenHTTPClient(bearerToken string) *http.Client {
+	return &http.Client{
+		Transport: &localTokenRoundTripper{
+			baseTransport: http.DefaultTransport,
+			bearerToken:   bearerToken,
+		},
+	}
 }
 
 // runDemoStatusLoop prints cluster status at the given interval until the context

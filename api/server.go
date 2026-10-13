@@ -98,7 +98,8 @@ type Server struct {
 	factStore                  store.StateStore
 	eventLog                   *types.EventLog // eventLog is the optional event log for the /api/logs endpoint.
 	enrollmentService          *security.EnrollmentService
-	workloadTokenIssuer        *security.WorkloadTokenIssuer
+	workloadTokenIssuer        *security.WorkloadTokenIssuer // workloadTokenIssuer signs workload identity JWTs and serves OIDC discovery.
+	userTokenIssuer            *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
 	watchMultiplexer           *WatchMultiplexer
 	secretStore                *security.SecretStore        // secretStore handles encrypted secret CRUD.
 	policyGate                 *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
@@ -152,6 +153,12 @@ func (apiServer *Server) SetWorkloadTokenIssuer(workloadTokenIssuer *security.Wo
 	apiServer.workloadTokenIssuer = workloadTokenIssuer
 	apiServer.mux.HandleFunc("/.well-known/openid-configuration", apiServer.handleOIDCDiscovery)
 	apiServer.mux.HandleFunc("/oidc/jwks", apiServer.handleOIDCJWKS)
+}
+
+// SetUserTokenIssuer attaches the user token issuer to the server, enabling
+// the user management endpoints for minting user authentication JWTs.
+func (apiServer *Server) SetUserTokenIssuer(userTokenIssuer *security.UserTokenIssuer) {
+	apiServer.userTokenIssuer = userTokenIssuer
 }
 
 // SetServerMode configures the operational mode, which affects health check
@@ -345,6 +352,10 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
 	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))
 	apiServer.mux.HandleFunc("/api/node/enable", apiServer.instrumentedHandler("node-enable", apiServer.handleNodeEnable))
+	apiServer.mux.HandleFunc("/api/user", apiServer.instrumentedHandler("user", apiServer.handleUser))
+	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))
+	apiServer.mux.HandleFunc("/api/auth/whoami", apiServer.instrumentedHandler("whoami", apiServer.handleAuthWhoami))
+	apiServer.mux.HandleFunc("/api/auth/oidc-config", apiServer.instrumentedHandler("oidc-config", apiServer.handleAuthOIDCConfig))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
 	apiServer.mux.HandleFunc("/metrics", apiServer.handleMetrics)
 }
@@ -1548,4 +1559,237 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 		"ok":   "true",
 		"name": secretName,
 	})
+}
+
+// handleUser dispatches /api/user requests for user account CRUD.
+// POST creates a user, GET lists users, DELETE removes a user.
+func (apiServer *Server) handleUser(responseWriter http.ResponseWriter, request *http.Request) {
+	userName := request.URL.Query().Get("name")
+
+	switch request.Method {
+	case http.MethodPost:
+		apiServer.handleUserCreate(responseWriter, request, userName)
+	case http.MethodGet:
+		apiServer.handleUserList(responseWriter, request, userName)
+	case http.MethodDelete:
+		apiServer.handleUserDelete(responseWriter, request, userName)
+	default:
+		writeJSONError(responseWriter, "GET, POST, or DELETE", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleUserCreate stores a user account in the fact store.
+func (apiServer *Server) handleUserCreate(responseWriter http.ResponseWriter, request *http.Request, userName string) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
+		return
+	}
+	if userName == "" {
+		writeJSONError(responseWriter, "name parameter required", http.StatusBadRequest)
+		return
+	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
+	body, readError := io.ReadAll(request.Body)
+	if readError != nil {
+		writeJSONError(responseWriter, "read body", http.StatusBadRequest)
+		return
+	}
+	var userDefinition struct {
+		Team   string   `json:"team"`   // team name for the user account
+		Groups []string `json:"groups"` // group memberships for authorization
+	}
+	if len(body) > 0 {
+		if unmarshalError := json.Unmarshal(body, &userDefinition); unmarshalError != nil {
+			writeJSONError(responseWriter, "invalid JSON: "+unmarshalError.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	userRecord := map[string]interface{}{
+		"team":    userDefinition.Team,
+		"groups":  userDefinition.Groups,
+		"created": time.Now().UTC().Format(time.RFC3339),
+	}
+	userJSON, marshalError := json.Marshal(userRecord)
+	if marshalError != nil {
+		writeJSONError(responseWriter, "marshal user: "+marshalError.Error(), http.StatusInternalServerError)
+		return
+	}
+	requestContext := request.Context()
+	if _, putError := apiServer.factStore.Put(requestContext, types.KeyAuthUser(userName), userJSON); putError != nil {
+		writeJSONError(responseWriter, "store user: "+putError.Error(), http.StatusInternalServerError)
+		return
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"ok":   "true",
+		"user": userName,
+	})
+}
+
+// handleUserList returns a single user or all user accounts.
+func (apiServer *Server) handleUserList(responseWriter http.ResponseWriter, request *http.Request, userName string) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
+		return
+	}
+	requestContext := request.Context()
+	if userName != "" {
+		fact, getError := apiServer.factStore.Get(requestContext, types.KeyAuthUser(userName))
+		if getError != nil {
+			writeJSONError(responseWriter, "user not found: "+userName, http.StatusNotFound)
+			return
+		}
+		responseWriter.Header().Set("Content-Type", "application/json")
+		_, _ = responseWriter.Write(fact.Value) //nolint:gosec // fact.Value is JSON from the trusted fact store, not user input
+		return
+	}
+	facts, scanError := apiServer.factStore.Scan(requestContext, types.ScanAuthUsers)
+	if scanError != nil {
+		writeJSONError(responseWriter, "scan users: "+scanError.Error(), http.StatusInternalServerError)
+		return
+	}
+	userNames := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		extractedName := strings.TrimPrefix(fact.Key, types.ScanAuthUsers)
+		if extractedName != "" {
+			userNames = append(userNames, extractedName)
+		}
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"users": userNames})
+}
+
+// handleUserDelete removes a user account from the fact store.
+func (apiServer *Server) handleUserDelete(responseWriter http.ResponseWriter, request *http.Request, userName string) {
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
+		return
+	}
+	if userName == "" {
+		writeJSONError(responseWriter, "name parameter required", http.StatusBadRequest)
+		return
+	}
+	requestContext := request.Context()
+	if deleteError := apiServer.factStore.Delete(requestContext, types.KeyAuthUser(userName)); deleteError != nil {
+		writeJSONError(responseWriter, "delete user: "+deleteError.Error(), http.StatusInternalServerError)
+		return
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"ok":   "true",
+		"user": userName,
+	})
+}
+
+// handleUserToken mints a JWT for the named user. Requires cluster.admin.
+func (apiServer *Server) handleUserToken(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
+		return
+	}
+	if apiServer.userTokenIssuer == nil {
+		writeJSONError(responseWriter, "user token issuer not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
+	body, readError := io.ReadAll(request.Body)
+	if readError != nil {
+		writeJSONError(responseWriter, "read body", http.StatusBadRequest)
+		return
+	}
+	var tokenRequest struct {
+		Username string `json:"username"` // name of the user to mint a token for
+		TTL      string `json:"ttl"`      // token lifetime as a Go duration string (e.g. "8h")
+	}
+	if unmarshalError := json.Unmarshal(body, &tokenRequest); unmarshalError != nil {
+		writeJSONError(responseWriter, "invalid JSON: "+unmarshalError.Error(), http.StatusBadRequest)
+		return
+	}
+	if tokenRequest.Username == "" {
+		writeJSONError(responseWriter, "username required", http.StatusBadRequest)
+		return
+	}
+
+	requestContext := request.Context()
+	userFact, getError := apiServer.factStore.Get(requestContext, types.KeyAuthUser(tokenRequest.Username))
+	if getError != nil {
+		writeJSONError(responseWriter, "user not found: "+tokenRequest.Username, http.StatusNotFound)
+		return
+	}
+
+	var userRecord struct {
+		Team   string   `json:"team"`   // team membership from user account
+		Groups []string `json:"groups"` // group memberships from user account
+	}
+	_ = json.Unmarshal(userFact.Value, &userRecord)
+
+	tokenTTL := time.Duration(0)
+	if tokenRequest.TTL != "" {
+		parsedTTL, parseError := time.ParseDuration(tokenRequest.TTL)
+		if parseError != nil {
+			writeJSONError(responseWriter, "invalid ttl: "+parseError.Error(), http.StatusBadRequest)
+			return
+		}
+		tokenTTL = parsedTTL
+	}
+
+	tokenString, mintError := apiServer.userTokenIssuer.MintUserToken(
+		tokenRequest.Username, userRecord.Team, userRecord.Groups, tokenTTL)
+	if mintError != nil {
+		writeJSONError(responseWriter, "mint token: "+mintError.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
+		"token":    tokenString,
+		"username": tokenRequest.Username,
+	})
+}
+
+// handleAuthWhoami returns the identity of the currently authenticated user.
+func (apiServer *Server) handleAuthWhoami(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	principal := security.PrincipalFromContext(request.Context())
+	if principal == "" {
+		writeJSONError(responseWriter, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+	principalStruct := security.PrincipalStructFromContext(request.Context())
+	result := map[string]interface{}{
+		"principal": principal,
+	}
+	for _, attribute := range principalStruct.Attributes {
+		if attribute.Key == "team" && attribute.Value != "" {
+			result["team"] = attribute.Value
+		}
+	}
+	if len(principalStruct.Groups) > 0 {
+		result["groups"] = principalStruct.Groups
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(result)
+}
+
+// handleAuthOIDCConfig returns the server's OIDC login parameters for the CLI.
+// This endpoint is unauthenticated so `cca login` can discover the IdP before
+// the user has a token.
+func (apiServer *Server) handleAuthOIDCConfig(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	result := map[string]interface{}{ //nolint:gosec // these are API path strings, not credentials
+		"token_endpoint": "/api/user/token",
+		"whoami":         "/api/auth/whoami",
+	}
+	if apiServer.workloadTokenIssuer != nil {
+		result["issuer"] = apiServer.workloadTokenIssuer.IssuerURL()
+	}
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(result)
 }

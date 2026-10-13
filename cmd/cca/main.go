@@ -206,6 +206,18 @@ func main() {
 	case "readiness":
 		parsedReadinessConfig := parseReadinessCommandArgs(os.Args[2:])
 		executeReadinessCommand(parsedReadinessConfig)
+	case "user":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca user <create|token|list|delete> [args]")
+			os.Exit(1)
+		}
+		executeUserCommand(os.Args[2:])
+	case "login":
+		executeLoginCommand(os.Args[2:])
+	case "logout":
+		executeLogoutCommand()
+	case "whoami":
+		executeWhoamiCommand()
 	case "completion":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca completion <bash|zsh>")
@@ -241,6 +253,15 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  token list [flags]           list active join tokens")
 	fmt.Fprintln(os.Stderr, "  token revoke <token> [flags] revoke a join token")
 	fmt.Fprintln(os.Stderr, "  join <server> <token> [flags] enroll this node with the cluster")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "user authentication:")
+	fmt.Fprintln(os.Stderr, "  user create <name> [flags]   create a user account (--team, --group)")
+	fmt.Fprintln(os.Stderr, "  user token <name> [--ttl]    mint a JWT for the user")
+	fmt.Fprintln(os.Stderr, "  user list                    list all user accounts")
+	fmt.Fprintln(os.Stderr, "  user delete <name>           remove a user account")
+	fmt.Fprintln(os.Stderr, "  login <server> --token <jwt> store credentials for API access")
+	fmt.Fprintln(os.Stderr, "  logout                       remove stored credentials")
+	fmt.Fprintln(os.Stderr, "  whoami                       show current identity and token expiry")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "demos:")
 	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")
