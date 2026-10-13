@@ -625,7 +625,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
         "$WORKLOADS_DIR/${workload_name}.cca" "vagrant@${CTRL_IP}:/tmp/${workload_name}.cca"
 
-    ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca apply /tmp/${workload_name}.cca"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca apply /tmp/${workload_name}.cca"
 
     # Wait for containers to converge.
     CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS + WORKLOAD_EXPECTED_CONTAINERS))
