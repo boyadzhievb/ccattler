@@ -20,6 +20,32 @@
   when: not ccattler_binary.stat.exists
   run_once: true
 
+- name: Disable systemd-resolved
+  systemd:
+    name: systemd-resolved
+    state: stopped
+    enabled: false
+  ignore_errors: true
+  tags: [dns]
+
+- name: Bootstrap resolv.conf for apt (before dnsmasq is installed)
+  copy:
+    dest: /etc/resolv.conf
+    content: "nameserver {{ ansible_host | regex_replace('\\.\\d+$', '.1') }}\n"
+    mode: "0644"
+  tags: [dns]
+
+- name: Disable IPv6 to prevent AAAA lookups on IPv4-only networks
+  sysctl:
+    name: "{{ item }}"
+    value: "1"
+    sysctl_set: true
+    reload: true
+  loop:
+    - net.ipv6.conf.all.disable_ipv6
+    - net.ipv6.conf.default.disable_ipv6
+  ignore_errors: true
+
 - name: Install base packages
   apt:
     name:
@@ -29,14 +55,6 @@
       - dnsmasq
     state: present
     update_cache: true
-
-- name: Disable systemd-resolved
-  systemd:
-    name: systemd-resolved
-    state: stopped
-    enabled: false
-  ignore_errors: true
-  tags: [dns]
 
 - name: Configure dnsmasq upstream servers
   copy:
@@ -63,17 +81,6 @@
     content: "nameserver 127.0.0.1\nnameserver {{ ansible_host | regex_replace('\\.\\d+$', '.1') }}\n"
     mode: "0644"
   tags: [dns]
-
-- name: Disable IPv6 to prevent AAAA lookups on IPv4-only networks
-  sysctl:
-    name: "{{ item }}"
-    value: "1"
-    sysctl_set: true
-    reload: true
-  loop:
-    - net.ipv6.conf.all.disable_ipv6
-    - net.ipv6.conf.default.disable_ipv6
-  ignore_errors: true
 
 - name: Enable and start dnsmasq
   systemd:
