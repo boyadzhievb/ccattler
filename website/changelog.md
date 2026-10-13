@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.28.0-beta <Badge type="tip" text="latest" /> {#v1-28-0-beta}
+## v1.29.0-beta <Badge type="tip" text="latest" /> {#v1-29-0-beta}
+
+**2026-10-13** — User Authentication & `cca login`.
+
+- **User Authentication & `cca login`** (M100) — `UserTokenIssuer` mints ES256 JWTs for human users (wraps WorkloadTokenIssuer signing key), `OIDCDiscoveryClient` fetches and caches external IdP JWKS for external OIDC auth, server authenticator chain: mTLS → ExternalOIDC (--oidc-issuer) → InternalJWT → LocalToken, new server flags (--oidc-issuer, --oidc-client-id, --oidc-claim-team), user management API (POST/GET/DELETE /api/user, POST /api/user/token, GET /api/auth/whoami, GET /api/auth/oidc-config), admin CLI (cca user create/token/list/delete), login CLI (cca login/logout/whoami), credential loading priority ($CCA_TOKEN → ~/.ccattler/credentials.json → local-token), 8-hour default TTL
+
+---
+
+## v1.28.0-beta {#v1-28-0-beta}
 
 **2026-10-13** — JSON API Error Responses.
 
