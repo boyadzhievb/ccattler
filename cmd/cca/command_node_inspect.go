@@ -40,6 +40,7 @@ func discoverNodeDebugAddress(nodeID string) string {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var facts []struct {
 		Key   string `json:"key"`

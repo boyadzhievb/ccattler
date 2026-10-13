@@ -139,7 +139,7 @@ func (secretAPIServer *SecretAPIServer) RevokeInstanceToken(instanceID string) {
 func (secretAPIServer *SecretAPIServer) authenticateRequest(responseWriter http.ResponseWriter, request *http.Request) (tokenMetadata, bool) {
 	authorizationHeader := request.Header.Get("Authorization")
 	if !strings.HasPrefix(authorizationHeader, "Bearer ") {
-		http.Error(responseWriter, `{"error":"missing or invalid Authorization header"}`, http.StatusUnauthorized)
+		writeDebugJSONError(responseWriter, "missing or invalid Authorization header", http.StatusUnauthorized)
 		return tokenMetadata{}, false
 	}
 
@@ -154,7 +154,7 @@ func (secretAPIServer *SecretAPIServer) authenticateRequest(responseWriter http.
 		}
 	}
 
-	http.Error(responseWriter, `{"error":"invalid token"}`, http.StatusUnauthorized)
+	writeDebugJSONError(responseWriter, "invalid token", http.StatusUnauthorized)
 	return tokenMetadata{}, false
 }
 
@@ -164,7 +164,7 @@ func (secretAPIServer *SecretAPIServer) authenticateRequest(responseWriter http.
 // the response is JSON {"name","value"}.
 func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -175,18 +175,18 @@ func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.Resp
 
 	secretName := strings.TrimPrefix(request.URL.Path, "/v1/secrets/")
 	if secretName == "" {
-		http.Error(responseWriter, `{"error":"missing secret name"}`, http.StatusBadRequest)
+		writeDebugJSONError(responseWriter, "missing secret name", http.StatusBadRequest)
 		return
 	}
 
 	plaintext, _, retrievalError := secretAPIServer.secretProvider.GetSecretForService(request.Context(), callerMetadata.serviceName, secretName)
 	if retrievalError != nil {
 		if strings.Contains(retrievalError.Error(), "no grant") {
-			http.Error(responseWriter, `{"error":"forbidden"}`, http.StatusForbidden)
+			writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
 			return
 		}
 		logging.Default().Error("secret retrieval failed", "node", secretAPIServer.nodeID, "secret", secretName, "service", callerMetadata.serviceName, "error", retrievalError.Error())
-		http.Error(responseWriter, `{"error":"internal error"}`, http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, "internal error", http.StatusInternalServerError)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.Resp
 // returns the names of secrets the caller's service is granted access to.
 func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -224,7 +224,7 @@ func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.Re
 	grantedSecretNames, scanError := secretAPIServer.listGrantedSecrets(request.Context(), callerMetadata.serviceName)
 	if scanError != nil {
 		logging.Default().Error("list secrets failed", "node", secretAPIServer.nodeID, "service", callerMetadata.serviceName, "error", scanError.Error())
-		http.Error(responseWriter, `{"error":"internal error"}`, http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, "internal error", http.StatusInternalServerError)
 		return
 	}
 

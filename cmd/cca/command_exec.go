@@ -48,6 +48,7 @@ func executeExecCommand(instanceID string, commandParts []string) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var execResponse agent.DebugExecResponse
 	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&execResponse); decodeError != nil {
@@ -76,6 +77,7 @@ func discoverInstancePlacement(instanceID string) string {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var facts []struct {
 		Key   string `json:"key"`

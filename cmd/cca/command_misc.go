@@ -493,6 +493,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 

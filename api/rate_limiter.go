@@ -77,7 +77,7 @@ func (rateLimiter *RateLimiter) Wrap(inner http.Handler) http.Handler {
 		if !rateLimiter.allow(clientAddress) {
 			retryAfter := rateLimiter.retryAfterSeconds()
 			responseWriter.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			http.Error(responseWriter,
+			writeJSONError(responseWriter,
 				fmt.Sprintf("rate limit exceeded for %s — retry after %ds", clientAddress, retryAfter),
 				http.StatusTooManyRequests)
 			return

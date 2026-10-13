@@ -82,6 +82,7 @@ func executeEventsCommand(parsedConfig eventsCommandConfig) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var events []struct {
 		Timestamp time.Time `json:"timestamp"`
@@ -200,6 +201,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var facts []struct {
 		Key   string `json:"key"`
@@ -328,6 +330,7 @@ func executeTopCommand(resourceType string) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var clusterStatus api.ClusterStatus
 	if err := json.NewDecoder(httpResponse.Body).Decode(&clusterStatus); err != nil {
@@ -842,6 +845,7 @@ func executeGetCommand(resourceType string) {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var status api.ClusterStatus
 	if err := json.NewDecoder(httpResponse.Body).Decode(&status); err != nil {

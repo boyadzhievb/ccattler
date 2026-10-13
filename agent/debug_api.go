@@ -103,14 +103,14 @@ type DebugContainersResponse struct {
 // their current resource usage.
 func (debugServer *DebugServer) handleDebugContainers(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	ctx := request.Context()
 	workloads, listError := debugServer.runtimeAdapter.List(ctx)
 	if listError != nil {
-		http.Error(responseWriter, listError.Error(), http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, listError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -164,7 +164,7 @@ type DebugImagesResponse struct {
 // list when the runtime does not implement ImageLister (e.g. ProcessRuntime).
 func (debugServer *DebugServer) handleDebugImages(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -173,7 +173,7 @@ func (debugServer *DebugServer) handleDebugImages(responseWriter http.ResponseWr
 	if imageLister, supportsImages := debugServer.runtimeAdapter.(runtime.ImageLister); supportsImages {
 		imageList, listError := imageLister.ListImages(request.Context())
 		if listError != nil {
-			http.Error(responseWriter, listError.Error(), http.StatusInternalServerError)
+			writeDebugJSONError(responseWriter, listError.Error(), http.StatusInternalServerError)
 			return
 		}
 		images = make([]DebugImageEntry, 0, len(imageList))
@@ -211,14 +211,14 @@ type DebugStatsResponse struct {
 // workloads on this node.
 func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	ctx := request.Context()
 	workloads, listError := debugServer.runtimeAdapter.List(ctx)
 	if listError != nil {
-		http.Error(responseWriter, listError.Error(), http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, listError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -266,23 +266,23 @@ type DebugExecResponse struct {
 // Requires the runtime to implement ExecCapturer; returns 501 otherwise.
 func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var execRequest DebugExecRequest
 	if decodeError := json.NewDecoder(request.Body).Decode(&execRequest); decodeError != nil {
-		http.Error(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
+		writeDebugJSONError(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
 		return
 	}
 	if execRequest.InstanceID == "" || execRequest.Command == "" {
-		http.Error(responseWriter, "instance_id and command are required", http.StatusBadRequest)
+		writeDebugJSONError(responseWriter, "instance_id and command are required", http.StatusBadRequest)
 		return
 	}
 
 	execCapturer, supportsCapture := debugServer.runtimeAdapter.(runtime.ExecCapturer)
 	if !supportsCapture {
-		http.Error(responseWriter, "runtime does not support exec capture", http.StatusNotImplemented)
+		writeDebugJSONError(responseWriter, "runtime does not support exec capture", http.StatusNotImplemented)
 		return
 	}
 
@@ -318,23 +318,23 @@ type DebugImagePullResponse struct {
 // runtime to implement ImagePuller; returns 501 otherwise.
 func (debugServer *DebugServer) handleDebugImagePull(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var pullRequest DebugImagePullRequest
 	if decodeError := json.NewDecoder(request.Body).Decode(&pullRequest); decodeError != nil {
-		http.Error(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
+		writeDebugJSONError(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
 		return
 	}
 	if pullRequest.ImageReference == "" {
-		http.Error(responseWriter, "image is required", http.StatusBadRequest)
+		writeDebugJSONError(responseWriter, "image is required", http.StatusBadRequest)
 		return
 	}
 
 	imagePuller, supportsPull := debugServer.runtimeAdapter.(runtime.ImagePuller)
 	if !supportsPull {
-		http.Error(responseWriter, "runtime does not support image pull", http.StatusNotImplemented)
+		writeDebugJSONError(responseWriter, "runtime does not support image pull", http.StatusNotImplemented)
 		return
 	}
 
@@ -350,11 +350,19 @@ func (debugServer *DebugServer) handleDebugImagePull(responseWriter http.Respons
 	writeJSONResponse(responseWriter, response)
 }
 
+// writeDebugJSONError writes a JSON-formatted error response with the given
+// status code, ensuring the Content-Type is always application/json.
+func writeDebugJSONError(responseWriter http.ResponseWriter, message string, statusCode int) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(statusCode)
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": message})
+}
+
 // writeJSONResponse marshals the payload as JSON and writes it with the
 // appropriate Content-Type header. Sends a 500 on marshal failure.
 func writeJSONResponse(responseWriter http.ResponseWriter, payload interface{}) {
 	responseWriter.Header().Set("Content-Type", "application/json")
 	if encodeError := json.NewEncoder(responseWriter).Encode(payload); encodeError != nil {
-		http.Error(responseWriter, encodeError.Error(), http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, encodeError.Error(), http.StatusInternalServerError)
 	}
 }

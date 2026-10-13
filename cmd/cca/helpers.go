@@ -8,7 +8,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -41,6 +43,36 @@ func resolveStatusAPIListenAddress() string {
 		return envAddress
 	}
 	return "127.0.0.1:" + defaultStatusAPIPort
+}
+
+// writeServerJSONError writes a JSON-formatted error response with the given
+// status code. Used by server-side handlers in the cmd package.
+func writeServerJSONError(responseWriter http.ResponseWriter, message string, statusCode int) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(statusCode)
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": message})
+}
+
+// checkAPIResponseStatus verifies the HTTP response has a 2xx status code.
+// On non-2xx, it reads the body, extracts the error message from JSON if
+// possible, prints the error to stderr, and exits the process.
+func checkAPIResponseStatus(httpResponse *http.Response) {
+	if httpResponse.StatusCode >= 200 && httpResponse.StatusCode < 300 {
+		return
+	}
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	var errorResponse struct {
+		Error string `json:"error"`
+	}
+	switch {
+	case json.Unmarshal(responseBody, &errorResponse) == nil && errorResponse.Error != "":
+		fmt.Fprintf(os.Stderr, "API error: %s\n", errorResponse.Error)
+	case len(responseBody) > 0:
+		fmt.Fprintf(os.Stderr, "API error (HTTP %d): %s\n", httpResponse.StatusCode, strings.TrimSpace(string(responseBody)))
+	default:
+		fmt.Fprintf(os.Stderr, "API error: HTTP %d\n", httpResponse.StatusCode)
+	}
+	os.Exit(1)
 }
 
 // configureLogger sets up the process-wide structured logger from CLI flags.

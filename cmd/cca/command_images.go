@@ -110,6 +110,11 @@ func executeImagesPullCommand(imageReference string, nodeID string) {
 			continue
 		}
 
+		if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
+			_ = httpResponse.Body.Close()
+			fmt.Printf("FAILED (HTTP %d)\n", httpResponse.StatusCode)
+			continue
+		}
 		var pullResponse agent.DebugImagePullResponse
 		decodeError := json.NewDecoder(httpResponse.Body).Decode(&pullResponse)
 		_ = httpResponse.Body.Close()
@@ -142,6 +147,7 @@ func discoverNodeDebugAddresses(filterNodeID string) map[string]string {
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	var facts []struct {
 		Key   string `json:"key"`

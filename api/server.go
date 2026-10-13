@@ -251,6 +251,15 @@ func (apiServer *Server) Handler() http.Handler {
 	return tracing.Middleware(apiServer.rateLimiter.Wrap(handler))
 }
 
+// writeJSONError writes a JSON error response with the given status code.
+// All API errors use this instead of http.Error to ensure clients can always
+// JSON-decode the response body.
+func writeJSONError(responseWriter http.ResponseWriter, message string, statusCode int) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(statusCode)
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": message})
+}
+
 // requirePrincipalMiddleware rejects requests that lack a principal in context
 // with 401 Unauthorized. Exempt paths (/healthz, /metrics, /api/enroll) are
 // passed through without checking.
@@ -263,7 +272,7 @@ func requirePrincipalMiddleware(wrappedHandler http.Handler) http.Handler {
 		}
 		principal := security.PrincipalFromContext(request.Context())
 		if principal == "" {
-			http.Error(responseWriter, "authentication required", http.StatusUnauthorized)
+			writeJSONError(responseWriter, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		wrappedHandler.ServeHTTP(responseWriter, request)
@@ -285,7 +294,7 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 		}
 		result, authError := chain.Authenticate(request)
 		if authError != nil {
-			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			writeJSONError(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
 			return
 		}
 		if result != nil {
@@ -313,7 +322,7 @@ func (apiServer *Server) requireCapability(responseWriter http.ResponseWriter, r
 	}
 	principal := security.PrincipalStructFromContext(request.Context())
 	if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, capability, scope, nil); authError != nil {
-		http.Error(responseWriter, "forbidden: "+authError.Error(), http.StatusForbidden)
+		writeJSONError(responseWriter, "forbidden: "+authError.Error(), http.StatusForbidden)
 		return false
 	}
 	return true
@@ -464,7 +473,7 @@ type factResponse struct {
 // GET /api/state?key=... to read a single fact.
 func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -476,12 +485,12 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 
 	if singleKey := request.URL.Query().Get("key"); singleKey != "" {
 		if isSensitivePrefix(singleKey) {
-			http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+			writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
 			return
 		}
 		fact, err := apiServer.factStore.Get(requestContext, singleKey)
 		if err != nil {
-			http.Error(responseWriter, fmt.Sprintf(`{"error":"key not found: %s"}`, singleKey), http.StatusNotFound)
+			writeJSONError(responseWriter, fmt.Sprintf("key not found: %s", singleKey), http.StatusNotFound)
 			return
 		}
 		_ = json.NewEncoder(responseWriter).Encode(factResponse{
@@ -492,19 +501,19 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
-		http.Error(responseWriter, `{"error":"prefix or key parameter required"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "prefix or key parameter required", http.StatusBadRequest)
 		return
 	}
 
 	if isSensitivePrefix(prefix) {
-		http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
 		return
 	}
 
 	statePrincipal := security.PrincipalStructFromContext(requestContext)
 	facts, err := tenant.ScopedScan(requestContext, apiServer.factStore, prefix, statePrincipal)
 	if err != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":"%s"}`, err), http.StatusInternalServerError)
+		writeJSONError(responseWriter, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -534,7 +543,7 @@ type applyResponse struct {
 // field (Content-Type: application/json).
 func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadCreate, security.ScopeCluster) {
@@ -618,7 +627,7 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 // Each store change under the prefix is sent as a JSON-encoded SSE data line.
 func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -626,7 +635,7 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	}
 
 	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
-		http.Error(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
 		return
 	}
 	apiServer.activeWatchConnectionCount.Add(1)
@@ -634,18 +643,18 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
-		http.Error(responseWriter, "prefix parameter required", http.StatusBadRequest)
+		writeJSONError(responseWriter, "prefix parameter required", http.StatusBadRequest)
 		return
 	}
 
 	if isSensitivePrefix(prefix) {
-		http.Error(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
 		return
 	}
 
 	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
-		http.Error(responseWriter, "streaming not supported", http.StatusInternalServerError)
+		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
@@ -661,7 +670,7 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 		eventChannel, watchError = apiServer.factStore.Watch(watchContext, prefix, store.WatchOption{Prefix: true})
 	}
 	if watchError != nil {
-		http.Error(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
+		writeJSONError(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -714,7 +723,7 @@ type scaleRequest struct {
 // instance count facts.
 func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityScalingWrite, security.ScopeCluster) {
@@ -776,7 +785,7 @@ type nodeDisableEnableRequest struct {
 // node. It sets the node state to draining and records drain metadata.
 func (apiServer *Server) handleNodeDrain(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
@@ -813,7 +822,7 @@ func (apiServer *Server) handleNodeDrain(responseWriter http.ResponseWriter, req
 // placements while keeping existing workloads running.
 func (apiServer *Server) handleNodeDisable(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
@@ -852,7 +861,7 @@ func (apiServer *Server) handleNodeDisable(responseWriter http.ResponseWriter, r
 // to the alive state, making it eligible for new placements again.
 func (apiServer *Server) handleNodeEnable(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityNodeManage, security.ScopeCluster) {
@@ -912,7 +921,7 @@ func (apiServer *Server) writeNodeDrainFacts(requestContext context.Context, nod
 // handleStatus serves GET /api/status returning the full cluster status as JSON.
 func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -955,7 +964,7 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 // by event kind), and limit (maximum number of events, default 50).
 func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -994,7 +1003,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	}
 
 	if queryError != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":"%s"}`, queryError), http.StatusInternalServerError)
+		writeJSONError(responseWriter, queryError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1010,7 +1019,7 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 // denied=true to show only DENY decisions.
 func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -1054,7 +1063,7 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 // Query parameters: type (service, node, instance) and name (resource identifier).
 func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -1108,7 +1117,7 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 // parameter to filter events whose target contains the service name.
 func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -1116,7 +1125,7 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 	}
 
 	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
-		http.Error(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
 		return
 	}
 	apiServer.activeWatchConnectionCount.Add(1)
@@ -1124,7 +1133,7 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 
 	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
-		http.Error(responseWriter, "streaming not supported", http.StatusInternalServerError)
+		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 
@@ -1143,7 +1152,7 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 		eventChannel, watchError = apiServer.factStore.Watch(watchContext, eventPrefix, store.WatchOption{Prefix: true})
 	}
 	if watchError != nil {
-		http.Error(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
+		writeJSONError(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1185,7 +1194,7 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 // writing anything to the store.
 func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
@@ -1256,7 +1265,7 @@ type enrollmentResponseBody struct {
 // certificate, binds the node-agent RBAC role, and returns the credentials.
 func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
@@ -1317,7 +1326,7 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 // handleMetric serves POST /api/metric to inject a simulated metric value.
 func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
@@ -1328,11 +1337,11 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 	metricName := request.URL.Query().Get("metric")
 	metricValue := request.URL.Query().Get("value")
 	if serviceName == "" || metricName == "" || metricValue == "" {
-		http.Error(responseWriter, `{"error":"service, metric, and value required"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "service, metric, and value required", http.StatusBadRequest)
 		return
 	}
 	if validateError := types.ValidateResourceName(serviceName); validateError != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, validateError.Error()), http.StatusBadRequest)
+		writeJSONError(responseWriter, validateError.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1356,7 +1365,7 @@ func (apiServer *Server) handleMetric(responseWriter http.ResponseWriter, reques
 // (webhooks, CI pipelines, cron jobs) to wake a scaled-to-zero service.
 func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		http.Error(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
@@ -1365,11 +1374,11 @@ func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, requ
 
 	serviceName := request.URL.Query().Get("service")
 	if serviceName == "" {
-		http.Error(responseWriter, `{"error":"service parameter required"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "service parameter required", http.StatusBadRequest)
 		return
 	}
 	if validateError := types.ValidateResourceName(serviceName); validateError != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, validateError.Error()), http.StatusBadRequest)
+		writeJSONError(responseWriter, validateError.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -1392,7 +1401,7 @@ func (apiServer *Server) handleActivate(responseWriter http.ResponseWriter, requ
 // the JWKS endpoint for verifying workload identity tokens.
 func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1418,7 +1427,7 @@ func isSensitivePrefix(prefix string) bool {
 // signatures during credential exchange.
 func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
-		http.Error(responseWriter, "GET only", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
 
@@ -1434,7 +1443,7 @@ func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, requ
 // GET /api/secret (no name) lists all secret names.
 func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, request *http.Request) {
 	if apiServer.secretStore == nil {
-		http.Error(responseWriter, `{"error":"secret store not configured"}`, http.StatusServiceUnavailable)
+		writeJSONError(responseWriter, "secret store not configured", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -1448,7 +1457,7 @@ func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, reques
 	case http.MethodDelete:
 		apiServer.handleSecretDelete(responseWriter, request, secretName)
 	default:
-		http.Error(responseWriter, "GET, POST, or DELETE", http.StatusMethodNotAllowed)
+		writeJSONError(responseWriter, "GET, POST, or DELETE", http.StatusMethodNotAllowed)
 	}
 }
 
@@ -1461,7 +1470,7 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 		}
 		secretNames, listErr := apiServer.secretStore.ListSecrets(requestContext)
 		if listErr != nil {
-			http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, listErr.Error()), http.StatusInternalServerError)
+			writeJSONError(responseWriter, listErr.Error(), http.StatusInternalServerError)
 			return
 		}
 		responseWriter.Header().Set("Content-Type", "application/json")
@@ -1474,7 +1483,7 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 	}
 	plaintext, getErr := apiServer.secretStore.GetSecret(requestContext, secretName)
 	if getErr != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, getErr.Error()), http.StatusNotFound)
+		writeJSONError(responseWriter, getErr.Error(), http.StatusNotFound)
 		return
 	}
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -1491,23 +1500,23 @@ func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, req
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 	if secretName == "" {
-		http.Error(responseWriter, `{"error":"name parameter required"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "name parameter required", http.StatusBadRequest)
 		return
 	}
 
 	body, readErr := io.ReadAll(request.Body)
 	if readErr != nil {
-		http.Error(responseWriter, `{"error":"read body"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "read body", http.StatusBadRequest)
 		return
 	}
 	if len(body) == 0 {
-		http.Error(responseWriter, `{"error":"empty body"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "empty body", http.StatusBadRequest)
 		return
 	}
 
 	requestContext := request.Context()
 	if putErr := apiServer.secretStore.PutSecret(requestContext, secretName, body); putErr != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, putErr.Error()), http.StatusInternalServerError)
+		writeJSONError(responseWriter, putErr.Error(), http.StatusInternalServerError)
 		return
 	}
 
@@ -1524,13 +1533,13 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 		return
 	}
 	if secretName == "" {
-		http.Error(responseWriter, `{"error":"name parameter required"}`, http.StatusBadRequest)
+		writeJSONError(responseWriter, "name parameter required", http.StatusBadRequest)
 		return
 	}
 
 	requestContext := request.Context()
 	if deleteErr := apiServer.secretStore.DeleteSecret(requestContext, secretName); deleteErr != nil {
-		http.Error(responseWriter, fmt.Sprintf(`{"error":%q}`, deleteErr.Error()), http.StatusInternalServerError)
+		writeJSONError(responseWriter, deleteErr.Error(), http.StatusInternalServerError)
 		return
 	}
 

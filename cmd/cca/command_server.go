@@ -731,7 +731,7 @@ func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 			return
 		}
 		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
-			http.Error(responseWriter, "client certificate required", http.StatusUnauthorized)
+			writeServerJSONError(responseWriter, "client certificate required", http.StatusUnauthorized)
 			return
 		}
 		wrappedHandler.ServeHTTP(responseWriter, request)
@@ -788,7 +788,7 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
 		requestContext, authError := authenticateLegacyRequest(request)
 		if authError != nil {
-			http.Error(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			writeServerJSONError(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
 			return
 		}
 		acceptHeader := request.Header.Get("Accept")
