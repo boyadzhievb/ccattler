@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.26.0-beta <Badge type="tip" text="latest" /> {#v1-26-0-beta}
+## v1.27.0-beta <Badge type="tip" text="latest" /> {#v1-27-0-beta}
+
+**2026-10-13** — Connection Block & Credential Probe.
+
+- **Connection Block & Credential Probe** (M98) — Top-level `connection` DSL block (driver, user, secret, host, port, database) compiles to JSON facts, service-level `connection` reference mounts assembled URL as secret file, credential probe init step TCP-dials named connection before container start (catches password mismatches vs stale persistent volumes), agent `materializeConnectionFiles` + `assembleConnectionURL` + `buildConnectionURL`, `parseConnectionJSON` for fact-to-struct, Airflow `_CMD` fix (wrap in `bash -c` for `shlex.split` compatibility), design doc, demo recording guide, 13 new parser/compiler tests
+
+---
+
+## v1.26.0-beta {#v1-26-0-beta}
 
 **2026-10-12** — dnsmasq Domain-Scoped Forwarding.
 
