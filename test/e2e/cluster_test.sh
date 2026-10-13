@@ -382,9 +382,10 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
-# Check if cluster is already provisioned by testing for the cca binary.
+# Check if cluster is already provisioned by testing for the cca binary and certs.
 ALREADY_PROVISIONED=false
-if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
+if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
+   ssh_vm "${VM_PREFIX}-ctrl" "test -f /etc/ccattler/pki/node.pem" 2>/dev/null; then
     ALREADY_PROVISIONED=true
     log "VMs already provisioned — skipping Ansible, cleaning previous workloads..."
     log "Stopping agents to prevent reconciliation races..."
