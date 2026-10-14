@@ -9,14 +9,6 @@ All notable releases of CCattler are documented here.
 
 ---
 
-## v1.33.0-beta {#v1-33-0-beta}
-
-**2026-10-14** — Connection Block Auto-Grant.
-
-- **Connection Block Auto-Grant** (M104) — Compiler auto-generates `desired/service/{name}/secret/{secret}` grant facts when a service references a connection that uses a secret, eliminating the need for redundant explicit `secret` declarations. Explicit secret mounts take precedence over auto-grants. Low-level connection URL assembly flow documented in `design/runtime-invariant-flows.md`. 3 new compiler tests.
-
----
-
 ## v1.32.0-beta {#v1-32-0-beta}
 
 **2026-10-14** — Airflow Connection Block Fix.
