@@ -26,6 +26,42 @@ func splitFactKeyIntoEntityAndSuffix(factKey string, prefix string) (string, str
 	return pathParts[0], pathParts[1], true
 }
 
+// splitServiceFactKey splits a fact key under a service scan prefix into a
+// service name and field suffix. Unlike splitFactKeyIntoEntityAndSuffix, this
+// handles hierarchical service names (e.g. "payments/checkout") by using a
+// prebuilt set of known service names to determine where the name ends and
+// the field suffix begins.
+func splitServiceFactKey(factKey string, prefix string, knownServiceNames map[string]bool) (string, string, bool) {
+	relativePath := strings.TrimPrefix(factKey, prefix)
+	for serviceName := range knownServiceNames {
+		if strings.HasPrefix(relativePath, serviceName+"/") {
+			fieldSuffix := relativePath[len(serviceName)+1:]
+			return serviceName, fieldSuffix, true
+		}
+		if relativePath == serviceName {
+			return "", "", false
+		}
+	}
+	pathParts := strings.SplitN(relativePath, "/", 2)
+	if len(pathParts) != 2 {
+		return "", "", false
+	}
+	return pathParts[0], pathParts[1], true
+}
+
+// discoverServiceNamesFromFacts builds a set of service names from root marker
+// facts (empty value) under the given service scan prefix.
+func discoverServiceNamesFromFacts(facts []store.Fact, prefix string) map[string]bool {
+	serviceNames := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, prefix) {
+		if len(fact.Value) == 0 {
+			serviceName := strings.TrimPrefix(fact.Key, prefix)
+			serviceNames[serviceName] = true
+		}
+	}
+	return serviceNames
+}
+
 // collectStringValuesBySuffix scans all facts under the given prefix, splits
 // each key into entity name and suffix via splitFactKeyIntoEntityAndSuffix,
 // and collects the string value for entries whose suffix matches exactly.

@@ -159,21 +159,20 @@ func filterInstancesByServiceNames(allInstances []types.Instance, visibleService
 
 // discoverSortedServiceNamesFromStore scans the desired-services prefix in the
 // fact store and returns a deduplicated, alphabetically sorted list of service
-// names.
+// names. Only root marker keys (empty value) are collected, which correctly
+// handles hierarchical names like "payments/checkout".
 func discoverSortedServiceNamesFromStore(ctx context.Context, factStore store.StateStore) []string {
 	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredServices)
-	uniqueServiceNames := make(map[string]bool)
+	var serviceNames []string
 	for _, fact := range desiredFacts {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
-		serviceName := strings.SplitN(relativePath, "/", 2)[0]
-		uniqueServiceNames[serviceName] = true
+		if string(fact.Value) != "" {
+			continue
+		}
+		serviceName := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		serviceNames = append(serviceNames, serviceName)
 	}
-	sortedServiceNames := make([]string, 0, len(uniqueServiceNames))
-	for serviceName := range uniqueServiceNames {
-		sortedServiceNames = append(sortedServiceNames, serviceName)
-	}
-	sort.Strings(sortedServiceNames)
-	return sortedServiceNames
+	sort.Strings(serviceNames)
+	return serviceNames
 }
 
 // collectServiceStatusFromStore reads each service definition and counts
