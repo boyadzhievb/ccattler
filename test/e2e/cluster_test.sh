@@ -55,6 +55,8 @@ set -euo pipefail
 if [[ -x /usr/local/go/bin/go ]]; then
     export PATH="/usr/local/go/bin:$PATH"
 fi
+# Allow Go to auto-download the toolchain version required by go.mod.
+export GOTOOLCHAIN=auto
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
