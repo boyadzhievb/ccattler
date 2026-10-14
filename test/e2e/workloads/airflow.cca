@@ -4,9 +4,30 @@
 # inter-service networking (webserver → postgres, worker → redis),
 # and secret mounts for database and admin credentials.
 #
+# The connection block assembles the DB URL at runtime from structured
+# fields + secret. Airflow reads it via _CMD = "cat /run/connections/...".
+#
 # Before deploying:
 #   cca secret set airflow.db-password <password>
 #   cca secret set airflow.admin-password <password>
+
+connection airflow-db {
+    driver "postgresql+psycopg2"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}
+
+connection airflow-celery-backend {
+    driver "db+postgresql"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}
 
 service metadata-db {
     image postgres:16
@@ -51,17 +72,18 @@ service webserver {
         cpu 500m
         memory 1024Mi
     }
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env _AIRFLOW_DB_MIGRATE "true"
         env _AIRFLOW_WWW_USER_CREATE "true"
         env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     secret airflow.admin-password "/run/secrets/admin-password"
     health {
         tcp
@@ -77,13 +99,14 @@ service scheduler {
         cpu 500m
         memory 1024Mi
     }
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     health {
         tcp
         every 30s
@@ -99,13 +122,14 @@ service worker {
         cpu 1000m
         memory 2048Mi
     }
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     health {
         tcp
         every 15s

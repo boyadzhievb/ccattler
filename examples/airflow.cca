@@ -1,8 +1,11 @@
 # Apache Airflow: CeleryExecutor stack with PostgreSQL + Redis.
 #
 # Deploys a production-style Airflow cluster: metadata database, message
-# broker, webserver, scheduler, and workers. Mirrors the official Helm
-# chart architecture (https://airflow.apache.org/docs/helm-chart/stable/).
+# broker, webserver, scheduler, and workers. Mirrors the official Docker
+# Compose architecture (https://airflow.apache.org/docs/apache-airflow/stable/howto/docker-compose/).
+#
+# Connection blocks define structured DB URLs that the agent assembles at
+# runtime from secret + fields. Airflow reads them via _CMD = "cat ...".
 #
 # Before deploying, create the required secrets:
 #   cca secret set airflow.db-password <database-password>
@@ -18,6 +21,24 @@
 #   webserver       Airflow webserver — UI + REST API (runs db migrate on start)
 #   scheduler       Airflow scheduler — DAG parsing + task scheduling
 #   worker          Airflow Celery worker — task execution (scalable)
+
+connection airflow-db {
+    driver "postgresql+psycopg2"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}
+
+connection airflow-celery-backend {
+    driver "db+postgresql"
+    user "airflow"
+    secret airflow.db-password
+    host "metadata-db"
+    port 5432
+    database "airflow"
+}
 
 volume metadata-db-data {
     size 20Gi
@@ -86,11 +107,13 @@ service webserver {
     }
     volume dags /opt/airflow/dags
     volume logs /opt/airflow/logs
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__WEBSERVER__EXPOSE_CONFIG "false"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
@@ -99,7 +122,6 @@ service webserver {
         env _AIRFLOW_WWW_USER_CREATE "true"
         env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     secret airflow.admin-password "/run/secrets/admin-password"
     secret fernet-key "/opt/airflow/fernet-key"
     secret webserver-secret-key "/opt/airflow/webserver-secret-key"
@@ -119,15 +141,16 @@ service scheduler {
     }
     volume dags /opt/airflow/dags
     volume logs /opt/airflow/logs
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     secret fernet-key "/opt/airflow/fernet-key"
     init {
         exec "airflow db check"
@@ -151,15 +174,16 @@ service worker {
     }
     volume dags /opt/airflow/dags
     volume logs /opt/airflow/logs
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
         env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "bash -c 'echo postgresql+psycopg2://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
     }
-    secret airflow.db-password "/run/secrets/db-password"
     secret fernet-key "/opt/airflow/fernet-key"
     init {
         exec "airflow db check"
