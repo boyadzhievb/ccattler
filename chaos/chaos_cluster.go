@@ -79,6 +79,9 @@ type SimulatedChaosCluster struct {
 	// maxCreationsPerCycle overrides the InstanceController's per-cycle
 	// creation budget. Zero uses the controller's default.
 	maxCreationsPerCycle int
+	// maxReplacementsPerCycle overrides the FailureController's per-cycle
+	// replacement budget. Zero uses the controller's default.
+	maxReplacementsPerCycle int
 	// mutex guards concurrent access to cluster state.
 	mutex sync.Mutex
 }
@@ -135,6 +138,13 @@ func (simulatedCluster *SimulatedChaosCluster) SetMaxInputKeyGuards(maxGuards in
 // convergence throughput at the cost of larger transactions.
 func (simulatedCluster *SimulatedChaosCluster) SetMaxCreationsPerCycle(maxCreations int) {
 	simulatedCluster.maxCreationsPerCycle = maxCreations
+}
+
+// SetMaxReplacementsPerCycle overrides the FailureController's per-cycle
+// replacement budget. Must be called before Start. Higher values increase
+// failure recovery throughput at the cost of larger transactions.
+func (simulatedCluster *SimulatedChaosCluster) SetMaxReplacementsPerCycle(maxReplacements int) {
+	simulatedCluster.maxReplacementsPerCycle = maxReplacements
 }
 
 // SetLeaseTimeout overrides the default node failure lease timeout. Must be
@@ -418,6 +428,9 @@ func (simulatedCluster *SimulatedChaosCluster) startControllers(ctx context.Cont
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
+	if simulatedCluster.maxReplacementsPerCycle > 0 {
+		failureController.MaxReplacementsPerCycle = simulatedCluster.maxReplacementsPerCycle
+	}
 	nodeFailureController := controllers.NewNodeFailureController()
 	nodeFailureController.LeaseTimeout = simulatedCluster.leaseTimeout
 	networkController := controllers.NewNetworkController()

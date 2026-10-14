@@ -20,16 +20,16 @@ const DefaultDrainGracePeriod = 5 * time.Second
 
 // defaultMaxReplacementsPerCycle limits how many failed instances the
 // FailureController replaces in a single reconciliation cycle. Each
-// replacement emits 4 store operations, so 10 replacements = 40 ops —
-// safely under the 128-op etcd transaction limit. Remaining failures
-// converge in subsequent cycles via watch re-trigger.
-const defaultMaxReplacementsPerCycle = 10
+// replacement emits 4 store operations, so 14 replacements = 56 ops —
+// near the 58-change hard cap. Remaining failures converge in
+// subsequent cycles via watch re-trigger.
+const defaultMaxReplacementsPerCycle = 14
 
 // defaultMaxDrainsPerCycle limits how many instances the FailureController
 // begins draining in a single reconciliation cycle. Each drain emits 2
 // store operations (readiness + drain_since), so 10 drains = 20 ops.
-// Combined with max replacements (40 ops), the total stays within the
-// runner's 60-change transaction budget.
+// The maxFailureControllerChangesPerCycle hard cap truncates the combined
+// output if replacements + drains + recoveries exceed the budget.
 const defaultMaxDrainsPerCycle = 10
 
 // defaultMaxRecoveriesPerCycle limits how many drain-recovery cleanups the

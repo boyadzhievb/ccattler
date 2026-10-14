@@ -17,10 +17,9 @@ import (
 
 // defaultMaxInstanceCreationsPerCycle limits how many new instances the
 // InstanceController creates per reconciliation cycle. Each creation
-// emits 3 store operations, so 18 creations = 54 ops — leaving room for
-// scale-down changes in the same cycle within the runner's 60-change
-// transaction budget. Remaining deficit converges in subsequent cycles.
-const defaultMaxInstanceCreationsPerCycle = 18
+// emits 3 store operations, so 19 creations = 57 ops — near the
+// 58-change hard cap. Remaining deficit converges in subsequent cycles.
+const defaultMaxInstanceCreationsPerCycle = 19
 
 // maxInstanceControllerChangesPerCycle is the hard output cap. If creations
 // plus scale-down changes exceed this, excess changes are deferred to the
