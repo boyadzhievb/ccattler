@@ -46,8 +46,9 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 	}
 	facts = append(facts, infrastructureFacts...)
 
+	connectionDeclsByName := buildConnectionDeclMap(file.Connections)
 	for _, serviceDecl := range file.Services {
-		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir)
+		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir, connectionDeclsByName)
 		if serviceErr != nil {
 			return nil, serviceErr
 		}
@@ -238,7 +239,7 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 // compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
 // It validates the declaration and delegates to per-block sub-compilers for each
 // DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
-func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, baseDir string) ([]Fact, error) {
+func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, baseDir string, connectionDeclsByName map[string]ConnectionDecl) ([]Fact, error) {
 	if serviceDecl.Name == "" {
 		return nil, &ParseError{
 			Line: serviceDecl.Line, Message: "service name is required",
@@ -304,7 +305,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 	}
 	facts = append(facts, configFacts...)
 	facts = append(facts, compileServiceSecretFacts(serviceDecl.Name, serviceDecl.Secrets)...)
-	facts = append(facts, compileServiceConnectionRefFacts(serviceDecl.Name, serviceDecl.Connections)...)
+	facts = append(facts, compileServiceConnectionRefFacts(serviceDecl.Name, serviceDecl.Connections, connectionDeclsByName, serviceDecl.Secrets)...)
 	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
 	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
@@ -661,16 +662,41 @@ func compileServiceSecretFacts(serviceName string, secretDecls []SecretDecl) []F
 }
 
 // compileServiceConnectionRefFacts produces connection mount path facts for
-// each connection referenced by a service.
-func compileServiceConnectionRefFacts(serviceName string, connectionRefs []ConnectionRef) []Fact {
+// each connection referenced by a service. When a referenced connection
+// declares a secret, an implicit secret grant is emitted so the agent can
+// decrypt the password at runtime. Explicit secret declarations take
+// precedence — if the service already grants the same secret with a mount
+// path, the auto-grant is skipped.
+func compileServiceConnectionRefFacts(serviceName string, connectionRefs []ConnectionRef, connectionDeclsByName map[string]ConnectionDecl, explicitSecrets []SecretDecl) []Fact {
+	explicitSecretNames := make(map[string]bool, len(explicitSecrets))
+	for _, explicitSecret := range explicitSecrets {
+		explicitSecretNames[explicitSecret.Name] = true
+	}
 	var connectionFacts []Fact
 	for _, connectionRef := range connectionRefs {
 		connectionFacts = append(connectionFacts, Fact{
 			Key:   types.KeyDesiredServiceConnection(serviceName, connectionRef.ConnectionName),
 			Value: connectionRef.MountPath,
 		})
+		connectionDecl, connectionDeclExists := connectionDeclsByName[connectionRef.ConnectionName]
+		if connectionDeclExists && connectionDecl.Secret != "" && !explicitSecretNames[connectionDecl.Secret] {
+			connectionFacts = append(connectionFacts, Fact{
+				Key:   types.KeyDesiredServiceSecret(serviceName, connectionDecl.Secret),
+				Value: "connection",
+			})
+		}
 	}
 	return connectionFacts
+}
+
+// buildConnectionDeclMap indexes top-level connection declarations by name
+// so service compilation can look up a connection's secret field.
+func buildConnectionDeclMap(connectionDecls []ConnectionDecl) map[string]ConnectionDecl {
+	connectionDeclsByName := make(map[string]ConnectionDecl, len(connectionDecls))
+	for _, connectionDecl := range connectionDecls {
+		connectionDeclsByName[connectionDecl.Name] = connectionDecl
+	}
+	return connectionDeclsByName
 }
 
 // compileConnectionDeclaration validates and converts a top-level ConnectionDecl

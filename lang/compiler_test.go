@@ -1186,6 +1186,105 @@ service api {
 	}
 }
 
+func TestCompileConnectionRefAutoGeneratesSecretGrant(t *testing.T) {
+	file, parseErr := Parse(`connection app-db {
+    driver "postgresql+psycopg2"
+    user "app"
+    secret app.db-password
+    host "database"
+    port 5432
+    database "myapp"
+}
+
+service api {
+    image my-api:v3
+    instances 1
+    connection app-db "/run/connections/app-db"
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	// The compiler should auto-generate a secret grant for the connection's secret.
+	secretGrantValue := compiledFactMap[types.KeyDesiredServiceSecret("api", "app.db-password")]
+	if secretGrantValue != "connection" {
+		t.Errorf("expected implicit secret grant with value %q, got %q", "connection", secretGrantValue)
+	}
+
+	connectionMountPath := compiledFactMap[types.KeyDesiredServiceConnection("api", "app-db")]
+	if connectionMountPath != "/run/connections/app-db" {
+		t.Errorf("connection mount: got %q, want %q", connectionMountPath, "/run/connections/app-db")
+	}
+}
+
+func TestCompileConnectionRefNoSecretNoGrant(t *testing.T) {
+	file, parseErr := Parse(`connection cache-conn {
+    driver "redis"
+    host "redis"
+    port 6379
+}
+
+service api {
+    image my-api:v3
+    instances 1
+    connection cache-conn
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	for _, compiledFact := range facts {
+		if strings.Contains(compiledFact.Key, "secret") && strings.Contains(compiledFact.Key, "/api/") {
+			t.Errorf("unexpected secret grant for secretless connection: %s=%s", compiledFact.Key, compiledFact.Value)
+		}
+	}
+}
+
+func TestCompileConnectionRefExplicitSecretTakesPrecedence(t *testing.T) {
+	file, parseErr := Parse(`connection app-db {
+    driver "postgresql+psycopg2"
+    user "app"
+    secret app.db-password
+    host "database"
+    port 5432
+}
+
+service api {
+    image my-api:v3
+    instances 1
+    connection app-db "/run/connections/app-db"
+    secret app.db-password "/run/secrets/db-password"
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	// Explicit secret mount path should win over auto-generated "connection" value.
+	explicitMountPath := compiledFactMap[types.KeyDesiredServiceSecret("api", "app.db-password")]
+	if explicitMountPath != "/run/secrets/db-password" { //nolint:gosec // test fixture path
+		t.Errorf("explicit secret grant should take precedence: got %q, want %q", explicitMountPath, "/run/secrets/db-password")
+	}
+}
+
 func TestCompileInitStepWithConnection(t *testing.T) {
 	file, parseErr := Parse(`connection app-db {
     driver "postgres"
