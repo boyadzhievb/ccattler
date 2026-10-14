@@ -52,13 +52,18 @@
     state: started
     daemon_reload: true
 
-- name: Wait for agent to register in etcd
-  command: >
-    etcdctl --endpoints={{ etcd_endpoints }}
-    get --prefix /ccattler/observed/node/{{ node_id | default(inventory_hostname) }} --keys-only --limit 1
-  delegate_to: "{{ groups['etcd'][0] }}"
+- name: Wait for agent to register via API
+  shell: >
+    curl -sf
+    --cacert {{ cca_cert_dir }}/ca.pem
+    --cert {{ cca_cert_dir }}/node.pem
+    --key {{ cca_cert_dir }}/node-key.pem
+    -H "Accept: application/json"
+    https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770/status
+    | grep -q '"id":"{{ node_id | default(inventory_hostname) }}"'
+  delegate_to: "{{ groups['controlplane'][0] }}"
   register: node_registered
   retries: 10
   delay: 3
-  until: node_registered.stdout | length > 0
+  until: node_registered.rc == 0
   changed_when: false

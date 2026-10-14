@@ -79,12 +79,12 @@ if [[ "$REACHABLE_COUNT" -lt 3 ]]; then
     log "Only $REACHABLE_COUNT/3 VMs reachable — remaining checks may fail"
 fi
 
-# ---- Check 2: etcd health ----
-log "Check 2: etcd health"
-if ssh_vm cca-deploy-ctrl "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" 2>/dev/null; then
-    log "  etcd: healthy"
+# ---- Check 2: etcd health (via healthz endpoint) ----
+log "Check 2: control plane health"
+if ssh_vm cca-deploy-ctrl "curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/healthz" >/dev/null 2>&1; then
+    log "  healthz: OK"
 else
-    warn "etcd: UNHEALTHY"
+    warn "healthz: UNHEALTHY"
 fi
 
 # ---- Check 3: cca server API ----

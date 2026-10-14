@@ -340,14 +340,19 @@
         state: started
         daemon_reload: true
 
-    - name: Wait for agent registration
-      command: >
-        etcdctl --endpoints=http://127.0.0.1:2379
-        get --prefix /ccattler/observed/node/node-1 --keys-only --limit 1
+    - name: Wait for agent registration via API
+      shell: >
+        curl -sf
+        --cacert /etc/ccattler/pki/ca.pem
+        --cert /etc/ccattler/pki/node.pem
+        --key /etc/ccattler/pki/node-key.pem
+        -H "Accept: application/json"
+        https://127.0.0.1:9770/status
+        | grep -q '"id":"node-1"'
       register: node_registered
       retries: 10
       delay: 3
-      until: node_registered.stdout | length > 0
+      until: node_registered.rc == 0
       changed_when: false
 
 - name: Deploy Airflow test app
@@ -368,13 +373,19 @@
       pause:
         seconds: 45
 
-    - name: Check running containers
-      command: nerdctl ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}"
-      register: container_list
+    - name: Check running instances via API
+      command: >
+        curl -sf
+        --cacert /etc/ccattler/pki/ca.pem
+        --cert /etc/ccattler/pki/node.pem
+        --key /etc/ccattler/pki/node-key.pem
+        -H "Accept: application/json"
+        https://127.0.0.1:9770/status
+      register: cluster_status
 
-    - name: Show containers
+    - name: Show running instances
       debug:
-        msg: "{{ container_list.stdout_lines }}"
+        msg: "{{ (cluster_status.stdout | from_json).instances | map(attribute='id') | list }}"
 
     - name: Print summary
       debug:

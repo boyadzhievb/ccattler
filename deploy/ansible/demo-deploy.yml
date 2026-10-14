@@ -121,19 +121,19 @@
       pause:
         seconds: 45
 
-    - name: Verify Airflow containers are running
-      shell: nerdctl ps --format '{{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}'
-      become: true
-      delegate_to: "{{ item }}"
-      loop: "{{ groups['workers'] }}"
-      register: container_list
+    - name: Verify Airflow instances are running
+      command: >
+        curl -sf
+        --cacert {{ cca_cert_dir }}/ca.pem
+        --cert {{ cca_cert_dir }}/node.pem
+        --key {{ cca_cert_dir }}/node-key.pem
+        -H "Accept: application/json"
+        https://{{ ansible_host }}:9770/status
+      register: cluster_status
 
-    - name: Show running containers
+    - name: Show running instances
       debug:
-        msg: "{{ item.stdout_lines }}"
-      loop: "{{ container_list.results }}"
-      loop_control:
-        label: "{{ item.item }}"
+        msg: "{{ (cluster_status.stdout | from_json).instances | map(attribute='id') | list }}"
 
     - name: Print demo summary
       debug:

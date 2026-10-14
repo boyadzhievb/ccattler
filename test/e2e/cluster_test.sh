@@ -609,8 +609,8 @@ if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
         log "Final /status response:"
         curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>&1 || true
         echo ""
-        log "etcd keys under /ccattler/observed/node/:"
-        ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/observed/node/ --keys-only" 2>/dev/null || true
+        log "Registered nodes (from API):"
+        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '.nodes[] | "  \(.id): \(.state)"' || true
         fail "Only $node_count/$EXPECTED_NODES nodes registered after ${CONVERGE_TIMEOUT}s"
     fi
 fi
@@ -864,13 +864,12 @@ case "$CLUSTER_ENV" in
     test)   WORKER1_NODE_ID="cca-test-worker-1" ;;
     deploy) WORKER1_NODE_ID="cca-deploy-worker-1" ;;
 esac
-WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${WORKER1_NODE_ID}/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+WORKER1_DEBUG_ADDR=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
 if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
-    # Wait for the debug address to be published.
     deadline=$((SECONDS + 30))
     while [[ $SECONDS -lt $deadline ]]; do
         sleep 2
-        WORKER1_DEBUG_ADDR=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get /ccattler/observed/node/${WORKER1_NODE_ID}/debug_address --print-value-only 2>/dev/null" | tr -d '\r\n')
+        WORKER1_DEBUG_ADDR=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
         [[ -n "$WORKER1_DEBUG_ADDR" ]] && break
     done
 fi
@@ -894,11 +893,10 @@ echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images fi
 log "GET /debug/images OK"
 
 log "Testing POST /debug/exec on worker-1..."
-INSTANCE_ID=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null | grep -v '^/ccattler/' | head -1" | tr -d '\r\n')
+STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
-    # Find an instance placed on worker-1 (placement values are node IDs, not VM names).
-    WORKER1_INSTANCE=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/placement/instance/ 2>/dev/null" | \
-        awk -v node="$WORKER1_NODE_ID" 'prev && $0 == node {print prev} {prev=$0}' | head -1 | sed 's|.*/||')
+    WORKER1_INSTANCE=$(echo "$STATUS_JSON" | jq -r --arg node "$WORKER1_NODE_ID" '[.instances[] | select(.node == $node)][0].id // empty')
     if [[ -n "$WORKER1_INSTANCE" ]]; then
         EXEC_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/exec" \
             -H "Content-Type: application/json" \
@@ -928,21 +926,21 @@ log "Phase 69 E2E tests passed"
 
 log "Validating VIP data plane (iptables DNAT rules)..."
 
-# Wait for endpoints to appear in etcd (endpoint controller must see running instances).
+# Wait for networking (endpoints + VIPs) via the status API.
 ENDPOINT_DEADLINE=$((SECONDS + 60))
 ENDPOINT_COUNT=0
 while [[ $SECONDS -lt $ENDPOINT_DEADLINE ]]; do
-    ENDPOINT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/endpoint/service/ --keys-only 2>/dev/null | grep -c '^/'" || echo "0")
+    NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    ENDPOINT_COUNT=$(echo "$NET_JSON" | jq '[.instances[] | select(.state == "running" and .ip != null and .ip != "")] | length' 2>/dev/null || echo "0")
     if [[ "$ENDPOINT_COUNT" -gt 0 ]]; then
         break
     fi
     sleep 3
 done
-log "  Endpoints in etcd: $ENDPOINT_COUNT"
+log "  Running instances with endpoints: $ENDPOINT_COUNT"
 
-# Wait for VIP facts in etcd.
-VIP_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/network/vip/service/ --keys-only 2>/dev/null | grep -c '^/'" || echo "0")
-log "  VIP facts in etcd: $VIP_COUNT"
+VIP_COUNT=$(echo "$NET_JSON" | jq '.networking | length' 2>/dev/null || echo "0")
+log "  VIP/networking entries: $VIP_COUNT"
 
 # Wait for iptables rules to appear on the ctrl node (gives data plane reconciler time).
 IPTABLES_DEADLINE=$((SECONDS + 30))
@@ -964,8 +962,10 @@ else
     log "WARNING: CCA_SERVICES chain has no jump rules — cross-node VIP routing may not work"
     log "  Dumping diagnostics..."
     ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/endpoint/ 2>/dev/null | head -20" || true
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/observed/node/ 2>/dev/null | head -20" || true
+    log "  Networking from API:"
+    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true
+    log "  Nodes from API:"
+    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.nodes' || true
 fi
 
 # ---- Step 6: Final status ----
@@ -973,11 +973,10 @@ log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true
 echo ""
 
-log "Containers on each node:"
-for vm in "${VM_NAMES[@]}"; do
-    echo "--- $vm ---"
-    ssh_vm "$vm" 'sudo nerdctl ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"' 2>/dev/null || true
-done
+log "Instances per node (from API):"
+FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) instances) ---"' || true
+echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
 
 log "All checks passed"
 exit 0
