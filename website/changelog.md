@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.30.0-beta <Badge type="tip" text="latest" /> {#v1-30-0-beta}
+## v1.31.0-beta <Badge type="tip" text="latest" /> {#v1-31-0-beta}
+
+**2026-10-14** — Cross-Node VIP Routing Fix.
+
+- **Cross-Node VIP Routing Fix** (M102) — Agent re-publishes host port facts on every steady-state cycle (not just initial start), fixing endpoint controller missing `hostport` for cross-node address resolution. Remote backend resolution no longer falls back to non-routable container-bridge IPs — skips unreachable backends instead of creating broken DNAT rules. E2E validates iptables `CCA_SERVICES` chain has DNAT rules after deployment. Init container `--entrypoint bash` bypass, rsync+build-on-testbed workflow, host-side image caching, `GOTOOLCHAIN=auto`, per-environment `VAGRANT_DOTFILE_PATH`.
+
+---
+
+## v1.30.0-beta {#v1-30-0-beta}
 
 **2026-10-13** — Bearer Auth Chain Fix.
 

@@ -316,6 +316,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
 		} else {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
+			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 		}
@@ -521,6 +522,17 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
+	}
+}
+
+// republishHostPortIfNeeded re-publishes the host port fact for a running
+// instance on every steady-state cycle. The endpoint controller requires
+// this fact to create endpoints with host-reachable addresses, and the
+// data plane reconciler on remote nodes needs it for cross-node DNAT rules.
+func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceID string) {
+	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
+		hostPort := containerRuntime.HostPortForInstance(instanceID)
+		publishInstanceHostPort(ctx, nodeAgent.store, instanceID, hostPort)
 	}
 }
 

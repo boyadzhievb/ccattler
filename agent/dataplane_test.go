@@ -107,7 +107,7 @@ func TestDataPlaneSkipsServicesWithNoPort(t *testing.T) {
 	}
 }
 
-func TestDataPlaneRemoteBackendFallsBackToContainerIP(t *testing.T) {
+func TestDataPlaneRemoteBackendSkippedWithoutHostAddress(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -121,6 +121,8 @@ func TestDataPlaneRemoteBackendFallsBackToContainerIP(t *testing.T) {
 		Service: "web", VIP: "10.200.0.1", Port: 80,
 	})
 
+	// Remote instance on node-3, but node-3 has no advertise address and
+	// the instance has no host port — container IP is not routable cross-node.
 	factStore.Put(ctx, types.KeyEndpoint("web", "instance-ccc", 80), []byte("10.100.3.2:80"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-ccc"), []byte("node-3"))
 
@@ -130,12 +132,8 @@ func TestDataPlaneRemoteBackendFallsBackToContainerIP(t *testing.T) {
 	if len(lastReconciled) != 1 {
 		t.Fatalf("expected 1 VIP config, got %d", len(lastReconciled))
 	}
-	if len(lastReconciled[0].Backends) != 1 {
-		t.Fatalf("expected 1 backend, got %d", len(lastReconciled[0].Backends))
-	}
-	backend := lastReconciled[0].Backends[0]
-	if backend.Address != "10.100.3.2" || backend.Port != 80 {
-		t.Errorf("expected fallback to container IP 10.100.3.2:80, got %s:%d", backend.Address, backend.Port)
+	if len(lastReconciled[0].Backends) != 0 {
+		t.Fatalf("expected 0 backends for unreachable remote instance, got %d", len(lastReconciled[0].Backends))
 	}
 }
 

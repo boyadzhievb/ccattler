@@ -169,8 +169,10 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 				Port:    endpointPort,
 			})
 		} else {
-			remoteBackend := dataPlaneReconciler.resolveRemoteBackend(ctx, instanceID, instanceNodeID, endpointIP, endpointPort)
-			backends = append(backends, remoteBackend)
+			remoteBackend := dataPlaneReconciler.resolveRemoteBackend(ctx, instanceID, instanceNodeID)
+			if remoteBackend.Port > 0 {
+				backends = append(backends, remoteBackend)
+			}
 		}
 	}
 
@@ -179,22 +181,26 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 
 // resolveRemoteBackend determines the host-accessible address for an
 // instance running on a different node. It looks up the remote node's
-// advertise address and the instance's host port mapping. Falls back to
-// the container IP:port if the node address or host port is unavailable.
-func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context.Context, instanceID string, remoteNodeID string, fallbackIP string, fallbackPort int) network.DataPlaneBackend {
+// advertise address and the instance's host port mapping. Returns an
+// empty backend (zero port) if the remote address cannot be resolved —
+// container-bridge IPs (172.x) are not routable cross-node, so falling
+// back to them would create broken DNAT rules.
+func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context.Context, instanceID string, remoteNodeID string) network.DataPlaneBackend {
 	nodeAddressFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedNodeAddress(remoteNodeID))
 	if err != nil {
-		return network.DataPlaneBackend{Address: fallbackIP, Port: fallbackPort}
+		logging.Default().Debug("remote backend: no advertise address for node", "node", remoteNodeID, "instance", instanceID)
+		return network.DataPlaneBackend{}
 	}
 	nodeAddress := string(nodeAddressFact.Value)
 
 	hostPortFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
 	if err != nil {
-		return network.DataPlaneBackend{Address: fallbackIP, Port: fallbackPort}
+		logging.Default().Debug("remote backend: no host port for instance", "instance", instanceID, "node", remoteNodeID)
+		return network.DataPlaneBackend{}
 	}
 	hostPort, err := strconv.Atoi(string(hostPortFact.Value))
-	if err != nil {
-		return network.DataPlaneBackend{Address: fallbackIP, Port: fallbackPort}
+	if err != nil || hostPort <= 0 {
+		return network.DataPlaneBackend{}
 	}
 
 	return network.DataPlaneBackend{Address: nodeAddress, Port: hostPort}

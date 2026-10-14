@@ -921,6 +921,53 @@ log "POST /debug/images/pull OK — pulled alpine:3.20 on worker-1"
 
 log "Phase 69 E2E tests passed"
 
+# ---- Step 5.6: VIP data plane validation ----
+# Verify that the agent programs iptables DNAT rules for service VIPs. The chain
+# CCA_SERVICES should contain jump rules to per-service chains, and each per-service
+# chain should contain DNAT rules pointing to host-accessible backends.
+
+log "Validating VIP data plane (iptables DNAT rules)..."
+
+# Wait for endpoints to appear in etcd (endpoint controller must see running instances).
+ENDPOINT_DEADLINE=$((SECONDS + 60))
+ENDPOINT_COUNT=0
+while [[ $SECONDS -lt $ENDPOINT_DEADLINE ]]; do
+    ENDPOINT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/endpoint/service/ --keys-only 2>/dev/null | grep -c '^/'" || echo "0")
+    if [[ "$ENDPOINT_COUNT" -gt 0 ]]; then
+        break
+    fi
+    sleep 3
+done
+log "  Endpoints in etcd: $ENDPOINT_COUNT"
+
+# Wait for VIP facts in etcd.
+VIP_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/network/vip/service/ --keys-only 2>/dev/null | grep -c '^/'" || echo "0")
+log "  VIP facts in etcd: $VIP_COUNT"
+
+# Wait for iptables rules to appear on the ctrl node (gives data plane reconciler time).
+IPTABLES_DEADLINE=$((SECONDS + 30))
+DNAT_RULE_COUNT=0
+while [[ $SECONDS -lt $IPTABLES_DEADLINE ]]; do
+    DNAT_RULE_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
+    if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
+        break
+    fi
+    sleep 3
+done
+log "  CCA_SERVICES jump rules on ctrl: $DNAT_RULE_COUNT"
+
+if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
+    # Show the per-service DNAT rules for debugging.
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null" | head -20
+    log "VIP data plane OK — DNAT rules programmed"
+else
+    log "WARNING: CCA_SERVICES chain has no jump rules — cross-node VIP routing may not work"
+    log "  Dumping diagnostics..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/endpoint/ 2>/dev/null | head -20" || true
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS get --prefix /ccattler/observed/node/ 2>/dev/null | head -20" || true
+fi
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true

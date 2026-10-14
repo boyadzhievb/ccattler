@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M101 — Phase 101 Bearer Auth Chain Fix. M1–M101 complete. Gates A–I resolved.
+**Completed through:** M102 — Phase 102 Cross-Node VIP Routing Fix. M1–M102 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
