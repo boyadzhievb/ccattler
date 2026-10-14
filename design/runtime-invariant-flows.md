@@ -169,6 +169,7 @@ A single IP (`--advertise-address`) propagates to:
 - Assembled URL format must match what the application expects (e.g. `postgresql+psycopg2://...` for SQLAlchemy)
 - `host` in connection definition must be resolvable from inside the container (requires DNS chain working)
 - When both an explicit `secret` declaration and a connection reference the same secret, the explicit mount path takes precedence over the auto-generated "connection" marker
+- Auto-grant value is `"connection"` (not an absolute path). `materializeSecretFiles` only bind-mounts secrets whose value starts with `/` — auto-grants are authorization-only, the connection URL goes to the connection mount path instead
 
 ---
 

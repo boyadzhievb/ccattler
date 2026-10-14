@@ -753,7 +753,7 @@ func (nodeAgent *Agent) materializeSecretFiles(ctx context.Context, serviceName 
 		}
 		secretValue := string(plaintext)
 		runtimeSpec.ConfigFiles[ccaSecretMountPrefix+secretName] = secretValue
-		if explicitMountPath != "" {
+		if explicitMountPath != "" && strings.HasPrefix(explicitMountPath, "/") {
 			runtimeSpec.ConfigFiles[explicitMountPath] = secretValue
 		}
 	}
