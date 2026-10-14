@@ -83,6 +83,7 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 3. **Idempotency is the fundamental primitive.** Every operation is `ensure_X()`, not `do_X()`. Safe to repeat. `ensure_running(container)`, not `start_container()`.
 4. **Store facts and desired results, not commands.** `desired(instance, running)` not `start(instance)`. This makes the system naturally retryable — if an action fails, the gap between desired and actual persists and the agent tries again.
 5. **Controllers return proposed changes, not arbitrary mutations.** `reconcile(facts) → []change`, validated and committed transactionally by the command layer.
+6. **Init containers must match main containers.** Init containers (from `init { exec "..." }` blocks) must receive the same network, DNS, and env vars as the main container. See [design/runtime-invariant-flows.md](design/runtime-invariant-flows.md) for all cross-component invariant chains.
 
 ### Intent Layers
 

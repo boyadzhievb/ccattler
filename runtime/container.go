@@ -485,13 +485,24 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 		return fmt.Errorf("invalid image reference: %q", image)
 	}
 	args := []string{"run", "--rm"}
+	if containerRuntime.networkName != "" {
+		if initNetworkError := containerRuntime.ensureNetworkExists(ctx); initNetworkError == nil {
+			args = append(args, "--network", containerRuntime.networkName)
+		}
+	}
+	if containerRuntime.dnsAddress != "" {
+		args = append(args, "--dns", containerRuntime.dnsAddress)
+	}
+	if containerRuntime.dnsSearchDomain != "" {
+		args = append(args, "--dns-search", containerRuntime.dnsSearchDomain)
+	}
 	for envKey, envValue := range execSpec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue
 		}
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
-	args = append(args, image, "bash", "-c", execSpec.Command)
+	args = append(args, "--entrypoint", "bash", image, "-c", execSpec.Command)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr

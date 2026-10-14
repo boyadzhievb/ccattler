@@ -84,11 +84,6 @@ service scheduler {
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
     }
     secret airflow.db-password "/run/secrets/db-password"
-    init {
-        exec "airflow db check"
-        timeout 120s
-        retry 20
-    }
     health {
         tcp
         every 30s
@@ -111,11 +106,6 @@ service worker {
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "bash -c 'echo db+postgresql://airflow:$(cca-secret airflow.db-password)@metadata-db:5432/airflow'"
     }
     secret airflow.db-password "/run/secrets/db-password"
-    init {
-        exec "airflow db check"
-        timeout 120s
-        retry 20
-    }
     health {
         tcp
         every 15s

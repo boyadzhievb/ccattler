@@ -85,7 +85,7 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 		if stepDefinition.connection != "" {
 			stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
 		} else {
-			stepError = nodeAgent.runInitCommand(ctx, image, stepDefinition)
+			stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo.service, stepDefinition)
 		}
 		stepLabel := stepDefinition.exec
 		if stepDefinition.connection != "" {
@@ -139,8 +139,10 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 // runInitCommand executes the init step's command via the runtime's ExecInit
 // method. For container runtimes, this runs the command in a temporary container
-// from the service image. Applies a timeout if configured.
-func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDefinition initStepDefinition) error {
+// from the service image. The service's config env vars are passed so init steps
+// can access the same configuration as the main workload (e.g. DB connection
+// strings). Applies a timeout if configured.
+func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, serviceName string, stepDefinition initStepDefinition) error {
 	execCtx := ctx
 	var cancelFunc context.CancelFunc
 	if stepDefinition.timeout > 0 {
@@ -152,8 +154,10 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, stepDe
 		return fmt.Errorf("empty init exec command for step %d", stepDefinition.index)
 	}
 
+	serviceEnvVars := nodeAgent.resolveServiceConfigEnvVars(execCtx, serviceName)
 	return nodeAgent.runtime.ExecInit(execCtx, image, goruntime.ExecSpec{
 		Command: stepDefinition.exec,
+		Env:     serviceEnvVars,
 	})
 }
 

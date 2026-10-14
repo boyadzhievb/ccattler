@@ -20,7 +20,8 @@
 #
 # Prerequisites:
 #   - Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
-#   - CCattler binary at deploy/ansible/cca-linux-amd64
+#   - Go toolchain on testbed (for default rsync+build mode)
+#   - Or: CCattler binary at deploy/ansible/cca-linux-amd64 (--skip-build)
 #
 # VM lifecycle: VMs are stopped (not destroyed) after each run, preserving cached
 # container images. On the next run, stopped VMs boot in seconds and skip Ansible
@@ -39,6 +40,8 @@
 #   ./test/e2e/cluster_test.sh --clean                         # destroy VMs + wipe state (fresh start)
 #   ./test/e2e/cluster_test.sh --no-destroy                    # keep VMs running after test
 #   ./test/e2e/cluster_test.sh --from-release                  # download latest release binary
+#   ./test/e2e/cluster_test.sh --skip-build                    # use pre-built binary (no go build)
+#   ./test/e2e/cluster_test.sh --cross-compile                 # cross-compile locally (old behavior)
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
 # Caddy reverse proxy: after deployment, Caddy on the testbed host
@@ -48,12 +51,17 @@
 
 set -euo pipefail
 
+# Prefer /usr/local/go if available (system Go may be too old for go.mod).
+if [[ -x /usr/local/go/bin/go ]]; then
+    export PATH="/usr/local/go/bin:$PATH"
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 DESTROY_ON_EXIT=halt
-BINARY_SOURCE=build
+BINARY_SOURCE=rsync
 CLUSTER_ENV=test
 CLEAN_START=false
 SELECTED_WORKLOADS=""
@@ -66,6 +74,8 @@ for arg in "$@"; do
         --clean)             CLEAN_START=true; DESTROY_ON_EXIT=destroy ;;
         --clear-workloads)   CLEAR_WORKLOADS_ONLY=true ;;
         --from-release)      BINARY_SOURCE=release ;;
+        --skip-build)        BINARY_SOURCE=skip ;;
+        --cross-compile)     BINARY_SOURCE=cross ;;
         --list-workloads)    LIST_WORKLOADS=true ;;
         --env=*)             CLUSTER_ENV="${arg#--env=}" ;;
         --env)               ;; # handled below with next arg
@@ -182,6 +192,12 @@ ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
 # Persisted Vagrant state directory — survives git checkout and workspace cleanup.
 VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
 
+# Each environment gets its own .vagrant directory so test and deploy state don't
+# collide. VAGRANT_DOTFILE_PATH separates the machine registrations (SSH keys,
+# libvirt domain IDs) per environment.
+VAGRANT_DOTFILE="$ANSIBLE_DIR/.vagrant-${CLUSTER_ENV}"
+export VAGRANT_DOTFILE_PATH="$VAGRANT_DOTFILE"
+
 # Maximum seconds to wait for convergence checks.
 CONVERGE_TIMEOUT=120
 CONTAINER_TIMEOUT=180
@@ -212,15 +228,18 @@ cleanup() {
         log "Stopping VMs (images and state preserved for next run)..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant halt 2>/dev/null || true
-        # Persist Vagrant state so next CI run can reuse the VMs.
-        rm -rf "$VAGRANT_STATE_DIR"
-        cp -a "$ANSIBLE_DIR/.vagrant" "$VAGRANT_STATE_DIR"
-        log "Vagrant state saved to $VAGRANT_STATE_DIR"
+        if [[ -d "$VAGRANT_DOTFILE" ]]; then
+            rm -rf "$VAGRANT_STATE_DIR"
+            cp -a "$VAGRANT_DOTFILE" "$VAGRANT_STATE_DIR"
+            log "Vagrant state saved to $VAGRANT_STATE_DIR"
+        fi
     else
         log "Keeping VMs running (--no-destroy). Stop manually:"
-        log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE vagrant halt"
-        rm -rf "$VAGRANT_STATE_DIR"
-        cp -a "$ANSIBLE_DIR/.vagrant" "$VAGRANT_STATE_DIR"
+        log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE VAGRANT_DOTFILE_PATH=$VAGRANT_DOTFILE vagrant halt"
+        if [[ -d "$VAGRANT_DOTFILE" ]]; then
+            rm -rf "$VAGRANT_STATE_DIR"
+            cp -a "$VAGRANT_DOTFILE" "$VAGRANT_STATE_DIR"
+        fi
     fi
     rm -f /tmp/cca-e2e-ca.pem /tmp/cca-e2e-client.pem /tmp/cca-e2e-client-key.pem
     if [[ $exit_code -eq 0 ]]; then
@@ -245,7 +264,7 @@ wait_for_port() {
 
 ssh_vm() {
     local vm_name="$1"; shift
-    local key_path="$ANSIBLE_DIR/.vagrant/machines/$vm_name/libvirt/private_key"
+    local key_path="$VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
     local ip
     case "$vm_name" in
         *-ctrl)     ip="$CTRL_IP" ;;
@@ -268,8 +287,8 @@ count_containers() {
 # containers don't drain within the timeout.
 if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     # Restore Vagrant state if needed.
-    if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
-        cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
+    if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+        cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
     fi
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
     ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
@@ -312,7 +331,7 @@ fi
 if [[ "$CLEAN_START" == "true" ]]; then
     log "Clean start requested — destroying VMs and wiping state..."
     rm -rf "$VAGRANT_STATE_DIR"
-    rm -rf "$ANSIBLE_DIR/.vagrant"
+    rm -rf "$VAGRANT_DOTFILE"
     for vm in "${VM_NAMES[@]}"; do
         stale_domain="ansible_${vm}"
         if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
@@ -323,10 +342,10 @@ if [[ "$CLEAN_START" == "true" ]]; then
 fi
 
 # ---- Restore persisted Vagrant state ----
-# CI checkout wipes .vagrant/ — restore from the persisted directory if available.
-if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+# CI checkout wipes .vagrant-<env>/ — restore from the persisted directory if available.
+if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
     log "Restoring Vagrant state from $VAGRANT_STATE_DIR"
-    cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
+    cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
 fi
 
 # ---- Handle orphaned libvirt domains ----
@@ -334,7 +353,7 @@ fi
 # lost), clean them up so vagrant up can recreate from scratch.
 for vm in "${VM_NAMES[@]}"; do
     stale_domain="ansible_${vm}"
-    vagrant_state="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/id"
+    vagrant_state="$VAGRANT_DOTFILE/machines/$vm/libvirt/id"
     if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1 && [[ ! -f "$vagrant_state" ]]; then
         log "Cleaning orphaned libvirt domain: $stale_domain (no Vagrant state)"
         sudo virsh destroy "$stale_domain" 2>/dev/null || true
@@ -351,7 +370,7 @@ if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
             sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
         fi
     done
-    rm -rf "$ANSIBLE_DIR/.vagrant"
+    rm -rf "$VAGRANT_DOTFILE"
 fi
 
 # ---- Step 0: Obtain binary ----
@@ -367,9 +386,23 @@ if [[ "$BINARY_SOURCE" == "release" ]]; then
     mv "$ANSIBLE_DIR/cca" "$ANSIBLE_DIR/cca-linux-amd64" 2>/dev/null || true
     rm -f "/tmp/${TARBALL_NAME}"
     log "Release binary: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
-else
-    log "Building cca binary for linux/amd64..."
+elif [[ "$BINARY_SOURCE" == "skip" ]]; then
+    if [[ ! -f "$ANSIBLE_DIR/cca-linux-amd64" ]]; then
+        fail "No binary at $ANSIBLE_DIR/cca-linux-amd64 — build locally first"
+    fi
+    log "Using pre-built binary: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+elif [[ "$BINARY_SOURCE" == "cross" ]]; then
+    log "Cross-compiling cca binary for linux/amd64..."
     (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+else
+    # Default: build from local source tree on the testbed.
+    # Assumes the repo has been rsynced to $REPO_DIR on this host before running.
+    # From a remote workstation: rsync -az --exclude='.git' repo/ testbed:~/ccattler/
+    # Then: ssh testbed 'cd ~/ccattler && test/e2e/cluster_test.sh'
+    log "Building cca binary from local source tree..."
+    TESTBED_GO="${TESTBED_GO:-/usr/local/go/bin/go}"
+    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 fi
 
@@ -429,7 +462,7 @@ else
             deploy) case "$vm" in *-ctrl) node_id="cca-deploy-ctrl" ;; *-worker-1) node_id="cca-deploy-worker-1" ;; *-worker-2) node_id="cca-deploy-worker-2" ;; esac ;;
         esac
         scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
+            -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
             "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${local_ip}:/tmp/cca-linux-amd64"
         ssh_vm "$vm" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
         ssh_vm "$vm" "sudo mkdir -p /etc/ccattler && echo '${ETCD_ENDPOINTS}' | sudo tee /etc/ccattler/endpoints > /dev/null"
@@ -460,7 +493,7 @@ StandardError=append:/var/log/ccattler/agent.log
 WantedBy=multi-user.target
 SVCEOF
         scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -i "$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key" \
+            -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
             "/tmp/cca-agent-${vm}.service" "vagrant@${local_ip}:/tmp/cca-agent.service"
         ssh_vm "$vm" "sudo mv /tmp/cca-agent.service /etc/systemd/system/cca-agent.service && sudo systemctl daemon-reload"
         rm -f "/tmp/cca-agent-${vm}.service"
@@ -495,7 +528,7 @@ StandardError=append:/var/log/ccattler/server.log
 WantedBy=multi-user.target
 SVCEOF
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
+        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
         "/tmp/cca-server.service" "vagrant@${CTRL_IP}:/tmp/cca-server.service"
     ssh_vm "${VM_PREFIX}-ctrl" "sudo mv /tmp/cca-server.service /etc/systemd/system/cca-server.service && sudo systemctl daemon-reload"
     rm -f /tmp/cca-server.service
@@ -625,30 +658,86 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     done
 done
 
-PULL_MAX_ATTEMPTS=3
+PULL_MAX_ATTEMPTS=5
+PULL_RETRY_DELAY=15
+IMAGE_CACHE_DIR="/tmp/cca-image-cache"
+mkdir -p "$IMAGE_CACHE_DIR"
+
 log "Pre-pulling ${#UNIQUE_IMAGES[@]} images for ${#WORKLOAD_NAMES[@]} workloads..."
-pull_image_with_retry() {
-    local vm="$1" image="$2"
-    local pull_output
-    for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
-        if pull_output=$(ssh_vm "$vm" "sudo nerdctl pull $image" 2>&1); then
-            return 0
-        fi
-        log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm — ${pull_output##*$'\n'}"
-        sleep 5
-    done
-    log "WARNING: failed to pull $image on $vm after $PULL_MAX_ATTEMPTS attempts"
-    log "  Last error: $pull_output"
-    return 1
+
+# Strategy: pull images on the testbed host (fast internet), save as tarballs,
+# load into VMs over the local network. Avoids Docker Hub rate limits and slow
+# pulls from inside libvirt VMs.
+ensure_image_cached() {
+    local image="$1"
+    local safe_name="${image//\//_}"
+    safe_name="${safe_name//:/_}"
+    local tar_path="${IMAGE_CACHE_DIR}/${safe_name}.tar"
+    if [[ -f "$tar_path" ]]; then
+        log "  $image — cached tarball exists"
+        return 0
+    fi
+    if ! sudo nerdctl image inspect "$image" >/dev/null 2>&1; then
+        log "  $image — pulling on host..."
+        local pull_output
+        for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
+            if pull_output=$(sudo nerdctl pull "$image" 2>&1); then
+                break
+            fi
+            log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image — ${pull_output##*$'\n'}"
+            sleep "$PULL_RETRY_DELAY"
+            if [[ "$attempt" -eq "$PULL_MAX_ATTEMPTS" ]]; then
+                log "WARNING: failed to pull $image on host after $PULL_MAX_ATTEMPTS attempts"
+                return 1
+            fi
+        done
+    fi
+    log "  $image — saving tarball..."
+    sudo nerdctl save -o "$tar_path" "$image" 2>&1 || { log "WARNING: failed to save $image"; return 1; }
 }
-for vm in "${VM_NAMES[@]}"; do
+
+load_images_on_vm() {
+    local vm="$1"
     for image in "${!UNIQUE_IMAGES[@]}"; do
-        pull_image_with_retry "$vm" "$image" &
+        if ssh_vm "$vm" "sudo nerdctl image inspect $image >/dev/null 2>&1"; then
+            log "  $image already cached on $vm"
+            continue
+        fi
+        local safe_name="${image//\//_}"
+        safe_name="${safe_name//:/_}"
+        local tar_path="${IMAGE_CACHE_DIR}/${safe_name}.tar"
+        if [[ ! -f "$tar_path" ]]; then
+            log "WARNING: no tarball for $image, pulling directly on $vm..."
+            ssh_vm "$vm" "sudo nerdctl pull $image" 2>/dev/null || true
+            continue
+        fi
+        local vm_ip
+        case "$vm" in
+            *-ctrl)     vm_ip="$CTRL_IP" ;;
+            *-worker-1) vm_ip="${WORKER_IPS[0]}" ;;
+            *-worker-2) vm_ip="${WORKER_IPS[1]:-}" ;;
+        esac
+        local key_path="$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key"
+        log "  Loading $image on $vm..."
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+            -i "$key_path" "$tar_path" "vagrant@${vm_ip}:/tmp/${safe_name}.tar"
+        ssh_vm "$vm" "sudo nerdctl load -i /tmp/${safe_name}.tar && rm -f /tmp/${safe_name}.tar" 2>/dev/null
     done
+}
+
+# Pull and cache images on host.
+for image in "${!UNIQUE_IMAGES[@]}"; do
+    ensure_image_cached "$image"
 done
-log "Waiting for all image pulls to complete..."
+log "Host image cache ready"
+
+# Load images into VMs in parallel (LAN transfer, fast).
+for vm in "${VM_NAMES[@]}"; do
+    load_images_on_vm "$vm" &
+done
+log "Loading images into VMs..."
 wait
-log "Image pre-pull complete"
+log "Image loading complete"
 
 # ---- Step 4: Deploy selected workloads ----
 
@@ -674,7 +763,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     # Copy and apply the .cca file.
     log "Applying $workload_name workload..."
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$ANSIBLE_DIR/.vagrant/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
+        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
         "$WORKLOADS_DIR/${workload_name}.cca" "vagrant@${CTRL_IP}:/tmp/${workload_name}.cca"
 
     ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca apply /tmp/${workload_name}.cca"
