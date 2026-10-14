@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M102 — Phase 102 Cross-Node VIP Routing Fix. M1–M102 complete. Gates A–I resolved.
+**Completed through:** M103 — Phase 103 Airflow Connection Block Fix. M1–M103 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

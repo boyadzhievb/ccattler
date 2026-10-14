@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.31.0-beta <Badge type="tip" text="latest" /> {#v1-31-0-beta}
+## v1.32.0-beta <Badge type="tip" text="latest" /> {#v1-32-0-beta}
+
+**2026-10-14** — Airflow Connection Block Fix.
+
+- **Airflow Connection Block Fix** (M103) — Replace `bash -c 'echo ...'` `_CMD` env vars with CCattler connection blocks + `cat /run/connections/...`. Fixes trailing newline in DB URL (`database "airflow\n"`) that prevented Airflow webserver from connecting to PostgreSQL. Both E2E and examples updated.
+
+---
+
+## v1.31.0-beta {#v1-31-0-beta}
 
 **2026-10-14** — Cross-Node VIP Routing Fix.
 
