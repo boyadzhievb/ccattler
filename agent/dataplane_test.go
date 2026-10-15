@@ -247,10 +247,13 @@ func TestDataPlaneLocalBackendUsesContainerIPNotAdvertiseAddress(t *testing.T) {
 		Service: "db", VIP: "10.200.0.1", Port: 5432,
 	})
 
-	// Local instance with host port — backend must still use container IP
-	// to avoid hairpin NAT (DNAT to self via advertise address).
-	factStore.Put(ctx, types.KeyEndpoint("db", "db-local", 5432), []byte("172.17.0.5:5432"))
+	// Endpoint value uses the advertise address (as the endpoint controller
+	// writes it), but the observed instance IP stores the container bridge IP.
+	// The dataplane must use the container IP for local backends to avoid
+	// hairpin NAT.
+	factStore.Put(ctx, types.KeyEndpoint("db", "db-local", 5432), []byte("192.168.100.43:5432"))
 	factStore.Put(ctx, types.KeyObservedInstanceNode("db-local"), []byte("node-1"))
+	factStore.Put(ctx, types.KeyObservedInstanceIP("db-local"), []byte("172.17.0.5"))
 	factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort("db-local", 5432), []byte("5432"))
 
 	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
@@ -265,7 +268,7 @@ func TestDataPlaneLocalBackendUsesContainerIPNotAdvertiseAddress(t *testing.T) {
 
 	backend := lastReconciled[0].Backends[0]
 	if backend.Address != "172.17.0.5" || backend.Port != 5432 {
-		t.Errorf("local backend = %s:%d, want 172.17.0.5:5432 (container IP, not advertise address)", backend.Address, backend.Port)
+		t.Errorf("local backend = %s:%d, want 172.17.0.5:5432 (container bridge IP, not advertise address)", backend.Address, backend.Port)
 	}
 }
 

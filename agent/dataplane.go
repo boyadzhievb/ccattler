@@ -158,13 +158,12 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 		instanceNodeID := string(instanceNodeFact.Value)
 
 		if instanceNodeID == dataPlaneReconciler.nodeID {
-			// Local backends use the container bridge IP directly.
-			// This avoids hairpin NAT (DNAT to self via the host
-			// address would require MASQUERADE on loopback).
-			backends = append(backends, network.DataPlaneBackend{
-				Address: endpointIP,
-				Port:    endpointPort,
-			})
+			// Local backends use the container bridge IP directly,
+			// looked up from the observed instance IP fact. This avoids
+			// hairpin NAT (DNAT to the node's own advertise address
+			// routes through loopback where MASQUERADE is excluded).
+			localBackend := dataPlaneReconciler.resolveLocalBackend(ctx, instanceID, containerPort, endpointIP, endpointPort)
+			backends = append(backends, localBackend)
 		} else {
 			remoteBackend := dataPlaneReconciler.resolveRemoteBackend(ctx, instanceID, instanceNodeID, containerPort)
 			if remoteBackend.Port > 0 {
@@ -196,6 +195,28 @@ func resolveHostPort(ctx context.Context, factStore store.StateStore, instanceID
 		}
 	}
 	return 0
+}
+
+// resolveLocalBackend returns a backend for an instance on this node. It
+// reads the container's bridge IP from the observed instance IP fact so that
+// DNAT targets the container directly via the bridge, avoiding hairpin NAT.
+// Falls back to the endpoint address if the container IP is not available.
+func (dataPlaneReconciler *DataPlaneReconciler) resolveLocalBackend(ctx context.Context, instanceID string, containerPort int, fallbackIP string, fallbackPort int) network.DataPlaneBackend {
+	containerIPFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceIP(instanceID))
+	if err == nil && len(containerIPFact.Value) > 0 {
+		backendPort := containerPort
+		if backendPort <= 0 {
+			backendPort = fallbackPort
+		}
+		return network.DataPlaneBackend{
+			Address: string(containerIPFact.Value),
+			Port:    backendPort,
+		}
+	}
+	return network.DataPlaneBackend{
+		Address: fallbackIP,
+		Port:    fallbackPort,
+	}
 }
 
 // resolveRemoteBackend determines the host-accessible address for an
