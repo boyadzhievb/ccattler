@@ -122,6 +122,15 @@ log_ok "Checksum verified"
 tar -xzf "${temp_dir}/${archive_name}" -C "$temp_dir"
 
 # --- Install binary ---
+if [ ! -d "$INSTALL_PATH" ]; then
+    if mkdir -p "$INSTALL_PATH" 2>/dev/null; then
+        :
+    else
+        log_info "Creating ${INSTALL_PATH} requires elevated permissions."
+        sudo mkdir -p "$INSTALL_PATH"
+    fi
+fi
+
 if [ -w "$INSTALL_PATH" ]; then
     mv "${temp_dir}/cca" "${INSTALL_PATH}/cca"
 else

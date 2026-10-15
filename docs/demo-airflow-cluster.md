@@ -45,18 +45,21 @@ cca version
 ### Act 2: Bootstrap the Cluster (~1.5 min)
 
 ```bash
-# Node 1 — start the control plane
-cca server --tls --listen 0.0.0.0:9770
+# Node 1 — prepare state directory (first time only)
+sudo mkdir -p /etc/ccattler && sudo chown $(id -u) /etc/ccattler
+
+# Node 1 — start the control plane (--tls enables mTLS and defaults to 0.0.0.0:9770)
+cca server --tls
 
 # Node 1 — create join tokens (in a second terminal)
 cca token create --node-id node-2 --ttl 15m
 cca token create --node-id node-3 --ttl 15m
 
-# Node 2 — join the cluster
-cca join 192.168.124.10:9770 <token> --node-id node-2 --ca-cert /etc/cca/ca.pem
+# Node 2 — join the cluster (token embeds CA fingerprint, no --ca-cert needed)
+cca join https://192.168.124.10:9770 <token> --node-id node-2
 
 # Node 3 — join the cluster
-cca join 192.168.124.10:9770 <token> --node-id node-3 --ca-cert /etc/cca/ca.pem
+cca join https://192.168.124.10:9770 <token> --node-id node-3
 
 # Verify — show all three nodes healthy
 cca get nodes

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -794,8 +795,11 @@ func loadOrGenerateSecretMasterKey() []byte {
 		os.Exit(1)
 	}
 
+	parentDir := filepath.Dir(secretMasterKeyPath)
+	_ = os.MkdirAll(parentDir, 0700)
 	if writeError := os.WriteFile(secretMasterKeyPath, freshKey, 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "write secret master key: %v\n", writeError)
+		fmt.Fprintf(os.Stderr, "  fix: sudo mkdir -p %s && sudo chown $(id -u) %s\n", parentDir, parentDir)
 		os.Exit(1)
 	}
 	fmt.Printf("Generated new secret master key at %s\n", secretMasterKeyPath)
