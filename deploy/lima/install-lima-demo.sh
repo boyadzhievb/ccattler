@@ -1,4 +1,5 @@
 #!/usr/bin/env sh
+# shellcheck disable=SC3043  # local is supported by dash, bash, zsh
 set -eu
 
 # CCattler Lima demo — single-VM all-in-one on macOS
