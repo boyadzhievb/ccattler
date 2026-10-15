@@ -1,15 +1,5 @@
 {
-  "mcpServers": {
-    "ccattler-remote": {
-      "command": "ssh",
-      "args": [
-        "-i", "~/.ssh/id_rsa_lenovo_bojan",
-        "-o", "StrictHostKeyChecking=no",
-        "bojan@192.168.100.43",
-        "CCATTLER_MCP_TOKEN=$(cat /tmp/ccattler-mcp-token) /home/bojan/ccattler/ccattler-mcp --repo /home/bojan/ccattler --token-file /tmp/ccattler-mcp-token --audit-log /tmp/ccattler-mcp-audit.jsonl"
-      ]
-    }
-  },
+  "mcpServers": {},
   "attribution": {
     "commit": ""
   },
@@ -32,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd /Users/boyadboz/REPOS/ccattler && go vet ./... 2>&1; VET=$?; if [ $VET -ne 0 ]; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: go vet failed. Fix vet warnings before committing.\"}}'; fi",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && go vet ./... 2>&1; VET=$?; if [ $VET -ne 0 ]; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: go vet failed. Fix vet warnings before committing.\"}}'; fi",
             "statusMessage": "Running go vet..."
           }
         ]
@@ -55,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/lint-naming.sh $CLAUDE_FILE_PATH 2>&1 | head -20"
+            "command": "bash scripts/lint-naming.sh \"$CLAUDE_FILE_PATH\" 2>&1 | head -20"
           }
         ]
       },
