@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.36.0-beta <Badge type="tip" text="latest" /> {#v1-36-0-beta}
+## v1.37.0-beta <Badge type="tip" text="latest" /> {#v1-37-0-beta}
+
+**2026-10-15** — VIP Hairpin Fix & Install Hardening.
+
+- **VIP Hairpin Fix & Install Hardening** (M111) — Fix cross-node VIP DNAT (per-port hostport key resolution), fix local VIP hairpin NAT (agent publishes container bridge IP from nerdctl inspect, dataplane uses container IP for local backends), POSIX sh install scripts (dash/bash/zsh), install script CI on Debian/RHEL/macOS, E2E iptables debug dumps + cross-node VIP/DNS checks, test speedup (build tags for loadtest/chaos, t.Parallel for integration, ~8min→~30s)
+
+---
+
+## v1.36.0-beta {#v1-36-0-beta}
 
 **2026-10-15** — Security Hardening (All Open Threats).
 

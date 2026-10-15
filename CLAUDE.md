@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M110 — Phase 110 Security Hardening (All Open Threats). M1–M110 complete. Gates A–I resolved.
+**Completed through:** M111 — Phase 111 VIP Hairpin Fix & Install Hardening. M1–M111 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
