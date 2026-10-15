@@ -320,9 +320,9 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
         cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
     fi
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
     log "Desired state cleared — agents will reconcile and stop containers..."
     deadline=$((SECONDS + 60))
     while [[ $SECONDS -lt $deadline ]]; do
@@ -524,7 +524,7 @@ ETCDSVC
         ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true; sudo systemctl daemon-reload"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"
         sleep 3
-        ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
         log "etcd restarted with mTLS — data directory recreated"
     fi
 
@@ -534,7 +534,7 @@ ETCDSVC
             ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
         done
         wait
-        if ! ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
+        if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
             log "WARNING: etcdctl del failed (expected if data dir was just wiped)"
         fi
     else
@@ -677,7 +677,7 @@ fi
 
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health..."
-ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy"
+ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy"
 
 log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
 if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
@@ -1188,7 +1188,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     fi
 
     # Verify etcd still healthy.
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "Upgrade: etcd unhealthy after binary swap"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "Upgrade: etcd unhealthy after binary swap"
 
     log "=== UPGRADE TEST PASSED ==="
 fi
