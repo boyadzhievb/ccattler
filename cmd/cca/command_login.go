@@ -63,7 +63,7 @@ func executeLoginCommand(args []string) {
 // validateAndStoreCredential calls /api/auth/whoami with the provided token to
 // verify it is valid, then writes the credential file.
 func validateAndStoreCredential(serverAddress string, tokenValue string) {
-	requestURL := fmt.Sprintf("http://%s/api/auth/whoami", serverAddress)
+	requestURL := fmt.Sprintf("%s://%s/api/auth/whoami", statusAPIScheme, serverAddress)
 	httpClient := buildBearerTokenHTTPClient(tokenValue)
 	httpResponse, requestError := httpClient.Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {

@@ -70,7 +70,7 @@ func executeExecCommand(instanceID string, commandParts []string) {
 // from the control plane API and returns the node ID where it is placed.
 func discoverInstancePlacement(instanceID string) string {
 	factKey := "placement/instance/" + instanceID
-	apiURL := "http://" + statusAPIListenAddress + "/api/state?prefix=" + factKey
+	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + factKey
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")

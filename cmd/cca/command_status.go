@@ -72,7 +72,7 @@ func executeEventsCommand(parsedConfig eventsCommandConfig) {
 		return
 	}
 
-	apiURL := "http://" + statusAPIListenAddress + "/api/logs"
+	apiURL := statusAPIBaseURL() + "/api/logs"
 	if parsedConfig.serviceFilter != "" {
 		apiURL += "?target=" + parsedConfig.serviceFilter
 	}
@@ -111,7 +111,7 @@ func executeEventsCommand(parsedConfig eventsCommandConfig) {
 // executeEventsFollowMode connects to the SSE event stream and prints new
 // events as they arrive. Blocks until interrupted with Ctrl-C.
 func executeEventsFollowMode(serviceFilter string) {
-	apiURL := "http://" + statusAPIListenAddress + "/api/events/stream"
+	apiURL := statusAPIBaseURL() + "/api/events/stream"
 	if serviceFilter != "" {
 		apiURL += "?service=" + serviceFilter
 	}
@@ -194,7 +194,7 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 		return
 	}
 
-	apiURL := "http://" + statusAPIListenAddress + "/api/state?prefix=" + "observed/instance/"
+	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + "observed/instance/"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run', 'server', or 'demo' running?")
@@ -293,7 +293,7 @@ func streamContainerLogs(serviceName string, instanceID string, follow bool) {
 // executeStatusCommand queries the status API of a running ccattler instance
 // and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
 func executeStatusCommand() {
-	statusRequest, _ := http.NewRequest("GET", "http://"+statusAPIListenAddress+"/status", nil)
+	statusRequest, _ := http.NewRequest("GET", statusAPIBaseURL()+"/status", nil)
 	statusRequest.Header.Set("Accept", "text/plain")
 	httpResponse, err := buildAuthenticatedHTTPClient().Do(statusRequest)
 	if err != nil {
@@ -308,7 +308,7 @@ func executeStatusCommand() {
 // executeMetricSetCommand sends a simulated metric value to a running ccattler instance
 // via the status API. The metric is stored in the fact store at observed/metric/service/{service}/{metric}.
 func executeMetricSetCommand(serviceName, metricName, metricValue string) {
-	requestURL := fmt.Sprintf("http://%s/api/metric?service=%s&metric=%s&value=%s",
+	requestURL := fmt.Sprintf("%s/api/metric?service=%s&metric=%s&value=%s",
 		statusAPIListenAddress, serviceName, metricName, metricValue)
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "", nil) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -323,7 +323,7 @@ func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 // executeTopCommand queries the cluster API and displays resource utilization
 // in a tabular format, similar to `kubectl top`.
 func executeTopCommand(resourceType string) {
-	apiBaseURL := "http://" + statusAPIListenAddress + "/api/status"
+	apiBaseURL := statusAPIBaseURL() + "/api/status"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -423,7 +423,7 @@ func executeDescribeCommand(resourceType, resourceName string) {
 		os.Exit(1)
 	}
 
-	apiURL := fmt.Sprintf("http://%s/api/describe?type=%s&name=%s",
+	apiURL := fmt.Sprintf("%s/api/describe?type=%s&name=%s",
 		statusAPIListenAddress, normalizedType, resourceName)
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -838,7 +838,7 @@ func printDescribeEvents(events []api.DescribeEvent) {
 // executeGetCommand queries the API for a specific resource type and prints
 // the result as formatted JSON.
 func executeGetCommand(resourceType string) {
-	apiBaseURL := "http://" + statusAPIListenAddress + "/api/status"
+	apiBaseURL := statusAPIBaseURL() + "/api/status"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -1104,7 +1104,7 @@ func printCloudIdentitiesTable(cloudIdentities []api.CloudIdentityStatus) {
 // desired instance count.
 func executeScaleCommand(serviceName, countStr string) {
 	requestBody := fmt.Sprintf(`{"service":%q,"instances":%s}`, serviceName, countStr)
-	apiURL := "http://" + statusAPIListenAddress + "/api/scale"
+	apiURL := statusAPIBaseURL() + "/api/scale"
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -1142,7 +1142,7 @@ func parseDrainGracePeriod(args []string) int {
 // eviction of all instances from a node.
 func executeDrainCommand(nodeID string, gracePeriod int) {
 	requestBody := fmt.Sprintf(`{"node_id":%q,"grace_period":%d}`, nodeID, gracePeriod)
-	apiURL := "http://" + statusAPIListenAddress + "/api/node/drain"
+	apiURL := statusAPIBaseURL() + "/api/node/drain"
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
@@ -1162,7 +1162,7 @@ func executeDrainCommand(nodeID string, gracePeriod int) {
 // from new placements while keeping existing workloads running.
 func executeDisableNodeCommand(nodeID string) {
 	requestBody := fmt.Sprintf(`{"node_id":%q}`, nodeID)
-	apiURL := "http://" + statusAPIListenAddress + "/api/node/disable"
+	apiURL := statusAPIBaseURL() + "/api/node/disable"
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
@@ -1182,7 +1182,7 @@ func executeDisableNodeCommand(nodeID string) {
 // disabled node to normal scheduling eligibility.
 func executeEnableNodeCommand(nodeID string) {
 	requestBody := fmt.Sprintf(`{"node_id":%q}`, nodeID)
-	apiURL := "http://" + statusAPIListenAddress + "/api/node/enable"
+	apiURL := statusAPIBaseURL() + "/api/node/enable"
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' or 'run' running?")
@@ -1201,7 +1201,7 @@ func executeEnableNodeCommand(nodeID string) {
 // executeWatchCommand connects to the API's SSE watch endpoint and prints
 // fact store changes as they occur.
 func executeWatchCommand(prefix string) {
-	apiURL := fmt.Sprintf("http://%s/api/watch?prefix=%s", statusAPIListenAddress, prefix)
+	apiURL := fmt.Sprintf("%s/api/watch?prefix=%s", statusAPIBaseURL(), prefix)
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -1254,7 +1254,7 @@ func executeSecretCommand(args []string) {
 
 // executeSecretSet stores an encrypted secret via the API.
 func executeSecretSet(secretName, secretValue string) {
-	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	requestURL := fmt.Sprintf("%s/api/secret?name=%s", statusAPIBaseURL(), secretName)
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "text/plain", strings.NewReader(secretValue)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -1272,7 +1272,7 @@ func executeSecretSet(secretName, secretValue string) {
 
 // executeSecretGet retrieves and displays a decrypted secret via the API.
 func executeSecretGet(secretName string) {
-	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	requestURL := fmt.Sprintf("%s/api/secret?name=%s", statusAPIBaseURL(), secretName)
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -1296,7 +1296,7 @@ func executeSecretGet(secretName string) {
 
 // executeSecretList displays all stored secret names.
 func executeSecretList() {
-	requestURL := fmt.Sprintf("http://%s/api/secret", statusAPIListenAddress)
+	requestURL := fmt.Sprintf("%s/api/secret", statusAPIBaseURL())
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -1328,7 +1328,7 @@ func executeSecretList() {
 
 // executeSecretDelete removes an encrypted secret via the API.
 func executeSecretDelete(secretName string) {
-	requestURL := fmt.Sprintf("http://%s/api/secret?name=%s", statusAPIListenAddress, secretName)
+	requestURL := fmt.Sprintf("%s/api/secret?name=%s", statusAPIBaseURL(), secretName)
 	deleteRequest, _ := http.NewRequest(http.MethodDelete, requestURL, nil) //nolint:gosec // URL is local CLI → server, not user-controlled
 	httpResponse, err := buildAuthenticatedHTTPClient().Do(deleteRequest)   //nolint:gosec // URL is local CLI → server, not user-controlled
 	if err != nil {

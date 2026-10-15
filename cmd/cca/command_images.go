@@ -140,7 +140,7 @@ func discoverNodeDebugAddresses(filterNodeID string) map[string]string {
 		return map[string]string{filterNodeID: address}
 	}
 
-	apiURL := "http://" + statusAPIListenAddress + "/api/state?prefix=observed/node/"
+	apiURL := statusAPIBaseURL() + "/api/state?prefix=observed/node/"
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")

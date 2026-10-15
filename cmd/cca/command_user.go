@@ -72,7 +72,7 @@ func executeUserCreate(args []string) {
 	}
 	bodyJSON, _ := json.Marshal(requestBody)
 
-	requestURL := fmt.Sprintf("http://%s/api/user?name=%s", statusAPIListenAddress, userName)
+	requestURL := fmt.Sprintf("%s/api/user?name=%s", statusAPIBaseURL(), userName)
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Post(requestURL, "application/json", bytes.NewReader(bodyJSON)) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -121,7 +121,7 @@ func executeUserCreateToken(args []string) {
 	}
 	bodyJSON, _ := json.Marshal(requestBody)
 
-	requestURL := fmt.Sprintf("http://%s/api/user/token", statusAPIListenAddress)
+	requestURL := fmt.Sprintf("%s/api/user/token", statusAPIBaseURL())
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Post(requestURL, "application/json", bytes.NewReader(bodyJSON)) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -151,7 +151,7 @@ func executeUserCreateToken(args []string) {
 
 // executeUserList lists all user accounts via GET /api/user.
 func executeUserList() {
-	requestURL := fmt.Sprintf("http://%s/api/user", statusAPIListenAddress)
+	requestURL := fmt.Sprintf("%s/api/user", statusAPIBaseURL())
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(requestURL) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
@@ -186,7 +186,7 @@ func executeUserList() {
 
 // executeUserDelete removes a user account via DELETE /api/user.
 func executeUserDelete(userName string) {
-	requestURL := fmt.Sprintf("http://%s/api/user?name=%s", statusAPIListenAddress, userName)
+	requestURL := fmt.Sprintf("%s/api/user?name=%s", statusAPIBaseURL(), userName)
 	deleteRequest, _ := http.NewRequest(http.MethodDelete, requestURL, nil)        //nolint:gosec // CLI connects to user-configured API server
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Do(deleteRequest) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {

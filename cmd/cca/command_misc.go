@@ -144,7 +144,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		return
 	}
 
-	apiURL := "http://" + statusAPIListenAddress + "/api/diff"
+	apiURL := statusAPIBaseURL() + "/api/diff"
 	httpResponse, diffErr := buildAuthenticatedHTTPClient().Post(apiURL, "text/plain", strings.NewReader(dslContent))
 	if diffErr != nil {
 		factStore := store.NewMemoryStore()

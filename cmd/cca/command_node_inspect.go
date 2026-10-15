@@ -33,7 +33,7 @@ func executeNodeInspectCommand(nodeID string) {
 // state API endpoint. Exits with an error if the address cannot be found.
 func discoverNodeDebugAddress(nodeID string) string {
 	factKey := fmt.Sprintf("observed/node/%s/debug_address", nodeID)
-	apiURL := "http://" + statusAPIListenAddress + "/api/state?prefix=" + factKey
+	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + factKey
 	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")

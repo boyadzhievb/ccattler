@@ -31,15 +31,60 @@ import (
 // defaultStatusAPIPort is the port for the CCattler API server.
 const defaultStatusAPIPort = "9770"
 
-// statusAPIListenAddress returns the address the CLI should connect to.
-// Defaults to 127.0.0.1:9770, overridable via CCA_API environment variable.
+// caCertSearchPaths lists locations where the CLI looks for the server CA
+// certificate to enable TLS. Checked in order; first match wins.
+var caCertSearchPaths = []string{
+	"/etc/ccattler/ca.pem",
+	"/etc/ccattler/pki/ca.pem",
+}
+
+// statusAPIListenAddress is the host:port the CLI connects to.
 var statusAPIListenAddress = resolveStatusAPIListenAddress()
+
+// statusAPIScheme is "https" when a CA cert is found, "http" otherwise.
+var statusAPIScheme = resolveStatusAPIScheme()
 
 func resolveStatusAPIListenAddress() string {
 	if envAddress := os.Getenv("CCA_API"); envAddress != "" {
 		return envAddress
 	}
 	return "127.0.0.1:" + defaultStatusAPIPort
+}
+
+func resolveStatusAPIScheme() string {
+	for _, candidatePath := range caCertSearchPaths {
+		if fileExists(candidatePath) {
+			return "https"
+		}
+	}
+	return "http"
+}
+
+// statusAPIBaseURL returns the full scheme://host:port prefix for API calls.
+func statusAPIBaseURL() string {
+	return statusAPIScheme + "://" + statusAPIListenAddress
+}
+
+// buildTLSTransportFromCACert returns an http.RoundTripper that trusts the
+// CCattler CA certificate. Returns http.DefaultTransport if no CA cert is found.
+func buildTLSTransportFromCACert() http.RoundTripper {
+	for _, candidatePath := range caCertSearchPaths {
+		caCertPEM, readError := os.ReadFile(candidatePath) //nolint:gosec // reading known CA cert path
+		if readError != nil {
+			continue
+		}
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCertPEM) {
+			continue
+		}
+		return &http.Transport{
+			TLSClientConfig: &tls.Config{
+				RootCAs:    caCertPool,
+				MinVersion: tls.VersionTLS13,
+			},
+		}
+	}
+	return http.DefaultTransport
 }
 
 // writeServerJSONError writes a JSON-formatted error response with the given
@@ -383,14 +428,15 @@ var authenticatedClientOnce sync.Once
 // Falls back to http.DefaultClient when no token source is available.
 func buildAuthenticatedHTTPClient() *http.Client {
 	authenticatedClientOnce.Do(func() {
+		baseTransport := buildTLSTransportFromCACert()
 		resolvedToken := resolveAuthenticationToken()
 		if resolvedToken == "" {
-			cachedAuthenticatedClient = http.DefaultClient
+			cachedAuthenticatedClient = &http.Client{Transport: baseTransport}
 			return
 		}
 		cachedAuthenticatedClient = &http.Client{
 			Transport: &localTokenRoundTripper{
-				baseTransport: http.DefaultTransport,
+				baseTransport: baseTransport,
 				bearerToken:   resolvedToken,
 			},
 		}
