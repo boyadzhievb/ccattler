@@ -163,5 +163,5 @@ E2E tests run on `testbed-100.43` using libvirt VMs. See [design/TESTING.md](des
 ---
 
 ## Implementation Phases & Milestones
-
+yes
 See [milestones.md](milestones.md) for the full phase checklist and milestone table.

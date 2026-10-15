@@ -11,7 +11,10 @@ ExecStart=/usr/local/bin/cca server \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
   --ca {{ cca_cert_dir }}/ca.pem \
-  --ca-key {{ cca_cert_dir }}/ca-key.pem
+  --ca-key {{ cca_cert_dir }}/ca-key.pem \
+  --etcd-cert {{ cca_cert_dir }}/node.pem \
+  --etcd-key {{ cca_cert_dir }}/node-key.pem \
+  --etcd-ca {{ cca_cert_dir }}/ca.pem
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/ccattler/server.log

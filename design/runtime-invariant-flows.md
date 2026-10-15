@@ -183,6 +183,37 @@ A single IP (`--advertise-address`) propagates to:
 
 ---
 
+## 8. Node Enrollment (CSR-Based)
+
+**Chain:** `cmd/cca/command_misc.go:executeJoinCommand` → HTTP POST `/api/enroll` → `security/enrollment.go:EnrollNode` → `security/ca.go:SignCSR`
+
+Enrollment is the trust bootstrap between a new node and the cluster. The node generates its own ECDSA P-256 keypair locally, builds a CSR with its node ID as CN and local IPs as SANs, and sends the CSR (not the private key) to the server. The server validates the bootstrap token, signs the CSR with the cluster CA, and returns only the signed certificate + CA cert.
+
+**What must hold:**
+- Private key never leaves the node (generated locally, never serialized to network)
+- CSR signature is verified before signing (prevents key substitution)
+- Server-side SANs (DNS names, IPs) are merged with CSR SANs
+- Legacy flow (server-generated keypair) preserved for backward compatibility during rolling upgrades
+- Bootstrap token consumed (deleted) after successful enrollment
+
+**What must NOT happen:**
+- Private key PEM in the enrollment HTTP response (the old flow — deprecated)
+- CSR accepted without signature verification
+- Enrollment without `--ca-cert` or CA fingerprint (unless `--insecure` explicitly set)
+
+## 9. etcd mTLS
+
+**Chain:** `deploy/ansible/roles/etcd/templates/etcd.service.j2` → etcd `--client-cert-auth` → `store/etcd.go:NewEtcdStore` → `--etcd-cert/--etcd-key/--etcd-ca` CLI flags
+
+etcd must require mTLS for all client connections. The cluster CA signs etcd server and client certificates. The cca server and agents present client certs when connecting. Plain HTTP (`http://`) endpoints must not exist in production.
+
+**What must hold:**
+- etcd `--client-cert-auth=true` and `--cert-file/--key-file/--trusted-ca-file` set
+- All `etcd_endpoints` configs use `https://` scheme
+- cca-server.service passes `--etcd-cert/--etcd-key/--etcd-ca`
+- etcdctl in E2E tests passes `--cacert/--cert/--key`
+- etcd cert SANs include `127.0.0.1` (for local health checks)
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

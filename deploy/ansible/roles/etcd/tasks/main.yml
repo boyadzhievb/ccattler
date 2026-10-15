@@ -43,7 +43,11 @@
 
 - name: Wait for etcd to be healthy
   command: >
-    etcdctl --endpoints=http://{{ ansible_host }}:2379 endpoint health
+    etcdctl --endpoints=https://{{ ansible_host }}:2379
+    --cacert {{ cca_cert_dir | default('/etc/ccattler/pki') }}/ca.pem
+    --cert {{ cca_cert_dir | default('/etc/ccattler/pki') }}/node.pem
+    --key {{ cca_cert_dir | default('/etc/ccattler/pki') }}/node-key.pem
+    endpoint health
   register: etcd_health
   retries: 10
   delay: 3

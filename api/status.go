@@ -100,7 +100,38 @@ type ConfigStatus struct {
 	Service string `json:"service"` // owning service name
 	Type    string `json:"type"`    // "env" or "file"
 	Key     string `json:"key"`     // env var name or file path
-	Value   string `json:"value"`   // config value
+	Value   string `json:"value"`   // config value (redacted for sensitive keys)
+}
+
+// sensitiveConfigKeyPatterns lists substrings that indicate a config key holds
+// a credential or secret. Matching is case-insensitive.
+var sensitiveConfigKeyPatterns = []string{
+	"PASSWORD",
+	"PASSWD",
+	"SECRET",
+	"TOKEN",
+	"API_KEY",
+	"APIKEY",
+	"PRIVATE_KEY",
+	"ACCESS_KEY",
+	"CREDENTIAL",
+	"AUTH",
+	"CONN_CMD",
+}
+
+// redactedConfigValuePlaceholder is the replacement shown for sensitive values.
+const redactedConfigValuePlaceholder = "[REDACTED]"
+
+// redactSensitiveConfigValue returns "[REDACTED]" if the config key name
+// matches any known sensitive pattern, otherwise returns the original value.
+func redactSensitiveConfigValue(configKey string, configValue string) string {
+	upperKey := strings.ToUpper(configKey)
+	for _, pattern := range sensitiveConfigKeyPatterns {
+		if strings.Contains(upperKey, pattern) {
+			return redactedConfigValuePlaceholder
+		}
+	}
+	return configValue
 }
 
 // CloudIdentityStatus represents a cloud identity declaration with its
@@ -370,7 +401,7 @@ func collectConfigStatusFromStore(ctx context.Context, factStore store.StateStor
 				Service: serviceName,
 				Type:    configType,
 				Key:     configKey,
-				Value:   string(configFact.Value),
+				Value:   redactSensitiveConfigValue(configKey, string(configFact.Value)),
 			})
 		}
 	}

@@ -23,9 +23,10 @@ ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 
 CTRL_IP="192.168.124.10"
-ETCD="etcdctl --endpoints=http://${CTRL_IP}:2379"
+ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+ETCD="etcdctl --endpoints=https://${CTRL_IP}:2379 ${ETCD_TLS_FLAGS}"
 PFX="/ccattler"
-API="http://${CTRL_IP}:9770"
+API="https://${CTRL_IP}:9770"
 
 PROVISION=false
 DESTROY_ON_EXIT=true

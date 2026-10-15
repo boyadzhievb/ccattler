@@ -542,7 +542,7 @@ func buildServiceConfig(ctx context.Context, factStore store.StateStore, service
 			Service: serviceName,
 			Type:    configType,
 			Key:     configKey,
-			Value:   string(configFact.Value),
+			Value:   redactSensitiveConfigValue(configKey, string(configFact.Value)),
 		})
 	}
 	return configs

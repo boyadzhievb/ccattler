@@ -7,9 +7,17 @@ Type=notify
 ExecStart=/usr/local/bin/etcd \
   --name {{ inventory_hostname }} \
   --data-dir /var/lib/etcd \
-  --listen-client-urls http://{{ ansible_host }}:2379,http://127.0.0.1:2379 \
-  --advertise-client-urls http://{{ ansible_host }}:2379 \
-  --listen-peer-urls http://{{ ansible_host }}:2380
+  --listen-client-urls https://{{ ansible_host }}:2379,https://127.0.0.1:2379 \
+  --advertise-client-urls https://{{ ansible_host }}:2379 \
+  --listen-peer-urls https://{{ ansible_host }}:2380 \
+  --client-cert-auth=true \
+  --cert-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/node.pem \
+  --key-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/node-key.pem \
+  --trusted-ca-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/ca.pem \
+  --peer-cert-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/node.pem \
+  --peer-key-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/node-key.pem \
+  --peer-trusted-ca-file={{ cca_cert_dir | default('/etc/ccattler/pki') }}/ca.pem \
+  --peer-client-cert-auth=true
 Restart=on-failure
 RestartSec=5
 

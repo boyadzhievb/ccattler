@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -1340,6 +1341,277 @@ func TestEnrollmentListAndRemove(t *testing.T) {
 	// RBAC binding should be removed.
 	if err := rbacAuthorizer.Authorize("node:node-a", PermissionRead, "observed/"); err == nil {
 		t.Fatal("removed node should not have RBAC binding")
+	}
+}
+
+func TestSignCSR_ValidRequest(t *testing.T) {
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+
+	// Generate a keypair on the "node side".
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrTemplate := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			Organization: []string{"CCattler"},
+			CommonName:   "node-csr-test",
+		},
+		DNSNames:    []string{"node-csr-test.cca.local"},
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.50")},
+	}
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+	parsedCSR, _ := x509.ParseCertificateRequest(csrDER)
+
+	signResponse, err := certificateAuthority.SignCSR(SignCSRRequest{
+		CSR:         parsedCSR,
+		TTL:         1 * time.Hour,
+		DNSNames:    []string{"node-csr-test", "node-csr-test.cca.local"},
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.50")},
+	})
+	if err != nil {
+		t.Fatalf("sign CSR: %v", err)
+	}
+	if len(signResponse.CertificatePEM) == 0 {
+		t.Fatal("empty certificate PEM from SignCSR")
+	}
+
+	// Parse the signed certificate and verify it uses the CSR's public key.
+	certBlock, _ := pem.Decode(signResponse.CertificatePEM)
+	if certBlock == nil {
+		t.Fatal("failed to decode certificate PEM")
+	}
+	signedCert, parseErr := x509.ParseCertificate(certBlock.Bytes)
+	if parseErr != nil {
+		t.Fatalf("parse signed certificate: %v", parseErr)
+	}
+
+	signedPublicKey, isECDSA := signedCert.PublicKey.(*ecdsa.PublicKey)
+	if !isECDSA {
+		t.Fatal("signed certificate does not have ECDSA public key")
+	}
+	if !signedPublicKey.Equal(&nodePrivateKey.PublicKey) {
+		t.Fatal("signed certificate public key does not match CSR public key")
+	}
+	if signedCert.Subject.CommonName != "node-csr-test" {
+		t.Fatalf("expected CN node-csr-test, got %s", signedCert.Subject.CommonName)
+	}
+}
+
+func TestSignCSR_InvalidSignature(t *testing.T) {
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+
+	// Build a CSR with one key, then tamper with it by using a different key's signature.
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrTemplate := &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "tampered"},
+	}
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+
+	// Corrupt one byte of the DER to invalidate the signature.
+	csrDER[len(csrDER)-1] ^= 0xFF
+	parsedCSR, parseErr := x509.ParseCertificateRequest(csrDER)
+	if parseErr != nil {
+		t.Skip("corrupted DER could not be parsed — signature check is moot")
+	}
+
+	_, err := certificateAuthority.SignCSR(SignCSRRequest{
+		CSR: parsedCSR,
+		TTL: 1 * time.Hour,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid CSR signature")
+	}
+	if !strings.Contains(err.Error(), "CSR signature verification failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSignCSR_MergesSANs(t *testing.T) {
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrTemplate := &x509.CertificateRequest{
+		Subject:     pkix.Name{CommonName: "node-san-merge"},
+		DNSNames:    []string{"from-csr.local"},
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.1")},
+	}
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+	parsedCSR, _ := x509.ParseCertificateRequest(csrDER)
+
+	signResponse, err := certificateAuthority.SignCSR(SignCSRRequest{
+		CSR:         parsedCSR,
+		TTL:         1 * time.Hour,
+		DNSNames:    []string{"from-server.local", "from-csr.local"}, // overlap with CSR
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.2")},
+	})
+	if err != nil {
+		t.Fatalf("sign CSR: %v", err)
+	}
+
+	certBlock, _ := pem.Decode(signResponse.CertificatePEM)
+	signedCert, _ := x509.ParseCertificate(certBlock.Bytes)
+
+	// Should have merged DNS names without duplicates.
+	expectedDNSNames := map[string]bool{"from-csr.local": true, "from-server.local": true}
+	if len(signedCert.DNSNames) != len(expectedDNSNames) {
+		t.Fatalf("expected %d DNS names, got %d: %v", len(expectedDNSNames), len(signedCert.DNSNames), signedCert.DNSNames)
+	}
+	for _, dnsName := range signedCert.DNSNames {
+		if !expectedDNSNames[dnsName] {
+			t.Fatalf("unexpected DNS name: %s", dnsName)
+		}
+	}
+
+	// Should have merged IPs without duplicates.
+	if len(signedCert.IPAddresses) != 2 {
+		t.Fatalf("expected 2 IPs, got %d: %v", len(signedCert.IPAddresses), signedCert.IPAddresses)
+	}
+}
+
+func TestEnrollNode_CSRFlow(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+
+	// Generate a local keypair and CSR (mimicking what the client does).
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrTemplate := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			Organization: []string{"CCattler"},
+			CommonName:   "node-csr-enroll",
+		},
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.42")},
+	}
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+
+	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:       joinToken.Token,
+		NodeID:      "node-csr-enroll",
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.42")},
+		CSRPEM:      csrPEM,
+	})
+	if err != nil {
+		t.Fatalf("enroll with CSR: %v", err)
+	}
+
+	// PrivateKeyPEM should be nil — the private key stays on the node.
+	if len(response.PrivateKeyPEM) != 0 {
+		t.Fatal("CSR flow should not return PrivateKeyPEM")
+	}
+
+	if len(response.CertificatePEM) == 0 {
+		t.Fatal("no certificate returned")
+	}
+	if response.Principal != "node:node-csr-enroll" {
+		t.Fatalf("expected node:node-csr-enroll, got %s", response.Principal)
+	}
+
+	// Verify the returned certificate uses the node's public key.
+	certBlock, _ := pem.Decode(response.CertificatePEM)
+	signedCert, _ := x509.ParseCertificate(certBlock.Bytes)
+	certPublicKey, isECDSA := signedCert.PublicKey.(*ecdsa.PublicKey)
+	if !isECDSA {
+		t.Fatal("certificate does not have ECDSA public key")
+	}
+	if !certPublicKey.Equal(&nodePrivateKey.PublicKey) {
+		t.Fatal("certificate public key does not match node's local key")
+	}
+}
+
+func TestEnrollNode_LegacyFlow(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+
+	// Enroll without a CSR — should use legacy server-side keypair generation.
+	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:       joinToken.Token,
+		NodeID:      "node-legacy",
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.10")},
+	})
+	if err != nil {
+		t.Fatalf("legacy enroll: %v", err)
+	}
+
+	// Legacy flow should return a private key.
+	if len(response.PrivateKeyPEM) == 0 {
+		t.Fatal("legacy flow should return PrivateKeyPEM")
+	}
+	if len(response.CertificatePEM) == 0 {
+		t.Fatal("no certificate returned")
+	}
+	if response.Principal != "node:node-legacy" {
+		t.Fatalf("expected node:node-legacy, got %s", response.Principal)
+	}
+}
+
+func TestTokenHashing(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+	enrollmentService := NewEnrollmentService(memoryStore, certificateAuthority, nil, 1*time.Hour)
+	ctx := context.Background()
+
+	joinToken, err := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	// The returned token should have the full 64-char hex value.
+	if len(joinToken.Token) != 64 {
+		t.Fatalf("expected 64 hex chars in returned token, got %d", len(joinToken.Token))
+	}
+
+	// The raw token value should NOT appear as an etcd key suffix.
+	rawTokenKey := JoinTokenPrefix + joinToken.Token
+	_, rawLookupError := memoryStore.Get(ctx, rawTokenKey)
+	if rawLookupError == nil {
+		t.Fatal("raw token should NOT be stored as key — token hashing is broken")
+	}
+
+	// The hashed token should be the key suffix.
+	expectedHash := hashTokenValue(joinToken.Token)
+	hashedTokenKey := JoinTokenPrefix + expectedHash
+	hashedFact, hashedLookupError := memoryStore.Get(ctx, hashedTokenKey)
+	if hashedLookupError != nil {
+		t.Fatalf("token should be stored under hashed key: %v", hashedLookupError)
+	}
+
+	// The stored value should contain only the token prefix, not the full token.
+	var storedToken JoinToken
+	if unmarshalError := json.Unmarshal(hashedFact.Value, &storedToken); unmarshalError != nil {
+		t.Fatalf("unmarshal stored token: %v", unmarshalError)
+	}
+	if len(storedToken.Token) != tokenHashPrefix {
+		t.Fatalf("stored token should be %d chars (prefix), got %d: %q",
+			tokenHashPrefix, len(storedToken.Token), storedToken.Token)
+	}
+	if storedToken.Token != joinToken.Token[:tokenHashPrefix] {
+		t.Fatalf("stored prefix %q does not match token prefix %q",
+			storedToken.Token, joinToken.Token[:tokenHashPrefix])
+	}
+
+	// Enrollment with the full raw token should succeed (lookup by hash).
+	response, enrollError := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+		Token:       joinToken.Token,
+		NodeID:      "node-hash-test",
+		IPAddresses: []net.IP{net.ParseIP("10.0.0.99")},
+	})
+	if enrollError != nil {
+		t.Fatalf("enrollment with raw token should work via hashed lookup: %v", enrollError)
+	}
+	if response.Principal != "node:node-hash-test" {
+		t.Fatalf("expected node:node-hash-test, got %s", response.Principal)
 	}
 }
 

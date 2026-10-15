@@ -24,4 +24,4 @@ workers
 
 [all:vars]
 ansible_ssh_common_args=-o StrictHostKeyChecking=no
-etcd_endpoints=http://10.0.0.1:2379
+etcd_endpoints=https://10.0.0.1:2379

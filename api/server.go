@@ -1259,6 +1259,7 @@ type enrollmentRequestBody struct {
 	Token       string   `json:"token"`
 	NodeID      string   `json:"node_id"`
 	IPAddresses []string `json:"ip_addresses"`
+	CSRPEM      string   `json:"csr_pem,omitempty"` // PEM-encoded CSR for CSR-based enrollment
 }
 
 // enrollmentResponseBody is the JSON response for POST /api/enroll.
@@ -1302,6 +1303,16 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		return
 	}
 
+	csrPresentString := "false"
+	if requestBody.CSRPEM != "" {
+		csrPresentString = "true"
+	}
+	logging.Default().Info("enrollment request",
+		"node_id", requestBody.NodeID,
+		"source_ip", request.RemoteAddr,
+		"csr_present", csrPresentString,
+	)
+
 	var parsedIPAddresses []net.IP
 	for _, ipString := range requestBody.IPAddresses {
 		if parsedIP := net.ParseIP(ipString); parsedIP != nil {
@@ -1313,6 +1324,7 @@ func (apiServer *Server) handleEnroll(responseWriter http.ResponseWriter, reques
 		Token:       requestBody.Token,
 		NodeID:      requestBody.NodeID,
 		IPAddresses: parsedIPAddresses,
+		CSRPEM:      []byte(requestBody.CSRPEM),
 	})
 	if enrollmentError != nil {
 		responseWriter.WriteHeader(http.StatusForbidden)

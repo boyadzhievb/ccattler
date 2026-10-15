@@ -13,7 +13,10 @@ ExecStart=/usr/local/bin/cca agent \
   --secret-api-listen {{ ansible_host }}:9772 \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
-  --ca {{ cca_cert_dir }}/ca.pem
+  --ca {{ cca_cert_dir }}/ca.pem \
+  --etcd-cert {{ cca_cert_dir }}/node.pem \
+  --etcd-key {{ cca_cert_dir }}/node-key.pem \
+  --etcd-ca {{ cca_cert_dir }}/ca.pem
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/ccattler/agent.log

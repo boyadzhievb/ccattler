@@ -7,11 +7,16 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -476,21 +481,13 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 
 // executeJoinCommand enrolls this node with the cluster by contacting the
 // server's enrollment endpoint, presenting the join token, and saving the
-// issued certificate material to the data directory. The token may be a
-// composite "<hex-token>.<ca-fingerprint>" — if so, the CA fingerprint is used
-// to verify the server's identity during the TLS handshake.
+// issued certificate material to the data directory. The node generates its
+// own ECDSA P-256 keypair and sends a CSR — the private key never transits
+// the network.
 func executeJoinCommand(parsedConfig joinCommandConfig) {
 	fmt.Printf("Enrolling node %s with %s...\n", parsedConfig.nodeID, parsedConfig.serverAddress)
 
-	// Split the composite token into the raw token and optional CA fingerprint.
-	rawToken := parsedConfig.joinToken
-	embeddedCAFingerprint := ""
-	tokenParts := strings.SplitN(parsedConfig.joinToken, ".", 2)
-	if len(tokenParts) == 2 {
-		rawToken = tokenParts[0]
-		embeddedCAFingerprint = tokenParts[1]
-	}
-
+	rawToken, embeddedCAFingerprint := splitCompositeToken(parsedConfig.joinToken)
 	enrollmentHTTPClient := buildEnrollmentHTTPClient(parsedConfig.caCertPath, embeddedCAFingerprint)
 
 	localIPAddresses := detectLocalIPAddresses()
@@ -499,16 +496,95 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 		ipStrings[ipIndex] = ipAddr.String()
 	}
 
-	// Send only the raw token (without the fingerprint suffix) to the server.
-	enrollmentRequestBody, _ := json.Marshal(map[string]interface{}{
+	localNodePrivateKey, enrollmentCSRPEM := generateNodeKeypairAndCSR(parsedConfig.nodeID, localIPAddresses)
+
+	enrollmentRequestPayload, _ := json.Marshal(map[string]interface{}{
 		"token":        rawToken,
 		"node_id":      parsedConfig.nodeID,
 		"ip_addresses": ipStrings,
+		"csr_pem":      string(enrollmentCSRPEM),
 	})
 
-	enrollmentURL := parsedConfig.serverAddress + "/api/enroll"
-	httpResponse, requestError := enrollmentHTTPClient.Post(enrollmentURL, "application/json",
-		strings.NewReader(string(enrollmentRequestBody)))
+	enrollmentResponse := sendEnrollmentRequest(enrollmentHTTPClient, parsedConfig.serverAddress, enrollmentRequestPayload)
+
+	// CSR flow: server returns no private key, so use the locally generated key.
+	// Legacy compat: if the server returns a private key (old server), use that.
+	nodePrivateKeyPEM := enrollmentResponse.PrivateKeyPEM
+	if nodePrivateKeyPEM == "" {
+		nodePrivateKeyPEM = marshalECPrivateKeyToPEM(localNodePrivateKey)
+	}
+
+	writeEnrollmentCredentials(parsedConfig.dataDirectory,
+		enrollmentResponse.CertificatePEM, nodePrivateKeyPEM, enrollmentResponse.CACertPEM)
+
+	saveSecretMasterKey(enrollmentResponse.SecretMasterKey)
+	saveEtcdEndpointsConfig(parsedConfig.serverAddress)
+
+	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
+	fmt.Println()
+	fmt.Println("Start the agent with:")
+	fmt.Printf("  cca agent --node-id %s --cert %s/node.pem --key %s/node-key.pem --ca %s/ca.pem\n",
+		parsedConfig.nodeID, parsedConfig.dataDirectory, parsedConfig.dataDirectory, parsedConfig.dataDirectory)
+}
+
+// splitCompositeToken splits a composite "<hex-token>.<ca-fingerprint>" into
+// the raw token and optional CA fingerprint.
+func splitCompositeToken(compositeToken string) (rawToken string, caFingerprint string) {
+	tokenParts := strings.SplitN(compositeToken, ".", 2)
+	if len(tokenParts) == 2 {
+		return tokenParts[0], tokenParts[1]
+	}
+	return compositeToken, ""
+}
+
+// generateNodeKeypairAndCSR creates an ECDSA P-256 keypair and builds a CSR
+// with the nodeID as CN, the local IPs as SANs, and "CCattler" as the
+// organization. The private key stays local — only the CSR is sent to the
+// server.
+func generateNodeKeypairAndCSR(nodeID string, localIPAddresses []net.IP) (*ecdsa.PrivateKey, []byte) {
+	localNodePrivateKey, keygenError := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if keygenError != nil {
+		fmt.Fprintf(os.Stderr, "error generating node keypair: %v\n", keygenError)
+		os.Exit(1)
+	}
+
+	csrTemplate := &x509.CertificateRequest{
+		Subject: pkix.Name{
+			Organization: []string{"CCattler"},
+			CommonName:   nodeID,
+		},
+		IPAddresses: localIPAddresses,
+	}
+
+	csrDERBytes, csrError := x509.CreateCertificateRequest(rand.Reader, csrTemplate, localNodePrivateKey)
+	if csrError != nil {
+		fmt.Fprintf(os.Stderr, "error creating CSR: %v\n", csrError)
+		os.Exit(1)
+	}
+
+	csrPEMBytes := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE REQUEST",
+		Bytes: csrDERBytes,
+	})
+	return localNodePrivateKey, csrPEMBytes
+}
+
+// enrollmentResponsePayload is the parsed JSON response from POST /api/enroll.
+type enrollmentResponsePayload struct {
+	CertificatePEM  string `json:"certificate_pem"`
+	PrivateKeyPEM   string `json:"private_key_pem"`
+	CACertPEM       string `json:"ca_cert_pem"`
+	SecretMasterKey string `json:"secret_master_key"`
+	Principal       string `json:"principal"`
+	Error           string `json:"error"`
+}
+
+// sendEnrollmentRequest posts the enrollment payload to the server and returns
+// the parsed response. Exits on transport or application error.
+func sendEnrollmentRequest(httpClient *http.Client, serverAddress string, requestPayload []byte) enrollmentResponsePayload {
+	enrollmentURL := serverAddress + "/api/enroll"
+	httpResponse, requestError := httpClient.Post(enrollmentURL, "application/json",
+		strings.NewReader(string(requestPayload)))
 	if requestError != nil {
 		fmt.Fprintf(os.Stderr, "error contacting server: %v\n", requestError)
 		os.Exit(1)
@@ -518,53 +594,64 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 
-	var enrollmentResponse struct {
-		CertificatePEM  string `json:"certificate_pem"`
-		PrivateKeyPEM   string `json:"private_key_pem"`
-		CACertPEM       string `json:"ca_cert_pem"`
-		SecretMasterKey string `json:"secret_master_key"`
-		Principal       string `json:"principal"`
-		Error           string `json:"error"`
-	}
+	var enrollmentResponse enrollmentResponsePayload
 	if jsonError := json.Unmarshal(responseBody, &enrollmentResponse); jsonError != nil {
 		fmt.Fprintf(os.Stderr, "error parsing response: %v\n", jsonError)
 		os.Exit(1)
 	}
-
 	if enrollmentResponse.Error != "" {
 		fmt.Fprintf(os.Stderr, "enrollment failed: %s\n", enrollmentResponse.Error)
 		os.Exit(1)
 	}
+	return enrollmentResponse
+}
 
-	writeEnrollmentCredentials(parsedConfig.dataDirectory,
-		enrollmentResponse.CertificatePEM, enrollmentResponse.PrivateKeyPEM, enrollmentResponse.CACertPEM)
-
-	if enrollmentResponse.SecretMasterKey != "" {
-		decodedKey, decodeError := hex.DecodeString(enrollmentResponse.SecretMasterKey)
-		if decodeError != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not decode secret master key: %v\n", decodeError)
-		} else if writeError := os.WriteFile(secretMasterKeyPath, decodedKey, 0600); writeError != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", secretMasterKeyPath, writeError)
-		} else {
-			fmt.Printf("  Secret key:  %s\n", secretMasterKeyPath)
-		}
+// marshalECPrivateKeyToPEM encodes an ECDSA private key as PEM. Used to save
+// the locally generated node key to disk.
+func marshalECPrivateKeyToPEM(privateKey *ecdsa.PrivateKey) string {
+	keyDERBytes, marshalError := x509.MarshalECPrivateKey(privateKey)
+	if marshalError != nil {
+		fmt.Fprintf(os.Stderr, "error encoding private key: %v\n", marshalError)
+		os.Exit(1)
 	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: keyDERBytes,
+	}))
+}
 
-	serverHost, _, splitError := net.SplitHostPort(strings.TrimPrefix(strings.TrimPrefix(parsedConfig.serverAddress, "https://"), "http://"))
-	if splitError == nil {
-		etcdEndpoints := "http://" + serverHost + ":2379"
-		if writeError := writeEndpointsConfig(etcdEndpoints); writeError != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", endpointsConfigPath, writeError)
-		} else {
-			fmt.Printf("  Endpoints:   %s → %s\n", etcdEndpoints, endpointsConfigPath)
-		}
+// saveSecretMasterKey decodes and writes the secret master key from the
+// enrollment response, if present.
+func saveSecretMasterKey(secretMasterKeyHex string) {
+	if secretMasterKeyHex == "" {
+		return
 	}
+	decodedKey, decodeError := hex.DecodeString(secretMasterKeyHex)
+	if decodeError != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not decode secret master key: %v\n", decodeError)
+		return
+	}
+	if writeError := os.WriteFile(secretMasterKeyPath, decodedKey, 0600); writeError != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", secretMasterKeyPath, writeError)
+	} else {
+		fmt.Printf("  Secret key:  %s\n", secretMasterKeyPath)
+	}
+}
 
-	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
-	fmt.Println()
-	fmt.Println("Start the agent with:")
-	fmt.Printf("  cca agent --node-id %s --cert %s/node.pem --key %s/node-key.pem --ca %s/ca.pem\n",
-		parsedConfig.nodeID, parsedConfig.dataDirectory, parsedConfig.dataDirectory, parsedConfig.dataDirectory)
+// saveEtcdEndpointsConfig extracts the host from the server address and writes
+// an etcd endpoints config file pointing to the same host over HTTPS.
+func saveEtcdEndpointsConfig(serverAddress string) {
+	serverHost, _, splitError := net.SplitHostPort(
+		strings.TrimPrefix(strings.TrimPrefix(serverAddress, "https://"), "http://"))
+	if splitError != nil {
+		return
+	}
+	etcdEndpoints := "https://" + serverHost + ":2379"
+	if writeError := writeEndpointsConfig(etcdEndpoints); writeError != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", endpointsConfigPath, writeError)
+	} else {
+		fmt.Printf("  Endpoints:   %s → %s\n", etcdEndpoints, endpointsConfigPath)
+	}
 }
 
 // buildEnrollmentHTTPClient creates an HTTP client configured for the node

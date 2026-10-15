@@ -51,12 +51,13 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Delete all state (denial of service)
 - Overwrite node enrollment records
 
-**Mitigations (existing):** None for the etcd connection. The secret store uses AES-256-GCM encryption at rest, limiting plaintext secret exposure even if etcd is compromised.
-
-**Mitigations (needed):**
-- Add TLS config to `EtcdStoreConfig` and wire through CLI flags
-- Configure etcd with `--client-cert-auth` and mTLS certificates
-- Validate endpoint schemes (`https://` required when TLS configured)
+**Mitigations (existing):**
+- etcd configured with `--client-cert-auth=true` and mTLS certificates (Phase 110)
+- `EtcdStoreConfig` supports `--etcd-cert/--etcd-key/--etcd-ca` flags for client TLS (Phase 45)
+- All deployment templates (Ansible, Lima) use `https://` endpoints and pass TLS flags
+- E2E tests use TLS flags for etcdctl commands
+- Secret store uses AES-256-GCM encryption at rest
+- Endpoint scheme validation rejects `http://` when TLS is configured (Phase 45)
 
 ### T2: Command Injection via Runtime Exec (HIGH)
 
@@ -73,10 +74,10 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - ProcessRuntime uses `exec.Command` (no shell), splits on whitespace
 - ValidateResourceName at API boundaries (Phase 39a) — rejects most injection payloads in service/instance names
 
-**Mitigations (needed):**
-- Validate `Spec.Image` format before passing to any runtime
-- Sanitize or restrict `ExecSpec.Command` content
-- Audit all `fmt.Sprintf` patterns building command arguments
+**Mitigations (added, Phase 45):**
+- Image format validation before passing to any runtime
+- Env var key validation rejects shell metacharacters
+- `ValidateResourceName` at API boundaries rejects injection payloads
 
 ### T3: Secret Leakage (MEDIUM)
 
@@ -93,10 +94,9 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - MCP server redacts sensitive fields from tool output
 - AES-256-GCM encryption in the store
 
-**Mitigations (needed):**
-- Audit all logging near secret/credential paths for value leakage
-- Ensure error messages never include plaintext secret content
-- Verify CLI `describe` output does not print secret values
+**Mitigations (added, Phase 110):**
+- API `describe` and `status` endpoints redact config values whose key matches sensitive patterns (PASSWORD, SECRET, TOKEN, API_KEY, AUTH, CONN_CMD, etc.)
+- Node cert permissions set to 0600 in all deployment paths
 
 ### T4: Node Enrollment MITM (HIGH)
 
@@ -105,13 +105,11 @@ User CLI ──→ API Server ──→ etcd (fact store)
 **Impact:** Attacker intercepts enrollment, obtains valid node certificate, joins cluster as a trusted node.
 
 **Mitigations (existing):**
-- Warning printed when `--ca-cert` is missing
+- CA fingerprint embedded in composite join token — `cca token create` returns `<token>.<ca-fingerprint>` and `cca join` verifies the server cert fingerprint during TLS handshake (Phase 45)
+- If `--ca-cert` is provided, standard CA validation is used
 - TLS 1.3 minimum version
 - Bootstrap tokens are single-use and time-limited
-
-**Mitigations (needed):**
-- Make `--ca-cert` required (or implement TOFU with fingerprint confirmation)
-- Log enrollment source IP in audit trail
+- Enrollment source IP logged in audit trail (Phase 110)
 
 ### T5: Privilege Escalation via Fact Store (MEDIUM)
 
@@ -146,21 +144,23 @@ User CLI ──→ API Server ──→ etcd (fact store)
 
 **Mitigations (existing):** RBAC restricts which principals can access which prefixes — but only when RBAC is configured.
 
-**Mitigations (needed):**
-- API prefix denylist blocking `secrets/`, `credentials/`, `enrollment/token/`, `bootstrap/` from state/watch endpoints
-- Store join token hashes instead of plaintext values
+**Mitigations (existing):**
+- API prefix denylist blocks `secrets/`, `credentials/`, `enrollment/token/`, `bootstrap/` from state/watch endpoints (Phase 45)
+- Join tokens stored as SHA-256 hashes — plaintext never persisted to etcd (Phase 110)
+- Token listings show only the first 8 characters
 
-### T8: Enrollment Sends Private Key Over HTTP (HIGH)
+### T8: Enrollment Sends Private Key Over Network (HIGH)
 
-**Attack surface:** The enrollment response includes the node's private key PEM. If the server is running without TLS (allowed by default), the key transits in cleartext.
+**Attack surface:** The legacy enrollment flow has the server generate the node's keypair and return the private key PEM in the enrollment response.
 
-**Impact:** Node identity compromise — any network observer obtains a valid node key.
+**Impact:** Node identity compromise — any network observer (or compromised server) obtains a valid node key.
 
-**Mitigations (existing):** TLS is available but optional for the API server.
+**Mitigations (existing):**
+- CSR-based enrollment (Phase 110): node generates its own ECDSA P-256 keypair locally, sends only the CSR to the server, server signs and returns only the certificate. Private key never leaves the node.
+- Legacy flow preserved for backward compatibility with old servers, but logs a deprecation warning.
+- TLS is available for the API server.
 
-**Mitigations (needed):**
-- Switch to CSR-based enrollment (node generates own key, sends CSR)
-- Or enforce TLS for enrollment endpoint
+**Residual risk:** Legacy enrollment flow (without CSR) is still available for backward compatibility but logs a deprecation warning. A future release should remove the legacy path entirely.
 
 ### T9: Config File Path Traversal (MEDIUM)
 
@@ -168,9 +168,8 @@ User CLI ──→ API Server ──→ etcd (fact store)
 
 **Impact:** Arbitrary file write as the CCattler process user.
 
-**Mitigations (needed):**
-- Validate joined path stays within temp directory using `strings.HasPrefix`
-- Reject config paths containing `..`
+**Mitigations (existing):**
+- Config file path containment validation added (Phase 45) — paths containing `..` are rejected, joined path verified to stay within temp directory
 
 ### T10: Container Escape (LOW — out of scope)
 
@@ -186,7 +185,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 |------|----------|--------|--------|
 | CA cert (`ca.pem`) | 0644 | 0644 | OK (public) |
 | CA key | Removed from non-CA nodes | Removed | OK |
-| Node cert (`node.pem`) | 0600 | 0644 | **FIX NEEDED** |
+| Node cert (`node.pem`) | 0600 | 0600 | OK |
 | Node key (`node-key.pem`) | 0600 | 0600 | OK |
 | Materialized secrets | 0600 | 0600 | OK |
 | Secret mount directories | 0700 | 0700 | OK |
@@ -197,13 +196,13 @@ User CLI ──→ API Server ──→ etcd (fact store)
 |----------|------|--------|--------|
 | P0 | Add TLS to etcd client connection | T1 | **FIXED (Phase 45)** |
 | P0 | API prefix denylist for sensitive keys | T7 | **FIXED (Phase 45)** |
-| P0 | Configure etcd deployment with mTLS | T1 | Ansible (infra) |
+| P0 | Configure etcd deployment with mTLS | T1 | **FIXED (Phase 110)** |
 | P1 | Validate image format before runtime exec | T2 | **FIXED (Phase 45)** |
 | P1 | Config file path traversal protection | T9 | **FIXED (Phase 45)** |
 | P1 | Env var key validation | T2 | **FIXED (Phase 45)** |
 | P1 | Fix node cert permissions (0644 → 0600) | T3 | **FIXED (Phase 45)** |
 | P1 | Validate etcd endpoint schemes | T1 | **FIXED (Phase 45)** |
-| P2 | Make `--ca-cert` required for `cca join` | T4 | Documented |
-| P2 | Switch to CSR-based enrollment | T8 | Documented |
-| P2 | Store join token hashes, not plaintext | T7 | Documented |
-| P2 | Redact config values matching sensitive patterns | T3 | Documented |
+| P2 | Make `--ca-cert` required for `cca join` | T4 | **FIXED (Phase 45)** — already enforced via CA fingerprint or `--ca-cert` |
+| P2 | Switch to CSR-based enrollment | T8 | **FIXED (Phase 110)** |
+| P2 | Store join token hashes, not plaintext | T7 | **FIXED (Phase 110)** |
+| P2 | Redact config values matching sensitive patterns | T3 | **FIXED (Phase 110)** |

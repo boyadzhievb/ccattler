@@ -189,7 +189,8 @@ case "$CLUSTER_ENV" in
 esac
 
 ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
-ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
+ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
+ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 
 # Persisted Vagrant state directory — survives git checkout and workspace cleanup.
 VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
@@ -293,9 +294,9 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
         cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
     fi
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
     log "Desired state cleared — agents will reconcile and stop containers..."
     deadline=$((SECONDS + 60))
     while [[ $SECONDS -lt $deadline ]]; do
@@ -315,6 +316,11 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
         done
         wait
     fi
+    log "Pruning container volumes for blank-slate redeploy..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo nerdctl volume prune -f 2>/dev/null || true" &
+    done
+    wait
     log "Cluster cleared"
     exit 0
 fi
@@ -429,12 +435,12 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
-    log "Removing all containers and pruning name store..."
+    log "Removing all containers, volumes, and pruning name store..."
     for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true" &
+        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS del --prefix /ccattler/ >/dev/null 2>&1 || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1 || true"
     log "Truncating old service logs..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
@@ -485,7 +491,10 @@ ExecStart=/usr/local/bin/cca agent \\
   --secret-api-listen ${local_ip}:9772 \\
   --cert /etc/ccattler/pki/node.pem \\
   --key /etc/ccattler/pki/node-key.pem \\
-  --ca /etc/ccattler/pki/ca.pem
+  --ca /etc/ccattler/pki/ca.pem \\
+  --etcd-cert /etc/ccattler/pki/node.pem \\
+  --etcd-key /etc/ccattler/pki/node-key.pem \\
+  --etcd-ca /etc/ccattler/pki/ca.pem
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/ccattler/agent.log
@@ -520,7 +529,10 @@ ExecStart=/usr/local/bin/cca server \\
   --cert /etc/ccattler/pki/node.pem \\
   --key /etc/ccattler/pki/node-key.pem \\
   --ca /etc/ccattler/pki/ca.pem \\
-  --ca-key /etc/ccattler/pki/ca-key.pem
+  --ca-key /etc/ccattler/pki/ca-key.pem \\
+  --etcd-cert /etc/ccattler/pki/node.pem \\
+  --etcd-key /etc/ccattler/pki/node-key.pem \\
+  --etcd-ca /etc/ccattler/pki/ca.pem
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:/var/log/ccattler/server.log
@@ -562,7 +574,20 @@ fi
 
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health..."
-ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health" || fail "etcd unhealthy"
+ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy"
+
+log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
+if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
+    fail "etcd accepted unauthenticated connection — mTLS not enforced (T1 CRITICAL)"
+fi
+log "etcd correctly rejects connections without client certificate"
+
+log "Verifying etcd rejects plain HTTP access..."
+ETCD_HTTP_ENDPOINT="http://${CTRL_IP}:2379"
+if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
+    fail "etcd accepted plain HTTP connection — TLS not enforced (T1 CRITICAL)"
+fi
+log "etcd correctly rejects plain HTTP — all access requires mTLS"
 
 log "Fetching cluster TLS certificates for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
@@ -825,7 +850,9 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
             service_name="${expose_entry#*:}"
             CADDY_CONFIG+="
 ${domain} {
-    tls internal
+    tls internal {
+        on_demand
+    }
     reverse_proxy${PROXY_UPSTREAMS} {
         header_up Host ${service_name}
     }
@@ -838,7 +865,16 @@ ${domain} {
     if [[ -n "$CADDY_CONFIG" ]]; then
         log "Configuring Caddy reverse proxy on testbed host..."
         CADDY_FILE="/etc/caddy/Caddyfile"
-        echo "$CADDY_CONFIG" | sudo tee "$CADDY_FILE" > /dev/null
+        # Global options: disable auto HTTP→HTTPS redirect (avoids port 80
+        # conflict) and skip installing the internal CA into the system trust
+        # store (caddy user has no sudo).
+        {
+            echo "{"
+            echo "    auto_https disable_redirects"
+            echo "    skip_install_trust"
+            echo "}"
+            echo "$CADDY_CONFIG"
+        } | sudo tee "$CADDY_FILE" > /dev/null
         sudo systemctl restart caddy 2>/dev/null || log "WARNING: Caddy not available on host"
         log "Caddy configured — services accessible from:"
         echo -e "$EXPOSE_SUMMARY"

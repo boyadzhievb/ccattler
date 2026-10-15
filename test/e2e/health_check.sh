@@ -20,7 +20,7 @@ ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 CTRL_IP="192.168.124.10"
 WORKER1_IP="192.168.124.20"
 WORKER2_IP="192.168.124.30"
-ETCD_ENDPOINTS="http://${CTRL_IP}:2379"
+ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 
 ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
 ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")

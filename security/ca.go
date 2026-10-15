@@ -268,6 +268,120 @@ func (certificateAuthority *CertificateAuthority) ClientTLSConfig(clientCertific
 	}, nil
 }
 
+// SignCSRRequest holds the parameters for signing a certificate signing request.
+// The CSR carries the subject's public key; the CA never generates or handles
+// the private key.
+type SignCSRRequest struct {
+	CSR         *x509.CertificateRequest // parsed CSR from the enrolling node
+	TTL         time.Duration            // how long the signed certificate should be valid
+	DNSNames    []string                 // server-side DNS SANs to merge with CSR SANs
+	IPAddresses []net.IP                 // server-side IP SANs to merge with CSR SANs
+}
+
+// SignCSRResponse contains the PEM-encoded certificate signed from a CSR.
+type SignCSRResponse struct {
+	CertificatePEM []byte    // PEM-encoded leaf certificate
+	NotAfter       time.Time // certificate expiry
+}
+
+// SignCSR validates the CSR signature, merges SANs from the request and the
+// CSR, and signs a leaf certificate using the CSR's public key (not a newly
+// generated one). The private key never leaves the node.
+func (certificateAuthority *CertificateAuthority) SignCSR(signRequest SignCSRRequest) (*SignCSRResponse, error) {
+	if err := signRequest.CSR.CheckSignature(); err != nil {
+		return nil, fmt.Errorf("CSR signature verification failed: %w", err)
+	}
+
+	serialNumber, err := generateSerialNumber()
+	if err != nil {
+		return nil, fmt.Errorf("generate serial: %w", err)
+	}
+
+	mergedDNSNames := mergeUniqueStrings(signRequest.CSR.DNSNames, signRequest.DNSNames)
+	mergedIPAddresses := mergeUniqueIPs(signRequest.CSR.IPAddresses, signRequest.IPAddresses)
+	notAfter := time.Now().Add(signRequest.TTL)
+
+	leafTemplate := buildCSRLeafTemplate(
+		serialNumber, signRequest.CSR.Subject, mergedDNSNames, mergedIPAddresses, notAfter,
+	)
+
+	leafCertificateBytes, err := x509.CreateCertificate(
+		rand.Reader, leafTemplate, certificateAuthority.caCertificate,
+		signRequest.CSR.PublicKey, certificateAuthority.caPrivateKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign CSR: %w", err)
+	}
+
+	leafCertificatePEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: leafCertificateBytes,
+	})
+
+	return &SignCSRResponse{
+		CertificatePEM: leafCertificatePEM,
+		NotAfter:       notAfter,
+	}, nil
+}
+
+// buildCSRLeafTemplate creates the x509.Certificate template used when signing
+// a CSR. Extracted to keep SignCSR under the 80-line function limit.
+func buildCSRLeafTemplate(
+	serialNumber *big.Int, subject pkix.Name,
+	dnsNames []string, ipAddresses []net.IP, notAfter time.Time,
+) *x509.Certificate {
+	return &x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject:      subject,
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddresses,
+		NotBefore:    time.Now().Add(certificateNotBeforeClockSkew),
+		NotAfter:     notAfter,
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+	}
+}
+
+// mergeUniqueStrings returns the union of two string slices with no duplicates.
+func mergeUniqueStrings(sliceA, sliceB []string) []string {
+	seen := make(map[string]bool, len(sliceA)+len(sliceB))
+	merged := make([]string, 0, len(sliceA)+len(sliceB))
+	for _, value := range sliceA {
+		if !seen[value] {
+			seen[value] = true
+			merged = append(merged, value)
+		}
+	}
+	for _, value := range sliceB {
+		if !seen[value] {
+			seen[value] = true
+			merged = append(merged, value)
+		}
+	}
+	return merged
+}
+
+// mergeUniqueIPs returns the union of two IP slices with no duplicates.
+func mergeUniqueIPs(sliceA, sliceB []net.IP) []net.IP {
+	seen := make(map[string]bool, len(sliceA)+len(sliceB))
+	merged := make([]net.IP, 0, len(sliceA)+len(sliceB))
+	for _, ipAddress := range sliceA {
+		ipString := ipAddress.String()
+		if !seen[ipString] {
+			seen[ipString] = true
+			merged = append(merged, ipAddress)
+		}
+	}
+	for _, ipAddress := range sliceB {
+		ipString := ipAddress.String()
+		if !seen[ipString] {
+			seen[ipString] = true
+			merged = append(merged, ipAddress)
+		}
+	}
+	return merged
+}
+
 // generateSerialNumber returns a random serial number for X.509 certificates.
 func generateSerialNumber() (*big.Int, error) {
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)

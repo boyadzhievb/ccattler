@@ -162,8 +162,12 @@
           ExecStart=/usr/local/bin/etcd \
             --name cca-ctrl \
             --data-dir /var/lib/etcd \
-            --listen-client-urls http://127.0.0.1:2379 \
-            --advertise-client-urls http://127.0.0.1:2379
+            --listen-client-urls https://127.0.0.1:2379 \
+            --advertise-client-urls https://127.0.0.1:2379 \
+            --client-cert-auth=true \
+            --cert-file=/etc/ccattler/pki/node.pem \
+            --key-file=/etc/ccattler/pki/node-key.pem \
+            --trusted-ca-file=/etc/ccattler/pki/ca.pem
           Restart=on-failure
           RestartSec=5
 
@@ -178,7 +182,12 @@
         daemon_reload: true
 
     - name: Wait for etcd
-      command: etcdctl --endpoints=http://127.0.0.1:2379 endpoint health
+      command: >
+        etcdctl --endpoints=https://127.0.0.1:2379
+        --cacert /etc/ccattler/pki/ca.pem
+        --cert /etc/ccattler/pki/node.pem
+        --key /etc/ccattler/pki/node-key.pem
+        endpoint health
       register: etcd_health
       retries: 10
       delay: 3
@@ -252,7 +261,7 @@
     - name: Write etcd endpoints config
       copy:
         dest: /etc/ccattler/endpoints
-        content: "http://127.0.0.1:2379\n"
+        content: "https://127.0.0.1:2379\n"
         mode: "0600"
 
     - name: Install cca-server systemd unit
@@ -270,7 +279,10 @@
             --listen 127.0.0.1:9770 \
             --cert {{ cca_cert_dir }}/node.pem \
             --key {{ cca_cert_dir }}/node-key.pem \
-            --ca {{ cca_cert_dir }}/ca.pem
+            --ca {{ cca_cert_dir }}/ca.pem \
+            --etcd-cert {{ cca_cert_dir }}/node.pem \
+            --etcd-key {{ cca_cert_dir }}/node-key.pem \
+            --etcd-ca {{ cca_cert_dir }}/ca.pem
           Restart=on-failure
           RestartSec=5
           StandardOutput=append:/var/log/ccattler/server.log
@@ -324,7 +336,10 @@
             --node-id node-1 \
             --cert {{ cca_cert_dir }}/node.pem \
             --key {{ cca_cert_dir }}/node-key.pem \
-            --ca {{ cca_cert_dir }}/ca.pem
+            --ca {{ cca_cert_dir }}/ca.pem \
+            --etcd-cert {{ cca_cert_dir }}/node.pem \
+            --etcd-key {{ cca_cert_dir }}/node-key.pem \
+            --etcd-ca {{ cca_cert_dir }}/ca.pem
           Restart=on-failure
           RestartSec=5
           StandardOutput=append:/var/log/ccattler/agent.log
