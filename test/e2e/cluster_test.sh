@@ -435,6 +435,59 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+
+    # Ensure etcd endpoints file uses https:// and etcd runs with mTLS.
+    # On clusters provisioned before M110, etcd used plain HTTP — upgrade in-place.
+    log "Ensuring etcd mTLS configuration..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "echo 'https://${CTRL_IP}:2379' | sudo tee /etc/ccattler/endpoints > /dev/null" &
+    done
+    wait
+    ETCD_NEEDS_RESTART=false
+    if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'client-cert-auth' /etc/systemd/system/etcd.service 2>/dev/null"; then
+        log "etcd already configured for mTLS"
+    else
+        log "Upgrading etcd to mTLS..."
+        ETCD_CERT_DIR="/etc/ccattler/pki"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
+[Unit]
+Description=etcd — CCattler fact store
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \\
+  --name ${VM_PREFIX}-ctrl \\
+  --data-dir /var/lib/etcd \\
+  --listen-client-urls https://${CTRL_IP}:2379,https://127.0.0.1:2379 \\
+  --advertise-client-urls https://${CTRL_IP}:2379 \\
+  --listen-peer-urls https://${CTRL_IP}:2380 \\
+  --client-cert-auth=true \\
+  --cert-file=${ETCD_CERT_DIR}/node.pem \\
+  --key-file=${ETCD_CERT_DIR}/node-key.pem \\
+  --trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
+  --peer-cert-file=${ETCD_CERT_DIR}/node.pem \\
+  --peer-key-file=${ETCD_CERT_DIR}/node-key.pem \\
+  --peer-trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
+  --peer-client-cert-auth=true
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+ETCDSVC
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
+        ETCD_NEEDS_RESTART=true
+    fi
+    if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
+        log "Restarting etcd with mTLS (wiping data dir for clean URL transition)..."
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd; sudo rm -rf /var/lib/etcd"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"
+        sleep 3
+        ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
+        log "etcd mTLS upgrade complete"
+    fi
+
     log "Removing all containers, volumes, and pruning name store..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
