@@ -285,6 +285,11 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 // until Ctrl+C. No node agent or runtime — that runs separately via "cca agent".
 func executeServerCommand(parsedConfig serverCommandConfig) {
 	configureLogger(parsedConfig.logLevel, parsedConfig.logFormat)
+
+	if parsedConfig.storeBackend == "etcd" {
+		runServerPreflightChecks(parsedConfig)
+	}
+
 	factStore, storeCreationError := createStateStoreFromServerConfig(
 		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
 		parsedConfig.etcdCertPath, parsedConfig.etcdKeyPath, parsedConfig.etcdCACertPath)
@@ -772,6 +777,117 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 		ClientCAs:    caCertPool,
 		ClientAuth:   clientAuthPolicy,
 		MinVersion:   tls.VersionTLS13,
+	}
+}
+
+// preflightExpectedKeyPermission is the maximum allowed permission bits for
+// private key files. Files with broader permissions are flagged as insecure.
+const preflightExpectedKeyPermission = 0600
+
+// runServerPreflightChecks validates that certificates, permissions, and etcd
+// are properly configured before starting the server. Exits with actionable
+// error messages when a prerequisite is missing.
+func runServerPreflightChecks(parsedConfig serverCommandConfig) {
+	preflightCheckExplicitCertPaths(parsedConfig)
+	preflightCheckEtcdCertPaths(parsedConfig)
+	preflightCheckDefaultPKIExists(parsedConfig)
+	preflightCheckEtcdConnectivity(parsedConfig)
+}
+
+// preflightCheckExplicitCertPaths validates that cert/key/ca files provided
+// via --cert/--key/--ca exist and have secure permissions.
+func preflightCheckExplicitCertPaths(parsedConfig serverCommandConfig) {
+	if parsedConfig.tlsCertPath == "" {
+		return
+	}
+	preflightRequireReadableFile(parsedConfig.tlsCertPath, "server certificate (--cert)")
+	preflightRequireReadableFile(parsedConfig.tlsKeyPath, "server private key (--key)")
+	preflightRequireReadableFile(parsedConfig.tlsCACertPath, "CA certificate (--ca)")
+	preflightRequireSecureKeyPermissions(parsedConfig.tlsKeyPath, "server private key")
+	if parsedConfig.tlsCAKeyPath != "" {
+		preflightRequireReadableFile(parsedConfig.tlsCAKeyPath, "CA private key (--ca-key)")
+		preflightRequireSecureKeyPermissions(parsedConfig.tlsCAKeyPath, "CA private key")
+	}
+}
+
+// preflightCheckEtcdCertPaths validates that etcd client TLS files provided
+// via --etcd-cert/--etcd-key/--etcd-ca exist and have secure permissions.
+func preflightCheckEtcdCertPaths(parsedConfig serverCommandConfig) {
+	if parsedConfig.etcdCertPath == "" {
+		return
+	}
+	preflightRequireReadableFile(parsedConfig.etcdCertPath, "etcd client certificate (--etcd-cert)")
+	preflightRequireReadableFile(parsedConfig.etcdKeyPath, "etcd client private key (--etcd-key)")
+	preflightRequireReadableFile(parsedConfig.etcdCACertPath, "etcd CA certificate (--etcd-ca)")
+	preflightRequireSecureKeyPermissions(parsedConfig.etcdKeyPath, "etcd client private key")
+}
+
+// preflightCheckDefaultPKIExists warns when TLS is requested but no explicit
+// cert paths were given and the default PKI directory is empty, suggesting
+// the user should run cca init first.
+func preflightCheckDefaultPKIExists(parsedConfig serverCommandConfig) {
+	if parsedConfig.tlsCertPath != "" || !parsedConfig.tlsEnabled {
+		return
+	}
+	// Auto-TLS mode generates certs on the fly, so only warn when the
+	// canonical PKI path has partial state that might confuse the operator.
+	const defaultPKIDirectory = "/etc/ccattler/pki"
+	if _, statError := os.Stat(defaultPKIDirectory); statError != nil {
+		fmt.Fprintf(os.Stderr, "notice: %s does not exist — auto-generating CA and certificates\n", defaultPKIDirectory)
+		fmt.Fprintf(os.Stderr, "  For production, run 'cca init' first to generate persistent PKI.\n")
+	}
+}
+
+// preflightCheckEtcdConnectivity verifies that at least one etcd endpoint is
+// reachable via a TCP dial. This catches the common case of etcd not running
+// before the slower store creation attempt.
+func preflightCheckEtcdConnectivity(parsedConfig serverCommandConfig) {
+	endpointList := strings.Split(parsedConfig.etcdEndpoints, ",")
+	for _, endpoint := range endpointList {
+		hostPort := strings.TrimPrefix(endpoint, "https://")
+		hostPort = strings.TrimPrefix(hostPort, "http://")
+		if !strings.Contains(hostPort, ":") {
+			hostPort += ":2379"
+		}
+		dialConnection, dialError := net.DialTimeout("tcp", hostPort, 3*time.Second)
+		if dialError == nil {
+			_ = dialConnection.Close()
+			return
+		}
+	}
+	fmt.Fprintf(os.Stderr, "error: cannot reach etcd at %s\n", parsedConfig.etcdEndpoints)
+	fmt.Fprintf(os.Stderr, "  Check:  systemctl status etcd\n")
+	fmt.Fprintf(os.Stderr, "  Setup:  run 'cca init' to generate PKI and configure etcd\n")
+	os.Exit(1)
+}
+
+// preflightRequireReadableFile exits with an error if the file does not exist
+// or is not readable.
+func preflightRequireReadableFile(filePath string, description string) {
+	fileInfo, statError := os.Stat(filePath)
+	if statError != nil {
+		fmt.Fprintf(os.Stderr, "error: %s not found: %s\n", description, filePath)
+		fmt.Fprintf(os.Stderr, "  Fix: run 'cca init' to generate PKI, or provide the correct path\n")
+		os.Exit(1)
+	}
+	if fileInfo.IsDir() {
+		fmt.Fprintf(os.Stderr, "error: %s is a directory, expected a file: %s\n", description, filePath)
+		os.Exit(1)
+	}
+}
+
+// preflightRequireSecureKeyPermissions exits with an error if a private key
+// file has permissions broader than 0600.
+func preflightRequireSecureKeyPermissions(filePath string, description string) {
+	fileInfo, statError := os.Stat(filePath)
+	if statError != nil {
+		return
+	}
+	fileMode := fileInfo.Mode().Perm()
+	if fileMode&^os.FileMode(preflightExpectedKeyPermission) != 0 {
+		fmt.Fprintf(os.Stderr, "error: %s has insecure permissions %04o: %s\n", description, fileMode, filePath)
+		fmt.Fprintf(os.Stderr, "  Fix: chmod 600 %s\n", filePath)
+		os.Exit(1)
 	}
 }
 
