@@ -393,7 +393,8 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	inspectContext, cancelInspect := context.WithTimeout(ctx, nerdctlCommandTimeout)
 	defer cancelInspect()
 
-	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect", "--format", "{{.State.Running}}", containerName)
+	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect",
+		"--format", "{{.State.Running}}|{{.NetworkSettings.IPAddress}}", containerName)
 	var inspectOutput bytes.Buffer
 	inspectCommand.Stdout = &inspectOutput
 	if err := inspectCommand.Run(); err != nil {
@@ -403,8 +404,16 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 		return Status{ID: id, Running: false}, nil
 	}
 
-	running := strings.TrimSpace(inspectOutput.String()) == "true"
-	return Status{ID: id, Running: running}, nil
+	rawOutput := strings.TrimSpace(inspectOutput.String())
+	outputParts := strings.SplitN(rawOutput, "|", 2)
+	running := outputParts[0] == "true"
+	containerIP := ""
+	if len(outputParts) > 1 {
+		containerIP = outputParts[1]
+	} else {
+		logging.Default().Warn("unexpected nerdctl inspect format", "id", id, "output", rawOutput)
+	}
+	return Status{ID: id, Running: running, IP: containerIP}, nil
 }
 
 // List returns the status of every container the runtime has tracked, querying

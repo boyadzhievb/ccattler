@@ -319,7 +319,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
 			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
+			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeStatus.IP)
 		}
 		delete(runningByID, instanceInfo.id)
 	}
@@ -502,7 +502,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		if nodeAgent.secretAPIServer != nil {
 			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
 		}
-		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed)
+		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 			logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 		}
@@ -514,13 +514,17 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		memoryBytes:   runtimeSpec.MemoryB,
 	}
 
+	runtimeIP := ""
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
 		portMappings := containerRuntime.HostPortsForInstance(instanceInfo.id)
 		publishInstanceHostPorts(ctx, nodeAgent.store, instanceInfo.id, portMappings)
+		if runtimeStatus, statusErr := containerRuntime.Status(ctx, instanceInfo.id); statusErr == nil {
+			runtimeIP = runtimeStatus.IP
+		}
 	}
 
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
-	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState)
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 	}
@@ -1051,9 +1055,9 @@ func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID str
 // publishInstanceStateToStore writes a complete set of observed-state facts for
 // the given instance: its existence marker, owning service, current state, the
 // node it is running on, and its IP address. When a NetworkProvider is configured,
-// an IP is allocated from the node's subnet. Without a provider, no IP is
-// assigned — consumers must check for the IP fact before using it.
-func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState) {
+// an IP is allocated from the node's subnet. Without a provider, the container's
+// bridge IP from the runtime is published if available.
+func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanceID, service string, state types.InstanceState, runtimeIP string) {
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstance(instanceID), []byte("")); putError != nil {
 		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
@@ -1078,6 +1082,12 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 			if _, writeError := types.WriteNetworkAllocation(ctx, nodeAgent.store, instanceID, allocatedIP); writeError != nil {
 				logging.Default().Error("failed to write network allocation", "instance", instanceID, "error", writeError.Error())
 			}
+		}
+	} else if runtimeIP != "" {
+		if net.ParseIP(runtimeIP) == nil {
+			logging.Default().Warn("invalid container IP from runtime", "instance", instanceID, "ip", runtimeIP)
+		} else if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(runtimeIP)); putError != nil {
+			logging.Default().Error("failed to publish container IP", "instance", instanceID, "error", putError.Error())
 		}
 	}
 }

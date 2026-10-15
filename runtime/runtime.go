@@ -49,6 +49,7 @@ type Status struct {
 	PID      int    // PID is the OS process ID (only meaningful for ProcessRuntime).
 	ExitCode int    // ExitCode is the exit code of the workload after it has stopped.
 	Error    string // Error holds a human-readable description of any failure that occurred.
+	IP       string // IP is the container's bridge IP reported by the runtime. Only populated for ContainerRuntime; empty for ProcessRuntime and SimulatorRuntime.
 }
 
 // Runtime is the pluggable interface for running workloads.
