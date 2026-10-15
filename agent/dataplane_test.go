@@ -232,6 +232,43 @@ func TestDataPlaneRemoteBackendUsesPerPortHostPort(t *testing.T) {
 	}
 }
 
+func TestDataPlaneLocalBackendUsesContainerIPNotAdvertiseAddress(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+	ctx := context.Background()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+	nodeAgent.SetAdvertiseAddress("192.168.100.43")
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "db", VIP: "10.200.0.1", Port: 5432,
+	})
+
+	// Local instance with host port — backend must still use container IP
+	// to avoid hairpin NAT (DNAT to self via advertise address).
+	factStore.Put(ctx, types.KeyEndpoint("db", "db-local", 5432), []byte("172.17.0.5:5432"))
+	factStore.Put(ctx, types.KeyObservedInstanceNode("db-local"), []byte("node-1"))
+	factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort("db-local", 5432), []byte("5432"))
+
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+
+	lastReconciled := simulatorDataPlane.LastReconciled()
+	if len(lastReconciled) != 1 {
+		t.Fatalf("expected 1 VIP config, got %d", len(lastReconciled))
+	}
+	if len(lastReconciled[0].Backends) != 1 {
+		t.Fatalf("expected 1 backend, got %d", len(lastReconciled[0].Backends))
+	}
+
+	backend := lastReconciled[0].Backends[0]
+	if backend.Address != "172.17.0.5" || backend.Port != 5432 {
+		t.Errorf("local backend = %s:%d, want 172.17.0.5:5432 (container IP, not advertise address)", backend.Address, backend.Port)
+	}
+}
+
 func TestDataPlaneRunsOnReconciliationTick(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

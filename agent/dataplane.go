@@ -158,14 +158,9 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 		instanceNodeID := string(instanceNodeFact.Value)
 
 		if instanceNodeID == dataPlaneReconciler.nodeID {
-			hostPort := resolveHostPort(ctx, dataPlaneReconciler.factStore, instanceID, containerPort)
-			if hostPort > 0 && dataPlaneReconciler.advertiseAddress != "" {
-				backends = append(backends, network.DataPlaneBackend{
-					Address: dataPlaneReconciler.advertiseAddress,
-					Port:    hostPort,
-				})
-				continue
-			}
+			// Local backends use the container bridge IP directly.
+			// This avoids hairpin NAT (DNAT to self via the host
+			// address would require MASQUERADE on loopback).
 			backends = append(backends, network.DataPlaneBackend{
 				Address: endpointIP,
 				Port:    endpointPort,
