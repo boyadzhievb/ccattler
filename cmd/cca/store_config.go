@@ -16,6 +16,14 @@ const (
 	endpointsEnvVariable  = "CCA_ENDPOINTS"
 	defaultEtcdEndpoints  = "localhost:2379"
 	defaultStoreKeyPrefix = "/ccattler/"
+
+	// defaultEtcdCertPath is the standard location for the node TLS certificate
+	// used for etcd client authentication when endpoints use https://.
+	defaultEtcdCertPath = "/etc/ccattler/pki/node.pem"
+	// defaultEtcdKeyPath is the standard location for the node TLS private key.
+	defaultEtcdKeyPath = "/etc/ccattler/pki/node-key.pem"
+	// defaultEtcdCACertPath is the standard location for the cluster CA certificate.
+	defaultEtcdCACertPath = "/etc/ccattler/pki/ca.pem"
 )
 
 // storeDefaults holds resolved store configuration that can be used as defaults
@@ -27,6 +35,12 @@ type storeDefaults struct {
 	etcdEndpoints string
 	// storeKeyPrefix is the key prefix for namespacing within etcd.
 	storeKeyPrefix string
+	// etcdCertPath is the TLS client certificate for etcd, auto-detected for https.
+	etcdCertPath string
+	// etcdKeyPath is the TLS client key for etcd, auto-detected for https.
+	etcdKeyPath string
+	// etcdCACertPath is the TLS CA certificate for verifying etcd, auto-detected for https.
+	etcdCACertPath string
 }
 
 // resolveStoreDefaults determines the store backend and endpoints by checking
@@ -47,6 +61,7 @@ func resolveStoreDefaults() storeDefaults {
 	if envEndpoints := os.Getenv(endpointsEnvVariable); envEndpoints != "" {
 		defaults.storeBackend = "etcd"
 		defaults.etcdEndpoints = envEndpoints
+		populateEtcdTLSDefaults(&defaults)
 		return defaults
 	}
 
@@ -56,11 +71,25 @@ func resolveStoreDefaults() storeDefaults {
 		if trimmedEndpoints != "" {
 			defaults.storeBackend = "etcd"
 			defaults.etcdEndpoints = trimmedEndpoints
+			populateEtcdTLSDefaults(&defaults)
 			return defaults
 		}
 	}
 
 	return defaults
+}
+
+// populateEtcdTLSDefaults sets TLS cert paths from the canonical location when
+// the resolved endpoints use https:// and the cert files exist on disk.
+func populateEtcdTLSDefaults(defaults *storeDefaults) {
+	if !strings.Contains(defaults.etcdEndpoints, "https://") {
+		return
+	}
+	if fileExists(defaultEtcdCertPath) && fileExists(defaultEtcdKeyPath) && fileExists(defaultEtcdCACertPath) {
+		defaults.etcdCertPath = defaultEtcdCertPath
+		defaults.etcdKeyPath = defaultEtcdKeyPath
+		defaults.etcdCACertPath = defaultEtcdCACertPath
+	}
 }
 
 // resolveStoreDefaultsForDaemon returns defaults appropriate for long-running

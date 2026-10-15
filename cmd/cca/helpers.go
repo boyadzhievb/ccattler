@@ -96,6 +96,17 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 	if storeBackend == "etcd" {
 		endpointList := strings.Split(etcdEndpoints, ",")
 
+		// Auto-detect TLS certs from canonical path when endpoints use https://
+		// and no explicit cert paths were provided.
+		if etcdCertPath == "" && etcdKeyPath == "" && etcdCACertPath == "" &&
+			strings.Contains(etcdEndpoints, "https://") {
+			if fileExists(defaultEtcdCertPath) && fileExists(defaultEtcdKeyPath) && fileExists(defaultEtcdCACertPath) {
+				etcdCertPath = defaultEtcdCertPath
+				etcdKeyPath = defaultEtcdKeyPath
+				etcdCACertPath = defaultEtcdCACertPath
+			}
+		}
+
 		var etcdTLSConfig *tls.Config
 		if etcdCertPath != "" && etcdKeyPath != "" && etcdCACertPath != "" {
 			clientCertificate, loadError := tls.LoadX509KeyPair(etcdCertPath, etcdKeyPath)

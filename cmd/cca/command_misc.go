@@ -270,6 +270,9 @@ type tokenCommandConfig struct {
 	storeBackend   string
 	etcdEndpoints  string
 	storeKeyPrefix string
+	etcdCertPath   string // TLS client cert for etcd (auto-detected from canonical path)
+	etcdKeyPath    string // TLS client key for etcd
+	etcdCACertPath string // TLS CA cert for etcd
 }
 
 // parseTokenCommandArgs extracts the subcommand and flags from the arguments
@@ -280,6 +283,9 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 		storeBackend:   defaults.storeBackend,
 		etcdEndpoints:  defaults.etcdEndpoints,
 		storeKeyPrefix: defaults.storeKeyPrefix,
+		etcdCertPath:   defaults.etcdCertPath,
+		etcdKeyPath:    defaults.etcdKeyPath,
+		etcdCACertPath: defaults.etcdCACertPath,
 		tokenTTL:       "15m",
 	}
 
@@ -316,6 +322,21 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--etcd-cert":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCertPath = args[argIndex]
+			}
+		case "--etcd-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdKeyPath = args[argIndex]
+			}
+		case "--etcd-ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.etcdCACertPath = args[argIndex]
+			}
 		case "--quiet", "-q":
 			parsedConfig.quietOutput = true
 		default:
@@ -333,7 +354,7 @@ func parseTokenCommandArgs(args []string) tokenCommandConfig {
 func executeTokenCommand(parsedConfig tokenCommandConfig) {
 	factStore, storeCreationError := createStateStoreFromServerConfig(
 		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
-		"", "", "")
+		parsedConfig.etcdCertPath, parsedConfig.etcdKeyPath, parsedConfig.etcdCACertPath)
 	if storeCreationError != nil {
 		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedConfig.storeBackend, storeCreationError)
 		os.Exit(1)
