@@ -19,9 +19,8 @@ import (
 // authentication token. The token is hex-encoded to 64 characters.
 const localTokenLength = 32
 
-// localTokenDirectoryName is the directory under the current working directory
-// where the token file is stored.
-const localTokenDirectoryName = ".ccattler"
+// localTokenDirectoryName is the default directory for the local auth token.
+const localTokenDirectoryName = "/etc/ccattler" //nolint:gosec // directory path, not a credential
 
 // localTokenFileName is the name of the file containing the local auth token.
 const localTokenFileName = "local-token"
@@ -44,26 +43,29 @@ const localTokenExpiry = 24 * time.Hour
 // token generated at server startup. This replaces the header-based
 // LocalUserAuthenticator that trusted an attacker-controllable header value.
 //
-// The token is written to .ccattler/local-token with mode 0600 so that only
-// the server's OS user can read it. CLI commands read this file and include
-// the token as Authorization: Bearer <token>.
+// The token is written to /etc/ccattler/local-token with mode 0600 so that
+// only the server's OS user can read it. CLI commands read this file and
+// include the token as Authorization: Bearer <token>.
 type LocalTokenAuthenticator struct {
 	expectedTokenHex string // hex-encoded expected token for constant-time comparison
 	tokenFilePath    string // filesystem path where the token was written
 }
 
 // NewLocalTokenAuthenticator generates a cryptographically random token,
-// writes it to .ccattler/local-token (mode 0600), and returns an
-// authenticator that validates requests against that token. Returns an error
-// if token generation or file writing fails.
-func NewLocalTokenAuthenticator() (*LocalTokenAuthenticator, error) {
+// writes it to <tokenDirectory>/local-token (mode 0600), and returns an
+// authenticator that validates requests against that token. When
+// tokenDirectory is empty it defaults to /etc/ccattler.
+func NewLocalTokenAuthenticator(tokenDirectory string) (*LocalTokenAuthenticator, error) {
+	if tokenDirectory == "" {
+		tokenDirectory = localTokenDirectoryName
+	}
+
 	tokenBytes := make([]byte, localTokenLength)
 	if _, readError := rand.Read(tokenBytes); readError != nil {
 		return nil, fmt.Errorf("local token: generate random bytes: %w", readError)
 	}
 	tokenHex := hex.EncodeToString(tokenBytes)
 
-	tokenDirectory := localTokenDirectoryName
 	if mkdirError := os.MkdirAll(tokenDirectory, 0700); mkdirError != nil {
 		return nil, fmt.Errorf("local token: create directory %s: %w", tokenDirectory, mkdirError)
 	}
@@ -71,10 +73,6 @@ func NewLocalTokenAuthenticator() (*LocalTokenAuthenticator, error) {
 	tokenFilePath := filepath.Join(tokenDirectory, localTokenFileName)
 	if writeError := os.WriteFile(tokenFilePath, []byte(tokenHex), 0600); writeError != nil {
 		return nil, fmt.Errorf("local token: write %s: %w", tokenFilePath, writeError)
-	}
-
-	if mkdirError := os.MkdirAll(filepath.Dir(systemTokenFilePath), 0750); mkdirError == nil {
-		_ = os.WriteFile(systemTokenFilePath, []byte(tokenHex), 0600)
 	}
 
 	return &LocalTokenAuthenticator{
@@ -138,22 +136,17 @@ func (authenticator *LocalTokenAuthenticator) TokenFilePath() string {
 	return authenticator.tokenFilePath
 }
 
-// ReadLocalToken reads the local authentication token, checking the system-wide
-// path (/etc/ccattler/local-token) first, then the CWD-relative path
-// (.ccattler/local-token). CLI commands call this to obtain the bearer token.
+// ReadLocalToken reads the local authentication token from the system path
+// (/etc/ccattler/local-token). CLI commands call this to obtain the bearer
+// token for authenticating against the server API.
 func ReadLocalToken() (string, error) {
-	for _, candidatePath := range []string{
-		systemTokenFilePath,
-		filepath.Join(localTokenDirectoryName, localTokenFileName),
-	} {
-		tokenBytes, readError := os.ReadFile(candidatePath) //nolint:gosec // reading the local auth token is intentional
-		if readError != nil {
-			continue
-		}
-		tokenValue := strings.TrimSpace(string(tokenBytes))
-		if tokenValue != "" {
-			return tokenValue, nil
-		}
+	tokenBytes, readError := os.ReadFile(systemTokenFilePath) //nolint:gosec // reading the local auth token is intentional
+	if readError != nil {
+		return "", fmt.Errorf("read local token: %w (is the server running?)", readError)
 	}
-	return "", fmt.Errorf("read local token: no token file found (is the server running?)")
+	tokenValue := strings.TrimSpace(string(tokenBytes))
+	if tokenValue == "" {
+		return "", fmt.Errorf("read local token: %s is empty", systemTokenFilePath)
+	}
+	return tokenValue, nil
 }

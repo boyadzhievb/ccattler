@@ -28,14 +28,11 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// defaultStatusAPIPort is the base port for the HTTP status API. When a TLS
-// server binds a wildcard address on this port, a plain-HTTP admin listener
-// starts on port+1 (9771) so local CLI commands work without mTLS certs.
+// defaultStatusAPIPort is the port for the CCattler API server.
 const defaultStatusAPIPort = "9770"
 
-// statusAPIListenAddress returns the localhost address the CLI should connect
-// to. It first tries the admin port (9771), and falls back to the main port
-// (9770) for non-TLS or explicit localhost servers.
+// statusAPIListenAddress returns the address the CLI should connect to.
+// Defaults to 127.0.0.1:9770, overridable via CCA_API environment variable.
 var statusAPIListenAddress = resolveStatusAPIListenAddress()
 
 func resolveStatusAPIListenAddress() string {
@@ -362,7 +359,7 @@ func combineDSLFileContents(renderedFiles []renderedDSLContent) string {
 type localTokenRoundTripper struct {
 	// baseTransport is the underlying transport that performs the actual HTTP call.
 	baseTransport http.RoundTripper
-	// bearerToken is the hex-encoded local token read from .ccattler/local-token.
+	// bearerToken is the hex-encoded local token read from /etc/ccattler/local-token.
 	bearerToken string
 }
 
@@ -382,7 +379,7 @@ var authenticatedClientOnce sync.Once
 // a bearer token into every request. The token is resolved in priority order:
 // 1. $CCA_TOKEN environment variable (explicit override, for CI/scripts)
 // 2. ~/.ccattler/credentials.json token field (user login)
-// 3. /etc/ccattler/local-token or .ccattler/local-token (operator on node)
+// 3. /etc/ccattler/local-token (operator on node)
 // Falls back to http.DefaultClient when no token source is available.
 func buildAuthenticatedHTTPClient() *http.Client {
 	authenticatedClientOnce.Do(func() {

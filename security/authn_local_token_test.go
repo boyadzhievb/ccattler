@@ -11,20 +11,20 @@ import (
 )
 
 func TestLocalTokenAuthenticatorAcceptsCorrectToken(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
 
-	tokenValue, readError := ReadLocalToken()
+	tokenFilePath := filepath.Join(temporaryDirectory, localTokenFileName)
+	tokenBytes, readError := os.ReadFile(tokenFilePath) //nolint:gosec // test reads from temp dir
 	if readError != nil {
 		t.Fatal(readError)
 	}
+	tokenValue := string(tokenBytes)
 
 	request, _ := http.NewRequest("GET", "/api/status", nil)
 	request.Header.Set("Authorization", "Bearer "+tokenValue)
@@ -45,12 +45,10 @@ func TestLocalTokenAuthenticatorAcceptsCorrectToken(t *testing.T) {
 }
 
 func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
@@ -62,16 +60,14 @@ func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
 	if authError == nil {
 		t.Fatal("expected error for wrong token, got nil")
 	}
-	_ = tokenAuthenticator // suppress unused
+	_ = tokenAuthenticator
 }
 
 func TestLocalTokenAuthenticatorRejectsNoHeader(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
@@ -88,17 +84,15 @@ func TestLocalTokenAuthenticatorRejectsNoHeader(t *testing.T) {
 }
 
 func TestLocalTokenFilePermissions(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	_, createError := NewLocalTokenAuthenticator()
+	_, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
 
-	tokenFilePath := filepath.Join(localTokenDirectoryName, localTokenFileName)
+	tokenFilePath := filepath.Join(temporaryDirectory, localTokenFileName)
 	fileInfo, statError := os.Stat(tokenFilePath)
 	if statError != nil {
 		t.Fatalf("stat token file: %v", statError)
@@ -111,12 +105,10 @@ func TestLocalTokenFilePermissions(t *testing.T) {
 }
 
 func TestLocalTokenAuthenticatorRejectsEmptyBearerToken(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
@@ -131,17 +123,14 @@ func TestLocalTokenAuthenticatorRejectsEmptyBearerToken(t *testing.T) {
 }
 
 func TestSpoofedXCCattlerUserHeaderRejected(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	tokenAuthenticator, createError := NewLocalTokenAuthenticator()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
 
-	// Attacker sends only X-CCattler-User, no bearer token.
 	request, _ := http.NewRequest("GET", "/api/status", nil)
 	request.Header.Set("X-CCattler-User", "admin")
 
@@ -155,12 +144,10 @@ func TestSpoofedXCCattlerUserHeaderRejected(t *testing.T) {
 }
 
 func TestLoadLocalTokenAuthenticator(t *testing.T) {
-	originalDirectory, _ := os.Getwd()
+	t.Parallel()
 	temporaryDirectory := t.TempDir()
-	os.Chdir(temporaryDirectory)      //nolint:errcheck // test helper
-	defer os.Chdir(originalDirectory) //nolint:errcheck // restore
 
-	originalAuthenticator, createError := NewLocalTokenAuthenticator()
+	originalAuthenticator, createError := NewLocalTokenAuthenticator(temporaryDirectory)
 	if createError != nil {
 		t.Fatal(createError)
 	}
@@ -170,7 +157,10 @@ func TestLoadLocalTokenAuthenticator(t *testing.T) {
 		t.Fatalf("load: %v", loadError)
 	}
 
-	tokenValue, _ := ReadLocalToken()
+	tokenFilePath := filepath.Join(temporaryDirectory, localTokenFileName)
+	tokenBytes, _ := os.ReadFile(tokenFilePath) //nolint:gosec // test reads from temp dir
+	tokenValue := string(tokenBytes)
+
 	request, _ := http.NewRequest("GET", "/api/status", nil)
 	request.Header.Set("Authorization", "Bearer "+tokenValue)
 

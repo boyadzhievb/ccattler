@@ -282,14 +282,15 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 // status messages about credential discovery and loading.
 func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACertPath string) {
 	if tlsCertPath == "" {
-		discoveredCertPath := ".ccattler/node.pem"
-		discoveredKeyPath := ".ccattler/node-key.pem"
-		discoveredCACertPath := ".ccattler/ca.pem"
+		const systemPKIDirectory = "/etc/ccattler/pki"
+		discoveredCertPath := systemPKIDirectory + "/node.pem"
+		discoveredKeyPath := systemPKIDirectory + "/node-key.pem"
+		discoveredCACertPath := systemPKIDirectory + "/ca.pem"
 		if fileExists(discoveredCertPath) && fileExists(discoveredKeyPath) && fileExists(discoveredCACertPath) {
 			tlsCertPath = discoveredCertPath
 			tlsKeyPath = discoveredKeyPath
 			tlsCACertPath = discoveredCACertPath
-			fmt.Printf("Agent %s auto-discovered credentials from .ccattler/\n", nodeID)
+			fmt.Printf("Agent %s auto-discovered credentials from %s\n", nodeID, systemPKIDirectory)
 		}
 	}
 	if tlsCertPath != "" {

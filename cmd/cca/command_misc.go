@@ -443,14 +443,14 @@ type joinCommandConfig struct {
 	joinToken     string
 	nodeID        string
 	caCertPath    string // optional: verify server cert against this CA (overrides token fingerprint)
-	dataDirectory string // where to write cert/key/ca (default ".ccattler")
+	dataDirectory string // where to write cert/key/ca (default "/etc/ccattler/pki")
 }
 
 // parseJoinCommandArgs extracts the server URL, token, and flags from the
 // arguments following "join".
 func parseJoinCommandArgs(args []string) joinCommandConfig {
 	parsedConfig := joinCommandConfig{
-		dataDirectory: ".ccattler",
+		dataDirectory: "/etc/ccattler/pki",
 	}
 
 	positionalIndex := 0
@@ -489,11 +489,6 @@ func parseJoinCommandArgs(args []string) joinCommandConfig {
 	if parsedConfig.caCertPath == "" {
 		if _, statError := os.Stat(systemCACertPath); statError == nil {
 			parsedConfig.caCertPath = systemCACertPath
-		}
-	}
-	if parsedConfig.dataDirectory == ".ccattler" {
-		if _, statError := os.Stat(systemPKIDirectory); statError == nil {
-			parsedConfig.dataDirectory = systemPKIDirectory
 		}
 	}
 

@@ -427,7 +427,7 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 			security.NewMTLSAuthenticator(),
 		}
 		chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, parsedConfig)
-		localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
+		localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator("")
 		if tokenError == nil {
 			chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
 			rbacAuthorizer.BindRole(security.RoleBinding{
@@ -454,7 +454,7 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 	// principal bound to cluster-admin for frictionless local development.
 	// Bearer token authenticators are still added so `cca login` works locally.
 	chainAuthenticators := appendBearerTokenAuthenticators(nil, workloadTokenIssuer, parsedConfig)
-	localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator()
+	localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator("")
 	if tokenError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
 		os.Exit(1)
@@ -677,7 +677,7 @@ func createCloudProvider(ctx context.Context, providerName string, region string
 // with auto-rotation, and returns a tls.Config plus the CA. The TLS config uses
 // VerifyClientCertIfGiven so the enrollment endpoint can accept unauthenticated
 // connections while all other endpoints enforce client certs via middleware. The
-// CA certificate is written to ca.pem in the .ccattler/ data directory.
+// CA certificate is written to /etc/ccattler/ca.pem.
 func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Config, *security.CertificateAuthority) {
 	certificateAuthority, err := security.NewCertificateAuthority(defaultCACertificateValidity)
 	if err != nil {
@@ -718,13 +718,10 @@ func buildServerTLSConfig(ctx context.Context, listenAddress string) (*tls.Confi
 	caCertPool := x509.NewCertPool()
 	caCertPool.AppendCertsFromPEM(certificateAuthority.CACertificatePEM())
 
-	dataDirectory := ".ccattler"
-	if mkdirError := os.MkdirAll(dataDirectory, 0700); mkdirError != nil {
-		fmt.Fprintf(os.Stderr, "error creating data directory: %v\n", mkdirError)
-		os.Exit(1)
-	}
+	const stateDirectory = "/etc/ccattler"
+	_ = os.MkdirAll(stateDirectory, 0700)
 
-	caCertPath := dataDirectory + "/ca.pem"
+	caCertPath := stateDirectory + "/ca.pem"
 	if writeError := os.WriteFile(caCertPath, certificateAuthority.CACertificatePEM(), 0600); writeError != nil {
 		fmt.Fprintf(os.Stderr, "error writing CA certificate: %v\n", writeError)
 		os.Exit(1)
@@ -970,51 +967,7 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 		}
 	}()
 
-	if serverTLSConfig != nil {
-		launchLocalhostAdminListener(httpMux, listenAddress)
-	}
-
 	return apiServer
-}
-
-// launchLocalhostAdminListener starts a plain-HTTP listener on 127.0.0.1 so
-// that local CLI commands (cca secret, cca status, etc.) can reach the API
-// without mTLS client certificates. Skipped when the main listener is already
-// on localhost without TLS. When the main listener binds a wildcard address
-// (0.0.0.0, ::), the admin port is mainPort+1 to avoid conflicts.
-func launchLocalhostAdminListener(handler http.Handler, mainListenAddress string) {
-	mainHost, mainPort, splitError := net.SplitHostPort(mainListenAddress)
-	if splitError != nil {
-		return
-	}
-	if mainHost == "127.0.0.1" || mainHost == "localhost" || mainHost == "::1" {
-		return
-	}
-
-	adminPort := mainPort
-	if mainHost == "0.0.0.0" || mainHost == "::" || mainHost == "" {
-		parsedPort, parseError := strconv.Atoi(mainPort)
-		if parseError != nil {
-			return
-		}
-		adminPort = strconv.Itoa(parsedPort + 1)
-	}
-	localhostAddress := "127.0.0.1:" + adminPort
-	localhostListener, listenError := net.Listen("tcp", localhostAddress)
-	if listenError != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not start localhost admin listener on %s: %v\n", localhostAddress, listenError)
-		return
-	}
-	localhostServer := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: types.DefaultReadHeaderTimeout,
-	}
-	go func() {
-		if serveError := localhostServer.Serve(localhostListener); serveError != nil {
-			fmt.Fprintf(os.Stderr, "localhost admin listener: %v\n", serveError)
-		}
-	}()
-	fmt.Printf("Local admin API on %s (http, no TLS)\n", localhostAddress)
 }
 
 // buildClusterStatusJSON collects the full cluster state from the fact store
