@@ -1114,6 +1114,14 @@ fi
 
 log "Validating cross-node VIP connectivity and DNS resolution..."
 
+# Dump per-service DNAT backends on every node for debugging.
+for vm in "${VM_NAMES[@]}"; do
+    log "  iptables DNAT backends on $vm:"
+    ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
+    log "  bridge/route info on $vm:"
+    ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|10\\.4|172\\.17|nerdctl'" || true
+done
+
 NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port) \(.dns)"' 2>/dev/null || echo "")
 
@@ -1126,10 +1134,11 @@ if [[ -n "$VIP_SERVICES" ]]; then
 
         # Test VIP connectivity from each node.
         for vm in "${VM_NAMES[@]}"; do
-            if ssh_vm "$vm" "nc -zv -w5 $svc_vip $svc_port 2>&1" | grep -q "succeeded"; then
+            nc_out=$(ssh_vm "$vm" "nc -zv -w5 $svc_vip $svc_port 2>&1" || true)
+            if echo "$nc_out" | grep -q "succeeded\|open"; then
                 log "  VIP $svc_vip:$svc_port ($svc_name) reachable from $vm"
             else
-                log "  WARNING: VIP $svc_vip:$svc_port ($svc_name) NOT reachable from $vm"
+                log "  WARNING: VIP $svc_vip:$svc_port ($svc_name) NOT reachable from $vm (nc: $nc_out)"
                 VIP_PASS=false
             fi
         done
