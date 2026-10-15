@@ -33,22 +33,22 @@ func setupTwoTenantStore(t *testing.T, factStore store.StateStore) {
 	t.Helper()
 	ctx := context.Background()
 
-	factStore.Put(ctx, types.KeyDesiredService("checkout"), []byte("true"))
+	factStore.Put(ctx, types.KeyDesiredService("checkout"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("checkout"), []byte("checkout:v1"))
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("checkout"), []byte("3"))
 	factStore.Put(ctx, types.KeyDesiredServiceOwner("checkout"), []byte("payments"))
 
-	factStore.Put(ctx, types.KeyDesiredService("paydb"), []byte("true"))
+	factStore.Put(ctx, types.KeyDesiredService("paydb"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("paydb"), []byte("postgres:16"))
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("paydb"), []byte("1"))
 	factStore.Put(ctx, types.KeyDesiredServiceOwner("paydb"), []byte("payments"))
 
-	factStore.Put(ctx, types.KeyDesiredService("web"), []byte("true"))
+	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("web"), []byte("5"))
 	factStore.Put(ctx, types.KeyDesiredServiceOwner("web"), []byte("frontend"))
 
-	factStore.Put(ctx, types.KeyDesiredService("assets"), []byte("true"))
+	factStore.Put(ctx, types.KeyDesiredService("assets"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("assets"), []byte("cdn:latest"))
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("assets"), []byte("2"))
 	factStore.Put(ctx, types.KeyDesiredServiceOwner("assets"), []byte("frontend"))
