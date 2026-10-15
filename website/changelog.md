@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.33.0-beta <Badge type="tip" text="latest" /> {#v1-33-0-beta}
+## v1.34.0-beta <Badge type="tip" text="latest" /> {#v1-34-0-beta}
+
+**2026-10-15** — External Review Fixes.
+
+- **External Review Fixes** (M108) — Fix 3 findings from external code review: (1) P1: multi-port service consistency — container runtime, agent, endpoint controller, and cloud LB all assume single port per service; (2) P2: connection URL credential escaping — `buildConnectionURL` uses `net/url` + `url.UserPassword` instead of raw string concat; (3) P2: init container network error swallowing — `ExecInit` returns network setup errors instead of silently skipping
+
+---
+
+## v1.33.0-beta {#v1-33-0-beta}
 
 **2026-10-14** — Connection Block Auto-Grant.
 

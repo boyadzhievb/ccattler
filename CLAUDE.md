@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M104 — Phase 104 Connection Block Auto-Grant. M1–M104 complete. Gates A–I resolved.
+**Completed through:** M108 — Phase 108 External Review Fixes. M1–M108 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
