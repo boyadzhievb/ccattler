@@ -153,6 +153,16 @@ func (certificateAuthority *CertificateAuthority) CACertificatePEM() []byte {
 	return certificateAuthority.caCertificatePEM
 }
 
+// CAPrivateKeyPEM returns the PEM-encoded CA private key. Used by cca init
+// to write the key to disk so the server can reload it later.
+func (certificateAuthority *CertificateAuthority) CAPrivateKeyPEM() ([]byte, error) {
+	keyBytes, marshalError := x509.MarshalECPrivateKey(certificateAuthority.caPrivateKey)
+	if marshalError != nil {
+		return nil, fmt.Errorf("marshal CA private key: %w", marshalError)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}), nil
+}
+
 // IssueCertificateRequest holds the parameters for issuing a new certificate.
 type IssueCertificateRequest struct {
 	CommonName  string

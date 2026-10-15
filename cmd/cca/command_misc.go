@@ -938,6 +938,7 @@ func buildZshCompletionScript() string {
 		{"apply", "parse .ccattler file and show reconciliation"},
 		{"run", "start real processes"},
 		{"run-container", "start real containers"},
+		{"init", "generate PKI and setup script for this node"},
 		{"server", "run control plane (controllers + API)"},
 		{"agent", "run node agent"},
 		{"token", "manage join tokens (create/list/revoke)"},

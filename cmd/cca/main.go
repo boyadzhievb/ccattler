@@ -50,6 +50,9 @@ func main() {
 			os.Exit(1)
 		}
 		executeLiveContainerCommand(parsedRunConfig)
+	case "init":
+		parsedInitConfig := parseInitCommandArgs(os.Args[2:])
+		executeInitCommand(parsedInitConfig)
 	case "server":
 		parsedServerConfig := parseServerCommandArgs(os.Args[2:])
 		executeServerCommand(parsedServerConfig)
