@@ -6,6 +6,16 @@ multi-node cluster with a real Airflow deployment.
 ## Prerequisites
 
 - 3 Linux machines (VMs, bare metal, or cloud instances) with network connectivity
+- etcd running on the control-plane node (node-1):
+  ```
+  # Debian/Ubuntu:
+  sudo apt install etcd-server
+  sudo systemctl enable --now etcd
+
+  # RHEL/AlmaLinux:
+  sudo dnf install etcd
+  sudo systemctl enable --now etcd
+  ```
 - Container runtime (containerd/nerdctl) installed on each node
 - Pre-pull images to avoid download delays on camera:
   ```

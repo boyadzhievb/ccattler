@@ -79,6 +79,14 @@ func NewEtcdStore(config EtcdStoreConfig) (*EtcdStore, error) {
 		return nil, connectionError
 	}
 
+	connectivityCtx, cancelConnectivityCheck := context.WithTimeout(context.Background(), dialTimeout)
+	defer cancelConnectivityCheck()
+	_, connectivityError := etcdClient.Status(connectivityCtx, config.Endpoints[0])
+	if connectivityError != nil {
+		_ = etcdClient.Close()
+		return nil, fmt.Errorf("cannot reach etcd at %v: %w\n  Is etcd running? Check: systemctl status etcd", config.Endpoints, connectivityError)
+	}
+
 	return &EtcdStore{
 		etcdClient: etcdClient,
 		keyPrefix:  config.KeyPrefix,
