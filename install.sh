@@ -143,6 +143,68 @@ log_ok "Installed cca to ${INSTALL_PATH}/cca"
 log_info "Run 'cca version' to verify."
 echo ""
 
+# --- Install example systemd unit files (Linux only) ---
+if [ "$operating_system" = "linux" ]; then
+    EXAMPLE_DIR="/etc/ccattler/examples"
+    if [ ! -d "$EXAMPLE_DIR" ]; then
+        if mkdir -p "$EXAMPLE_DIR" 2>/dev/null; then
+            :
+        else
+            sudo mkdir -p "$EXAMPLE_DIR"
+        fi
+    fi
+
+    cat > /tmp/cca-server.service <<'UNITEOF'
+[Unit]
+Description=CCattler Server — controllers + API
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca server \
+  --tls \
+  --listen 0.0.0.0:9770 \
+  --dns --dns-listen 0.0.0.0:15353
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/server.log
+StandardError=append:/var/log/ccattler/server.log
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+    cat > /tmp/cca-agent.service <<'UNITEOF'
+[Unit]
+Description=CCattler Agent — node worker
+After=network.target containerd.service
+Requires=containerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cca agent \
+  --node-id CHANGEME \
+  --advertise-address CHANGEME
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ccattler/agent.log
+StandardError=append:/var/log/ccattler/agent.log
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+
+    if [ -w "$EXAMPLE_DIR" ]; then
+        mv /tmp/cca-server.service "$EXAMPLE_DIR/cca-server.service"
+        mv /tmp/cca-agent.service "$EXAMPLE_DIR/cca-agent.service"
+    else
+        sudo mv /tmp/cca-server.service "$EXAMPLE_DIR/cca-server.service"
+        sudo mv /tmp/cca-agent.service "$EXAMPLE_DIR/cca-agent.service"
+    fi
+    log_ok "Example systemd units installed to $EXAMPLE_DIR"
+fi
+
 # --- Post-install: check container runtime ---
 log_info "Checking container runtime availability..."
 if command -v nerdctl >/dev/null 2>&1; then
@@ -164,4 +226,29 @@ else
         log_warn "  Docker:   curl -fsSL https://get.docker.com | sh"
         log_warn "  nerdctl:  https://github.com/containerd/nerdctl/releases"
     fi
+fi
+
+# --- Next steps ---
+echo ""
+log_info "Next steps:"
+if [ "$operating_system" = "linux" ]; then
+    log_info "  Quick test (simulation):  cca apply examples/basic.cca"
+    log_info ""
+    log_info "  Run a cluster:"
+    log_info "    1. sudo mkdir -p /etc/ccattler && sudo chown \$(id -u) /etc/ccattler"
+    log_info "    2. Edit CHANGEME values in /etc/ccattler/examples/cca-server.service"
+    log_info "    3. sudo cp /etc/ccattler/examples/cca-server.service /etc/systemd/system/"
+    log_info "    4. sudo mkdir -p /var/log/ccattler"
+    log_info "    5. sudo systemctl daemon-reload && sudo systemctl enable --now cca-server"
+    log_info ""
+    log_info "  Add worker nodes:"
+    log_info "    1. Install cca on the worker (run this script again)"
+    log_info "    2. On the server: cca token create --node-id <worker> --ttl 15m"
+    log_info "    3. On the worker: cca join https://<server>:9770 <token> --node-id <worker>"
+    log_info "    4. Edit CHANGEME values in /etc/ccattler/examples/cca-agent.service"
+    log_info "    5. sudo cp /etc/ccattler/examples/cca-agent.service /etc/systemd/system/"
+    log_info "    6. sudo systemctl daemon-reload && sudo systemctl enable --now cca-agent"
+else
+    log_info "  Quick test (simulation):  cca apply examples/basic.cca"
+    log_info "  Run containers locally:   cca run-container examples/basic.cca --watch"
 fi
