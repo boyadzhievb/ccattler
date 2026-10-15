@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.34.0-beta <Badge type="tip" text="latest" /> {#v1-34-0-beta}
+## v1.35.0-beta <Badge type="tip" text="latest" /> {#v1-35-0-beta}
+
+**2026-10-15** — Node Principal Tenant Visibility Fix.
+
+- **Node Principal Tenant Visibility Fix** (M109) — Fix `IsPlatformPrincipal` to recognize `PrincipalKindNode` as infrastructure — node principals (mTLS-authenticated agents/server) were treated as tenantless users by `ScopedScan`, returning empty results from `/api/state`. Latent since M55, exposed when M106 switched E2E tests from etcdctl to API. 4 unit tests, 1 integration test.
+
+---
+
+## v1.34.0-beta {#v1-34-0-beta}
 
 **2026-10-15** — External Review Fixes.
 
