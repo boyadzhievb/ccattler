@@ -1621,6 +1621,47 @@ func TestFairSchedulerNoTenants(t *testing.T) {
 	}
 }
 
+func TestIsPlatformPrincipalNodeKind(t *testing.T) {
+	nodePrincipal := security.Principal{Kind: security.PrincipalKindNode, Name: "cca-test-ctrl"}
+	if !IsPlatformPrincipal(nodePrincipal) {
+		t.Error("node principal should be a platform principal")
+	}
+}
+
+func TestIsPlatformPrincipalSystemKind(t *testing.T) {
+	systemPrincipal := security.Principal{Kind: security.PrincipalKindSystem, Name: "instance-controller"}
+	if !IsPlatformPrincipal(systemPrincipal) {
+		t.Error("system principal should be a platform principal")
+	}
+}
+
+func TestIsPlatformPrincipalUserWithoutGroup(t *testing.T) {
+	userPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "alice"}
+	if IsPlatformPrincipal(userPrincipal) {
+		t.Error("user without platform group should not be a platform principal")
+	}
+}
+
+func TestScopedScanNodePrincipalSeesObservedFacts(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	ctx := context.Background()
+	memoryStore.Put(ctx, types.KeyObservedNodeDebugAddress("worker-1"), []byte("192.168.1.20:9771"))
+
+	nodePrincipal := security.Principal{Kind: security.PrincipalKindNode, Name: "ctrl"}
+	facts, scanError := ScopedScan(ctx, memoryStore, "observed/node/worker-1/debug_address", nodePrincipal)
+	if scanError != nil {
+		t.Fatalf("ScopedScan: %v", scanError)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 fact, got %d", len(facts))
+	}
+	if string(facts[0].Value) != "192.168.1.20:9771" {
+		t.Errorf("expected 192.168.1.20:9771, got %s", string(facts[0].Value))
+	}
+}
+
 func TestQuotaUpdateUsageWritesFacts(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()

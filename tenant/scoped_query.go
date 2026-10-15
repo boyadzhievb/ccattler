@@ -13,10 +13,14 @@ import (
 )
 
 // IsPlatformPrincipal returns true if the principal should see all resources.
-// Platform group members and system principals (controllers, scheduler) have
-// unrestricted visibility.
+// System principals (controllers, scheduler) and node principals (agents,
+// server) have unrestricted visibility — they are infrastructure, not tenants.
+// User principals with the "platform" group also get full visibility.
 func IsPlatformPrincipal(principal security.Principal) bool {
 	if principal.Kind == security.PrincipalKindSystem {
+		return true
+	}
+	if principal.Kind == security.PrincipalKindNode {
 		return true
 	}
 	return principal.HasGroup("platform")

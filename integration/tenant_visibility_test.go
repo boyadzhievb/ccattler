@@ -328,6 +328,48 @@ func TestTenantVisibilityScopedScan(t *testing.T) {
 	})
 }
 
+// TestNodePrincipalStateAccess verifies that a node principal (mTLS-authenticated
+// agent or server) can read observed/ facts via /api/state. Node principals are
+// infrastructure — they must have full visibility, not tenant-scoped filtering.
+func TestNodePrincipalStateAccess(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx := context.Background()
+	factStore.Put(ctx, types.KeyObservedNodeDebugAddress("worker-1"), []byte("192.168.1.20:9771"))
+	factStore.Put(ctx, types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v1"))
+
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("node:ctrl", "cluster-admin")
+
+	apiServer := api.NewServer(factStore)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+
+	nodePrincipal := security.Principal{Kind: security.PrincipalKindNode, Name: "ctrl"}
+	request := httptest.NewRequest(http.MethodGet, "/api/state?prefix=observed/node/worker-1/debug_address", nil)
+	requestCtx := security.WithPrincipalStruct(request.Context(), nodePrincipal)
+	requestCtx = security.WithPrincipal(requestCtx, "node:ctrl")
+	request = request.WithContext(requestCtx)
+	recorder := httptest.NewRecorder()
+
+	apiServer.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+
+	var facts []tenantVisibilityFactResponse
+	if unmarshalError := json.Unmarshal(recorder.Body.Bytes(), &facts); unmarshalError != nil {
+		t.Fatalf("JSON decode: %v", unmarshalError)
+	}
+	if len(facts) != 1 {
+		t.Fatalf("expected 1 fact, got %d", len(facts))
+	}
+	if facts[0].Value != "192.168.1.20:9771" {
+		t.Errorf("expected 192.168.1.20:9771, got %s", facts[0].Value)
+	}
+}
+
 // TestTenantAuditEndpoint verifies the /api/audit endpoint returns
 // tenant-scoped audit entries.
 func TestTenantAuditEndpoint(t *testing.T) {
