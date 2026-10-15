@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # Deploy a CCattler demo cluster using Ansible.
 #
-#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | bash
+#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install-demo.sh | sh
 #
 # This script:
 #   1. Runs install.sh to install the cca binary on this machine
@@ -19,7 +19,7 @@
 #   CCATTLER_HOME      Override working directory. Default: ~/.ccattler
 #   DEMO_MODE          "vagrant" (default) or "inventory" (bare-metal with manual hosts)
 
-set -euo pipefail
+set -eu
 
 GITHUB_REPO="boyadzhievb/ccattler"
 INSTALL_DIR="${CCATTLER_HOME:-$HOME/.ccattler}"
@@ -38,7 +38,7 @@ if [ -n "${CCATTLER_VERSION:-}" ]; then
     install_script_url="https://github.com/${GITHUB_REPO}/releases/download/${CCATTLER_VERSION}/install.sh"
 fi
 
-curl -fsSL "$install_script_url" | CCATTLER_VERSION="${CCATTLER_VERSION:-}" bash
+curl -fsSL "$install_script_url" | CCATTLER_VERSION="${CCATTLER_VERSION:-}" sh
 
 # --- Check Ansible dependency ---
 if ! command -v ansible-playbook >/dev/null; then

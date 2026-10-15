@@ -1,17 +1,20 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 # Install the CCattler CLI binary.
 #
-#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | bash
+#   curl -sSL https://github.com/boyadzhievb/ccattler/releases/latest/download/install.sh | sh
 #
 # Detects OS and architecture, downloads the correct binary from GitHub
 # Releases, and installs it to /usr/local/bin/. That's it — no Ansible,
 # no deployment, no cluster setup.
 #
+# Works with dash (Debian/Ubuntu), bash (RHEL/macOS), zsh, and any
+# POSIX-compliant shell.
+#
 # Environment variables:
 #   CCATTLER_VERSION   Pin a specific release (e.g. v0.38.0). Default: latest.
 #   INSTALL_PATH       Override install directory. Default: /usr/local/bin
 
-set -euo pipefail
+set -eu
 
 GITHUB_REPO="boyadzhievb/ccattler"
 INSTALL_PATH="${INSTALL_PATH:-/usr/local/bin}"

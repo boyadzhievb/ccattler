@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env sh
+set -eu
 
 # CCattler Lima demo — single-VM all-in-one on macOS
 # Requires: lima, ansible
@@ -13,9 +13,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-info()  { echo -e "${GREEN}[INFO]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error() { echo -e "${RED}[ERROR]${NC} $*"; exit 1; }
+info()  { printf '%b[INFO]%b %s\n' "$GREEN" "$NC" "$*"; }
+warn()  { printf '%b[WARN]%b %s\n' "$YELLOW" "$NC" "$*"; }
+error() { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$*"; exit 1; }
 
 check_dependencies() {
     info "Checking dependencies..."
@@ -36,7 +36,7 @@ detect_architecture() {
 
 download_binary() {
     local binary_path="${SCRIPT_DIR}/cca-linux-${LINUX_ARCH}"
-    if [[ -f "$binary_path" ]]; then
+    if [ -f "$binary_path" ]; then
         info "CCattler binary already exists: $binary_path"
         return
     fi
@@ -57,7 +57,7 @@ create_vm() {
     if limactl list --json 2>/dev/null | grep -q "\"name\":\"${VM_NAME}\""; then
         local vm_status
         vm_status="$(limactl list --json | python3 -c "import sys,json; [print(vm['status']) for vm in json.loads('['+','.join(sys.stdin.readlines())+']') if vm['name']=='${VM_NAME}']" 2>/dev/null || echo "unknown")"
-        if [[ "$vm_status" == "Running" ]]; then
+        if [ "$vm_status" = "Running" ]; then
             info "VM '${VM_NAME}' is already running"
             return
         fi
