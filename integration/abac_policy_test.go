@@ -18,6 +18,7 @@ import (
 // DSL policy block → parse → compile to auth/policy/ facts → auth controller
 // reconcile → conditional enforcement in APIAuthorizer.
 func TestABACPolicyDSLRoundTrip(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -180,6 +181,7 @@ policy restricted-teams {
 // take precedence over conditional policies — if a grant matches, the
 // request is allowed regardless of policy conditions.
 func TestABACPolicyWithRBACGrants(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -253,6 +255,7 @@ policy team-isolation {
 // TestABACPolicyAuditLogging verifies that denied requests due to condition
 // failure produce audit entries.
 func TestABACPolicyAuditLogging(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -317,6 +320,7 @@ policy team-isolation {
 // TestABACPolicyMultiCondition verifies that multiple when clauses in a
 // single policy use AND semantics.
 func TestABACPolicyMultiCondition(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -392,6 +396,7 @@ policy strict-update {
 // TestABACPolicyParsing verifies that the DSL parser correctly parses
 // policy blocks with various operators.
 func TestABACPolicyParsing(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name           string
 		input          string
@@ -496,6 +501,7 @@ func TestABACPolicyParsing(t *testing.T) {
 // TestABACPolicyCompilation verifies that compiled policy facts have the
 // correct key layout under auth/policy/.
 func TestABACPolicyCompilation(t *testing.T) {
+	t.Parallel()
 	input := `
 policy team-isolation {
     allow workload.update

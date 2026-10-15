@@ -65,6 +65,7 @@ func setupTwoTenantStore(t *testing.T, factStore store.StateStore) {
 // TestTenantVisibilityStatus verifies that the /api/status endpoint returns
 // only services and instances belonging to the requesting principal's tenant.
 func TestTenantVisibilityStatus(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	setupTwoTenantStore(t, factStore)
@@ -240,6 +241,7 @@ func TestTenantVisibilityStatus(t *testing.T) {
 // returns only facts visible to the requesting principal's tenant. Uses
 // hierarchical service names since ScopedScan derives tenancy from path prefixes.
 func TestTenantVisibilityScopedScan(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx := context.Background()
@@ -332,6 +334,7 @@ func TestTenantVisibilityScopedScan(t *testing.T) {
 // agent or server) can read observed/ facts via /api/state. Node principals are
 // infrastructure — they must have full visibility, not tenant-scoped filtering.
 func TestNodePrincipalStateAccess(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -373,6 +376,7 @@ func TestNodePrincipalStateAccess(t *testing.T) {
 // TestTenantAuditEndpoint verifies the /api/audit endpoint returns
 // tenant-scoped audit entries.
 func TestTenantAuditEndpoint(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

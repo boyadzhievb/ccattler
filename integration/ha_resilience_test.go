@@ -82,6 +82,7 @@ func (slowStore *slowStore) Close() error {
 // are not stopped. When the store becomes reachable again, reconciliation
 // resumes and the system converges.
 func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
+	testHandle.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
@@ -166,6 +167,7 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 // and restarting them does not lose any desired or observed state. The store
 // retains all facts across controller lifecycle boundaries.
 func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -223,6 +225,7 @@ func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
 // store's optimistic concurrency (transaction CAS) ensures only one runner's
 // changes succeed per reconciliation cycle.
 func TestLeaderElectionFencing(testHandle *testing.T) {
+	testHandle.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
@@ -281,6 +284,7 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 // from a store snapshot. All facts are dumped from the original store into a
 // fresh store, and controllers converge the new store to the same state.
 func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
+	testHandle.Parallel()
 	originalStore := store.NewMemoryStore()
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
 
@@ -349,6 +353,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 // store (creating a split-brain), healing the partition causes convergence
 // without duplicate instances.
 func TestSplitBrainHeal(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupResilienceCluster(testHandle)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -400,6 +405,7 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 // partitioned and its instances become failed, the endpoint controller removes
 // their endpoints. After healing, replacement instances get new endpoints.
 func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupResilienceCluster(testHandle)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -455,6 +461,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 // controller Reconcile calls to prove the controller logic handles missing
 // observed state by re-creating it.
 func TestStorageFailure_VolumeDisappears(testHandle *testing.T) {
+	testHandle.Parallel()
 	storageController := controllers.NewStorageController(store.NewMemoryStore())
 	ctx := context.Background()
 
@@ -511,6 +518,7 @@ func TestStorageFailure_VolumeDisappears(testHandle *testing.T) {
 // continue reconciling with backoff. We verify that the system eventually
 // converges despite latency.
 func TestStorageFailure_SlowStore(testHandle *testing.T) {
+	testHandle.Parallel()
 	memStore := store.NewMemoryStore()
 	defer memStore.Close()
 
@@ -563,6 +571,7 @@ func TestStorageFailure_SlowStore(testHandle *testing.T) {
 // controllers sequentially (simulating a rolling upgrade) does not cause
 // any reconciliation gap — all services remain at desired count throughout.
 func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()

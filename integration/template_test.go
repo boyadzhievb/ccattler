@@ -20,6 +20,7 @@ import (
 // memory store, and verifies that the resulting facts differ per environment
 // (different instance counts, images, resource allocations).
 func TestTemplateMultiEnvironmentRoundTrip(t *testing.T) {
+	t.Parallel()
 	tempDirectory := t.TempDir()
 
 	// Write the template file that all environments share.
@@ -153,6 +154,7 @@ func TestTemplateMultiEnvironmentRoundTrip(t *testing.T) {
 // .cca and .ccattler files in a directory, and that each can be independently
 // rendered and applied.
 func TestTemplateDirectoryRoundTrip(t *testing.T) {
+	t.Parallel()
 	tempDirectory := t.TempDir()
 
 	// Write two DSL template files in the directory.
@@ -244,6 +246,7 @@ func TestTemplateDirectoryRoundTrip(t *testing.T) {
 // TestTemplateValidateRenderedDSL verifies that ValidateRenderedDSL catches
 // invalid DSL after template rendering.
 func TestTemplateValidateRenderedDSL(t *testing.T) {
+	t.Parallel()
 	// Valid rendered DSL should pass.
 	validDSL := `service web {
     image nginx:1.27
@@ -264,6 +267,7 @@ func TestTemplateValidateRenderedDSL(t *testing.T) {
 // TestTemplateDetectUnusedValues verifies that DetectUnusedValues identifies
 // top-level keys in the values map that are not referenced by the template.
 func TestTemplateDetectUnusedValues(t *testing.T) {
+	t.Parallel()
 	templateContent := `service {{ .name }} {
     image {{ .image }}
     instances {{ .count }}

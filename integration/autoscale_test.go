@@ -20,6 +20,7 @@ import (
 )
 
 func TestAutoscaleScalesUpOnHighCPU(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -81,6 +82,7 @@ service web {
 }
 
 func TestAutoscaleScalesDownOnLowCPU(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -170,6 +172,7 @@ service api {
 }
 
 func TestAutoscaleRespectsMaxBound(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -232,6 +235,7 @@ service worker {
 }
 
 func TestAutoscaleMultipleMetricsTakesMax(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -289,6 +293,7 @@ service gateway {
 }
 
 func TestIntentResolverMergesUserAndAutoscaler(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -329,6 +334,7 @@ func TestIntentResolverMergesUserAndAutoscaler(t *testing.T) {
 }
 
 func TestDSLScaleBlockParsesAndCompiles(t *testing.T) {
+	t.Parallel()
 	input := `
 service web {
     image nginx:1.27
@@ -396,6 +402,7 @@ service web {
 }
 
 func TestAutoscaleEndToEndWithDistributedCluster(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -473,6 +480,7 @@ service web {
 }
 
 func TestWarmZeroActivationLifecycle(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -566,6 +574,7 @@ service webhook {
 }
 
 func TestVerticalAutoscaleAgentResizesOnEffectiveChange(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

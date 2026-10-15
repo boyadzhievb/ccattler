@@ -19,6 +19,7 @@ import (
 )
 
 func TestStabilizationWindowPreventsOscillation(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -78,6 +79,7 @@ service web {
 }
 
 func TestEventDrivenScalingWithQueueDepth(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -130,6 +132,7 @@ service worker {
 }
 
 func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -179,6 +182,7 @@ func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
 }
 
 func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -224,6 +228,7 @@ func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 }
 
 func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -279,6 +284,7 @@ func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 }
 
 func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -322,6 +328,7 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 }
 
 func TestPlacementConstraintArchitecture(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -393,6 +400,7 @@ service web {
 }
 
 func TestPlacementConstraintZoneSpread(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -458,6 +466,7 @@ service web {
 }
 
 func TestRollingUpdateGraduallyReplacesInstances(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -514,6 +523,7 @@ service web {
 }
 
 func TestRollbackOnHealthFailure(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -562,6 +572,7 @@ func TestRollbackOnHealthFailure(t *testing.T) {
 }
 
 func TestDSLPhase10FeaturesParseAndCompile(t *testing.T) {
+	t.Parallel()
 	input := `
 service web {
     image nginx:1.27

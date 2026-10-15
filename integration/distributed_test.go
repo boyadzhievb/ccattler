@@ -19,6 +19,7 @@ import (
 // TestDistributedSpreadAcrossNodes verifies that instances are spread evenly
 // across 3 nodes with agents running. Each node gets its own SimulatorRuntime.
 func TestDistributedSpreadAcrossNodes(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -87,6 +88,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 // pipeline: kill a node's agent, detect lease expiry, mark instances failed,
 // create replacements, place on surviving nodes, and start them.
 func TestDistributedNodeFailureReschedules(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -176,6 +178,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 // TestDistributedHeartbeatsVisibleInStore verifies that the agent writes
 // heartbeat lease timestamps to the store that can be scanned.
 func TestDistributedHeartbeatsVisibleInStore(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -210,6 +213,7 @@ func TestDistributedHeartbeatsVisibleInStore(t *testing.T) {
 // TestDistributedMultiServiceSpread verifies that multiple services are
 // deployed and spread across nodes simultaneously with independent instance counts.
 func TestDistributedMultiServiceSpread(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

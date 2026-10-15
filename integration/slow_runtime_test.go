@@ -82,6 +82,7 @@ func (slowRuntime *slowStartRuntime) Resize(ctx context.Context, id string, cpuM
 // initial reconciliation while the agent was blocked starting containers,
 // causing the node failure controller to mark the node unreachable.
 func TestSlowStartDoesNotCauseNodeUnreachable(t *testing.T) {
+	t.Parallel()
 	memStore := store.NewMemoryStore()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -139,6 +140,7 @@ func TestSlowStartDoesNotCauseNodeUnreachable(t *testing.T) {
 // node failure lease timeout is long enough for typical container operations.
 // Container image pulls can take 30-60 seconds; the timeout must exceed this.
 func TestLeaseTimeoutDefaultIsReasonableForContainers(t *testing.T) {
+	t.Parallel()
 	nodeFailureController := controllers.NewNodeFailureController()
 
 	minimumReasonableTimeout := 15 * time.Second
@@ -155,6 +157,7 @@ func TestLeaseTimeoutDefaultIsReasonableForContainers(t *testing.T) {
 // store (parsed to 536870912 bytes), and the runtime spec should contain that
 // exact byte value — verified via the simulator's Stats().
 func TestMemoryBytesPassedDirectlyToRuntime(t *testing.T) {
+	t.Parallel()
 	memStore := store.NewMemoryStore()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

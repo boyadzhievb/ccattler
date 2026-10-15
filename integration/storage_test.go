@@ -86,6 +86,7 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 // causes the StorageController to create observed volume facts with
 // state=available.
 func TestVolumeCreatedFromDesiredState(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -108,6 +109,7 @@ func TestVolumeCreatedFromDesiredState(t *testing.T) {
 // volume mount is deployed, the agent attaches the volume before starting
 // the instance, and the observed volume facts reflect the attachment.
 func TestVolumeAttachedWhenInstanceStarts(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -130,6 +132,7 @@ func TestVolumeAttachedWhenInstanceStarts(t *testing.T) {
 // TestVolumeDetachedWhenInstanceStops verifies that scaling a service to zero
 // causes the agent to detach the volume, setting its state back to available.
 func TestVolumeDetachedWhenInstanceStops(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -160,6 +163,7 @@ func TestVolumeDetachedWhenInstanceStops(t *testing.T) {
 // with a persistent volume on one node, kills that node, and verifies the
 // volume migrates to a replacement instance on a surviving node.
 func TestVolumeSurvivesNodeFailure(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -222,6 +226,7 @@ func TestVolumeSurvivesNodeFailure(t *testing.T) {
 // force-detaches a volume from a node that becomes unreachable, setting the
 // volume state to available.
 func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -256,6 +261,7 @@ func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
 // TestMultipleServicesIndependentVolumes verifies that two services with
 // different volumes have independent volume lifecycles.
 func TestMultipleServicesIndependentVolumes(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -294,6 +300,7 @@ func TestMultipleServicesIndependentVolumes(t *testing.T) {
 // TestServiceWithoutVolumeUnaffected verifies that services without volume
 // mounts work normally alongside services that use volumes.
 func TestServiceWithoutVolumeUnaffected(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -336,6 +343,7 @@ func TestServiceWithoutVolumeUnaffected(t *testing.T) {
 // TestVolumeStateReflectedInStore verifies that all expected observed volume
 // facts are present and correct after a volume is attached.
 func TestVolumeStateReflectedInStore(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()
@@ -390,6 +398,7 @@ func TestVolumeStateReflectedInStore(t *testing.T) {
 // force-detached from an unreachable node, a new instance on a surviving
 // node successfully attaches it.
 func TestVolumeReattachAfterForceDetach(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
 	defer cluster.cancel()
 	defer cluster.factStore.Close()

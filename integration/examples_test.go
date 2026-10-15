@@ -17,6 +17,7 @@ import (
 // every .cca file can be parsed, compiled, and applied to a fresh store
 // without error. This ensures example configs stay valid as the DSL evolves.
 func TestAllExamplesParseAndApply(t *testing.T) {
+	t.Parallel()
 	examplesDirectory := filepath.Join("..", "examples")
 	exampleFiles, err := filepath.Glob(filepath.Join(examplesDirectory, "*.cca"))
 	if err != nil {

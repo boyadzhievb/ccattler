@@ -17,6 +17,7 @@ import (
 // TestAuthDSLRoundTrip verifies the full authorization pipeline:
 // DSL source → parse → compile → apply to store → auth controller reconcile → authorization enforced.
 func TestAuthDSLRoundTrip(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -98,6 +99,7 @@ grant operator to user "carol@example.com"
 // TestAuthDSLAdditionalGrantTakesEffect verifies that applying additional auth
 // DSL facts and re-reconciling expands the authorization state.
 func TestAuthDSLAdditionalGrantTakesEffect(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

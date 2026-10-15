@@ -31,6 +31,7 @@ import (
 // read/write/delete on placement/. A compromised scheduler must not be able
 // to inject desired state or access encrypted secrets.
 func TestCompromisedControllerCannotEscalate(t *testing.T) {
+	t.Parallel()
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
@@ -123,6 +124,7 @@ func TestCompromisedControllerCannotEscalate(t *testing.T) {
 // not be able to write to desired/ prefixes, which would let a compromised node
 // alter cluster intent (e.g., setting desired_instances to 0).
 func TestCompromisedNodeCannotWriteDesired(t *testing.T) {
+	t.Parallel()
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
@@ -229,6 +231,7 @@ func TestCompromisedNodeCannotWriteDesired(t *testing.T) {
 // or secrets via the API layer. This validates both status visibility
 // filtering and API-level secret access control.
 func TestTenantIsolation_CrossTenantRead(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	setupTwoTenantStore(t, factStore)
@@ -377,6 +380,7 @@ func TestTenantIsolation_CrossTenantRead(t *testing.T) {
 // capabilities scoped to one tenant cannot modify another tenant's resources.
 // Tests both apply and scale endpoints with team-scoped capabilities.
 func TestTenantIsolation_CrossTenantWrite(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	setupTwoTenantStore(t, factStore)
@@ -512,6 +516,7 @@ func TestTenantIsolation_CrossTenantWrite(t *testing.T) {
 // plaintext value. This validates that envelope encryption is applied to all
 // secrets and that no code path bypasses encryption.
 func TestSecretNeverInPlaintext(t *testing.T) {
+	t.Parallel()
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
@@ -591,6 +596,7 @@ func TestSecretNeverInPlaintext(t *testing.T) {
 // CertificateRotator atomically swaps the TLS certificate so that in-flight
 // and subsequent requests succeed without interruption.
 func TestCertificateRotation(t *testing.T) {
+	t.Parallel()
 	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
 	if caError != nil {
 		t.Fatalf("create CA: %v", caError)

@@ -18,6 +18,7 @@ import (
 // scoped to one team cannot access cluster-scoped API endpoints. This validates
 // that hierarchical scoping prevents cross-tenant privilege escalation.
 func TestCrossTenantAuthorizationDenied(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	setupTwoTenantStore(t, factStore)
@@ -94,6 +95,7 @@ func TestCrossTenantAuthorizationDenied(t *testing.T) {
 // cluster.admin capability at cluster scope can access all endpoints regardless
 // of which tenant owns the resources.
 func TestClusterAdminBypassesTeamScoping(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	setupTwoTenantStore(t, factStore)
@@ -129,6 +131,7 @@ func TestClusterAdminBypassesTeamScoping(t *testing.T) {
 // TestUnauthenticatedRequestDenied verifies that requests without a principal
 // are rejected with 401 when requirePrincipal is enabled.
 func TestUnauthenticatedRequestDenied(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

@@ -66,6 +66,7 @@ func helperSetupServiceGroupCluster(t *testing.T) (store.StateStore, context.Can
 // desired/group/ facts → scheduler co-places group member instances on the
 // same node.
 func TestServiceGroupCoScheduled(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -147,6 +148,7 @@ group frontend {
 // TestServiceGroupWithUngroupedService verifies that ungrouped services are
 // placed independently while grouped services are co-located.
 func TestServiceGroupWithUngroupedService(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

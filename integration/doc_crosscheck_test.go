@@ -40,6 +40,7 @@ func readProjectFile(testContext *testing.T, relativePath string) string {
 // subcommand patterns from the CLI section, and verifies each subcommand
 // string appears in the main.go command registration switch statement.
 func TestDocCrossCheckCLICommandsExist(testContext *testing.T) {
+	testContext.Parallel()
 	claudeDocContents := readProjectFile(testContext, "CLAUDE.md")
 	mainGoContents := readProjectFile(testContext, "cmd/cca/main.go")
 
@@ -89,6 +90,7 @@ func TestDocCrossCheckCLICommandsExist(testContext *testing.T) {
 // about the Controller interface having Name(), Watch(), and Reconcile()
 // methods matches the actual interface definition in controllers/controller.go.
 func TestDocCrossCheckControllerInterfaceMethods(testContext *testing.T) {
+	testContext.Parallel()
 	controllerSourceContents := readProjectFile(testContext, "controllers/controller.go")
 
 	// The documented Controller interface methods from CLAUDE.md.
@@ -117,6 +119,7 @@ func TestDocCrossCheckControllerInterfaceMethods(testContext *testing.T) {
 // StateStore operations (Get, Put, Delete, Scan, Watch, Transaction, Revision)
 // matches the actual interface definition in store/store.go.
 func TestDocCrossCheckStoreInterfaceMethods(testContext *testing.T) {
+	testContext.Parallel()
 	storeSourceContents := readProjectFile(testContext, "store/store.go")
 
 	// The documented StateStore operations from CLAUDE.md's Fact Store Interface section.
@@ -150,6 +153,7 @@ func TestDocCrossCheckStoreInterfaceMethods(testContext *testing.T) {
 // event, network, derived) matches the actual constant definitions in
 // types/keys.go.
 func TestDocCrossCheckFactPrefixesExist(testContext *testing.T) {
+	testContext.Parallel()
 	keysSourceContents := readProjectFile(testContext, "types/keys.go")
 
 	// The documented key prefixes from CLAUDE.md. Each should be defined as a
@@ -194,6 +198,7 @@ func TestDocCrossCheckFactPrefixesExist(testContext *testing.T) {
 // runtime adapters (SimulatorRuntime, ProcessRuntime, ContainerRuntime) matches
 // the actual struct definitions in the runtime package.
 func TestDocCrossCheckRuntimeAdapters(testContext *testing.T) {
+	testContext.Parallel()
 	// Read all Go source files in the runtime package to find struct definitions.
 	runtimeDirectoryEntries, readDirError := os.ReadDir(projectRoot + "/runtime")
 	if readDirError != nil {

@@ -18,6 +18,7 @@ import (
 // lifecycle: ordinal IDs, ordered startup (one at a time), per-instance DNS,
 // and per-ordinal volumes.
 func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -128,6 +129,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 // TestStatefulServiceScaleDown verifies that scaling down a stateful service
 // removes the highest ordinals first.
 func TestStatefulServiceScaleDown(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

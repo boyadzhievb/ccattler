@@ -150,6 +150,7 @@ func countRunningInstancesForServiceInStore(backgroundContext context.Context, f
 // under "observed/" — the two namespaces serve fundamentally different purposes
 // (user intent vs. agent-reported reality) and must never be conflated.
 func TestInvariantDesiredObservedSeparation(t *testing.T) {
+	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -217,6 +218,7 @@ func TestInvariantDesiredObservedSeparation(t *testing.T) {
 // or non-existent nodes would violate the system's correctness guarantee that
 // workloads only run on healthy machines.
 func TestInvariantPlacementOnlyOnAliveNodes(t *testing.T) {
+	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -267,6 +269,7 @@ func TestInvariantPlacementOnlyOnAliveNodes(t *testing.T) {
 // number of running instances exactly matches the desired count. This is the
 // core promise of the orchestrator: desired state becomes actual state.
 func TestInvariantInstanceCountMatchesDesired(t *testing.T) {
+	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -345,6 +348,7 @@ func TestInvariantInstanceCountMatchesDesired(t *testing.T) {
 // changes. This proves the controllers are truly idempotent — they don't
 // oscillate or create spurious work when the system is already converged.
 func TestInvariantIdempotentReconciliation(t *testing.T) {
+	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -447,6 +451,7 @@ func TestInvariantIdempotentReconciliation(t *testing.T) {
 // that exposes a port must have exactly one endpoint, and no phantom endpoints
 // should exist for non-running instances.
 func TestInvariantEndpointsMatchRunningInstances(t *testing.T) {
+	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()

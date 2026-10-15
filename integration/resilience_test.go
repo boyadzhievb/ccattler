@@ -154,6 +154,7 @@ func (cluster *resilienceCluster) restartControllers() {
 // a new service is added, and controllers restart, the system converges to
 // the desired state.
 func TestControllerRestartRecovery(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -186,6 +187,7 @@ func TestControllerRestartRecovery(t *testing.T) {
 // TestControllerRestartPreservesExistingState verifies that restarting
 // controllers does not disrupt existing running instances.
 func TestControllerRestartPreservesExistingState(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -211,6 +213,7 @@ func TestControllerRestartPreservesExistingState(t *testing.T) {
 // to become unreachable, then starting a new agent with the same nodeID causes
 // the node to rejoin and resume hosting instances.
 func TestAgentRestartRejoin(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -244,6 +247,7 @@ func TestAgentRestartRejoin(t *testing.T) {
 // TestMultipleSimultaneousNodeFailures verifies that killing 2 of 3 nodes
 // simultaneously causes all instances to reschedule to the sole survivor.
 func TestMultipleSimultaneousNodeFailures(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -274,6 +278,7 @@ func TestMultipleSimultaneousNodeFailures(t *testing.T) {
 // a node's store, wait for the node to become unreachable, heal the partition,
 // and verify the node reconnects and becomes alive again.
 func TestNetworkPartitionAndHeal(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -304,6 +309,7 @@ func TestNetworkPartitionAndHeal(t *testing.T) {
 // instances are rescheduled to surviving nodes, and after heal the cluster
 // stabilizes at the correct total count without double-counting.
 func TestPartitionedAgentInstancesRescheduled(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -335,6 +341,7 @@ func TestPartitionedAgentInstancesRescheduled(t *testing.T) {
 // node (within the lease timeout) prevents unnecessary rescheduling — the
 // node stays alive and instances are not disrupted.
 func TestRapidNodeCycling(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -365,6 +372,7 @@ func TestRapidNodeCycling(t *testing.T) {
 // a node is being detected as failed still converges to the new desired count
 // on surviving nodes.
 func TestScaleChangeDuringNodeFailure(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -398,6 +406,7 @@ func TestScaleChangeDuringNodeFailure(t *testing.T) {
 // kill a node, verify convergence, partition another, verify convergence,
 // heal, scale up, and verify final convergence.
 func TestFullResilienceCycle(t *testing.T) {
+	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()

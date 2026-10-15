@@ -68,6 +68,7 @@ func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, context.Ca
 // TestNetworkPolicyDSLToCompiledRules verifies the full pipeline: DSL
 // network block → policy/network/ facts → controller → derived/network/rule/ facts.
 func TestNetworkPolicyDSLToCompiledRules(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -167,6 +168,7 @@ network {
 // TestNetworkPolicyDenyRule verifies that a deny rule in the DSL is
 // compiled through to a derived deny rule.
 func TestNetworkPolicyDenyRule(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -249,6 +251,7 @@ network {
 // TestNetworkPolicyMultipleRules verifies that multiple allow/deny rules
 // in a single network block all produce compiled derived rules.
 func TestNetworkPolicyMultipleRules(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}

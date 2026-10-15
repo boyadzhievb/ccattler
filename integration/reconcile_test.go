@@ -27,6 +27,7 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool
 }
 
 func TestDesiredToPlaced(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -88,6 +89,7 @@ func TestDesiredToPlaced(t *testing.T) {
 }
 
 func TestScaleUpPlacesNewInstances(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -133,6 +135,7 @@ func TestScaleUpPlacesNewInstances(t *testing.T) {
 }
 
 func TestNoPlacementWithoutNodes(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

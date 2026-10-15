@@ -148,6 +148,7 @@ func defaultIsolationGroups() []controllerGroup {
 // network controllers continue operating. New instances cannot be placed until
 // the scheduler is restarted, at which point they converge.
 func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -192,6 +193,7 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 // network controller does not prevent the scheduler from placing instances or
 // agents from starting them. Only endpoint/DNS/VIP reconciliation stops.
 func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -218,6 +220,7 @@ func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 // the instance controller mid-reconciliation produces no duplicate instances
 // and no orphaned instances. All services converge to their desired counts.
 func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -244,6 +247,7 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 // alive), and that restarting controllers resumes reconciliation to converge
 // new desired state.
 func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()
@@ -289,6 +293,7 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 // produces no conflicts. Optimistic concurrency (store transactions) prevents
 // double-writes when multiple controllers reconcile concurrently after restart.
 func TestConcurrentControllerRecovery(testHandle *testing.T) {
+	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
 	defer cluster.clusterCancel()
 	defer cluster.factStore.Close()

@@ -21,6 +21,7 @@ import (
 // respects disruption budgets: when draining a node, it never evicts instances
 // that would drop the service below min_available.
 func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -122,6 +123,7 @@ func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 // agents, drains one node, and verifies that all instances are migrated to
 // the surviving nodes while total instance count is preserved.
 func TestDrainNodeMigratesInstances(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 

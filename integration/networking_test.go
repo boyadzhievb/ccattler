@@ -70,6 +70,7 @@ func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Cance
 // TestInstancesGetUniqueIPsFromNodeSubnet verifies that instances deployed
 // across 3 nodes receive unique IPs from their respective node subnets.
 func TestInstancesGetUniqueIPsFromNodeSubnet(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -110,6 +111,7 @@ func TestInstancesGetUniqueIPsFromNodeSubnet(t *testing.T) {
 // TestEndpointsReflectAllocatedIPs verifies that endpoint facts contain the
 // allocated IPs from the network provider, not the default 127.0.0.1.
 func TestEndpointsReflectAllocatedIPs(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -145,6 +147,7 @@ func TestEndpointsReflectAllocatedIPs(t *testing.T) {
 // TestServiceGetsVIPAndDNS verifies that the NetworkController creates VIP
 // and DNS facts for a service with running instances and an exposed port.
 func TestServiceGetsVIPAndDNS(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -178,6 +181,7 @@ func TestServiceGetsVIPAndDNS(t *testing.T) {
 // TestDNSResolvesServiceToVIP verifies that the StoreBackedResolver returns
 // the correct VIP for a deployed service.
 func TestDNSResolvesServiceToVIP(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -201,6 +205,7 @@ func TestDNSResolvesServiceToVIP(t *testing.T) {
 // TestLoadBalancingDistributesTraffic verifies that the SimulatorProxy
 // distributes requests across all running instances using round-robin.
 func TestLoadBalancingDistributesTraffic(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -243,6 +248,7 @@ func TestLoadBalancingDistributesTraffic(t *testing.T) {
 // instances' IPs are released, replacements get new IPs from surviving
 // nodes, and the load balancer routes correctly.
 func TestNodeFailureUpdatesNetworking(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
@@ -325,6 +331,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 // TestScaleUpAddsToLoadBalancerPool verifies that scaling up a service
 // causes new instances to appear in the load balancer pool.
 func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -360,6 +367,7 @@ func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
 // verify each gets a unique VIP, DNS resolves both names, and traffic to
 // each service balances across its instances.
 func TestServiceReachableByName(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -435,6 +443,7 @@ func TestServiceReachableByName(t *testing.T) {
 // TestMultipleServicesIndependentNetworking verifies that two services
 // have independent VIPs, DNS records, endpoint sets, and load balancing.
 func TestMultipleServicesIndependentNetworking(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()
@@ -479,6 +488,7 @@ func TestMultipleServicesIndependentNetworking(t *testing.T) {
 // TestInstanceIPReleasedOnStop verifies that scaling down a service deletes
 // the network allocation facts for stopped instances.
 func TestInstanceIPReleasedOnStop(t *testing.T) {
+	t.Parallel()
 	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
 	defer cancel()
 	defer factStore.Close()

@@ -36,6 +36,7 @@ import (
 // as failed in the observed state — not a crash loop. The instance should stay
 // in InstanceFailed with a clear error, not repeatedly restart.
 func TestContainerRuntime_ImagePullFailure(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -90,6 +91,7 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 // OOM with exit code 137), the agent detects the killed container via runtime
 // Status and reports it as InstanceFailed.
 func TestContainerRuntime_OOMKill(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,6 +151,7 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 // The SimulatorRuntime Stop produces a clean exit; the agent should report the
 // instance as stopped and clean up observed state.
 func TestContainerRuntime_GracefulShutdown(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,6 +204,7 @@ func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 // produces semantic events in the event log explaining each decision: instance
 // creation, placement, and reaching running state.
 func TestObservability_DecisionAuditTrail(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -301,6 +305,7 @@ func TestObservability_DecisionAuditTrail(t *testing.T) {
 // failure, the event stream shows the causal chain: node unreachable → instances
 // failed → replacements created → placed on surviving nodes.
 func TestObservability_ReconciliationExplainability(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -410,6 +415,7 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 // This is a regression suite ensuring the DSL grammar never breaks existing
 // configs as it evolves.
 func TestAPIVersioning_BackwardsCompatibility(t *testing.T) {
+	t.Parallel()
 	ccaDirectories := []string{
 		filepath.Join("..", "examples"),
 		filepath.Join("..", "test", "e2e", "workloads"),
@@ -483,6 +489,7 @@ var nodeContractFields = []string{
 // comparison catches accidental renames or type changes that would break
 // existing consumers.
 func TestAPIStability_StatusEndpointContract(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx := context.Background()
@@ -580,6 +587,7 @@ func TestAPIStability_StatusEndpointContract(t *testing.T) {
 // registered in a Runner, receive facts via the standard Watch/Reconcile loop,
 // and write derived facts back to the store.
 func TestEcosystem_ControllerSDKPlugin(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -647,6 +655,7 @@ func TestEcosystem_ControllerSDKPlugin(t *testing.T) {
 // event format is a stable JSON structure with type, key, value, and revision
 // fields.
 func TestEcosystem_WatchIntegration(t *testing.T) {
+	t.Parallel()
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
