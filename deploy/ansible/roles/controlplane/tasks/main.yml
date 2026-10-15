@@ -1,9 +1,20 @@
 ---
-- name: Install cca-server systemd unit
-  template:
-    src: cca-server.service.j2
-    dest: /etc/systemd/system/cca-server.service
-  notify: restart cca-server
+# cca init generates PKI and a setup script that installs certificates,
+# configures etcd TLS via systemd drop-in, and creates systemd units.
+
+- name: Generate PKI and setup script with cca init
+  command: >
+    /usr/local/bin/cca init
+    --advertise-address {{ ansible_host }}
+    --node-id {{ inventory_hostname }}
+    -o /tmp/cca-init
+  args:
+    creates: /tmp/cca-init/setup.sh
+
+- name: Run setup script
+  command: /tmp/cca-init/setup.sh
+  args:
+    creates: /etc/ccattler/pki/ca.pem
 
 - name: Enable and start cca-server
   systemd:

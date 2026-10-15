@@ -21,7 +21,7 @@
   failed_when: false
   when: "'etcd' in group_names"
 
-- name: Remove old systemd units
+- name: Remove old systemd units and drop-ins
   file:
     path: "{{ item }}"
     state: absent
@@ -29,6 +29,7 @@
     - /etc/systemd/system/cca-agent.service
     - /etc/systemd/system/cca-server.service
     - /etc/systemd/system/etcd.service
+    - /etc/systemd/system/etcd.service.d
 
 - name: Reload systemd
   systemd:

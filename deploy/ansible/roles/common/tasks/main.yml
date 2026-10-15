@@ -56,6 +56,12 @@
     state: present
     update_cache: true
 
+- name: Install etcd from distribution packages
+  apt:
+    name: etcd-server
+    state: present
+  when: "'etcd' in group_names"
+
 - name: Configure dnsmasq upstream servers
   copy:
     dest: /etc/dnsmasq.d/upstream.conf

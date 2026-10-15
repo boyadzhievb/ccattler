@@ -249,7 +249,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
 	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<'ETCD_OVERRIDE'\n")
 	scriptBuilder.WriteString("[Service]\n")
-	scriptBuilder.WriteString("Environment=\"ETCD_LISTEN_CLIENT_URLS=https://127.0.0.1:2379\"\n")
+	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:2379,https://127.0.0.1:2379\"\n", advertiseAddress)
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:2379\"\n", advertiseAddress)
 	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/node.pem\"\n")
 	scriptBuilder.WriteString("Environment=\"ETCD_KEY_FILE=/etc/ccattler/pki/node-key.pem\"\n")

@@ -40,19 +40,7 @@
   roles:
     - common
 
-- name: Generate CA and distribute certificates
-  hosts: all
-  become: true
-  roles:
-    - certificates
-
-- name: Install and start etcd
-  hosts: etcd
-  become: true
-  roles:
-    - etcd
-
-- name: Provision control-plane nodes
+- name: Provision control-plane node
   hosts: controlplane
   become: true
   roles:
@@ -65,4 +53,4 @@
     - worker
 
 # Workload deployment is handled by cluster_test.sh after image pre-pull.
-# Ansible only provisions infrastructure (etcd, certificates, server, agents).
+# Ansible only provisions infrastructure (server, agents).
