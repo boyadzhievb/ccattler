@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M109 — Phase 109 Node Principal Tenant Visibility Fix. M1–M109 complete. Gates A–I resolved.
+**Completed through:** M110 — Phase 110 Security Hardening (All Open Threats). M1–M110 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

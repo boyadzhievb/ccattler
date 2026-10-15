@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.35.0-beta <Badge type="tip" text="latest" /> {#v1-35-0-beta}
+## v1.36.0-beta <Badge type="tip" text="latest" /> {#v1-36-0-beta}
+
+**2026-10-15** — Security Hardening (All Open Threats).
+
+- **Security Hardening (All Open Threats)** (M110) — Close all open threat-model items: (1) T1: etcd mTLS deployment — Ansible/Lima templates with `--client-cert-auth`, `https://` endpoints, etcd TLS flags on cca-server/agent; (2) T4: `--ca-cert` required for `cca join`, `--insecure` escape hatch with warnings, audit log enrollment source IP; (3) T8: CSR-based enrollment — node generates keypair locally, sends CSR, server signs and returns cert only, private key never transits network; (4) T7: store enrollment token hashes not plaintext; (5) T3: node cert permissions 0644→0600, redact sensitive config patterns in describe output; (6) E2E test etcdctl calls updated for TLS. Backward-compatible: legacy enrollment still works during rolling upgrade.
+
+---
+
+## v1.35.0-beta {#v1-35-0-beta}
 
 **2026-10-15** — Node Principal Tenant Visibility Fix.
 
