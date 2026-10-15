@@ -480,12 +480,14 @@ ETCDSVC
         ETCD_NEEDS_RESTART=true
     fi
     if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
-        log "Restarting etcd with mTLS (wiping data dir for clean URL transition)..."
+        log "WARNING: Wiping etcd data directory — existing cluster state will be lost"
+        log "  Reason: etcd listen URLs changed from http:// to https:// (mTLS upgrade)"
+        log "  All workload state will be redeployed from .cca files"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd; sudo rm -rf /var/lib/etcd"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"
         sleep 3
         ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
-        log "etcd mTLS upgrade complete"
+        log "etcd restarted with mTLS — data directory recreated"
     fi
 
     log "Removing all containers, volumes, and pruning name store..."
@@ -493,7 +495,9 @@ ETCDSVC
         ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1 || true"
+    if ! ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
+        log "WARNING: etcdctl del failed (expected if data dir was just wiped)"
+    fi
     log "Truncating old service logs..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
