@@ -1,0 +1,98 @@
+name: Install Script Test
+
+on:
+  push:
+    paths:
+      - "install.sh"
+      - "install-demo.sh"
+      - "scripts/install.sh"
+      - ".github/workflows/install-test.yml"
+  pull_request:
+    paths:
+      - "install.sh"
+      - "install-demo.sh"
+      - "scripts/install.sh"
+  release:
+    types: [published]
+
+jobs:
+  shellcheck:
+    name: ShellCheck lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Run shellcheck
+        run: shellcheck -s sh install.sh install-demo.sh scripts/install.sh deploy/lima/install-lima-demo.sh
+
+  install-test:
+    name: Install (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    needs: shellcheck
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 24.04 (dash)
+            runner: ubuntu-latest
+            container: ""
+            shell: sh
+          - name: Debian 12 (dash)
+            runner: ubuntu-latest
+            container: debian:12
+            shell: sh
+          - name: RHEL 9 (bash)
+            runner: ubuntu-latest
+            container: almalinux:9
+            shell: sh
+          - name: macOS (zsh)
+            runner: macos-latest
+            container: ""
+            shell: sh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install in container
+        if: matrix.container != ''
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src ${{ matrix.container }} ${{ matrix.shell }} -c '
+            # Install curl if missing (minimal containers).
+            if ! command -v curl >/dev/null 2>&1; then
+              if command -v apt-get >/dev/null 2>&1; then
+                apt-get update -qq && apt-get install -y -qq curl tar >/dev/null
+              elif command -v dnf >/dev/null 2>&1; then
+                dnf install -y -q curl tar
+              fi
+            fi
+
+            # Dry-run: source the script functions and test detection.
+            ${{ matrix.shell }} -n install.sh
+            echo "Syntax check passed"
+
+            # Test OS/arch detection by running just the functions.
+            os=$(${{ matrix.shell }} -c ". ./scripts/install.sh 2>/dev/null; detect_os" 2>/dev/null || echo "")
+            arch=$(${{ matrix.shell }} -c ". ./scripts/install.sh 2>/dev/null; detect_arch" 2>/dev/null || echo "")
+            echo "Detected: os=${os:-unknown} arch=${arch:-unknown}"
+
+            # Full install against latest release (if published).
+            if curl -fsSL -o /dev/null "https://api.github.com/repos/boyadzhievb/ccattler/releases/latest" 2>/dev/null; then
+              INSTALL_PATH=/tmp/cca-test ${{ matrix.shell }} install.sh
+              /tmp/cca-test/cca version
+              echo "Install succeeded"
+            else
+              echo "No release available — skipping full install test"
+            fi
+          '
+
+      - name: Install on host
+        if: matrix.container == ''
+        run: |
+          ${{ matrix.shell }} -n install.sh
+          echo "Syntax check passed"
+
+          if curl -fsSL -o /dev/null "https://api.github.com/repos/boyadzhievb/ccattler/releases/latest" 2>/dev/null; then
+            INSTALL_PATH=/tmp/cca-test ${{ matrix.shell }} install.sh
+            /tmp/cca-test/cca version
+            echo "Install succeeded"
+          else
+            echo "No release available — skipping full install test"
+          fi
