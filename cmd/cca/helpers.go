@@ -98,12 +98,19 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 
 		// Auto-detect TLS certs from canonical path when endpoints use https://
 		// and no explicit cert paths were provided.
-		if etcdCertPath == "" && etcdKeyPath == "" && etcdCACertPath == "" &&
-			strings.Contains(etcdEndpoints, "https://") {
+		endpointsRequireTLS := strings.Contains(etcdEndpoints, "https://")
+		if etcdCertPath == "" && etcdKeyPath == "" && etcdCACertPath == "" && endpointsRequireTLS {
 			if fileExists(defaultEtcdCertPath) && fileExists(defaultEtcdKeyPath) && fileExists(defaultEtcdCACertPath) {
 				etcdCertPath = defaultEtcdCertPath
 				etcdKeyPath = defaultEtcdKeyPath
 				etcdCACertPath = defaultEtcdCACertPath
+			} else {
+				return nil, fmt.Errorf("etcd endpoints use https:// but TLS certificates not found\n"+
+					"  Expected:  %s, %s, %s\n"+
+					"  Fix:       run 'cca join <server> <token> --node-id <id>' to enroll this node,\n"+
+					"             or provide --etcd-cert, --etcd-key, --etcd-ca flags\n"+
+					"  See:       design/security-model.md for certificate setup",
+					defaultEtcdCertPath, defaultEtcdKeyPath, defaultEtcdCACertPath)
 			}
 		}
 
