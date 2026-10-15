@@ -46,17 +46,17 @@
   roles:
     - common
 
-- name: Install and start etcd
-  hosts: etcd
-  become: true
-  roles:
-    - etcd
-
 - name: Generate CA and distribute certificates
   hosts: all
   become: true
   roles:
     - certificates
+
+- name: Install and start etcd
+  hosts: etcd
+  become: true
+  roles:
+    - etcd
 
 - name: Provision control-plane nodes
   hosts: controlplane

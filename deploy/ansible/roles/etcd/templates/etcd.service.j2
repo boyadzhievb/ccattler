@@ -4,6 +4,8 @@ After=network.target
 
 [Service]
 Type=notify
+User=etcd
+Group=etcd
 ExecStart=/usr/local/bin/etcd \
   --name {{ inventory_hostname }} \
   --data-dir /var/lib/etcd \

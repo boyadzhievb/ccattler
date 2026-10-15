@@ -149,6 +149,31 @@
   hosts: all
   become: true
   tasks:
+    - name: Create etcd system user
+      user:
+        name: etcd
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+
+    - name: Set etcd data directory ownership
+      file:
+        path: /var/lib/etcd
+        state: directory
+        owner: etcd
+        group: etcd
+        mode: "0700"
+
+    - name: Grant etcd group read access to TLS certificates
+      file:
+        path: "{{ item }}"
+        group: etcd
+        mode: "0640"
+      loop:
+        - /etc/ccattler/pki/node.pem
+        - /etc/ccattler/pki/node-key.pem
+        - /etc/ccattler/pki/ca.pem
+
     - name: Install etcd systemd unit
       copy:
         dest: /etc/systemd/system/etcd.service
@@ -159,6 +184,8 @@
 
           [Service]
           Type=notify
+          User=etcd
+          Group=etcd
           ExecStart=/usr/local/bin/etcd \
             --name cca-ctrl \
             --data-dir /var/lib/etcd \

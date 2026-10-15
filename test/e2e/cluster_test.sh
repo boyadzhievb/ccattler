@@ -42,6 +42,8 @@
 #   ./test/e2e/cluster_test.sh --from-release                  # download latest release binary
 #   ./test/e2e/cluster_test.sh --skip-build                    # use pre-built binary (no go build)
 #   ./test/e2e/cluster_test.sh --cross-compile                 # cross-compile locally (old behavior)
+#   ./test/e2e/cluster_test.sh --keep-data                     # preserve volumes + etcd between runs
+#   ./test/e2e/cluster_test.sh --upgrade                       # deploy latest release, upgrade to local build
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
 # Caddy reverse proxy: after deployment, Caddy on the testbed host
@@ -69,6 +71,8 @@ CLEAN_START=false
 SELECTED_WORKLOADS=""
 LIST_WORKLOADS=false
 CLEAR_WORKLOADS_ONLY=false
+KEEP_DATA=false
+UPGRADE_TEST=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -78,6 +82,8 @@ for arg in "$@"; do
         --from-release)      BINARY_SOURCE=release ;;
         --skip-build)        BINARY_SOURCE=skip ;;
         --cross-compile)     BINARY_SOURCE=cross ;;
+        --keep-data)         KEEP_DATA=true ;;
+        --upgrade)           UPGRADE_TEST=true ;;
         --list-workloads)    LIST_WORKLOADS=true ;;
         --env=*)             CLUSTER_ENV="${arg#--env=}" ;;
         --env)               ;; # handled below with next arg
@@ -100,6 +106,11 @@ for ((i=1; i<=$#; i++)); do
         fi
     fi
 done
+
+# --upgrade implies --keep-data: upgrade tests must not wipe volumes or etcd.
+if [[ "$UPGRADE_TEST" == "true" ]]; then
+    KEEP_DATA=true
+fi
 
 # ---- Workload discovery ----
 
@@ -283,6 +294,21 @@ count_containers() {
     ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
+# Copy a local file to a VM via scp.
+scp_to_vm() {
+    local vm_name="$1" local_path="$2" remote_path="$3"
+    local key_path="$VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
+    local ip
+    case "$vm_name" in
+        *-ctrl)     ip="$CTRL_IP" ;;
+        *-worker-1) ip="${WORKER_IPS[0]}" ;;
+        *-worker-2) ip="${WORKER_IPS[1]:-}" ;;
+        *) fail "Unknown VM: $vm_name" ;;
+    esac
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -i "$key_path" "$local_path" "vagrant@${ip}:${remote_path}"
+}
+
 # ---- Clear workloads mode ----
 # Wipes desired state from etcd and lets agents reconcile (stop orphaned containers).
 # Faster and more principled than brute-force container removal: the agents handle
@@ -316,11 +342,15 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
         done
         wait
     fi
-    log "Pruning container volumes for blank-slate redeploy..."
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl volume prune -f 2>/dev/null || true" &
-    done
-    wait
+    if [[ "$KEEP_DATA" == "false" ]]; then
+        log "Pruning container volumes for blank-slate redeploy..."
+        for vm in "${VM_NAMES[@]}"; do
+            ssh_vm "$vm" "sudo nerdctl volume prune -f 2>/dev/null || true" &
+        done
+        wait
+    else
+        log "Keeping container volumes (--keep-data)"
+    fi
     log "Cluster cleared"
     exit 0
 fi
@@ -456,6 +486,8 @@ After=network.target
 
 [Service]
 Type=notify
+User=etcd
+Group=etcd
 ExecStart=/usr/local/bin/etcd \\
   --name ${VM_PREFIX}-ctrl \\
   --data-dir /var/lib/etcd \\
@@ -484,19 +516,33 @@ ETCDSVC
         log "  Reason: etcd listen URLs changed from http:// to https:// (mTLS upgrade)"
         log "  All workload state will be redeployed from .cca files"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd; sudo rm -rf /var/lib/etcd"
+        # Create etcd user, data dir, and grant cert access.
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo mkdir -p /var/lib/etcd && sudo chown etcd:etcd /var/lib/etcd && sudo chmod 0700 /var/lib/etcd"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo chgrp etcd /etc/ccattler/pki/node.pem /etc/ccattler/pki/node-key.pem /etc/ccattler/pki/ca.pem && sudo chmod 0640 /etc/ccattler/pki/node.pem /etc/ccattler/pki/node-key.pem /etc/ccattler/pki/ca.pem"
+        # Remove any systemd drop-in overrides from prior installs.
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true; sudo systemctl daemon-reload"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"
         sleep 3
         ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
         log "etcd restarted with mTLS — data directory recreated"
     fi
 
-    log "Removing all containers, volumes, and pruning name store..."
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
-    done
-    wait
-    if ! ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
-        log "WARNING: etcdctl del failed (expected if data dir was just wiped)"
+    if [[ "$KEEP_DATA" == "false" ]]; then
+        log "Removing all containers, volumes, and pruning name store..."
+        for vm in "${VM_NAMES[@]}"; do
+            ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
+        done
+        wait
+        if ! ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
+            log "WARNING: etcdctl del failed (expected if data dir was just wiped)"
+        fi
+    else
+        log "Keeping existing data (--keep-data) — stopping containers only..."
+        for vm in "${VM_NAMES[@]}"; do
+            ssh_vm "$vm" "sudo nerdctl stop \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+        done
+        wait
     fi
     log "Truncating old service logs..."
     for vm in "${VM_NAMES[@]}"; do
@@ -1070,6 +1116,82 @@ log "Instances per node (from API):"
 FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) instances) ---"' || true
 echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
+
+# ---- Step 7: Upgrade test (--upgrade only) ----
+if [[ "$UPGRADE_TEST" == "true" ]]; then
+    log "=== UPGRADE TEST: switching from release binary to local build ==="
+
+    # Build current binary from source.
+    log "Building local binary..."
+    TESTBED_GO="${TESTBED_GO:-/usr/local/go/bin/go}"
+    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    log "Local binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
+
+    # Record pre-upgrade state for comparison.
+    PRE_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    PRE_UPGRADE_COUNT=$(echo "$PRE_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
+    log "Pre-upgrade: $PRE_UPGRADE_COUNT instances"
+
+    # Stop agents first, then server — reverse startup order.
+    log "Stopping agents..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+
+    # Swap binary on all nodes.
+    log "Deploying new binary to all nodes..."
+    for vm in "${VM_NAMES[@]}"; do
+        scp_to_vm "$vm" "$ANSIBLE_DIR/cca-linux-amd64" "/tmp/cca"
+        ssh_vm "$vm" "sudo mv /tmp/cca /usr/local/bin/cca && sudo chmod 0755 /usr/local/bin/cca"
+    done
+
+    # Restart server then agents — same startup order as initial deploy.
+    log "Starting server with new binary..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start cca-server"
+    sleep 3
+    log "Starting agents with new binary..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo systemctl start cca-agent 2>/dev/null || true"
+    done
+
+    # Wait for all instances to return to running state.
+    log "Waiting for workloads to recover after upgrade..."
+    deadline=$((SECONDS + 120))
+    while [[ $SECONDS -lt $deadline ]]; do
+        sleep 5
+        total_containers=0
+        for vm in "${VM_NAMES[@]}"; do
+            c=$(count_containers "$vm")
+            total_containers=$((total_containers + c))
+        done
+        log "  Upgrade recovery: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers"
+        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
+    done
+    [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Upgrade: expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers"
+
+    # Verify API is healthy with new binary.
+    log "Verifying API health after upgrade..."
+    curl -sf $CURL_TLS "${CCA_API}/status" > /dev/null || fail "Upgrade: API unreachable after binary swap"
+
+    # Verify instance IDs survived the upgrade (data preserved).
+    POST_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    POST_UPGRADE_COUNT=$(echo "$POST_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
+    log "Post-upgrade: $POST_UPGRADE_COUNT instances"
+    if [[ "$PRE_UPGRADE_INSTANCES" != "$POST_UPGRADE_INSTANCES" ]]; then
+        log "WARNING: Instance IDs changed across upgrade"
+        log "  Before: $PRE_UPGRADE_INSTANCES"
+        log "  After:  $POST_UPGRADE_INSTANCES"
+    else
+        log "Instance IDs preserved across upgrade"
+    fi
+
+    # Verify etcd still healthy.
+    ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "Upgrade: etcd unhealthy after binary swap"
+
+    log "=== UPGRADE TEST PASSED ==="
+fi
 
 log "All checks passed"
 exit 0
