@@ -196,6 +196,42 @@ func TestDataPlanePublishesNodeAdvertiseAddress(t *testing.T) {
 	}
 }
 
+func TestDataPlaneRemoteBackendUsesPerPortHostPort(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+	ctx := context.Background()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "db", VIP: "10.200.0.3", Port: 5432,
+	})
+
+	// Remote instance with per-port hostport fact (no legacy key).
+	factStore.Put(ctx, types.KeyEndpoint("db", "db-inst", 5432), []byte("10.100.2.5:5432"))
+	factStore.Put(ctx, types.KeyObservedInstanceNode("db-inst"), []byte("node-2"))
+	factStore.Put(ctx, types.KeyObservedNodeAddress("node-2"), []byte("192.168.124.10"))
+	factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort("db-inst", 5432), []byte("5432"))
+
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+
+	lastReconciled := simulatorDataPlane.LastReconciled()
+	if len(lastReconciled) != 1 {
+		t.Fatalf("expected 1 VIP config, got %d", len(lastReconciled))
+	}
+	if len(lastReconciled[0].Backends) != 1 {
+		t.Fatalf("expected 1 backend, got %d", len(lastReconciled[0].Backends))
+	}
+
+	backend := lastReconciled[0].Backends[0]
+	if backend.Address != "192.168.124.10" || backend.Port != 5432 {
+		t.Errorf("backend = %s:%d, want 192.168.124.10:5432", backend.Address, backend.Port)
+	}
+}
+
 func TestDataPlaneRunsOnReconciliationTick(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

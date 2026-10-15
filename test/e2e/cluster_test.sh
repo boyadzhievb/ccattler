@@ -1107,6 +1107,66 @@ else
     curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.nodes' || true
 fi
 
+# ---- Step 5.7: Cross-node VIP connectivity and DNS resolution ----
+# Verify that VIP addresses are reachable from every node (not just the node
+# hosting the service), and that DNS resolves service names via the cca.local
+# search domain.
+
+log "Validating cross-node VIP connectivity and DNS resolution..."
+
+NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port) \(.dns)"' 2>/dev/null || echo "")
+
+if [[ -n "$VIP_SERVICES" ]]; then
+    VIP_PASS=true
+    DNS_PASS=true
+
+    while IFS=' ' read -r svc_name svc_vip svc_port svc_dns; do
+        [[ -z "$svc_name" ]] && continue
+
+        # Test VIP connectivity from each node.
+        for vm in "${VM_NAMES[@]}"; do
+            if ssh_vm "$vm" "nc -zv -w5 $svc_vip $svc_port 2>&1" | grep -q "succeeded"; then
+                log "  VIP $svc_vip:$svc_port ($svc_name) reachable from $vm"
+            else
+                log "  WARNING: VIP $svc_vip:$svc_port ($svc_name) NOT reachable from $vm"
+                VIP_PASS=false
+            fi
+        done
+
+        # Test DNS resolution from each node (short name via search domain).
+        short_name="${svc_name}"
+        for vm in "${VM_NAMES[@]}"; do
+            resolved=$(ssh_vm "$vm" "dig +short $svc_dns @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+            if [[ -z "$resolved" ]]; then
+                resolved=$(ssh_vm "$vm" "getent hosts $svc_dns 2>/dev/null | awk '{print \$1}'" || echo "")
+            fi
+            if [[ "$resolved" == "$svc_vip" ]]; then
+                log "  DNS $svc_dns -> $resolved (correct) from $vm"
+            elif [[ -n "$resolved" ]]; then
+                log "  WARNING: DNS $svc_dns -> $resolved (expected $svc_vip) from $vm"
+                DNS_PASS=false
+            else
+                log "  WARNING: DNS $svc_dns unresolvable from $vm"
+                DNS_PASS=false
+            fi
+        done
+    done <<< "$VIP_SERVICES"
+
+    if [[ "$VIP_PASS" == "true" ]]; then
+        log "All VIPs reachable from all nodes"
+    else
+        fail "Some VIPs unreachable cross-node — DNAT rules may be missing"
+    fi
+    if [[ "$DNS_PASS" == "true" ]]; then
+        log "All service DNS names resolve correctly from all nodes"
+    else
+        log "WARNING: Some DNS names did not resolve (non-fatal)"
+    fi
+else
+    log "WARNING: No networking entries in status — skipping VIP/DNS checks"
+fi
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true

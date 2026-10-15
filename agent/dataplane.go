@@ -131,7 +131,12 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 	var backends []network.DataPlaneBackend
 	for _, endpointFact := range endpointFacts {
 		endpointSuffix := strings.TrimPrefix(endpointFact.Key, endpointPrefix)
-		instanceID := strings.SplitN(endpointSuffix, "/", 2)[0]
+		suffixParts := strings.SplitN(endpointSuffix, "/", 2)
+		instanceID := suffixParts[0]
+		containerPort := 0
+		if len(suffixParts) > 1 {
+			containerPort, _ = strconv.Atoi(suffixParts[1])
+		}
 		endpointValue := string(endpointFact.Value)
 
 		colonIndex := strings.LastIndex(endpointValue, ":")
@@ -153,23 +158,20 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 		instanceNodeID := string(instanceNodeFact.Value)
 
 		if instanceNodeID == dataPlaneReconciler.nodeID {
-			hostPortFact, hostPortErr := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
-			if hostPortErr == nil && dataPlaneReconciler.advertiseAddress != "" {
-				hostPort, parseErr := strconv.Atoi(string(hostPortFact.Value))
-				if parseErr == nil && hostPort > 0 {
-					backends = append(backends, network.DataPlaneBackend{
-						Address: dataPlaneReconciler.advertiseAddress,
-						Port:    hostPort,
-					})
-					continue
-				}
+			hostPort := resolveHostPort(ctx, dataPlaneReconciler.factStore, instanceID, containerPort)
+			if hostPort > 0 && dataPlaneReconciler.advertiseAddress != "" {
+				backends = append(backends, network.DataPlaneBackend{
+					Address: dataPlaneReconciler.advertiseAddress,
+					Port:    hostPort,
+				})
+				continue
 			}
 			backends = append(backends, network.DataPlaneBackend{
 				Address: endpointIP,
 				Port:    endpointPort,
 			})
 		} else {
-			remoteBackend := dataPlaneReconciler.resolveRemoteBackend(ctx, instanceID, instanceNodeID)
+			remoteBackend := dataPlaneReconciler.resolveRemoteBackend(ctx, instanceID, instanceNodeID, containerPort)
 			if remoteBackend.Port > 0 {
 				backends = append(backends, remoteBackend)
 			}
@@ -179,13 +181,35 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 	return backends, nil
 }
 
+// resolveHostPort looks up the host port for an instance, trying the
+// per-container-port key first, then falling back to the legacy single-port key.
+func resolveHostPort(ctx context.Context, factStore store.StateStore, instanceID string, containerPort int) int {
+	if containerPort > 0 {
+		portFact, err := factStore.Get(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, containerPort))
+		if err == nil {
+			hostPort, parseErr := strconv.Atoi(string(portFact.Value))
+			if parseErr == nil && hostPort > 0 {
+				return hostPort
+			}
+		}
+	}
+	portFact, err := factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
+	if err == nil {
+		hostPort, parseErr := strconv.Atoi(string(portFact.Value))
+		if parseErr == nil && hostPort > 0 {
+			return hostPort
+		}
+	}
+	return 0
+}
+
 // resolveRemoteBackend determines the host-accessible address for an
 // instance running on a different node. It looks up the remote node's
 // advertise address and the instance's host port mapping. Returns an
 // empty backend (zero port) if the remote address cannot be resolved —
 // container-bridge IPs (172.x) are not routable cross-node, so falling
 // back to them would create broken DNAT rules.
-func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context.Context, instanceID string, remoteNodeID string) network.DataPlaneBackend {
+func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context.Context, instanceID string, remoteNodeID string, containerPort int) network.DataPlaneBackend {
 	nodeAddressFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedNodeAddress(remoteNodeID))
 	if err != nil {
 		logging.Default().Debug("remote backend: no advertise address for node", "node", remoteNodeID, "instance", instanceID)
@@ -193,13 +217,9 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context
 	}
 	nodeAddress := string(nodeAddressFact.Value)
 
-	hostPortFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID))
-	if err != nil {
+	hostPort := resolveHostPort(ctx, dataPlaneReconciler.factStore, instanceID, containerPort)
+	if hostPort <= 0 {
 		logging.Default().Debug("remote backend: no host port for instance", "instance", instanceID, "node", remoteNodeID)
-		return network.DataPlaneBackend{}
-	}
-	hostPort, err := strconv.Atoi(string(hostPortFact.Value))
-	if err != nil || hostPort <= 0 {
 		return network.DataPlaneBackend{}
 	}
 
