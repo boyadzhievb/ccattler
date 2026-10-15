@@ -144,7 +144,7 @@ func TestCloudLoadBalancerControllerCreatesLoadBalancer(testing *testing.T) {
 
 	foundPendingChange := false
 	for _, change := range proposedChanges {
-		if change.Key == types.KeyDerivedCloudLBPendingOperation("web") {
+		if change.Key == types.KeyDerivedCloudLBPendingOperationForPort("web", 80) {
 			foundPendingChange = true
 		}
 	}

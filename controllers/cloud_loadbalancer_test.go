@@ -51,7 +51,7 @@ func TestCloudLBEmitsEnsureForExistingLoadBalancer(testHandle *testing.T) {
 
 	foundEnsure := false
 	for _, change := range changes {
-		if change.Key == types.KeyDerivedCloudLBPendingOperation("web") && change.Type == store.OpPut {
+		if change.Key == types.KeyDerivedCloudLBPendingOperationForPort("web", 443) && change.Type == store.OpPut {
 			var pendingOp pendingCloudLBOperation
 			if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
 				testHandle.Fatalf("failed to unmarshal pending op: %v", unmarshalErr)
@@ -169,5 +169,41 @@ func TestCloudLBPostCommitUpdatesBackends(testHandle *testing.T) {
 	callConfig := simulatorProvider.EnsureLoadBalancerCalls[0]
 	if len(callConfig.Backends) == 0 {
 		testHandle.Fatal("expected at least one backend in EnsureLoadBalancer call")
+	}
+}
+
+// TestCloudLBMultiPortServiceEmitsPerPortEnsure verifies that a service
+// exposing multiple external ports produces one ensure operation per port.
+func TestCloudLBMultiPortServiceEmitsPerPortEnsure(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	loadBalancerController := NewCloudLoadBalancerController(simulatorProvider, factStore)
+
+	factStore.Put(ctx, types.KeyDesiredServiceExposeExternal("web", 80), []byte("http"))
+	factStore.Put(ctx, types.KeyDesiredServiceExposeExternal("web", 443), []byte("http"))
+
+	changes := helperReconcileCloudLB(testHandle, loadBalancerController, factStore)
+
+	ensurePorts := make(map[int]bool)
+	for _, change := range changes {
+		if change.Type != store.OpPut {
+			continue
+		}
+		var pendingOp pendingCloudLBOperation
+		if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
+			continue
+		}
+		if pendingOp.Kind == "ensure" {
+			ensurePorts[pendingOp.Port] = true
+		}
+	}
+
+	if !ensurePorts[80] {
+		testHandle.Error("expected ensure operation for port 80")
+	}
+	if !ensurePorts[443] {
+		testHandle.Error("expected ensure operation for port 443")
 	}
 }

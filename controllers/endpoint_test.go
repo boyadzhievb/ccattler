@@ -530,3 +530,72 @@ func TestEndpointMultiPortStaleRemoval(t *testing.T) {
 		t.Errorf("key: got %s, want %s", changes[0].Key, types.KeyEndpoint("web", "aaa", 8443))
 	}
 }
+
+// TestEndpointMultiPortHostPortResolution verifies that a multi-port service
+// using host-port addressing resolves each exposed port to its own host port
+// via per-port hostport facts (hostport/8080, hostport/9090).
+func TestEndpointMultiPortHostPortResolution(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceHostPortForPort("aaa", 8080), "32001"),
+		kv(types.KeyObservedInstanceHostPortForPort("aaa", 9090), "32002"),
+		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+		kv(types.KeyDesiredServiceExpose("web", 9090), ""),
+	)
+
+	changes, reconcileError := endpointController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 endpoints (one per port), got %d", len(changes))
+	}
+
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+
+	if string(changes[0].Value) != "192.168.1.10:32001" {
+		t.Errorf("port 8080 endpoint: got %s, want 192.168.1.10:32001", changes[0].Value)
+	}
+	if string(changes[1].Value) != "192.168.1.10:32002" {
+		t.Errorf("port 9090 endpoint: got %s, want 192.168.1.10:32002", changes[1].Value)
+	}
+}
+
+// TestEndpointMultiPortLegacyFallback verifies that the endpoint controller
+// falls back to the single legacy hostport fact when per-port facts are absent,
+// preserving backward compatibility during rolling upgrades.
+func TestEndpointMultiPortLegacyFallback(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceHostPort("aaa"), "8080"),
+		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+		kv(types.KeyDesiredServiceExpose("web", 9090), ""),
+	)
+
+	changes, reconcileError := endpointController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+	if len(changes) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(changes))
+	}
+
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
+
+	if string(changes[0].Value) != "192.168.1.10:8080" {
+		t.Errorf("port 8080 endpoint: got %s, want 192.168.1.10:8080", changes[0].Value)
+	}
+	if string(changes[1].Value) != "192.168.1.10:8080" {
+		t.Errorf("port 9090 endpoint (legacy fallback): got %s, want 192.168.1.10:8080", changes[1].Value)
+	}
+}

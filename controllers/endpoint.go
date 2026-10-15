@@ -121,12 +121,13 @@ func buildDesiredEndpoints(
 			continue
 		}
 		instanceIP := fields["ip"]
-		hostPort := fields["hostport"]
+		legacyHostPort := fields["hostport"]
 		nodeID := fields["node"]
 		nodeAddress := nodeAddresses[nodeID]
 
 		hasOverlayAddress := instanceIP != ""
-		hasHostAddress := hostPort != "" && nodeAddress != ""
+		hasAnyHostPort := legacyHostPort != "" || hasPerPortHostPorts(fields)
+		hasHostAddress := hasAnyHostPort && nodeAddress != ""
 		if !hasOverlayAddress && !hasHostAddress {
 			continue
 		}
@@ -149,7 +150,11 @@ func buildDesiredEndpoints(
 		for _, exposedPort := range exposedPorts {
 			endpointKey := fmt.Sprintf("%s/%s/%d", serviceName, instanceID, exposedPort)
 			if hasHostAddress {
-				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, hostPort)
+				perPortHostPort := fields[fmt.Sprintf("hostport/%d", exposedPort)]
+				if perPortHostPort == "" {
+					perPortHostPort = legacyHostPort
+				}
+				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, perPortHostPort)
 			} else {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
 			}
@@ -196,4 +201,15 @@ func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndp
 	}
 
 	return changes
+}
+
+// hasPerPortHostPorts returns true if the instance fields contain any
+// per-container-port host port keys (e.g. "hostport/8080").
+func hasPerPortHostPorts(instanceFields map[string]string) bool {
+	for fieldKey := range instanceFields {
+		if strings.HasPrefix(fieldKey, "hostport/") {
+			return true
+		}
+	}
+	return false
 }

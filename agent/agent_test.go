@@ -1638,3 +1638,83 @@ func TestSplitSimpleCommand(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildConnectionURL verifies that buildConnectionURL percent-encodes
+// credentials and produces parseable URLs for all edge cases.
+func TestBuildConnectionURL(t *testing.T) { //nolint:funlen // table-driven test
+	//nolint:gosec // G101 false positive: test fixture URLs contain dummy credentials
+	testCases := []struct {
+		name       string
+		definition connectionDefinition
+		credential string
+		wantURL    string
+	}{
+		{
+			name: "normal case without special characters",
+			definition: connectionDefinition{
+				driver: "postgresql", user: "airflow", host: "postgres", port: 5432, database: "airflow",
+			},
+			credential: "secret",
+			wantURL:    "postgresql://airflow:secret@postgres:5432/airflow",
+		},
+		{
+			name: "credential with at sign and colon",
+			definition: connectionDefinition{
+				driver: "postgresql", user: "admin", host: "db.internal", port: 5432, database: "mydb",
+			},
+			credential: "p@ss:word",
+			wantURL:    "postgresql://admin:p%40ss%3Aword@db.internal:5432/mydb",
+		},
+		{
+			name: "credential with slash question hash",
+			definition: connectionDefinition{
+				driver: "mysql", user: "root", host: "mysql-host", port: 3306, database: "app",
+			},
+			credential: "a/b?c#d",
+			wantURL:    "mysql://root:a%2Fb%3Fc%23d@mysql-host:3306/app",
+		},
+		{
+			name: "user with at sign",
+			definition: connectionDefinition{
+				driver: "postgresql", user: "user@domain", host: "db", port: 5432, database: "test",
+			},
+			credential: "pass",
+			wantURL:    "postgresql://user%40domain:pass@db:5432/test",
+		},
+		{
+			name: "empty user and credential",
+			definition: connectionDefinition{
+				driver: "redis", host: "cache", port: 6379,
+			},
+			wantURL: "redis://cache:6379",
+		},
+		{
+			name: "user without credential",
+			definition: connectionDefinition{
+				driver: "postgresql", user: "readonly", host: "db", port: 5432, database: "reports",
+			},
+			wantURL: "postgresql://readonly@db:5432/reports",
+		},
+		{
+			name: "zero port omitted",
+			definition: connectionDefinition{
+				driver: "sqlite", host: "localhost", database: "local.db",
+			},
+			wantURL: "sqlite://localhost/local.db",
+		},
+		{
+			name: "empty database omitted",
+			definition: connectionDefinition{
+				driver: "redis", host: "cache", port: 6379,
+			},
+			wantURL: "redis://cache:6379",
+		},
+	}
+
+	for _, testCase := range testCases {
+		result := buildConnectionURL(testCase.definition, testCase.credential)
+		if result != testCase.wantURL {
+			t.Errorf("%s: buildConnectionURL() = %q, want %q", testCase.name, result, testCase.wantURL)
+		}
+	}
+}

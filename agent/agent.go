@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -514,8 +515,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	}
 
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
-		hostPort := containerRuntime.HostPortForInstance(instanceInfo.id)
-		publishInstanceHostPort(ctx, nodeAgent.store, instanceInfo.id, hostPort)
+		portMappings := containerRuntime.HostPortsForInstance(instanceInfo.id)
+		publishInstanceHostPorts(ctx, nodeAgent.store, instanceInfo.id, portMappings)
 	}
 
 	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -531,8 +532,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 // data plane reconciler on remote nodes needs it for cross-node DNAT rules.
 func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceID string) {
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
-		hostPort := containerRuntime.HostPortForInstance(instanceID)
-		publishInstanceHostPort(ctx, nodeAgent.store, instanceID, hostPort)
+		portMappings := containerRuntime.HostPortsForInstance(instanceID)
+		publishInstanceHostPorts(ctx, nodeAgent.store, instanceID, portMappings)
 	}
 }
 
@@ -877,32 +878,27 @@ func extractJSONIntField(jsonValue string, fieldName string) int {
 }
 
 // buildConnectionURL assembles a standard connection URL from the definition
-// fields and decrypted password: driver://user:password@host:port/database
+// fields and decrypted password: driver://user:password@host:port/database.
+// Credentials are percent-encoded via net/url so special characters (@:/?#)
+// produce valid URLs.
 func buildConnectionURL(connectionDef connectionDefinition, password string) string {
-	var connectionURL strings.Builder
-	connectionURL.WriteString(connectionDef.driver)
-	connectionURL.WriteString("://")
-
-	if connectionDef.user != "" {
-		connectionURL.WriteString(connectionDef.user)
-		if password != "" {
-			connectionURL.WriteByte(':')
-			connectionURL.WriteString(password)
-		}
-		connectionURL.WriteByte('@')
+	connectionURL := &url.URL{
+		Scheme: connectionDef.driver,
+		Host:   connectionDef.host,
 	}
-
-	connectionURL.WriteString(connectionDef.host)
 	if connectionDef.port > 0 {
-		connectionURL.WriteByte(':')
-		connectionURL.WriteString(strconv.Itoa(connectionDef.port))
+		connectionURL.Host = net.JoinHostPort(connectionDef.host, strconv.Itoa(connectionDef.port))
 	}
-
+	if connectionDef.user != "" {
+		if password != "" {
+			connectionURL.User = url.UserPassword(connectionDef.user, password)
+		} else {
+			connectionURL.User = url.User(connectionDef.user)
+		}
+	}
 	if connectionDef.database != "" {
-		connectionURL.WriteByte('/')
-		connectionURL.WriteString(connectionDef.database)
+		connectionURL.Path = "/" + connectionDef.database
 	}
-
 	return connectionURL.String()
 }
 

@@ -115,13 +115,19 @@ func TestBuildRunArgumentsPortMapping(t *testing.T) {
 		Ports: []int{8080, 9090},
 	}
 
-	args, firstHostPort, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	args, portMappings, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if firstHostPort != 8080 {
-		t.Errorf("first host port: got %d, want 8080", firstHostPort)
+	if len(portMappings) != 2 {
+		t.Fatalf("expected 2 port mappings, got %d", len(portMappings))
+	}
+	if portMappings[8080] != 8080 {
+		t.Errorf("host port for 8080: got %d, want 8080", portMappings[8080])
+	}
+	if portMappings[9090] != 9090 {
+		t.Errorf("host port for 9090: got %d, want 9090", portMappings[9090])
 	}
 
 	portArgs := []string{}

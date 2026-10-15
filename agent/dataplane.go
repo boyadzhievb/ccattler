@@ -218,16 +218,18 @@ func (dataPlaneReconciler *DataPlaneReconciler) PublishAdvertiseAddress(ctx cont
 	}
 }
 
-// publishInstanceHostPort writes the host port mapping for an instance to
-// the store. This is called after starting a container so other nodes can
-// resolve the host-accessible port for cross-host data plane DNAT. This is
-// a package-level function because it is called from both the DataPlaneReconciler
-// and the Agent's instance reconciliation logic.
-func publishInstanceHostPort(ctx context.Context, factStore store.StateStore, instanceID string, hostPort int) {
-	if hostPort <= 0 {
-		return
-	}
-	if _, putError := factStore.Put(ctx, types.KeyObservedInstanceHostPort(instanceID), []byte(strconv.Itoa(hostPort))); putError != nil {
-		logging.Default().Error("failed to publish instance host port", "instance", instanceID, "error", putError.Error())
+// publishInstanceHostPorts writes per-container-port host port mappings to
+// the store. Each containerPort gets its own key so the endpoint controller
+// can resolve the correct host port for multi-port services.
+func publishInstanceHostPorts(ctx context.Context, factStore store.StateStore, instanceID string, portMappings map[int]int) {
+	for containerPort, hostPort := range portMappings {
+		if hostPort <= 0 {
+			continue
+		}
+		hostPortKey := types.KeyObservedInstanceHostPortForPort(instanceID, containerPort)
+		if _, putError := factStore.Put(ctx, hostPortKey, []byte(strconv.Itoa(hostPort))); putError != nil {
+			logging.Default().Error("failed to publish instance host port",
+				"instance", instanceID, "containerPort", strconv.Itoa(containerPort), "error", putError.Error())
+		}
 	}
 }

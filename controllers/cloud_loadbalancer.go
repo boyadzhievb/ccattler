@@ -76,7 +76,7 @@ type pendingCloudLBOperation struct {
 func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	externalServices := extractExternalServicePorts(facts)
 	existingLoadBalancers := extractExistingLoadBalancers(facts)
-	pendingEnsureServices := extractPendingEnsureServices(facts)
+	pendingEnsureKeysByService := extractPendingEnsureKeysByService(facts)
 	appliedConfigHashes := collectStringValuesBySuffix(facts, types.ScanDerivedCloudLoadBalancers, "applied_hash")
 	endpointAddresses := extractEndpointAddressesPerService(facts)
 
@@ -84,30 +84,32 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 
 	for serviceName, externalConfig := range externalServices {
 		currentAddresses := endpointAddresses[serviceName]
-		configHash := computeLoadBalancerConfigHash(
-			serviceName, externalConfig.port, externalConfig.protocol, currentAddresses)
-		if appliedHash, hashExists := appliedConfigHashes[serviceName]; hashExists && appliedHash == configHash {
-			continue
-		}
+		for _, portConfig := range externalConfig.ports {
+			configHash := computeLoadBalancerConfigHash(
+				serviceName, portConfig.port, portConfig.protocol, currentAddresses)
+			if appliedHash, hashExists := appliedConfigHashes[serviceName]; hashExists && appliedHash == configHash {
+				continue
+			}
 
-		pendingOp := pendingCloudLBOperation{
-			Kind:        "ensure",
-			ServiceName: serviceName,
-			Port:        externalConfig.port,
-			TargetPort:  externalConfig.port,
-			Protocol:    externalConfig.protocol,
+			pendingOp := pendingCloudLBOperation{
+				Kind:        "ensure",
+				ServiceName: serviceName,
+				Port:        portConfig.port,
+				TargetPort:  portConfig.port,
+				Protocol:    portConfig.protocol,
+			}
+			pendingJSON, marshalErr := json.Marshal(pendingOp)
+			if marshalErr != nil {
+				logging.Default().Error("failed to marshal pending LB operation",
+					"service", serviceName, "error", marshalErr.Error())
+				continue
+			}
+			proposedChanges = append(proposedChanges, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyDerivedCloudLBPendingOperationForPort(serviceName, portConfig.port),
+				Value: pendingJSON,
+			})
 		}
-		pendingJSON, marshalErr := json.Marshal(pendingOp)
-		if marshalErr != nil {
-			logging.Default().Error("failed to marshal pending LB operation",
-				"service", serviceName, "error", marshalErr.Error())
-			continue
-		}
-		proposedChanges = append(proposedChanges, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedCloudLBPendingOperation(serviceName),
-			Value: pendingJSON,
-		})
 	}
 
 	for serviceName := range existingLoadBalancers {
@@ -130,15 +132,17 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 		}
 	}
 
-	for serviceName := range pendingEnsureServices {
+	for serviceName, pendingKeys := range pendingEnsureKeysByService {
 		if _, stillExternal := externalServices[serviceName]; !stillExternal {
 			if _, hasObservedLB := existingLoadBalancers[serviceName]; hasObservedLB {
 				continue
 			}
-			proposedChanges = append(proposedChanges, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyDerivedCloudLBPendingOperation(serviceName),
-			})
+			for _, pendingKey := range pendingKeys {
+				proposedChanges = append(proposedChanges, Change{
+					Type: store.OpDelete,
+					Key:  pendingKey,
+				})
+			}
 		}
 	}
 
@@ -155,7 +159,7 @@ func (loadBalancerController *CloudLoadBalancerController) ExecutePostCommitOper
 	}
 
 	for _, pendingFact := range pendingFacts {
-		if !strings.HasSuffix(pendingFact.Key, "/pending_operation") {
+		if !strings.Contains(pendingFact.Key, "/pending_operation") {
 			continue
 		}
 
@@ -266,14 +270,19 @@ func (loadBalancerController *CloudLoadBalancerController) executeDeleteLoadBala
 	}
 }
 
-// externalServiceConfig holds the parsed external exposure config for a service.
-type externalServiceConfig struct {
+// externalPortConfig holds the port and protocol for one externally exposed port.
+type externalPortConfig struct {
 	port     int
 	protocol string
 }
 
+// externalServiceConfig holds all externally exposed ports for a service.
+type externalServiceConfig struct {
+	ports []externalPortConfig
+}
+
 // extractExternalServicePorts builds a map of service names to their external
-// port configuration from desired facts.
+// port configurations from desired facts. Collects all ports per service.
 func extractExternalServicePorts(facts []store.Fact) map[string]externalServiceConfig {
 	externalServices := make(map[string]externalServiceConfig)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
@@ -289,10 +298,12 @@ func extractExternalServicePorts(facts []store.Fact) map[string]externalServiceC
 			if protocol == "" {
 				protocol = "tcp"
 			}
-			externalServices[serviceName] = externalServiceConfig{
+			serviceConfig := externalServices[serviceName]
+			serviceConfig.ports = append(serviceConfig.ports, externalPortConfig{
 				port:     port,
 				protocol: protocol,
-			}
+			})
+			externalServices[serviceName] = serviceConfig
 		}
 	}
 	return externalServices
@@ -369,13 +380,14 @@ func extractExistingLoadBalancers(facts []store.Fact) map[string]string {
 	return collectStringValuesBySuffix(facts, types.ScanObservedCloudLoadBalancers, "address")
 }
 
-// extractPendingEnsureServices returns the set of service names that have a
-// pending "ensure" operation in the derived cloud LB prefix. Used to detect
-// orphaned pending operations for services that have been deleted.
-func extractPendingEnsureServices(facts []store.Fact) map[string]bool {
-	pendingServices := make(map[string]bool)
+// extractPendingEnsureKeysByService returns a map of service names to their
+// pending "ensure" operation fact keys. Used to detect and clean up orphaned
+// pending operations for services that have been deleted. Matches both legacy
+// per-service keys and per-port keys.
+func extractPendingEnsureKeysByService(facts []store.Fact) map[string][]string {
+	pendingKeysByService := make(map[string][]string)
 	for _, factEntry := range store.FactsWithPrefix(facts, types.ScanDerivedCloudLoadBalancers) {
-		if !strings.HasSuffix(factEntry.Key, "/pending_operation") {
+		if !strings.Contains(factEntry.Key, "/pending_operation") {
 			continue
 		}
 		var pendingOp pendingCloudLBOperation
@@ -383,10 +395,11 @@ func extractPendingEnsureServices(facts []store.Fact) map[string]bool {
 			continue
 		}
 		if pendingOp.Kind == "ensure" {
-			pendingServices[pendingOp.ServiceName] = true
+			pendingKeysByService[pendingOp.ServiceName] = append(
+				pendingKeysByService[pendingOp.ServiceName], factEntry.Key)
 		}
 	}
-	return pendingServices
+	return pendingKeysByService
 }
 
 // computeLoadBalancerConfigHash computes a stable SHA-256 hash of the load

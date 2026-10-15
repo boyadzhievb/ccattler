@@ -40,18 +40,18 @@ const nerdctlCommandTimeout = 10 * time.Second
 // Config files specified in Spec.ConfigFiles are materialized to a temporary
 // directory on the host and bind-mounted read-only into the container.
 type ContainerRuntime struct {
-	mutex                     sync.Mutex        // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
-	trackedContainers         map[string]bool   // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
-	containerNames            map[string]string // containerNames maps workload IDs to their container names.
-	allocatedHostPorts        map[int]int       // allocatedHostPorts tracks the next host port offset per container port.
-	instanceHostPorts         map[string]int    // instanceHostPorts maps workload IDs to their allocated host port (first exposed port).
-	configFileTempDirectories map[string]string // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
-	networkName               string            // networkName is the container network to connect containers to for IP assignment.
-	networkCIDR               string            // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
-	networkReady              bool              // networkReady is true once the container network has been verified or created.
-	dnsAddress                string            // dnsAddress is the DNS server address passed to containers via --dns (empty = use runtime default).
-	dnsSearchDomain           string            // dnsSearchDomain is the search domain passed to containers via --dns-search (e.g. "cca.local").
-	containerCommand          string            // containerCommand is the CLI binary to use: "nerdctl" or "docker".
+	mutex                     sync.Mutex             // mutex guards concurrent access to the trackedContainers and configFileTempDirectories maps.
+	trackedContainers         map[string]bool        // trackedContainers maps workload IDs to their running state (true = started, false = stopped).
+	containerNames            map[string]string      // containerNames maps workload IDs to their container names.
+	allocatedHostPorts        map[int]int            // allocatedHostPorts tracks the next host port offset per container port.
+	instanceHostPorts         map[string]map[int]int // instanceHostPorts maps workload IDs to containerPort→hostPort mappings.
+	configFileTempDirectories map[string]string      // configFileTempDirectories maps workload IDs to the temp directory holding their materialized config files.
+	networkName               string                 // networkName is the container network to connect containers to for IP assignment.
+	networkCIDR               string                 // networkCIDR is the subnet CIDR for the container network (e.g. "10.100.0.0/16").
+	networkReady              bool                   // networkReady is true once the container network has been verified or created.
+	dnsAddress                string                 // dnsAddress is the DNS server address passed to containers via --dns (empty = use runtime default).
+	dnsSearchDomain           string                 // dnsSearchDomain is the search domain passed to containers via --dns-search (e.g. "cca.local").
+	containerCommand          string                 // containerCommand is the CLI binary to use: "nerdctl" or "docker".
 }
 
 // detectContainerCommand returns the first available container CLI. Checks in
@@ -96,7 +96,7 @@ func NewContainerRuntime() *ContainerRuntime {
 		trackedContainers:         make(map[string]bool),
 		containerNames:            make(map[string]string),
 		allocatedHostPorts:        make(map[int]int),
-		instanceHostPorts:         make(map[string]int),
+		instanceHostPorts:         make(map[string]map[int]int),
 		configFileTempDirectories: make(map[string]string),
 		containerCommand:          detectContainerCommand(),
 	}
@@ -229,7 +229,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	containerName := buildContainerName(spec.ServiceName, spec.ID)
-	args, firstHostPort, validationError := containerRuntime.buildRunArguments(spec, containerName, volumeMountArgs)
+	args, portMappings, validationError := containerRuntime.buildRunArguments(spec, containerName, volumeMountArgs)
 	if validationError != nil {
 		return validationError
 	}
@@ -246,8 +246,8 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 
 	containerRuntime.trackedContainers[spec.ID] = true
 	containerRuntime.containerNames[spec.ID] = containerName
-	if firstHostPort > 0 {
-		containerRuntime.instanceHostPorts[spec.ID] = firstHostPort
+	if len(portMappings) > 0 {
+		containerRuntime.instanceHostPorts[spec.ID] = portMappings
 	}
 	if configTempDirectoryPath != "" {
 		containerRuntime.configFileTempDirectories[spec.ID] = configTempDirectoryPath
@@ -256,10 +256,10 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 }
 
 // buildRunArguments constructs the nerdctl/docker run argument list from a
-// workload spec. Returns the args slice, the first allocated host port (0 if
-// no ports), and a validation error if the image reference is invalid. This
-// function is separated from Start for testability.
-func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, containerName string, volumeMountArgs []string) ([]string, int, error) {
+// workload spec. Returns the args slice, a map of containerPort→hostPort
+// for all exposed ports, and a validation error if the image reference is
+// invalid. This function is separated from Start for testability.
+func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, containerName string, volumeMountArgs []string) ([]string, map[int]int, error) {
 	args := []string{"run", "-d", "--name", containerName}
 
 	if containerRuntime.networkName != "" {
@@ -290,14 +290,12 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB))
 	}
 
-	firstHostPort := 0
-	for portIndex, containerPort := range spec.Ports {
+	portMappings := make(map[int]int, len(spec.Ports))
+	for _, containerPort := range spec.Ports {
 		hostPort := containerPort + containerRuntime.allocatedHostPorts[containerPort]
 		containerRuntime.allocatedHostPorts[containerPort]++
 		args = append(args, "-p", fmt.Sprintf("%d:%d", hostPort, containerPort))
-		if portIndex == 0 {
-			firstHostPort = hostPort
-		}
+		portMappings[containerPort] = hostPort
 	}
 
 	args = append(args, volumeMountArgs...)
@@ -310,18 +308,18 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 	}
 
 	if !validImageReferencePattern.MatchString(spec.Image) {
-		return nil, 0, &StartError{ID: spec.ID, Reason: fmt.Sprintf("invalid image reference: %q", spec.Image)}
+		return nil, nil, &StartError{ID: spec.ID, Reason: fmt.Sprintf("invalid image reference: %q", spec.Image)}
 	}
 
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)
-	return args, firstHostPort, nil
+	return args, portMappings, nil
 }
 
-// HostPortForInstance returns the host port allocated to the given workload's
-// first exposed port. Returns 0 if the workload has no port mapping or was
-// not started by this runtime.
-func (containerRuntime *ContainerRuntime) HostPortForInstance(instanceID string) int {
+// HostPortsForInstance returns all containerPort→hostPort mappings allocated
+// for the given workload. Returns nil if the workload has no port mappings
+// or was not started by this runtime.
+func (containerRuntime *ContainerRuntime) HostPortsForInstance(instanceID string) map[int]int {
 	containerRuntime.mutex.Lock()
 	defer containerRuntime.mutex.Unlock()
 	return containerRuntime.instanceHostPorts[instanceID]
@@ -486,9 +484,10 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 	}
 	args := []string{"run", "--rm"}
 	if containerRuntime.networkName != "" {
-		if initNetworkError := containerRuntime.ensureNetworkExists(ctx); initNetworkError == nil {
-			args = append(args, "--network", containerRuntime.networkName)
+		if initNetworkError := containerRuntime.ensureNetworkExists(ctx); initNetworkError != nil {
+			return fmt.Errorf("init network setup: %w", initNetworkError)
 		}
+		args = append(args, "--network", containerRuntime.networkName)
 	}
 	if containerRuntime.dnsAddress != "" {
 		args = append(args, "--dns", containerRuntime.dnsAddress)

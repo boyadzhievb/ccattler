@@ -259,12 +259,19 @@ func KeyObservedInstanceIP(instanceID string) string {
 }
 
 // KeyObservedInstanceHostPort returns the store path for the host port
-// mapped to a container's exposed port. This is the port on the host's
-// LAN address that forwards to the container, used by the data plane for
-// cross-host DNAT targets.
+// mapped to a container's first exposed port (legacy single-port format).
 // Path: observed/instance/{instanceID}/hostport
 func KeyObservedInstanceHostPort(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/hostport", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceHostPortForPort returns the per-container-port store
+// path for a host port mapping. Multi-port services publish one fact per
+// container port so the endpoint controller can resolve the correct host
+// port for each exposed port.
+// Path: observed/instance/{instanceID}/hostport/{containerPort}
+func KeyObservedInstanceHostPortForPort(instanceID string, containerPort int) string {
+	return fmt.Sprintf("%s/instance/%s/hostport/%d", PrefixObserved, instanceID, containerPort)
 }
 
 // KeyObservedInstanceHealth returns the store path for an instance's latest health check result.
@@ -1568,6 +1575,14 @@ func KeyObservedCloudRoute(destinationCIDR string) string {
 // Path: derived/cloud/loadbalancer/{serviceName}/pending_operation
 func KeyDerivedCloudLBPendingOperation(serviceName string) string {
 	return fmt.Sprintf("%s/cloud/loadbalancer/%s/pending_operation", PrefixDerived, serviceName)
+}
+
+// KeyDerivedCloudLBPendingOperationForPort returns the per-port store path
+// for a cloud load balancer pending operation. Multi-port services emit one
+// pending operation per external port.
+// Path: derived/cloud/loadbalancer/{serviceName}/pending_operation/{port}
+func KeyDerivedCloudLBPendingOperationForPort(serviceName string, port int) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/pending_operation/%d", PrefixDerived, serviceName, port)
 }
 
 // KeyDerivedCloudLBAppliedHash returns the store path for the hash of the
