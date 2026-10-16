@@ -22,8 +22,14 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Build (cloud-enabled)
+        run: go build -tags cloudprovider ./...
+
       - name: Test with race detector
         run: go test -race -short -count=1 -timeout=5m ./...
+
+      - name: Test cloud-tagged code
+        run: go test -race -short -count=1 -timeout=5m -tags cloudprovider ./...
 
   lint:
     runs-on: ubuntu-latest
@@ -39,6 +45,9 @@ jobs:
 
       - name: golangci-lint
         run: golangci-lint run
+
+      - name: golangci-lint (cloud-enabled)
+        run: golangci-lint run --build-tags cloudprovider
 
   audit:
     runs-on: ubuntu-latest

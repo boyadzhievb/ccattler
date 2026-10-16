@@ -2036,20 +2036,6 @@ func TestSimulatorCloudAdapterExchangeToken(t *testing.T) {
 	}
 }
 
-func TestAWSSTSAdapterRequiresRole(t *testing.T) {
-	ctx := context.Background()
-	adapter, adapterError := NewAWSSTSAdapter(ctx, "us-east-1", "")
-	if adapterError != nil {
-		t.Fatalf("NewAWSSTSAdapter failed: %v", adapterError)
-	}
-	_, err := adapter.ExchangeToken(ctx, "jwt", CloudIdentityConfig{
-		Provider: "aws",
-	})
-	if err == nil || !strings.Contains(err.Error(), "role ARN is required") {
-		t.Fatalf("expected role required error, got: %v", err)
-	}
-}
-
 func TestGCPSTSAdapterRequiresServiceAccount(t *testing.T) {
 	adapter := NewGCPSTSAdapter("")
 	_, err := adapter.ExchangeToken(context.Background(), "jwt", CloudIdentityConfig{

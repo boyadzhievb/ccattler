@@ -46,38 +46,27 @@ func (kmsProvider *KMSSecretProvider) GetSecretForService(ctx context.Context, s
 	return kmsProvider.secretStore.GetSecretForService(ctx, serviceName, secretName)
 }
 
+// defaultAWSKMSRegion is the fallback region when the key ARN does not contain
+// a region component.
+const defaultAWSKMSRegion = "us-east-1"
+
 // CreateAgentKeyProvider creates the appropriate KeyProvider based on the
-// provider name and key identifier. For cloud KMS providers, this creates a
-// client using the default credential chain (instance metadata, environment
-// variables). The provider name determines which KMS backend is used:
-//   - "local": local 32-byte AES key (masterKey required)
-//   - "aws-kms": AWS KMS (keyID is an ARN or alias)
-//   - "gcp-kms": GCP Cloud KMS (keyID is the full resource name)
-//   - "vault-transit": HashiCorp Vault Transit (keyID is key name, vaultAddr required)
+// provider name and key identifier. Cloud KMS providers (aws-kms, gcp-kms) are
+// available only when built with -tags cloudprovider; without that tag the
+// registry lookup returns nil and an actionable error is returned.
 func CreateAgentKeyProvider(ctx context.Context, providerName string, keyID string) (security.KeyProvider, error) {
-	switch providerName {
-	case "aws-kms":
-		return createAWSKMSKeyProviderForAgent(ctx, keyID)
-	case "gcp-kms":
-		return createGCPKMSKeyProviderForAgent(ctx, keyID)
-	default:
-		return nil, fmt.Errorf("unsupported KMS provider %q (supported: aws-kms, gcp-kms)", providerName)
+	factory := security.LookupKMSKeyProviderFactory(providerName)
+	if factory == nil {
+		return nil, fmt.Errorf("unsupported KMS provider %q — build with -tags cloudprovider for aws-kms/gcp-kms", providerName)
 	}
-}
-
-// createAWSKMSKeyProviderForAgent creates an AWS KMS KeyProvider for the agent.
-// Extracts the region from the key ARN if it follows the standard ARN format.
-func createAWSKMSKeyProviderForAgent(ctx context.Context, keyID string) (security.KeyProvider, error) {
-	region := extractRegionFromAWSKeyARN(keyID)
-	if region == "" {
-		region = "us-east-1"
+	var region string
+	if providerName == "aws-kms" {
+		region = extractRegionFromAWSKeyARN(keyID)
+		if region == "" {
+			region = defaultAWSKMSRegion
+		}
 	}
-	return security.NewAWSKMSKeyProvider(ctx, keyID, region)
-}
-
-// createGCPKMSKeyProviderForAgent creates a GCP KMS KeyProvider for the agent.
-func createGCPKMSKeyProviderForAgent(ctx context.Context, keyID string) (security.KeyProvider, error) {
-	return security.NewGCPKMSKeyProvider(ctx, keyID)
+	return factory(ctx, keyID, region)
 }
 
 // extractRegionFromAWSKeyARN extracts the AWS region from a KMS key ARN.

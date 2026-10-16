@@ -1,3 +1,5 @@
+//go:build cloudprovider
+
 // Copyright (C) 2026 CCattler Contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
@@ -15,6 +17,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
 	elbv2types "github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2/types"
 )
+
+func init() {
+	RegisterCloudProviderFactory("aws", func(ctx context.Context, _ string, region string) (CloudProvider, error) {
+		return NewAWSCloudProvider(ctx, region)
+	})
+}
 
 const (
 	// awsManagedTagKey is the tag key applied to all CCattler-managed AWS resources.

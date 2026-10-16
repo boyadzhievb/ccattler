@@ -650,32 +650,27 @@ func printStartupBannerAndAwaitShutdown(ctx context.Context, parsedConfig server
 }
 
 // createCloudProvider returns a CloudProvider for the given provider name, or
-// nil if the name is unrecognized. This is the factory used by `cca server`
-// to instantiate the right cloud adapter based on the --cloud-provider flag.
-// AWS and GCP providers load credentials from the default SDK credential chain.
+// nil if the name is unrecognized. Azure and simulator are always available.
+// AWS and GCP require building with -tags cloudprovider; without that tag
+// their factory is not registered and a warning is printed.
 func createCloudProvider(ctx context.Context, providerName string, region string) cloud.CloudProvider {
 	switch providerName {
-	case "aws":
-		awsProvider, awsError := cloud.NewAWSCloudProvider(ctx, region)
-		if awsError != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to create AWS provider: %v\n", awsError)
-			return nil
-		}
-		return awsProvider
-	case "gcp":
-		gcpProvider, gcpError := cloud.NewGCPCloudProvider(ctx, "", region)
-		if gcpError != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to create GCP provider: %v\n", gcpError)
-			return nil
-		}
-		return gcpProvider
 	case "azure":
 		return cloud.NewAzureCloudProvider("", "", region)
 	case "simulator":
 		return cloud.NewSimulatorCloudProvider()
 	default:
-		fmt.Fprintf(os.Stderr, "warning: unknown cloud provider %q, cloud controllers disabled\n", providerName)
-		return nil
+		factory := cloud.LookupCloudProviderFactory(providerName)
+		if factory == nil {
+			fmt.Fprintf(os.Stderr, "warning: unknown cloud provider %q — build with -tags cloudprovider for aws/gcp\n", providerName)
+			return nil
+		}
+		cloudProviderInstance, factoryError := factory(ctx, "", region)
+		if factoryError != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to create %s provider: %v\n", providerName, factoryError)
+			return nil
+		}
+		return cloudProviderInstance
 	}
 }
 

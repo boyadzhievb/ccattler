@@ -1,3 +1,5 @@
+//go:build cloudprovider
+
 // Copyright (C) 2026 CCattler Contributors
 // SPDX-License-Identifier: GPL-3.0-only
 
@@ -13,6 +15,12 @@ import (
 	"google.golang.org/api/iterator"
 	"google.golang.org/protobuf/proto"
 )
+
+func init() {
+	RegisterCloudProviderFactory("gcp", func(ctx context.Context, projectID string, region string) (CloudProvider, error) {
+		return NewGCPCloudProvider(ctx, projectID, region)
+	})
+}
 
 const (
 	// gcpManagedLabelKey is the label key applied to all CCattler-managed GCP resources.
