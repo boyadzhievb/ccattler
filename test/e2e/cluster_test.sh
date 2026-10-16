@@ -473,9 +473,8 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     done
     wait
 
-    # Ensure separate key pairs: node-key.pem (root, 0600) for cca server/agent,
-    # etcd-key.pem (etcd, 0600) for etcd. Idempotent: always writes the definitive
-    # service file, fixes all permissions, and starts etcd fresh.
+    # Ensure separate key pairs and configure etcd TLS via drop-in override
+    # (same approach as setup.sh from cca init — never replace the base service file).
     ETCD_CERT_DIR="/etc/ccattler/pki"
     ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
         useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true
@@ -489,37 +488,18 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     if [[ "$NODE_KEY_PERMS" != "600" ]]; then
         fail "node-key.pem has permissions $NODE_KEY_PERMS (expected 600) — chmod failed"
     fi
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
-[Unit]
-Description=etcd — CCattler fact store
-After=network.target
-
-[Service]
-Type=notify
-User=etcd
-Group=etcd
-ExecStart=/usr/bin/etcd \\
-  --name ${VM_PREFIX}-ctrl \\
-  --data-dir /var/lib/etcd \\
-  --listen-client-urls https://${CTRL_IP}:2379,https://127.0.0.1:2379 \\
-  --advertise-client-urls https://${CTRL_IP}:2379 \\
-  --listen-peer-urls https://${CTRL_IP}:2380 \\
-  --client-cert-auth=true \\
-  --cert-file=${ETCD_CERT_DIR}/etcd.pem \\
-  --key-file=${ETCD_CERT_DIR}/etcd-key.pem \\
-  --trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
-  --peer-cert-file=${ETCD_CERT_DIR}/etcd.pem \\
-  --peer-key-file=${ETCD_CERT_DIR}/etcd-key.pem \\
-  --peer-trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
-  --peer-client-cert-auth=true
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-ETCDSVC
+    # Write etcd TLS drop-in (matches setup.sh from cca init).
     ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-        rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true
+        mkdir -p /etc/systemd/system/etcd.service.d
+        cat > /etc/systemd/system/etcd.service.d/tls.conf <<DROPIN
+[Service]
+Environment=\"ETCD_LISTEN_CLIENT_URLS=https://${CTRL_IP}:2379,https://127.0.0.1:2379\"
+Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://${CTRL_IP}:2379\"
+Environment=\"ETCD_CERT_FILE=${ETCD_CERT_DIR}/etcd.pem\"
+Environment=\"ETCD_KEY_FILE=${ETCD_CERT_DIR}/etcd-key.pem\"
+Environment=\"ETCD_TRUSTED_CA_FILE=${ETCD_CERT_DIR}/ca.pem\"
+Environment=\"ETCD_CLIENT_CERT_AUTH=true\"
+DROPIN
         systemctl stop etcd 2>/dev/null || true
         rm -rf /var/lib/etcd
         mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
@@ -529,7 +509,7 @@ ETCDSVC
         log "etcd failed to start — dumping diagnostics..."
         ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 30" || true
         ssh_vm "${VM_PREFIX}-ctrl" "ls -la ${ETCD_CERT_DIR}/" || true
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/systemd/system/etcd.service" || true
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
         fail "etcd failed to start after fresh setup — see diagnostics above"
     fi
     log "etcd restarted with mTLS (data directory wiped — workloads will be redeployed)"
