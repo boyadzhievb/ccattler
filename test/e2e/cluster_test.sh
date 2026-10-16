@@ -542,37 +542,6 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     fi
     log "etcd healthy with mTLS (fresh PKI from cca init)"
 
-    # Distribute new certs to worker nodes (shared cert — test shortcut, not
-    # production-safe; production uses per-node certs via cca join).
-    # Certs on ctrl are root-owned, so use sudo cat to read them via SSH.
-    log "Distributing certs to worker nodes..."
-    for cert_file in ca.pem node.pem node-key.pem; do
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/pki/$cert_file" > "/tmp/cca-cert-$cert_file"
-    done
-    for vm in "${VM_NAMES[@]}"; do
-        [[ "$vm" == "${VM_PREFIX}-ctrl" ]] && continue
-        local_ip=""
-        case "$vm" in
-            *-worker-1) local_ip="${WORKER_IPS[0]}" ;;
-            *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
-        esac
-        ssh_vm "$vm" "sudo mkdir -p /etc/ccattler/pki"
-        for cert_file in ca.pem node.pem node-key.pem; do
-            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-                -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
-                "/tmp/cca-cert-$cert_file" "vagrant@${local_ip}:/tmp/$cert_file"
-            ssh_vm "$vm" "sudo mv /tmp/$cert_file /etc/ccattler/pki/$cert_file"
-        done
-        ssh_vm "$vm" "sudo chmod 600 /etc/ccattler/pki/node-key.pem && sudo chmod 644 /etc/ccattler/pki/ca.pem /etc/ccattler/pki/node.pem"
-    done
-    rm -f /tmp/cca-cert-ca.pem /tmp/cca-cert-node.pem /tmp/cca-cert-node-key.pem
-
-    # Update etcd endpoints on all VMs.
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "echo 'https://${CTRL_IP}:2379' | sudo tee /etc/ccattler/endpoints > /dev/null" &
-    done
-    wait
-
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers, volumes, and pruning name store..."
         for vm in "${VM_NAMES[@]}"; do
