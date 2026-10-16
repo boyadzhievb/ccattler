@@ -176,7 +176,7 @@ func createStateStoreFromServerConfig(storeBackend, etcdEndpoints, storeKeyPrefi
 			etcdTLSConfig = &tls.Config{
 				Certificates: []tls.Certificate{clientCertificate},
 				RootCAs:      caCertPool,
-				MinVersion:   tls.VersionTLS13,
+				MinVersion:   tls.VersionTLS12,
 			}
 
 			for _, endpoint := range endpointList {
