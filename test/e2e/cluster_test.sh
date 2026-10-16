@@ -453,7 +453,36 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
+# Deploy env: always run the full Ansible path (cca init → cca join) so we test
+# real deployment, not a shortcut. Clean old cluster state on reused VMs so the
+# ALREADY_PROVISIONED check below naturally returns false. Without this, worker
+# agents miss the secret master key (only distributed by cca join).
+if [[ "$CLUSTER_ENV" == "deploy" ]]; then
+    log "Deploy env: cleaning old cluster state for fresh deployment..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo rm -rf /etc/ccattler/pki /etc/ccattler/secret-master.key /etc/ccattler/endpoints" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service"
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
+    done
+    wait
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd' 2>/dev/null || true"
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
+    done
+    wait
+    log "Old cluster state cleared — Ansible will run full deployment"
+fi
+
 # Check if cluster is already provisioned by testing for the cca binary and certs.
+# For deploy env the check above already removed certs, so this is always false.
 ALREADY_PROVISIONED=false
 if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
    ssh_vm "${VM_PREFIX}-ctrl" "test -f /etc/ccattler/pki/node.pem" 2>/dev/null; then
@@ -571,7 +600,9 @@ fi
 # ---- Step 2: Deploy cluster via Ansible (skip if reusing) ----
 if [[ "$ALREADY_PROVISIONED" == "false" ]]; then
     log "Running Ansible deployment (first-time provisioning)..."
-    ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
+    # Skip vagrant (VMs already running), cleanup (handled above for deploy env),
+    # and testapp (cluster_test.sh deploys workloads from test/e2e/workloads/).
+    ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup
 else
     log "Ensuring DNS configuration is up to date..."
     ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --tags dns
