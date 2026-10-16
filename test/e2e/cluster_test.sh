@@ -468,12 +468,12 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
         ssh_vm "$vm" "sudo rm -rf /etc/ccattler/pki /etc/ccattler/secret-master.key /etc/ccattler/endpoints" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd' 2>/dev/null || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; mkdir -p /var/lib/etcd; chown etcd:etcd /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
     done
