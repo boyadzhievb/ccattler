@@ -453,12 +453,13 @@ for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
 
-# Deploy env: always run the full Ansible path (cca init → cca join) so we test
-# real deployment, not a shortcut. Clean old cluster state on reused VMs so the
-# ALREADY_PROVISIONED check below naturally returns false. Without this, worker
-# agents miss the secret master key (only distributed by cca join).
-if [[ "$CLUSTER_ENV" == "deploy" ]]; then
-    log "Deploy env: cleaning old cluster state for fresh deployment..."
+# Check if VMs are already provisioned (packages installed, binary present).
+# If so, clean cluster state so Ansible creates: guards trigger fresh runs of
+# cca init + cca join. This handles both e2e re-runs and deploy env reuse.
+ALREADY_PROVISIONED=false
+if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
+    ALREADY_PROVISIONED=true
+    log "VMs already provisioned — cleaning cluster state for fresh deployment..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
     done
@@ -469,88 +470,13 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
-    done
-    wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
-    done
-    wait
-    log "Old cluster state cleared — Ansible will run full deployment"
-fi
-
-# Check if cluster is already provisioned by testing for the cca binary and certs.
-# For deploy env the check above already removed certs, so this is always false.
-ALREADY_PROVISIONED=false
-if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
-   ssh_vm "${VM_PREFIX}-ctrl" "test -f /etc/ccattler/pki/node.pem" 2>/dev/null; then
-    ALREADY_PROVISIONED=true
-    log "VMs already provisioned — skipping Ansible, cleaning previous workloads..."
-    log "Stopping agents to prevent reconciliation races..."
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
-    done
-    wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
-
-    # Deploy new binary to ctrl first so cca init uses the current version.
-    log "Deploying binary to control node..."
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-        "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${CTRL_IP}:/tmp/cca-linux-amd64"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
-
-    # Generate fresh PKI + setup.sh via cca init.
-    log "Running cca init on control node..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init"
-    INIT_SAN_FLAGS=""
-    for worker_ip in "${WORKER_IPS[@]}"; do
-        INIT_SAN_FLAGS="$INIT_SAN_FLAGS --san $worker_ip"
-    done
-    ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca init \
-        --node-id ${VM_PREFIX}-ctrl \
-        --advertise-address ${CTRL_IP} \
-        ${INIT_SAN_FLAGS} \
-        -o /tmp/cca-init"
-
-    # Remove any full etcd service override that shadows the apt-provided base unit
-    # (left by prior E2E runs that wrote /etc/systemd/system/etcd.service directly).
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -f /etc/systemd/system/etcd.service"
-
-    # Run setup.sh: installs certs, writes etcd TLS drop-in, writes systemd units.
-    log "Running setup.sh on control node..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash /tmp/cca-init/setup.sh"
-
-    # Wipe etcd data for a clean start (new CA = old data unusable).
-    log "Wiping etcd data directory for clean start..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-        systemctl stop etcd
-        rm -rf /var/lib/etcd
-        mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
-        systemctl start etcd
-    '"
-    sleep 3
-
-    # Verify etcd is healthy and listening with TLS.
-    if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
-        log "etcd failed to start — dumping diagnostics..."
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 20" || true
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
-        fail "etcd unhealthy after cca init + setup.sh — see diagnostics above"
-    fi
-    log "etcd healthy with mTLS (fresh PKI from cca init)"
-
     if [[ "$KEEP_DATA" == "false" ]]; then
-        log "Removing all containers, volumes, and pruning name store..."
+        log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
             ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
         done
         wait
-        if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/ >/dev/null 2>&1"; then
-            log "WARNING: etcdctl del failed (expected if data dir was just wiped)"
-        fi
     else
         log "Keeping existing data (--keep-data) — stopping containers only..."
         for vm in "${VM_NAMES[@]}"; do
@@ -558,138 +484,19 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
         done
         wait
     fi
-    log "Truncating old service logs..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
     done
     wait
-    log "Previous workloads cleaned"
+    log "Cluster state cleaned"
 fi
 
-# ---- Step 2: Deploy cluster via Ansible (skip if reusing) ----
-if [[ "$ALREADY_PROVISIONED" == "false" ]]; then
-    log "Running Ansible deployment (first-time provisioning)..."
-    # Skip vagrant (VMs already running), cleanup (handled above for deploy env),
-    # and testapp (cluster_test.sh deploys workloads from test/e2e/workloads/).
-    ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup
-else
-    log "Ensuring DNS configuration is up to date..."
-    ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --tags dns
-    log "Updating binary and service files on existing VMs..."
-    for vm in "${VM_NAMES[@]}"; do
-        local_ip=""
-        node_id=""
-        case "$vm" in
-            *-ctrl)     local_ip="$CTRL_IP" ;;
-            *-worker-1) local_ip="${WORKER_IPS[0]}" ;;
-            *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
-        esac
-        case "$CLUSTER_ENV" in
-            test)   case "$vm" in *-ctrl) node_id="cca-test-ctrl" ;; *-worker-1) node_id="cca-test-worker-1" ;; esac ;;
-            deploy) case "$vm" in *-ctrl) node_id="cca-deploy-ctrl" ;; *-worker-1) node_id="cca-deploy-worker-1" ;; *-worker-2) node_id="cca-deploy-worker-2" ;; esac ;;
-        esac
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
-            "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${local_ip}:/tmp/cca-linux-amd64"
-        ssh_vm "$vm" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
-        ssh_vm "$vm" "sudo mkdir -p /etc/ccattler && echo '${ETCD_ENDPOINTS}' | sudo tee /etc/ccattler/endpoints > /dev/null"
-        # Regenerate agent service file to pick up new flags (e.g. --debug-listen).
-        cat > /tmp/cca-agent-${vm}.service <<SVCEOF
-[Unit]
-Description=CCattler Agent — node ${node_id}
-After=network.target containerd.service
-Requires=containerd.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/cca agent \\
-  --node-id ${node_id} \\
-  --advertise-address ${local_ip} \\
-  --proxy --proxy-listen ${local_ip}:80 \\
-  --debug-listen ${local_ip}:9771 \\
-  --secret-api-listen ${local_ip}:9772 \\
-  --cert /etc/ccattler/pki/node.pem \\
-  --key /etc/ccattler/pki/node-key.pem \\
-  --ca /etc/ccattler/pki/ca.pem \\
-  --etcd-cert /etc/ccattler/pki/node.pem \\
-  --etcd-key /etc/ccattler/pki/node-key.pem \\
-  --etcd-ca /etc/ccattler/pki/ca.pem
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:/var/log/ccattler/agent.log
-StandardError=append:/var/log/ccattler/agent.log
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
-            "/tmp/cca-agent-${vm}.service" "vagrant@${local_ip}:/tmp/cca-agent.service"
-        ssh_vm "$vm" "sudo mv /tmp/cca-agent.service /etc/systemd/system/cca-agent.service && sudo systemctl daemon-reload"
-        rm -f "/tmp/cca-agent-${vm}.service"
-    done
-    # Regenerate server service file with --ca-key for enrollment support.
-    ctrl_node_id=""
-    case "$CLUSTER_ENV" in
-        test)   ctrl_node_id="cca-test-ctrl" ;;
-        deploy) ctrl_node_id="cca-deploy-ctrl" ;;
-    esac
-    cat > /tmp/cca-server.service <<SVCEOF
-[Unit]
-Description=CCattler Server — controllers + API
-After=network.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/cca server \\
-  --listen 0.0.0.0:9770 \\
-  --dns --dns-listen ${CTRL_IP}:15353 \\
-  --cert /etc/ccattler/pki/node.pem \\
-  --key /etc/ccattler/pki/node-key.pem \\
-  --ca /etc/ccattler/pki/ca.pem \\
-  --ca-key /etc/ccattler/pki/ca-key.pem \\
-  --etcd-cert /etc/ccattler/pki/node.pem \\
-  --etcd-key /etc/ccattler/pki/node-key.pem \\
-  --etcd-ca /etc/ccattler/pki/ca.pem
-Restart=on-failure
-RestartSec=5
-StandardOutput=append:/var/log/ccattler/server.log
-StandardError=append:/var/log/ccattler/server.log
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-        "/tmp/cca-server.service" "vagrant@${CTRL_IP}:/tmp/cca-server.service"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo mv /tmp/cca-server.service /etc/systemd/system/cca-server.service && sudo systemctl daemon-reload"
-    rm -f /tmp/cca-server.service
-    # Restart services with new binary and service files.
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart cca-server" || true
-    sleep 2
-    # Re-join workers to distribute fresh secret master key and endpoints.
-    log "Re-joining worker nodes to cluster..."
-    for worker_ip in "${WORKER_IPS[@]}"; do
-        worker_vm=""
-        worker_node_id=""
-        case "$worker_ip" in
-            "${WORKER_IPS[0]}") worker_vm="${VM_PREFIX}-worker-1" ;;
-            "${WORKER_IPS[1]:-}") worker_vm="${VM_PREFIX}-worker-2" ;;
-        esac
-        case "$CLUSTER_ENV" in
-            test)   case "$worker_vm" in *-worker-1) worker_node_id="cca-test-worker-1" ;; esac ;;
-            deploy) case "$worker_vm" in *-worker-1) worker_node_id="cca-deploy-worker-1" ;; *-worker-2) worker_node_id="cca-deploy-worker-2" ;; esac ;;
-        esac
-        JOIN_TOKEN=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca token create --node-id $worker_node_id --ttl 5m" 2>/dev/null | grep '^Token:' | awk '{print $2}')
-        ssh_vm "$worker_vm" "sudo /usr/local/bin/cca join https://${CTRL_IP}:9770 ${JOIN_TOKEN} --node-id $worker_node_id"
-    done
-    for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo systemctl restart cca-agent" 2>/dev/null || true
-    done
-    sleep 3
-    log "Binary and service files updated, services restarted"
-fi
+# ---- Step 2: Deploy cluster via Ansible ----
+# Ansible handles: binary distribution (common), cca init + setup.sh (controlplane),
+# cca join + agent service (worker). The creates: guards in each role ensure
+# idempotent re-runs — cleaning the guard files above triggers fresh execution.
+log "Running Ansible deployment..."
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup
 
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health via cca server API..."
