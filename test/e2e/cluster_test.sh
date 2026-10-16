@@ -508,11 +508,25 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
             ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
             sleep 3
         fi
-        # Ensure etcd is running — it may have failed on boot due to stale permissions.
+        # Ensure etcd is running — it may have failed on boot due to stale permissions
+        # or a data directory owned by the wrong user from a prior failed run.
         if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
-            log "etcd not running — restarting after permission fix..."
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
-            sleep 3
+            log "etcd not running — fixing data dir ownership and restarting..."
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+                mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
+                systemctl daemon-reload
+            '"
+            if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart etcd 2>&1" 2>/dev/null; then
+                log "etcd restart failed — dumping journal and wiping data directory..."
+                ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 20" 2>/dev/null || true
+                ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+                    systemctl stop etcd 2>/dev/null || true
+                    rm -rf /var/lib/etcd
+                    mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
+                    systemctl start etcd
+                '"
+                sleep 3
+            fi
         fi
     else
         log "Upgrading etcd to mTLS..."
