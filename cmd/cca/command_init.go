@@ -287,7 +287,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("[Service]\n")
 	scriptBuilder.WriteString("Type=simple\n")
 	fmt.Fprintf(&scriptBuilder, "ExecStart=/usr/local/bin/cca server \\\n")
-	fmt.Fprintf(&scriptBuilder, "  --listen %s:9770 \\\n", advertiseAddress)
+	scriptBuilder.WriteString("  --listen 0.0.0.0:9770 \\\n")
 	fmt.Fprintf(&scriptBuilder, "  --dns --dns-listen %s:15353 \\\n", advertiseAddress)
 	scriptBuilder.WriteString("  --cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("  --key /etc/ccattler/pki/node-key.pem \\\n")

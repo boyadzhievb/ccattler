@@ -642,7 +642,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/cca server \\
-  --listen ${CTRL_IP}:9770 \\
+  --listen 0.0.0.0:9770 \\
   --dns --dns-listen ${CTRL_IP}:15353 \\
   --cert /etc/ccattler/pki/node.pem \\
   --key /etc/ccattler/pki/node-key.pem \\
