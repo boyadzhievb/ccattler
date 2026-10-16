@@ -473,16 +473,41 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
         ssh_vm "$vm" "echo 'https://${CTRL_IP}:2379' | sudo tee /etc/ccattler/endpoints > /dev/null" &
     done
     wait
+    # Ensure separate etcd cert files exist. Legacy VMs only have node.pem —
+    # copy it so etcd gets its own key at 0600 owned by etcd, and node-key.pem
+    # stays at 0600 owned by root (the server preflight check requires this).
+    ETCD_CERT_DIR="/etc/ccattler/pki"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd.pem || sudo cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd-key.pem || sudo cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem 2>/dev/null || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/ca-key.pem 2>/dev/null || true"
+
     ETCD_NEEDS_RESTART=false
     if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'client-cert-auth' /etc/systemd/system/etcd.service 2>/dev/null"; then
         log "etcd already configured for mTLS"
+        # Update etcd to use its own cert files instead of shared node cert.
+        if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service 2>/dev/null"; then
+            log "Migrating etcd service to separate cert files..."
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service"
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
+            ETCD_NEEDS_RESTART=true
+        fi
+        # Also check the drop-in override (from cca init).
+        if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service.d/tls.conf 2>/dev/null"; then
+            log "Migrating etcd drop-in to separate cert files..."
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service.d/tls.conf"
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
+            ETCD_NEEDS_RESTART=true
+        fi
+        if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart etcd"
+            sleep 3
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after cert migration"
+            log "etcd migrated to separate cert files"
+            ETCD_NEEDS_RESTART=false
+        fi
     else
         log "Upgrading etcd to mTLS..."
-        ETCD_CERT_DIR="/etc/ccattler/pki"
-        # Create separate etcd cert files if they don't exist (legacy VMs
-        # only have node.pem). Copy from node cert — same CA, same SANs.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd.pem || sudo cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd-key.pem || sudo cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
 [Unit]
 Description=etcd — CCattler fact store
