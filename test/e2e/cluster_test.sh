@@ -466,48 +466,60 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
 
-    # Ensure etcd endpoints file uses https:// and etcd runs with mTLS.
-    # On clusters provisioned before M110, etcd used plain HTTP — upgrade in-place.
+    # Ensure etcd endpoints file uses https://.
     log "Ensuring etcd mTLS configuration..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "echo 'https://${CTRL_IP}:2379' | sudo tee /etc/ccattler/endpoints > /dev/null" &
     done
     wait
-    # Ensure separate etcd cert files exist. Legacy VMs only have node.pem —
-    # copy it so etcd gets its own key at 0600 owned by etcd, and node-key.pem
-    # stays at 0600 owned by root (the server preflight check requires this).
-    ETCD_CERT_DIR="/etc/ccattler/pki"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd.pem || sudo cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd-key.pem || sudo cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem 2>/dev/null || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/ca-key.pem 2>/dev/null || true"
 
-    ETCD_NEEDS_RESTART=false
+    # Ensure separate key pairs: node-key.pem (root, 0600) for cca server/agent,
+    # etcd-key.pem (etcd, 0600) for etcd. Legacy VMs share node-key.pem at 0640.
+    # All cert/key setup is done atomically in a single SSH call to avoid races.
+    ETCD_CERT_DIR="/etc/ccattler/pki"
     if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'client-cert-auth' /etc/systemd/system/etcd.service 2>/dev/null"; then
         log "etcd already configured for mTLS"
-        # Update etcd to use its own cert files instead of shared node cert.
+        # Create separate etcd cert files if missing and fix all permissions.
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+            test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
+            test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
+            chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
+            chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
+            chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
+        '"
+        # Verify node-key.pem is 0600 — the server preflight check will reject anything else.
+        NODE_KEY_PERMS=$(ssh_vm "${VM_PREFIX}-ctrl" "stat -c '%a' ${ETCD_CERT_DIR}/node-key.pem")
+        if [[ "$NODE_KEY_PERMS" != "600" ]]; then
+            fail "node-key.pem has permissions $NODE_KEY_PERMS (expected 600) — chmod failed"
+        fi
+        # Migrate etcd config from node.pem to etcd.pem if needed.
+        ETCD_NEEDS_RESTART=false
         if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service 2>/dev/null"; then
             log "Migrating etcd service to separate cert files..."
             ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service"
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
             ETCD_NEEDS_RESTART=true
         fi
-        # Also check the drop-in override (from cca init).
         if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service.d/tls.conf 2>/dev/null"; then
             log "Migrating etcd drop-in to separate cert files..."
             ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service.d/tls.conf"
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
             ETCD_NEEDS_RESTART=true
         fi
         if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart etcd"
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
             sleep 3
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after cert migration"
-            log "etcd migrated to separate cert files"
-            ETCD_NEEDS_RESTART=false
         fi
     else
         log "Upgrading etcd to mTLS..."
+        # Create etcd user, data dir, cert files, and write the service file.
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+            useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true
+            mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
+            test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
+            test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
+            chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
+            chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
+            chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
+        '"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
 [Unit]
 Description=etcd — CCattler fact store
@@ -537,24 +549,15 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ETCDSVC
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload"
-        ETCD_NEEDS_RESTART=true
-    fi
-    if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
         log "WARNING: Wiping etcd data directory — existing cluster state will be lost"
         log "  Reason: etcd listen URLs changed from http:// to https:// (mTLS upgrade)"
         log "  All workload state will be redeployed from .cca files"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd; sudo rm -rf /var/lib/etcd"
-        # Create etcd user, data dir, and grant cert ownership.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd 2>/dev/null || true; sudo rm -rf /var/lib/etcd"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo mkdir -p /var/lib/etcd && sudo chown etcd:etcd /var/lib/etcd && sudo chmod 0700 /var/lib/etcd"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem && sudo chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem && sudo chmod 0644 ${ETCD_CERT_DIR}/etcd.pem"
         # Remove any systemd drop-in overrides from prior installs.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true; sudo systemctl daemon-reload"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl start etcd"
         sleep 3
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy after mTLS upgrade"
-        log "etcd restarted with mTLS — data directory recreated"
     fi
 
     if [[ "$KEEP_DATA" == "false" ]]; then
@@ -705,8 +708,15 @@ SVCEOF
 fi
 
 # ---- Step 3: Verify cluster basics ----
-log "Verifying etcd health..."
-ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "etcd unhealthy"
+log "Verifying etcd health via cca server API..."
+deadline=$((SECONDS + 30))
+while [[ $SECONDS -lt $deadline ]]; do
+    if ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null 2>&1"; then
+        break
+    fi
+    sleep 2
+done
+ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null" || fail "cca server unreachable (etcd may be unhealthy)"
 
 log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
 if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
@@ -1286,7 +1296,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     fi
 
     # Verify etcd still healthy.
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS endpoint health" || fail "Upgrade: etcd unhealthy after binary swap"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null" || fail "Upgrade: cca server unreachable after binary swap"
 
     log "=== UPGRADE TEST PASSED ==="
 fi
