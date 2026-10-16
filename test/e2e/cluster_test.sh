@@ -524,8 +524,14 @@ ETCDSVC
         rm -rf /var/lib/etcd
         mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
         systemctl daemon-reload
-        systemctl start etcd
     '"
+    if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd" 2>/dev/null; then
+        log "etcd failed to start — dumping diagnostics..."
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 30" || true
+        ssh_vm "${VM_PREFIX}-ctrl" "ls -la ${ETCD_CERT_DIR}/" || true
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/systemd/system/etcd.service" || true
+        fail "etcd failed to start after fresh setup — see diagnostics above"
+    fi
     log "etcd restarted with mTLS (data directory wiped — workloads will be redeployed)"
     sleep 3
 
