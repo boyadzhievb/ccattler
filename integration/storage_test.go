@@ -429,18 +429,15 @@ func TestVolumeReattachAfterForceDetach(t *testing.T) {
 		return err == nil && (volume.State == types.VolumeMigrating || volume.State == types.VolumeAttached)
 	})
 
-	// Wait for the volume to be reattached on a different node.
+	// Wait for the volume to be reattached on a different node and the
+	// provider to agree. All assertions inside waitFor to avoid TOCTOU races
+	// between the store and provider state.
 	waitFor(t, 10*time.Second, "volume reattached on surviving node", func() bool {
 		volume, err := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-		return err == nil && volume.State == types.VolumeAttached && volume.Node != originalNodeID
+		if err != nil || volume.State != types.VolumeAttached || volume.Node == "" || volume.Node == originalNodeID {
+			return false
+		}
+		attached, attachedNode, _ := cluster.storageProvider.IsAttached(ctx, "pgdata")
+		return attached && attachedNode == volume.Node
 	})
-
-	volumeAfter, _ := types.ReadObservedVolume(ctx, cluster.factStore, "pgdata")
-	attached, attachedNode, _ := cluster.storageProvider.IsAttached(ctx, "pgdata")
-	if !attached {
-		t.Error("volume not attached in storage provider after reattach")
-	}
-	if attachedNode != volumeAfter.Node {
-		t.Errorf("provider says attached to %s, store says %s", attachedNode, volumeAfter.Node)
-	}
 }
