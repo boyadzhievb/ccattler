@@ -263,9 +263,13 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("    chown etcd:etcd \"$PKI_DIR/etcd.pem\" \"$PKI_DIR/etcd-key.pem\"\n")
 	scriptBuilder.WriteString("fi\n\n")
 
+	scriptBuilder.WriteString("# Clear /etc/default/etcd to prevent apt-default DAEMON_ARGS from\n")
+	scriptBuilder.WriteString("# overriding TLS environment variables via command-line flags.\n")
+	scriptBuilder.WriteString("echo -n > /etc/default/etcd 2>/dev/null || true\n\n")
 	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
 	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<'ETCD_OVERRIDE'\n")
 	scriptBuilder.WriteString("[Service]\n")
+	scriptBuilder.WriteString("Environment=\"DAEMON_ARGS=\"\n")
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:2379,https://127.0.0.1:2379\"\n", advertiseAddress)
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:2379\"\n", advertiseAddress)
 	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/etcd.pem\"\n")
