@@ -1,0 +1,48 @@
+"""
+### Toy using @task.bash
+
+Deploys a simple DAG that demonstrates the @task.bash decorator
+from Airflow 2.9+. Source: astronomer/2-9-example-dags.
+"""
+
+from airflow.decorators import dag, task
+
+
+@dag(
+    start_date=None,
+    schedule=None,
+    catchup=False,
+    doc_md=__doc__,
+    tags=["@task.bash", "toy", "ccattler"],
+)
+def toy_taskflow_bash():
+
+    @task
+    def upstream_task():
+        dog_owner_data = {
+            "names": ["Trevor", "Grant", "Marcy", "Carly", "Philip"],
+            "dogs": [1, 2, 2, 0, 4],
+        }
+
+        return dog_owner_data
+
+    @task.bash
+    def bash_task(dog_owner_data):
+        names_of_dogless_people = []
+        for name, dog in zip(dog_owner_data["names"], dog_owner_data["dogs"]):
+            if dog < 1:
+                names_of_dogless_people.append(name)
+
+        if names_of_dogless_people:
+            if len(names_of_dogless_people) == 1:
+                return f'echo "{names_of_dogless_people[0]} urgently needs a dog!"'
+            else:
+                names_of_dogless_people_str = " and ".join(names_of_dogless_people)
+                return f'echo "{names_of_dogless_people_str} urgently need a dog!"'
+        else:
+            return 'echo "All good, everyone has at least one dog!"'
+
+    bash_task(dog_owner_data=upstream_task())
+
+
+toy_taskflow_bash()

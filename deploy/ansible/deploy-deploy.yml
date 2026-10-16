@@ -144,3 +144,44 @@
     - name: Show Airflow health check result
       debug:
         msg: "{{ airflow_health.stdout }}"
+
+- name: Deploy custom DAGs to Airflow containers
+  hosts: all
+  become: true
+  tags: [dags]
+  tasks:
+    - name: Create DAG staging directory
+      file:
+        path: /tmp/airflow-dags
+        state: directory
+        mode: "0755"
+
+    - name: Copy DAG files to node
+      copy:
+        src: "{{ item }}"
+        dest: "/tmp/airflow-dags/{{ item | basename }}"
+        mode: "0644"
+      with_fileglob:
+        - "{{ playbook_dir }}/dags/*.py"
+
+    - name: Deploy DAGs into running Airflow containers
+      shell: |
+        containers=$(nerdctl ps --format '{{ '{{' }}.Names{{ '}}' }}' | grep -E '^(scheduler|webserver|worker)-' || true)
+        if [ -z "$containers" ]; then
+          echo "No Airflow containers found on this node"
+          exit 0
+        fi
+        for dag in /tmp/airflow-dags/*.py; do
+          [ -f "$dag" ] || continue
+          dagname=$(basename "$dag")
+          for container in $containers; do
+            echo "Deploying $dagname -> $container"
+            cat "$dag" | nerdctl exec -i "$container" tee "/opt/airflow/dags/$dagname" > /dev/null
+          done
+        done
+      register: dag_deploy_result
+      changed_when: "'Deploying' in dag_deploy_result.stdout"
+
+    - name: Show DAG deployment result
+      debug:
+        msg: "{{ dag_deploy_result.stdout_lines }}"
