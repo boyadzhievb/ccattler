@@ -503,13 +503,17 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     '"
     sleep 3
 
-    # Verify etcd is healthy (cca-server isn't running yet, so check etcd directly).
+    # Verify etcd is healthy and listening with TLS.
     if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
         log "etcd failed to start — dumping diagnostics..."
         ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 20" || true
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
         fail "etcd unhealthy after cca init + setup.sh — see diagnostics above"
     fi
+    # Dump merged etcd config and listen ports for debugging.
+    log "etcd running — verifying TLS configuration..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo ss -tlnp | grep 2379" || true
     log "etcd healthy with mTLS (fresh PKI from cca init)"
 
     # Distribute new certs to worker nodes (shared cert — test shortcut, not
