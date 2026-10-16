@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"net/http"
@@ -760,6 +761,8 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 		os.Exit(1)
 	}
 
+	appendCACertificateToChain(&serverCertificate, caCertPEM)
+
 	fmt.Printf("TLS: cert=%s key=%s ca=%s\n", certPath, keyPath, caCertPath)
 
 	clientAuthPolicy := tls.RequireAndVerifyClientCert
@@ -773,6 +776,17 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 		ClientAuth:   clientAuthPolicy,
 		MinVersion:   tls.VersionTLS13,
 	}
+}
+
+// appendCACertificateToChain appends the CA certificate to the server's TLS
+// certificate chain so that clients performing fingerprint-based verification
+// can find the CA in the presented chain.
+func appendCACertificateToChain(serverCertificate *tls.Certificate, caCertPEM []byte) {
+	pemBlock, _ := pem.Decode(caCertPEM)
+	if pemBlock == nil {
+		return
+	}
+	serverCertificate.Certificate = append(serverCertificate.Certificate, pemBlock.Bytes)
 }
 
 // preflightExpectedKeyPermission is the maximum allowed permission bits for

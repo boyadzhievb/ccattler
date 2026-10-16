@@ -297,6 +297,10 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("Environment=\"ETCD_CLIENT_CERT_AUTH=true\"\n")
 	scriptBuilder.WriteString("ETCD_OVERRIDE\n\n")
 
+	scriptBuilder.WriteString("echo '==> Writing etcd endpoints for CLI auto-detection'\n")
+	scriptBuilder.WriteString("echo 'https://127.0.0.1:2379' > /etc/ccattler/endpoints\n")
+	scriptBuilder.WriteString("chmod 600 /etc/ccattler/endpoints\n\n")
+
 	scriptBuilder.WriteString("echo '==> Installing systemd units'\n")
 	fmt.Fprintf(&scriptBuilder, "cat > /etc/systemd/system/cca-server.service <<'UNIT'\n")
 	scriptBuilder.WriteString("[Unit]\n")
@@ -328,7 +332,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("[Unit]\n")
 	fmt.Fprintf(&scriptBuilder, "Description=CCattler Agent — node %s\n", nodeID)
 	scriptBuilder.WriteString("After=network.target containerd.service\n")
-	scriptBuilder.WriteString("Requires=containerd.service\n\n")
+	scriptBuilder.WriteString("Wants=containerd.service\n\n")
 	scriptBuilder.WriteString("[Service]\n")
 	scriptBuilder.WriteString("Type=simple\n")
 	fmt.Fprintf(&scriptBuilder, "ExecStart=/usr/local/bin/cca agent \\\n")
