@@ -55,11 +55,15 @@ cca version
 ### Act 2: Bootstrap the Cluster (~1.5 min)
 
 ```bash
-# Node 1 — prepare state directory (first time only)
-sudo mkdir -p /etc/ccattler && sudo chown $(id -u) /etc/ccattler
+# Node 1 — generate PKI, configure etcd TLS, and create systemd units
+cca init --advertise-address 192.168.124.10 --node-id node-1
 
-# Node 1 — start the control plane (--tls enables mTLS and defaults to 0.0.0.0:9770)
-cca server --tls
+# Node 1 — review the setup script, then run it
+sudo /tmp/cca-init-*/setup.sh
+
+# Node 1 — start the control plane and local agent
+sudo systemctl enable --now cca-server
+sudo systemctl enable --now cca-agent
 
 # Node 1 — create join tokens (in a second terminal)
 cca token create --node-id node-2 --ttl 15m
@@ -192,7 +196,7 @@ cca node-inspect node-2
    logged in) to avoid typing URLs on camera.
 
 6. **Kill background services cleanly** before recording to avoid stale
-   state. `cca` on a fresh boot is ideal.
+   state. A fresh `cca init` + reboot is ideal.
 
 ## Prep Script
 
@@ -221,6 +225,12 @@ Run on the control node only:
 # demo-prep-ctrl.sh — run on node-1 before recording
 
 set -e
+
+# Bootstrap the control plane (generates PKI, configures etcd TLS, creates systemd units)
+cca init --advertise-address 192.168.124.10 --node-id node-1
+sudo /tmp/cca-init-*/setup.sh
+sudo systemctl enable --now cca-server
+sudo systemctl enable --now cca-agent
 
 # Create secrets ahead of time (optional — can do live in demo)
 cca secret set airflow.db-password "airflow-db-pass-2026"
