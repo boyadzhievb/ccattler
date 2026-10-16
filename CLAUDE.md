@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M116 — Phase 116 Join Token TLS Chain Fix. M1–M116 complete. Gates A–I resolved.
+**Completed through:** M117 — Phase 117 E2E Streamline & CI Fixes. M1–M117 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

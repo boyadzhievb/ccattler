@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.43.0-beta <Badge type="tip" text="latest" /> {#v1-43-0-beta}
+## v1.44.0-beta <Badge type="tip" text="latest" /> {#v1-44-0-beta}
+
+**2026-10-16** — E2E Streamline & CI Fixes.
+
+- **E2E Streamline & CI Fixes** (M117) — Default e2e workload from `airflow,zabbix` to `airflow`-only across `cluster_test.sh`, `e2e.yml`, `deploy-testbed.yml`, and `upgrade-test.yml` — reduces e2e time by skipping 3 extra image pulls and container starts. Fix flaky `TestAgentReconcileDesiredInstanceStartsMissing` (bare assertion after `waitFor` → move into predicate). Fix release workflow: non-overlapping asset globs (`cca-v*-*` vs `cca-cloud-v*-*`) prevent duplicate delete/upload cycles causing GitHub API "Not Found" errors.
+
+---
+
+## v1.43.0-beta {#v1-43-0-beta}
 
 **2026-10-16** — Join Token TLS Chain Fix.
 
