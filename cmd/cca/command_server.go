@@ -781,9 +781,8 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 }
 
 // preflightExpectedKeyPermission is the maximum allowed permission bits for
-// private key files. 0640 allows group-read, which is required when etcd
-// shares the same key file (etcd runs as a separate user in the etcd group).
-const preflightExpectedKeyPermission = 0640
+// private key files. Files with broader permissions are flagged as insecure.
+const preflightExpectedKeyPermission = 0600
 
 // runServerPreflightChecks validates that certificates, permissions, and etcd
 // are properly configured before starting the server. Exits with actionable
@@ -887,7 +886,7 @@ func preflightRequireSecureKeyPermissions(filePath string, description string) {
 	fileMode := fileInfo.Mode().Perm()
 	if fileMode&^os.FileMode(preflightExpectedKeyPermission) != 0 {
 		fmt.Fprintf(os.Stderr, "error: %s has insecure permissions %04o: %s\n", description, fileMode, filePath)
-		fmt.Fprintf(os.Stderr, "  Fix: chmod 640 %s\n", filePath)
+		fmt.Fprintf(os.Stderr, "  Fix: chmod 600 %s\n", filePath)
 		os.Exit(1)
 	}
 }

@@ -479,6 +479,10 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     else
         log "Upgrading etcd to mTLS..."
         ETCD_CERT_DIR="/etc/ccattler/pki"
+        # Create separate etcd cert files if they don't exist (legacy VMs
+        # only have node.pem). Copy from node cert — same CA, same SANs.
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd.pem || sudo cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo test -f ${ETCD_CERT_DIR}/etcd-key.pem || sudo cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
 [Unit]
 Description=etcd — CCattler fact store
@@ -495,11 +499,11 @@ ExecStart=/usr/local/bin/etcd \\
   --advertise-client-urls https://${CTRL_IP}:2379 \\
   --listen-peer-urls https://${CTRL_IP}:2380 \\
   --client-cert-auth=true \\
-  --cert-file=${ETCD_CERT_DIR}/node.pem \\
-  --key-file=${ETCD_CERT_DIR}/node-key.pem \\
+  --cert-file=${ETCD_CERT_DIR}/etcd.pem \\
+  --key-file=${ETCD_CERT_DIR}/etcd-key.pem \\
   --trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
-  --peer-cert-file=${ETCD_CERT_DIR}/node.pem \\
-  --peer-key-file=${ETCD_CERT_DIR}/node-key.pem \\
+  --peer-cert-file=${ETCD_CERT_DIR}/etcd.pem \\
+  --peer-key-file=${ETCD_CERT_DIR}/etcd-key.pem \\
   --peer-trusted-ca-file=${ETCD_CERT_DIR}/ca.pem \\
   --peer-client-cert-auth=true
 Restart=on-failure
@@ -516,10 +520,10 @@ ETCDSVC
         log "  Reason: etcd listen URLs changed from http:// to https:// (mTLS upgrade)"
         log "  All workload state will be redeployed from .cca files"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd; sudo rm -rf /var/lib/etcd"
-        # Create etcd user, data dir, and grant cert access.
+        # Create etcd user, data dir, and grant cert ownership.
         ssh_vm "${VM_PREFIX}-ctrl" "sudo useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo mkdir -p /var/lib/etcd && sudo chown etcd:etcd /var/lib/etcd && sudo chmod 0700 /var/lib/etcd"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo chgrp etcd /etc/ccattler/pki/node.pem /etc/ccattler/pki/node-key.pem /etc/ccattler/pki/ca.pem && sudo chmod 0640 /etc/ccattler/pki/node.pem /etc/ccattler/pki/node-key.pem /etc/ccattler/pki/ca.pem"
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem && sudo chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem && sudo chmod 0644 ${ETCD_CERT_DIR}/etcd.pem"
         # Remove any systemd drop-in overrides from prior installs.
         ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true; sudo systemctl daemon-reload"
         ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd"

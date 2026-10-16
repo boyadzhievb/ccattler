@@ -158,6 +158,19 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 		os.Exit(1)
 	}
 
+	// Issue a separate certificate for etcd so each service owns its own
+	// private key at 0600. Sharing a key would require 0640 group-read.
+	etcdCertificate, etcdIssueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+		CommonName:  "etcd-" + parsedConfig.nodeID,
+		DNSNames:    nodeDNSNames,
+		IPAddresses: nodeIPAddresses,
+		TTL:         parsedConfig.certValidity,
+	})
+	if etcdIssueError != nil {
+		fmt.Fprintf(os.Stderr, "error issuing etcd certificate: %v\n", etcdIssueError)
+		os.Exit(1)
+	}
+
 	caKeyPEM, keyError := certificateAuthority.CAPrivateKeyPEM()
 	if keyError != nil {
 		fmt.Fprintf(os.Stderr, "error exporting CA key: %v\n", keyError)
@@ -174,6 +187,8 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	writeInitFile(outputDirectory, "ca-key.pem", caKeyPEM, 0600)
 	writeInitFile(outputDirectory, "node.pem", nodeCertificate.CertificatePEM, 0644)
 	writeInitFile(outputDirectory, "node-key.pem", nodeCertificate.PrivateKeyPEM, 0600)
+	writeInitFile(outputDirectory, "etcd.pem", etcdCertificate.CertificatePEM, 0644)
+	writeInitFile(outputDirectory, "etcd-key.pem", etcdCertificate.PrivateKeyPEM, 0600)
 	writeInitFile(outputDirectory, "secret-master.key", secretMasterKey, 0600)
 
 	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory)
@@ -185,8 +200,10 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	fmt.Println("Files generated:")
 	fmt.Println("  ca.pem             CA certificate (distribute to all nodes)")
 	fmt.Println("  ca-key.pem         CA private key (keep on control plane only)")
-	fmt.Println("  node.pem           Node certificate")
-	fmt.Println("  node-key.pem       Node private key")
+	fmt.Println("  node.pem           Node certificate (cca server/agent)")
+	fmt.Println("  node-key.pem       Node private key (cca server/agent)")
+	fmt.Println("  etcd.pem           etcd certificate")
+	fmt.Println("  etcd-key.pem       etcd private key (owned by etcd user)")
 	fmt.Println("  secret-master.key  Secret store encryption key")
 	fmt.Println("  setup.sh           Setup script (review, then run with sudo)")
 	fmt.Println()
@@ -226,10 +243,11 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("echo '==> Installing PKI certificates'\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/ca.pem\" \"$SOURCE_DIR/ca-key.pem\" \"$PKI_DIR/\"\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/node.pem\" \"$SOURCE_DIR/node-key.pem\" \"$PKI_DIR/\"\n")
+	scriptBuilder.WriteString("cp \"$SOURCE_DIR/etcd.pem\" \"$SOURCE_DIR/etcd-key.pem\" \"$PKI_DIR/\"\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/ca.pem\" /etc/ccattler/ca.pem\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/secret-master.key\" /etc/ccattler/secret-master.key\n")
-	scriptBuilder.WriteString("chmod 600 \"$PKI_DIR/ca-key.pem\" \"$PKI_DIR/node-key.pem\" /etc/ccattler/secret-master.key\n")
-	scriptBuilder.WriteString("chmod 644 \"$PKI_DIR/ca.pem\" \"$PKI_DIR/node.pem\"\n\n")
+	scriptBuilder.WriteString("chmod 600 \"$PKI_DIR/ca-key.pem\" \"$PKI_DIR/node-key.pem\" \"$PKI_DIR/etcd-key.pem\" /etc/ccattler/secret-master.key\n")
+	scriptBuilder.WriteString("chmod 644 \"$PKI_DIR/ca.pem\" \"$PKI_DIR/node.pem\" \"$PKI_DIR/etcd.pem\"\n\n")
 
 	scriptBuilder.WriteString("echo '==> Configuring etcd with TLS'\n")
 	scriptBuilder.WriteString("if ! command -v etcd >/dev/null 2>&1; then\n")
@@ -240,10 +258,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("    exit 1\n")
 	scriptBuilder.WriteString("fi\n\n")
 
-	scriptBuilder.WriteString("# Grant etcd read access to TLS certificates.\n")
+	scriptBuilder.WriteString("# Grant etcd ownership of its own key pair.\n")
 	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
-	scriptBuilder.WriteString("    chgrp etcd \"$PKI_DIR/node.pem\" \"$PKI_DIR/node-key.pem\" \"$PKI_DIR/ca.pem\"\n")
-	scriptBuilder.WriteString("    chmod 640 \"$PKI_DIR/node-key.pem\"\n")
+	scriptBuilder.WriteString("    chown etcd:etcd \"$PKI_DIR/etcd.pem\" \"$PKI_DIR/etcd-key.pem\"\n")
 	scriptBuilder.WriteString("fi\n\n")
 
 	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
@@ -251,8 +268,8 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("[Service]\n")
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:2379,https://127.0.0.1:2379\"\n", advertiseAddress)
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:2379\"\n", advertiseAddress)
-	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/node.pem\"\n")
-	scriptBuilder.WriteString("Environment=\"ETCD_KEY_FILE=/etc/ccattler/pki/node-key.pem\"\n")
+	scriptBuilder.WriteString("Environment=\"ETCD_CERT_FILE=/etc/ccattler/pki/etcd.pem\"\n")
+	scriptBuilder.WriteString("Environment=\"ETCD_KEY_FILE=/etc/ccattler/pki/etcd-key.pem\"\n")
 	scriptBuilder.WriteString("Environment=\"ETCD_TRUSTED_CA_FILE=/etc/ccattler/pki/ca.pem\"\n")
 	scriptBuilder.WriteString("Environment=\"ETCD_CLIENT_CERT_AUTH=true\"\n")
 	scriptBuilder.WriteString("ETCD_OVERRIDE\n\n")
