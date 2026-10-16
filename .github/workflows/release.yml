@@ -93,10 +93,10 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            cca-*.tar.gz
-            cca-cloud-*.tar.gz
-            cca-*.tar.gz.sha256
-            cca-cloud-*.tar.gz.sha256
+            cca-v*-*.tar.gz
+            cca-cloud-v*-*.tar.gz
+            cca-v*-*.tar.gz.sha256
+            cca-cloud-v*-*.tar.gz.sha256
             install.sh
             install-demo.sh
             checksums.txt
