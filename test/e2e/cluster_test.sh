@@ -474,73 +474,22 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     wait
 
     # Ensure separate key pairs: node-key.pem (root, 0600) for cca server/agent,
-    # etcd-key.pem (etcd, 0600) for etcd. Legacy VMs share node-key.pem at 0640.
-    # All cert/key setup is done atomically in a single SSH call to avoid races.
+    # etcd-key.pem (etcd, 0600) for etcd. Idempotent: always writes the definitive
+    # service file, fixes all permissions, and starts etcd fresh.
     ETCD_CERT_DIR="/etc/ccattler/pki"
-    if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'client-cert-auth' /etc/systemd/system/etcd.service 2>/dev/null"; then
-        log "etcd already configured for mTLS"
-        # Create separate etcd cert files if missing and fix all permissions.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-            test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
-            test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
-            chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
-            chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
-            chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
-        '"
-        # Verify node-key.pem is 0600 — the server preflight check will reject anything else.
-        NODE_KEY_PERMS=$(ssh_vm "${VM_PREFIX}-ctrl" "stat -c '%a' ${ETCD_CERT_DIR}/node-key.pem")
-        if [[ "$NODE_KEY_PERMS" != "600" ]]; then
-            fail "node-key.pem has permissions $NODE_KEY_PERMS (expected 600) — chmod failed"
-        fi
-        # Migrate etcd config from node.pem to etcd.pem if needed.
-        ETCD_NEEDS_RESTART=false
-        if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service 2>/dev/null"; then
-            log "Migrating etcd service to separate cert files..."
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service"
-            ETCD_NEEDS_RESTART=true
-        fi
-        if ssh_vm "${VM_PREFIX}-ctrl" "grep -q 'node-key.pem' /etc/systemd/system/etcd.service.d/tls.conf 2>/dev/null"; then
-            log "Migrating etcd drop-in to separate cert files..."
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo sed -i 's|/node\\.pem|/etcd.pem|g; s|/node-key\\.pem|/etcd-key.pem|g' /etc/systemd/system/etcd.service.d/tls.conf"
-            ETCD_NEEDS_RESTART=true
-        fi
-        if [[ "$ETCD_NEEDS_RESTART" == "true" ]]; then
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
-            sleep 3
-        fi
-        # Ensure etcd is running — it may have failed on boot due to stale permissions
-        # or a data directory owned by the wrong user from a prior failed run.
-        if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
-            log "etcd not running — fixing data dir ownership and restarting..."
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-                mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
-                systemctl daemon-reload
-            '"
-            if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl restart etcd 2>&1" 2>/dev/null; then
-                log "etcd restart failed — dumping journal and wiping data directory..."
-                ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 20" 2>/dev/null || true
-                ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-                    systemctl stop etcd 2>/dev/null || true
-                    rm -rf /var/lib/etcd
-                    mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
-                    systemctl start etcd
-                '"
-                sleep 3
-            fi
-        fi
-    else
-        log "Upgrading etcd to mTLS..."
-        # Create etcd user, data dir, cert files, and write the service file.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-            useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true
-            mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
-            test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
-            test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
-            chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
-            chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
-            chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
-        '"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+        useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true
+        test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
+        test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
+        chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
+        chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
+        chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
+    '"
+    NODE_KEY_PERMS=$(ssh_vm "${VM_PREFIX}-ctrl" "stat -c '%a' ${ETCD_CERT_DIR}/node-key.pem")
+    if [[ "$NODE_KEY_PERMS" != "600" ]]; then
+        fail "node-key.pem has permissions $NODE_KEY_PERMS (expected 600) — chmod failed"
+    fi
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo tee /etc/systemd/system/etcd.service > /dev/null" <<ETCDSVC
 [Unit]
 Description=etcd — CCattler fact store
 After=network.target
@@ -569,16 +518,16 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 ETCDSVC
-        log "WARNING: Wiping etcd data directory — existing cluster state will be lost"
-        log "  Reason: etcd listen URLs changed from http:// to https:// (mTLS upgrade)"
-        log "  All workload state will be redeployed from .cca files"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop etcd 2>/dev/null || true; sudo rm -rf /var/lib/etcd"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo mkdir -p /var/lib/etcd && sudo chown etcd:etcd /var/lib/etcd && sudo chmod 0700 /var/lib/etcd"
-        # Remove any systemd drop-in overrides from prior installs.
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true"
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl start etcd"
-        sleep 3
-    fi
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+        rm -rf /etc/systemd/system/etcd.service.d 2>/dev/null || true
+        systemctl stop etcd 2>/dev/null || true
+        rm -rf /var/lib/etcd
+        mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
+        systemctl daemon-reload
+        systemctl start etcd
+    '"
+    log "etcd restarted with mTLS (data directory wiped — workloads will be redeployed)"
+    sleep 3
 
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers, volumes, and pruning name store..."
