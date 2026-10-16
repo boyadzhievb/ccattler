@@ -508,6 +508,12 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
             ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
             sleep 3
         fi
+        # Ensure etcd is running — it may have failed on boot due to stale permissions.
+        if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
+            log "etcd not running — restarting after permission fix..."
+            ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl daemon-reload && sudo systemctl restart etcd"
+            sleep 3
+        fi
     else
         log "Upgrading etcd to mTLS..."
         # Create etcd user, data dir, cert files, and write the service file.
