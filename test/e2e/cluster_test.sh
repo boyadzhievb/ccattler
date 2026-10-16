@@ -498,7 +498,7 @@ After=network.target
 Type=notify
 User=etcd
 Group=etcd
-ExecStart=/usr/local/bin/etcd \\
+ExecStart=/usr/bin/etcd \\
   --name ${VM_PREFIX}-ctrl \\
   --data-dir /var/lib/etcd \\
   --listen-client-urls https://${CTRL_IP}:2379,https://127.0.0.1:2379 \\
