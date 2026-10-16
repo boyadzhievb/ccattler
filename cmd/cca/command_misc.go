@@ -361,7 +361,16 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 	}
 	defer func() { _ = factStore.Close() }()
 
-	enrollmentService := security.NewEnrollmentService(factStore, nil, nil, 0)
+	// Load the CA certificate from the standard PKI path so that generated
+	// join tokens embed the CA fingerprint. Nodes that join with such a token
+	// can verify the server identity without a pre-distributed --ca-cert file.
+	const systemCACertFile = "/etc/ccattler/pki/ca.pem"
+	const systemCAPrivateKeyFile = "/etc/ccattler/pki/ca-key.pem" //nolint:gosec // filesystem path, not a credential
+	var clusterCertificateAuthority *security.CertificateAuthority
+	if loadedCA, loadError := security.LoadCertificateAuthorityFromFiles(systemCACertFile, systemCAPrivateKeyFile); loadError == nil {
+		clusterCertificateAuthority = loadedCA
+	}
+	enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 0)
 
 	ctx := context.Background()
 

@@ -334,6 +334,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("if id etcd >/dev/null 2>&1; then\n")
 	scriptBuilder.WriteString("    chown etcd:etcd \"$ETCD_DATA_DIR\"\n")
 	scriptBuilder.WriteString("fi\n")
+	scriptBuilder.WriteString("chmod 0700 \"$ETCD_DATA_DIR\"\n")
 	scriptBuilder.WriteString("systemctl daemon-reload\n")
 	scriptBuilder.WriteString("systemctl restart etcd\n")
 	scriptBuilder.WriteString("sleep 2\n\n")
