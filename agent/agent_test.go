@@ -1223,18 +1223,14 @@ func TestAgentReconcileDesiredInstanceStartsMissing(t *testing.T) {
 
 	go nodeAgent.Run(ctx)
 
-	waitFor(t, 2*time.Second, "instance running", func() bool {
-		stateFact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
-		return getError == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	waitFor(t, 2*time.Second, "instance running with image fact", func() bool {
+		stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		if stateErr != nil || string(stateFact.Value) != string(types.InstanceRunning) {
+			return false
+		}
+		imageFact, imageErr := factStore.Get(ctx, types.KeyObservedInstanceImage(instanceID))
+		return imageErr == nil && string(imageFact.Value) == "nginx:1.27"
 	})
-
-	imageFact, imageError := factStore.Get(ctx, types.KeyObservedInstanceImage(instanceID))
-	if imageError != nil {
-		t.Fatal("expected observed image fact")
-	}
-	if string(imageFact.Value) != "nginx:1.27" {
-		t.Errorf("image: got %s, want nginx:1.27", imageFact.Value)
-	}
 }
 
 // TestAgentCleanupUndesiredInstanceStopsStale verifies that the extracted
