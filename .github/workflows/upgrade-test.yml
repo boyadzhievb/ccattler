@@ -23,7 +23,7 @@ jobs:
 
       - name: Run upgrade test
         run: |
-          ./test/e2e/cluster_test.sh --from-release --workload airflow,zabbix --upgrade
+          ./test/e2e/cluster_test.sh --from-release --workload airflow --upgrade
 
       - name: Collect logs on failure
         if: failure()

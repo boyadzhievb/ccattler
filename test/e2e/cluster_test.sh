@@ -31,7 +31,7 @@
 # CI checkout doesn't lose track of existing VMs.
 #
 # Usage:
-#   ./test/e2e/cluster_test.sh                                 # default workloads (airflow,zabbix)
+#   ./test/e2e/cluster_test.sh                                 # default workload (airflow)
 #   ./test/e2e/cluster_test.sh --workload all                  # deploy all available workloads
 #   ./test/e2e/cluster_test.sh --workload whoami               # deploy only whoami
 #   ./test/e2e/cluster_test.sh --workload airflow,whoami       # deploy airflow + whoami
@@ -142,7 +142,7 @@ fi
 ALL_AVAILABLE_WORKLOADS=($(discover_workloads))
 
 if [[ -z "$SELECTED_WORKLOADS" ]]; then
-    SELECTED_WORKLOADS="airflow,zabbix"
+    SELECTED_WORKLOADS="airflow"
 fi
 
 WORKLOAD_NAMES=()

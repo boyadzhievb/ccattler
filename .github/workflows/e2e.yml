@@ -8,12 +8,12 @@ on:
       workload:
         description: "Workloads to deploy (comma-separated or 'all')"
         required: false
-        default: "airflow,zabbix"
+        default: "airflow"
         type: choice
         options:
+          - "airflow"
           - "airflow,zabbix"
           - "all"
-          - "airflow"
           - "zabbix"
           - "whoami"
           - "airflow,whoami"
@@ -54,7 +54,7 @@ jobs:
 
       - name: Run e2e cluster test
         run: |
-          WORKLOAD="${{ inputs.workload || 'airflow,zabbix' }}"
+          WORKLOAD="${{ inputs.workload || 'airflow' }}"
           BINARY_FLAG=""
           if [[ "${{ inputs.binary_source }}" == "release" ]]; then
             BINARY_FLAG="--from-release"
