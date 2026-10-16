@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.42.0-beta <Badge type="tip" text="latest" /> {#v1-42-0-beta}
+## v1.43.0-beta <Badge type="tip" text="latest" /> {#v1-43-0-beta}
+
+**2026-10-16** — Join Token TLS Chain Fix.
+
+- **Join Token TLS Chain Fix** (M116) — Fix `cca join` CA fingerprint verification failure: server TLS handshake now includes CA certificate in the presented chain (append to `tls.Certificate.Certificate` slice) so fingerprint-based join tokens work. `setup.sh` writes `/etc/ccattler/endpoints` with `https://127.0.0.1:2379` so CLI commands auto-detect etcd TLS instead of falling back to plaintext. Change `cca-agent` systemd unit from `Requires=containerd.service` to `Wants=containerd.service` so the agent starts without containerd installed.
+
+---
+
+## v1.42.0-beta {#v1-42-0-beta}
 
 **2026-10-16** — Code Quality & RHEL Compat.
 

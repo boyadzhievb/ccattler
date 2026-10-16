@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M115 — Phase 115 Code Quality & RHEL Compat. M1–M115 complete. Gates A–I resolved.
+**Completed through:** M116 — Phase 116 Join Token TLS Chain Fix. M1–M116 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
