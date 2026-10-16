@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.41.0-beta <Badge type="tip" text="latest" /> {#v1-41-0-beta}
+## v1.42.0-beta <Badge type="tip" text="latest" /> {#v1-42-0-beta}
+
+**2026-10-16** — Code Quality & RHEL Compat.
+
+- **Code Quality & RHEL Compat** (M115) — Enforce 80-line function limit: refactor 8 functions (`executeTokenCommand`, `executeInitCommand`, `runControllerLoop`, `attemptSingleReconciliation`, `failure.Reconcile`, `cloud_routes.Reconcile`, `handleApply`, `handleWatch`) into smaller helpers. Add exemption comments for 2 flat declarative functions (`buildSetupScript`, `readinessCoreAreaDefinitions`). Fix silent CA loading failure in `cca token create` — warn when CA unavailable for join token fingerprinting. Fix RHEL etcd startup: override ExecStart in systemd drop-in to prevent etcd 3.5+ flag/env variable conflict. Remove redundant etcd dir creation from e2e cleanup.
+
+---
+
+## v1.41.0-beta {#v1-41-0-beta}
 
 **2026-10-16** — Deploy Enrollment & E2E Cleanup.
 

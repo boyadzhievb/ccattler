@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M114 — Phase 114 Deploy Enrollment & E2E Cleanup. M1–M114 complete. Gates A–I resolved.
+**Completed through:** M115 — Phase 115 Code Quality & RHEL Compat. M1–M115 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
