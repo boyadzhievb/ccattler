@@ -470,7 +470,7 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
     done
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do

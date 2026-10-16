@@ -283,53 +283,73 @@ func (controllerRunner *Runner) runControllerLoop(ctx context.Context, controlle
 		watchEventBuffer = newDeltaBuffer()
 	}
 
-	for _, prefix := range controller.Watch() {
-		watchEventChannel, err := controllerRunner.store.Watch(watchCtx, prefix, store.WatchOption{Prefix: true})
-		if err != nil {
-			return err
-		}
-		go func(watchEventChannel <-chan store.Event, controllerName string) {
-			for {
-				select {
-				case <-watchCtx.Done():
-					return
-				case watchEvent, ok := <-watchEventChannel:
-					if !ok {
-						logging.Default().Warn("watch channel closed, signaling restart", "controller", controllerName)
-						select {
-						case watchLost <- struct{}{}:
-						default:
-						}
-						return
-					}
-					if watchEvent.Type == store.EventOverflow {
-						logging.Default().Warn("watch events dropped, triggering resync", "controller", controllerName)
-						if watchEventBuffer != nil {
-							watchEventBuffer.markOverflow()
-						}
-					}
-					if watchEvent.Type == store.EventCompacted {
-						logging.Default().Warn("watch revision compacted, triggering resync", "controller", controllerName)
-						if watchEventBuffer != nil {
-							watchEventBuffer.markOverflow()
-						}
-					}
-					if watchEventBuffer != nil && (watchEvent.Type == store.EventPut || watchEvent.Type == store.EventDelete) {
-						watchEventBuffer.appendEvent(watchEvent)
-					}
-					select {
-					case reconcileTrigger <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}(watchEventChannel, controller.Name())
+	if watchErr := controllerRunner.setupControllerWatches(watchCtx, controller, reconcileTrigger, watchLost, watchEventBuffer); watchErr != nil {
+		return watchErr
 	}
 
 	if err := controllerRunner.executeReconciliationCycle(ctx, controller, nil); err != nil {
 		return err
 	}
 
+	return controllerRunner.runReconcileSelectLoop(ctx, controller, reconcileTrigger, watchLost, watchEventBuffer)
+}
+
+// setupControllerWatches starts a watch goroutine for each prefix the
+// controller declares. Watch events are funneled into reconcileTrigger;
+// channel closures signal watchLost for restart.
+func (controllerRunner *Runner) setupControllerWatches(watchCtx context.Context, controller Controller, reconcileTrigger chan<- struct{}, watchLost chan<- struct{}, watchEventBuffer *deltaBuffer) error {
+	for _, prefix := range controller.Watch() {
+		watchEventChannel, err := controllerRunner.store.Watch(watchCtx, prefix, store.WatchOption{Prefix: true})
+		if err != nil {
+			return err
+		}
+		go controllerRunner.forwardWatchEvents(watchCtx, watchEventChannel, controller.Name(), reconcileTrigger, watchLost, watchEventBuffer)
+	}
+	return nil
+}
+
+// forwardWatchEvents reads events from a single watch channel and signals
+// the reconcile trigger. It handles overflow, compaction, and channel closure.
+func (controllerRunner *Runner) forwardWatchEvents(watchCtx context.Context, watchEventChannel <-chan store.Event, controllerName string, reconcileTrigger chan<- struct{}, watchLost chan<- struct{}, watchEventBuffer *deltaBuffer) {
+	for {
+		select {
+		case <-watchCtx.Done():
+			return
+		case watchEvent, ok := <-watchEventChannel:
+			if !ok {
+				logging.Default().Warn("watch channel closed, signaling restart", "controller", controllerName)
+				select {
+				case watchLost <- struct{}{}:
+				default:
+				}
+				return
+			}
+			if watchEvent.Type == store.EventOverflow {
+				logging.Default().Warn("watch events dropped, triggering resync", "controller", controllerName)
+				if watchEventBuffer != nil {
+					watchEventBuffer.markOverflow()
+				}
+			}
+			if watchEvent.Type == store.EventCompacted {
+				logging.Default().Warn("watch revision compacted, triggering resync", "controller", controllerName)
+				if watchEventBuffer != nil {
+					watchEventBuffer.markOverflow()
+				}
+			}
+			if watchEventBuffer != nil && (watchEvent.Type == store.EventPut || watchEvent.Type == store.EventDelete) {
+				watchEventBuffer.appendEvent(watchEvent)
+			}
+			select {
+			case reconcileTrigger <- struct{}{}:
+			default:
+			}
+		}
+	}
+}
+
+// runReconcileSelectLoop drives the controller's reconcile loop, waiting for
+// watch triggers or periodic resync timers. Applies debouncing between cycles.
+func (controllerRunner *Runner) runReconcileSelectLoop(ctx context.Context, controller Controller, reconcileTrigger chan struct{}, watchLost chan struct{}, watchEventBuffer *deltaBuffer) error {
 	var resyncTicker *time.Ticker
 	var resyncChannel <-chan time.Time
 	if controllerRunner.resyncInterval > 0 {
@@ -454,30 +474,9 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 
 	store.SortFacts(allFacts)
 
-	var changes []Change
-	usedDeltaPath := false
-
-	if len(deltaEvents) > 0 {
-		if deltaController, isDelta := controller.(DeltaController); isDelta {
-			deltaChanges, deltaError := deltaController.ReconcileDelta(ctx, allFacts, deltaEvents)
-			switch {
-			case errors.Is(deltaError, ErrDeltaFallback):
-				logging.Default().Info("delta fallback requested", "controller", controller.Name())
-			case deltaError != nil:
-				return false, deltaError
-			default:
-				changes = deltaChanges
-				usedDeltaPath = true
-			}
-		}
-	}
-
-	if !usedDeltaPath {
-		var fullReconcileError error
-		changes, fullReconcileError = controller.Reconcile(ctx, allFacts)
-		if fullReconcileError != nil {
-			return false, fullReconcileError
-		}
+	changes, computeError := controllerRunner.computeReconciliationChanges(ctx, controller, allFacts, deltaEvents)
+	if computeError != nil {
+		return false, computeError
 	}
 	if len(changes) == 0 {
 		controllerRunner.executePendingPostCommitOperations(ctx, controller)
@@ -492,27 +491,9 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 		return false, nil
 	}
 
-	sortChangesByGroupAndKey(changes)
-
-	if duplicateKey := findDuplicateChangeKey(changes); duplicateKey != "" {
-		return false, fmt.Errorf("controller %s produced duplicate key in single transaction: %s",
-			controller.Name(), duplicateKey)
-	}
-
-	if len(changes) > maxTransactionChanges {
-		var deferredChangeCount int
-		var groupError error
-		changes, deferredChangeCount, groupError = takeWholeGroups(changes, maxTransactionChanges)
-		if groupError != nil {
-			return false, fmt.Errorf("controller %s: %w", controller.Name(), groupError)
-		}
-		if deferredChangeCount > 0 {
-			logging.Default().Warn("deferred atomic change groups to fit transaction budget",
-				"controller", controller.Name(),
-				"committed_changes", fmt.Sprintf("%d", len(changes)),
-				"deferred_changes", fmt.Sprintf("%d", deferredChangeCount))
-			transactionRejections.Inc(controller.Name())
-		}
+	changes, validationError := controllerRunner.validateAndCapChanges(controller.Name(), changes)
+	if validationError != nil {
+		return false, validationError
 	}
 
 	transactionCompares, transactionOperations := controllerRunner.buildReconciliationTransaction(controller.Name(), changes, allFacts)
@@ -528,10 +509,56 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	}
 
 	reconciliationChanges.Add(int64(len(changes)), controller.Name())
-
 	controllerRunner.executePendingPostCommitOperations(ctx, controller)
-
 	return false, nil
+}
+
+// computeReconciliationChanges tries the delta reconciliation path first (if
+// applicable), falling back to full Reconcile. Returns the proposed changes.
+func (controllerRunner *Runner) computeReconciliationChanges(ctx context.Context, controller Controller, allFacts []store.Fact, deltaEvents []store.Event) ([]Change, error) {
+	if len(deltaEvents) > 0 {
+		if deltaController, isDelta := controller.(DeltaController); isDelta {
+			deltaChanges, deltaError := deltaController.ReconcileDelta(ctx, allFacts, deltaEvents)
+			switch {
+			case errors.Is(deltaError, ErrDeltaFallback):
+				logging.Default().Info("delta fallback requested", "controller", controller.Name())
+			case deltaError != nil:
+				return nil, deltaError
+			default:
+				return deltaChanges, nil
+			}
+		}
+	}
+	return controller.Reconcile(ctx, allFacts)
+}
+
+// validateAndCapChanges sorts changes, checks for duplicates, and caps the
+// change set to fit within the etcd transaction budget.
+func (controllerRunner *Runner) validateAndCapChanges(controllerName string, changes []Change) ([]Change, error) {
+	sortChangesByGroupAndKey(changes)
+
+	if duplicateKey := findDuplicateChangeKey(changes); duplicateKey != "" {
+		return nil, fmt.Errorf("controller %s produced duplicate key in single transaction: %s",
+			controllerName, duplicateKey)
+	}
+
+	if len(changes) > maxTransactionChanges {
+		var deferredChangeCount int
+		var groupError error
+		changes, deferredChangeCount, groupError = takeWholeGroups(changes, maxTransactionChanges)
+		if groupError != nil {
+			return nil, fmt.Errorf("controller %s: %w", controllerName, groupError)
+		}
+		if deferredChangeCount > 0 {
+			logging.Default().Warn("deferred atomic change groups to fit transaction budget",
+				"controller", controllerName,
+				"committed_changes", fmt.Sprintf("%d", len(changes)),
+				"deferred_changes", fmt.Sprintf("%d", deferredChangeCount))
+			transactionRejections.Inc(controllerName)
+		}
+	}
+
+	return changes, nil
 }
 
 // executePendingPostCommitOperations calls ExecutePostCommitOperations on a

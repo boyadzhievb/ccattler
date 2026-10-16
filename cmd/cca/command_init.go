@@ -108,20 +108,7 @@ func parseInitCommandArgs(args []string) initCommandConfig {
 // executeInitCommand generates PKI material and writes a setup script that
 // the user reviews and runs with sudo to configure the node.
 func executeInitCommand(parsedConfig initCommandConfig) {
-	outputDirectory := parsedConfig.outputDirectory
-	if outputDirectory == "" {
-		tempDirectory, tempError := os.MkdirTemp("", "cca-init-")
-		if tempError != nil {
-			fmt.Fprintf(os.Stderr, "error creating temp directory: %v\n", tempError)
-			os.Exit(1)
-		}
-		outputDirectory = tempDirectory
-	} else {
-		if mkdirError := os.MkdirAll(outputDirectory, 0700); mkdirError != nil {
-			fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", mkdirError)
-			os.Exit(1)
-		}
-	}
+	outputDirectory := resolveInitOutputDirectory(parsedConfig.outputDirectory)
 
 	fmt.Printf("Generating PKI for node %s (advertise: %s)...\n", parsedConfig.nodeID, parsedConfig.advertiseAddress)
 
@@ -131,45 +118,10 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 		os.Exit(1)
 	}
 
-	var nodeIPAddresses []net.IP
-	if parsedIP := net.ParseIP(parsedConfig.advertiseAddress); parsedIP != nil {
-		nodeIPAddresses = append(nodeIPAddresses, parsedIP)
-	}
-	nodeIPAddresses = append(nodeIPAddresses, net.ParseIP("127.0.0.1"))
+	nodeIPAddresses, nodeDNSNames := buildCertificateSANs(parsedConfig)
 
-	nodeDNSNames := []string{"localhost", parsedConfig.nodeID}
-
-	for _, extraSAN := range parsedConfig.extraSANs {
-		if extraIP := net.ParseIP(extraSAN); extraIP != nil {
-			nodeIPAddresses = append(nodeIPAddresses, extraIP)
-		} else {
-			nodeDNSNames = append(nodeDNSNames, extraSAN)
-		}
-	}
-
-	nodeCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-		CommonName:  parsedConfig.nodeID,
-		DNSNames:    nodeDNSNames,
-		IPAddresses: nodeIPAddresses,
-		TTL:         parsedConfig.certValidity,
-	})
-	if issueError != nil {
-		fmt.Fprintf(os.Stderr, "error issuing node certificate: %v\n", issueError)
-		os.Exit(1)
-	}
-
-	// Issue a separate certificate for etcd so each service owns its own
-	// private key at 0600. Sharing a key would require 0640 group-read.
-	etcdCertificate, etcdIssueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-		CommonName:  "etcd-" + parsedConfig.nodeID,
-		DNSNames:    nodeDNSNames,
-		IPAddresses: nodeIPAddresses,
-		TTL:         parsedConfig.certValidity,
-	})
-	if etcdIssueError != nil {
-		fmt.Fprintf(os.Stderr, "error issuing etcd certificate: %v\n", etcdIssueError)
-		os.Exit(1)
-	}
+	nodeCertificate := issueCertificateOrExit(certificateAuthority, "node", parsedConfig.nodeID, nodeDNSNames, nodeIPAddresses, parsedConfig.certValidity)
+	etcdCertificate := issueCertificateOrExit(certificateAuthority, "etcd", "etcd-"+parsedConfig.nodeID, nodeDNSNames, nodeIPAddresses, parsedConfig.certValidity)
 
 	caKeyPEM, keyError := certificateAuthority.CAPrivateKeyPEM()
 	if keyError != nil {
@@ -194,6 +146,65 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory)
 	writeInitFile(outputDirectory, "setup.sh", []byte(setupScript), 0755)
 
+	printInitSummary(outputDirectory)
+}
+
+// resolveInitOutputDirectory returns the output path for generated PKI. Uses a
+// temp directory when no explicit path is given.
+func resolveInitOutputDirectory(explicitPath string) string {
+	if explicitPath == "" {
+		tempDirectory, tempError := os.MkdirTemp("", "cca-init-")
+		if tempError != nil {
+			fmt.Fprintf(os.Stderr, "error creating temp directory: %v\n", tempError)
+			os.Exit(1)
+		}
+		return tempDirectory
+	}
+	if mkdirError := os.MkdirAll(explicitPath, 0700); mkdirError != nil {
+		fmt.Fprintf(os.Stderr, "error creating output directory: %v\n", mkdirError)
+		os.Exit(1)
+	}
+	return explicitPath
+}
+
+// buildCertificateSANs assembles the IP addresses and DNS names for the node
+// and etcd certificates from the init command configuration.
+func buildCertificateSANs(parsedConfig initCommandConfig) ([]net.IP, []string) {
+	var nodeIPAddresses []net.IP
+	if parsedIP := net.ParseIP(parsedConfig.advertiseAddress); parsedIP != nil {
+		nodeIPAddresses = append(nodeIPAddresses, parsedIP)
+	}
+	nodeIPAddresses = append(nodeIPAddresses, net.ParseIP("127.0.0.1"))
+
+	nodeDNSNames := []string{"localhost", parsedConfig.nodeID}
+	for _, extraSAN := range parsedConfig.extraSANs {
+		if extraIP := net.ParseIP(extraSAN); extraIP != nil {
+			nodeIPAddresses = append(nodeIPAddresses, extraIP)
+		} else {
+			nodeDNSNames = append(nodeDNSNames, extraSAN)
+		}
+	}
+	return nodeIPAddresses, nodeDNSNames
+}
+
+// issueCertificateOrExit issues a certificate from the CA and exits with an
+// error message if issuance fails.
+func issueCertificateOrExit(certificateAuthority *security.CertificateAuthority, label string, commonName string, dnsNames []string, ipAddresses []net.IP, validity time.Duration) *security.IssuedCertificate {
+	certificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+		CommonName:  commonName,
+		DNSNames:    dnsNames,
+		IPAddresses: ipAddresses,
+		TTL:         validity,
+	})
+	if issueError != nil {
+		fmt.Fprintf(os.Stderr, "error issuing %s certificate: %v\n", label, issueError)
+		os.Exit(1)
+	}
+	return certificate
+}
+
+// printInitSummary prints the list of generated files and next-step instructions.
+func printInitSummary(outputDirectory string) {
 	fmt.Println()
 	fmt.Printf("PKI and setup script written to %s/\n", outputDirectory)
 	fmt.Println()
@@ -222,6 +233,8 @@ func writeInitFile(outputDirectory string, fileName string, data []byte, permiss
 
 // buildSetupScript generates a shell script that installs the PKI, configures
 // etcd with TLS, and creates systemd unit files for the CCattler server and agent.
+// This function exceeds 80 lines because it is predominantly shell template text
+// assembled via WriteString calls with no meaningful logic boundaries to extract.
 func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string) string {
 	var scriptBuilder strings.Builder
 
@@ -267,8 +280,14 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("# overriding TLS environment variables via command-line flags.\n")
 	scriptBuilder.WriteString("echo -n > /etc/default/etcd 2>/dev/null || true\n\n")
 	scriptBuilder.WriteString("mkdir -p /etc/systemd/system/etcd.service.d\n")
-	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<'ETCD_OVERRIDE'\n")
+	scriptBuilder.WriteString("# Detect etcd binary path for ExecStart override.\n")
+	scriptBuilder.WriteString("ETCD_BIN=$(command -v etcd)\n")
+	scriptBuilder.WriteString("cat > /etc/systemd/system/etcd.service.d/tls.conf <<ETCD_OVERRIDE\n")
 	scriptBuilder.WriteString("[Service]\n")
+	scriptBuilder.WriteString("# Clear base unit ExecStart to prevent flag/env conflicts (RHEL ships\n")
+	scriptBuilder.WriteString("# etcd with --listen-client-urls flags; etcd 3.5+ rejects duplicate config).\n")
+	scriptBuilder.WriteString("ExecStart=\n")
+	scriptBuilder.WriteString("ExecStart=$ETCD_BIN\n")
 	scriptBuilder.WriteString("Environment=\"DAEMON_ARGS=\"\n")
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_LISTEN_CLIENT_URLS=https://%s:2379,https://127.0.0.1:2379\"\n", advertiseAddress)
 	fmt.Fprintf(&scriptBuilder, "Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://%s:2379\"\n", advertiseAddress)

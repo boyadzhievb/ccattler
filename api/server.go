@@ -561,76 +561,87 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
-
-	requestContext := request.Context()
 	responseWriter.Header().Set("Content-Type", "application/json")
 
-	var dslInput string
-	contentType := request.Header.Get("Content-Type")
+	dslInput, readError := readDSLRequestBody(request)
+	if readError != "" {
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: readError})
+		return
+	}
 
+	if apiServer.policyGate != nil {
+		apiServer.applyViaPolicyGate(responseWriter, request.Context(), dslInput)
+		return
+	}
+
+	apiServer.applyDirect(responseWriter, request.Context(), dslInput)
+}
+
+// readDSLRequestBody extracts DSL text from the request body. Returns the DSL
+// string and an empty error string on success, or empty DSL and the error
+// message on failure.
+func readDSLRequestBody(request *http.Request) (string, string) {
+	contentType := request.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/json") {
 		var body applyRequest
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "invalid JSON: " + err.Error()})
-			return
+			return "", "invalid JSON: " + err.Error()
 		}
-		dslInput = body.Config
-	} else {
-		rawBody, err := io.ReadAll(request.Body)
-		if err != nil {
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "read body: " + err.Error()})
-			return
+		if body.Config == "" {
+			return "", "empty config"
 		}
-		dslInput = string(rawBody)
+		return body.Config, ""
 	}
+	rawBody, err := io.ReadAll(request.Body)
+	if err != nil {
+		return "", "read body: " + err.Error()
+	}
+	if len(rawBody) == 0 {
+		return "", "empty config"
+	}
+	return string(rawBody), ""
+}
 
-	if dslInput == "" {
-		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "empty config"})
+// applyViaPolicyGate routes DSL through the full admission pipeline
+// (syntax, schema, authorization, quota, commit).
+func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, requestContext context.Context, dslInput string) {
+	principal := security.PrincipalFromContext(requestContext)
+	result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, dslInput)
+	if evaluateError != nil {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "policy: " + evaluateError.Error()})
 		return
 	}
-
-	// When a policy gate is configured, route through the full admission pipeline
-	// (syntax → schema → authorization → quota → commit). Otherwise fall through
-	// to the direct parse-compile-put path for local/demo modes.
-	if apiServer.policyGate != nil {
-		principal := security.PrincipalFromContext(requestContext)
-		result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, dslInput)
-		if evaluateError != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "policy: " + evaluateError.Error()})
-			return
-		}
-		if !result.Allowed {
-			responseWriter.WriteHeader(http.StatusForbidden)
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: result.Stage + ": " + result.Reason})
-			return
-		}
-		_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts)})
+	if !result.Allowed {
+		responseWriter.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: result.Stage + ": " + result.Reason})
 		return
 	}
+	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(result.Facts)})
+}
 
+// applyDirect parses, compiles, and writes facts without policy evaluation.
+// Used in local/demo modes without a policy gate.
+func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, requestContext context.Context, dslInput string) {
 	file, err := lang.Parse(dslInput)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "parse: " + err.Error()})
 		return
 	}
-
 	facts, err := lang.Compile(file)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})
 		return
 	}
-
 	for _, fact := range facts {
-		if _, err := apiServer.factStore.Put(requestContext, fact.Key, []byte(fact.Value)); err != nil {
+		if _, putErr := apiServer.factStore.Put(requestContext, fact.Key, []byte(fact.Value)); putErr != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + err.Error()})
+			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + putErr.Error()})
 			return
 		}
 	}
-
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
 }
 
@@ -645,43 +656,8 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
-		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
-		return
-	}
-	apiServer.activeWatchConnectionCount.Add(1)
-	defer apiServer.activeWatchConnectionCount.Add(-1)
-
-	prefix := request.URL.Query().Get("prefix")
-	if prefix == "" {
-		writeJSONError(responseWriter, "prefix parameter required", http.StatusBadRequest)
-		return
-	}
-
-	if isSensitivePrefix(prefix) {
-		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
-		return
-	}
-
-	flusher, ok := responseWriter.(http.Flusher)
-	if !ok {
-		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	watchContext, cancelWatch := context.WithCancel(request.Context())
-	defer cancelWatch()
-
-	var eventChannel <-chan store.Event
-	var watchError error
-
-	if apiServer.watchMultiplexer != nil {
-		eventChannel, watchError = apiServer.watchMultiplexer.Subscribe(watchContext, prefix)
-	} else {
-		eventChannel, watchError = apiServer.factStore.Watch(watchContext, prefix, store.WatchOption{Prefix: true})
-	}
-	if watchError != nil {
-		writeJSONError(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
+	eventChannel, flusher, setupOK := apiServer.setupWatchStream(responseWriter, request)
+	if !setupOK {
 		return
 	}
 
@@ -693,9 +669,68 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	responseWriter.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
+	streamWatchEventsAsSSE(request.Context(), eventChannel, responseWriter, flusher)
+}
+
+// setupWatchStream validates the watch request, enforces connection limits, and
+// subscribes to the store watch. Returns the event channel, flusher, and true
+// on success. Writes an error response and returns false on failure.
+func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, request *http.Request) (<-chan store.Event, http.Flusher, bool) {
+	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
+		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		return nil, nil, false
+	}
+	apiServer.activeWatchConnectionCount.Add(1)
+
+	prefix := request.URL.Query().Get("prefix")
+	if prefix == "" {
+		apiServer.activeWatchConnectionCount.Add(-1)
+		writeJSONError(responseWriter, "prefix parameter required", http.StatusBadRequest)
+		return nil, nil, false
+	}
+	if isSensitivePrefix(prefix) {
+		apiServer.activeWatchConnectionCount.Add(-1)
+		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+		return nil, nil, false
+	}
+
+	flusher, ok := responseWriter.(http.Flusher)
+	if !ok {
+		apiServer.activeWatchConnectionCount.Add(-1)
+		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
+		return nil, nil, false
+	}
+
+	watchContext, cancelWatch := context.WithCancel(request.Context())
+	var eventChannel <-chan store.Event
+	var watchError error
+	if apiServer.watchMultiplexer != nil {
+		eventChannel, watchError = apiServer.watchMultiplexer.Subscribe(watchContext, prefix)
+	} else {
+		eventChannel, watchError = apiServer.factStore.Watch(watchContext, prefix, store.WatchOption{Prefix: true})
+	}
+	if watchError != nil {
+		cancelWatch()
+		apiServer.activeWatchConnectionCount.Add(-1)
+		writeJSONError(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
+		return nil, nil, false
+	}
+
+	go func() {
+		<-request.Context().Done()
+		cancelWatch()
+		apiServer.activeWatchConnectionCount.Add(-1)
+	}()
+
+	return eventChannel, flusher, true
+}
+
+// streamWatchEventsAsSSE reads events from the watch channel and writes them
+// as Server-Sent Events until the channel closes or the request context ends.
+func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan store.Event, responseWriter http.ResponseWriter, flusher http.Flusher) {
 	for {
 		select {
-		case <-request.Context().Done():
+		case <-requestContext.Done():
 			return
 		case event, open := <-eventChannel:
 			if !open {

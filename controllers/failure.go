@@ -125,86 +125,104 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 
 	now := failureController.NowFunc()
 	var changes []Change
-	replacementCount := 0
-	drainCount := 0
-	recoveryCount := 0
+	cycleCounters := &failureCycleCounters{}
 
-	// Iterate instances in sorted order for deterministic output.
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
 	for _, instanceID := range sortedInstanceIDs {
-		fields := instanceFields[instanceID]
-		instanceState := effectiveInstanceState(fields)
-		serviceName := fields["service"]
-		if serviceName == "" {
-			continue
-		}
-
-		// Case 1: instance already failed — immediate replacement.
-		if instanceState == types.InstanceFailed {
-			if replacementCount >= failureController.MaxReplacementsPerCycle {
-				continue
-			}
-			changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
-			replacementCount++
-			continue
-		}
-
-		if instanceState != types.InstanceRunning {
-			continue
-		}
-
-		// Case 2: startup failed — immediate replacement (no drain needed,
-		// the instance never served traffic).
-		if fields["probe/startup"] == string(types.StartupProbeFailed) {
-			if replacementCount >= failureController.MaxReplacementsPerCycle {
-				continue
-			}
-			changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
-			replacementCount++
-			continue
-		}
-
-		// Case 3: liveness recovered while draining — clear stale drain state.
-		drainSince := fields["drain_since"]
-		if drainSince != "" && fields["probe/liveness"] != string(types.LivenessProbeUnhealthy) {
-			if recoveryCount >= failureController.MaxRecoveriesPerCycle {
-				continue
-			}
-			changes = append(changes, failureController.clearDrainState(instanceID)...)
-			recoveryCount++
-			continue
-		}
-
-		// Case 4: liveness unhealthy — graceful drain.
-		if fields["probe/liveness"] == string(types.LivenessProbeUnhealthy) {
-			if drainSince == "" {
-				if drainCount >= failureController.MaxDrainsPerCycle {
-					continue
-				}
-				changes = append(changes, failureController.beginDrain(instanceID, now)...)
-				drainCount++
-			} else {
-				drainStartMillis, parseErr := strconv.ParseInt(drainSince, 10, 64)
-				if parseErr != nil {
-					if replacementCount >= failureController.MaxReplacementsPerCycle {
-						continue
-					}
-					changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
-					replacementCount++
-					continue
-				}
-				drainStartTime := time.UnixMilli(drainStartMillis)
-				if now.Sub(drainStartTime) >= failureController.DrainGracePeriod {
-					if replacementCount >= failureController.MaxReplacementsPerCycle {
-						continue
-					}
-					changes = append(changes, failureController.stopAndReplace(instanceID, serviceName)...)
-					replacementCount++
-				}
-			}
-		}
+		instanceChanges := failureController.processInstanceForRecovery(instanceID, instanceFields[instanceID], now, cycleCounters)
+		changes = append(changes, instanceChanges...)
 	}
 
+	return failureController.capOutputChanges(changes)
+}
+
+// failureCycleCounters tracks how many of each action type have been emitted
+// in the current reconciliation cycle to enforce per-type caps.
+type failureCycleCounters struct {
+	replacements int
+	drains       int
+	recoveries   int
+}
+
+// processInstanceForRecovery evaluates a single instance and returns changes
+// for failure replacement, drain initiation, drain completion, or recovery.
+func (failureController *FailureController) processInstanceForRecovery(instanceID string, fields map[string]string, now time.Time, counters *failureCycleCounters) []Change {
+	instanceState := effectiveInstanceState(fields)
+	serviceName := fields["service"]
+	if serviceName == "" {
+		return nil
+	}
+
+	if instanceState == types.InstanceFailed {
+		if counters.replacements >= failureController.MaxReplacementsPerCycle {
+			return nil
+		}
+		counters.replacements++
+		return failureController.stopAndReplace(instanceID, serviceName)
+	}
+
+	if instanceState != types.InstanceRunning {
+		return nil
+	}
+
+	if fields["probe/startup"] == string(types.StartupProbeFailed) {
+		if counters.replacements >= failureController.MaxReplacementsPerCycle {
+			return nil
+		}
+		counters.replacements++
+		return failureController.stopAndReplace(instanceID, serviceName)
+	}
+
+	drainSince := fields["drain_since"]
+	if drainSince != "" && fields["probe/liveness"] != string(types.LivenessProbeUnhealthy) {
+		if counters.recoveries >= failureController.MaxRecoveriesPerCycle {
+			return nil
+		}
+		counters.recoveries++
+		return failureController.clearDrainState(instanceID)
+	}
+
+	if fields["probe/liveness"] == string(types.LivenessProbeUnhealthy) {
+		return failureController.handleUnhealthyLiveness(instanceID, serviceName, drainSince, now, counters)
+	}
+
+	return nil
+}
+
+// handleUnhealthyLiveness processes an instance with unhealthy liveness: begins
+// a drain if not already draining, or completes the replacement if the grace
+// period has elapsed.
+func (failureController *FailureController) handleUnhealthyLiveness(instanceID string, serviceName string, drainSince string, now time.Time, counters *failureCycleCounters) []Change {
+	if drainSince == "" {
+		if counters.drains >= failureController.MaxDrainsPerCycle {
+			return nil
+		}
+		counters.drains++
+		return failureController.beginDrain(instanceID, now)
+	}
+
+	drainStartMillis, parseErr := strconv.ParseInt(drainSince, 10, 64)
+	if parseErr != nil {
+		if counters.replacements >= failureController.MaxReplacementsPerCycle {
+			return nil
+		}
+		counters.replacements++
+		return failureController.stopAndReplace(instanceID, serviceName)
+	}
+	drainStartTime := time.UnixMilli(drainStartMillis)
+	if now.Sub(drainStartTime) >= failureController.DrainGracePeriod {
+		if counters.replacements >= failureController.MaxReplacementsPerCycle {
+			return nil
+		}
+		counters.replacements++
+		return failureController.stopAndReplace(instanceID, serviceName)
+	}
+	return nil
+}
+
+// capOutputChanges truncates the combined change set to fit within the
+// runner's transaction budget using atomic group boundaries.
+func (failureController *FailureController) capOutputChanges(changes []Change) ([]Change, error) {
 	if len(changes) > maxFailureControllerChangesPerCycle {
 		var deferredCount int
 		var groupError error
@@ -218,7 +236,6 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 				"deferred_changes", fmt.Sprintf("%d", deferredCount))
 		}
 	}
-
 	return changes, nil
 }
 

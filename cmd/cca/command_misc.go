@@ -361,88 +361,107 @@ func executeTokenCommand(parsedConfig tokenCommandConfig) {
 	}
 	defer func() { _ = factStore.Close() }()
 
-	// Load the CA certificate from the standard PKI path so that generated
-	// join tokens embed the CA fingerprint. Nodes that join with such a token
-	// can verify the server identity without a pre-distributed --ca-cert file.
+	enrollmentService := createTokenEnrollmentService(factStore)
+	ctx := context.Background()
+
+	switch parsedConfig.action {
+	case "create":
+		executeTokenCreateSubcommand(ctx, enrollmentService, parsedConfig)
+	case "list":
+		executeTokenListSubcommand(ctx, enrollmentService)
+	case "revoke":
+		executeTokenRevokeSubcommand(ctx, enrollmentService, parsedConfig)
+	default:
+		fmt.Fprintln(os.Stderr, "usage: cca token <create|list|revoke> [flags]")
+		os.Exit(1)
+	}
+}
+
+// createTokenEnrollmentService loads the CA certificate from the standard PKI
+// path and creates an enrollment service for token management. Tokens embed the
+// CA fingerprint so joining nodes can verify server identity without --ca-cert.
+func createTokenEnrollmentService(factStore store.StateStore) *security.EnrollmentService {
 	const systemCACertFile = "/etc/ccattler/pki/ca.pem"
 	const systemCAPrivateKeyFile = "/etc/ccattler/pki/ca-key.pem" //nolint:gosec // filesystem path, not a credential
 	var clusterCertificateAuthority *security.CertificateAuthority
 	if loadedCA, loadError := security.LoadCertificateAuthorityFromFiles(systemCACertFile, systemCAPrivateKeyFile); loadError == nil {
 		clusterCertificateAuthority = loadedCA
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: CA not loaded from %s — join tokens will not contain CA fingerprint: %v\n", systemCACertFile, loadError)
 	}
-	enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 0)
+	return security.NewEnrollmentService(factStore, clusterCertificateAuthority, nil, 0)
+}
 
-	ctx := context.Background()
-
-	switch parsedConfig.action {
-	case "create":
-		tokenDuration, parseError := time.ParseDuration(parsedConfig.tokenTTL)
-		if parseError != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid TTL %q: %v\n", parsedConfig.tokenTTL, parseError)
-			os.Exit(1)
-		}
-
-		joinToken, createError := enrollmentService.GenerateJoinToken(ctx, parsedConfig.nodeID, tokenDuration)
-		if createError != nil {
-			fmt.Fprintf(os.Stderr, "error creating token: %v\n", createError)
-			os.Exit(1)
-		}
-
-		compositeTokenValue := joinToken.CompositeTokenString()
-		if parsedConfig.quietOutput {
-			fmt.Print(compositeTokenValue)
-			return
-		}
-		fmt.Printf("Token:   %s\n", compositeTokenValue)
-		fmt.Printf("Expires: %s (in %s)\n", joinToken.ExpiresAt.Format("2006-01-02 15:04:05"), parsedConfig.tokenTTL)
-		if parsedConfig.nodeID != "" {
-			fmt.Printf("Node:    %s (scoped)\n", parsedConfig.nodeID)
-		} else {
-			fmt.Println("Node:    any")
-		}
-		fmt.Println()
-		fmt.Println("Join command:")
-		fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", compositeTokenValue)
-
-	case "list":
-		tokens, listError := enrollmentService.ListJoinTokens(ctx)
-		if listError != nil {
-			fmt.Fprintf(os.Stderr, "error listing tokens: %v\n", listError)
-			os.Exit(1)
-		}
-
-		if len(tokens) == 0 {
-			fmt.Println("no active join tokens")
-			return
-		}
-
-		fmt.Printf("%-72s  %-12s  %s\n", "TOKEN", "NODE", "EXPIRES")
-		for _, token := range tokens {
-			nodeScope := "any"
-			if token.NodeID != "" {
-				nodeScope = token.NodeID
-			}
-			expiresIn := time.Until(token.ExpiresAt).Round(time.Second)
-			fmt.Printf("%-72s  %-12s  %s (in %s)\n",
-				token.CompositeTokenString(), nodeScope, token.ExpiresAt.Format("15:04:05"), expiresIn)
-		}
-
-	case "revoke":
-		if parsedConfig.tokenValue == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca token revoke <token-prefix>")
-			os.Exit(1)
-		}
-		revokeError := enrollmentService.RevokeJoinToken(ctx, parsedConfig.tokenValue)
-		if revokeError != nil {
-			fmt.Fprintf(os.Stderr, "error revoking token: %v\n", revokeError)
-			os.Exit(1)
-		}
-		fmt.Println("Token revoked.")
-
-	default:
-		fmt.Fprintln(os.Stderr, "usage: cca token <create|list|revoke> [flags]")
+// executeTokenCreateSubcommand generates a new join token with the configured
+// TTL and optional node scope, then prints the token and usage instructions.
+func executeTokenCreateSubcommand(ctx context.Context, enrollmentService *security.EnrollmentService, parsedConfig tokenCommandConfig) {
+	tokenDuration, parseError := time.ParseDuration(parsedConfig.tokenTTL)
+	if parseError != nil {
+		fmt.Fprintf(os.Stderr, "error: invalid TTL %q: %v\n", parsedConfig.tokenTTL, parseError)
 		os.Exit(1)
 	}
+
+	joinToken, createError := enrollmentService.GenerateJoinToken(ctx, parsedConfig.nodeID, tokenDuration)
+	if createError != nil {
+		fmt.Fprintf(os.Stderr, "error creating token: %v\n", createError)
+		os.Exit(1)
+	}
+
+	compositeTokenValue := joinToken.CompositeTokenString()
+	if parsedConfig.quietOutput {
+		fmt.Print(compositeTokenValue)
+		return
+	}
+	fmt.Printf("Token:   %s\n", compositeTokenValue)
+	fmt.Printf("Expires: %s (in %s)\n", joinToken.ExpiresAt.Format("2006-01-02 15:04:05"), parsedConfig.tokenTTL)
+	if parsedConfig.nodeID != "" {
+		fmt.Printf("Node:    %s (scoped)\n", parsedConfig.nodeID)
+	} else {
+		fmt.Println("Node:    any")
+	}
+	fmt.Println()
+	fmt.Println("Join command:")
+	fmt.Printf("  cca join https://<server>:9770 %s --node-id <id>\n", compositeTokenValue)
+}
+
+// executeTokenListSubcommand lists all active join tokens with their node scope
+// and expiration time.
+func executeTokenListSubcommand(ctx context.Context, enrollmentService *security.EnrollmentService) {
+	tokens, listError := enrollmentService.ListJoinTokens(ctx)
+	if listError != nil {
+		fmt.Fprintf(os.Stderr, "error listing tokens: %v\n", listError)
+		os.Exit(1)
+	}
+
+	if len(tokens) == 0 {
+		fmt.Println("no active join tokens")
+		return
+	}
+
+	fmt.Printf("%-72s  %-12s  %s\n", "TOKEN", "NODE", "EXPIRES")
+	for _, token := range tokens {
+		nodeScope := "any"
+		if token.NodeID != "" {
+			nodeScope = token.NodeID
+		}
+		expiresIn := time.Until(token.ExpiresAt).Round(time.Second)
+		fmt.Printf("%-72s  %-12s  %s (in %s)\n",
+			token.CompositeTokenString(), nodeScope, token.ExpiresAt.Format("15:04:05"), expiresIn)
+	}
+}
+
+// executeTokenRevokeSubcommand removes a join token matching the given prefix.
+func executeTokenRevokeSubcommand(ctx context.Context, enrollmentService *security.EnrollmentService, parsedConfig tokenCommandConfig) {
+	if parsedConfig.tokenValue == "" {
+		fmt.Fprintln(os.Stderr, "usage: cca token revoke <token-prefix>")
+		os.Exit(1)
+	}
+	revokeError := enrollmentService.RevokeJoinToken(ctx, parsedConfig.tokenValue)
+	if revokeError != nil {
+		fmt.Fprintf(os.Stderr, "error revoking token: %v\n", revokeError)
+		os.Exit(1)
+	}
+	fmt.Println("Token revoked.")
 }
 
 // joinCommandConfig holds parsed flags for the "join" command, which enrolls

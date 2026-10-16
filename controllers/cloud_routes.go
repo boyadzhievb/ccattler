@@ -66,11 +66,22 @@ func (cloudRouteController *CloudRouteController) Reconcile(ctx context.Context,
 	nodeSubnets := extractNodeSubnetsForRoutes(facts)
 	nodeProviderInstances, currentNodeStates := extractNodeProviderAndStates(facts)
 	existingRoutes := extractObservedCloudRoutes(facts)
+	desiredRoutes := buildDesiredRouteMap(nodeSubnets, nodeProviderInstances, currentNodeStates)
 
+	var proposedChanges []Change
+	proposedChanges = append(proposedChanges, buildEnsureRouteChanges(desiredRoutes, existingRoutes)...)
+	proposedChanges = append(proposedChanges, buildDeleteRouteChanges(desiredRoutes, existingRoutes)...)
+	proposedChanges = append(proposedChanges, buildCleanupStaleRouteChanges(facts, desiredRoutes, existingRoutes)...)
+
+	return proposedChanges, nil
+}
+
+// buildDesiredRouteMap assembles the set of routes that should exist based on
+// alive nodes with valid subnet and provider instance assignments.
+func buildDesiredRouteMap(nodeSubnets map[string]string, nodeProviderInstances map[string]string, currentNodeStates map[string]string) map[string]cloud.RouteConfig {
 	desiredRoutes := make(map[string]cloud.RouteConfig)
 	for nodeID, subnetCIDR := range nodeSubnets {
-		nodeState := currentNodeStates[nodeID]
-		if nodeState != string(types.NodeAlive) {
+		if currentNodeStates[nodeID] != string(types.NodeAlive) {
 			continue
 		}
 		providerInstanceID := nodeProviderInstances[nodeID]
@@ -83,68 +94,64 @@ func (cloudRouteController *CloudRouteController) Reconcile(ctx context.Context,
 			TargetInstanceID: providerInstanceID,
 		}
 	}
+	return desiredRoutes
+}
 
-	var proposedChanges []Change
-
+// buildEnsureRouteChanges emits pending "ensure" operations for desired routes
+// that are missing or point to a different node than expected.
+func buildEnsureRouteChanges(desiredRoutes map[string]cloud.RouteConfig, existingRoutes map[string]string) []Change {
+	var changes []Change
 	for cidr, desiredRoute := range desiredRoutes {
 		existingNodeID, exists := existingRoutes[cidr]
 		if exists && existingNodeID == desiredRoute.TargetNodeID {
 			continue
 		}
-
 		pendingOp := pendingCloudRouteOperation{
-			Kind:             "ensure",
-			DestinationCIDR:  cidr,
-			TargetNodeID:     desiredRoute.TargetNodeID,
-			TargetInstanceID: desiredRoute.TargetInstanceID,
+			Kind: "ensure", DestinationCIDR: cidr,
+			TargetNodeID: desiredRoute.TargetNodeID, TargetInstanceID: desiredRoute.TargetInstanceID,
 		}
 		pendingJSON, marshalErr := json.Marshal(pendingOp)
 		if marshalErr != nil {
-			logging.Default().Error("failed to marshal pending route operation",
-				"cidr", cidr, "error", marshalErr.Error())
+			logging.Default().Error("failed to marshal pending route operation", "cidr", cidr, "error", marshalErr.Error())
 			continue
 		}
-		proposedChanges = append(proposedChanges, Change{
-			Type:  store.OpPut,
-			Key:   types.KeyDerivedCloudRoutePendingOperation(cidr),
-			Value: pendingJSON,
-		})
+		changes = append(changes, Change{Type: store.OpPut, Key: types.KeyDerivedCloudRoutePendingOperation(cidr), Value: pendingJSON})
 	}
+	return changes
+}
 
+// buildDeleteRouteChanges emits pending "delete" operations for routes that
+// exist in the cloud but are no longer desired.
+func buildDeleteRouteChanges(desiredRoutes map[string]cloud.RouteConfig, existingRoutes map[string]string) []Change {
+	var changes []Change
 	for cidr := range existingRoutes {
 		if _, stillDesired := desiredRoutes[cidr]; !stillDesired {
-			pendingOp := pendingCloudRouteOperation{
-				Kind:            "delete",
-				DestinationCIDR: cidr,
-			}
+			pendingOp := pendingCloudRouteOperation{Kind: "delete", DestinationCIDR: cidr}
 			pendingJSON, marshalErr := json.Marshal(pendingOp)
 			if marshalErr != nil {
-				logging.Default().Error("failed to marshal pending route delete",
-					"cidr", cidr, "error", marshalErr.Error())
+				logging.Default().Error("failed to marshal pending route delete", "cidr", cidr, "error", marshalErr.Error())
 				continue
 			}
-			proposedChanges = append(proposedChanges, Change{
-				Type:  store.OpPut,
-				Key:   types.KeyDerivedCloudRoutePendingOperation(cidr),
-				Value: pendingJSON,
-			})
+			changes = append(changes, Change{Type: store.OpPut, Key: types.KeyDerivedCloudRoutePendingOperation(cidr), Value: pendingJSON})
 		}
 	}
+	return changes
+}
 
+// buildCleanupStaleRouteChanges removes stale pending ensure operations for
+// routes that are no longer desired and have no observed cloud route.
+func buildCleanupStaleRouteChanges(facts []store.Fact, desiredRoutes map[string]cloud.RouteConfig, existingRoutes map[string]string) []Change {
+	var changes []Change
 	pendingEnsureRoutes := extractPendingEnsureRoutes(facts)
 	for cidr := range pendingEnsureRoutes {
 		if _, stillDesired := desiredRoutes[cidr]; !stillDesired {
 			if _, hasObservedRoute := existingRoutes[cidr]; hasObservedRoute {
 				continue
 			}
-			proposedChanges = append(proposedChanges, Change{
-				Type: store.OpDelete,
-				Key:  types.KeyDerivedCloudRoutePendingOperation(cidr),
-			})
+			changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyDerivedCloudRoutePendingOperation(cidr)})
 		}
 	}
-
-	return proposedChanges, nil
+	return changes
 }
 
 // ExecutePostCommitOperations reads pending cloud route operations from the

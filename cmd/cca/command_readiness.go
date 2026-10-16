@@ -104,6 +104,8 @@ func readinessAreaDefinitions() []readinessArea {
 
 // readinessCoreAreaDefinitions returns the first 8 readiness areas: scheduling,
 // control-plane, network, nodes, storage, upgrades, reconciliation, and security.
+// This function exceeds 80 lines because it is a flat slice literal of area
+// definitions — each element is an independent data declaration.
 func readinessCoreAreaDefinitions() []readinessArea {
 	return []readinessArea{
 		{
