@@ -466,54 +466,82 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
     wait
     ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
 
-    # Ensure etcd endpoints file uses https://.
-    log "Ensuring etcd mTLS configuration..."
+    # Deploy new binary to ctrl first so cca init uses the current version.
+    log "Deploying binary to control node..."
+    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
+        "$ANSIBLE_DIR/cca-linux-amd64" "vagrant@${CTRL_IP}:/tmp/cca-linux-amd64"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo mv /tmp/cca-linux-amd64 /usr/local/bin/cca && sudo chmod +x /usr/local/bin/cca"
+
+    # Generate fresh PKI + setup.sh via cca init.
+    log "Running cca init on control node..."
+    INIT_SAN_FLAGS=""
+    for worker_ip in "${WORKER_IPS[@]}"; do
+        INIT_SAN_FLAGS="$INIT_SAN_FLAGS --san $worker_ip"
+    done
+    ssh_vm "${VM_PREFIX}-ctrl" "/usr/local/bin/cca init \
+        --node-id ${VM_PREFIX}-ctrl \
+        --advertise-address ${CTRL_IP} \
+        ${INIT_SAN_FLAGS} \
+        -o /tmp/cca-init"
+
+    # Remove any full etcd service override that shadows the apt-provided base unit
+    # (left by prior E2E runs that wrote /etc/systemd/system/etcd.service directly).
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -f /etc/systemd/system/etcd.service"
+
+    # Run setup.sh: installs certs, writes etcd TLS drop-in, writes systemd units.
+    log "Running setup.sh on control node..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash /tmp/cca-init/setup.sh"
+
+    # Wipe etcd data for a clean start (new CA = old data unusable).
+    log "Wiping etcd data directory for clean start..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
+        systemctl stop etcd
+        rm -rf /var/lib/etcd
+        mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
+        systemctl start etcd
+    '"
+    sleep 3
+
+    # Verify etcd is healthy (cca-server isn't running yet, so check etcd directly).
+    if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl is-active etcd >/dev/null 2>&1"; then
+        log "etcd failed to start — dumping diagnostics..."
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 20" || true
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
+        fail "etcd unhealthy after cca init + setup.sh — see diagnostics above"
+    fi
+    log "etcd healthy with mTLS (fresh PKI from cca init)"
+
+    # Distribute new certs to worker nodes (shared cert — test shortcut, not
+    # production-safe; production uses per-node certs via cca join).
+    # Certs on ctrl are root-owned, so use sudo cat to read them via SSH.
+    log "Distributing certs to worker nodes..."
+    for cert_file in ca.pem node.pem node-key.pem; do
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/pki/$cert_file" > "/tmp/cca-cert-$cert_file"
+    done
+    for vm in "${VM_NAMES[@]}"; do
+        [[ "$vm" == "${VM_PREFIX}-ctrl" ]] && continue
+        local_ip=""
+        case "$vm" in
+            *-worker-1) local_ip="${WORKER_IPS[0]}" ;;
+            *-worker-2) local_ip="${WORKER_IPS[1]:-}" ;;
+        esac
+        ssh_vm "$vm" "sudo mkdir -p /etc/ccattler/pki"
+        for cert_file in ca.pem node.pem node-key.pem; do
+            scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+                -i "$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key" \
+                "/tmp/cca-cert-$cert_file" "vagrant@${local_ip}:/tmp/$cert_file"
+            ssh_vm "$vm" "sudo mv /tmp/$cert_file /etc/ccattler/pki/$cert_file"
+        done
+        ssh_vm "$vm" "sudo chmod 600 /etc/ccattler/pki/node-key.pem && sudo chmod 644 /etc/ccattler/pki/ca.pem /etc/ccattler/pki/node.pem"
+    done
+    rm -f /tmp/cca-cert-ca.pem /tmp/cca-cert-node.pem /tmp/cca-cert-node-key.pem
+
+    # Update etcd endpoints on all VMs.
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "echo 'https://${CTRL_IP}:2379' | sudo tee /etc/ccattler/endpoints > /dev/null" &
     done
     wait
-
-    # Ensure separate key pairs and configure etcd TLS via drop-in override
-    # (same approach as setup.sh from cca init — never replace the base service file).
-    ETCD_CERT_DIR="/etc/ccattler/pki"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-        useradd --system --shell /usr/sbin/nologin --no-create-home etcd 2>/dev/null || true
-        test -f ${ETCD_CERT_DIR}/etcd.pem     || cp ${ETCD_CERT_DIR}/node.pem ${ETCD_CERT_DIR}/etcd.pem
-        test -f ${ETCD_CERT_DIR}/etcd-key.pem  || cp ${ETCD_CERT_DIR}/node-key.pem ${ETCD_CERT_DIR}/etcd-key.pem
-        chown etcd:etcd ${ETCD_CERT_DIR}/etcd.pem ${ETCD_CERT_DIR}/etcd-key.pem
-        chmod 0600 ${ETCD_CERT_DIR}/etcd-key.pem ${ETCD_CERT_DIR}/node-key.pem
-        chmod 0644 ${ETCD_CERT_DIR}/etcd.pem
-    '"
-    NODE_KEY_PERMS=$(ssh_vm "${VM_PREFIX}-ctrl" "stat -c '%a' ${ETCD_CERT_DIR}/node-key.pem")
-    if [[ "$NODE_KEY_PERMS" != "600" ]]; then
-        fail "node-key.pem has permissions $NODE_KEY_PERMS (expected 600) — chmod failed"
-    fi
-    # Write etcd TLS drop-in (matches setup.sh from cca init).
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c '
-        mkdir -p /etc/systemd/system/etcd.service.d
-        cat > /etc/systemd/system/etcd.service.d/tls.conf <<DROPIN
-[Service]
-Environment=\"ETCD_LISTEN_CLIENT_URLS=https://${CTRL_IP}:2379,https://127.0.0.1:2379\"
-Environment=\"ETCD_ADVERTISE_CLIENT_URLS=https://${CTRL_IP}:2379\"
-Environment=\"ETCD_CERT_FILE=${ETCD_CERT_DIR}/etcd.pem\"
-Environment=\"ETCD_KEY_FILE=${ETCD_CERT_DIR}/etcd-key.pem\"
-Environment=\"ETCD_TRUSTED_CA_FILE=${ETCD_CERT_DIR}/ca.pem\"
-Environment=\"ETCD_CLIENT_CERT_AUTH=true\"
-DROPIN
-        systemctl stop etcd 2>/dev/null || true
-        rm -rf /var/lib/etcd
-        mkdir -p /var/lib/etcd && chown etcd:etcd /var/lib/etcd && chmod 0700 /var/lib/etcd
-        systemctl daemon-reload
-    '"
-    if ! ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start etcd" 2>/dev/null; then
-        log "etcd failed to start — dumping diagnostics..."
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo journalctl -u etcd --no-pager -n 30" || true
-        ssh_vm "${VM_PREFIX}-ctrl" "ls -la ${ETCD_CERT_DIR}/" || true
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl cat etcd.service" || true
-        fail "etcd failed to start after fresh setup — see diagnostics above"
-    fi
-    log "etcd restarted with mTLS (data directory wiped — workloads will be redeployed)"
-    sleep 3
 
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers, volumes, and pruning name store..."
