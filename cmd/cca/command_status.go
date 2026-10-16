@@ -302,6 +302,10 @@ func executeStatusCommand() {
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
 	fmt.Print(string(responseBody))
 }
 

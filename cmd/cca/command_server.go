@@ -989,7 +989,9 @@ func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 			wrappedHandler.ServeHTTP(responseWriter, request)
 			return
 		}
-		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+		hasClientCert := request.TLS != nil && len(request.TLS.PeerCertificates) > 0
+		hasBearerToken := request.Header.Get("Authorization") != ""
+		if !hasClientCert && !hasBearerToken {
 			writeServerJSONError(responseWriter, "client certificate required", http.StatusUnauthorized)
 			return
 		}
