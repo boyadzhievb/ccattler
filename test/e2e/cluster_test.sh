@@ -475,6 +475,7 @@ if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null && \
 
     # Generate fresh PKI + setup.sh via cca init.
     log "Running cca init on control node..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init"
     INIT_SAN_FLAGS=""
     for worker_ip in "${WORKER_IPS[@]}"; do
         INIT_SAN_FLAGS="$INIT_SAN_FLAGS --san $worker_ip"
