@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M111 — Phase 111 VIP Hairpin Fix & Install Hardening. M1–M111 complete. Gates A–I resolved.
+**Completed through:** M112 — Phase 112 Node Bootstrap & Install Flow. M1–M112 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

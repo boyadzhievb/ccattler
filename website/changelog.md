@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.37.0-beta <Badge type="tip" text="latest" /> {#v1-37-0-beta}
+## v1.38.0-beta <Badge type="tip" text="latest" /> {#v1-38-0-beta}
+
+**2026-10-16** — Node Bootstrap & Install Flow.
+
+- **Node Bootstrap & Install Flow** (M112) — `cca init` command generates PKI + setup.sh for one-command node bootstrapping (CA, node cert, secret master key, etcd TLS drop-in, systemd units), `cca server` pre-flight checks (cert existence, key permissions 0600, etcd TCP connectivity) with actionable error messages, CLI auto-detects TLS via `/etc/ccattler/ca.pem`, remove plaintext localhost admin listener (port 9771) and `.ccattler/` fallback paths, etcd fail-fast connectivity check, Ansible migration to `cca init` (remove certificates/etcd roles, etcd from distro packages), demo doc updated to `cca init` flow
+
+---
+
+## v1.37.0-beta {#v1-37-0-beta}
 
 **2026-10-15** — VIP Hairpin Fix & Install Hardening.
 
