@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.39.0-beta <Badge type="tip" text="latest" /> {#v1-39-0-beta}
+## v1.40.0-beta <Badge type="tip" text="latest" /> {#v1-40-0-beta}
+
+**2026-10-16** — Cloud Provider Build-Tag Split.
+
+- **Cloud Provider Build-Tag Split** (M113) — Gate AWS/GCP SDK imports behind `//go:build cloudprovider` tag — default binary drops from 62MB to ~25MB. Factory-registration pattern (`cloud/registry.go`, `security/kms_registry.go`) with `init()` in tagged files. Extract `AWSKMSKeyProvider`/`GCPKMSKeyProvider` into `security/kms_cloud.go`, `AWSSTSAdapter` into `security/cloud_credentials_aws.go`. Refactor `createCloudProvider` and `CreateAgentKeyProvider` to registry lookup. CI builds and tests both slim and cloud-enabled binaries. Release includes `cca` (slim) and `cca-cloud` (full) artifacts.
+
+---
+
+## v1.39.0-beta {#v1-39-0-beta}
 
 **2026-10-16** — Node Bootstrap & Install Flow.
 
