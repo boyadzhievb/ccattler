@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.40.0-beta <Badge type="tip" text="latest" /> {#v1-40-0-beta}
+## v1.41.0-beta <Badge type="tip" text="latest" /> {#v1-41-0-beta}
+
+**2026-10-16** — Deploy Enrollment & E2E Cleanup.
+
+- **Deploy Enrollment & E2E Cleanup** (M114) — Fix `cca token create` to embed CA fingerprint so `cca join` can verify server identity without pre-distributed `--ca-cert` (loads CA from `/etc/ccattler/pki/`). Fix etcd data dir not recreated after cleanup (setup.sh creates `/var/lib/etcd` with `etcd:etcd` 0700). Remove 200+ lines of manual e2e provisioning shims (cert scp, inline service files, endpoint writes) — both paths now delegate to Ansible for `cca init` + `cca join`. Merge deploy-env and e2e cleanup into unified ALREADY_PROVISIONED block.
+
+---
+
+## v1.40.0-beta {#v1-40-0-beta}
 
 **2026-10-16** — Cloud Provider Build-Tag Split.
 

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M113 — Phase 113 Cloud Provider Build-Tag Split. M1–M113 complete. Gates A–I resolved.
+**Completed through:** M114 — Phase 114 Deploy Enrollment & E2E Cleanup. M1–M114 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
