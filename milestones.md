@@ -1363,6 +1363,66 @@ Replace bind-mount secret delivery with an agent-side HTTP API. Containers fetch
 - [ ] `TestSecretAPIServerListSecrets` — returns only granted names
 - [ ] `TestReconcileWithSecretAPIInjectsEnvVars` — `CCA_SECRET_URL` + `CCA_SECRET_TOKEN` in spec.Env
 
+### Phase 118 — Route Block & Sticky Sessions (M118)
+
+Top-level `route` DSL block for traffic routing with session affinity. Inspired by Traefik IngressRoute / nginx upstream sticky — CCattler equivalent is the `route` block.
+
+**Phase 1 — DSL + Facts** (done)
+- [x] `RouteDecl`, `RouteStickyDecl`, `RouteCookieSettings` AST nodes in `lang/ast.go`
+- [x] `parseRouteDeclaration` with host, path, service+port, sticky cookie/source-ip in `lang/parser.go`
+- [x] `compileRouteDeclaration` and `compileStickyFacts` in `lang/compiler.go`
+- [x] 10 `KeyDesiredRoute*` functions in `types/keys.go`
+- [x] 8 parser tests (full, minimal, bare cookie, source-ip, missing service, unknown field, unknown sticky, no port)
+- [x] 4 compiler tests (full, minimal, source-ip, bare cookie defaults)
+- [x] Design doc: `design/routes-sticky-sessions.md`
+- [x] `examples/reference.cca` — Debian-style annotated config with all DSL constructs
+
+**Phase 2 — Route Controller**
+- [ ] `ScanDesiredRoutes`, `KeyDerivedRouteBackends`, `KeyDerivedRouteProxyPort` key functions in `types/keys.go`
+- [ ] `RouteController` in `controllers/route.go` — watch `desired/route/` + `observed/endpoint/`
+- [ ] Reconcile: read route facts → resolve target service → collect healthy backend addresses
+- [ ] Write `derived/route/{name}/backends` (comma-separated host:port)
+- [ ] Write `derived/route/{name}/proxy-port` for cookie-sticky routes (allocated from port range)
+- [ ] Register in runner controller list
+- [ ] Integration tests: route with/without sticky → correct derived facts
+
+**Phase 3 — Agent Data Plane**
+- [ ] Source-IP affinity: iptables `xt_recent` module to pin client IPs to backends
+- [ ] Cookie affinity: embedded Go `httputil.ReverseProxy` on allocated proxy-port
+- [ ] Proxy sets `Set-Cookie: __CCA_STICKY_{service}=<instance-id>` on first request
+- [ ] Proxy reads cookie → routes to same backend on subsequent requests
+- [ ] Backend failure: proxy detects down backend, picks new one, rewrites cookie
+- [ ] Agent lifecycle: start proxy when cookie-sticky route appears, stop when removed
+- [ ] iptables DNAT: redirect matching traffic to local proxy port
+- [ ] E2E test: whoami workload + curl with cookie jar validates sticky routing
+
+### Phase 119 — Service Tags & Cross-Service Queries (M119)
+
+User-defined key=value tags on services for grouping and filtering. Not used for scheduling (that's `placement`) or identity (that's `owner`/tenant).
+
+- [ ] `tags` sub-block in service declarations: `tags { team "payments", tier "frontend" }`
+- [ ] Parser: `parseTagsBlock` in `lang/parser.go`, `TagsDecl` in `lang/ast.go`
+- [ ] Compiler: `desired/service/{name}/tag/{key}` = `{value}` facts
+- [ ] `cca get services --tag team=payments` — filter by tag match
+- [ ] `cca logs --tag team=payments` — aggregate logs across all matching services
+- [ ] `cca top workloads --tag tier=frontend` — scoped resource view
+- [ ] Parser + compiler tests
+- [ ] CLI integration tests
+
+### Phase 120 — DSL Formatter & Linter (M120)
+
+`cca fmt` for canonical formatting, `cca lint` for validation without writing to store.
+
+- [ ] AST→text emitter (`lang/formatter.go`): serialize AST back to canonical `.cca` syntax
+- [ ] Consistent indentation (4 spaces), deterministic block ordering, trailing newline
+- [ ] Idempotent: `fmt(fmt(input)) == fmt(input)`
+- [ ] `cca fmt <file>` command: parse → re-emit → overwrite (or `--check` for CI dry-run)
+- [ ] `cca lint <file>` command: parse + validate without writing to store
+- [ ] Lint checks: undefined service references in routes/groups/network rules
+- [ ] Lint checks: duplicate names, missing required fields, port range validation
+- [ ] Formatter tests (round-trip for every DSL construct)
+- [ ] Lint tests (error cases for each check)
+
 ### Backlog
 
 - [ ] Load test: 200 nodes, 5000 workloads synthetic benchmark (extends `cca benchmark`)
@@ -1480,6 +1540,9 @@ Replace bind-mount secret delivery with an agent-side HTTP API. Containers fetch
 | M115 — Code Quality & RHEL Compat | 115 | Enforce 80-line function limit: refactor 8 functions (`executeTokenCommand`, `executeInitCommand`, `runControllerLoop`, `attemptSingleReconciliation`, `failure.Reconcile`, `cloud_routes.Reconcile`, `handleApply`, `handleWatch`) into smaller helpers. Add exemption comments for 2 flat declarative functions (`buildSetupScript`, `readinessCoreAreaDefinitions`). Fix silent CA loading failure in `cca token create` — warn when CA unavailable for join token fingerprinting. Fix RHEL etcd startup: override ExecStart in systemd drop-in to prevent etcd 3.5+ flag/env variable conflict. Remove redundant etcd dir creation from e2e cleanup. |
 | M116 — Join Token TLS Chain Fix | 116 | Fix `cca join` CA fingerprint verification failure: server TLS handshake now includes CA certificate in the presented chain (append to `tls.Certificate.Certificate` slice) so fingerprint-based join tokens work. `setup.sh` writes `/etc/ccattler/endpoints` with `https://127.0.0.1:2379` so CLI commands auto-detect etcd TLS instead of falling back to plaintext. Change `cca-agent` systemd unit from `Requires=containerd.service` to `Wants=containerd.service` so the agent starts without containerd installed. |
 | M117 — E2E Streamline & CI Fixes | 117 | Default e2e workload from `airflow,zabbix` to `airflow`-only across `cluster_test.sh`, `e2e.yml`, `deploy-testbed.yml`, and `upgrade-test.yml` — reduces e2e time by skipping 3 extra image pulls and container starts. Fix flaky `TestAgentReconcileDesiredInstanceStartsMissing` (bare assertion after `waitFor` → move into predicate). Fix release workflow: non-overlapping asset globs (`cca-v*-*` vs `cca-cloud-v*-*`) prevent duplicate delete/upload cycles causing GitHub API "Not Found" errors. |
+| M118 — Route Block & Sticky Sessions | 118 | Top-level `route` DSL block (host matching, service+port target, sticky cookie with name/secure/http-only/same-site), parser→compiler→`route()` facts, endpoint controller resolves route→backend mapping, agent data plane programs iptables/eBPF DNAT with cookie-based session affinity (Set-Cookie on first request, hash cookie→backend on subsequent), cookie name defaults to `__CCA_STICKY_{service}`, stale mapping cleanup on backend failure, source-IP affinity as alternative strategy. Inspired by Traefik IngressRoute / nginx upstream sticky — CCattler equivalent is the `route` block. |
+| M119 — Service Tags & Cross-Service Queries | 119 | `tags` block inside service declarations (key=value pairs stored as `desired/service/{name}/tag/{key}` facts), `cca get services --tag team=payments` filters by tag, `cca logs --tag team=payments` aggregates logs across all matching services, `cca top workloads --tag tier=frontend` scoped resource view. Tags are user metadata for grouping and filtering — not used for scheduling (that's `placement`) or identity (that's `owner`/tenant). |
+| M120 — DSL Formatter & Linter | 120 | `cca fmt <file>` parses `.cca` files and re-emits them in canonical format (consistent indentation, block ordering, spacing). `cca lint <file>` validates syntax and semantics without writing to the store (catches errors early, usable in CI). AST→text emitter with configurable indent width, idempotent formatting (fmt∘fmt = fmt), lint checks: undefined service references in routes/groups/network rules, duplicate names, missing required fields, port range validation. |
 | *(future)* eBPF Data Plane | — | Implement `EbpfDataPlaneProvider`: BPF C DNAT program (TC ingress hook), `cilium/ebpf` bpf2go Go loader, VIP→backend hash map population from `ReconcileVIPDataPlane`, kernel conntrack for return path, network namespace + veth pair tests, kernel 5.10+ gate, iptables fallback preserved |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

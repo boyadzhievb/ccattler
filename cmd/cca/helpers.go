@@ -278,6 +278,7 @@ func coreControllers() []controllers.Controller {
 		controllers.NewInitController(),
 		controllers.NewStatefulDNSController(),
 		controllers.NewStatefulVolumeController(),
+		controllers.NewRouteController(),
 	}
 }
 

@@ -1654,3 +1654,189 @@ func TestParseInitStepNeitherExecNorConnection(t *testing.T) {
 		t.Fatal("expected error for init with neither exec nor connection")
 	}
 }
+
+func TestParseRouteFullBlock(t *testing.T) {
+	input := `route web-public {
+    host "app.example.com"
+    path "/api"
+    service api port 3000
+    sticky cookie {
+        name "session"
+        secure true
+        http-only true
+        same-site "strict"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(file.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(file.Routes))
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.Name != "web-public" {
+		t.Errorf("name: got %q, want %q", routeDecl.Name, "web-public")
+	}
+	if routeDecl.Host != "app.example.com" {
+		t.Errorf("host: got %q, want %q", routeDecl.Host, "app.example.com")
+	}
+	if routeDecl.Path != "/api" {
+		t.Errorf("path: got %q, want %q", routeDecl.Path, "/api")
+	}
+	if routeDecl.ServiceName != "api" {
+		t.Errorf("service: got %q, want %q", routeDecl.ServiceName, "api")
+	}
+	if routeDecl.ServicePort != 3000 {
+		t.Errorf("port: got %d, want %d", routeDecl.ServicePort, 3000)
+	}
+	if routeDecl.Sticky == nil {
+		t.Fatal("expected sticky config, got nil")
+	}
+	if routeDecl.Sticky.Method != "cookie" {
+		t.Errorf("sticky method: got %q, want %q", routeDecl.Sticky.Method, "cookie")
+	}
+	if routeDecl.Sticky.Cookie == nil {
+		t.Fatal("expected cookie settings, got nil")
+	}
+	cookieSettings := routeDecl.Sticky.Cookie
+	if cookieSettings.Name != "session" {
+		t.Errorf("cookie name: got %q, want %q", cookieSettings.Name, "session")
+	}
+	if !cookieSettings.Secure {
+		t.Error("cookie secure: got false, want true")
+	}
+	if !cookieSettings.HTTPOnly {
+		t.Error("cookie http-only: got false, want true")
+	}
+	if cookieSettings.SameSite != "strict" {
+		t.Errorf("cookie same-site: got %q, want %q", cookieSettings.SameSite, "strict")
+	}
+}
+
+func TestParseRouteMinimal(t *testing.T) {
+	input := `route api-route {
+    service api port 8080
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(file.Routes) != 1 {
+		t.Fatalf("expected 1 route, got %d", len(file.Routes))
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.Name != "api-route" {
+		t.Errorf("name: got %q, want %q", routeDecl.Name, "api-route")
+	}
+	if routeDecl.ServiceName != "api" {
+		t.Errorf("service: got %q, want %q", routeDecl.ServiceName, "api")
+	}
+	if routeDecl.ServicePort != 8080 {
+		t.Errorf("port: got %d, want %d", routeDecl.ServicePort, 8080)
+	}
+	if routeDecl.Host != "" {
+		t.Errorf("host: got %q, want empty", routeDecl.Host)
+	}
+	if routeDecl.Path != "" {
+		t.Errorf("path: got %q, want empty", routeDecl.Path)
+	}
+	if routeDecl.Sticky != nil {
+		t.Errorf("sticky: got %v, want nil", routeDecl.Sticky)
+	}
+}
+
+func TestParseRouteStickyCookieNoSettings(t *testing.T) {
+	input := `route api-sticky {
+    service api port 3000
+    sticky cookie
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.Sticky == nil {
+		t.Fatal("expected sticky config, got nil")
+	}
+	if routeDecl.Sticky.Method != "cookie" {
+		t.Errorf("sticky method: got %q, want %q", routeDecl.Sticky.Method, "cookie")
+	}
+	if routeDecl.Sticky.Cookie != nil {
+		t.Errorf("cookie settings: got %v, want nil (bare cookie)", routeDecl.Sticky.Cookie)
+	}
+}
+
+func TestParseRouteStickySourceIP(t *testing.T) {
+	input := `route api-ip {
+    service api port 3000
+    sticky source-ip
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.Sticky == nil {
+		t.Fatal("expected sticky config, got nil")
+	}
+	if routeDecl.Sticky.Method != "source-ip" {
+		t.Errorf("sticky method: got %q, want %q", routeDecl.Sticky.Method, "source-ip")
+	}
+}
+
+func TestParseRouteMissingService(t *testing.T) {
+	input := `route broken {
+    host "example.com"
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for route without service")
+	}
+}
+
+func TestParseRouteUnknownField(t *testing.T) {
+	input := `route broken {
+    service api port 3000
+    weight 10
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown route field")
+	}
+}
+
+func TestParseRouteUnknownStickyMethod(t *testing.T) {
+	input := `route broken {
+    service api port 3000
+    sticky random
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for unknown sticky method")
+	}
+}
+
+func TestParseRouteServiceWithoutPort(t *testing.T) {
+	input := `route minimal {
+    service api
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.ServiceName != "api" {
+		t.Errorf("service: got %q, want %q", routeDecl.ServiceName, "api")
+	}
+	if routeDecl.ServicePort != 0 {
+		t.Errorf("port: got %d, want 0 (unset)", routeDecl.ServicePort)
+	}
+}

@@ -18,6 +18,7 @@ type File struct {
 	ServiceGroups    []ServiceGroupDecl    // top-level group blocks defining co-scheduled service groups
 	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
 	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
+	Routes           []RouteDecl           // top-level route blocks defining traffic routing with optional sticky sessions
 	BaseDir          string                // directory of the source file, used to resolve "from" paths
 }
 
@@ -413,4 +414,40 @@ type NetworkRuleDecl struct {
 	Target string // target service identity (e.g. "payments/checkout")
 	Port   int    // target port (0 means any port)
 	Line   int    // source line number for error reporting
+}
+
+// RouteDecl represents a parsed top-level "route" block in the DSL. A route
+// directs external traffic to a target service, with optional host/path
+// matching and sticky session affinity.
+//
+//	route web-public {
+//	    host "app.example.com"
+//	    path "/api"
+//	    service api port 3000
+//	    sticky cookie { name "session", secure true }
+//	}
+type RouteDecl struct {
+	Name        string           // unique route identifier (e.g. "web-public")
+	Host        string           // optional hostname to match (e.g. "app.example.com")
+	Path        string           // optional URL path prefix to match (e.g. "/api")
+	ServiceName string           // target service name
+	ServicePort int              // target service port
+	Sticky      *RouteStickyDecl // optional sticky session configuration
+	Line        int              // source line number for error reporting
+}
+
+// RouteStickyDecl holds sticky session configuration for a route.
+// Method is either "cookie" (L7 affinity via Set-Cookie) or "source-ip"
+// (L4 affinity via client IP tracking).
+type RouteStickyDecl struct {
+	Method string               // "cookie" or "source-ip"
+	Cookie *RouteCookieSettings // cookie settings (only when Method is "cookie")
+}
+
+// RouteCookieSettings holds the cookie attributes for cookie-based sticky sessions.
+type RouteCookieSettings struct {
+	Name     string // cookie name (default: "__CCA_STICKY_{service}")
+	Secure   bool   // Secure flag on the cookie
+	HTTPOnly bool   // HttpOnly flag on the cookie
+	SameSite string // SameSite attribute: "strict", "lax", or "none"
 }

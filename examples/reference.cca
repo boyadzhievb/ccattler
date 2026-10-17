@@ -1,0 +1,401 @@
+# CCattler Configuration Reference
+#
+# Every supported DSL construct in one file, explained line by line.
+# This is not meant to be applied as-is — it is a reference showing
+# what each directive does and what values it accepts.
+#
+# Modeled after Debian's annotated example configs:
+# read it top to bottom, uncomment what you need, copy into your own .cca file.
+#
+# Top-level blocks: service, volume, connection, config (standalone), secret,
+#                   group, role, grant, policy, tenant, network,
+#                   cloud, cloud_identity, credential_broker.
+
+# ---------------------------------------------------------------------------
+# connection — structured database/service URL assembled at runtime
+# ---------------------------------------------------------------------------
+# The agent builds "driver://user:password@host:port/database" from the fields
+# below. The password comes from the named secret, resolved at deploy time.
+# Services reference connections by name to get the URL mounted as a file.
+
+connection app-db {
+    driver "postgresql+psycopg2"    # URL scheme (e.g. postgresql, mysql, redis)
+    user "appuser"                  # username embedded in the URL
+    secret app.db-password          # CCattler secret whose value becomes the password
+    host "database"                 # hostname — use the CCattler service name for DNS
+    port 5432                       # TCP port
+    database "myapp"                # database/path component of the URL
+}
+
+# ---------------------------------------------------------------------------
+# volume — persistent storage that survives node failure and rescheduling
+# ---------------------------------------------------------------------------
+# Volumes attach to a single instance at a time (ReadWriteOnce).
+# If the node dies, the volume detaches and reattaches on the replacement node.
+
+volume app-data {
+    size 50Gi          # requested capacity (suffixes: Mi, Gi, Ti)
+    persistent true    # true = data survives instance restart; false = ephemeral
+}
+
+# ---------------------------------------------------------------------------
+# secret — an opaque value stored encrypted in the fact store
+# ---------------------------------------------------------------------------
+# Declare here, set the value out-of-band: cca secret set app.db-password "hunter2"
+# Services reference secrets to mount them as files inside containers.
+# Note: standalone "secret" is set via CLI (cca secret set), not declared in .cca files.
+# Services reference secrets inline: secret app.db-password "/run/secrets/db-password"
+
+# ---------------------------------------------------------------------------
+# service — the core workload unit
+# ---------------------------------------------------------------------------
+# A service declares what to run, how many, where, and how to keep it healthy.
+# The reconciliation engine ensures the cluster matches this description.
+
+service web {
+
+    # --- identity -----------------------------------------------------------
+
+    image "nginx:1.28"      # container image reference (registry/name:tag)
+    command "nginx -g 'daemon off;'"  # override the container CMD (optional)
+    instances 5             # desired replica count (scheduler spreads across nodes)
+    owner payments          # owning tenant (for multi-tenant quota enforcement)
+    stateful                # ordinal instance IDs (web-0, web-1, ...), ordered startup,
+                            # reverse scale-down, stable DNS per ordinal
+
+    # --- networking ---------------------------------------------------------
+
+    expose 8080             # internal service port — gets a cluster VIP, DNS entry,
+                            # and load-balanced DNAT rules on every node
+
+    expose external 443 http  # cloud-facing port — creates a cloud load balancer
+                              # (NLB on AWS, forwarding rule on GCP).
+                              # Protocol: tcp (default) or http.
+
+    # --- init containers ----------------------------------------------------
+    # Run sequentially before the main container starts. Same network, DNS, env.
+    # If any step fails after retries, the instance stays in "init-failed".
+
+    init {
+        exec "db-migrate --run"   # shell command to execute
+        timeout 30s               # max time for this step (suffixes: s, m)
+        retry 3                   # retry count on failure (0 = no retries)
+    }
+
+    init {
+        connection app-db         # credential probe — TCP-dials the connection target
+        timeout 10s               # before starting the main container. Catches bad
+        retry 5                   # passwords early instead of crash-looping.
+    }
+
+    # --- health checking ----------------------------------------------------
+    # Simple health block — one probe, checked at a regular interval.
+    # Instance is marked unhealthy after one failed check.
+
+    health {
+        http /health        # HTTP GET probe — path to check (port from "expose")
+        every 10s           # check interval (suffixes: s, m)
+    }
+
+    # --- advanced probes (Kubernetes-style, optional) -----------------------
+    # startup, liveness, and readiness are independent probes with thresholds.
+    # Use these instead of "health" when you need fine-grained control.
+
+    startup {
+        http /ready                # probe type: http <path>, tcp, or exec "<cmd>"
+        port 8080                  # explicit port (defaults to first "expose" port)
+        every 5s                   # check interval
+        timeout 3s                 # per-check timeout
+        failure_threshold 30       # failures before giving up (startup only)
+        success_threshold 1        # successes before passing
+        initial_delay 10s          # wait before first check
+    }
+
+    liveness {
+        http /health
+        every 15s
+        timeout 5s
+        failure_threshold 3        # failures before restarting the instance
+        success_threshold 1
+    }
+
+    readiness {
+        tcp                        # TCP connect probe (no path needed)
+        port 8080
+        every 10s
+        timeout 3s
+        failure_threshold 3        # failures before removing from load balancer
+        success_threshold 1
+    }
+
+    # --- resource limits ----------------------------------------------------
+
+    resources {
+        cpu 500m            # CPU request (millicores: 500m = 0.5 core, 2 = 2 cores)
+        memory 512Mi        # memory request (suffixes: Mi, Gi)
+    }
+
+    # --- autoscaling --------------------------------------------------------
+
+    scale {
+        # horizontal — add/remove instances based on metrics
+        horizontal {
+            min 3                          # floor — never scale below this
+            max 30                         # ceiling — never scale above this
+            target cpu = 60                # scale when average CPU exceeds 60%
+            target requests_per_second = 500  # scale on custom metric
+            event payments.pending = 20    # event-driven: 20 messages per instance
+            idle_timeout 300s              # scale-to-zero: time with no traffic
+            activation_timeout 10s         # cold-start: buffer requests this long
+
+            schedule {
+                days weekdays              # day filter (weekdays, weekends, or specific)
+                start "08:00"              # window start (UTC)
+                end "18:00"                # window end
+                minimum 10                 # minimum instances during this window
+            }
+
+            stabilization {
+                scale_up 60s               # wait this long before scaling up
+                scale_down 300s            # wait this long before scaling down
+                                           # (asymmetric: fast up, slow down)
+            }
+        }
+
+        # vertical — resize CPU/memory of existing instances
+        vertical {
+            cpu { min 250m max 4 }        # resize range for CPU
+            memory { min 512Mi max 8Gi }  # resize range for memory
+        }
+    }
+
+    # --- placement ----------------------------------------------------------
+    # Controls which nodes can run this service's instances.
+
+    placement {
+        architecture amd64            # require this CPU architecture
+        zone spread                   # spread instances across availability zones
+        require gpu = true            # hard constraint: only nodes with this label
+        prefer region = us-east       # soft constraint: prefer but don't require
+        accept dedicated-compute      # tolerate this node restriction (like K8s tolerations,
+                                      # but in plain English)
+    }
+
+    # --- rolling updates ----------------------------------------------------
+
+    update {
+        max_unavailable 1    # at most 1 instance down during image change
+        max_extra 1          # at most 1 extra instance (new version) during rollout
+    }
+
+    # --- disruption budget --------------------------------------------------
+    # Safety ceiling for drain and rolling updates.
+    # Choose one: min_available OR max_unavailable (not both).
+
+    disruption {
+        min_available 4      # never let running count drop below 4
+        # max_unavailable 1  # alternative: at most 1 instance unavailable
+    }
+
+    # --- configuration & environment ----------------------------------------
+
+    config {
+        env LOG_LEVEL "info"                  # environment variable
+        env PORT "8080"                       # another env var
+        file "/etc/app/config.yaml" "..."     # file injected into the container
+    }
+
+    # --- secrets ------------------------------------------------------------
+    # Mount a secret as a file inside the container.
+
+    secret app.db-password "/run/secrets/db-password"
+
+    # --- connection references ----------------------------------------------
+    # Mount a connection URL (from a top-level connection block) as a file.
+
+    connection app-db "/run/connections/app-db"
+
+    # --- volume mounts ------------------------------------------------------
+
+    volume app-data /var/lib/app/data     # attach named volume at this path
+
+    # --- cloud identity -----------------------------------------------------
+    # Bind a cloud identity to this service for workload-level cloud access.
+
+    cloud_identity app-identity {
+        mount_path "/var/run/secrets/cloud"   # where to deliver credentials
+        deliver env                           # delivery method: env or file
+    }
+}
+
+# ---------------------------------------------------------------------------
+# route — traffic routing with optional sticky sessions
+# ---------------------------------------------------------------------------
+# Routes direct external traffic to a target service. Optional host/path
+# matching selects which requests go where. Sticky sessions pin a client
+# to the same backend instance.
+#
+# Without sticky: round-robin across healthy backends (same as VIP DNAT).
+# With sticky cookie: L7 reverse proxy sets a cookie, subsequent requests
+#   route to the same instance. If the backend dies, a new one is selected.
+# With sticky source-ip: L4 affinity via client IP (works behind NAT).
+
+route web-public {
+    host "app.example.com"       # match by Host header (optional)
+    path "/api"                  # match by URL path prefix (optional)
+    service web port 8080        # target service name and port
+
+    sticky cookie {
+        name "session"           # cookie name (default: __CCA_STICKY_{service})
+        secure true              # Secure flag
+        http-only true           # HttpOnly flag
+        same-site "strict"       # SameSite: strict, lax, none
+    }
+}
+
+# Minimal route — just sticky, no host/path filtering:
+# route api-sticky {
+#     service api port 3000
+#     sticky cookie
+# }
+
+# Source-IP affinity (L4, no proxy needed):
+# route api-ip {
+#     service api port 3000
+#     sticky source-ip
+# }
+
+# ---------------------------------------------------------------------------
+# group — co-schedule services on the same node
+# ---------------------------------------------------------------------------
+# Processes in a group share a node. Optionally share network namespace
+# (localhost connectivity) and/or volumes.
+
+group frontend {
+    process web            # service name
+    process api            # another service
+    share network          # shared network namespace (services reach each other on localhost)
+    share volume cache     # shared volume between grouped services
+}
+
+# ---------------------------------------------------------------------------
+# role — bundle of capabilities for authorization
+# ---------------------------------------------------------------------------
+# Capabilities are CCattler-native (workload.read, not K8s get/list/watch).
+# Scope restricts the role to a tenant/team path (optional — omit for cluster-wide).
+
+role developer {
+    allow workload.read
+    allow workload.update
+    scope team/payments       # only within this tenant hierarchy
+}
+
+role operator {
+    allow workload.read
+    allow workload.create
+    allow workload.update
+    allow workload.delete
+    allow node.read
+    allow node.manage
+    allow scaling.read
+    allow scaling.write
+    # no scope = cluster-wide
+}
+
+# ---------------------------------------------------------------------------
+# group (user group) — collect members for bulk grant assignment
+# ---------------------------------------------------------------------------
+# Note: "group" with "member" fields is a user group.
+# "group" with "process"/"share" fields is a service group (see above).
+
+group developers {
+    member "alice@example.com"
+    member "bob@example.com"
+}
+
+# ---------------------------------------------------------------------------
+# grant — bind a role to a user or group
+# ---------------------------------------------------------------------------
+
+grant developer to group developers
+grant operator to user "dave@example.com"
+
+# ---------------------------------------------------------------------------
+# policy — dynamic ABAC condition evaluated on every API request
+# ---------------------------------------------------------------------------
+# Beyond static roles: policies add runtime conditions using subject/resource
+# attributes. "when" clauses support ==, in, and not_in operators.
+
+policy team-isolation {
+    allow service.update
+    when subject.team == resource.team   # only update services owned by your team
+}
+
+# ---------------------------------------------------------------------------
+# tenant — resource quota for multi-tenant isolation
+# ---------------------------------------------------------------------------
+# Services owned by this tenant count against these limits.
+
+tenant payments {
+    quota {
+        cpu 100            # total CPU cores across all services
+        memory 256Gi       # total memory
+        instances 500      # max instance count
+        volumes 50         # max volume count
+        storage 1Ti        # total storage capacity
+    }
+    weight 10              # fair-share scheduling weight (higher = more resources)
+}
+
+# ---------------------------------------------------------------------------
+# network — traffic rules between services
+# ---------------------------------------------------------------------------
+# Default: all traffic denied. Explicit allow/deny rules with service paths
+# and optional port restrictions. Uses nftables on each node.
+
+network {
+    allow frontend/web -> payments/checkout port 443
+    deny frontend/web -> payments/database
+}
+
+# ---------------------------------------------------------------------------
+# cloud — cloud provider configuration for node lifecycle and load balancers
+# ---------------------------------------------------------------------------
+# Enables: auto-provisioning nodes, cloud LBs for "expose external", VPC routes.
+
+cloud {
+    provider aws                    # aws or gcp (bare identifier, not quoted)
+    region "us-east-1"              # cloud region
+    credentials cloud-creds         # credential identity name (bare identifier)
+    instance_type "m5.xlarge"       # default instance type for new nodes
+    vpc_network "vpc-abc123"        # VPC/network ID
+    route_table "rtb-def456"        # route table for VPC route programming
+    # project_id "my-gcp-project"   # GCP only
+    # resource_group "my-rg"        # Azure only (future)
+}
+
+# ---------------------------------------------------------------------------
+# cloud_identity — workload identity for cloud API access
+# ---------------------------------------------------------------------------
+# Instead of static credentials, services assume cloud IAM roles.
+# The credential broker exchanges CCattler identity for cloud tokens.
+
+cloud_identity app-identity {
+    provider aws                    # aws or gcp (bare identifier, not quoted)
+    role "arn:aws:iam::123:role/app-role"  # AWS IAM role ARN
+    # service_account "sa@proj.iam.gserviceaccount.com"  # GCP service account
+    # pool "projects/123/locations/global/workloadIdentityPools/cca"  # GCP WIF pool
+    # client_id "abc123"            # Azure/OIDC client ID
+    # tenant_id "def456"            # Azure tenant ID
+}
+
+# ---------------------------------------------------------------------------
+# credential_broker — OIDC token exchange endpoint for cloud identity
+# ---------------------------------------------------------------------------
+# The broker issues short-lived tokens that services exchange for cloud credentials.
+
+credential_broker {
+    oidc_issuer "https://cca.example.com"   # OIDC issuer URL (must match cloud trust)
+    credential_ttl "1h"                     # how long issued credentials last
+    refresh_before "15m"                    # refresh this long before expiry
+}

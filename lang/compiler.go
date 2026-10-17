@@ -110,6 +110,13 @@ func compileInfrastructureDeclarations(file *File, sourceLines []string) ([]Fact
 		}
 		facts = append(facts, connectionFacts...)
 	}
+	for _, routeDecl := range file.Routes {
+		routeFacts, err := compileRouteDeclaration(routeDecl, sourceLines)
+		if err != nil {
+			return nil, err
+		}
+		facts = append(facts, routeFacts...)
+	}
 	return facts, nil
 }
 
@@ -735,6 +742,83 @@ func buildConnectionJSON(connectionDecl ConnectionDecl) string {
 		parts = append(parts, fmt.Sprintf(`"database":%q`, connectionDecl.Database))
 	}
 	return "{" + strings.Join(parts, ",") + "}"
+}
+
+// compileRouteDeclaration converts a RouteDecl into its corresponding facts.
+func compileRouteDeclaration(routeDecl RouteDecl, sourceLines []string) ([]Fact, error) {
+	if routeDecl.Name == "" {
+		return nil, &ParseError{
+			Line: routeDecl.Line, Message: "route name is required",
+			SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
+		}
+	}
+	if routeDecl.ServiceName == "" {
+		return nil, &ParseError{
+			Line: routeDecl.Line, Message: "route must specify a target service",
+			SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
+		}
+	}
+
+	routeFacts := []Fact{
+		{Key: types.KeyDesiredRoute(routeDecl.Name), Value: ""},
+		{Key: types.KeyDesiredRouteService(routeDecl.Name), Value: routeDecl.ServiceName},
+	}
+
+	if routeDecl.Host != "" {
+		routeFacts = append(routeFacts, Fact{
+			Key: types.KeyDesiredRouteHost(routeDecl.Name), Value: routeDecl.Host,
+		})
+	}
+	if routeDecl.Path != "" {
+		routeFacts = append(routeFacts, Fact{
+			Key: types.KeyDesiredRoutePath(routeDecl.Name), Value: routeDecl.Path,
+		})
+	}
+	if routeDecl.ServicePort > 0 {
+		routeFacts = append(routeFacts, Fact{
+			Key:   types.KeyDesiredRoutePort(routeDecl.Name),
+			Value: strconv.Itoa(routeDecl.ServicePort),
+		})
+	}
+
+	if routeDecl.Sticky != nil {
+		routeFacts = append(routeFacts, compileStickyFacts(routeDecl.Name, routeDecl.Sticky)...)
+	}
+
+	return routeFacts, nil
+}
+
+// compileStickyFacts produces facts for a route's sticky session configuration.
+func compileStickyFacts(routeName string, stickyDecl *RouteStickyDecl) []Fact {
+	stickyFacts := []Fact{
+		{Key: types.KeyDesiredRouteSticky(routeName), Value: stickyDecl.Method},
+	}
+
+	if stickyDecl.Cookie != nil {
+		cookieSettings := stickyDecl.Cookie
+		if cookieSettings.Name != "" {
+			stickyFacts = append(stickyFacts, Fact{
+				Key: types.KeyDesiredRouteCookieName(routeName), Value: cookieSettings.Name,
+			})
+		}
+		if cookieSettings.Secure {
+			stickyFacts = append(stickyFacts, Fact{
+				Key: types.KeyDesiredRouteCookieSecure(routeName), Value: "true",
+			})
+		}
+		if cookieSettings.HTTPOnly {
+			stickyFacts = append(stickyFacts, Fact{
+				Key: types.KeyDesiredRouteCookieHTTPOnly(routeName), Value: "true",
+			})
+		}
+		if cookieSettings.SameSite != "" {
+			stickyFacts = append(stickyFacts, Fact{
+				Key: types.KeyDesiredRouteCookieSameSite(routeName), Value: cookieSettings.SameSite,
+			})
+		}
+	}
+
+	return stickyFacts
 }
 
 // compileServiceCloudIdentityFacts produces cloud identity binding facts for a

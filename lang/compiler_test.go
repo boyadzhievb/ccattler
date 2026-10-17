@@ -1335,3 +1335,136 @@ service api {
 		t.Errorf("init step 1 should not have connection, got %q", connectionStep1Value)
 	}
 }
+
+func TestCompileRouteFullBlock(t *testing.T) {
+	file, parseErr := Parse(`route web-public {
+    host "app.example.com"
+    path "/api"
+    service api port 3000
+    sticky cookie {
+        name "session"
+        secure true
+        http-only true
+        same-site "strict"
+    }
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	if _, exists := compiledFactMap[types.KeyDesiredRoute("web-public")]; !exists {
+		t.Error("route marker fact not found")
+	}
+	if compiledFactMap[types.KeyDesiredRouteHost("web-public")] != "app.example.com" {
+		t.Errorf("host: got %q, want %q", compiledFactMap[types.KeyDesiredRouteHost("web-public")], "app.example.com")
+	}
+	if compiledFactMap[types.KeyDesiredRoutePath("web-public")] != "/api" {
+		t.Errorf("path: got %q, want %q", compiledFactMap[types.KeyDesiredRoutePath("web-public")], "/api")
+	}
+	if compiledFactMap[types.KeyDesiredRouteService("web-public")] != "api" {
+		t.Errorf("service: got %q, want %q", compiledFactMap[types.KeyDesiredRouteService("web-public")], "api")
+	}
+	if compiledFactMap[types.KeyDesiredRoutePort("web-public")] != "3000" {
+		t.Errorf("port: got %q, want %q", compiledFactMap[types.KeyDesiredRoutePort("web-public")], "3000")
+	}
+	if compiledFactMap[types.KeyDesiredRouteSticky("web-public")] != "cookie" {
+		t.Errorf("sticky: got %q, want %q", compiledFactMap[types.KeyDesiredRouteSticky("web-public")], "cookie")
+	}
+	if compiledFactMap[types.KeyDesiredRouteCookieName("web-public")] != "session" {
+		t.Errorf("cookie name: got %q, want %q", compiledFactMap[types.KeyDesiredRouteCookieName("web-public")], "session")
+	}
+	if compiledFactMap[types.KeyDesiredRouteCookieSecure("web-public")] != "true" {
+		t.Errorf("cookie secure: got %q, want %q", compiledFactMap[types.KeyDesiredRouteCookieSecure("web-public")], "true")
+	}
+	if compiledFactMap[types.KeyDesiredRouteCookieHTTPOnly("web-public")] != "true" {
+		t.Errorf("cookie httponly: got %q, want %q", compiledFactMap[types.KeyDesiredRouteCookieHTTPOnly("web-public")], "true")
+	}
+	if compiledFactMap[types.KeyDesiredRouteCookieSameSite("web-public")] != "strict" {
+		t.Errorf("cookie samesite: got %q, want %q", compiledFactMap[types.KeyDesiredRouteCookieSameSite("web-public")], "strict")
+	}
+}
+
+func TestCompileRouteMinimal(t *testing.T) {
+	file, parseErr := Parse(`route simple {
+    service web port 8080
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+
+	if _, exists := compiledFactMap[types.KeyDesiredRoute("simple")]; !exists {
+		t.Error("route marker fact not found")
+	}
+	if compiledFactMap[types.KeyDesiredRouteService("simple")] != "web" {
+		t.Errorf("service: got %q, want %q", compiledFactMap[types.KeyDesiredRouteService("simple")], "web")
+	}
+	if compiledFactMap[types.KeyDesiredRoutePort("simple")] != "8080" {
+		t.Errorf("port: got %q, want %q", compiledFactMap[types.KeyDesiredRoutePort("simple")], "8080")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteHost("simple")]; exists {
+		t.Error("host fact should not exist for minimal route")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteSticky("simple")]; exists {
+		t.Error("sticky fact should not exist for minimal route")
+	}
+}
+
+func TestCompileRouteStickySourceIP(t *testing.T) {
+	file, parseErr := Parse(`route ip-affinity {
+    service api port 3000
+    sticky source-ip
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredRouteSticky("ip-affinity")] != "source-ip" {
+		t.Errorf("sticky: got %q, want %q", compiledFactMap[types.KeyDesiredRouteSticky("ip-affinity")], "source-ip")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteCookieName("ip-affinity")]; exists {
+		t.Error("cookie name fact should not exist for source-ip sticky")
+	}
+}
+
+func TestCompileRouteStickyCookieDefaults(t *testing.T) {
+	file, parseErr := Parse(`route bare-cookie {
+    service api port 3000
+    sticky cookie
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredRouteSticky("bare-cookie")] != "cookie" {
+		t.Errorf("sticky: got %q, want %q", compiledFactMap[types.KeyDesiredRouteSticky("bare-cookie")], "cookie")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteCookieName("bare-cookie")]; exists {
+		t.Error("cookie name should not be set for bare cookie (uses default)")
+	}
+}

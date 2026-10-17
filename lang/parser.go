@@ -143,6 +143,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Connections = append(file.Connections, *connectionDecl)
+		case "route":
+			routeDecl, err := parser.parseRouteDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Routes = append(file.Routes, *routeDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -2071,6 +2077,155 @@ func (parser *Parser) parseServicePath() (string, error) {
 		parser.advanceToken()
 	}
 	return path, nil
+}
+
+// parseRouteDeclaration parses a top-level "route" block that defines traffic
+// routing to a service with optional host/path matching and sticky sessions.
+func (parser *Parser) parseRouteDeclaration() (*RouteDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "route"
+
+	routeName, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	routeDecl := &RouteDecl{Name: routeName, Line: line}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		fieldName, fieldErr := parser.expectIdentifier()
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+
+		if parseErr := parser.parseRouteField(routeDecl, fieldName); parseErr != nil {
+			return nil, parseErr
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if routeDecl.ServiceName == "" {
+		return nil, &ParseError{
+			Line: line, Message: "route must specify a target service",
+			SourceLine: sourceLineAt(parser.sourceLines, line),
+		}
+	}
+
+	return routeDecl, nil
+}
+
+// parseRouteField dispatches parsing of a single field inside a route block.
+func (parser *Parser) parseRouteField(routeDecl *RouteDecl, fieldName string) error {
+	var err error
+	switch fieldName {
+	case "host":
+		routeDecl.Host, err = parser.expectStringOrIdentifier()
+	case "path":
+		routeDecl.Path, err = parser.expectStringOrIdentifier()
+	case "service":
+		routeDecl.ServiceName, err = parser.expectIdentifier()
+		if err != nil {
+			return err
+		}
+		if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "port" {
+			parser.advanceToken() // skip "port"
+			routeDecl.ServicePort, err = parser.expectInteger()
+		}
+	case "sticky":
+		routeDecl.Sticky, err = parser.parseRouteStickyDeclaration()
+	default:
+		return parser.parserErrorf("unknown route field %q", fieldName)
+	}
+	return err
+}
+
+// parseRouteStickyDeclaration parses "sticky cookie { ... }" or "sticky source-ip".
+func (parser *Parser) parseRouteStickyDeclaration() (*RouteStickyDecl, error) {
+	methodToken, err := parser.expectIdentifier()
+	if err != nil {
+		return nil, err
+	}
+
+	stickyDecl := &RouteStickyDecl{Method: methodToken}
+
+	switch methodToken {
+	case "cookie":
+		if parser.currentTokenIs(TokenLBrace) {
+			cookieSettings, cookieErr := parser.parseRouteCookieSettings()
+			if cookieErr != nil {
+				return nil, cookieErr
+			}
+			stickyDecl.Cookie = cookieSettings
+		}
+	case "source-ip":
+		// no additional config needed
+	default:
+		return nil, parser.parserErrorf("unknown sticky method %q (expected cookie or source-ip)", methodToken)
+	}
+
+	return stickyDecl, nil
+}
+
+// parseRouteCookieSettings parses the cookie settings block inside a sticky declaration.
+func (parser *Parser) parseRouteCookieSettings() (*RouteCookieSettings, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	cookieSettings := &RouteCookieSettings{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		fieldName, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch fieldName {
+		case "name":
+			cookieSettings.Name, err = parser.expectStringOrIdentifier()
+		case "secure":
+			cookieSettings.Secure, err = parser.expectBooleanValue()
+		case "http-only":
+			cookieSettings.HTTPOnly, err = parser.expectBooleanValue()
+		case "same-site":
+			cookieSettings.SameSite, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown cookie field %q", fieldName)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+	return cookieSettings, nil
+}
+
+// expectBooleanValue consumes a "true" or "false" identifier and returns its value.
+func (parser *Parser) expectBooleanValue() (bool, error) {
+	value, err := parser.expectIdentifier()
+	if err != nil {
+		return false, err
+	}
+	switch value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, parser.parserErrorf("expected true or false, got %q", value)
+	}
 }
 
 func (parser *Parser) parserErrorf(format string, args ...any) error {

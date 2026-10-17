@@ -1753,3 +1753,79 @@ func KeyDerivedSchedulerUnplacedReason(instanceID string) string {
 func KeyDerivedSchedulerUnplacedRequirements(instanceID string) string {
 	return fmt.Sprintf("%s/scheduler/unplaced/%s/requirements", PrefixDerived, instanceID)
 }
+
+// --- Route keys ---
+
+// KeyDesiredRoute returns the store path for a route's root marker key.
+// Path: desired/route/{name}
+func KeyDesiredRoute(routeName string) string {
+	return fmt.Sprintf("%s/route/%s", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteHost returns the store path for a route's hostname match.
+// Path: desired/route/{name}/host
+func KeyDesiredRouteHost(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/host", PrefixDesired, routeName)
+}
+
+// KeyDesiredRoutePath returns the store path for a route's URL path prefix match.
+// Path: desired/route/{name}/path
+func KeyDesiredRoutePath(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/path", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteService returns the store path for a route's target service name.
+// Path: desired/route/{name}/service
+func KeyDesiredRouteService(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/service", PrefixDesired, routeName)
+}
+
+// KeyDesiredRoutePort returns the store path for a route's target service port.
+// Path: desired/route/{name}/port
+func KeyDesiredRoutePort(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/port", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteSticky returns the store path for a route's sticky session method.
+// Value is "cookie" or "source-ip".
+// Path: desired/route/{name}/sticky
+func KeyDesiredRouteSticky(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/sticky", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteCookieName returns the store path for a route's sticky cookie name.
+// Path: desired/route/{name}/cookie/name
+func KeyDesiredRouteCookieName(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/cookie/name", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteCookieSecure returns the store path for a route's sticky cookie Secure flag.
+// Path: desired/route/{name}/cookie/secure
+func KeyDesiredRouteCookieSecure(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/cookie/secure", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteCookieHTTPOnly returns the store path for a route's sticky cookie HttpOnly flag.
+// Path: desired/route/{name}/cookie/httponly
+func KeyDesiredRouteCookieHTTPOnly(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/cookie/httponly", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteCookieSameSite returns the store path for a route's sticky cookie SameSite attribute.
+// Path: desired/route/{name}/cookie/samesite
+func KeyDesiredRouteCookieSameSite(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/cookie/samesite", PrefixDesired, routeName)
+}
+
+// ScanDesiredRoutes is the prefix for scanning all route definitions.
+const ScanDesiredRoutes = PrefixDesired + "/route/"
+
+// KeyDerivedRouteBackends returns the store path for a route's resolved backend
+// list. Value is a comma-separated list of host:port addresses.
+// Path: derived/route/{name}/backends
+func KeyDerivedRouteBackends(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/backends", PrefixDerived, routeName)
+}
+
+// ScanDerivedRoutes is the prefix for scanning all derived route facts.
+const ScanDerivedRoutes = PrefixDerived + "/route/"

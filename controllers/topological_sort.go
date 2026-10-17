@@ -103,6 +103,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"cloud-routes":         {"observed/cloud/route/", "derived/cloud/route/"},
 		"drain":                {"derived/node/"},
 		"cluster-autoscale":    {"derived/capacity/request/"},
+		"route":                {"derived/route/"},
 		"auth":                 {},
 	}
 }

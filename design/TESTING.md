@@ -27,6 +27,7 @@ The `examples/` directory contains working `.cca` configs — one per feature ar
 | `web-container.cca` | Container runtime with SSI hostname display |
 | `autoscaling.cca` | Horizontal/vertical/event-driven scaling policies |
 | `zabbix.cca` | Monitoring integration with Zabbix |
+| `reference.cca` | **All DSL constructs** — annotated config reference (every block, every field, with comments) |
 
 ## Test Coverage by Milestone
 
