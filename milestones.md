@@ -1413,15 +1413,15 @@ User-defined key=value tags on services for grouping and filtering. Not used for
 
 `cca fmt` for canonical formatting, `cca lint` for validation without writing to store.
 
-- [ ] AST→text emitter (`lang/formatter.go`): serialize AST back to canonical `.cca` syntax
-- [ ] Consistent indentation (4 spaces), deterministic block ordering, trailing newline
-- [ ] Idempotent: `fmt(fmt(input)) == fmt(input)`
-- [ ] `cca fmt <file>` command: parse → re-emit → overwrite (or `--check` for CI dry-run)
-- [ ] `cca lint <file>` command: parse + validate without writing to store
-- [ ] Lint checks: undefined service references in routes/groups/network rules
-- [ ] Lint checks: duplicate names, missing required fields, port range validation
-- [ ] Formatter tests (round-trip for every DSL construct)
-- [ ] Lint tests (error cases for each check)
+- [x] AST→text emitter (`lang/formatter.go`): serialize AST back to canonical `.cca` syntax
+- [x] Consistent indentation (4 spaces), deterministic block ordering, trailing newline
+- [x] Idempotent: `fmt(fmt(input)) == fmt(input)`
+- [x] `cca fmt <file>` command: parse → re-emit → overwrite (or `--check` for CI dry-run)
+- [x] `cca lint <file>` command: parse + validate without writing to store
+- [x] Lint checks: undefined service references in routes/groups/network rules
+- [x] Lint checks: duplicate names, missing required fields, port range validation
+- [x] Formatter tests (round-trip for every DSL construct)
+- [x] Lint tests (error cases for each check)
 
 ### Backlog
 

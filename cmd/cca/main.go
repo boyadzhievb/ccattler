@@ -221,6 +221,10 @@ func main() {
 		executeLogoutCommand()
 	case "whoami":
 		executeWhoamiCommand()
+	case "fmt":
+		executeFmtCommand(os.Args[2:])
+	case "lint":
+		executeLintCommand(os.Args[2:])
 	case "completion":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca completion <bash|zsh>")
@@ -294,6 +298,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")
 	fmt.Fprintln(os.Stderr, "  watch [prefix]               stream fact store changes")
 	fmt.Fprintln(os.Stderr, "  metric set <svc> <m> <v>     inject simulated metric")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "development tools:")
+	fmt.Fprintln(os.Stderr, "  fmt [--check] <file>         format .cca file to canonical style (--check for CI)")
+	fmt.Fprintln(os.Stderr, "  lint <file>                  validate .cca file without writing to store")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for run / run-container / apply:")
 	fmt.Fprintln(os.Stderr, "  --watch, -w                  print status every 2s (run only)")

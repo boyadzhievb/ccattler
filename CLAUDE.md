@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M117 — Phase 117 E2E Streamline & CI Fixes. M1–M117 complete. Gates A–I resolved.
+**Completed through:** M120 — Phase 120 DSL Formatter & Linter. M1–M120 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
@@ -135,6 +135,8 @@ cca exec <id> -- <command>
 cca images list [--node <id>] / cca images pull <img> [--node]
 cca top [nodes|workloads]
 cca metric set <svc> <m> <v>
+cca fmt [--check] <file>
+cca lint <file>
 ```
 
 ---

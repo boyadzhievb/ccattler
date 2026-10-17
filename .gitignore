@@ -7,3 +7,4 @@ deploy/lima/lima-inventory.ini
 deploy/demo-multihost.sh
 COMMAND_HISTORY.md
 investigate_airflow/
+.DS_Store
