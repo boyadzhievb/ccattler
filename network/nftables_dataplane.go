@@ -162,7 +162,8 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 ) string {
 	var rulesetBuilder strings.Builder
 
-	rulesetBuilder.WriteString("flush ruleset ip\n")
+	fmt.Fprintf(&rulesetBuilder, "table ip %s {}\n", nftablesTableName)
+	fmt.Fprintf(&rulesetBuilder, "delete table ip %s\n", nftablesTableName)
 	fmt.Fprintf(&rulesetBuilder, "table ip %s {\n", nftablesTableName)
 
 	fmt.Fprintf(&rulesetBuilder, "    map %s {\n", nftablesVIPDispatchMap)

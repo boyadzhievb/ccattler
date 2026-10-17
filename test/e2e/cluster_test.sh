@@ -911,25 +911,40 @@ log "  Running instances with endpoints: $ENDPOINT_COUNT"
 VIP_COUNT=$(echo "$NET_JSON" | jq '.networking | length' 2>/dev/null || echo "0")
 log "  VIP/networking entries: $VIP_COUNT"
 
-# Wait for iptables rules to appear on the ctrl node (gives data plane reconciler time).
-IPTABLES_DEADLINE=$((SECONDS + 30))
+# Wait for data plane rules to appear on the ctrl node (gives data plane reconciler time).
+# Supports both nftables (table ip cca) and iptables (CCA_SERVICES chain).
+DATAPLANE_DEADLINE=$((SECONDS + 30))
 DNAT_RULE_COUNT=0
-while [[ $SECONDS -lt $IPTABLES_DEADLINE ]]; do
-    DNAT_RULE_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
-    if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
+DATAPLANE_TYPE=""
+while [[ $SECONDS -lt $DATAPLANE_DEADLINE ]]; do
+    NFT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto'" || echo "0")
+    if [[ "$NFT_COUNT" -gt 0 ]]; then
+        DNAT_RULE_COUNT=$NFT_COUNT
+        DATAPLANE_TYPE="nftables"
+        break
+    fi
+    IPT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
+    if [[ "$IPT_COUNT" -gt 0 ]]; then
+        DNAT_RULE_COUNT=$IPT_COUNT
+        DATAPLANE_TYPE="iptables"
         break
     fi
     sleep 3
 done
-log "  CCA_SERVICES jump rules on ctrl: $DNAT_RULE_COUNT"
+log "  Data plane rules on ctrl: $DNAT_RULE_COUNT ($DATAPLANE_TYPE)"
 
 if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
-    # Show the per-service DNAT rules for debugging.
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null" | head -20
-    log "VIP data plane OK — DNAT rules programmed"
+    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null" | head -30
+    else
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null" | head -20
+    fi
+    log "VIP data plane OK — DNAT rules programmed ($DATAPLANE_TYPE)"
 else
-    log "WARNING: CCA_SERVICES chain has no jump rules — cross-node VIP routing may not work"
+    log "WARNING: No data plane rules found — cross-node VIP routing may not work"
     log "  Dumping diagnostics..."
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list tables 2>/dev/null" || true
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null" || true
     ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
     log "  Networking from API:"
     curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true

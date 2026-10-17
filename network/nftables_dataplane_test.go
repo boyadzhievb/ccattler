@@ -245,8 +245,8 @@ func TestNftablesBuildVIPRulesetAtomicFlush(t *testing.T) {
 	desiredVIPAddresses := make(map[string]bool)
 	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
 
-	if !strings.HasPrefix(ruleset, "flush ruleset ip\n") {
-		t.Error("ruleset should begin with flush for atomic replacement")
+	if !strings.HasPrefix(ruleset, "table ip cca {}\ndelete table ip cca\n") {
+		t.Error("ruleset should begin with create+delete for safe table replacement")
 	}
 }
 
