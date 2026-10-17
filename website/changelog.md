@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.46.0-beta <Badge type="tip" text="latest" /> {#v1-46-0-beta}
+## v1.47.0-beta <Badge type="tip" text="latest" /> {#v1-47-0-beta}
+
+**2026-10-17** — DSL Formatter & Linter.
+
+- **DSL Formatter & Linter** (M120) — `cca fmt <file>` parses `.cca` files and re-emits them in canonical format (consistent indentation, block ordering, spacing). `cca lint <file>` validates syntax and semantics without writing to the store (catches errors early, usable in CI). AST→text emitter with configurable indent width, idempotent formatting (fmt∘fmt = fmt), lint checks: undefined service references in routes/groups/network rules, duplicate names, missing required fields, port range validation.
+
+---
+
+## v1.46.0-beta {#v1-46-0-beta}
 
 **2026-10-17** — Service Tags & Cross-Service Queries.
 

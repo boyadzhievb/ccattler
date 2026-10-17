@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M119 — Phase 119 Service Tags & Cross-Service Queries. M1–M119 complete. Gates A–I resolved.
+**Completed through:** M120 — Phase 120 DSL Formatter & Linter. M1–M120 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
