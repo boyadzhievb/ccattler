@@ -204,7 +204,7 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 				serviceConfig.VirtualIP, protocol, serviceConfig.Port, chainName))
 
 		fmt.Fprintf(&rulesetBuilder, "    chain %s {\n", chainName)
-		writeBackendDNATRules(&rulesetBuilder, serviceConfig.Backends)
+		writeBackendDNATRules(&rulesetBuilder, serviceConfig.Backends, protocol)
 		rulesetBuilder.WriteString("    }\n\n")
 	}
 
@@ -243,17 +243,18 @@ func writeVerdictMapWithElements(rulesetBuilder *strings.Builder, dispatchEntrie
 }
 
 // writeBackendDNATRules writes nftables DNAT rules for the given backends
-// using numgen round-robin into the provided builder. Uses "dnat ip to"
-// with explicit family so the port is parsed correctly without a prior
-// transport protocol match in the chain.
-func writeBackendDNATRules(rulesetBuilder *strings.Builder, backends []DataPlaneBackend) {
+// using numgen round-robin into the provided builder. Includes an explicit
+// transport protocol match so nftables accepts the :port syntax — older
+// nftables (e.g. 1.0.2 on Ubuntu 22.04) requires this context.
+func writeBackendDNATRules(rulesetBuilder *strings.Builder, backends []DataPlaneBackend, protocol string) {
+	fmt.Fprintf(rulesetBuilder, "        meta l4proto %s\n", protocol)
 	if len(backends) == 1 {
-		fmt.Fprintf(rulesetBuilder, "        dnat ip to %s:%d\n",
+		fmt.Fprintf(rulesetBuilder, "        dnat to %s:%d\n",
 			backends[0].Address, backends[0].Port)
 		return
 	}
 
-	fmt.Fprintf(rulesetBuilder, "        dnat ip to numgen inc mod %d map {\n", len(backends))
+	fmt.Fprintf(rulesetBuilder, "        dnat to numgen inc mod %d map {\n", len(backends))
 	for backendIndex, backend := range backends {
 		separator := ","
 		if backendIndex == len(backends)-1 {
@@ -311,11 +312,12 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 func writeSourceIPStickyChain(rulesetBuilder *strings.Builder, routeConfig RouteDataPlaneConfig, chainName string) {
 	fmt.Fprintf(rulesetBuilder, "    chain %s {\n", chainName)
 
+	rulesetBuilder.WriteString("        meta l4proto tcp\n")
 	if len(routeConfig.Backends) == 1 {
-		fmt.Fprintf(rulesetBuilder, "        dnat ip to %s:%d\n",
+		fmt.Fprintf(rulesetBuilder, "        dnat to %s:%d\n",
 			routeConfig.Backends[0].Address, routeConfig.Backends[0].Port)
 	} else {
-		fmt.Fprintf(rulesetBuilder, "        dnat ip to jhash ip saddr mod %d map {\n", len(routeConfig.Backends))
+		fmt.Fprintf(rulesetBuilder, "        dnat to jhash ip saddr mod %d map {\n", len(routeConfig.Backends))
 		for backendIndex, backend := range routeConfig.Backends {
 			separator := ","
 			if backendIndex == len(routeConfig.Backends)-1 {
