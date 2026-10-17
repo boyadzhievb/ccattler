@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.44.0-beta <Badge type="tip" text="latest" /> {#v1-44-0-beta}
+## v1.45.0-beta <Badge type="tip" text="latest" /> {#v1-45-0-beta}
+
+**2026-10-17** — Route Block & Sticky Sessions.
+
+- **Route Block & Sticky Sessions** (M118) — Top-level `route` DSL block (host matching, service+port target, sticky cookie with name/secure/http-only/same-site), parser→compiler→`route()` facts, endpoint controller resolves route→backend mapping, agent data plane programs iptables/eBPF DNAT with cookie-based session affinity (Set-Cookie on first request, hash cookie→backend on subsequent), cookie name defaults to `__CCA_STICKY_{service}`, stale mapping cleanup on backend failure, source-IP affinity as alternative strategy. Inspired by Traefik IngressRoute / nginx upstream sticky — CCattler equivalent is the `route` block.
+
+---
+
+## v1.44.0-beta {#v1-44-0-beta}
 
 **2026-10-16** — E2E Streamline & CI Fixes.
 
