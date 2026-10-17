@@ -11,9 +11,10 @@ package network
 
 import "context"
 
-// DataPlaneProvider programs per-node forwarding rules for service VIPs.
-// Each worker node runs a data plane provider that translates VIP:port
-// traffic into DNAT to the actual backend endpoints. Implementations
+// DataPlaneProvider programs per-node forwarding rules for service VIPs
+// and route-based traffic distribution. Each worker node runs a data plane
+// provider that translates VIP:port traffic into DNAT to backend endpoints
+// and applies route-level policies (sticky sessions). Implementations
 // range from a no-op simulator (for tests) to iptables DNAT rules
 // (for real Linux hosts, analogous to kube-proxy iptables mode).
 type DataPlaneProvider interface {
@@ -23,9 +24,14 @@ type DataPlaneProvider interface {
 	// idempotent — calling with the same input twice produces no changes.
 	ReconcileVIPDataPlane(ctx context.Context, serviceConfigs []ServiceVIPConfig) error
 
+	// ReconcileRouteDataPlane programs forwarding rules for route-based
+	// traffic distribution with optional sticky session affinity. Called
+	// on every agent reconciliation cycle alongside VIP reconciliation.
+	ReconcileRouteDataPlane(ctx context.Context, routeConfigs []RouteDataPlaneConfig) error
+
 	// Cleanup removes all data plane state managed by this provider:
-	// iptables chains/rules, dummy interfaces, VIP addresses. Called on
-	// agent shutdown for clean teardown.
+	// iptables chains/rules, dummy interfaces, VIP addresses, route
+	// proxy processes. Called on agent shutdown for clean teardown.
 	Cleanup(ctx context.Context) error
 }
 
@@ -54,4 +60,36 @@ type DataPlaneBackend struct {
 	// Port is the port number on the backend (host port for cross-host,
 	// container port for local containers).
 	Port int
+}
+
+// RouteDataPlaneConfig describes the forwarding configuration for a single
+// route: which service VIP to intercept and how to distribute traffic
+// across backends, optionally with sticky session affinity.
+type RouteDataPlaneConfig struct {
+	// RouteName is the CCattler route name (e.g. "web-public").
+	RouteName string
+	// ServiceName is the target service name (e.g. "web").
+	ServiceName string
+	// VirtualIP is the service's VIP address used as the DNAT entry point.
+	VirtualIP string
+	// Port is the service port on the VIP.
+	Port int
+	// Backends is the set of resolved backend endpoints.
+	Backends []DataPlaneBackend
+	// StickyMethod is the affinity method: "" (none), "source-ip", or "cookie".
+	StickyMethod string
+	// CookieConfig holds cookie-specific settings when StickyMethod is "cookie".
+	CookieConfig *RouteCookieConfig
+}
+
+// RouteCookieConfig holds the cookie attributes for cookie-based sticky sessions.
+type RouteCookieConfig struct {
+	// Name is the cookie name (e.g. "session" or "__CCA_STICKY_web").
+	Name string
+	// Secure sets the Secure flag on the cookie.
+	Secure bool
+	// HTTPOnly sets the HttpOnly flag on the cookie.
+	HTTPOnly bool
+	// SameSite is the SameSite attribute: "strict", "lax", or "none".
+	SameSite string
 }

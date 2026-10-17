@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -38,10 +39,11 @@ func NewDataPlaneReconciler(nodeID string, factStore store.StateStore, dataPlane
 
 // Reconcile reads VIP and endpoint facts from the store, resolves
 // each endpoint to a host-accessible backend address, and calls the data
-// plane provider to program iptables DNAT rules. For instances running on
-// this node, the backend is the container IP:port (reachable via Docker
-// bridge). For instances on other nodes, the backend is the remote node's
-// advertise address + host port (reachable via LAN).
+// plane provider to program iptables DNAT rules. Also reads route facts
+// and programs route-specific forwarding (sticky sessions). For instances
+// running on this node, the backend is the container IP:port (reachable
+// via Docker bridge). For instances on other nodes, the backend is the
+// remote node's advertise address + host port (reachable via LAN).
 func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 	if dataPlaneReconciler.dataPlaneProvider == nil {
 		return
@@ -53,8 +55,20 @@ func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 		return
 	}
 
-	if err := dataPlaneReconciler.dataPlaneProvider.ReconcileVIPDataPlane(ctx, serviceVIPConfigs); err != nil {
-		logging.Default().Error("dataplane: reconcile error", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
+	if vipReconcileError := dataPlaneReconciler.dataPlaneProvider.ReconcileVIPDataPlane(ctx, serviceVIPConfigs); vipReconcileError != nil {
+		logging.Default().Error("dataplane: reconcile error", "agent", dataPlaneReconciler.nodeID, "error", vipReconcileError.Error())
+	}
+
+	routeConfigs, err := dataPlaneReconciler.buildRouteDataPlaneConfigs(ctx, serviceVIPConfigs)
+	if err != nil {
+		logging.Default().Error("dataplane: failed to build route configs", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
+		return
+	}
+
+	if len(routeConfigs) > 0 {
+		if err := dataPlaneReconciler.dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs); err != nil {
+			logging.Default().Error("dataplane: route reconcile error", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
+		}
 	}
 }
 
@@ -115,6 +129,181 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	}
 
 	return serviceVIPConfigs, nil
+}
+
+// buildRouteDataPlaneConfigs reads desired route facts and derived backend
+// facts to construct route configurations for the data plane. It resolves
+// each route's target service to its VIP (from the already-built VIP configs)
+// and parses sticky session settings.
+func (dataPlaneReconciler *DataPlaneReconciler) buildRouteDataPlaneConfigs(ctx context.Context, serviceVIPConfigs []network.ServiceVIPConfig) ([]network.RouteDataPlaneConfig, error) {
+	desiredRouteFacts, err := dataPlaneReconciler.factStore.Scan(ctx, types.ScanDesiredRoutes)
+	if err != nil {
+		return nil, fmt.Errorf("scanning desired routes: %w", err)
+	}
+	if len(desiredRouteFacts) == 0 {
+		return nil, nil
+	}
+
+	serviceVIPLookup := make(map[string]network.ServiceVIPConfig, len(serviceVIPConfigs))
+	for _, vipConfig := range serviceVIPConfigs {
+		serviceVIPLookup[vipConfig.ServiceName] = vipConfig
+	}
+
+	derivedRouteFacts, err := dataPlaneReconciler.factStore.Scan(ctx, types.ScanDerivedRoutes)
+	if err != nil {
+		return nil, fmt.Errorf("scanning derived routes: %w", err)
+	}
+
+	parsedRoutes := parseRouteFactsForDataPlane(desiredRouteFacts, derivedRouteFacts)
+
+	var routeConfigs []network.RouteDataPlaneConfig
+	for _, parsedRoute := range parsedRoutes {
+		vipConfig, hasVIP := serviceVIPLookup[parsedRoute.serviceName]
+		if !hasVIP || vipConfig.VirtualIP == "" {
+			continue
+		}
+		routeConfig := buildRouteConfigFromEntry(parsedRoute, vipConfig)
+		routeConfigs = append(routeConfigs, routeConfig)
+	}
+
+	return routeConfigs, nil
+}
+
+// buildRouteConfigFromEntry converts a parsed route entry and its service's VIP
+// config into a RouteDataPlaneConfig with resolved backends and cookie settings.
+func buildRouteConfigFromEntry(parsedRoute dataPlaneRouteEntry, vipConfig network.ServiceVIPConfig) network.RouteDataPlaneConfig {
+	routePort := parsedRoute.servicePort
+	if routePort == 0 {
+		routePort = vipConfig.Port
+	}
+
+	routeConfig := network.RouteDataPlaneConfig{
+		RouteName:    parsedRoute.routeName,
+		ServiceName:  parsedRoute.serviceName,
+		VirtualIP:    vipConfig.VirtualIP,
+		Port:         routePort,
+		StickyMethod: parsedRoute.stickyMethod,
+		Backends:     parseBackendAddressList(parsedRoute.backendAddresses),
+	}
+
+	if parsedRoute.stickyMethod == "cookie" {
+		routeConfig.CookieConfig = &network.RouteCookieConfig{
+			Name:     parsedRoute.cookieName,
+			Secure:   parsedRoute.cookieSecure,
+			HTTPOnly: parsedRoute.cookieHTTPOnly,
+			SameSite: parsedRoute.cookieSameSite,
+		}
+	}
+
+	return routeConfig
+}
+
+// parseBackendAddressList converts a list of "host:port" strings into
+// DataPlaneBackend structs, skipping malformed entries.
+func parseBackendAddressList(addresses []string) []network.DataPlaneBackend {
+	var backends []network.DataPlaneBackend
+	for _, backendAddress := range addresses {
+		colonIndex := strings.LastIndex(backendAddress, ":")
+		if colonIndex < 0 {
+			continue
+		}
+		backendIP := backendAddress[:colonIndex]
+		backendPort, _ := strconv.Atoi(backendAddress[colonIndex+1:])
+		if backendPort <= 0 {
+			continue
+		}
+		backends = append(backends, network.DataPlaneBackend{
+			Address: backendIP,
+			Port:    backendPort,
+		})
+	}
+	return backends
+}
+
+// dataPlaneRouteEntry holds the parsed fields from desired + derived route facts.
+type dataPlaneRouteEntry struct {
+	routeName        string
+	serviceName      string
+	servicePort      int
+	stickyMethod     string
+	cookieName       string
+	cookieSecure     bool
+	cookieHTTPOnly   bool
+	cookieSameSite   string
+	backendAddresses []string
+}
+
+// parseRouteFactsForDataPlane extracts route definitions from desired and
+// derived route facts into structured entries for data plane programming.
+func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store.Fact) []dataPlaneRouteEntry {
+	routeEntries := make(map[string]*dataPlaneRouteEntry)
+
+	for _, fact := range desiredFacts {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		routeName := pathParts[0]
+
+		if routeEntries[routeName] == nil {
+			routeEntries[routeName] = &dataPlaneRouteEntry{routeName: routeName}
+		}
+		entry := routeEntries[routeName]
+
+		if len(pathParts) == 1 {
+			continue
+		}
+
+		fieldPath := pathParts[1]
+		fieldValue := string(fact.Value)
+		switch fieldPath {
+		case "service":
+			entry.serviceName = fieldValue
+		case "port":
+			entry.servicePort, _ = strconv.Atoi(fieldValue)
+		case "sticky":
+			entry.stickyMethod = fieldValue
+		case "cookie/name":
+			entry.cookieName = fieldValue
+		case "cookie/secure":
+			entry.cookieSecure = fieldValue == "true"
+		case "cookie/httponly":
+			entry.cookieHTTPOnly = fieldValue == "true"
+		case "cookie/samesite":
+			entry.cookieSameSite = fieldValue
+		}
+	}
+
+	for _, fact := range derivedFacts {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDerivedRoutes)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		routeName := pathParts[0]
+
+		if routeEntries[routeName] == nil {
+			continue
+		}
+
+		if len(pathParts) == 2 && pathParts[1] == "backends" {
+			backendsValue := string(fact.Value)
+			if backendsValue != "" {
+				routeEntries[routeName].backendAddresses = strings.Split(backendsValue, ",")
+			}
+		}
+	}
+
+	var sortedEntries []dataPlaneRouteEntry
+	sortedRouteNames := make([]string, 0, len(routeEntries))
+	for routeName := range routeEntries {
+		sortedRouteNames = append(sortedRouteNames, routeName)
+	}
+	sort.Strings(sortedRouteNames)
+
+	for _, routeName := range sortedRouteNames {
+		entry := routeEntries[routeName]
+		if entry.serviceName != "" {
+			sortedEntries = append(sortedEntries, *entry)
+		}
+	}
+
+	return sortedEntries
 }
 
 // resolveServiceBackends reads endpoint facts for a service and resolves

@@ -31,6 +31,10 @@ const vipDummyInterface = "cca0"
 // removes only one matching rule per invocation.
 const maxJumpRuleRemovalAttempts = 20
 
+// iptablesRouteChainPrefix is prepended to the route name to form
+// the per-route iptables chain name (e.g. "CCA_RT_web-public").
+const iptablesRouteChainPrefix = "CCA_RT_"
+
 // IptablesDataPlane programs iptables nat-table DNAT rules for VIP-based
 // load balancing, analogous to kube-proxy in iptables mode. For each
 // service VIP it creates a per-service chain with round-robin DNAT rules
@@ -41,15 +45,20 @@ const maxJumpRuleRemovalAttempts = 20
 //
 //	PREROUTING → CCA_SERVICES → CCA_SVC_web → DNAT to backends
 //	OUTPUT     → CCA_SERVICES → CCA_SVC_web → DNAT to backends
+//	                           → CCA_RT_web-public → DNAT with xt_recent (source-ip sticky)
 type IptablesDataPlane struct {
 	// mutex serializes reconciliation calls.
 	mutex sync.Mutex
 	// activeServiceChains tracks which per-service chains currently exist
 	// in iptables, so stale chains can be detected and removed.
 	activeServiceChains map[string]bool
+	// activeRouteChains tracks which per-route chains currently exist.
+	activeRouteChains map[string]bool
 	// activeVIPAddresses tracks which VIP addresses are currently assigned
 	// to the dummy interface, so stale addresses can be removed.
 	activeVIPAddresses map[string]bool
+	// cookieProxy manages per-route cookie-sticky reverse proxy listeners.
+	cookieProxy *CookieStickyProxy
 	// initialized tracks whether the global chain and jump rules have been set up.
 	initialized bool
 }
@@ -59,7 +68,9 @@ type IptablesDataPlane struct {
 func NewIptablesDataPlane() *IptablesDataPlane {
 	return &IptablesDataPlane{
 		activeServiceChains: make(map[string]bool),
+		activeRouteChains:   make(map[string]bool),
 		activeVIPAddresses:  make(map[string]bool),
+		cookieProxy:         NewCookieStickyProxy(),
 	}
 }
 
@@ -106,11 +117,160 @@ func (iptablesDataPlane *IptablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 	return nil
 }
 
+// ReconcileRouteDataPlane programs iptables chains for route-based traffic
+// distribution. For source-ip sticky routes, it creates per-route chains
+// that use xt_recent to pin client IPs to specific backends. Non-sticky
+// routes reuse the service VIP's round-robin chain (no extra rules needed).
+// Cookie-sticky routes are handled by the cookie proxy, not iptables.
+func (iptablesDataPlane *IptablesDataPlane) ReconcileRouteDataPlane(ctx context.Context, routeConfigs []RouteDataPlaneConfig) error {
+	iptablesDataPlane.mutex.Lock()
+	defer iptablesDataPlane.mutex.Unlock()
+
+	if err := iptablesDataPlane.ensureGlobalChainAndJumpRules(); err != nil {
+		return fmt.Errorf("setting up global chain for routes: %w", err)
+	}
+
+	desiredRouteChains := make(map[string]bool)
+
+	for _, routeConfig := range routeConfigs {
+		if len(routeConfig.Backends) == 0 || routeConfig.VirtualIP == "" {
+			continue
+		}
+
+		switch routeConfig.StickyMethod {
+		case "source-ip":
+			chainName := iptablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
+			desiredRouteChains[chainName] = true
+			if err := iptablesDataPlane.reconcileSourceIPStickyChain(routeConfig, chainName); err != nil {
+				logging.Default().Error("failed to reconcile source-ip route chain", "chain", chainName, "error", err.Error())
+			}
+
+		case "cookie":
+			chainName := iptablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
+			desiredRouteChains[chainName] = true
+			if err := iptablesDataPlane.reconcileCookieStickyChain(routeConfig, chainName); err != nil {
+				logging.Default().Error("failed to reconcile cookie route chain", "chain", chainName, "error", err.Error())
+			}
+		}
+	}
+
+	iptablesDataPlane.cookieProxy.ReconcileRoutes(routeConfigs)
+	iptablesDataPlane.removeStaleRouteChains(desiredRouteChains)
+
+	return nil
+}
+
+// reconcileSourceIPStickyChain creates a per-route iptables chain that uses
+// the xt_recent module to pin each client source IP to a specific backend.
+// The first packet from a new client is DNAT'd round-robin; subsequent
+// packets from the same source IP are DNAT'd to the same backend.
+func (iptablesDataPlane *IptablesDataPlane) reconcileSourceIPStickyChain(routeConfig RouteDataPlaneConfig, chainName string) error {
+	_ = runIptables("-t", "nat", "-N", chainName)
+
+	if err := runIptablesStrict("-t", "nat", "-F", chainName); err != nil {
+		return fmt.Errorf("flushing chain %s: %w", chainName, err)
+	}
+
+	for backendIndex, backend := range routeConfig.Backends {
+		destination := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
+		recentListName := fmt.Sprintf("cca_rt_%s_%d", sanitizeChainName(routeConfig.RouteName), backendIndex)
+
+		if err := runIptablesStrict("-t", "nat", "-A", chainName,
+			"-p", "tcp",
+			"-m", "recent", "--name", recentListName, "--rcheck", "--seconds", "1800",
+			"-j", "DNAT", "--to-destination", destination); err != nil {
+			return fmt.Errorf("adding recent-check rule for %s: %w", destination, err)
+		}
+	}
+
+	backendCount := len(routeConfig.Backends)
+	for backendIndex, backend := range routeConfig.Backends {
+		destination := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
+		recentListName := fmt.Sprintf("cca_rt_%s_%d", sanitizeChainName(routeConfig.RouteName), backendIndex)
+		remainingBackends := backendCount - backendIndex
+
+		if remainingBackends > 1 {
+			if err := runIptablesStrict("-t", "nat", "-A", chainName,
+				"-p", "tcp",
+				"-m", "statistic", "--mode", "nth",
+				"--every", fmt.Sprintf("%d", remainingBackends), "--packet", "0",
+				"-m", "recent", "--name", recentListName, "--set",
+				"-j", "DNAT", "--to-destination", destination); err != nil {
+				return fmt.Errorf("adding sticky DNAT rule for %s: %w", destination, err)
+			}
+		} else {
+			if err := runIptablesStrict("-t", "nat", "-A", chainName,
+				"-p", "tcp",
+				"-m", "recent", "--name", recentListName, "--set",
+				"-j", "DNAT", "--to-destination", destination); err != nil {
+				return fmt.Errorf("adding final sticky DNAT rule for %s: %w", destination, err)
+			}
+		}
+	}
+
+	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, chainName); err != nil {
+		return fmt.Errorf("adding jump to %s: %w", chainName, err)
+	}
+
+	iptablesDataPlane.activeRouteChains[chainName] = true
+	return nil
+}
+
+// reconcileCookieStickyChain creates a per-route iptables chain that DNATs
+// VIP:port traffic to the local cookie proxy listener port. The cookie proxy
+// handles L7 sticky session logic (reading/writing cookies, selecting backends).
+func (iptablesDataPlane *IptablesDataPlane) reconcileCookieStickyChain(routeConfig RouteDataPlaneConfig, chainName string) error {
+	proxyPort := iptablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)
+	if proxyPort == 0 {
+		return nil
+	}
+
+	_ = runIptables("-t", "nat", "-N", chainName)
+
+	if err := runIptablesStrict("-t", "nat", "-F", chainName); err != nil {
+		return fmt.Errorf("flushing chain %s: %w", chainName, err)
+	}
+
+	proxyDestination := fmt.Sprintf("127.0.0.1:%d", proxyPort)
+	if err := runIptablesStrict("-t", "nat", "-A", chainName,
+		"-p", "tcp",
+		"-j", "DNAT", "--to-destination", proxyDestination); err != nil {
+		return fmt.Errorf("adding cookie proxy DNAT rule for %s: %w", proxyDestination, err)
+	}
+
+	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, chainName); err != nil {
+		return fmt.Errorf("adding jump to %s: %w", chainName, err)
+	}
+
+	iptablesDataPlane.activeRouteChains[chainName] = true
+	return nil
+}
+
+// removeStaleRouteChains removes per-route chains that are no longer needed.
+func (iptablesDataPlane *IptablesDataPlane) removeStaleRouteChains(desiredChains map[string]bool) {
+	for chainName := range iptablesDataPlane.activeRouteChains {
+		if !desiredChains[chainName] {
+			removeJumpRuleFromMainChain(chainName)
+			flushAndDeleteChain(chainName)
+			delete(iptablesDataPlane.activeRouteChains, chainName)
+			logging.Default().Info("removed stale route chain", "chain", chainName)
+		}
+	}
+}
+
 // Cleanup removes all CCattler-managed iptables chains, rules, and the
 // dummy interface. Safe to call even if nothing was set up.
 func (iptablesDataPlane *IptablesDataPlane) Cleanup(_ context.Context) error {
 	iptablesDataPlane.mutex.Lock()
 	defer iptablesDataPlane.mutex.Unlock()
+
+	iptablesDataPlane.cookieProxy.Cleanup()
+
+	for chainName := range iptablesDataPlane.activeRouteChains {
+		removeJumpRuleFromMainChain(chainName)
+		flushAndDeleteChain(chainName)
+	}
+	iptablesDataPlane.activeRouteChains = make(map[string]bool)
 
 	for chainName := range iptablesDataPlane.activeServiceChains {
 		removeJumpRuleFromMainChain(chainName)
