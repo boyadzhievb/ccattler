@@ -247,14 +247,13 @@ func writeVerdictMapWithElements(rulesetBuilder *strings.Builder, dispatchEntrie
 // transport protocol match so nftables accepts the :port syntax — older
 // nftables (e.g. 1.0.2 on Ubuntu 22.04) requires this context.
 func writeBackendDNATRules(rulesetBuilder *strings.Builder, backends []DataPlaneBackend, protocol string) {
-	fmt.Fprintf(rulesetBuilder, "        meta l4proto %s\n", protocol)
 	if len(backends) == 1 {
-		fmt.Fprintf(rulesetBuilder, "        dnat to %s:%d\n",
-			backends[0].Address, backends[0].Port)
+		fmt.Fprintf(rulesetBuilder, "        meta l4proto %s dnat to %s:%d\n",
+			protocol, backends[0].Address, backends[0].Port)
 		return
 	}
 
-	fmt.Fprintf(rulesetBuilder, "        dnat to numgen inc mod %d map {\n", len(backends))
+	fmt.Fprintf(rulesetBuilder, "        meta l4proto %s dnat to numgen inc mod %d map {\n", protocol, len(backends))
 	for backendIndex, backend := range backends {
 		separator := ","
 		if backendIndex == len(backends)-1 {
@@ -312,12 +311,11 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 func writeSourceIPStickyChain(rulesetBuilder *strings.Builder, routeConfig RouteDataPlaneConfig, chainName string) {
 	fmt.Fprintf(rulesetBuilder, "    chain %s {\n", chainName)
 
-	rulesetBuilder.WriteString("        meta l4proto tcp\n")
 	if len(routeConfig.Backends) == 1 {
-		fmt.Fprintf(rulesetBuilder, "        dnat to %s:%d\n",
+		fmt.Fprintf(rulesetBuilder, "        meta l4proto tcp dnat to %s:%d\n",
 			routeConfig.Backends[0].Address, routeConfig.Backends[0].Port)
 	} else {
-		fmt.Fprintf(rulesetBuilder, "        dnat to jhash ip saddr mod %d map {\n", len(routeConfig.Backends))
+		fmt.Fprintf(rulesetBuilder, "        meta l4proto tcp dnat to jhash ip saddr mod %d map {\n", len(routeConfig.Backends))
 		for backendIndex, backend := range routeConfig.Backends {
 			separator := ","
 			if backendIndex == len(routeConfig.Backends)-1 {
