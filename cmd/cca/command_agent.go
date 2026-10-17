@@ -43,6 +43,7 @@ type agentCommandConfig struct {
 	kmsKeyID               string // kmsKeyID is the KMS key ARN (AWS) or resource name (GCP) for secret decryption.
 	debugListenAddress     string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
 	secretAPIListenAddress string // secretAPIListenAddress is the address for the per-instance secret HTTP API (e.g. "0.0.0.0:9772").
+	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", or "iptables" (default "auto").
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -52,10 +53,11 @@ type agentCommandConfig struct {
 func parseAgentCommandArgs(args []string) agentCommandConfig {
 	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := agentCommandConfig{
-		storeBackend:   defaults.storeBackend,
-		etcdEndpoints:  defaults.etcdEndpoints,
-		storeKeyPrefix: defaults.storeKeyPrefix,
-		runtimeBackend: "container",
+		storeBackend:     defaults.storeBackend,
+		etcdEndpoints:    defaults.etcdEndpoints,
+		storeKeyPrefix:   defaults.storeKeyPrefix,
+		runtimeBackend:   "container",
+		dataPlaneBackend: "auto",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -160,6 +162,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.secretAPIListenAddress = args[argIndex]
 			}
+		case "--dataplane":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.dataPlaneBackend = args[argIndex]
+			}
 		}
 	}
 
@@ -174,6 +181,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 
 	if parsedConfig.runtimeBackend != "process" && parsedConfig.runtimeBackend != "container" {
 		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\" or \"container\")\n", parsedConfig.runtimeBackend)
+		os.Exit(1)
+	}
+
+	if parsedConfig.dataPlaneBackend != "auto" && parsedConfig.dataPlaneBackend != "nftables" && parsedConfig.dataPlaneBackend != "iptables" {
+		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", or \"iptables\")\n", parsedConfig.dataPlaneBackend)
 		os.Exit(1)
 	}
 
@@ -226,8 +238,8 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	if parsedConfig.advertiseAddress != "" {
 		nodeAgent.SetAdvertiseAddress(parsedConfig.advertiseAddress)
-		iptablesDataPlane := network.NewIptablesDataPlane()
-		nodeAgent.SetDataPlaneProvider(iptablesDataPlane)
+		dataPlaneProvider := createDataPlaneProvider(parsedConfig.dataPlaneBackend)
+		nodeAgent.SetDataPlaneProvider(dataPlaneProvider)
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
 	}
@@ -318,6 +330,27 @@ func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string) r
 		return containerRuntime
 	}
 	return runtime.NewProcessRuntime()
+}
+
+// createDataPlaneProvider selects the data plane implementation based on
+// the --dataplane flag. "auto" tries nftables first, falling back to
+// iptables. "nftables" or "iptables" forces a specific backend.
+func createDataPlaneProvider(dataPlaneBackend string) network.DataPlaneProvider {
+	switch dataPlaneBackend {
+	case "nftables":
+		fmt.Println("Data plane: nftables (forced)")
+		return network.NewNftablesDataPlane()
+	case "iptables":
+		fmt.Println("Data plane: iptables (forced)")
+		return network.NewIptablesDataPlane()
+	default:
+		if network.CheckNftablesAvailable() == nil {
+			fmt.Println("Data plane: nftables (auto-detected)")
+			return network.NewNftablesDataPlane()
+		}
+		fmt.Println("Data plane: iptables (nftables not available, falling back)")
+		return network.NewIptablesDataPlane()
+	}
 }
 
 // startAgentHTTPProxy starts the userspace HTTP proxy that routes requests to

@@ -208,7 +208,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileSourceIPStickyChain(routeCo
 		}
 	}
 
-	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, chainName); err != nil {
+	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, "tcp", chainName); err != nil {
 		return fmt.Errorf("adding jump to %s: %w", chainName, err)
 	}
 
@@ -238,7 +238,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileCookieStickyChain(routeConf
 		return fmt.Errorf("adding cookie proxy DNAT rule for %s: %w", proxyDestination, err)
 	}
 
-	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, chainName); err != nil {
+	if err := ensureJumpFromMainToService(routeConfig.VirtualIP, routeConfig.Port, "tcp", chainName); err != nil {
 		return fmt.Errorf("adding jump to %s: %w", chainName, err)
 	}
 
@@ -351,6 +351,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig 
 		return fmt.Errorf("flushing chain %s: %w", chainName, err)
 	}
 
+	protocol := serviceConfig.EffectiveProtocol()
 	backendCount := len(serviceConfig.Backends)
 	for backendIndex, backend := range serviceConfig.Backends {
 		destination := fmt.Sprintf("%s:%d", backend.Address, backend.Port)
@@ -358,7 +359,7 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig 
 
 		if remainingBackends > 1 {
 			if err := runIptablesStrict("-t", "nat", "-A", chainName,
-				"-p", "tcp",
+				"-p", protocol,
 				"-m", "statistic", "--mode", "nth",
 				"--every", fmt.Sprintf("%d", remainingBackends), "--packet", "0",
 				"-j", "DNAT", "--to-destination", destination); err != nil {
@@ -366,14 +367,14 @@ func (iptablesDataPlane *IptablesDataPlane) reconcileServiceChain(serviceConfig 
 			}
 		} else {
 			if err := runIptablesStrict("-t", "nat", "-A", chainName,
-				"-p", "tcp",
+				"-p", protocol,
 				"-j", "DNAT", "--to-destination", destination); err != nil {
 				return fmt.Errorf("adding final DNAT rule for %s: %w", destination, err)
 			}
 		}
 	}
 
-	if err := ensureJumpFromMainToService(serviceConfig.VirtualIP, serviceConfig.Port, chainName); err != nil {
+	if err := ensureJumpFromMainToService(serviceConfig.VirtualIP, serviceConfig.Port, serviceConfig.EffectiveProtocol(), chainName); err != nil {
 		return fmt.Errorf("adding jump to %s: %w", chainName, err)
 	}
 
@@ -441,17 +442,17 @@ func ensureJumpToChain(builtinChain string, targetChain string) error {
 }
 
 // ensureJumpFromMainToService adds a rule in CCA_SERVICES that jumps to
-// the per-service chain when the destination matches the VIP:port. Uses
-// -C to check first so duplicates are not created.
-func ensureJumpFromMainToService(virtualIP string, port int, serviceChain string) error {
+// the per-service chain when the destination matches the VIP:port:protocol.
+// Uses -C to check first so duplicates are not created.
+func ensureJumpFromMainToService(virtualIP string, port int, protocol string, serviceChain string) error {
 	ruleArgs := []string{"-t", "nat", "-C", iptablesMainChain,
-		"-d", virtualIP + "/32", "-p", "tcp", "--dport", fmt.Sprintf("%d", port),
+		"-d", virtualIP + "/32", "-p", protocol, "--dport", fmt.Sprintf("%d", port),
 		"-j", serviceChain}
 	if runIptables(ruleArgs...) == nil {
 		return nil
 	}
 	insertArgs := []string{"-t", "nat", "-A", iptablesMainChain,
-		"-d", virtualIP + "/32", "-p", "tcp", "--dport", fmt.Sprintf("%d", port),
+		"-d", virtualIP + "/32", "-p", protocol, "--dport", fmt.Sprintf("%d", port),
 		"-j", serviceChain}
 	return runIptablesStrict(insertArgs...)
 }

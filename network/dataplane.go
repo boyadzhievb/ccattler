@@ -45,10 +45,22 @@ type ServiceVIPConfig struct {
 	VirtualIP string
 	// Port is the port number on the VIP (e.g. 80).
 	Port int
+	// Protocol is the IP protocol: "tcp" or "udp". Defaults to "tcp".
+	Protocol string
 	// Backends is the set of real endpoints to distribute traffic across.
 	// Order does not matter — the data plane implementation chooses the
 	// load balancing strategy (round-robin via iptables statistic module).
 	Backends []DataPlaneBackend
+}
+
+// EffectiveProtocol returns the protocol for this config, defaulting to
+// "tcp" when unset. This preserves backward compatibility with callers
+// that do not populate the Protocol field.
+func (serviceVIPConfig ServiceVIPConfig) EffectiveProtocol() string {
+	if serviceVIPConfig.Protocol == "" {
+		return "tcp"
+	}
+	return serviceVIPConfig.Protocol
 }
 
 // DataPlaneBackend is a single real endpoint that a VIP can forward to.
