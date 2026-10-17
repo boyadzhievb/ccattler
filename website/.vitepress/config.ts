@@ -35,6 +35,8 @@ export default defineConfig({
             { text: 'Controllers', link: '/concepts/controllers' },
             { text: 'Networking', link: '/concepts/networking' },
             { text: 'Security', link: '/concepts/security' },
+            { text: 'Ecosystem Comparison', link: '/concepts/ecosystem-comparison' },
+            { text: 'Kubernetes Comparison', link: '/concepts/kubernetes-comparison' },
           ],
         },
       ],
