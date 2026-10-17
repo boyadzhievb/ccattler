@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.45.0-beta <Badge type="tip" text="latest" /> {#v1-45-0-beta}
+## v1.46.0-beta <Badge type="tip" text="latest" /> {#v1-46-0-beta}
+
+**2026-10-17** — Service Tags & Cross-Service Queries.
+
+- **Service Tags & Cross-Service Queries** (M119) — `tags` block inside service declarations (key=value pairs stored as `desired/service/{name}/tag/{key}` facts), `cca get services --tag team=payments` filters by tag, `cca logs --tag team=payments` aggregates logs across all matching services, `cca top workloads --tag tier=frontend` scoped resource view. Tags are user metadata for grouping and filtering — not used for scheduling (that's `placement`) or identity (that's `owner`/tenant).
+
+---
+
+## v1.45.0-beta {#v1-45-0-beta}
 
 **2026-10-17** — Route Block & Sticky Sessions.
 

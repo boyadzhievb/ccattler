@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M118 — Phase 118 Route Block & Sticky Sessions. M1–M118 complete. Gates A–I resolved.
+**Completed through:** M119 — Phase 119 Service Tags & Cross-Service Queries. M1–M119 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
