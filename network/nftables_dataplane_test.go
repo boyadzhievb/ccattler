@@ -79,7 +79,7 @@ func TestNftablesBuildVIPRulesetSingleBackend(t *testing.T) {
 	if strings.Contains(ruleset, "numgen") {
 		t.Error("single-backend service should use direct dnat, not numgen")
 	}
-	if !strings.Contains(ruleset, "dnat to 192.168.1.20:6379") {
+	if !strings.Contains(ruleset, "dnat ip to 192.168.1.20:6379") {
 		t.Error("ruleset should contain direct dnat to the single backend")
 	}
 }
