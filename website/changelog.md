@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.47.0-beta <Badge type="tip" text="latest" /> {#v1-47-0-beta}
+## v1.48.0-beta <Badge type="tip" text="latest" /> {#v1-48-0-beta}
+
+**2026-10-17** — nftables Data Plane.
+
+- **nftables Data Plane** (M121) — Replace iptables linear chain walk with nftables hash set lookups (O(1) per connection). `NftablesDataPlane` implements `DataPlaneProvider` using `google/nftables` pure-Go library. Verdict map dispatches VIP:proto:port to per-service chains, `numgen` round-robin for backend selection, `jhash` for source-IP sticky with kernel-enforced timeouts. PREROUTING + OUTPUT hooks (ingress + host-originated), POSTROUTING masquerade. Atomic nftables transactions (all-or-nothing updates). Add `Protocol` field to `ServiceVIPConfig`. `--dataplane auto\
+
+---
+
+## v1.47.0-beta {#v1-47-0-beta}
 
 **2026-10-17** — DSL Formatter & Linter.
 
