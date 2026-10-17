@@ -278,14 +278,14 @@ func TestNftablesBuildVIPRulesetVerdictMapHooksPresent(t *testing.T) {
 	desiredVIPAddresses := make(map[string]bool)
 	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
 
-	if !strings.Contains(ruleset, "hook prerouting priority dstnat") {
-		t.Error("prerouting chain should hook at dstnat priority")
+	if !strings.Contains(ruleset, "hook prerouting priority -100") {
+		t.Error("prerouting chain should hook at dstnat priority (-100)")
 	}
-	if !strings.Contains(ruleset, "hook output priority dstnat") {
-		t.Error("output chain should hook at dstnat priority for host-originated traffic")
+	if !strings.Contains(ruleset, "hook output priority -100") {
+		t.Error("output chain should hook at dstnat priority (-100) for host-originated traffic")
 	}
-	if !strings.Contains(ruleset, "hook postrouting priority srcnat") {
-		t.Error("postrouting chain should hook at srcnat priority")
+	if !strings.Contains(ruleset, "hook postrouting priority 100") {
+		t.Error("postrouting chain should hook at srcnat priority (100)")
 	}
 }
 

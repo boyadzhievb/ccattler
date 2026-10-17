@@ -170,12 +170,12 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 	rulesetBuilder.WriteString("    }\n\n")
 
 	rulesetBuilder.WriteString("    chain prerouting {\n")
-	rulesetBuilder.WriteString("        type nat hook prerouting priority dstnat; policy accept;\n")
+	rulesetBuilder.WriteString("        type nat hook prerouting priority -100; policy accept;\n")
 	fmt.Fprintf(&rulesetBuilder, "        ip daddr . ip protocol . th dport vmap @%s\n", nftablesVIPDispatchMap)
 	rulesetBuilder.WriteString("    }\n\n")
 
 	rulesetBuilder.WriteString("    chain output {\n")
-	rulesetBuilder.WriteString("        type nat hook output priority dstnat; policy accept;\n")
+	rulesetBuilder.WriteString("        type nat hook output priority -100; policy accept;\n")
 	fmt.Fprintf(&rulesetBuilder, "        ip daddr . ip protocol . th dport vmap @%s\n", nftablesVIPDispatchMap)
 	rulesetBuilder.WriteString("    }\n\n")
 
@@ -217,7 +217,7 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 // writePostRoutingChain writes the postrouting masquerade chain.
 func writePostRoutingChain(rulesetBuilder *strings.Builder) {
 	rulesetBuilder.WriteString("    chain postrouting {\n")
-	rulesetBuilder.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
+	rulesetBuilder.WriteString("        type nat hook postrouting priority 100; policy accept;\n")
 	rulesetBuilder.WriteString("        ct status dnat masquerade\n")
 	rulesetBuilder.WriteString("    }\n\n")
 }
