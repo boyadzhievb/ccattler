@@ -1400,14 +1400,14 @@ Top-level `route` DSL block for traffic routing with session affinity. Inspired 
 
 User-defined key=value tags on services for grouping and filtering. Not used for scheduling (that's `placement`) or identity (that's `owner`/tenant).
 
-- [ ] `tags` sub-block in service declarations: `tags { team "payments", tier "frontend" }`
-- [ ] Parser: `parseTagsBlock` in `lang/parser.go`, `TagsDecl` in `lang/ast.go`
-- [ ] Compiler: `desired/service/{name}/tag/{key}` = `{value}` facts
-- [ ] `cca get services --tag team=payments` — filter by tag match
-- [ ] `cca logs --tag team=payments` — aggregate logs across all matching services
-- [ ] `cca top workloads --tag tier=frontend` — scoped resource view
-- [ ] Parser + compiler tests
-- [ ] CLI integration tests
+- [x] `tags` sub-block in service declarations: `tags { team "payments"  tier "frontend" }`
+- [x] Parser: `parseTagsBlock` in `lang/parser.go`, `TagDecl` in `lang/ast.go`
+- [x] Compiler: `desired/service/{name}/tag/{key}` = `{value}` facts
+- [x] `cca get services --tag team=payments` — filter by tag match
+- [x] `cca logs --tag team=payments` — aggregate logs across all matching services
+- [x] `cca top workloads --tag tier=frontend` — scoped resource view
+- [x] Parser + compiler tests
+- [x] CLI integration tests
 
 ### Phase 120 — DSL Formatter & Linter (M120)
 

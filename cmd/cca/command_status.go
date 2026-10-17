@@ -157,11 +157,12 @@ type logsCommandConfig struct {
 	serviceName string
 	instanceID  string
 	follow      bool
+	tagFilters  map[string]string
 }
 
 // parseLogsCommandArgs extracts flags from the arguments following "logs".
 func parseLogsCommandArgs(args []string) logsCommandConfig {
-	parsedConfig := logsCommandConfig{}
+	parsedConfig := logsCommandConfig{tagFilters: make(map[string]string)}
 	for argIndex := 0; argIndex < len(args); argIndex++ {
 		currentArg := args[argIndex]
 		switch currentArg {
@@ -171,6 +172,15 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.instanceID = args[argIndex]
+			}
+		case "--tag":
+			if argIndex+1 < len(args) {
+				argIndex++
+				tagExpression := args[argIndex]
+				equalsIndex := strings.Index(tagExpression, "=")
+				if equalsIndex > 0 {
+					parsedConfig.tagFilters[tagExpression[:equalsIndex]] = tagExpression[equalsIndex+1:]
+				}
 			}
 		default:
 			if !strings.HasPrefix(currentArg, "-") && parsedConfig.serviceName == "" {
@@ -182,10 +192,11 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 }
 
 // executeLogsCommand streams container stdout/stderr logs for a service or
-// specific instance. Uses nerdctl/docker logs on the local machine.
+// specific instance. Uses nerdctl/docker logs on the local machine. With
+// --tag, resolves matching services and aggregates logs across all of them.
 func executeLogsCommand(parsedConfig logsCommandConfig) {
-	if parsedConfig.serviceName == "" && parsedConfig.instanceID == "" {
-		fmt.Fprintln(os.Stderr, "usage: cca logs <service> [--follow] [--instance <id>]")
+	if parsedConfig.serviceName == "" && parsedConfig.instanceID == "" && len(parsedConfig.tagFilters) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: cca logs <service> [--follow] [--instance <id>] [--tag key=value]")
 		os.Exit(1)
 	}
 
@@ -194,6 +205,65 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 		return
 	}
 
+	serviceNames := resolveServiceNamesForLogs(parsedConfig)
+
+	observedFacts := fetchObservedInstanceFacts()
+
+	var allInstanceIDs []struct {
+		serviceName string
+		instanceID  string
+	}
+	for _, serviceName := range serviceNames {
+		instanceIDs := findInstanceIDsForService(observedFacts, serviceName)
+		for _, instanceID := range instanceIDs {
+			allInstanceIDs = append(allInstanceIDs, struct {
+				serviceName string
+				instanceID  string
+			}{serviceName, instanceID})
+		}
+	}
+
+	if len(allInstanceIDs) == 0 {
+		if len(parsedConfig.tagFilters) > 0 {
+			fmt.Fprintln(os.Stderr, "no running instances found for matching tags")
+		} else {
+			fmt.Fprintf(os.Stderr, "no running instances found for service %q\n", parsedConfig.serviceName)
+		}
+		os.Exit(1)
+	}
+
+	if parsedConfig.follow {
+		streamContainerLogs(allInstanceIDs[0].serviceName, allInstanceIDs[0].instanceID, true)
+		return
+	}
+
+	for _, entry := range allInstanceIDs {
+		fmt.Printf("==> %s/%s <==\n", entry.serviceName, entry.instanceID)
+		streamContainerLogs(entry.serviceName, entry.instanceID, false)
+		fmt.Println()
+	}
+}
+
+// resolveServiceNamesForLogs determines which service names to stream logs for.
+// With --tag, fetches cluster status and filters by tags. Otherwise uses the
+// explicit service name from the command arguments.
+func resolveServiceNamesForLogs(parsedConfig logsCommandConfig) []string {
+	if len(parsedConfig.tagFilters) > 0 {
+		matchedServices := fetchServicesMatchingTags(parsedConfig.tagFilters)
+		if len(matchedServices) == 0 {
+			fmt.Fprintln(os.Stderr, "no services match the specified tags")
+			os.Exit(1)
+		}
+		return matchedServices
+	}
+	return []string{parsedConfig.serviceName}
+}
+
+// fetchObservedInstanceFacts retrieves all observed instance facts from the API.
+func fetchObservedInstanceFacts() []struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+} {
 	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + "observed/instance/"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -211,23 +281,35 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
 		os.Exit(1)
 	}
+	return facts
+}
 
-	instanceIDs := findInstanceIDsForService(facts, parsedConfig.serviceName)
-	if len(instanceIDs) == 0 {
-		fmt.Fprintf(os.Stderr, "no running instances found for service %q\n", parsedConfig.serviceName)
+// fetchServicesMatchingTags queries the cluster status API and returns the names
+// of services whose tags match all the provided filter criteria.
+func fetchServicesMatchingTags(tagFilters map[string]string) []string {
+	apiURL := statusAPIBaseURL() + "/api/status"
+	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run', 'server', or 'demo' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
+
+	var clusterStatus api.ClusterStatus
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&clusterStatus); decodeError != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
 		os.Exit(1)
 	}
 
-	if parsedConfig.follow {
-		streamContainerLogs(parsedConfig.serviceName, instanceIDs[0], true)
-		return
+	var matchingServiceNames []string
+	for _, service := range clusterStatus.Services {
+		if serviceMatchesAllTags(service.Tags, tagFilters) {
+			matchingServiceNames = append(matchingServiceNames, service.Name)
+		}
 	}
-
-	for _, instanceID := range instanceIDs {
-		fmt.Printf("==> %s <==\n", instanceID)
-		streamContainerLogs(parsedConfig.serviceName, instanceID, false)
-		fmt.Println()
-	}
+	sort.Strings(matchingServiceNames)
+	return matchingServiceNames
 }
 
 // findInstanceIDsForService scans observed facts to find instance IDs belonging
@@ -326,7 +408,7 @@ func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 
 // executeTopCommand queries the cluster API and displays resource utilization
 // in a tabular format, similar to `kubectl top`.
-func executeTopCommand(resourceType string) {
+func executeTopCommand(resourceType string, extraArgs []string) {
 	apiBaseURL := statusAPIBaseURL() + "/api/status"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -352,8 +434,10 @@ func executeTopCommand(resourceType string) {
 				nodeStatus.ID, nodeStatus.State, cpuDisplay, memoryDisplay, nodeStatus.PlacedInstances)
 		}
 	case "workloads", "workload", "instances", "inst":
+		tagFilters := parseTagFilterArgs(extraArgs)
+		filteredInstances := filterInstancesByServiceTags(clusterStatus.Instances, clusterStatus.Services, tagFilters)
 		fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n", "WORKLOAD", "NODE", "STATUS", "CPU", "MEMORY", "HEALTH")
-		for _, instanceStatus := range clusterStatus.Instances {
+		for _, instanceStatus := range filteredInstances {
 			healthDisplay := instanceStatus.HealthState
 			if healthDisplay == "" || healthDisplay == "-" {
 				healthDisplay = "-"
@@ -912,6 +996,28 @@ func filterServicesByTags(services []api.ServiceStatus, tagFilters map[string]st
 		}
 	}
 	return matchingServices
+}
+
+// filterInstancesByServiceTags returns only instances belonging to services that
+// match all specified tag filters. If no filters are specified, all instances
+// are returned unchanged.
+func filterInstancesByServiceTags(instances []api.InstanceStatus, services []api.ServiceStatus, tagFilters map[string]string) []api.InstanceStatus {
+	if len(tagFilters) == 0 {
+		return instances
+	}
+	matchingServiceNames := make(map[string]bool)
+	for _, service := range services {
+		if serviceMatchesAllTags(service.Tags, tagFilters) {
+			matchingServiceNames[service.Name] = true
+		}
+	}
+	var filteredInstances []api.InstanceStatus
+	for _, instance := range instances {
+		if matchingServiceNames[instance.ServiceName] {
+			filteredInstances = append(filteredInstances, instance)
+		}
+	}
+	return filteredInstances
 }
 
 // serviceMatchesAllTags checks whether a service's tags contain every filter entry.

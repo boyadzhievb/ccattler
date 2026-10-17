@@ -97,10 +97,10 @@ func main() {
 		executeBenchmarkCommand(parsedBenchmarkConfig)
 	case "top":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads|volumes>")
+			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads|volumes> [--tag key=value]")
 			os.Exit(1)
 		}
-		executeTopCommand(os.Args[2])
+		executeTopCommand(os.Args[2], os.Args[3:])
 	case "status":
 		executeStatusCommand()
 	case "logs":
