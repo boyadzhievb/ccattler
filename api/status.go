@@ -31,11 +31,12 @@ type ClusterStatus struct {
 
 // ServiceStatus represents one service in the cluster status.
 type ServiceStatus struct {
-	Name         string `json:"name"`
-	Image        string `json:"image"`
-	DesiredCount int    `json:"desired"`
-	RunningCount int    `json:"running"`
-	ExposedPorts []int  `json:"ports,omitempty"`
+	Name         string            `json:"name"`
+	Image        string            `json:"image"`
+	DesiredCount int               `json:"desired"`
+	RunningCount int               `json:"running"`
+	ExposedPorts []int             `json:"ports,omitempty"`
+	Tags         map[string]string `json:"tags,omitempty"`
 }
 
 // InstanceStatus represents one instance in the cluster status.
@@ -221,12 +222,31 @@ func collectServiceStatusFromStore(ctx context.Context, factStore store.StateSto
 				runningInstanceCount++
 			}
 		}
+		serviceTags := collectServiceTagsFromStore(ctx, factStore, serviceName)
 		serviceStatusList = append(serviceStatusList, ServiceStatus{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
-			RunningCount: runningInstanceCount, ExposedPorts: service.Ports,
+			RunningCount: runningInstanceCount, ExposedPorts: service.Ports, Tags: serviceTags,
 		})
 	}
 	return serviceStatusList
+}
+
+// collectServiceTagsFromStore reads all tag facts for a service and returns
+// them as a key-value map. Returns nil if the service has no tags.
+func collectServiceTagsFromStore(ctx context.Context, factStore store.StateStore, serviceName string) map[string]string {
+	tagPrefix := types.KeyDesiredServiceTagPrefix(serviceName)
+	tagFacts, scanError := factStore.Scan(ctx, tagPrefix)
+	if scanError != nil || len(tagFacts) == 0 {
+		return nil
+	}
+	tags := make(map[string]string, len(tagFacts))
+	for _, tagFact := range tagFacts {
+		tagKey := strings.TrimPrefix(tagFact.Key, tagPrefix)
+		if tagKey != "" {
+			tags[tagKey] = string(tagFact.Value)
+		}
+	}
+	return tags
 }
 
 // collectInstanceStatusFromStore builds an InstanceStatus for every non-stopped

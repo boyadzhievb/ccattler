@@ -63,8 +63,17 @@ type ServiceDecl struct {
 	Liveness        *ProbeDecl                 // optional liveness probe (triggers restart on failure)
 	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
 	Disruption      *DisruptionDecl            // optional disruption budget for drain/rollout safety
+	Tags            []TagDecl                  // optional user-defined key-value tags for grouping and filtering
 	Stateful        bool                       // true if service uses ordinal instance IDs and ordered startup
 	Line            int                        // source line number for error reporting
+}
+
+// TagDecl holds a single user-defined key-value tag on a service.
+// Tags are metadata for grouping and filtering — not used for scheduling
+// (that's placement) or identity (that's owner/tenant).
+type TagDecl struct {
+	Key   string // tag key (e.g. "team", "tier")
+	Value string // tag value (e.g. "payments", "frontend")
 }
 
 // VolumeDecl represents a parsed top-level "volume" block in the DSL.

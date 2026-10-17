@@ -283,6 +283,12 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 		serviceDecl.Stateful = true
 	case "disruption":
 		serviceDecl.Disruption, err = parser.parseDisruptionBlock()
+	case "tags":
+		var tagDecls []TagDecl
+		tagDecls, err = parser.parseTagsBlock()
+		if err == nil {
+			serviceDecl.Tags = append(serviceDecl.Tags, tagDecls...)
+		}
 	case "cloud_identity":
 		cloudIdentityBinding, bindErr := parser.parseCloudIdentityBindingInService()
 		if bindErr != nil {
@@ -905,6 +911,41 @@ func (parser *Parser) parseDisruptionBlock() (*DisruptionDecl, error) {
 	}
 
 	return disruptionDecl, nil
+}
+
+// parseTagsBlock parses a tags { key "value" ... } block containing
+// user-defined key-value metadata for grouping and filtering.
+func (parser *Parser) parseTagsBlock() ([]TagDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	var tagDecls []TagDecl
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		tagKey, keyError := parser.expectIdentifier()
+		if keyError != nil {
+			return nil, keyError
+		}
+
+		tagValue, valueError := parser.expectStringOrIdentifier()
+		if valueError != nil {
+			return nil, valueError
+		}
+
+		tagDecls = append(tagDecls, TagDecl{Key: tagKey, Value: tagValue})
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if len(tagDecls) == 0 {
+		return nil, parser.parserErrorf("tags block must contain at least one tag")
+	}
+
+	return tagDecls, nil
 }
 
 // parseTargetValue extracts an integer from a token value that may include a

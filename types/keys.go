@@ -151,6 +151,19 @@ func KeyDesiredServiceHealthTimeout(name string) string {
 	return fmt.Sprintf("%s/service/%s/health/timeout", PrefixDesired, name)
 }
 
+// KeyDesiredServiceTag returns the store path for a user-defined tag on a service.
+// Tags are metadata for grouping and filtering — not used for scheduling or identity.
+// Path: desired/service/{name}/tag/{tagKey}
+func KeyDesiredServiceTag(serviceName string, tagKey string) string {
+	return fmt.Sprintf("%s/service/%s/tag/%s", PrefixDesired, serviceName, tagKey)
+}
+
+// KeyDesiredServiceTagPrefix returns the scan prefix for all tags of a service.
+// Path: desired/service/{name}/tag/
+func KeyDesiredServiceTagPrefix(serviceName string) string {
+	return fmt.Sprintf("%s/service/%s/tag/", PrefixDesired, serviceName)
+}
+
 // KeyEffectiveServiceInstances returns the store path for a service's effective (resolved)
 // instance count, derived from all intent layers.
 // Path: effective/service/{name}/instances

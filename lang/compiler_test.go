@@ -1468,3 +1468,66 @@ func TestCompileRouteStickyCookieDefaults(t *testing.T) {
 		t.Error("cookie name should not be set for bare cookie (uses default)")
 	}
 }
+
+func TestCompileServiceWithTags(t *testing.T) {
+	file, _ := Parse(`service web {
+    image nginx:1.28
+    instances 3
+    tags {
+        team "payments"
+        tier "frontend"
+    }
+}`)
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatal(compileError)
+	}
+
+	compiledFactMap := factMap(facts)
+	teamTagKey := types.KeyDesiredServiceTag("web", "team")
+	tierTagKey := types.KeyDesiredServiceTag("web", "tier")
+
+	if compiledFactMap[teamTagKey] != "payments" {
+		t.Errorf("team tag: got %q, want %q", compiledFactMap[teamTagKey], "payments")
+	}
+	if compiledFactMap[tierTagKey] != "frontend" {
+		t.Errorf("tier tag: got %q, want %q", compiledFactMap[tierTagKey], "frontend")
+	}
+}
+
+func TestCompileServiceWithoutTagsOmitsTagFacts(t *testing.T) {
+	file, _ := Parse(`service web {
+    image nginx:1.28
+    instances 1
+}`)
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatal(compileError)
+	}
+
+	for _, compiledFact := range facts {
+		if strings.Contains(compiledFact.Key, "/tag/") {
+			t.Errorf("unexpected tag fact: %s", compiledFact.Key)
+		}
+	}
+}
+
+func TestCompileServiceTagFactKeyFormat(t *testing.T) {
+	file, _ := Parse(`service payments/checkout {
+    image checkout:v2
+    instances 2
+    tags {
+        cost_center "engineering"
+    }
+}`)
+	facts, compileError := Compile(file)
+	if compileError != nil {
+		t.Fatal(compileError)
+	}
+
+	expectedKey := "desired/service/payments/checkout/tag/cost_center"
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[expectedKey] != "engineering" {
+		t.Errorf("tag fact: got %q at key %q, want %q", compiledFactMap[expectedKey], expectedKey, "engineering")
+	}
+}

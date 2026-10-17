@@ -316,6 +316,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 	facts = append(facts, compileServiceCloudIdentityFacts(serviceDecl.Name, serviceDecl.CloudIdentities)...)
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
 	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
+	facts = append(facts, compileServiceTagFacts(serviceDecl.Name, serviceDecl.Tags)...)
 
 	if serviceDecl.Stateful {
 		facts = append(facts,
@@ -580,6 +581,22 @@ func compileServiceDisruptionFacts(serviceName string, disruptionDecl *Disruptio
 		})
 	}
 	return disruptionFacts
+}
+
+// compileServiceTagFacts produces user-defined tag facts for a service.
+// Each tag becomes a fact at desired/service/{name}/tag/{key} = {value}.
+func compileServiceTagFacts(serviceName string, tagDecls []TagDecl) []Fact {
+	if len(tagDecls) == 0 {
+		return nil
+	}
+	tagFacts := make([]Fact, 0, len(tagDecls))
+	for _, tagDecl := range tagDecls {
+		tagFacts = append(tagFacts, Fact{
+			Key:   types.KeyDesiredServiceTag(serviceName, tagDecl.Key),
+			Value: tagDecl.Value,
+		})
+	}
+	return tagFacts
 }
 
 // compileServiceHealthProbeFacts produces health check configuration facts for a

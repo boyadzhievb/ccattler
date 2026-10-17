@@ -134,7 +134,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking|secrets|config>")
 			os.Exit(1)
 		}
-		executeGetCommand(os.Args[2])
+		executeGetCommand(os.Args[2], os.Args[3:])
 	case "scale":
 		if len(os.Args) < 4 {
 			fmt.Fprintln(os.Stderr, "usage: cca scale <service> <count>")

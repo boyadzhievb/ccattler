@@ -1840,3 +1840,83 @@ func TestParseRouteServiceWithoutPort(t *testing.T) {
 		t.Errorf("port: got %d, want 0 (unset)", routeDecl.ServicePort)
 	}
 }
+
+func TestParseServiceWithTags(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 3
+    tags {
+        team "payments"
+        tier "frontend"
+    }
+}`
+	file, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Tags) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(serviceDecl.Tags))
+	}
+	if serviceDecl.Tags[0].Key != "team" || serviceDecl.Tags[0].Value != "payments" {
+		t.Errorf("tag[0]: got %s=%s, want team=payments", serviceDecl.Tags[0].Key, serviceDecl.Tags[0].Value)
+	}
+	if serviceDecl.Tags[1].Key != "tier" || serviceDecl.Tags[1].Value != "frontend" {
+		t.Errorf("tag[1]: got %s=%s, want tier=frontend", serviceDecl.Tags[1].Key, serviceDecl.Tags[1].Value)
+	}
+}
+
+func TestParseServiceWithSingleTag(t *testing.T) {
+	input := `service api {
+    image api:latest
+    instances 1
+    tags {
+        env "production"
+    }
+}`
+	file, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d", len(serviceDecl.Tags))
+	}
+	if serviceDecl.Tags[0].Key != "env" || serviceDecl.Tags[0].Value != "production" {
+		t.Errorf("tag: got %s=%s, want env=production", serviceDecl.Tags[0].Key, serviceDecl.Tags[0].Value)
+	}
+}
+
+func TestParseServiceTagsBlockEmpty(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    tags {
+    }
+}`
+	_, parseError := Parse(input)
+	if parseError == nil {
+		t.Fatal("expected error for empty tags block")
+	}
+}
+
+func TestParseServiceTagsBlockIdentifierValue(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+    tags {
+        env production
+    }
+}`
+	file, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Tags) != 1 {
+		t.Fatalf("expected 1 tag, got %d", len(serviceDecl.Tags))
+	}
+	if serviceDecl.Tags[0].Value != "production" {
+		t.Errorf("tag value: got %q, want %q", serviceDecl.Tags[0].Value, "production")
+	}
+}

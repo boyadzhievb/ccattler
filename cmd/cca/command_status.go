@@ -841,7 +841,7 @@ func printDescribeEvents(events []api.DescribeEvent) {
 
 // executeGetCommand queries the API for a specific resource type and prints
 // the result as formatted JSON.
-func executeGetCommand(resourceType string) {
+func executeGetCommand(resourceType string, extraArgs []string) {
 	apiBaseURL := statusAPIBaseURL() + "/api/status"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -859,7 +859,9 @@ func executeGetCommand(resourceType string) {
 
 	switch resourceType {
 	case "services", "svc":
-		printServicesTable(status.Services)
+		tagFilters := parseTagFilterArgs(extraArgs)
+		filteredServices := filterServicesByTags(status.Services, tagFilters)
+		printServicesTable(filteredServices)
 	case "instances", "inst":
 		printInstancesTable(status.Instances)
 	case "nodes":
@@ -878,6 +880,48 @@ func executeGetCommand(resourceType string) {
 		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities)\n", resourceType)
 		os.Exit(1)
 	}
+}
+
+// parseTagFilterArgs extracts --tag key=value pairs from command arguments.
+// Each --tag flag must be followed by a key=value argument.
+func parseTagFilterArgs(args []string) map[string]string {
+	tagFilters := make(map[string]string)
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		if args[argIndex] == "--tag" && argIndex+1 < len(args) {
+			argIndex++
+			tagExpression := args[argIndex]
+			equalsIndex := strings.Index(tagExpression, "=")
+			if equalsIndex > 0 {
+				tagFilters[tagExpression[:equalsIndex]] = tagExpression[equalsIndex+1:]
+			}
+		}
+	}
+	return tagFilters
+}
+
+// filterServicesByTags returns only services matching all specified tag filters.
+// If no filters are specified, all services are returned.
+func filterServicesByTags(services []api.ServiceStatus, tagFilters map[string]string) []api.ServiceStatus {
+	if len(tagFilters) == 0 {
+		return services
+	}
+	var matchingServices []api.ServiceStatus
+	for _, service := range services {
+		if serviceMatchesAllTags(service.Tags, tagFilters) {
+			matchingServices = append(matchingServices, service)
+		}
+	}
+	return matchingServices
+}
+
+// serviceMatchesAllTags checks whether a service's tags contain every filter entry.
+func serviceMatchesAllTags(serviceTags map[string]string, tagFilters map[string]string) bool {
+	for filterKey, filterValue := range tagFilters {
+		if serviceTags[filterKey] != filterValue {
+			return false
+		}
+	}
+	return true
 }
 
 // printAlignedTable renders rows as an aligned table with a header row. Column
@@ -928,7 +972,19 @@ func truncateValue(value string, maxLength int) string {
 }
 
 func printServicesTable(services []api.ServiceStatus) {
+	anyServiceHasTags := false
+	for _, service := range services {
+		if len(service.Tags) > 0 {
+			anyServiceHasTags = true
+			break
+		}
+	}
+
 	header := []string{"NAME", "IMAGE", "DESIRED", "RUNNING", "PORTS"}
+	if anyServiceHasTags {
+		header = append(header, "TAGS")
+	}
+
 	var rows [][]string
 	for _, service := range services {
 		portStrings := make([]string, len(service.ExposedPorts))
@@ -939,15 +995,37 @@ func printServicesTable(services []api.ServiceStatus) {
 		if portsDisplay == "" {
 			portsDisplay = "-"
 		}
-		rows = append(rows, []string{
+		row := []string{
 			service.Name,
 			truncateValue(service.Image, 40),
 			fmt.Sprintf("%d", service.DesiredCount),
 			fmt.Sprintf("%d", service.RunningCount),
 			portsDisplay,
-		})
+		}
+		if anyServiceHasTags {
+			row = append(row, formatServiceTags(service.Tags))
+		}
+		rows = append(rows, row)
 	}
 	printAlignedTable(header, rows)
+}
+
+// formatServiceTags renders a service's tags as a compact "key=value,..." string
+// with deterministic key ordering.
+func formatServiceTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "-"
+	}
+	tagKeys := make([]string, 0, len(tags))
+	for tagKey := range tags {
+		tagKeys = append(tagKeys, tagKey)
+	}
+	sort.Strings(tagKeys)
+	tagPairs := make([]string, len(tagKeys))
+	for pairIndex, tagKey := range tagKeys {
+		tagPairs[pairIndex] = tagKey + "=" + tags[tagKey]
+	}
+	return strings.Join(tagPairs, ",")
 }
 
 func printInstancesTable(instances []api.InstanceStatus) {
