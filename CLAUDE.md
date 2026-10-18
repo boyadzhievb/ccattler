@@ -99,6 +99,8 @@ CCattler uses two configurable CIDR ranges (no node CIDR — physical node addre
 
 Both are passed via `cca init --cluster-cidr X --vip-cidr Y`, `cca server --vip-cidr Y`, and `cca agent --cluster-cidr X`. The two ranges must not overlap with each other or with the physical node network.
 
+For HA clusters, `cca init --ca <path> --ca-key <path>` on secondary control-plane nodes reuses the primary's CA instead of generating a new one, ensuring all nodes share the same trust root.
+
 ## Core Fact Types
 
 ```

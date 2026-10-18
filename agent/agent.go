@@ -70,6 +70,7 @@ type Agent struct {
 	nodeReporter             *NodeReporter                        // nodeReporter collects telemetry and publishes node state to the store.
 	dataPlaneReconciler      *DataPlaneReconciler                 // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 	secretAPIServer          *SecretAPIServer                     // secretAPIServer serves per-instance secret retrieval over HTTP; nil means secrets use file materialization.
+	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -147,6 +148,19 @@ func (nodeAgent *Agent) DataPlaneProvider() network.DataPlaneProvider {
 	return nodeAgent.dataPlaneReconciler.dataPlaneProvider
 }
 
+// SetVXLANReconciler configures the agent to manage VXLAN overlay tunnels
+// for cross-node container networking. When set, the agent creates a VXLAN
+// interface, publishes its subnet, and programs routes to peer nodes.
+func (nodeAgent *Agent) SetVXLANReconciler(vxlanReconciler *VXLANReconciler) {
+	nodeAgent.vxlanReconciler = vxlanReconciler
+}
+
+// VXLANReconciler returns the configured VXLAN reconciler, or nil if overlay
+// networking is not enabled. Used during shutdown for cleanup.
+func (nodeAgent *Agent) VXLANReconciler() *VXLANReconciler {
+	return nodeAgent.vxlanReconciler
+}
+
 // SetInterval overrides the default periodic reconciliation interval.
 // This is typically used in tests to speed up convergence. Zero or
 // negative values are replaced with the default to avoid a panic in
@@ -181,6 +195,10 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	nodeAgent.nodeReporter.PublishAliveState(ctx)
 	nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 	nodeAgent.nodeReporter.PublishAdvertiseAddress(ctx)
+
+	if nodeAgent.vxlanReconciler != nil {
+		nodeAgent.vxlanReconciler.EnsureSubnetPublished(ctx)
+	}
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
@@ -238,6 +256,9 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 			}
 			nodeAgent.nodeReporter.CollectAndReportTelemetry(ctx)
 			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+			if nodeAgent.vxlanReconciler != nil {
+				nodeAgent.vxlanReconciler.Reconcile(ctx)
+			}
 		case watchEvent, ok := <-placementCh:
 			if !ok {
 				return fmt.Errorf("watch channel closed (compaction or store shutdown)")

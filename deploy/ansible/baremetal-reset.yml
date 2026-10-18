@@ -1,0 +1,131 @@
+---
+# Reset bare-metal nodes to pre-deployment state.
+# Stops all CCattler services, removes PKI, etcd data, containers, VXLAN
+# interfaces, and network config. Nodes are ready for a fresh deployment
+# with different CIDRs or configuration.
+#
+# Run:
+#   cd deploy/ansible
+#   ansible-playbook -i baremetal-inventory.ini baremetal-reset.yml
+#
+# Or for HA:
+#   ansible-playbook -i ha-inventory.ini baremetal-reset.yml
+
+- name: Reset all nodes to clean state
+  hosts: all
+  become: true
+  tasks:
+    - name: Stop cca-agent
+      systemd:
+        name: cca-agent
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop cca-server
+      systemd:
+        name: cca-server
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop etcd
+      systemd:
+        name: etcd
+        state: stopped
+        enabled: false
+      failed_when: false
+
+    - name: Stop and remove all CCattler containers
+      shell: |
+        if command -v nerdctl &>/dev/null; then
+          nerdctl ps -a --format '{{ '{{' }}.Names{{ '}}' }}' | grep -E '^(nginx|whoami|airflow|postgres|redis|zabbix|metadata)' | xargs -r nerdctl rm -f 2>/dev/null || true
+        fi
+      changed_when: false
+
+    - name: Remove VXLAN interface
+      command: ip link del cca-vxlan0
+      failed_when: false
+      changed_when: false
+
+    - name: Remove cca0 bridge interface
+      command: ip link del cca0
+      failed_when: false
+      changed_when: false
+
+    - name: Remove cca-net bridge
+      command: ip link del cca-net
+      failed_when: false
+      changed_when: false
+
+    - name: Flush nftables CCattler rules
+      shell: nft list table ip cca 2>/dev/null && nft delete table ip cca || true
+      changed_when: false
+
+    - name: Flush iptables CCattler chains
+      shell: |
+        iptables -t nat -F CCA_SERVICES 2>/dev/null || true
+        iptables -t nat -D PREROUTING -j CCA_SERVICES 2>/dev/null || true
+        iptables -t nat -D OUTPUT -j CCA_SERVICES 2>/dev/null || true
+        iptables -t nat -X CCA_SERVICES 2>/dev/null || true
+      changed_when: false
+
+    - name: Remove systemd units and drop-ins
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/cca-agent.service
+        - /etc/systemd/system/cca-server.service
+        - /etc/systemd/system/etcd.service.d
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: true
+
+    - name: Remove CCattler PKI, config, and data
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/ccattler
+        - /var/lib/ccattler
+        - /var/log/ccattler
+        - /tmp/cca-init
+
+    - name: Remove etcd data
+      file:
+        path: /var/lib/etcd
+        state: absent
+
+    - name: Remove overlay network routes
+      shell: |
+        ip route show | grep 'dev cca-vxlan0' | while read route; do
+          ip route del $route 2>/dev/null || true
+        done
+      changed_when: false
+
+    - name: Remove dnsmasq CCattler forwarding
+      file:
+        path: /etc/dnsmasq.d/ccattler-dns.conf
+        state: absent
+      notify: restart dnsmasq
+
+    - name: Verify clean state
+      shell: |
+        echo "Services: $(systemctl is-active cca-agent cca-server etcd 2>/dev/null | tr '\n' ' ')"
+        echo "PKI: $(ls /etc/ccattler/pki/ 2>/dev/null || echo 'gone')"
+        echo "VXLAN: $(ip link show cca-vxlan0 2>/dev/null || echo 'gone')"
+        echo "Containers: $(nerdctl ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | wc -l) remaining"
+      changed_when: false
+      register: clean_state
+
+    - name: Display clean state
+      debug:
+        msg: "{{ clean_state.stdout_lines }}"
+
+  handlers:
+    - name: restart dnsmasq
+      systemd:
+        name: dnsmasq
+        state: restarted

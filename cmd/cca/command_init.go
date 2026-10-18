@@ -40,6 +40,10 @@ type initCommandConfig struct {
 	clusterCIDR string
 	// vipCIDR overrides the default service virtual IP CIDR.
 	vipCIDR string
+	// existingCAPath points to an existing CA certificate to reuse (HA setup).
+	existingCAPath string
+	// existingCAKeyPath points to the corresponding CA private key (HA setup).
+	existingCAKeyPath string
 }
 
 // parseInitCommandArgs extracts flags from the arguments following "init".
@@ -95,6 +99,16 @@ func parseInitCommandArgs(args []string) initCommandConfig {
 				argIndex++
 				parsedConfig.vipCIDR = args[argIndex]
 			}
+		case "--ca":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.existingCAPath = args[argIndex]
+			}
+		case "--ca-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.existingCAKeyPath = args[argIndex]
+			}
 		}
 	}
 
@@ -126,10 +140,22 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 
 	fmt.Printf("Generating PKI for node %s (advertise: %s)...\n", parsedConfig.nodeID, parsedConfig.advertiseAddress)
 
-	certificateAuthority, caError := security.NewCertificateAuthority(parsedConfig.caValidity)
-	if caError != nil {
-		fmt.Fprintf(os.Stderr, "error creating CA: %v\n", caError)
-		os.Exit(1)
+	var certificateAuthority *security.CertificateAuthority
+	if parsedConfig.existingCAPath != "" && parsedConfig.existingCAKeyPath != "" {
+		loadedCA, loadError := security.LoadCertificateAuthorityFromFiles(parsedConfig.existingCAPath, parsedConfig.existingCAKeyPath)
+		if loadError != nil {
+			fmt.Fprintf(os.Stderr, "error loading existing CA: %v\n", loadError)
+			os.Exit(1)
+		}
+		certificateAuthority = loadedCA
+		fmt.Println("Loaded existing CA (HA mode)")
+	} else {
+		newCA, caError := security.NewCertificateAuthority(parsedConfig.caValidity)
+		if caError != nil {
+			fmt.Fprintf(os.Stderr, "error creating CA: %v\n", caError)
+			os.Exit(1)
+		}
+		certificateAuthority = newCA
 	}
 
 	nodeIPAddresses, nodeDNSNames := buildCertificateSANs(parsedConfig)

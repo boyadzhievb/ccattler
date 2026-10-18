@@ -45,6 +45,7 @@ type agentCommandConfig struct {
 	secretAPIListenAddress string // secretAPIListenAddress is the address for the per-instance secret HTTP API (e.g. "0.0.0.0:9772").
 	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", or "iptables" (default "auto").
 	clusterCIDR            string // clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
+	networkMode            string // networkMode selects overlay networking: "local" (bridge only) or "vxlan" (cross-node tunnels).
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -173,6 +174,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.clusterCIDR = args[argIndex]
 			}
+		case "--network-mode":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.networkMode = args[argIndex]
+			}
 		}
 	}
 
@@ -192,6 +198,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 
 	if parsedConfig.dataPlaneBackend != "auto" && parsedConfig.dataPlaneBackend != "nftables" && parsedConfig.dataPlaneBackend != "iptables" && parsedConfig.dataPlaneBackend != "shadow" {
 		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", or \"shadow\")\n", parsedConfig.dataPlaneBackend)
+		os.Exit(1)
+	}
+
+	if parsedConfig.networkMode != "" && parsedConfig.networkMode != "local" && parsedConfig.networkMode != "vxlan" {
+		fmt.Fprintf(os.Stderr, "error: unknown network-mode %q (must be \"local\" or \"vxlan\")\n", parsedConfig.networkMode)
 		os.Exit(1)
 	}
 
@@ -248,6 +259,16 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		nodeAgent.SetDataPlaneProvider(dataPlaneProvider)
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
+	}
+
+	if parsedConfig.networkMode == "vxlan" {
+		overlayNetworkCIDR := network.DefaultClusterCIDR
+		if parsedConfig.clusterCIDR != "" {
+			overlayNetworkCIDR = parsedConfig.clusterCIDR
+		}
+		vxlanReconciler := agent.NewVXLANReconciler(parsedConfig.nodeID, factStore, parsedConfig.advertiseAddress, overlayNetworkCIDR)
+		nodeAgent.SetVXLANReconciler(vxlanReconciler)
+		fmt.Printf("Agent %s: VXLAN overlay networking enabled (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
 	}
 
 	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)
@@ -381,13 +402,16 @@ func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID
 		nodeID, proxyListenAddress)
 }
 
-// performAgentShutdownCleanup cleans up the data plane provider and stops all
-// running workloads when the agent is shutting down.
+// performAgentShutdownCleanup cleans up the data plane provider, VXLAN overlay,
+// and stops all running workloads when the agent is shutting down.
 func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.Runtime) {
 	if nodeAgent.DataPlaneProvider() != nil {
 		if cleanupError := nodeAgent.DataPlaneProvider().Cleanup(context.Background()); cleanupError != nil {
 			logging.Default().Error("data plane cleanup failed", "error", cleanupError.Error())
 		}
+	}
+	if nodeAgent.VXLANReconciler() != nil {
+		nodeAgent.VXLANReconciler().Cleanup(context.Background())
 	}
 	if processRuntime, isProcessRuntime := runtimeAdapter.(*runtime.ProcessRuntime); isProcessRuntime {
 		processRuntime.StopAll(context.Background())

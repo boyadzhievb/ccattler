@@ -1,0 +1,124 @@
+---
+# HA control-plane setup. Runs on all control-plane nodes.
+# The first node generates PKI via "cca init"; other nodes receive copies.
+# Leader election in cca-server ensures only one controller is active.
+
+- name: Generate PKI on the first control-plane node
+  command: >
+    /usr/local/bin/cca init
+    --advertise-address {{ ansible_host }}
+    --node-id {{ inventory_hostname }}
+    --cluster-cidr {{ cluster_cidr }}
+    --vip-cidr {{ vip_cidr }}
+    -o /tmp/cca-init
+  args:
+    creates: /tmp/cca-init/setup.sh
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Run setup script on the first node (installs PKI and systemd units)
+  command: /tmp/cca-init/setup.sh
+  args:
+    creates: /etc/ccattler/pki/ca.pem
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Fetch CA and shared PKI from the first control-plane node
+  fetch:
+    src: "{{ item }}"
+    dest: /tmp/ccattler-ha-pki/
+    flat: true
+  loop:
+    - /etc/ccattler/pki/ca.pem
+    - /etc/ccattler/pki/ca-key.pem
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Fetch node cert and key from the first node (used as template)
+  fetch:
+    src: "{{ item }}"
+    dest: /tmp/ccattler-ha-pki/
+    flat: true
+  loop:
+    - /etc/ccattler/pki/node.pem
+    - /etc/ccattler/pki/node-key.pem
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Distribute CA to other control-plane nodes
+  copy:
+    src: "/tmp/ccattler-ha-pki/{{ item }}"
+    dest: "{{ cca_cert_dir }}/{{ item }}"
+    mode: "0600"
+  loop:
+    - ca.pem
+    - ca-key.pem
+  when: inventory_hostname != groups['controlplane'][0]
+
+- name: Generate per-node certificates on secondary control-plane nodes
+  command: >
+    /usr/local/bin/cca init
+    --advertise-address {{ ansible_host }}
+    --node-id {{ inventory_hostname }}
+    --cluster-cidr {{ cluster_cidr }}
+    --vip-cidr {{ vip_cidr }}
+    --ca {{ cca_cert_dir }}/ca.pem
+    --ca-key {{ cca_cert_dir }}/ca-key.pem
+    -o /tmp/cca-init
+  args:
+    creates: /tmp/cca-init/setup.sh
+  when: inventory_hostname != groups['controlplane'][0]
+
+- name: Run setup script on secondary nodes
+  command: /tmp/cca-init/setup.sh
+  args:
+    creates: /etc/ccattler/pki/node.pem
+  when: inventory_hostname != groups['controlplane'][0]
+
+- name: Write etcd endpoints config (all 3 nodes)
+  copy:
+    dest: /etc/ccattler/endpoints
+    content: "{{ etcd_endpoints }}\n"
+    mode: "0600"
+
+- name: Install cca-server systemd unit (HA mode with --node-id)
+  template:
+    src: cca-server.service.j2
+    dest: /etc/systemd/system/cca-server.service
+    mode: "0644"
+  notify: restart cca-server
+
+- name: Enable and start cca-server
+  systemd:
+    name: cca-server
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Wait for cca-server API to respond
+  wait_for:
+    host: "{{ ansible_host }}"
+    port: 9770
+    timeout: 45
+
+- name: Create examples directory
+  file:
+    path: /var/lib/ccattler/examples
+    state: directory
+    mode: "0755"
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: List example files from GitHub
+  uri:
+    url: "https://api.github.com/repos/boyadzhievb/ccattler/contents/examples"
+    return_content: true
+    headers:
+      Accept: "application/vnd.github.v3+json"
+  register: examples_listing
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Download example files
+  get_url:
+    url: "{{ item.download_url }}"
+    dest: "/var/lib/ccattler/examples/{{ item.name }}"
+    mode: "0644"
+  loop: "{{ examples_listing.json | selectattr('name', 'match', '.*\\.ccattler$') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: inventory_hostname == groups['controlplane'][0]

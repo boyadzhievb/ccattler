@@ -1,0 +1,80 @@
+---
+# Configure etcd as a multi-node raft cluster.
+# Expects: groups['etcd'] has 3+ hosts, cca PKI already distributed.
+
+- name: Build etcd initial-cluster string from inventory
+  set_fact:
+    etcd_initial_cluster: >-
+      {% set members = [] %}
+      {% for node in groups['etcd'] %}
+      {% set _ = members.append(node + '=https://' + hostvars[node].ansible_host + ':2380') %}
+      {% endfor %}
+      {{ members | join(',') }}
+
+- name: Stop etcd before reconfiguration
+  systemd:
+    name: etcd
+    state: stopped
+  failed_when: false
+
+- name: Remove single-node etcd data (fresh cluster bootstrap)
+  file:
+    path: /var/lib/etcd
+    state: absent
+
+- name: Recreate etcd data directory
+  file:
+    path: /var/lib/etcd
+    state: directory
+    owner: root
+    mode: "0700"
+
+- name: Create etcd systemd drop-in directory
+  file:
+    path: /etc/systemd/system/etcd.service.d
+    state: directory
+    mode: "0755"
+
+- name: Install etcd cluster drop-in
+  template:
+    src: etcd-cluster.conf.j2
+    dest: /etc/systemd/system/etcd.service.d/cluster.conf
+    mode: "0644"
+
+- name: Reload systemd and start etcd cluster
+  systemd:
+    name: etcd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for etcd to accept connections
+  shell: >
+    ETCDCTL_API=3 etcdctl
+    --endpoints https://{{ ansible_host }}:2379
+    --cacert {{ cca_cert_dir }}/ca.pem
+    --cert {{ cca_cert_dir }}/node.pem
+    --key {{ cca_cert_dir }}/node-key.pem
+    endpoint health
+  retries: 15
+  delay: 3
+  register: etcd_health
+  until: etcd_health.rc == 0
+  changed_when: false
+
+- name: Verify etcd cluster has quorum
+  shell: >
+    ETCDCTL_API=3 etcdctl
+    --endpoints https://{{ ansible_host }}:2379
+    --cacert {{ cca_cert_dir }}/ca.pem
+    --cert {{ cca_cert_dir }}/node.pem
+    --key {{ cca_cert_dir }}/node-key.pem
+    member list -w table
+  register: etcd_members
+  changed_when: false
+  run_once: true
+
+- name: Display etcd cluster members
+  debug:
+    msg: "{{ etcd_members.stdout_lines }}"
+  run_once: true
