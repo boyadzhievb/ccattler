@@ -12,3 +12,6 @@ cca_runtime: "container"
 # vip_cidr: service virtual IP pool (one VIP per service with exposed ports).
 cluster_cidr: "10.100.0.0/16"
 vip_cidr: "10.200.0.0/24"
+
+# network_mode: "local" (bridge only, same-node containers) or "vxlan" (cross-node overlay).
+network_mode: "vxlan"
