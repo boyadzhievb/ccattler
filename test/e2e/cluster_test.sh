@@ -964,7 +964,7 @@ log "Validating cross-node VIP connectivity and DNS resolution..."
 for vm in "${VM_NAMES[@]}"; do
     log "  data plane backends on $vm ($DATAPLANE_TYPE):"
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null" | head -40 || true
+        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null | head -40" || true
     else
         ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
     fi

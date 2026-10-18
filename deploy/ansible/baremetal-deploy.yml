@@ -1,0 +1,81 @@
+---
+# Bare-metal 3-node cluster deployment (no VMs, no Vagrant)
+#
+# Prerequisites:
+#   - 3 Debian/Ubuntu servers with SSH access
+#   - Fill in IPs in baremetal-inventory.ini
+#   - Build cca binary: go build -o /tmp/cca ./cmd/cca/
+#
+# Run from your workstation:
+#   cd deploy/ansible
+#   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml
+#
+# Deploy demo workload after cluster is up:
+#   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --tags testapp
+
+- name: Clean up old state (skip with --skip-tags cleanup)
+  hosts: all
+  become: true
+  tags: [cleanup]
+  roles:
+    - cleanup
+
+- name: Common setup on all nodes
+  hosts: all
+  become: true
+  roles:
+    - common
+
+- name: Provision control-plane node
+  hosts: controlplane
+  become: true
+  roles:
+    - controlplane
+
+- name: Provision worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+- name: Deploy demo workload
+  hosts: controlplane
+  become: true
+  tags: [testapp]
+  tasks:
+    - name: Copy demo workload config
+      copy:
+        src: "{{ playbook_dir }}/baremetal-demo.cca"
+        dest: /tmp/baremetal-demo.cca
+        mode: "0644"
+
+    - name: Wait for CCattler server to be ready
+      shell: >
+        curl -sf --cacert {{ cca_cert_dir }}/ca.pem
+        --cert {{ cca_cert_dir }}/node.pem --key {{ cca_cert_dir }}/node-key.pem
+        https://{{ ansible_host }}:9770/healthz
+      retries: 15
+      delay: 2
+      register: server_ready
+      until: server_ready.rc == 0
+
+    - name: Apply demo workload
+      command: /usr/local/bin/cca apply /tmp/baremetal-demo.cca
+
+    - name: Wait for workload to converge
+      pause:
+        seconds: 30
+
+    - name: Show cluster status
+      command: >
+        curl -sf
+        --cacert {{ cca_cert_dir }}/ca.pem
+        --cert {{ cca_cert_dir }}/node.pem
+        --key {{ cca_cert_dir }}/node-key.pem
+        -H "Accept: application/json"
+        https://{{ ansible_host }}:9770/status
+      register: cluster_status
+
+    - name: Display running instances
+      debug:
+        msg: "{{ (cluster_status.stdout | from_json).instances | map(attribute='id') | list }}"

@@ -1,0 +1,59 @@
+service whoami {
+    image "traefik/whoami:latest"
+    instances 6
+    expose 80
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
+    health {
+        http /health
+        every 10s
+    }
+    placement {
+        zone spread
+    }
+}
+
+service nginx {
+    image "nginx:1.27-alpine"
+    instances 3
+    expose 80
+    expose 443
+    resources {
+        cpu 250m
+        memory 128Mi
+    }
+    health {
+        http /
+        every 15s
+    }
+}
+
+service redis {
+    image "redis:7-alpine"
+    instances 2
+    expose 6379
+    resources {
+        cpu 250m
+        memory 128Mi
+    }
+    health {
+        tcp
+        every 10s
+    }
+}
+
+route whoami-public {
+    host "whoami.demo"
+    service whoami port 80
+}
+
+route nginx-public {
+    host "nginx.demo"
+    service nginx port 80
+    sticky cookie {
+        name "srv"
+        secure true
+    }
+}
