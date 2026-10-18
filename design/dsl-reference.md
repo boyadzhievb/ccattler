@@ -38,12 +38,12 @@ service web {
             max 30
             target cpu = 60%
             target requests_per_second = 500
-            event { source payments.pending, target 20 messages/instance }
-            schedule { weekdays 08:00-18:00, minimum 10 }
+            event { source payments.pending target 20 messages/instance }
+            schedule { weekdays 08:00-18:00 minimum 10 }
         }
         vertical {
-            cpu { min 250m, max 4 }
-            memory { min 512Mi, max 8Gi }
+            cpu { min 250m max 4 }
+            memory { min 512Mi max 8Gi }
         }
     }
 
