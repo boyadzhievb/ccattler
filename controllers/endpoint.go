@@ -84,13 +84,14 @@ func parseNodeAdvertiseAddresses(facts []store.Fact) map[string]string {
 	return collectStringValuesBySuffix(facts, types.ScanObservedNodes, "address")
 }
 
-// parseExistingEndpoints scans endpoint facts and returns a set of existing
-// endpoint keys (in the format "service/instance/port") for staleness detection.
-func parseExistingEndpoints(facts []store.Fact) map[string]bool {
-	existingEndpoints := make(map[string]bool)
+// parseExistingEndpoints scans endpoint facts and returns a map from endpoint
+// key ("service/instance/port") to its current value (address:port). Both key
+// and value are needed so the diff can detect stale addresses that need updating.
+func parseExistingEndpoints(facts []store.Fact) map[string]string {
+	existingEndpoints := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
-		existingEndpoints[relativePath] = true
+		existingEndpoints[relativePath] = string(fact.Value)
 	}
 	return existingEndpoints
 }
@@ -126,9 +127,8 @@ func buildDesiredEndpoints(
 		nodeAddress := nodeAddresses[nodeID]
 
 		hasOverlayAddress := instanceIP != ""
-		hasAnyHostPort := legacyHostPort != "" || hasPerPortHostPorts(fields)
-		hasHostAddress := hasAnyHostPort && nodeAddress != ""
-		if !hasOverlayAddress && !hasHostAddress {
+		hasAnyHostAddress := (legacyHostPort != "" || hasPerPortHostPorts(fields)) && nodeAddress != ""
+		if !hasOverlayAddress && !hasAnyHostAddress {
 			continue
 		}
 
@@ -149,13 +149,13 @@ func buildDesiredEndpoints(
 
 		for _, exposedPort := range exposedPorts {
 			endpointKey := fmt.Sprintf("%s/%s/%d", serviceName, instanceID, exposedPort)
-			if hasHostAddress {
-				perPortHostPort := fields[fmt.Sprintf("hostport/%d", exposedPort)]
-				if perPortHostPort == "" {
-					perPortHostPort = legacyHostPort
-				}
+			perPortHostPort := fields[fmt.Sprintf("hostport/%d", exposedPort)]
+			if perPortHostPort == "" {
+				perPortHostPort = legacyHostPort
+			}
+			if perPortHostPort != "" && nodeAddress != "" {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, perPortHostPort)
-			} else {
+			} else if hasOverlayAddress {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
 			}
 		}
@@ -164,9 +164,10 @@ func buildDesiredEndpoints(
 }
 
 // computeEndpointDiffChanges compares the desired endpoint set against the
-// existing endpoint set and returns changes to create missing endpoints and
-// delete stale ones. Output is sorted for deterministic reconciliation.
-func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndpoints map[string]bool) []Change {
+// existing endpoint set and returns changes to create missing endpoints,
+// update endpoints whose address has changed, and delete stale ones.
+// Output is sorted for deterministic reconciliation.
+func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndpoints map[string]string) []Change {
 	var changes []Change
 
 	sortedDesiredKeys := make([]string, 0, len(desiredEndpoints))
@@ -176,11 +177,13 @@ func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndp
 	sort.Strings(sortedDesiredKeys)
 
 	for _, endpointKey := range sortedDesiredKeys {
-		if !existingEndpoints[endpointKey] {
+		desiredValue := desiredEndpoints[endpointKey]
+		existingValue, exists := existingEndpoints[endpointKey]
+		if !exists || existingValue != desiredValue {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.PrefixEndpoint + "/service/" + endpointKey,
-				Value: []byte(desiredEndpoints[endpointKey]),
+				Value: []byte(desiredValue),
 			})
 		}
 	}
