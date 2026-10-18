@@ -256,14 +256,24 @@ cca top nodes        # per-node CPU, memory, workload count
 cca top workloads    # per-instance CPU and memory
 ```
 
-### `cca logs [service]`
+### `cca logs <service>`
 
-View the cluster event log, optionally filtered by service.
+Stream container stdout/stderr for a service's running instances. Requires a running `cca server`, `cca run`, or `cca run-container` instance. Uses `nerdctl logs` on the node (falls back to `docker logs`).
 
 ```bash
-cca logs         # all events
-cca logs web     # events for the web service
+cca logs web                       # print recent logs for all running instances of web
+cca logs web --follow              # live tail (follows one instance)
+cca logs web --instance web-abc123 # specific instance
+cca logs --tag team=payments       # aggregate logs across all services matching the tag
 ```
+
+| Flag | Description |
+|------|-------------|
+| `--follow`, `-f` | Live tail (streams one instance continuously) |
+| `--instance <id>` | Stream logs from a specific instance |
+| `--tag key=value` | Filter services by tag (repeatable) |
+
+When multiple instances match, logs are printed sequentially with `==> service/instance <==` headers. With `--follow`, only the first matching instance is tailed.
 
 ### `cca watch [prefix]`
 

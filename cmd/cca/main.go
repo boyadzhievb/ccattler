@@ -293,7 +293,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
 	fmt.Fprintln(os.Stderr, "  render [flags] <template>     render a template with values to stdout")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
-	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>]  container stdout/stderr")
+	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>] [--tag k=v]  container stdout/stderr")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
 	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")

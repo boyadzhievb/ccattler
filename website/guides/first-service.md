@@ -174,9 +174,9 @@ cca top workloads
 # Stream fact store changes in real time
 cca watch
 
-# View cluster event log
-cca logs
-cca logs web    # filtered by service
+# View container stdout/stderr
+cca logs web
+cca logs web --follow   # live tail
 ```
 
 ## Step 7: Update

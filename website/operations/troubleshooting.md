@@ -20,9 +20,9 @@ cca top workloads
 # Real-time fact store changes
 cca watch
 
-# Event log (optionally filtered by service)
-cca logs
+# Container stdout/stderr
 cca logs web
+cca logs web --follow
 ```
 
 ## Common issues
