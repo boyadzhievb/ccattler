@@ -757,9 +757,10 @@ log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINE
 # services inside the libvirt VMs. Each workload manifest declares
 # WORKLOAD_EXPOSE entries as "domain:service_name".
 #
-# VIPs (10.100.x.x) are only routable inside the VMs where agent iptables DNAT
-# rules translate them. From the testbed host we proxy through the agent's HTTP
-# proxy (port 80 on each VM) which routes by Host header to the correct service.
+# VIPs (10.100.x.x) are only routable inside the VMs where agent data plane
+# (nftables or iptables) DNAT rules translate them. From the testbed host we
+# proxy through the agent's HTTP proxy (port 80 on each VM) which routes by
+# Host header to the correct service.
 
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     CADDY_CONFIG=""
@@ -889,11 +890,11 @@ log "POST /debug/images/pull OK — pulled alpine:3.20 on worker-1"
 log "Phase 69 E2E tests passed"
 
 # ---- Step 5.6: VIP data plane validation ----
-# Verify that the agent programs iptables DNAT rules for service VIPs. The chain
-# CCA_SERVICES should contain jump rules to per-service chains, and each per-service
-# chain should contain DNAT rules pointing to host-accessible backends.
+# Verify that the agent programs data plane DNAT rules for service VIPs. With
+# nftables (preferred), the table ip cca contains verdict maps; with iptables
+# (fallback), the CCA_SERVICES chain contains jump rules to per-service chains.
 
-log "Validating VIP data plane (iptables DNAT rules)..."
+log "Validating VIP data plane (nftables/iptables DNAT rules)..."
 
 # Wait for networking (endpoints + VIPs) via the status API.
 ENDPOINT_DEADLINE=$((SECONDS + 60))
@@ -961,8 +962,12 @@ log "Validating cross-node VIP connectivity and DNS resolution..."
 
 # Dump per-service DNAT backends on every node for debugging.
 for vm in "${VM_NAMES[@]}"; do
-    log "  iptables DNAT backends on $vm:"
-    ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
+    log "  data plane backends on $vm ($DATAPLANE_TYPE):"
+    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
+        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null" | head -40 || true
+    else
+        ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
+    fi
     log "  bridge/route info on $vm:"
     ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|10\\.4|172\\.17|nerdctl'" || true
 done
@@ -1019,6 +1024,56 @@ if [[ -n "$VIP_SERVICES" ]]; then
     fi
 else
     log "WARNING: No networking entries in status — skipping VIP/DNS checks"
+fi
+
+# ---- Step 5.8: HTTP traffic through VIP ----
+# Verify actual HTTP responses flow through VIPs, not just TCP connectivity.
+# This proves the data plane (nftables or iptables) forwards real application
+# traffic end-to-end across nodes.
+
+log "Validating HTTP traffic through VIPs..."
+
+NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null || echo "")
+
+if [[ -n "$VIP_SERVICES" ]]; then
+    HTTP_PASS=true
+
+    while IFS=' ' read -r svc_name svc_vip svc_port; do
+        [[ -z "$svc_name" ]] && continue
+
+        # Try HTTP through VIP from two different VMs.
+        for vm in "${VM_NAMES[@]:0:2}"; do
+            HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "000")
+            if [[ "$HTTP_CODE" =~ ^[23] ]]; then
+                log "  HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
+            else
+                log "  WARNING: HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
+                HTTP_PASS=false
+            fi
+        done
+
+        # For whoami, verify the response body proves traffic reached a container.
+        if [[ "$svc_name" == "whoami" ]]; then
+            WHOAMI_BODY=$(ssh_vm "${VM_NAMES[0]}" "curl -sf --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "")
+            if echo "$WHOAMI_BODY" | grep -qi "hostname"; then
+                log "  whoami response body contains hostname — container reachable"
+            elif [[ -n "$WHOAMI_BODY" ]]; then
+                log "  whoami response body received (no hostname field): $(echo "$WHOAMI_BODY" | head -3)"
+            else
+                log "  WARNING: whoami returned empty body"
+                HTTP_PASS=false
+            fi
+        fi
+    done <<< "$VIP_SERVICES"
+
+    if [[ "$HTTP_PASS" == "true" ]]; then
+        log "HTTP traffic through all VIPs verified"
+    else
+        fail "Some VIPs did not return valid HTTP responses — data plane forwarding broken"
+    fi
+else
+    log "WARNING: No networking entries in status — skipping HTTP traffic checks"
 fi
 
 # ---- Step 6: Final status ----
