@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M121 — Phase 121 nftables Data Plane. M1–M121 complete. Gates A–I resolved.
+**Completed through:** M122 — Phase 122 VXLAN Overlay Networking. M1–M122 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

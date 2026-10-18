@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.48.0-beta <Badge type="tip" text="latest" /> {#v1-48-0-beta}
+## v1.49.0-beta <Badge type="tip" text="latest" /> {#v1-49-0-beta}
+
+**2026-10-18** — VXLAN Overlay Networking.
+
+- **VXLAN Overlay Networking** (M122) — Native VXLAN tunnel mesh for cross-node container connectivity. `--network-mode vxlan` flag on `cca agent`. Agent-managed VXLAN reconciler creates `cca-vxlan0` interface (VNI 42, UDP 4789), programs per-peer routes and FDB entries from node facts in the store. Subnet allocation as `desired/network/subnet/{node-id}` facts written by the server on node registration. Bridge MTU 1450 (VXLAN 50-byte overhead). No external daemon — fully fact-based, idempotent reconciliation. See `design/networking.md`.
+
+---
+
+## v1.48.0-beta {#v1-48-0-beta}
 
 **2026-10-17** — nftables Data Plane.
 
