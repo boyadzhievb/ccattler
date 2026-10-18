@@ -74,9 +74,9 @@ desired/route/web-public/cookie/samesite   = "strict"
 iptables operates at L3/L4 — it cannot read HTTP cookies. Cookie-based sticky sessions require L7 inspection. Two options:
 
 1. **Userspace Go proxy** — simple, portable, works everywhere. Adds one hop but only for routes with `sticky cookie`. Non-sticky routes stay pure iptables.
-2. **eBPF** — could parse HTTP headers in-kernel, but significantly more complex. Defer to the eBPF milestone.
+2. **eBPF** — could parse HTTP headers in-kernel, but significantly more complex. Possible future optimization, not planned.
 
-Decision: userspace proxy for cookies now, eBPF optimization later.
+Decision: userspace proxy for cookies now. eBPF is a possible future optimization if benchmarks warrant it.
 
 ### Source-IP Affinity (L4, no proxy)
 

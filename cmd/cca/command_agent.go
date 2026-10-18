@@ -184,8 +184,8 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		os.Exit(1)
 	}
 
-	if parsedConfig.dataPlaneBackend != "auto" && parsedConfig.dataPlaneBackend != "nftables" && parsedConfig.dataPlaneBackend != "iptables" {
-		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", or \"iptables\")\n", parsedConfig.dataPlaneBackend)
+	if parsedConfig.dataPlaneBackend != "auto" && parsedConfig.dataPlaneBackend != "nftables" && parsedConfig.dataPlaneBackend != "iptables" && parsedConfig.dataPlaneBackend != "shadow" {
+		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", or \"shadow\")\n", parsedConfig.dataPlaneBackend)
 		os.Exit(1)
 	}
 
@@ -343,6 +343,9 @@ func createDataPlaneProvider(dataPlaneBackend string) network.DataPlaneProvider 
 	case "iptables":
 		fmt.Println("Data plane: iptables (forced)")
 		return network.NewIptablesDataPlane()
+	case "shadow":
+		fmt.Println("Data plane: shadow (iptables active, nftables generating for comparison)")
+		return network.NewShadowDataPlane()
 	default:
 		if network.CheckNftablesAvailable() == nil {
 			fmt.Println("Data plane: nftables (auto-detected)")

@@ -262,14 +262,13 @@ No Rust toolchain, no clang, no BPF verifier, no compiled bytecode. Pure Go.
 - Explicit `--dataplane nftables` fails if nftables unavailable
 - `cca benchmark dataplane` command
 
-### Phase 4: Hardening + benchmark (1 week)
+### Phase 4: Hardening + benchmark (1 week) ✓
 
-- Edge cases: UDP, fragmentation, ICMP, health probes hitting VIP
-- Shadow mode: run nftables alongside iptables, log decision divergence
+- `cca benchmark dataplane` — measures nftables ruleset generation p50/p99 at 10/100/500/1000 services, reports iptables command count for comparison, JSON output
+- `--dataplane shadow` — `ShadowDataPlane` wraps iptables (active) + nftables (generation-only), logs per-cycle comparison and divergences, summary on cleanup
+- `network/benchmark.go` — `GenerateVIPRuleset`, `CountIptablesVIPCommands`, `GenerateSyntheticServiceConfigs` exported helpers
 - Multi-node test on testbed-100.43
-- Benchmark iptables vs nftables at 10/100/500/1000 services
-- Graceful migration: drain iptables after nftables confirmed working
-- Publish benchmark results in website networking docs
+- Graceful migration: drain iptables after nftables confirmed working via shadow mode
 
 **Total estimate: ~3.5 weeks**
 

@@ -132,7 +132,7 @@ allow api → database:5432
 deny frontend → database:5432
 ```
 
-Network controller translates identity policies → iptables/nftables/eBPF rules.
+Network controller translates identity policies → iptables/nftables rules.
 
 ## Audit Logging
 

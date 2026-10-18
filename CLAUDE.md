@@ -12,7 +12,7 @@ Items addressed by Phase 26 (P0 Correctness), Phase 35a (Correctness II), Phase 
 
 ### Performance Optimization Principle
 
-Optimize the architecture first, the algorithms second, Go code third, and assembly only for demonstrated hot paths. Go is the right language for the control plane. Networking data plane is the one area where eBPF/XDP could eventually matter. Establish benchmarks (`cca benchmark`) before optimizing: reconciliation/sec, scheduling/sec, state transactions/sec, controller latency, agent reconciliation latency, startup-to-ready latency.
+Optimize the architecture first, the algorithms second, Go code third, and assembly only for demonstrated hot paths. Go is the right language for the control plane. Establish benchmarks (`cca benchmark`) before optimizing: reconciliation/sec, scheduling/sec, state transactions/sec, controller latency, agent reconciliation latency, startup-to-ready latency.
 
 ---
 

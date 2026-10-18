@@ -93,8 +93,13 @@ func main() {
 	case "chaos":
 		executeChaosCommand()
 	case "benchmark":
-		parsedBenchmarkConfig := parseBenchmarkCommandArgs(os.Args[2:])
-		executeBenchmarkCommand(parsedBenchmarkConfig)
+		if len(os.Args) > 2 && os.Args[2] == "dataplane" {
+			parsedDataplaneConfig := parseDataplaneBenchmarkArgs(os.Args[3:])
+			executeDataplaneBenchmarkCommand(parsedDataplaneConfig)
+		} else {
+			parsedBenchmarkConfig := parseBenchmarkCommandArgs(os.Args[2:])
+			executeBenchmarkCommand(parsedBenchmarkConfig)
+		}
 	case "top":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: cca top <nodes|workloads|volumes> [--tag key=value]")
@@ -277,6 +282,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  demo-storage                 3 nodes with persistent volumes, node kill")
 	fmt.Fprintln(os.Stderr, "  chaos                        random failure injection, convergence reporting")
 	fmt.Fprintln(os.Stderr, "  benchmark [--json] [--nodes N] [--services N] [--instances N]  chaos benchmark with recovery metrics")
+	fmt.Fprintln(os.Stderr, "  benchmark dataplane [--json] [--services 10,100,500,1000]     nftables vs iptables generation benchmark")
 	fmt.Fprintln(os.Stderr, "  readiness [--json]           run test suite across 16 areas, print readiness report")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "cluster management:")
@@ -334,6 +340,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --store memory|etcd          state store backend (default: etcd)")
 	fmt.Fprintln(os.Stderr, "  --endpoints host:port,...    etcd endpoints (default: localhost:2379)")
 	fmt.Fprintln(os.Stderr, "  --store-prefix /path/        etcd key prefix (default: /ccattler/)")
+	fmt.Fprintln(os.Stderr, "  --dataplane auto|nftables|iptables|shadow  VIP data plane (default: auto)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flags for token:")
 	fmt.Fprintln(os.Stderr, "  --node-id <id>               scope token to a specific node (optional)")
