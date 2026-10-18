@@ -122,6 +122,7 @@ Detailed design for each subsystem lives in `design/`:
 - **[runtime-invariant-flows.md](design/runtime-invariant-flows.md)** — Cross-component invariant chains (init, DNS, secrets, VIP, connections)
 - **[threat-model.md](design/threat-model.md)** — Security threat model and mitigations
 - **[etcd-schema.md](design/etcd-schema.md)** — Fact store key layout and prefix conventions
+- **[networking.md](design/networking.md)** — Network model: container overlay, VIPs, VXLAN tunnels, Cilium future path
 
 ## CLI
 

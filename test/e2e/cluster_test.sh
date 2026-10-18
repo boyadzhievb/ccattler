@@ -1027,20 +1027,32 @@ else
 fi
 
 # ---- Step 5.8: HTTP traffic through VIP ----
-# Verify actual HTTP responses flow through VIPs, not just TCP connectivity.
-# This proves the data plane (nftables or iptables) forwards real application
-# traffic end-to-end across nodes.
+# Verify actual HTTP responses flow through VIPs for services that speak HTTP.
+# Non-HTTP services (PostgreSQL, Redis, etc.) are already validated by TCP
+# reachability in Step 5.7.  Only test ports that serve HTTP traffic.
 
 log "Validating HTTP traffic through VIPs..."
+
+# HTTP-capable ports — standard web ports where curl is meaningful.
+HTTP_PORTS_REGEX="^(80|443|8080|8443|8000|3000|9090)$"
 
 NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
     HTTP_PASS=true
+    HTTP_TESTED=0
 
     while IFS=' ' read -r svc_name svc_vip svc_port; do
         [[ -z "$svc_name" ]] && continue
+
+        # Skip non-HTTP ports — those services use TCP/binary protocols.
+        if ! [[ "$svc_port" =~ $HTTP_PORTS_REGEX ]]; then
+            log "  Skipping $svc_name ($svc_vip:$svc_port) — non-HTTP port (TCP-verified in Step 5.7)"
+            continue
+        fi
+
+        HTTP_TESTED=$((HTTP_TESTED + 1))
 
         # Try HTTP through VIP from two different VMs.
         for vm in "${VM_NAMES[@]:0:2}"; do
@@ -1067,8 +1079,10 @@ if [[ -n "$VIP_SERVICES" ]]; then
         fi
     done <<< "$VIP_SERVICES"
 
-    if [[ "$HTTP_PASS" == "true" ]]; then
-        log "HTTP traffic through all VIPs verified"
+    if [[ "$HTTP_TESTED" -eq 0 ]]; then
+        log "No HTTP-capable VIP services deployed — TCP validation sufficient"
+    elif [[ "$HTTP_PASS" == "true" ]]; then
+        log "HTTP traffic through all HTTP-capable VIPs verified ($HTTP_TESTED services)"
     else
         fail "Some VIPs did not return valid HTTP responses — data plane forwarding broken"
     fi
