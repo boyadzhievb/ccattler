@@ -7,6 +7,8 @@
     /usr/local/bin/cca init
     --advertise-address {{ ansible_host }}
     --node-id {{ inventory_hostname }}
+    --cluster-cidr {{ cluster_cidr }}
+    --vip-cidr {{ vip_cidr }}
     -o /tmp/cca-init
   args:
     creates: /tmp/cca-init/setup.sh

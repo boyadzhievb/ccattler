@@ -6,3 +6,9 @@ go_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 cca_cert_dir: /etc/ccattler/pki
 
 cca_runtime: "container"
+
+# Network CIDRs — override these per-run to verify no hardcoded values.
+# cluster_cidr: overlay network for container IPs (each node gets a /24 subnet).
+# vip_cidr: service virtual IP pool (one VIP per service with exposed ports).
+cluster_cidr: "10.100.0.0/16"
+vip_cidr: "10.200.0.0/24"

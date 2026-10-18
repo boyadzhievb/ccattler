@@ -936,9 +936,9 @@ log "  Data plane rules on ctrl: $DNAT_RULE_COUNT ($DATAPLANE_TYPE)"
 
 if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null" | head -30
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null | head -30" || true
     else
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null" | head -20
+        ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" || true
     fi
     log "VIP data plane OK — DNAT rules programmed ($DATAPLANE_TYPE)"
 else

@@ -6,6 +6,8 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"net"
+	"os"
 	"strconv"
 	"strings"
 
@@ -34,6 +36,27 @@ func NewNetworkController() *NetworkController {
 		vipBaseFirstOctet:  10,
 		vipBaseSecondOctet: 200,
 		vipBaseThirdOctet:  0,
+	}
+}
+
+// NewNetworkControllerWithCIDR returns a NetworkController that allocates VIPs
+// from the given CIDR (e.g. "10.200.0.0/24"). The first three octets of the
+// network address define the VIP base. Falls back to defaults on parse error.
+func NewNetworkControllerWithCIDR(vipCIDR string) *NetworkController {
+	networkIP, _, parseError := net.ParseCIDR(vipCIDR)
+	if parseError != nil {
+		fmt.Fprintf(os.Stderr, "warning: invalid --vip-cidr %q, using default\n", vipCIDR)
+		return NewNetworkController()
+	}
+	ipv4Address := networkIP.To4()
+	if ipv4Address == nil {
+		fmt.Fprintf(os.Stderr, "warning: --vip-cidr %q is not IPv4, using default\n", vipCIDR)
+		return NewNetworkController()
+	}
+	return &NetworkController{
+		vipBaseFirstOctet:  int(ipv4Address[0]),
+		vipBaseSecondOctet: int(ipv4Address[1]),
+		vipBaseThirdOctet:  int(ipv4Address[2]),
 	}
 }
 

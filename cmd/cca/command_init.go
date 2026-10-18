@@ -36,6 +36,10 @@ type initCommandConfig struct {
 	caValidity time.Duration
 	// certValidity is the node certificate lifetime.
 	certValidity time.Duration
+	// clusterCIDR overrides the default overlay network CIDR for container IPs.
+	clusterCIDR string
+	// vipCIDR overrides the default service virtual IP CIDR.
+	vipCIDR string
 }
 
 // parseInitCommandArgs extracts flags from the arguments following "init".
@@ -80,6 +84,16 @@ func parseInitCommandArgs(args []string) initCommandConfig {
 				if parsed, parseErr := time.ParseDuration(args[argIndex]); parseErr == nil {
 					parsedConfig.certValidity = parsed
 				}
+			}
+		case "--cluster-cidr":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.clusterCIDR = args[argIndex]
+			}
+		case "--vip-cidr":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.vipCIDR = args[argIndex]
 			}
 		}
 	}
@@ -143,7 +157,7 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 	writeInitFile(outputDirectory, "etcd-key.pem", etcdCertificate.PrivateKeyPEM, 0600)
 	writeInitFile(outputDirectory, "secret-master.key", secretMasterKey, 0600)
 
-	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory)
+	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory, parsedConfig.clusterCIDR, parsedConfig.vipCIDR)
 	writeInitFile(outputDirectory, "setup.sh", []byte(setupScript), 0755)
 
 	printInitSummary(outputDirectory)
@@ -233,9 +247,11 @@ func writeInitFile(outputDirectory string, fileName string, data []byte, permiss
 
 // buildSetupScript generates a shell script that installs the PKI, configures
 // etcd with TLS, and creates systemd unit files for the CCattler server and agent.
-// This function exceeds 80 lines because it is predominantly shell template text
-// assembled via WriteString calls with no meaningful logic boundaries to extract.
-func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string) string {
+// When clusterCIDR or vipCIDR are non-empty, the corresponding --cluster-cidr /
+// --vip-cidr flags are included in the generated systemd units. This function
+// exceeds 80 lines because it is predominantly shell template text assembled
+// via WriteString calls with no meaningful logic boundaries to extract.
+func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory string, clusterCIDR string, vipCIDR string) string {
 	var scriptBuilder strings.Builder
 
 	scriptBuilder.WriteString("#!/bin/sh\n")
@@ -319,6 +335,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("  --etcd-endpoints https://127.0.0.1:2379 \\\n")
 	scriptBuilder.WriteString("  --etcd-cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("  --etcd-key /etc/ccattler/pki/node-key.pem \\\n")
+	if vipCIDR != "" {
+		fmt.Fprintf(&scriptBuilder, "  --vip-cidr %s \\\n", vipCIDR)
+	}
 	scriptBuilder.WriteString("  --etcd-ca /etc/ccattler/pki/ca.pem\n")
 	scriptBuilder.WriteString("Restart=on-failure\n")
 	scriptBuilder.WriteString("RestartSec=5\n")
@@ -343,6 +362,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("  --ca /etc/ccattler/pki/ca.pem \\\n")
 	scriptBuilder.WriteString("  --etcd-cert /etc/ccattler/pki/node.pem \\\n")
 	scriptBuilder.WriteString("  --etcd-key /etc/ccattler/pki/node-key.pem \\\n")
+	if clusterCIDR != "" {
+		fmt.Fprintf(&scriptBuilder, "  --cluster-cidr %s \\\n", clusterCIDR)
+	}
 	scriptBuilder.WriteString("  --etcd-ca /etc/ccattler/pki/ca.pem\n")
 	scriptBuilder.WriteString("Restart=on-failure\n")
 	scriptBuilder.WriteString("RestartSec=5\n")

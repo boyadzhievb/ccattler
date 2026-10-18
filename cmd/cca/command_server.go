@@ -105,6 +105,10 @@ type serverCommandConfig struct {
 	// oidcClaimTeam is the JWT claim name used to extract team membership from
 	// external OIDC tokens (default: "team").
 	oidcClaimTeam string
+	// clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
+	clusterCIDR string
+	// vipCIDR overrides the default service virtual IP CIDR (e.g. "10.200.0.0/24").
+	vipCIDR string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -235,6 +239,16 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				argIndex++
 				parsedConfig.oidcClaimTeam = args[argIndex]
 			}
+		case "--cluster-cidr":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.clusterCIDR = args[argIndex]
+			}
+		case "--vip-cidr":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.vipCIDR = args[argIndex]
+			}
 		}
 	}
 
@@ -344,10 +358,14 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 // runner with leader election. The runner goroutine runs until the context is
 // cancelled.
 func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, parsedConfig serverCommandConfig) {
+	networkController := controllers.NewNetworkController()
+	if parsedConfig.vipCIDR != "" {
+		networkController = controllers.NewNetworkControllerWithCIDR(parsedConfig.vipCIDR)
+	}
 	controllerList := append(coreControllers(),
 		controllers.NewNodeFailureController(),
 		controllers.NewDrainController(),
-		controllers.NewNetworkController(),
+		networkController,
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController())
 

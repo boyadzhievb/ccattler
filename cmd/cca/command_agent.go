@@ -44,6 +44,7 @@ type agentCommandConfig struct {
 	debugListenAddress     string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
 	secretAPIListenAddress string // secretAPIListenAddress is the address for the per-instance secret HTTP API (e.g. "0.0.0.0:9772").
 	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", or "iptables" (default "auto").
+	clusterCIDR            string // clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -167,6 +168,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.dataPlaneBackend = args[argIndex]
 			}
+		case "--cluster-cidr":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.clusterCIDR = args[argIndex]
+			}
 		}
 	}
 
@@ -233,7 +239,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	registerLocalNode(ctx, factStore, parsedConfig.nodeID)
 
-	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress)
+	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress, parsedConfig.clusterCIDR)
 	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
 
 	if parsedConfig.advertiseAddress != "" {
@@ -315,15 +321,20 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 // the configured backend. For "container" it creates a ContainerRuntime with
 // the cluster network configured and DNS pointed at the node's advertise
 // address (where dnsmasq forwards to the CCattler DNS server). For "process"
-// it creates a ProcessRuntime.
-func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string) runtime.Runtime {
+// it creates a ProcessRuntime. When clusterCIDR is empty the default overlay
+// CIDR is used.
+func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string, clusterCIDR string) runtime.Runtime {
 	if runtimeBackend == "container" {
 		if _, lookupError := exec.LookPath("nerdctl"); lookupError != nil {
 			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
 			os.Exit(1)
 		}
 		containerRuntime := runtime.NewContainerRuntime()
-		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+		overlayNetworkCIDR := network.DefaultClusterCIDR
+		if clusterCIDR != "" {
+			overlayNetworkCIDR = clusterCIDR
+		}
+		containerRuntime.SetNetwork("cca-net", overlayNetworkCIDR)
 		if advertiseAddress != "" {
 			containerRuntime.SetDNS(advertiseAddress)
 		}

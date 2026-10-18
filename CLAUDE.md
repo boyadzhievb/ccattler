@@ -90,6 +90,15 @@ USER → DSL (.cca files) → FACT STORE (etcd) → Controllers → NODE AGENTS 
 
 Computational model: `facts → rules/queries → new facts → actions → real world → observed facts → repeat`
 
+### Network CIDRs
+
+CCattler uses two configurable CIDR ranges (no node CIDR — physical node addresses are not managed by CCattler):
+
+- **`--cluster-cidr`** (default `10.100.0.0/16`): Overlay network for container IP addresses. Each node is assigned a /24 subnet from this range (e.g. node-1 → `10.100.1.0/24`). Every container instance receives an IP from its node's subnet. Equivalent to Kubernetes `--cluster-cidr` (pod network).
+- **`--vip-cidr`** (default `10.200.0.0/24`): Service virtual IP pool. Each service with exposed ports gets one stable VIP from this range. The data plane (nftables) DNATs traffic hitting a VIP to actual container endpoints. Equivalent to Kubernetes `--service-cluster-ip-range`.
+
+Both are passed via `cca init --cluster-cidr X --vip-cidr Y`, `cca server --vip-cidr Y`, and `cca agent --cluster-cidr X`. The two ranges must not overlap with each other or with the physical node network.
+
 ## Core Fact Types
 
 ```
@@ -120,8 +129,8 @@ Detailed design for each subsystem lives in `design/`:
 cca apply <file>              # deploy config (simulated, prints status and exits)
 cca run [--watch] <file>      # start real OS processes (--watch for live status)
 cca run-container [--watch] <file>  # start real Docker containers (--watch for live status)
-cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>]
-cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>] [--debug-listen <addr>]
+cca server [--listen h:p] [--tls] [--cert/--key/--ca] [--api-only] [--controllers-only] [--node-id <id>] [--cloud-provider <name>] [--cloud-region <region>] [--vip-cidr <cidr>]
+cca agent --node-id <id> [--cert/--key/--ca] [--advertise-address <ip>] [--debug-listen <addr>] [--cluster-cidr <cidr>]
 cca token create [--node-id <id>] [--ttl 15m]
 cca token list / cca token revoke <token>
 cca join <server> <token> --node-id <id> [--ca-cert <path>]

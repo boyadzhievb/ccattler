@@ -8,6 +8,7 @@ Type=simple
 ExecStart=/usr/local/bin/cca agent \
   --node-id {{ node_id | default(inventory_hostname) }} \
   --advertise-address {{ ansible_host }} \
+  --cluster-cidr {{ cluster_cidr }} \
   --proxy --proxy-listen {{ ansible_host }}:80 \
   --debug-listen {{ ansible_host }}:9771 \
   --secret-api-listen {{ ansible_host }}:9772 \
