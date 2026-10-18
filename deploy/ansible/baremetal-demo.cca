@@ -19,7 +19,6 @@ service nginx {
     image "nginx:1.27-alpine"
     instances 3
     expose 80
-    expose 443
     resources {
         cpu 250m
         memory 128Mi

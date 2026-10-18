@@ -39,7 +39,14 @@
     - name: Stop and remove all CCattler containers
       shell: |
         if command -v nerdctl &>/dev/null; then
-          nerdctl ps -a --format '{{ '{{' }}.Names{{ '}}' }}' | grep -E '^(nginx|whoami|airflow|postgres|redis|zabbix|metadata)' | xargs -r nerdctl rm -f 2>/dev/null || true
+          nerdctl ps -a --format '{{ '{{' }}.ID{{ '}}' }}' | xargs -r nerdctl rm -f 2>/dev/null || true
+        fi
+      changed_when: false
+
+    - name: Remove nerdctl cca-net network
+      shell: |
+        if command -v nerdctl &>/dev/null; then
+          nerdctl network rm cca-net 2>/dev/null || true
         fi
       changed_when: false
 

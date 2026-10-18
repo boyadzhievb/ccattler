@@ -9,7 +9,7 @@ ExecStart=/usr/local/bin/cca agent \
   --node-id {{ node_id | default(inventory_hostname) }} \
   --advertise-address {{ ansible_host }} \
   --cluster-cidr {{ cluster_cidr }} \
-  --proxy --proxy-listen {{ ansible_host }}:80 \
+  --proxy --proxy-listen {{ ansible_host }}:{{ proxy_port | default(8080) }} \
   --debug-listen {{ ansible_host }}:9771 \
   --secret-api-listen {{ ansible_host }}:9772 \
   --cert {{ cca_cert_dir }}/node.pem \

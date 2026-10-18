@@ -250,8 +250,30 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	registerLocalNode(ctx, factStore, parsedConfig.nodeID)
 
-	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress, parsedConfig.clusterCIDR)
+	containerNetworkCIDR := parsedConfig.clusterCIDR
+	var vxlanReconciler *agent.VXLANReconciler
+
+	if parsedConfig.networkMode == "vxlan" {
+		overlayNetworkCIDR := network.DefaultClusterCIDR
+		if parsedConfig.clusterCIDR != "" {
+			overlayNetworkCIDR = parsedConfig.clusterCIDR
+		}
+		vxlanReconciler = agent.NewVXLANReconciler(parsedConfig.nodeID, factStore, parsedConfig.advertiseAddress, overlayNetworkCIDR)
+		vxlanReconciler.EnsureSubnetPublished(ctx)
+		nodeSubnet := vxlanReconciler.AllocatedSubnet(ctx)
+		if nodeSubnet != "" {
+			containerNetworkCIDR = nodeSubnet
+			fmt.Printf("Agent %s: container bridge using node subnet %s\n", parsedConfig.nodeID, nodeSubnet)
+		}
+		fmt.Printf("Agent %s: VXLAN overlay networking enabled (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
+	}
+
+	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress, containerNetworkCIDR)
 	nodeAgent := agent.New(parsedConfig.nodeID, factStore, runtimeAdapter)
+
+	if vxlanReconciler != nil {
+		nodeAgent.SetVXLANReconciler(vxlanReconciler)
+	}
 
 	if parsedConfig.advertiseAddress != "" {
 		nodeAgent.SetAdvertiseAddress(parsedConfig.advertiseAddress)
@@ -259,16 +281,6 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		nodeAgent.SetDataPlaneProvider(dataPlaneProvider)
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
-	}
-
-	if parsedConfig.networkMode == "vxlan" {
-		overlayNetworkCIDR := network.DefaultClusterCIDR
-		if parsedConfig.clusterCIDR != "" {
-			overlayNetworkCIDR = parsedConfig.clusterCIDR
-		}
-		vxlanReconciler := agent.NewVXLANReconciler(parsedConfig.nodeID, factStore, parsedConfig.advertiseAddress, overlayNetworkCIDR)
-		nodeAgent.SetVXLANReconciler(vxlanReconciler)
-		fmt.Printf("Agent %s: VXLAN overlay networking enabled (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
 	}
 
 	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)

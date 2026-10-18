@@ -93,6 +93,17 @@ func (vxlanReconciler *VXLANReconciler) Reconcile(ctx context.Context) {
 	vxlanReconciler.removeStaleRoutes(ctx, peerNodes)
 }
 
+// AllocatedSubnet returns this node's /24 subnet CIDR from the fact store.
+// Returns an empty string if no subnet has been allocated yet.
+func (vxlanReconciler *VXLANReconciler) AllocatedSubnet(ctx context.Context) string {
+	subnetKey := types.KeyNetworkNodeSubnet(vxlanReconciler.nodeID)
+	subnetFact, getError := vxlanReconciler.factStore.Get(ctx, subnetKey)
+	if getError != nil || len(subnetFact.Value) == 0 {
+		return ""
+	}
+	return string(subnetFact.Value)
+}
+
 // Cleanup removes the VXLAN interface from the host. Called during agent
 // shutdown to clean up network resources.
 func (vxlanReconciler *VXLANReconciler) Cleanup(ctx context.Context) {
@@ -169,46 +180,15 @@ func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.C
 		return fmt.Errorf("setting VXLAN MTU: %w", mtuError)
 	}
 
-	if addrError := vxlanReconciler.assignOverlayAddress(ctx); addrError != nil {
-		return fmt.Errorf("assigning overlay address: %w", addrError)
-	}
+	// No IP assigned to the VXLAN device — it acts as a pure tunnel backend.
+	// The container bridge (cca-net) owns the node's /24 subnet and serves
+	// as the gateway (.1). Cross-node routes use "dev cca-vxlan0" and FDB
+	// entries handle underlay encapsulation (Flannel model).
 
 	logging.Default().Info("vxlan: interface created",
 		"node", vxlanReconciler.nodeID, "interface", vxlanInterfaceName,
 		"mac", derivedMAC, "vni", fmt.Sprintf("%d", vxlanVNI),
 		"mtu", fmt.Sprintf("%d", vxlanBridgeMTU))
-	return nil
-}
-
-// assignOverlayAddress reads this node's allocated subnet from the fact store
-// and assigns the .1 address to the VXLAN interface (e.g. 10.100.166.1/24).
-func (vxlanReconciler *VXLANReconciler) assignOverlayAddress(ctx context.Context) error {
-	subnetKey := types.KeyNetworkNodeSubnet(vxlanReconciler.nodeID)
-	subnetFact, getError := vxlanReconciler.factStore.Get(ctx, subnetKey)
-	if getError != nil || len(subnetFact.Value) == 0 {
-		return fmt.Errorf("node subnet not published yet")
-	}
-	subnetCIDR := string(subnetFact.Value)
-	parsedIP, parsedNet, parseError := net.ParseCIDR(subnetCIDR)
-	if parseError != nil {
-		return fmt.Errorf("parsing allocated subnet %q: %w", subnetCIDR, parseError)
-	}
-	ipv4 := parsedIP.To4()
-	if ipv4 == nil {
-		return fmt.Errorf("subnet %q is not IPv4", subnetCIDR)
-	}
-	gatewayIP := fmt.Sprintf("%d.%d.%d.1", ipv4[0], ipv4[1], ipv4[2])
-	prefixLen, _ := parsedNet.Mask.Size()
-	overlayAddress := fmt.Sprintf("%s/%d", gatewayIP, prefixLen)
-	return executeIPAddrReplace(ctx, vxlanInterfaceName, overlayAddress)
-}
-
-// executeIPAddrReplace adds or replaces an IP address on a network interface.
-func executeIPAddrReplace(ctx context.Context, interfaceName string, addressCIDR string) error {
-	addrCommand := exec.CommandContext(ctx, "ip", "addr", "replace", addressCIDR, "dev", interfaceName) //nolint:gosec // ip commands with validated arguments
-	if output, runError := addrCommand.CombinedOutput(); runError != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
-	}
 	return nil
 }
 
