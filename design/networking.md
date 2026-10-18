@@ -342,6 +342,47 @@ This is deferred until benchmarks show nftables is insufficient at scale. See `d
 
 ---
 
+## Service Mesh Comparison (Istio vs CCattler)
+
+Kubernetes uses Istio (or Linkerd) as a service mesh to solve request-level concerns. CCattler solves many of the same problems natively or via Cilium, without sidecar proxies.
+
+### What CCattler already handles
+
+| Problem | Istio/K8s approach | CCattler approach |
+|---|---|---|
+| Service discovery | kube-dns → ClusterIP | Built-in DNS → VIP (`network/dns.go`) |
+| L4 load balancing | kube-proxy iptables/IPVS | nftables DNAT with round-robin/sticky (`network/nftables_dataplane.go`) |
+| Circuit breaking | Envoy detects unhealthy backends | Health controller marks unhealthy, endpoint controller removes from VIP backends |
+| Traffic routing | Istio VirtualService + Envoy | `route` block with host matching, sticky sessions (`controllers/route.go`) |
+
+### What Cilium adds (no sidecars)
+
+| Problem | Istio approach | Cilium approach |
+|---|---|---|
+| Service-to-service mTLS | Envoy sidecar injects TLS per request | WireGuard/IPsec transparent encryption at L3 |
+| L7 authorization | Istio AuthorizationPolicy → Envoy filter | eBPF L7 policy (HTTP method/path matching in kernel) |
+| Request-level metrics | Envoy emits latency, error rates per request | eBPF flow visibility via Hubble |
+| Rate limiting | Envoy per-service rate limits | eBPF rate limiting at socket level |
+
+### Gaps remaining after Cilium
+
+| Problem | Istio approach | CCattler status |
+|---|---|---|
+| Traffic splitting / canary | VirtualService: 90% v1, 10% v2 | Not yet — add weighted backends to `route` block |
+| Retries / timeouts | Envoy retry policy per route | Not yet — application responsibility or future `route` option |
+| Distributed tracing | Envoy propagates trace headers (Jaeger/Zipkin) | Not planned — requires proxy or instrumentation |
+| Fault injection | Istio injects delays/errors for chaos testing | Not planned — could be a test-only controller |
+
+### Design philosophy
+
+Istio solves L7 problems by injecting a sidecar proxy (Envoy) next to every container. This doubles the container count, adds ~2ms latency per hop, and creates complex lifecycle management (sidecar readiness races, drain ordering, resource overhead).
+
+Cilium solves the same problems via eBPF programs in the kernel — no extra containers, no proxy latency, no injection mechanism needed. This aligns with CCattler's architecture: the agent manages the node's network stack directly rather than wrapping containers in proxy layers.
+
+CCattler's path to the Istio feature set is Cilium, not a sidecar mesh.
+
+---
+
 ## Why Native VXLAN (Not Flannel/Calico)
 
 ### No external daemon
