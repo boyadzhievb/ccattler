@@ -142,7 +142,7 @@ fi
 ALL_AVAILABLE_WORKLOADS=($(discover_workloads))
 
 if [[ -z "$SELECTED_WORKLOADS" ]]; then
-    SELECTED_WORKLOADS="airflow,whoami"
+    SELECTED_WORKLOADS="airflow,whoami,whoami-multiport"
 fi
 
 WORKLOAD_NAMES=()

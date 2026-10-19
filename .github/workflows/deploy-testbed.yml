@@ -6,15 +6,15 @@ on:
       workload:
         description: "Workloads to deploy (comma-separated or 'all')"
         required: false
-        default: "airflow,whoami"
+        default: "airflow,whoami,whoami-multiport"
         type: choice
         options:
+          - "airflow,whoami,whoami-multiport"
           - "airflow,whoami"
           - "airflow"
-          - "airflow,zabbix"
           - "all"
+          - "whoami,whoami-multiport"
           - "zabbix"
-          - "whoami"
           - "zabbix,whoami"
       clear_first:
         description: "Clear existing workloads before deploying"
@@ -39,7 +39,7 @@ jobs:
 
       - name: Deploy cluster (3-node, no teardown, latest release binary)
         run: |
-          WORKLOAD="${{ inputs.workload || 'airflow,whoami' }}"
+          WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport' }}"
           ./test/e2e/cluster_test.sh --env deploy --from-release --workload "$WORKLOAD"
 
       - name: Collect logs on failure
