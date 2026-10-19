@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.52.0-beta <Badge type="tip" text="latest" /> {#v1-52-0-beta}
+## v1.53.0-beta <Badge type="tip" text="latest" /> {#v1-53-0-beta}
+
+**2026-10-19** — Cilium E2E Integration.
+
+- **Cilium E2E Integration** (M127) — Wire CiliumFactTranslator into agent reconciliation loop: call `WriteEndpointIPIdentity` when containers start, `WriteNodeRegistration` on agent startup. Wire `CiliumPolicyTranslator.ReconcilePolicies` into network controller for identity-based policy. Ansible `cilium` role: install Cilium agent binary (DEB/RPM), configure `--kvstore etcd --kvstore-opt etcd.config=<path>`, kernel BTF/bpf_jit check, systemd unit. E2E test workload: deploy service with `--network-mode cilium --dataplane cilium`, validate cross-node VIP DNAT via Cilium eBPF instead of nftables. Shadow mode: Cilium runs alongside nftables, `cca benchmark dataplane` compares latency/throughput, operator switches when confident. Test on testbed-100.43 bare-metal VMs (kernel 5.15+).
+
+---
+
+## v1.52.0-beta {#v1-52-0-beta}
 
 **2026-10-19** — Cilium eBPF Data Plane.
 

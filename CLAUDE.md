@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M126 — Phase 126 Cilium eBPF Data Plane. M1–M126 complete. Gates A–I resolved.
+**Completed through:** M127 — Phase 127 Cilium E2E Integration. M1–M127 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
