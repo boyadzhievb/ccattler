@@ -1,0 +1,9 @@
+# Workload manifest for multi-port whoami test service.
+# Tests per-port VIP routing, hostport fact publishing, and nftables verdict map entries.
+
+WORKLOAD_DESCRIPTION="Whoami multi-port (2 instances, ports 80+8081, per-port data plane test)"
+WORKLOAD_IMAGES=("traefik/whoami:latest")
+WORKLOAD_EXPECTED_CONTAINERS=2
+WORKLOAD_SECRETS=()
+
+WORKLOAD_EXPOSE=("whoami-multiport.home.arpa:whoami-multiport")

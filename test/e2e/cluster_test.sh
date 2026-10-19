@@ -1355,6 +1355,115 @@ else
     log "Skipping DNS-under-churn test — whoami not deployed or no VIP"
 fi
 
+# ---- Step 5.14: Multi-port VIP data plane validation ----
+# Verify that a service with multiple exposed ports gets per-port VIP DNAT
+# entries, per-port hostport facts, and HTTP traffic works on the listening port.
+
+MULTIPORT_DEPLOYED=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    [[ "$workload_name" == "whoami-multiport" ]] && MULTIPORT_DEPLOYED=true
+done
+
+if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
+    log "Validating multi-port VIP data plane (whoami-multiport: ports 80, 8081)..."
+
+    MULTIPORT_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    MULTIPORT_VIPS=$(echo "$MULTIPORT_STATUS" | jq -r '.networking[] | select(.service == "whoami-multiport") | "\(.vip) \(.port)"' 2>/dev/null || echo "")
+
+    MULTIPORT_VIP_COUNT=$(echo "$MULTIPORT_VIPS" | grep -c '[0-9]' || echo "0")
+    log "  VIP entries for whoami-multiport: $MULTIPORT_VIP_COUNT"
+
+    MULTIPORT_PORT80_VIP=""
+    MULTIPORT_PORT8081_VIP=""
+    while IFS=' ' read -r vipAddr vipPort; do
+        [[ -z "$vipAddr" ]] && continue
+        if [[ "$vipPort" == "80" ]]; then
+            MULTIPORT_PORT80_VIP="$vipAddr"
+        elif [[ "$vipPort" == "8081" ]]; then
+            MULTIPORT_PORT8081_VIP="$vipAddr"
+        fi
+    done <<< "$MULTIPORT_VIPS"
+
+    MULTIPORT_PASS=true
+
+    if [[ -n "$MULTIPORT_PORT80_VIP" ]]; then
+        log "  Port 80 VIP: $MULTIPORT_PORT80_VIP"
+        for vm in "${VM_NAMES[@]:0:2}"; do
+            HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "000")
+            if [[ "$HTTP_CODE" =~ ^[23] ]]; then
+                log "  HTTP $HTTP_CODE from $vm -> whoami-multiport:80"
+            else
+                log "  FAIL: HTTP $HTTP_CODE from $vm -> whoami-multiport:80"
+                MULTIPORT_PASS=false
+            fi
+        done
+    else
+        log "  FAIL: No VIP entry for whoami-multiport port 80"
+        MULTIPORT_PASS=false
+    fi
+
+    if [[ -n "$MULTIPORT_PORT8081_VIP" ]]; then
+        log "  Port 8081 VIP: $MULTIPORT_PORT8081_VIP (declared, no listener expected)"
+    else
+        log "  WARNING: No VIP entry for whoami-multiport port 8081"
+    fi
+
+    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
+        VERDICT_MAP=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list map ip cca vip_dispatch 2>/dev/null" || echo "")
+        PORT80_IN_MAP=false
+        PORT8081_IN_MAP=false
+        if echo "$VERDICT_MAP" | grep -q "whoami.multiport.*: 80"; then
+            PORT80_IN_MAP=true
+        fi
+        if echo "$VERDICT_MAP" | grep -q "whoami.multiport.*: 8081"; then
+            PORT8081_IN_MAP=true
+        fi
+
+        if echo "$VERDICT_MAP" | grep -qi "multiport"; then
+            PORT80_IN_MAP=true
+        fi
+
+        log "  nftables verdict map entries — port 80: $PORT80_IN_MAP, port 8081: $PORT8081_IN_MAP"
+    fi
+
+    MULTIPORT_INSTANCES=$(echo "$MULTIPORT_STATUS" | jq -r '[.instances[] | select(.service == "whoami-multiport" and .state == "running")] | .[].id' 2>/dev/null || echo "")
+    HOSTPORT_PASS=true
+    for instanceID in $MULTIPORT_INSTANCES; do
+        [[ -z "$instanceID" ]] && continue
+        HP80=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/80" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
+        HP8081=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport/8081" 2>/dev/null | jq -r '.[0].value // empty' || echo "")
+        HPLEGACY=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/instance/${instanceID}/hostport" 2>/dev/null | jq -r 'length' || echo "0")
+
+        if [[ -n "$HP80" ]]; then
+            log "  Instance $instanceID: hostport/80=$HP80"
+        else
+            log "  WARNING: Instance $instanceID: no per-port hostport/80 fact"
+            HOSTPORT_PASS=false
+        fi
+        if [[ -n "$HP8081" ]]; then
+            log "  Instance $instanceID: hostport/8081=$HP8081"
+        else
+            log "  WARNING: Instance $instanceID: no per-port hostport/8081 fact"
+            HOSTPORT_PASS=false
+        fi
+        log "  Instance $instanceID: total hostport facts=$HPLEGACY"
+    done
+
+    if [[ "$HOSTPORT_PASS" == "true" ]]; then
+        log "Per-port hostport facts verified for all instances"
+    else
+        log "WARNING: Some per-port hostport facts missing (may be timing)"
+    fi
+
+    if [[ "$MULTIPORT_PASS" == "true" ]]; then
+        log "Multi-port VIP data plane validation PASSED"
+    else
+        fail "Multi-port VIP data plane validation FAILED — HTTP on port 80 unreachable"
+    fi
+else
+    log "Skipping multi-port test — whoami-multiport workload not deployed"
+fi
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true

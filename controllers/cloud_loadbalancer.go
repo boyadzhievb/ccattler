@@ -77,7 +77,7 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 	externalServices := extractExternalServicePorts(facts)
 	existingLoadBalancers := extractExistingLoadBalancers(facts)
 	pendingEnsureKeysByService := extractPendingEnsureKeysByService(facts)
-	appliedConfigHashes := collectStringValuesBySuffix(facts, types.ScanDerivedCloudLoadBalancers, "applied_hash")
+	appliedConfigHashes := collectPerPortAppliedConfigHashes(facts, types.ScanDerivedCloudLoadBalancers)
 	endpointAddresses := extractEndpointAddressesPerService(facts)
 
 	var proposedChanges []Change
@@ -87,7 +87,8 @@ func (loadBalancerController *CloudLoadBalancerController) Reconcile(ctx context
 		for _, portConfig := range externalConfig.ports {
 			configHash := computeLoadBalancerConfigHash(
 				serviceName, portConfig.port, portConfig.protocol, currentAddresses)
-			if appliedHash, hashExists := appliedConfigHashes[serviceName]; hashExists && appliedHash == configHash {
+			perPortHashKey := fmt.Sprintf("%s:%d", serviceName, portConfig.port)
+			if appliedHash, hashExists := appliedConfigHashes[perPortHashKey]; hashExists && appliedHash == configHash {
 				continue
 			}
 
@@ -232,10 +233,10 @@ func (loadBalancerController *CloudLoadBalancerController) executeEnsureLoadBala
 		pendingOp.ServiceName, pendingOp.Port, pendingOp.Protocol,
 		endpointAddressesByService[pendingOp.ServiceName])
 	if _, putErr := loadBalancerController.factStore.Put(ctx,
-		types.KeyDerivedCloudLBAppliedHash(pendingOp.ServiceName),
+		types.KeyDerivedCloudLBAppliedHashForPort(pendingOp.ServiceName, pendingOp.Port),
 		[]byte(appliedConfigHash)); putErr != nil {
 		logging.Default().Error("failed to write LB applied config hash",
-			"service", pendingOp.ServiceName, "error", putErr.Error())
+			"service", pendingOp.ServiceName, "port", strconv.Itoa(pendingOp.Port), "error", putErr.Error())
 	}
 
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, pendingKey); deleteErr != nil {
@@ -262,9 +263,8 @@ func (loadBalancerController *CloudLoadBalancerController) executeDeleteLoadBala
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, types.KeyObservedCloudLoadBalancerState(pendingOp.ServiceName)); deleteErr != nil {
 		logging.Default().Error("failed to delete LB state", "service", pendingOp.ServiceName, "error", deleteErr.Error())
 	}
-	if deleteErr := loadBalancerController.factStore.Delete(ctx, types.KeyDerivedCloudLBAppliedHash(pendingOp.ServiceName)); deleteErr != nil {
-		logging.Default().Error("failed to delete LB applied config hash", "service", pendingOp.ServiceName, "error", deleteErr.Error())
-	}
+	deletePerPortAppliedHashes(ctx, loadBalancerController.factStore, pendingOp.ServiceName)
+
 	if deleteErr := loadBalancerController.factStore.Delete(ctx, pendingKey); deleteErr != nil {
 		logging.Default().Error("failed to delete pending LB op", "service", pendingOp.ServiceName, "error", deleteErr.Error())
 	}
@@ -400,6 +400,47 @@ func extractPendingEnsureKeysByService(facts []store.Fact) map[string][]string {
 		}
 	}
 	return pendingKeysByService
+}
+
+// deletePerPortAppliedHashes scans derived cloud LB facts for the given service
+// and deletes all per-port applied_hash entries plus the legacy per-service key.
+func deletePerPortAppliedHashes(ctx context.Context, factStore store.StateStore, serviceName string) {
+	derivedFacts, scanErr := factStore.Scan(ctx, types.ScanDerivedCloudLoadBalancers)
+	if scanErr != nil {
+		logging.Default().Error("failed to scan for LB applied hashes", "service", serviceName, "error", scanErr.Error())
+		return
+	}
+	for _, factEntry := range derivedFacts {
+		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, types.ScanDerivedCloudLoadBalancers)
+		if !hasSuffix || entityName != serviceName {
+			continue
+		}
+		if suffix == "applied_hash" || strings.HasPrefix(suffix, "applied_hash/") {
+			if deleteErr := factStore.Delete(ctx, factEntry.Key); deleteErr != nil {
+				logging.Default().Error("failed to delete LB applied hash",
+					"key", factEntry.Key, "error", deleteErr.Error())
+			}
+		}
+	}
+}
+
+// collectPerPortAppliedConfigHashes scans derived cloud LB facts and returns
+// applied config hashes keyed by "serviceName:port". Matches keys with suffix
+// "applied_hash/{port}" produced by KeyDerivedCloudLBAppliedHashForPort.
+func collectPerPortAppliedConfigHashes(facts []store.Fact, scanPrefix string) map[string]string {
+	perPortHashes := make(map[string]string)
+	for _, factEntry := range store.FactsWithPrefix(facts, scanPrefix) {
+		entityName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(factEntry.Key, scanPrefix)
+		if !hasSuffix {
+			continue
+		}
+		if strings.HasPrefix(suffix, "applied_hash/") {
+			portSuffix := strings.TrimPrefix(suffix, "applied_hash/")
+			compositeKey := entityName + ":" + portSuffix
+			perPortHashes[compositeKey] = string(factEntry.Value)
+		}
+	}
+	return perPortHashes
 }
 
 // computeLoadBalancerConfigHash computes a stable SHA-256 hash of the load

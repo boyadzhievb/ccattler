@@ -68,23 +68,24 @@ type NodeDescribe struct {
 // related facts: service, node, state, health, probes, init phase, resources,
 // networking, and recent events.
 type InstanceDescribe struct {
-	ID             string          `json:"id"`
-	ServiceName    string          `json:"service"`
-	NodeID         string          `json:"node"`
-	State          string          `json:"state"`
-	Image          string          `json:"image,omitempty"`
-	IPAddress      string          `json:"ip,omitempty"`
-	HostPort       string          `json:"host_port,omitempty"`
-	HealthState    string          `json:"health,omitempty"`
-	CPUMillis      string          `json:"cpu,omitempty"`
-	MemoryBytes    string          `json:"memory,omitempty"`
-	InitPhase      string          `json:"init_phase,omitempty"`
-	Restarts       string          `json:"restarts,omitempty"`
-	StartupProbe   string          `json:"startup,omitempty"`
-	LivenessProbe  string          `json:"liveness,omitempty"`
-	ReadinessProbe string          `json:"readiness,omitempty"`
-	Endpoint       string          `json:"endpoint,omitempty"`
-	Events         []DescribeEvent `json:"events,omitempty"`
+	ID             string            `json:"id"`
+	ServiceName    string            `json:"service"`
+	NodeID         string            `json:"node"`
+	State          string            `json:"state"`
+	Image          string            `json:"image,omitempty"`
+	IPAddress      string            `json:"ip,omitempty"`
+	HostPort       string            `json:"host_port,omitempty"`
+	HostPorts      map[string]string `json:"host_ports,omitempty"`
+	HealthState    string            `json:"health,omitempty"`
+	CPUMillis      string            `json:"cpu,omitempty"`
+	MemoryBytes    string            `json:"memory,omitempty"`
+	InitPhase      string            `json:"init_phase,omitempty"`
+	Restarts       string            `json:"restarts,omitempty"`
+	StartupProbe   string            `json:"startup,omitempty"`
+	LivenessProbe  string            `json:"liveness,omitempty"`
+	ReadinessProbe string            `json:"readiness,omitempty"`
+	Endpoint       string            `json:"endpoint,omitempty"`
+	Events         []DescribeEvent   `json:"events,omitempty"`
 }
 
 // DescribeResources shows a service's CPU and memory resource requirements.
@@ -279,6 +280,10 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 		HealthState: string(instance.Health),
 	}
 
+	perPortHostPorts := collectPerPortHostPorts(ctx, factStore, instanceID)
+	if len(perPortHostPorts) > 0 {
+		describe.HostPorts = perPortHostPorts
+	}
 	if hostPortFact, hostPortErr := factStore.Get(ctx, types.KeyObservedInstanceHostPort(instanceID)); hostPortErr == nil {
 		describe.HostPort = string(hostPortFact.Value)
 	}
@@ -563,6 +568,22 @@ func buildServiceSecrets(ctx context.Context, factStore store.StateStore, servic
 		})
 	}
 	return grants
+}
+
+// collectPerPortHostPorts scans per-port hostport facts for the given instance
+// and returns a map from container port (as a string) to host port value.
+func collectPerPortHostPorts(ctx context.Context, factStore store.StateStore, instanceID string) map[string]string {
+	hostPortPrefix := fmt.Sprintf("%s/instance/%s/hostport/", types.PrefixObserved, instanceID)
+	hostPortFacts, scanErr := factStore.Scan(ctx, hostPortPrefix)
+	if scanErr != nil || len(hostPortFacts) == 0 {
+		return nil
+	}
+	perPortMap := make(map[string]string, len(hostPortFacts))
+	for _, factEntry := range hostPortFacts {
+		containerPort := strings.TrimPrefix(factEntry.Key, hostPortPrefix)
+		perPortMap[containerPort] = string(factEntry.Value)
+	}
+	return perPortMap
 }
 
 // collectInstanceSummariesForService finds all non-stopped instances for the

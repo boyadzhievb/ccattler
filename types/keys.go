@@ -1598,12 +1598,20 @@ func KeyDerivedCloudLBPendingOperationForPort(serviceName string, port int) stri
 	return fmt.Sprintf("%s/cloud/loadbalancer/%s/pending_operation/%d", PrefixDerived, serviceName, port)
 }
 
-// KeyDerivedCloudLBAppliedHash returns the store path for the hash of the
-// last successfully applied cloud load balancer configuration. Used to skip
-// redundant ensure calls when the configuration has not changed.
+// KeyDerivedCloudLBAppliedHash returns the store path for the legacy
+// per-service applied hash. Retained for backward compatibility during
+// rolling upgrades — new code uses KeyDerivedCloudLBAppliedHashForPort.
 // Path: derived/cloud/loadbalancer/{serviceName}/applied_hash
 func KeyDerivedCloudLBAppliedHash(serviceName string) string {
 	return fmt.Sprintf("%s/cloud/loadbalancer/%s/applied_hash", PrefixDerived, serviceName)
+}
+
+// KeyDerivedCloudLBAppliedHashForPort returns the per-port store path for
+// the hash of the last successfully applied cloud load balancer config.
+// Multi-port services store one hash per port to avoid overwrite races.
+// Path: derived/cloud/loadbalancer/{serviceName}/applied_hash/{port}
+func KeyDerivedCloudLBAppliedHashForPort(serviceName string, port int) string {
+	return fmt.Sprintf("%s/cloud/loadbalancer/%s/applied_hash/%d", PrefixDerived, serviceName, port)
 }
 
 // KeyDerivedCloudRoutePendingOperation returns the store path for a cloud

@@ -380,6 +380,8 @@ func resolveHostPort(ctx context.Context, factStore store.StateStore, instanceID
 	if err == nil {
 		hostPort, parseErr := strconv.Atoi(string(portFact.Value))
 		if parseErr == nil && hostPort > 0 {
+			logging.Default().Warn("resolved host port via legacy single-port key, per-port key missing",
+				"instance", instanceID, "containerPort", strconv.Itoa(containerPort))
 			return hostPort
 		}
 	}

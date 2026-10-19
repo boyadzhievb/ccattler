@@ -83,21 +83,22 @@ func TestCloudLBSkipsEnsureWhenConfigUnchanged(testHandle *testing.T) {
 	// Set up an endpoint for the service.
 	factStore.Put(ctx, types.ScanEndpoints+"web/inst-1", []byte("10.0.0.1:8080"))
 
-	// Compute and store the applied hash matching the current configuration.
+	// Compute and store the per-port applied hash matching the current configuration.
 	configHash := computeLoadBalancerConfigHash("web", 443, "http", []string{"10.0.0.1:8080"})
-	factStore.Put(ctx, types.KeyDerivedCloudLBAppliedHash("web"), []byte(configHash))
+	factStore.Put(ctx, types.KeyDerivedCloudLBAppliedHashForPort("web", 443), []byte(configHash))
 
 	changes := helperReconcileCloudLB(testHandle, loadBalancerController, factStore)
 
 	for _, change := range changes {
-		if change.Key == types.KeyDerivedCloudLBPendingOperation("web") && change.Type == store.OpPut {
-			var pendingOp pendingCloudLBOperation
-			if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
-				testHandle.Fatalf("failed to unmarshal pending op: %v", unmarshalErr)
-			}
-			if pendingOp.Kind == "ensure" {
-				testHandle.Fatal("expected no ensure operation when config hash is unchanged")
-			}
+		if change.Type != store.OpPut {
+			continue
+		}
+		var pendingOp pendingCloudLBOperation
+		if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
+			continue
+		}
+		if pendingOp.Kind == "ensure" && pendingOp.ServiceName == "web" && pendingOp.Port == 443 {
+			testHandle.Fatal("expected no ensure operation when per-port config hash is unchanged")
 		}
 	}
 }
@@ -205,5 +206,89 @@ func TestCloudLBMultiPortServiceEmitsPerPortEnsure(testHandle *testing.T) {
 	}
 	if !ensurePorts[443] {
 		testHandle.Error("expected ensure operation for port 443")
+	}
+}
+
+// TestCloudLBMultiPortSkipsMatchedPortOnly verifies that per-port hash
+// comparison skips only the port whose hash matches and still emits an
+// ensure for the port whose hash is missing or stale.
+func TestCloudLBMultiPortSkipsMatchedPortOnly(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	loadBalancerController := NewCloudLoadBalancerController(simulatorProvider, factStore)
+
+	factStore.Put(ctx, types.KeyDesiredServiceExposeExternal("web", 80), []byte("http"))
+	factStore.Put(ctx, types.KeyDesiredServiceExposeExternal("web", 443), []byte("http"))
+	factStore.Put(ctx, types.ScanEndpoints+"web/inst-1", []byte("10.0.0.1:8080"))
+
+	// Store a matching per-port hash for port 80 only.
+	hashForPort80 := computeLoadBalancerConfigHash("web", 80, "http", []string{"10.0.0.1:8080"})
+	factStore.Put(ctx, types.KeyDerivedCloudLBAppliedHashForPort("web", 80), []byte(hashForPort80))
+
+	changes := helperReconcileCloudLB(testHandle, loadBalancerController, factStore)
+
+	ensurePorts := make(map[int]bool)
+	for _, change := range changes {
+		if change.Type != store.OpPut {
+			continue
+		}
+		var pendingOp pendingCloudLBOperation
+		if unmarshalErr := json.Unmarshal(change.Value, &pendingOp); unmarshalErr != nil {
+			continue
+		}
+		if pendingOp.Kind == "ensure" {
+			ensurePorts[pendingOp.Port] = true
+		}
+	}
+
+	if ensurePorts[80] {
+		testHandle.Error("expected port 80 to be skipped (hash matches)")
+	}
+	if !ensurePorts[443] {
+		testHandle.Error("expected ensure operation for port 443 (no hash)")
+	}
+}
+
+// TestCloudLBPostCommitWritesPerPortHash verifies that executing an ensure
+// operation stores the applied config hash under the per-port key, not the
+// legacy per-service key.
+func TestCloudLBPostCommitWritesPerPortHash(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	simulatorProvider := cloud.NewSimulatorCloudProvider()
+	loadBalancerController := NewCloudLoadBalancerController(simulatorProvider, factStore)
+
+	pendingOp := pendingCloudLBOperation{
+		Kind:        "ensure",
+		ServiceName: "web",
+		Port:        443,
+		TargetPort:  443,
+		Protocol:    "http",
+	}
+	pendingJSON, _ := json.Marshal(pendingOp)
+	factStore.Put(ctx, types.KeyDerivedCloudLBPendingOperationForPort("web", 443), pendingJSON)
+	factStore.Put(ctx, types.ScanEndpoints+"web/inst-1", []byte("10.0.0.1:8080"))
+
+	executeError := loadBalancerController.ExecutePostCommitOperations(ctx)
+	if executeError != nil {
+		testHandle.Fatalf("ExecutePostCommitOperations failed: %v", executeError)
+	}
+
+	// Per-port hash key should exist.
+	perPortHashFact, getErr := factStore.Get(ctx, types.KeyDerivedCloudLBAppliedHashForPort("web", 443))
+	if getErr != nil {
+		testHandle.Fatalf("expected per-port applied hash to be written, got error: %v", getErr)
+	}
+	if len(perPortHashFact.Value) == 0 {
+		testHandle.Fatal("expected non-empty per-port applied hash value")
+	}
+
+	// Legacy per-service key should NOT exist.
+	_, legacyErr := factStore.Get(ctx, types.KeyDerivedCloudLBAppliedHash("web"))
+	if legacyErr == nil {
+		testHandle.Fatal("expected legacy per-service applied hash to NOT be written")
 	}
 }
