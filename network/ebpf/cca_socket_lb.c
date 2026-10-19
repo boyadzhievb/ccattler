@@ -10,7 +10,9 @@
 
 /* cca_sock4_connect intercepts IPv4 connect() calls. If the destination
  * matches a VIP, selects a backend and rewrites the socket destination.
- * Records reverse NAT keyed by socket cookie for getpeername transparency. */
+ * Records reverse NAT keyed by socket cookie for getpeername transparency.
+ * Note: msg_src_ip4 is not readable in connect4 (kernel restriction), so
+ * we use the truncated socket cookie as the affinity client identifier. */
 SEC("cgroup/connect4")
 int cca_sock4_connect(struct bpf_sock_addr *socket_ctx)
 {
@@ -27,7 +29,8 @@ int cca_sock4_connect(struct bpf_sock_addr *socket_ctx)
 	if (!matched_service)
 		return 1;
 
-	if (select_backend(matched_service, socket_ctx->msg_src_ip4,
+	__u32 client_identity = (__u32)bpf_get_socket_cookie(socket_ctx);
+	if (select_backend(matched_service, client_identity,
 			   &chosen_backend) < 0)
 		return 1;
 

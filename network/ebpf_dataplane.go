@@ -75,7 +75,7 @@ type ebpfCgroupAttachment struct {
 var ebpfCgroupPrograms = []ebpfCgroupAttachment{
 	{ebpfConnect4ProgName, ebpf.AttachCGroupInet4Connect},
 	{ebpfSendmsg4ProgName, ebpf.AttachCGroupUDP4Sendmsg},
-	{ebpfGetpeername4ProgName, ebpf.AttachCGroupInet4GetPeername},
+	{ebpfGetpeername4ProgName, ebpf.AttachCgroupInet4GetPeername},
 }
 
 // EbpfDataPlane implements DataPlaneProvider by loading BPF programs that
