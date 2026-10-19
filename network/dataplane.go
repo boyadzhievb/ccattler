@@ -94,6 +94,34 @@ type RouteDataPlaneConfig struct {
 	CookieConfig *RouteCookieConfig
 }
 
+// DataPlaneInitializer can be implemented by data plane providers that require
+// one-time initialization before the first reconciliation cycle (e.g. scanning
+// existing state, creating leases).
+type DataPlaneInitializer interface {
+	Initialize(ctx context.Context) error
+}
+
+// DataPlaneNodeRegistrar can be implemented by data plane providers that need
+// to register node metadata on agent startup (e.g. Cilium node entries for
+// tunnel discovery).
+type DataPlaneNodeRegistrar interface {
+	RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error
+}
+
+// EndpointIdentityRegistrar can be implemented by data plane providers that
+// need to register container IP-to-identity mappings when instances start
+// (e.g. Cilium identity-based eBPF policy).
+type EndpointIdentityRegistrar interface {
+	RegisterEndpointIdentity(ctx context.Context, containerIP string, hostIP string, serviceName string, containerPort int) error
+}
+
+// DataPlanePolicyReconciler can be implemented by data plane providers that
+// translate compiled network policy rules (derived/network/rule/) into their
+// native enforcement format (e.g. Cilium identity-based eBPF policy).
+type DataPlanePolicyReconciler interface {
+	ReconcilePolicies(ctx context.Context) error
+}
+
 // RouteCookieConfig holds the cookie attributes for cookie-based sticky sessions.
 type RouteCookieConfig struct {
 	// Name is the cookie name (e.g. "session" or "__CCA_STICKY_web").

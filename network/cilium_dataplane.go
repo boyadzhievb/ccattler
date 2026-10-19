@@ -17,11 +17,14 @@ import (
 // CiliumDataPlane implements DataPlaneProvider by translating CCattler VIP and
 // route configurations into Cilium kvstore entries. Cilium agents watch these
 // keys and program eBPF maps for socket-level load balancing, replacing
-// nftables/iptables DNAT rules. Cleanup removes Cilium kvstore keys and
-// revokes the active lease.
+// nftables/iptables DNAT rules. Also implements DataPlaneInitializer,
+// DataPlaneNodeRegistrar, EndpointIdentityRegistrar, and
+// DataPlanePolicyReconciler for full Cilium integration.
 type CiliumDataPlane struct {
 	// factTranslator translates CCattler facts to Cilium kvstore entries.
 	factTranslator *CiliumFactTranslator
+	// policyTranslator translates compiled network rules to Cilium policy entries.
+	policyTranslator *CiliumPolicyTranslator
 	// mutex serializes reconciliation calls.
 	mutex sync.Mutex
 	// initialized tracks whether Initialize has been called.
@@ -34,7 +37,8 @@ type CiliumDataPlane struct {
 // for slave key writes and node registration.
 func NewCiliumDataPlane(factStore store.StateStore, clusterName string, nodeID string) *CiliumDataPlane {
 	return &CiliumDataPlane{
-		factTranslator: NewCiliumFactTranslator(factStore, clusterName, nodeID),
+		factTranslator:   NewCiliumFactTranslator(factStore, clusterName, nodeID),
+		policyTranslator: NewCiliumPolicyTranslator(factStore, clusterName),
 	}
 }
 
@@ -94,10 +98,38 @@ func (ciliumDataPlane *CiliumDataPlane) Cleanup(ctx context.Context) error {
 
 	logging.Default().Info("cilium data plane: cleaning up kvstore entries")
 
+	policyError := ciliumDataPlane.policyTranslator.CleanupPolicies(ctx)
+	if policyError != nil {
+		logging.Default().Error("cilium policy cleanup failed", "error", policyError.Error())
+	}
+
 	cleanupError := ciliumDataPlane.factTranslator.CleanupAll(ctx)
 	if cleanupError != nil {
 		return fmt.Errorf("cilium kvstore cleanup failed: %w", cleanupError)
 	}
 
 	return nil
+}
+
+// RegisterNode writes a Cilium node registration entry so other Cilium agents
+// can discover this node for tunnel setup and health checking.
+func (ciliumDataPlane *CiliumDataPlane) RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error {
+	return ciliumDataPlane.factTranslator.WriteNodeRegistration(ctx, nodeIP, podCIDR)
+}
+
+// RegisterEndpointIdentity writes a Cilium IP-to-identity mapping and the
+// corresponding identity master and slave keys for a newly started container.
+func (ciliumDataPlane *CiliumDataPlane) RegisterEndpointIdentity(ctx context.Context, containerIP string, hostIP string, serviceName string, containerPort int) error {
+	return ciliumDataPlane.factTranslator.WriteEndpointIPIdentity(ctx, containerIP, hostIP, serviceName, containerPort)
+}
+
+// ReconcilePolicies reads compiled network policy rules from the fact store
+// and translates them into Cilium identity-based policy entries. Uses the
+// translator's identity cache to resolve IPs to Cilium security identities.
+func (ciliumDataPlane *CiliumDataPlane) ReconcilePolicies(ctx context.Context) error {
+	ciliumDataPlane.mutex.Lock()
+	defer ciliumDataPlane.mutex.Unlock()
+
+	identityResolver := ciliumDataPlane.factTranslator.ResolveIPToIdentity
+	return ciliumDataPlane.policyTranslator.ReconcilePolicies(ctx, identityResolver)
 }

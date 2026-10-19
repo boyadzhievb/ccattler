@@ -70,6 +70,12 @@ func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 			logging.Default().Error("dataplane: route reconcile error", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
 		}
 	}
+
+	if policyReconciler, supportsPolicy := dataPlaneReconciler.dataPlaneProvider.(network.DataPlanePolicyReconciler); supportsPolicy {
+		if policyError := policyReconciler.ReconcilePolicies(ctx); policyError != nil {
+			logging.Default().Error("dataplane: policy reconcile error", "agent", dataPlaneReconciler.nodeID, "error", policyError.Error())
+		}
+	}
 }
 
 // buildServiceVIPConfigs scans VIP facts and endpoint facts to construct

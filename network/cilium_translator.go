@@ -483,6 +483,34 @@ func (ciliumTranslator *CiliumFactTranslator) removeStaleKeys(ctx context.Contex
 	}
 }
 
+// ResolveIPToIdentity looks up the Cilium security identity for a container IP
+// by scanning the written IP-to-identity keys. Returns 0 if no identity is
+// found for the given IP address. Used by the policy translator to map
+// compiled IP-based rules back to Cilium identity-based policy entries.
+func (ciliumTranslator *CiliumFactTranslator) ResolveIPToIdentity(ipAddress string) int {
+	ciliumTranslator.mutex.Lock()
+	defer ciliumTranslator.mutex.Unlock()
+
+	ipKey := fmt.Sprintf("%s%s/%s", ciliumIPPrefix, ciliumTranslator.clusterName, ipAddress)
+	if !ciliumTranslator.writtenIPKeys[ipKey] {
+		return 0
+	}
+
+	ctx, cancelFunc := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFunc()
+
+	ipFact, getError := ciliumTranslator.factStore.Get(ctx, ipKey)
+	if getError != nil {
+		return 0
+	}
+
+	var ipPair ciliumIPIdentityPair
+	if unmarshalError := json.Unmarshal(ipFact.Value, &ipPair); unmarshalError != nil {
+		return 0
+	}
+	return ipPair.ID
+}
+
 // BuildCiliumLabelKey converts a CCattler service name into a sorted Cilium
 // label key string. Format: "source:key=value;..." sorted alphabetically.
 func BuildCiliumLabelKey(serviceName string) string {

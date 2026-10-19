@@ -275,9 +275,21 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		}
 		fmt.Printf("Agent %s: VXLAN overlay networking enabled (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
 	case "cilium":
-		// Cilium manages its own tunnels (VXLAN or Geneve). No VXLANReconciler needed.
-		// Subnet allocation still uses CCattler's fact store for IPAM.
-		fmt.Printf("Agent %s: Cilium networking mode — tunnels managed by Cilium agent\n", parsedConfig.nodeID)
+		// Cilium manages its own tunnels (VXLAN or Geneve). No VXLANReconciler on
+		// the agent — but we still allocate a per-node /24 for IPAM using the same
+		// etcd keys as VXLAN mode, so Cilium node registration knows the pod CIDR.
+		overlayNetworkCIDR := network.DefaultClusterCIDR
+		if parsedConfig.clusterCIDR != "" {
+			overlayNetworkCIDR = parsedConfig.clusterCIDR
+		}
+		ciliumSubnetAllocator := agent.NewVXLANReconciler(parsedConfig.nodeID, factStore, parsedConfig.advertiseAddress, overlayNetworkCIDR)
+		ciliumSubnetAllocator.EnsureSubnetPublished(ctx)
+		nodeSubnet := ciliumSubnetAllocator.AllocatedSubnet(ctx)
+		if nodeSubnet != "" {
+			containerNetworkCIDR = nodeSubnet
+			fmt.Printf("Agent %s: container bridge using node subnet %s\n", parsedConfig.nodeID, nodeSubnet)
+		}
+		fmt.Printf("Agent %s: Cilium networking mode — tunnels managed by Cilium agent (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
 	}
 
 	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress, containerNetworkCIDR)
@@ -285,6 +297,11 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	if vxlanReconciler != nil {
 		nodeAgent.SetVXLANReconciler(vxlanReconciler)
+	}
+
+	// Pass node subnet to agent for data plane providers that need it (e.g. Cilium node registration).
+	if containerNetworkCIDR != "" && containerNetworkCIDR != parsedConfig.clusterCIDR {
+		nodeAgent.SetNodeSubnet(containerNetworkCIDR)
 	}
 
 	if parsedConfig.advertiseAddress != "" {

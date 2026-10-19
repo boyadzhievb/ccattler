@@ -71,6 +71,7 @@ type Agent struct {
 	dataPlaneReconciler      *DataPlaneReconciler                 // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 	secretAPIServer          *SecretAPIServer                     // secretAPIServer serves per-instance secret retrieval over HTTP; nil means secrets use file materialization.
 	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
+	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -161,6 +162,13 @@ func (nodeAgent *Agent) VXLANReconciler() *VXLANReconciler {
 	return nodeAgent.vxlanReconciler
 }
 
+// SetNodeSubnet configures the pod CIDR allocated to this node (e.g.
+// "10.100.1.0/24"). Used by data plane providers that need node subnet
+// information for registration (e.g. Cilium node entries).
+func (nodeAgent *Agent) SetNodeSubnet(nodeSubnet string) {
+	nodeAgent.nodeSubnet = nodeSubnet
+}
+
 // SetInterval overrides the default periodic reconciliation interval.
 // This is typically used in tests to speed up convergence. Zero or
 // negative values are replaced with the default to avoid a panic in
@@ -199,6 +207,8 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	if nodeAgent.vxlanReconciler != nil {
 		nodeAgent.vxlanReconciler.EnsureSubnetPublished(ctx)
 	}
+
+	nodeAgent.initializeDataPlaneIfSupported(ctx)
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {
@@ -276,6 +286,66 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
 		}
+	}
+}
+
+// initializeDataPlaneIfSupported checks whether the data plane provider
+// implements the optional DataPlaneInitializer and DataPlaneNodeRegistrar
+// interfaces. If so, it calls Initialize (e.g. to scan existing identities and
+// create leases) and RegisterNode (to publish this node's address and subnet
+// for tunnel discovery). Called once at agent startup before the first reconcile.
+func (nodeAgent *Agent) initializeDataPlaneIfSupported(ctx context.Context) {
+	dataPlaneProvider := nodeAgent.dataPlaneReconciler.dataPlaneProvider
+	if dataPlaneProvider == nil {
+		return
+	}
+
+	if initializer, supportsInit := dataPlaneProvider.(network.DataPlaneInitializer); supportsInit {
+		if initError := initializer.Initialize(ctx); initError != nil {
+			logging.Default().Error("data plane initialization failed", "agent", nodeAgent.nodeID, "error", initError.Error())
+			return
+		}
+		logging.Default().Info("data plane initialized", "agent", nodeAgent.nodeID)
+	}
+
+	if registrar, supportsNodeReg := dataPlaneProvider.(network.DataPlaneNodeRegistrar); supportsNodeReg {
+		if nodeAgent.advertiseAddress != "" && nodeAgent.nodeSubnet != "" {
+			if regError := registrar.RegisterNode(ctx, nodeAgent.advertiseAddress, nodeAgent.nodeSubnet); regError != nil {
+				logging.Default().Error("data plane node registration failed", "agent", nodeAgent.nodeID, "error", regError.Error())
+			} else {
+				logging.Default().Info("data plane node registered", "agent", nodeAgent.nodeID, "ip", nodeAgent.advertiseAddress, "subnet", nodeAgent.nodeSubnet)
+			}
+		}
+	}
+}
+
+// registerEndpointIdentityIfSupported checks if the data plane provider
+// implements EndpointIdentityRegistrar and writes an IP-to-identity mapping
+// for a newly started container. Called from publishInstanceStateToStore after
+// the container IP is known. Skipped if the IP is empty or the provider
+// does not support identity registration.
+func (nodeAgent *Agent) registerEndpointIdentityIfSupported(ctx context.Context, containerIP string, serviceName string) {
+	if containerIP == "" {
+		return
+	}
+	dataPlaneProvider := nodeAgent.dataPlaneReconciler.dataPlaneProvider
+	if dataPlaneProvider == nil {
+		return
+	}
+	registrar, supportsIdentityReg := dataPlaneProvider.(network.EndpointIdentityRegistrar)
+	if !supportsIdentityReg {
+		return
+	}
+
+	exposedPorts := nodeAgent.lookupServiceExposedPortsFromStore(ctx, serviceName)
+	containerPort := 0
+	if len(exposedPorts) > 0 {
+		containerPort = exposedPorts[0]
+	}
+
+	if regError := registrar.RegisterEndpointIdentity(ctx, containerIP, nodeAgent.advertiseAddress, serviceName, containerPort); regError != nil {
+		logging.Default().Error("endpoint identity registration failed",
+			"agent", nodeAgent.nodeID, "ip", containerIP, "service", serviceName, "error", regError.Error())
 	}
 }
 
@@ -1092,11 +1162,13 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
 
+	publishedContainerIP := ""
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)
 		if allocateError != nil {
 			logging.Default().Error("failed to allocate IP", "agent", nodeAgent.nodeID, "instance", instanceID, "error", allocateError.Error())
 		} else {
+			publishedContainerIP = allocatedIP
 			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(allocatedIP)); putError != nil {
 				logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 			}
@@ -1107,10 +1179,15 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 	} else if runtimeIP != "" {
 		if net.ParseIP(runtimeIP) == nil {
 			logging.Default().Warn("invalid container IP from runtime", "instance", instanceID, "ip", runtimeIP)
-		} else if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(runtimeIP)); putError != nil {
-			logging.Default().Error("failed to publish container IP", "instance", instanceID, "error", putError.Error())
+		} else {
+			publishedContainerIP = runtimeIP
+			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(runtimeIP)); putError != nil {
+				logging.Default().Error("failed to publish container IP", "instance", instanceID, "error", putError.Error())
+			}
 		}
 	}
+
+	nodeAgent.registerEndpointIdentityIfSupported(ctx, publishedContainerIP, service)
 }
 
 // reconcileResourceChanges compares the effective resource allocation for an

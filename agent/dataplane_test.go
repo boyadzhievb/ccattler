@@ -300,3 +300,113 @@ func TestDataPlaneRunsOnReconciliationTick(t *testing.T) {
 
 	cancel()
 }
+
+// ciliumCapableDataPlane is a test mock that implements both DataPlaneProvider
+// and all optional Cilium interfaces (DataPlaneInitializer,
+// DataPlaneNodeRegistrar, EndpointIdentityRegistrar, DataPlanePolicyReconciler).
+type ciliumCapableDataPlane struct {
+	initializeCalled       bool
+	registerNodeCalled     bool
+	registerNodeIP         string
+	registerNodeCIDR       string
+	endpointRegCalled      bool
+	endpointRegContainerIP string
+	endpointRegService     string
+	policyReconcileCalled  bool
+}
+
+func (mockDP *ciliumCapableDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
+	return nil
+}
+func (mockDP *ciliumCapableDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
+	return nil
+}
+func (mockDP *ciliumCapableDataPlane) Cleanup(_ context.Context) error { return nil }
+
+func (mockDP *ciliumCapableDataPlane) Initialize(_ context.Context) error {
+	mockDP.initializeCalled = true
+	return nil
+}
+
+func (mockDP *ciliumCapableDataPlane) RegisterNode(_ context.Context, nodeIP string, podCIDR string) error {
+	mockDP.registerNodeCalled = true
+	mockDP.registerNodeIP = nodeIP
+	mockDP.registerNodeCIDR = podCIDR
+	return nil
+}
+
+func (mockDP *ciliumCapableDataPlane) RegisterEndpointIdentity(_ context.Context, containerIP string, _ string, serviceName string, _ int) error {
+	mockDP.endpointRegCalled = true
+	mockDP.endpointRegContainerIP = containerIP
+	mockDP.endpointRegService = serviceName
+	return nil
+}
+
+func (mockDP *ciliumCapableDataPlane) ReconcilePolicies(_ context.Context) error {
+	mockDP.policyReconcileCalled = true
+	return nil
+}
+
+// TestDataPlaneInitializerCalledOnStartup verifies that the agent calls
+// Initialize and RegisterNode on data plane providers that implement those
+// optional interfaces.
+func TestDataPlaneInitializerCalledOnStartup(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetAdvertiseAddress("192.168.1.10")
+	nodeAgent.SetNodeSubnet("10.100.1.0/24")
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "initializer and node registrar called", func() bool {
+		return mockDP.initializeCalled && mockDP.registerNodeCalled
+	})
+
+	cancel()
+
+	if mockDP.registerNodeIP != "192.168.1.10" {
+		t.Errorf("expected RegisterNode IP '192.168.1.10', got %q", mockDP.registerNodeIP)
+	}
+	if mockDP.registerNodeCIDR != "10.100.1.0/24" {
+		t.Errorf("expected RegisterNode CIDR '10.100.1.0/24', got %q", mockDP.registerNodeCIDR)
+	}
+}
+
+// TestDataPlanePolicyReconcilerCalledOnTick verifies that the data plane
+// reconciler calls ReconcilePolicies on providers that implement it.
+func TestDataPlanePolicyReconcilerCalledOnTick(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web", types.PrefixDesired), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web/instances", types.PrefixDesired), []byte("0"))
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "web", VIP: "10.200.0.1", Port: 80,
+	})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "policy reconciler called", func() bool {
+		return mockDP.policyReconcileCalled
+	})
+
+	cancel()
+}

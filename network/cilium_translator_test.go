@@ -287,3 +287,122 @@ func TestCiliumTranslatorCleanupRemovesAllKeys(testHandle *testing.T) {
 		testHandle.Error("expected identity master key to be deleted after cleanup")
 	}
 }
+
+// TestCiliumTranslatorResolveIPToIdentity verifies that ResolveIPToIdentity
+// returns the correct security identity for a registered container IP.
+func TestCiliumTranslatorResolveIPToIdentity(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	translator := NewCiliumFactTranslator(factStore, "ccattler", "node-1")
+	translator.Initialize(ctx)
+
+	// Write an endpoint so we have an IP-to-identity mapping.
+	translator.WriteEndpointIPIdentity(ctx, "10.100.1.42", "192.168.1.10", "web", 8080)
+
+	resolvedIdentity := translator.ResolveIPToIdentity("10.100.1.42")
+	if resolvedIdentity != 256 {
+		testHandle.Fatalf("expected identity 256, got %d", resolvedIdentity)
+	}
+
+	// Unknown IP should return 0.
+	unknownIdentity := translator.ResolveIPToIdentity("10.100.99.99")
+	if unknownIdentity != 0 {
+		testHandle.Fatalf("expected identity 0 for unknown IP, got %d", unknownIdentity)
+	}
+}
+
+// TestCiliumDataPlaneImplementsOptionalInterfaces verifies that CiliumDataPlane
+// satisfies all four optional data plane interfaces.
+func TestCiliumDataPlaneImplementsOptionalInterfaces(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ciliumDP := NewCiliumDataPlane(factStore, "ccattler", "node-1")
+
+	var _ DataPlaneInitializer = ciliumDP
+	var _ DataPlaneNodeRegistrar = ciliumDP
+	var _ EndpointIdentityRegistrar = ciliumDP
+	var _ DataPlanePolicyReconciler = ciliumDP
+}
+
+// TestCiliumDataPlaneRegisterNodeWritesKvstoreEntry verifies that RegisterNode
+// delegates to the fact translator and writes a Cilium node entry.
+func TestCiliumDataPlaneRegisterNodeWritesKvstoreEntry(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	ciliumDP := NewCiliumDataPlane(factStore, "ccattler", "node-1")
+	ciliumDP.Initialize(ctx)
+
+	regError := ciliumDP.RegisterNode(ctx, "192.168.1.10", "10.100.1.0/24")
+	if regError != nil {
+		testHandle.Fatalf("RegisterNode failed: %v", regError)
+	}
+
+	nodeKey := "cilium/state/nodes/v1/ccattler/node-1"
+	if _, getError := factStore.Get(ctx, nodeKey); getError != nil {
+		testHandle.Fatalf("expected node key to exist: %v", getError)
+	}
+}
+
+// TestCiliumDataPlaneRegisterEndpointIdentity verifies that endpoint identity
+// registration writes IP-to-identity and identity master/slave keys.
+func TestCiliumDataPlaneRegisterEndpointIdentity(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	ciliumDP := NewCiliumDataPlane(factStore, "ccattler", "node-1")
+	ciliumDP.Initialize(ctx)
+
+	regError := ciliumDP.RegisterEndpointIdentity(ctx, "10.100.1.42", "192.168.1.10", "web", 8080)
+	if regError != nil {
+		testHandle.Fatalf("RegisterEndpointIdentity failed: %v", regError)
+	}
+
+	ipKey := "cilium/state/ip/v1/ccattler/10.100.1.42"
+	if _, getError := factStore.Get(ctx, ipKey); getError != nil {
+		testHandle.Fatalf("expected IP key: %v", getError)
+	}
+
+	masterKey := "cilium/state/identities/v1/id/256"
+	if _, getError := factStore.Get(ctx, masterKey); getError != nil {
+		testHandle.Fatalf("expected identity master key: %v", getError)
+	}
+}
+
+// TestCiliumDataPlanePolicyReconciliation verifies that ReconcilePolicies reads
+// compiled rules and writes Cilium policy entries when identities are known.
+func TestCiliumDataPlanePolicyReconciliation(testHandle *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	ciliumDP := NewCiliumDataPlane(factStore, "ccattler", "node-1")
+	ciliumDP.Initialize(ctx)
+
+	// Register endpoints so identities exist for policy resolution.
+	ciliumDP.RegisterEndpointIdentity(ctx, "10.100.1.10", "192.168.1.10", "web", 80)
+	ciliumDP.RegisterEndpointIdentity(ctx, "10.100.1.20", "192.168.1.10", "api", 443)
+
+	// Write a compiled network rule: web → api on port 443.
+	factStore.Put(ctx, "derived/network/rule/node-1/0", []byte("10.100.1.10:10.100.1.20:443:allow"))
+
+	reconcileError := ciliumDP.ReconcilePolicies(ctx)
+	if reconcileError != nil {
+		testHandle.Fatalf("ReconcilePolicies failed: %v", reconcileError)
+	}
+
+	// Verify a Cilium policy key was written (identities 256 and 257).
+	policyKey := "cilium/state/policy/v1/ccattler/256-257-443"
+	policyFact, getError := factStore.Get(ctx, policyKey)
+	if getError != nil {
+		testHandle.Fatalf("expected policy key to exist: %v", getError)
+	}
+	if !strings.Contains(string(policyFact.Value), `"action":"allow"`) {
+		testHandle.Errorf("expected policy action 'allow', got %q", string(policyFact.Value))
+	}
+}
