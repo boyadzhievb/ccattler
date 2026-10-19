@@ -48,15 +48,15 @@ const ebpfReverseNatMapName = "cca_reverse_nat"
 
 // ebpfConnect4ProgName is the name of the cgroup/connect4 BPF program
 // that intercepts TCP connect() calls destined for a VIP.
-const ebpfConnect4ProgName = "cca_connect4"
+const ebpfConnect4ProgName = "cca_sock4_connect"
 
 // ebpfSendmsg4ProgName is the name of the cgroup/sendmsg4 BPF program
 // that intercepts UDP sendto()/sendmsg() calls destined for a VIP.
-const ebpfSendmsg4ProgName = "cca_sendmsg4"
+const ebpfSendmsg4ProgName = "cca_sock4_sendmsg"
 
 // ebpfGetpeername4ProgName is the name of the cgroup/getpeername4 BPF
 // program that returns the original VIP address for translated sockets.
-const ebpfGetpeername4ProgName = "cca_getpeername4"
+const ebpfGetpeername4ProgName = "cca_sock4_getpeername"
 
 // ebpfInitialServiceID is the starting value for service ID allocation.
 // IDs are monotonically increasing; zero is reserved as an invalid sentinel.

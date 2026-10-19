@@ -8,9 +8,13 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
-/* nf_conn is an opaque conntrack entry handle. BPF programs receive and
- * pass it by pointer; the internal structure is managed by the kernel. */
-struct nf_conn;
+/* nf_conn is a conntrack entry handle. Defined as a minimal struct (not a
+ * forward declaration) so clang emits a BTF Struct kind that matches the
+ * kernel's BTF. BPF programs only pass it by pointer to kfuncs — the
+ * internal fields are never accessed. */
+struct nf_conn {
+	unsigned int __opaque;
+};
 
 /* nf_inet_addr holds an IP address for NAT target specification.
  * Only the IPv4 member is used by CCattler. */
