@@ -572,6 +572,28 @@ func (memStore *MemoryStore) Revision(_ context.Context) (int64, error) {
 	return memStore.currentRevision.Load(), nil
 }
 
+// GrantLease returns a synthetic lease ID. MemoryStore does not enforce TTLs —
+// keys written with PutWithLease behave identically to regular Put.
+func (memStore *MemoryStore) GrantLease(_ context.Context, _ int64) (int64, error) {
+	return memStore.currentRevision.Add(1), nil
+}
+
+// PutWithLease writes a key-value pair. The leaseID is stored but the memory
+// store does not enforce TTL expiration — keys persist until explicitly deleted.
+func (memStore *MemoryStore) PutWithLease(ctx context.Context, key string, value []byte, _ int64) (int64, error) {
+	return memStore.Put(ctx, key, value)
+}
+
+// RenewLease is a no-op in MemoryStore. Returns a synthetic TTL of 900 seconds.
+func (memStore *MemoryStore) RenewLease(_ context.Context, _ int64) (int64, error) {
+	return 900, nil
+}
+
+// RevokeLease is a no-op in MemoryStore.
+func (memStore *MemoryStore) RevokeLease(_ context.Context, _ int64) error {
+	return nil
+}
+
 // Close shuts down the memory store by closing all active watcher event
 // channels. Subsequent operations return ErrStoreClosed.
 func (memStore *MemoryStore) Close() error {

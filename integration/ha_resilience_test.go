@@ -73,6 +73,26 @@ func (slowStore *slowStore) Revision(ctx context.Context) (int64, error) {
 	return slowStore.underlying.Revision(ctx)
 }
 
+func (slowStore *slowStore) GrantLease(ctx context.Context, ttlSeconds int64) (int64, error) {
+	slowStore.delay()
+	return slowStore.underlying.GrantLease(ctx, ttlSeconds)
+}
+
+func (slowStore *slowStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	slowStore.delay()
+	return slowStore.underlying.PutWithLease(ctx, key, value, leaseID)
+}
+
+func (slowStore *slowStore) RenewLease(ctx context.Context, leaseID int64) (int64, error) {
+	slowStore.delay()
+	return slowStore.underlying.RenewLease(ctx, leaseID)
+}
+
+func (slowStore *slowStore) RevokeLease(ctx context.Context, leaseID int64) error {
+	slowStore.delay()
+	return slowStore.underlying.RevokeLease(ctx, leaseID)
+}
+
 func (slowStore *slowStore) Close() error {
 	return slowStore.underlying.Close()
 }

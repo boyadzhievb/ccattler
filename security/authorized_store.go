@@ -163,6 +163,26 @@ func (authorizedStore *AuthorizedStore) Revision(ctx context.Context) (int64, er
 	return authorizedStore.inner.Revision(ctx)
 }
 
+// GrantLease delegates to the underlying store.
+func (authorizedStore *AuthorizedStore) GrantLease(ctx context.Context, ttlSeconds int64) (int64, error) {
+	return authorizedStore.inner.GrantLease(ctx, ttlSeconds)
+}
+
+// PutWithLease delegates to the underlying store.
+func (authorizedStore *AuthorizedStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	return authorizedStore.inner.PutWithLease(ctx, key, value, leaseID)
+}
+
+// RenewLease delegates to the underlying store.
+func (authorizedStore *AuthorizedStore) RenewLease(ctx context.Context, leaseID int64) (int64, error) {
+	return authorizedStore.inner.RenewLease(ctx, leaseID)
+}
+
+// RevokeLease delegates to the underlying store.
+func (authorizedStore *AuthorizedStore) RevokeLease(ctx context.Context, leaseID int64) error {
+	return authorizedStore.inner.RevokeLease(ctx, leaseID)
+}
+
 // Close closes the underlying store.
 func (authorizedStore *AuthorizedStore) Close() error {
 	return authorizedStore.inner.Close()

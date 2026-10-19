@@ -135,6 +135,38 @@ func (partitionedStore *PartitionedStore) Revision(ctx context.Context) (int64, 
 	return partitionedStore.underlyingStore.Revision(ctx)
 }
 
+// GrantLease delegates to the underlying store if not partitioned.
+func (partitionedStore *PartitionedStore) GrantLease(ctx context.Context, ttlSeconds int64) (int64, error) {
+	if err := partitionedStore.checkPartition(); err != nil {
+		return 0, err
+	}
+	return partitionedStore.underlyingStore.GrantLease(ctx, ttlSeconds)
+}
+
+// PutWithLease delegates to the underlying store if not partitioned.
+func (partitionedStore *PartitionedStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	if err := partitionedStore.checkPartition(); err != nil {
+		return 0, err
+	}
+	return partitionedStore.underlyingStore.PutWithLease(ctx, key, value, leaseID)
+}
+
+// RenewLease delegates to the underlying store if not partitioned.
+func (partitionedStore *PartitionedStore) RenewLease(ctx context.Context, leaseID int64) (int64, error) {
+	if err := partitionedStore.checkPartition(); err != nil {
+		return 0, err
+	}
+	return partitionedStore.underlyingStore.RenewLease(ctx, leaseID)
+}
+
+// RevokeLease delegates to the underlying store if not partitioned.
+func (partitionedStore *PartitionedStore) RevokeLease(ctx context.Context, leaseID int64) error {
+	if err := partitionedStore.checkPartition(); err != nil {
+		return err
+	}
+	return partitionedStore.underlyingStore.RevokeLease(ctx, leaseID)
+}
+
 // Close shuts down the store, delegating to the underlying store.
 // Close always passes through regardless of partition state.
 func (partitionedStore *PartitionedStore) Close() error {

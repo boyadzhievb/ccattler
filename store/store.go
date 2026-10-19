@@ -139,6 +139,19 @@ type StateStore interface {
 	// to perform a full resync — dropped events must never cause permanent state drift.
 	Watch(ctx context.Context, key string, opts WatchOption) (<-chan Event, error)
 
+	// GrantLease creates a new lease with the given time-to-live in seconds.
+	// Returns a lease ID that can be passed to PutWithLease. The lease expires
+	// if not renewed within the TTL. Returns 0 for stores that do not support leases.
+	GrantLease(ctx context.Context, ttlSeconds int64) (int64, error)
+	// PutWithLease creates or updates the fact at the given key, attaching it to
+	// the specified lease. When the lease expires the key is automatically deleted.
+	PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error)
+	// RenewLease extends the TTL of an existing lease. Must be called periodically
+	// before the lease expires. Returns the new TTL in seconds.
+	RenewLease(ctx context.Context, leaseID int64) (int64, error)
+	// RevokeLease immediately expires a lease and deletes all keys attached to it.
+	RevokeLease(ctx context.Context, leaseID int64) error
+
 	// Transaction atomically evaluates the compare preconditions and, if all pass,
 	// executes the onSuccess operations; otherwise executes the onFailure operations.
 	// Returns true if all preconditions were satisfied.

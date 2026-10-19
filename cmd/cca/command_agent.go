@@ -196,14 +196,21 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		os.Exit(1)
 	}
 
-	if parsedConfig.dataPlaneBackend != "auto" && parsedConfig.dataPlaneBackend != "nftables" && parsedConfig.dataPlaneBackend != "iptables" && parsedConfig.dataPlaneBackend != "shadow" {
-		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", or \"shadow\")\n", parsedConfig.dataPlaneBackend)
+	knownDataPlaneBackends := map[string]bool{"auto": true, "nftables": true, "iptables": true, "shadow": true, "cilium": true}
+	if !knownDataPlaneBackends[parsedConfig.dataPlaneBackend] {
+		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", \"shadow\", or \"cilium\")\n", parsedConfig.dataPlaneBackend)
 		os.Exit(1)
 	}
 
-	if parsedConfig.networkMode != "" && parsedConfig.networkMode != "local" && parsedConfig.networkMode != "vxlan" {
-		fmt.Fprintf(os.Stderr, "error: unknown network-mode %q (must be \"local\" or \"vxlan\")\n", parsedConfig.networkMode)
+	knownNetworkModes := map[string]bool{"": true, "local": true, "vxlan": true, "cilium": true}
+	if !knownNetworkModes[parsedConfig.networkMode] {
+		fmt.Fprintf(os.Stderr, "error: unknown network-mode %q (must be \"local\", \"vxlan\", or \"cilium\")\n", parsedConfig.networkMode)
 		os.Exit(1)
+	}
+
+	// Auto-enable cilium data plane when cilium network mode is selected.
+	if parsedConfig.networkMode == "cilium" && parsedConfig.dataPlaneBackend == "auto" {
+		parsedConfig.dataPlaneBackend = "cilium"
 	}
 
 	tlsFlagCount := 0
@@ -253,7 +260,8 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	containerNetworkCIDR := parsedConfig.clusterCIDR
 	var vxlanReconciler *agent.VXLANReconciler
 
-	if parsedConfig.networkMode == "vxlan" {
+	switch parsedConfig.networkMode {
+	case "vxlan":
 		overlayNetworkCIDR := network.DefaultClusterCIDR
 		if parsedConfig.clusterCIDR != "" {
 			overlayNetworkCIDR = parsedConfig.clusterCIDR
@@ -266,6 +274,10 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			fmt.Printf("Agent %s: container bridge using node subnet %s\n", parsedConfig.nodeID, nodeSubnet)
 		}
 		fmt.Printf("Agent %s: VXLAN overlay networking enabled (CIDR: %s)\n", parsedConfig.nodeID, overlayNetworkCIDR)
+	case "cilium":
+		// Cilium manages its own tunnels (VXLAN or Geneve). No VXLANReconciler needed.
+		// Subnet allocation still uses CCattler's fact store for IPAM.
+		fmt.Printf("Agent %s: Cilium networking mode — tunnels managed by Cilium agent\n", parsedConfig.nodeID)
 	}
 
 	runtimeAdapter := createAgentRuntimeAdapter(parsedConfig.runtimeBackend, parsedConfig.advertiseAddress, containerNetworkCIDR)
@@ -277,7 +289,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	if parsedConfig.advertiseAddress != "" {
 		nodeAgent.SetAdvertiseAddress(parsedConfig.advertiseAddress)
-		dataPlaneProvider := createDataPlaneProvider(parsedConfig.dataPlaneBackend)
+		dataPlaneProvider := createDataPlaneProvider(parsedConfig.dataPlaneBackend, factStore, "ccattler", parsedConfig.nodeID)
 		nodeAgent.SetDataPlaneProvider(dataPlaneProvider)
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
@@ -378,8 +390,9 @@ func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string, c
 
 // createDataPlaneProvider selects the data plane implementation based on
 // the --dataplane flag. "auto" tries nftables first, falling back to
-// iptables. "nftables" or "iptables" forces a specific backend.
-func createDataPlaneProvider(dataPlaneBackend string) network.DataPlaneProvider {
+// iptables. "nftables" or "iptables" forces a specific backend. "cilium"
+// delegates to the Cilium eBPF data plane (requires cilium build tag).
+func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore, clusterName string, nodeID string) network.DataPlaneProvider {
 	switch dataPlaneBackend {
 	case "nftables":
 		fmt.Println("Data plane: nftables (forced)")
@@ -390,6 +403,14 @@ func createDataPlaneProvider(dataPlaneBackend string) network.DataPlaneProvider 
 	case "shadow":
 		fmt.Println("Data plane: shadow (iptables active, nftables generating for comparison)")
 		return network.NewShadowDataPlane()
+	case "cilium":
+		ciliumFactory := network.LookupDataPlaneFactory("cilium")
+		if ciliumFactory == nil {
+			fmt.Fprintln(os.Stderr, "error: cilium data plane requested but not compiled in (build with -tags cilium)")
+			os.Exit(1)
+		}
+		fmt.Println("Data plane: cilium eBPF (kvstore mode)")
+		return ciliumFactory(factStore, clusterName, nodeID)
 	default:
 		if network.CheckNftablesAvailable() == nil {
 			fmt.Println("Data plane: nftables (auto-detected)")

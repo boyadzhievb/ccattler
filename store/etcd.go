@@ -447,6 +447,58 @@ func (etcdStore *EtcdStore) Revision(ctx context.Context) (int64, error) {
 	return getResponse.Header.Revision, nil
 }
 
+// GrantLease creates a new etcd lease with the given TTL. The returned lease
+// ID can be passed to PutWithLease to attach keys to the lease.
+func (etcdStore *EtcdStore) GrantLease(ctx context.Context, ttlSeconds int64) (int64, error) {
+	if closedError := etcdStore.checkClosed(); closedError != nil {
+		return 0, closedError
+	}
+	grantResponse, grantError := etcdStore.etcdClient.Grant(ctx, ttlSeconds)
+	if grantError != nil {
+		return 0, grantError
+	}
+	return int64(grantResponse.ID), nil
+}
+
+// PutWithLease creates or updates the fact at the given key with the value
+// attached to the specified etcd lease. When the lease expires (or is revoked)
+// the key is automatically deleted by etcd.
+func (etcdStore *EtcdStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	if closedError := etcdStore.checkClosed(); closedError != nil {
+		return 0, closedError
+	}
+	putResponse, putError := etcdStore.etcdClient.Put(ctx,
+		etcdStore.prefixedKey(key), string(value),
+		clientv3.WithLease(clientv3.LeaseID(leaseID)))
+	if putError != nil {
+		return 0, putError
+	}
+	return putResponse.Header.Revision, nil
+}
+
+// RenewLease sends a keep-alive for the given lease, extending its TTL.
+// Returns the remaining TTL in seconds after renewal.
+func (etcdStore *EtcdStore) RenewLease(ctx context.Context, leaseID int64) (int64, error) {
+	if closedError := etcdStore.checkClosed(); closedError != nil {
+		return 0, closedError
+	}
+	keepAliveResponse, keepAliveError := etcdStore.etcdClient.KeepAliveOnce(ctx, clientv3.LeaseID(leaseID))
+	if keepAliveError != nil {
+		return 0, keepAliveError
+	}
+	return keepAliveResponse.TTL, nil
+}
+
+// RevokeLease immediately expires the given lease, deleting all keys attached
+// to it. This is a best-effort operation — the keys may briefly remain visible.
+func (etcdStore *EtcdStore) RevokeLease(ctx context.Context, leaseID int64) error {
+	if closedError := etcdStore.checkClosed(); closedError != nil {
+		return closedError
+	}
+	_, revokeError := etcdStore.etcdClient.Revoke(ctx, clientv3.LeaseID(leaseID))
+	return revokeError
+}
+
 // Close shuts down the etcd client connection and marks the store as closed.
 // Subsequent operations will return ErrStoreClosed.
 func (etcdStore *EtcdStore) Close() error {

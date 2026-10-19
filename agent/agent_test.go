@@ -1481,6 +1481,18 @@ func (watchStore *watchClosingStore) Transaction(ctx context.Context, compares [
 func (watchStore *watchClosingStore) Revision(ctx context.Context) (int64, error) {
 	return watchStore.inner.Revision(ctx)
 }
+func (watchStore *watchClosingStore) GrantLease(ctx context.Context, ttlSeconds int64) (int64, error) {
+	return watchStore.inner.GrantLease(ctx, ttlSeconds)
+}
+func (watchStore *watchClosingStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
+	return watchStore.inner.PutWithLease(ctx, key, value, leaseID)
+}
+func (watchStore *watchClosingStore) RenewLease(ctx context.Context, leaseID int64) (int64, error) {
+	return watchStore.inner.RenewLease(ctx, leaseID)
+}
+func (watchStore *watchClosingStore) RevokeLease(ctx context.Context, leaseID int64) error {
+	return watchStore.inner.RevokeLease(ctx, leaseID)
+}
 func (watchStore *watchClosingStore) Close() error {
 	return watchStore.inner.Close()
 }
