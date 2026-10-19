@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.50.0-beta <Badge type="tip" text="latest" /> {#v1-50-0-beta}
+## v1.51.0-beta <Badge type="tip" text="latest" /> {#v1-51-0-beta}
+
+**2026-10-19** — Multi-Port Cross-Node Regression.
+
+- **Multi-Port Cross-Node Regression** (M124) — End-to-end proof that multi-port services work across nodes, closing external review finding. New `whoami-multiport.cca` test workload exposing ports 80 (HTTP) and 8081 (HTTP alt), each returning the port it was served on. Per-port E2E assertions: curl both ports from every node through VIPs, verify distinct nftables verdict map entries per port. Per-port hostport fact check: verify `observed/instance/{id}/hostport/80` and `observed/instance/{id}/hostport/8081` exist (not just legacy single-port key). Cloud LB hash granularity audit: verify `cloud_loadbalancer.go` stores/retrieves config hashes at per-port granularity (review flagged per-service hash vs per-port config mismatch). Legacy fallback removal: if all multi-port paths work, deprecate the legacy single-port `hostport` key with a TODO for removal.
+
+---
+
+## v1.50.0-beta {#v1-50-0-beta}
 
 **2026-10-19** — Traffic-Level Networking Validation.
 
