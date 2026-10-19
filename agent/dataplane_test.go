@@ -6,6 +6,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -304,7 +306,9 @@ func TestDataPlaneRunsOnReconciliationTick(t *testing.T) {
 // ciliumCapableDataPlane is a test mock that implements both DataPlaneProvider
 // and all optional Cilium interfaces (DataPlaneInitializer,
 // DataPlaneNodeRegistrar, EndpointIdentityRegistrar, DataPlanePolicyReconciler).
+// All fields are guarded by a mutex for race-detector safety.
 type ciliumCapableDataPlane struct {
+	mutex                  sync.Mutex
 	initializeCalled       bool
 	registerNodeCalled     bool
 	registerNodeIP         string
@@ -324,11 +328,15 @@ func (mockDP *ciliumCapableDataPlane) ReconcileRouteDataPlane(_ context.Context,
 func (mockDP *ciliumCapableDataPlane) Cleanup(_ context.Context) error { return nil }
 
 func (mockDP *ciliumCapableDataPlane) Initialize(_ context.Context) error {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
 	mockDP.initializeCalled = true
 	return nil
 }
 
 func (mockDP *ciliumCapableDataPlane) RegisterNode(_ context.Context, nodeIP string, podCIDR string) error {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
 	mockDP.registerNodeCalled = true
 	mockDP.registerNodeIP = nodeIP
 	mockDP.registerNodeCIDR = podCIDR
@@ -336,6 +344,8 @@ func (mockDP *ciliumCapableDataPlane) RegisterNode(_ context.Context, nodeIP str
 }
 
 func (mockDP *ciliumCapableDataPlane) RegisterEndpointIdentity(_ context.Context, containerIP string, _ string, serviceName string, _ int) error {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
 	mockDP.endpointRegCalled = true
 	mockDP.endpointRegContainerIP = containerIP
 	mockDP.endpointRegService = serviceName
@@ -343,8 +353,58 @@ func (mockDP *ciliumCapableDataPlane) RegisterEndpointIdentity(_ context.Context
 }
 
 func (mockDP *ciliumCapableDataPlane) ReconcilePolicies(_ context.Context) error {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
 	mockDP.policyReconcileCalled = true
 	return nil
+}
+
+func (mockDP *ciliumCapableDataPlane) isInitializeCalled() bool {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.initializeCalled
+}
+
+func (mockDP *ciliumCapableDataPlane) isRegisterNodeCalled() bool {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.registerNodeCalled
+}
+
+func (mockDP *ciliumCapableDataPlane) isEndpointRegCalled() bool {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.endpointRegCalled
+}
+
+func (mockDP *ciliumCapableDataPlane) isPolicyReconcileCalled() bool {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.policyReconcileCalled
+}
+
+func (mockDP *ciliumCapableDataPlane) getEndpointRegContainerIP() string {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.endpointRegContainerIP
+}
+
+func (mockDP *ciliumCapableDataPlane) getEndpointRegService() string {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.endpointRegService
+}
+
+func (mockDP *ciliumCapableDataPlane) getRegisterNodeIP() string {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.registerNodeIP
+}
+
+func (mockDP *ciliumCapableDataPlane) getRegisterNodeCIDR() string {
+	mockDP.mutex.Lock()
+	defer mockDP.mutex.Unlock()
+	return mockDP.registerNodeCIDR
 }
 
 // TestDataPlaneInitializerCalledOnStartup verifies that the agent calls
@@ -367,16 +427,16 @@ func TestDataPlaneInitializerCalledOnStartup(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 2*time.Second, "initializer and node registrar called", func() bool {
-		return mockDP.initializeCalled && mockDP.registerNodeCalled
+		return mockDP.isInitializeCalled() && mockDP.isRegisterNodeCalled()
 	})
 
 	cancel()
 
-	if mockDP.registerNodeIP != "192.168.1.10" {
-		t.Errorf("expected RegisterNode IP '192.168.1.10', got %q", mockDP.registerNodeIP)
+	if mockDP.getRegisterNodeIP() != "192.168.1.10" {
+		t.Errorf("expected RegisterNode IP '192.168.1.10', got %q", mockDP.getRegisterNodeIP())
 	}
-	if mockDP.registerNodeCIDR != "10.100.1.0/24" {
-		t.Errorf("expected RegisterNode CIDR '10.100.1.0/24', got %q", mockDP.registerNodeCIDR)
+	if mockDP.getRegisterNodeCIDR() != "10.100.1.0/24" {
+		t.Errorf("expected RegisterNode CIDR '10.100.1.0/24', got %q", mockDP.getRegisterNodeCIDR())
 	}
 }
 
@@ -405,7 +465,7 @@ func TestDataPlanePolicyReconcilerCalledOnTick(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 2*time.Second, "policy reconciler called", func() bool {
-		return mockDP.policyReconcileCalled
+		return mockDP.isPolicyReconcileCalled()
 	})
 
 	cancel()
@@ -414,9 +474,8 @@ func TestDataPlanePolicyReconcilerCalledOnTick(t *testing.T) {
 // failingInitDataPlane is a mock that fails on Initialize to verify the agent
 // handles initialization failures gracefully.
 type failingInitDataPlane struct {
-	initCalled            bool
-	registerNodeCalled    bool
-	policyReconcileCalled bool
+	initCalled         atomic.Bool
+	registerNodeCalled atomic.Bool
 }
 
 func (mockDP *failingInitDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
@@ -428,17 +487,16 @@ func (mockDP *failingInitDataPlane) ReconcileRouteDataPlane(_ context.Context, _
 func (mockDP *failingInitDataPlane) Cleanup(_ context.Context) error { return nil }
 
 func (mockDP *failingInitDataPlane) Initialize(_ context.Context) error {
-	mockDP.initCalled = true
+	mockDP.initCalled.Store(true)
 	return fmt.Errorf("simulated initialization failure")
 }
 
 func (mockDP *failingInitDataPlane) RegisterNode(_ context.Context, _ string, _ string) error {
-	mockDP.registerNodeCalled = true
+	mockDP.registerNodeCalled.Store(true)
 	return nil
 }
 
 func (mockDP *failingInitDataPlane) ReconcilePolicies(_ context.Context) error {
-	mockDP.policyReconcileCalled = true
 	return nil
 }
 
@@ -468,12 +526,12 @@ func TestDataPlaneInitializeFailureSkipsNodeRegistration(t *testing.T) {
 
 	// Agent should still reconcile despite init failure.
 	waitFor(t, 2*time.Second, "agent continues after init failure", func() bool {
-		return mockDP.initCalled
+		return mockDP.initCalled.Load()
 	})
 
 	cancel()
 
-	if mockDP.registerNodeCalled {
+	if mockDP.registerNodeCalled.Load() {
 		t.Error("RegisterNode should not be called when Initialize fails")
 	}
 }
@@ -497,12 +555,12 @@ func TestDataPlaneNoSubnetSkipsNodeRegistration(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 2*time.Second, "initializer called", func() bool {
-		return mockDP.initializeCalled
+		return mockDP.isInitializeCalled()
 	})
 
 	cancel()
 
-	if mockDP.registerNodeCalled {
+	if mockDP.isRegisterNodeCalled() {
 		t.Error("RegisterNode should not be called when node subnet is empty")
 	}
 }
@@ -526,12 +584,12 @@ func TestDataPlaneNoAdvertiseAddressSkipsNodeRegistration(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 2*time.Second, "initializer called", func() bool {
-		return mockDP.initializeCalled
+		return mockDP.isInitializeCalled()
 	})
 
 	cancel()
 
-	if mockDP.registerNodeCalled {
+	if mockDP.isRegisterNodeCalled() {
 		t.Error("RegisterNode should not be called when advertise address is empty")
 	}
 }
@@ -574,16 +632,16 @@ func TestDataPlaneEndpointRegistrationCalledWithNetworkProvider(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	waitFor(t, 3*time.Second, "endpoint identity registration called", func() bool {
-		return mockDP.endpointRegCalled
+		return mockDP.isEndpointRegCalled()
 	})
 
 	cancel()
 
-	if mockDP.endpointRegContainerIP != "10.100.1.42" {
-		t.Errorf("expected container IP '10.100.1.42', got %q", mockDP.endpointRegContainerIP)
+	if mockDP.getEndpointRegContainerIP() != "10.100.1.42" {
+		t.Errorf("expected container IP '10.100.1.42', got %q", mockDP.getEndpointRegContainerIP())
 	}
-	if mockDP.endpointRegService != "web" {
-		t.Errorf("expected service 'web', got %q", mockDP.endpointRegService)
+	if mockDP.getEndpointRegService() != "web" {
+		t.Errorf("expected service 'web', got %q", mockDP.getEndpointRegService())
 	}
 }
 
@@ -620,7 +678,7 @@ func TestDataPlaneEndpointRegistrationSkippedWithoutNetworkProvider(t *testing.T
 	cancel()
 
 	// Without a network provider, container IP is empty so registration is skipped.
-	if mockDP.endpointRegCalled {
+	if mockDP.isEndpointRegCalled() {
 		t.Error("RegisterEndpointIdentity should not be called when container IP is empty")
 	}
 }
@@ -628,11 +686,11 @@ func TestDataPlaneEndpointRegistrationSkippedWithoutNetworkProvider(t *testing.T
 // nonIdentityDataPlane is a mock that implements DataPlaneProvider but NOT
 // EndpointIdentityRegistrar, verifying the agent skips identity registration.
 type nonIdentityDataPlane struct {
-	reconcileCallCount int
+	reconcileCallCount atomic.Int32
 }
 
 func (mockDP *nonIdentityDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
-	mockDP.reconcileCallCount++
+	mockDP.reconcileCallCount.Add(1)
 	return nil
 }
 func (mockDP *nonIdentityDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
@@ -663,7 +721,7 @@ func TestDataPlaneNonIdentityProviderSkipsRegistration(t *testing.T) {
 
 	// Should still reconcile VIP data plane without crashing.
 	waitFor(t, 2*time.Second, "dataplane reconcile runs", func() bool {
-		return mockDP.reconcileCallCount > 0
+		return mockDP.reconcileCallCount.Load() > 0
 	})
 
 	cancel()
