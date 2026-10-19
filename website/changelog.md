@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.54.0-beta <Badge type="tip" text="latest" /> {#v1-54-0-beta}
+## v1.55.0-beta <Badge type="tip" text="latest" /> {#v1-55-0-beta}
+
+**2026-10-19** — tc DNAT for Bridge Traffic.
+
+- **tc DNAT for Bridge Traffic** (M129) — Phase 2 of independent eBPF data plane. tc BPF program `cca_tc_dnat` attached to `cca-net` bridge ingress replaces nftables PREROUTING DNAT for container-to-VIP traffic. Uses conntrack kfuncs (`bpf_skb_ct_alloc`, `bpf_ct_set_nat_info`, `bpf_ct_insert_entry`) to create kernel conntrack DNAT entries — the kernel's nf_nat applies actual packet rewriting and handles return-path reverse NAT automatically. Fast path: `bpf_skb_ct_lookup` for established connections (one hash lookup, no backend selection). Shares `cca_services`/`cca_backends`/`cca_affinity` maps with socket LB via `MapReplacements`. Bridge interface auto-discovered from overlay CIDR. Compiled to separate ELF (`cca_tc_dnat.o`), loaded with cilium/ebpf `link.AttachTCX` (kernel 6.6+). After this phase, nftables is only used for POSTROUTING masquerade (SNAT). See `design/tc-dnat-design.md`.
+
+---
+
+## v1.54.0-beta {#v1-54-0-beta}
 
 **2026-10-19** — Independent eBPF Socket LB.
 
