@@ -435,7 +435,7 @@ func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore
 			fmt.Fprintln(os.Stderr, "error: ebpf data plane requested but not compiled in (build with -tags ebpf)")
 			os.Exit(1)
 		}
-		fmt.Println("Data plane: independent eBPF socket LB")
+		fmt.Println("Data plane: independent eBPF (socket LB + tc DNAT)")
 		return ebpfFactory(factStore, clusterName, nodeID)
 	default:
 		if network.CheckNftablesAvailable() == nil {

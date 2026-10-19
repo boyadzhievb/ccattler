@@ -8,6 +8,7 @@ package network
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"sort"
 	"strconv"
@@ -81,8 +82,9 @@ var ebpfCgroupPrograms = []ebpfCgroupAttachment{
 // EbpfDataPlane implements DataPlaneProvider by loading BPF programs that
 // intercept socket syscalls (connect4, sendmsg4, getpeername4) on the host
 // cgroup and translating VIP destinations to backend endpoints via BPF hash
-// maps. Replaces nftables DNAT for host-originated traffic. Also implements
-// DataPlaneInitializer for one-time program loading and map pinning.
+// maps. Also loads a tc ingress program on the container bridge for
+// container-to-VIP DNAT via conntrack kfuncs. Implements DataPlaneInitializer
+// for one-time program loading and DataPlaneNodeRegistrar for bridge discovery.
 type EbpfDataPlane struct {
 	// pinPath is the BPF filesystem directory where maps are pinned.
 	pinPath string
@@ -108,16 +110,27 @@ type EbpfDataPlane struct {
 	elfPath string
 	// initialized tracks whether Initialize completed successfully.
 	initialized bool
+	// tcELFPath is the filesystem path to the tc DNAT BPF ELF object.
+	tcELFPath string
+	// tcCollection holds the loaded tc BPF program for bridge DNAT.
+	tcCollection *ebpf.Collection
+	// tcLink is the TCX attachment of the tc program to the bridge.
+	tcLink link.Link
+	// tcProgram is the loaded tc DNAT BPF program, ready for attachment.
+	tcProgram *ebpf.Program
+	// bridgeInterfaceName is the discovered container bridge device name.
+	bridgeInterfaceName string
 }
 
 // NewEbpfDataPlane creates an EbpfDataPlane ready to load BPF programs and
-// manage BPF maps for socket-level VIP load balancing.
+// manage BPF maps for socket-level VIP load balancing and tc bridge DNAT.
 func NewEbpfDataPlane() *EbpfDataPlane {
 	return &EbpfDataPlane{
 		pinPath:         ebpfPinPath,
 		nextServiceID:   ebpfInitialServiceID,
 		serviceNameToID: make(map[string]uint32),
 		elfPath:         ebpfELFPath,
+		tcELFPath:       ebpfTCDNATELFPath,
 	}
 }
 
@@ -163,6 +176,11 @@ func (ebpfDataPlane *EbpfDataPlane) Initialize(ctx context.Context) error {
 	if scanError := ebpfDataPlane.scanExistingServiceIDs(); scanError != nil {
 		logger.Warn("ebpf data plane: could not scan existing service IDs",
 			"error", scanError.Error())
+	}
+
+	if tcLoadError := ebpfDataPlane.loadTCProgram(); tcLoadError != nil {
+		logger.Warn("ebpf data plane: tc DNAT program not loaded (nftables handles bridge traffic)",
+			"error", tcLoadError.Error())
 	}
 
 	ebpfDataPlane.initialized = true
@@ -478,6 +496,148 @@ func (ebpfDataPlane *EbpfDataPlane) enableStickyAffinityForService(routeConfig R
 	}
 }
 
+// loadTCProgram loads the tc DNAT BPF ELF with map replacements so it
+// shares cca_services, cca_backends, and cca_affinity maps with socket LB.
+// The program is stored but not attached — attachment happens in RegisterNode
+// when the bridge interface is known.
+func (ebpfDataPlane *EbpfDataPlane) loadTCProgram() error {
+	logger := logging.Default()
+
+	if _, statError := os.Stat(ebpfDataPlane.tcELFPath); os.IsNotExist(statError) {
+		return fmt.Errorf("tc DNAT ELF not found at %s", ebpfDataPlane.tcELFPath)
+	}
+
+	tcCollectionSpec, loadError := ebpf.LoadCollectionSpec(ebpfDataPlane.tcELFPath)
+	if loadError != nil {
+		return fmt.Errorf("loading tc DNAT ELF from %s: %w", ebpfDataPlane.tcELFPath, loadError)
+	}
+
+	sharedMapReplacements := map[string]*ebpf.Map{
+		ebpfServiceMapName:    ebpfDataPlane.serviceMap,
+		ebpfBackendMapName:    ebpfDataPlane.backendMap,
+		ebpfAffinityMapName:   ebpfDataPlane.affinityMap,
+		ebpfReverseNatMapName: ebpfDataPlane.reverseNatMap,
+	}
+
+	tcCollection, createError := ebpf.NewCollectionWithOptions(tcCollectionSpec, ebpf.CollectionOptions{
+		MapReplacements: sharedMapReplacements,
+	})
+	if createError != nil {
+		return fmt.Errorf("creating tc DNAT BPF collection: %w", createError)
+	}
+	ebpfDataPlane.tcCollection = tcCollection
+
+	tcProgram := tcCollection.Programs[ebpfTCDNATProgName]
+	if tcProgram == nil {
+		tcCollection.Close()
+		ebpfDataPlane.tcCollection = nil
+		return fmt.Errorf("tc DNAT program %s not found in ELF", ebpfTCDNATProgName)
+	}
+	ebpfDataPlane.tcProgram = tcProgram
+
+	logger.Info("ebpf data plane: tc DNAT program loaded, awaiting bridge discovery")
+	return nil
+}
+
+// RegisterNode discovers the container bridge interface from the overlay
+// subnet CIDR and attaches the tc DNAT program to the bridge ingress.
+// This enables BPF-based VIP DNAT for container-originated traffic.
+func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error {
+	ebpfDataPlane.mutex.Lock()
+	defer ebpfDataPlane.mutex.Unlock()
+
+	logger := logging.Default()
+
+	if ebpfDataPlane.tcProgram == nil {
+		logger.Warn("ebpf data plane: tc DNAT program not loaded, skipping bridge attachment")
+		return nil
+	}
+
+	bridgeName, discoveryError := discoverBridgeInterfaceBySubnet(podCIDR)
+	if discoveryError != nil {
+		logger.Warn("ebpf data plane: bridge discovery failed, nftables handles bridge traffic",
+			"subnet", podCIDR, "error", discoveryError.Error())
+		return nil
+	}
+	ebpfDataPlane.bridgeInterfaceName = bridgeName
+
+	if attachError := ebpfDataPlane.attachTCProgramToBridge(bridgeName); attachError != nil {
+		logger.Warn("ebpf data plane: tc attachment failed, nftables handles bridge traffic",
+			"bridge", bridgeName, "error", attachError.Error())
+		return nil
+	}
+
+	logger.Info("ebpf data plane: tc DNAT attached to bridge",
+		"bridge", bridgeName, "subnet", podCIDR)
+	return nil
+}
+
+// attachTCProgramToBridge attaches the tc DNAT program to the named bridge
+// interface using the TCX link API (kernel 6.6+).
+func (ebpfDataPlane *EbpfDataPlane) attachTCProgramToBridge(bridgeName string) error {
+	bridgeInterface, lookupError := net.InterfaceByName(bridgeName)
+	if lookupError != nil {
+		return fmt.Errorf("looking up bridge interface %s: %w", bridgeName, lookupError)
+	}
+
+	tcxLink, attachError := link.AttachTCX(link.TCXOptions{
+		Interface: bridgeInterface.Index,
+		Program:   ebpfDataPlane.tcProgram,
+		Attach:    ebpf.AttachTCXIngress,
+	})
+	if attachError != nil {
+		return fmt.Errorf("attaching tc DNAT to %s (index %d): %w",
+			bridgeName, bridgeInterface.Index, attachError)
+	}
+
+	ebpfDataPlane.tcLink = tcxLink
+	return nil
+}
+
+// discoverBridgeInterfaceBySubnet finds the Linux bridge device that has an
+// IP address within the given CIDR subnet. This identifies the container
+// bridge (e.g. nerdctl's br-xxx) by its gateway IP in the overlay subnet.
+func discoverBridgeInterfaceBySubnet(subnetCIDR string) (string, error) {
+	_, targetNetwork, parseError := net.ParseCIDR(subnetCIDR)
+	if parseError != nil {
+		return "", fmt.Errorf("parsing subnet CIDR %s: %w", subnetCIDR, parseError)
+	}
+
+	allInterfaces, listError := net.Interfaces()
+	if listError != nil {
+		return "", fmt.Errorf("listing network interfaces: %w", listError)
+	}
+
+	for _, networkInterface := range allInterfaces {
+		if !isBridgeInterface(networkInterface.Name) {
+			continue
+		}
+		interfaceAddresses, addrError := networkInterface.Addrs()
+		if addrError != nil {
+			continue
+		}
+		for _, interfaceAddress := range interfaceAddresses {
+			ipNetwork, ok := interfaceAddress.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if targetNetwork.Contains(ipNetwork.IP) {
+				return networkInterface.Name, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no bridge interface found with IP in %s", subnetCIDR)
+}
+
+// isBridgeInterface checks whether the named interface is a Linux bridge
+// by looking for the bridge sysfs directory.
+func isBridgeInterface(interfaceName string) bool {
+	bridgeSysfsPath := "/sys/class/net/" + interfaceName + "/bridge"
+	_, statError := os.Stat(bridgeSysfsPath)
+	return statError == nil
+}
+
 // Cleanup detaches all BPF programs from the cgroup, unpins maps from the
 // BPF filesystem, and closes all BPF resource handles.
 func (ebpfDataPlane *EbpfDataPlane) Cleanup(ctx context.Context) error {
@@ -495,10 +655,25 @@ func (ebpfDataPlane *EbpfDataPlane) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// closeAllResources detaches all BPF cgroup links and closes the BPF
-// collection (which closes all program and map file descriptors).
+// closeAllResources detaches all BPF cgroup and tc links and closes the
+// BPF collections (which close all program and map file descriptors).
 func (ebpfDataPlane *EbpfDataPlane) closeAllResources() {
 	logger := logging.Default()
+
+	if ebpfDataPlane.tcLink != nil {
+		if closeError := ebpfDataPlane.tcLink.Close(); closeError != nil {
+			logger.Warn("ebpf: failed to detach tc DNAT program", "error", closeError.Error())
+		}
+		ebpfDataPlane.tcLink = nil
+	}
+
+	if ebpfDataPlane.tcCollection != nil {
+		ebpfDataPlane.tcCollection.Close()
+		ebpfDataPlane.tcCollection = nil
+	}
+	ebpfDataPlane.tcProgram = nil
+	ebpfDataPlane.bridgeInterfaceName = ""
+
 	for _, attachedLink := range ebpfDataPlane.attachedLinks {
 		if closeError := attachedLink.Close(); closeError != nil {
 			logger.Warn("ebpf: failed to detach BPF program", "error", closeError.Error())

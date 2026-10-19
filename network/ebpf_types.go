@@ -66,6 +66,15 @@ const ebpfProtocolTCP uint8 = 6
 // ebpfProtocolUDP is the IANA protocol number for UDP.
 const ebpfProtocolUDP uint8 = 17
 
+// ebpfTCDNATELFPath is the default filesystem path to the compiled tc DNAT
+// BPF ELF object. Contains the cca_tc_dnat program that creates conntrack
+// DNAT entries for container-to-VIP traffic on the bridge.
+const ebpfTCDNATELFPath = "/usr/lib/cca/cca_tc_dnat.o"
+
+// ebpfTCDNATProgName is the name of the tc ingress BPF program in the tc
+// DNAT ELF object.
+const ebpfTCDNATProgName = "cca_tc_dnat"
+
 // EbpfServiceKey is the BPF map key for the cca_services hash map.
 // Layout must match the C struct exactly:
 // { vip_addr: u32, port: u16, protocol: u8, _pad: u8 } = 8 bytes.

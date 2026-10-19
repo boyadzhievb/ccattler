@@ -1,24 +1,31 @@
 #!/usr/bin/env bash
-# build-ebpf.sh — Compile CCattler BPF C programs to ELF object.
+# build-ebpf.sh — Compile CCattler BPF C programs to ELF objects.
 # Run on a Linux machine with clang and linux-headers-$(uname -r) installed.
 #
 # Usage:
-#   scripts/build-ebpf.sh                    # output to /usr/lib/cca/cca_ebpf.o
-#   scripts/build-ebpf.sh ./cca_ebpf.o       # output to custom path
+#   scripts/build-ebpf.sh                    # output to /usr/lib/cca/
+#   scripts/build-ebpf.sh <output_dir>       # output to custom directory
 #
-# The compiled ELF contains all three cgroup socket LB programs (connect4,
-# sendmsg4, getpeername4) and shared BPF map definitions. The Go agent loads
-# this file at runtime via ebpf.LoadCollectionSpec().
+# Compiles two ELF files:
+#   cca_ebpf.o      — cgroup socket LB programs (connect4, sendmsg4, getpeername4)
+#   cca_tc_dnat.o   — tc ingress DNAT for container bridge traffic
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-BPF_SOURCE="${REPO_ROOT}/network/ebpf/cca_socket_lb.c"
-OUTPUT_PATH="${1:-/usr/lib/cca/cca_ebpf.o}"
 
-if [ ! -f "${BPF_SOURCE}" ]; then
-    echo "error: BPF source not found: ${BPF_SOURCE}" >&2
+SOCKET_LB_SOURCE="${REPO_ROOT}/network/ebpf/cca_socket_lb.c"
+TC_DNAT_SOURCE="${REPO_ROOT}/network/ebpf/cca_tc_dnat.c"
+OUTPUT_DIR="${1:-/usr/lib/cca}"
+
+if [ ! -f "${SOCKET_LB_SOURCE}" ]; then
+    echo "error: socket LB source not found: ${SOCKET_LB_SOURCE}" >&2
+    exit 1
+fi
+
+if [ ! -f "${TC_DNAT_SOURCE}" ]; then
+    echo "error: tc DNAT source not found: ${TC_DNAT_SOURCE}" >&2
     exit 1
 fi
 
@@ -38,22 +45,19 @@ else
     exit 1
 fi
 
-# Create output directory if it doesn't exist.
-OUTPUT_DIR="$(dirname "${OUTPUT_PATH}")"
 if [ ! -d "${OUTPUT_DIR}" ]; then
     mkdir -p "${OUTPUT_DIR}"
 fi
 
-echo "Compiling BPF: ${BPF_SOURCE} -> ${OUTPUT_PATH}"
-clang \
-    -O2 \
-    -g \
-    -Wall \
-    -Werror \
-    -target bpf \
-    -D__TARGET_ARCH_x86 \
-    -I"${BPF_INCLUDE}" \
-    -c "${BPF_SOURCE}" \
-    -o "${OUTPUT_PATH}"
+BPF_CFLAGS="-O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86"
+BPF_INCLUDES="-I${BPF_INCLUDE} -I/usr/include/x86_64-linux-gnu"
 
-echo "BPF object compiled successfully: $(stat --printf='%s bytes' "${OUTPUT_PATH}" 2>/dev/null || wc -c < "${OUTPUT_PATH}") at ${OUTPUT_PATH}"
+echo "Compiling socket LB: ${SOCKET_LB_SOURCE}"
+clang ${BPF_CFLAGS} ${BPF_INCLUDES} -c "${SOCKET_LB_SOURCE}" -o "${OUTPUT_DIR}/cca_ebpf.o"
+echo "  -> ${OUTPUT_DIR}/cca_ebpf.o"
+
+echo "Compiling tc DNAT: ${TC_DNAT_SOURCE}"
+clang ${BPF_CFLAGS} ${BPF_INCLUDES} -c "${TC_DNAT_SOURCE}" -o "${OUTPUT_DIR}/cca_tc_dnat.o"
+echo "  -> ${OUTPUT_DIR}/cca_tc_dnat.o"
+
+echo "BPF compilation complete: 2 ELF objects in ${OUTPUT_DIR}"
