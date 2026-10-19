@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.49.0-beta <Badge type="tip" text="latest" /> {#v1-49-0-beta}
+## v1.50.0-beta <Badge type="tip" text="latest" /> {#v1-50-0-beta}
+
+**2026-10-19** — Traffic-Level Networking Validation.
+
+- **Traffic-Level Networking Validation** (M123) — Promote E2E networking from rule-existence checks to live traffic proof — CI fails on traffic regression. Harden HTTP-through-VIP (step 5.8) from soft warning to hard CI failure: every exposed HTTP port must return 2xx/3xx from every node. Backend-churn traffic test: `curl` VIP in a loop while scaling service down, verify zero failed requests once remaining backend is healthy. Node-failure traffic test: stop `cca-agent` on one worker, verify VIP traffic continues via backends on surviving nodes within the failure controller's replacement window. Cross-node path assertion: deploy `whoami` on worker-1 only (placement restrict), curl its VIP from worker-2, verify response proves worker-1 container served it. Sticky session validation: deploy a route with `sticky cookie`, send 10 consecutive requests with cookie jar, verify all hit the same backend via `whoami` hostname. DNS-under-churn: scale a service, verify `dig` resolves VIP correctly before and after the scale event.
+
+---
+
+## v1.49.0-beta {#v1-49-0-beta}
 
 **2026-10-18** — VXLAN Overlay Networking.
 

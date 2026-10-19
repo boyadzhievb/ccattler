@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M122 — Phase 122 VXLAN Overlay Networking. M1–M122 complete. Gates A–I resolved.
+**Completed through:** M123 — Phase 123 Traffic-Level Networking Validation. M1–M123 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
