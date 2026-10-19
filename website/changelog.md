@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.51.0-beta <Badge type="tip" text="latest" /> {#v1-51-0-beta}
+## v1.52.0-beta <Badge type="tip" text="latest" /> {#v1-52-0-beta}
+
+**2026-10-19** — Cilium eBPF Data Plane.
+
+- **Cilium eBPF Data Plane** (M126) — Replace native VXLAN + nftables + network policy with Cilium's eBPF stack on kernel 5.4+ hosts. Cilium in kvstore mode reads CCattler's etcd directly — no Cilium API server, CCattler remains the single control plane. `CiliumFactTranslator` watches CCattler endpoint/VIP/policy facts, writes Cilium-compatible kvstore keys (`cilium/state/identities/`, `cilium/state/ip/`, `cilium/state/services/`). `CiliumDataPlaneProvider` implements `DataPlaneProvider` — `ReconcileVIPDataPlane` and `ReconcileRouteDataPlane` become no-ops (Cilium handles it), `Cleanup` removes Cilium kvstore keys. VXLAN replacement: Cilium tunnel mode replaces `VXLANReconciler`, manages its own `cilium_vxlan` interface. Network policy replacement: `CiliumPolicyTranslator` maps `DerivedFirewallRule` to Cilium identity-based policy in kvstore. Ansible `cilium` role installs Cilium agent (DEB/RPM), configures kvstore endpoint, kernel BTF check. `--dataplane cilium` agent flag alongside `nftables\
+
+---
+
+## v1.51.0-beta {#v1-51-0-beta}
 
 **2026-10-19** — Multi-Port Cross-Node Regression.
 

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M124 — Phase 124 Multi-Port Cross-Node Regression. M1–M124 complete. Gates A–I resolved.
+**Completed through:** M126 — Phase 126 Cilium eBPF Data Plane. M1–M126 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
