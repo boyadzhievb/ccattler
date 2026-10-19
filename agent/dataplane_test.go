@@ -410,3 +410,261 @@ func TestDataPlanePolicyReconcilerCalledOnTick(t *testing.T) {
 
 	cancel()
 }
+
+// failingInitDataPlane is a mock that fails on Initialize to verify the agent
+// handles initialization failures gracefully.
+type failingInitDataPlane struct {
+	initCalled            bool
+	registerNodeCalled    bool
+	policyReconcileCalled bool
+}
+
+func (mockDP *failingInitDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
+	return nil
+}
+func (mockDP *failingInitDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
+	return nil
+}
+func (mockDP *failingInitDataPlane) Cleanup(_ context.Context) error { return nil }
+
+func (mockDP *failingInitDataPlane) Initialize(_ context.Context) error {
+	mockDP.initCalled = true
+	return fmt.Errorf("simulated initialization failure")
+}
+
+func (mockDP *failingInitDataPlane) RegisterNode(_ context.Context, _ string, _ string) error {
+	mockDP.registerNodeCalled = true
+	return nil
+}
+
+func (mockDP *failingInitDataPlane) ReconcilePolicies(_ context.Context) error {
+	mockDP.policyReconcileCalled = true
+	return nil
+}
+
+// TestDataPlaneInitializeFailureSkipsNodeRegistration verifies that when
+// Initialize returns an error, RegisterNode is not called but the agent
+// continues running.
+func TestDataPlaneInitializeFailureSkipsNodeRegistration(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &failingInitDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetAdvertiseAddress("192.168.1.10")
+	nodeAgent.SetNodeSubnet("10.100.1.0/24")
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Write a service so the agent has work to do.
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web", types.PrefixDesired), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web/instances", types.PrefixDesired), []byte("0"))
+
+	go nodeAgent.Run(ctx)
+
+	// Agent should still reconcile despite init failure.
+	waitFor(t, 2*time.Second, "agent continues after init failure", func() bool {
+		return mockDP.initCalled
+	})
+
+	cancel()
+
+	if mockDP.registerNodeCalled {
+		t.Error("RegisterNode should not be called when Initialize fails")
+	}
+}
+
+// TestDataPlaneNoSubnetSkipsNodeRegistration verifies that when no node subnet
+// is set, RegisterNode is not called even if the provider supports it.
+func TestDataPlaneNoSubnetSkipsNodeRegistration(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetAdvertiseAddress("192.168.1.10")
+	// Deliberately NOT setting node subnet.
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "initializer called", func() bool {
+		return mockDP.initializeCalled
+	})
+
+	cancel()
+
+	if mockDP.registerNodeCalled {
+		t.Error("RegisterNode should not be called when node subnet is empty")
+	}
+}
+
+// TestDataPlaneNoAdvertiseAddressSkipsNodeRegistration verifies that when no
+// advertise address is set, RegisterNode is not called.
+func TestDataPlaneNoAdvertiseAddressSkipsNodeRegistration(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	// Deliberately NOT setting advertise address.
+	nodeAgent.SetNodeSubnet("10.100.1.0/24")
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "initializer called", func() bool {
+		return mockDP.initializeCalled
+	})
+
+	cancel()
+
+	if mockDP.registerNodeCalled {
+		t.Error("RegisterNode should not be called when advertise address is empty")
+	}
+}
+
+// staticNetworkProvider is a mock NetworkProvider that always allocates a
+// fixed IP, enabling endpoint identity registration tests.
+type staticNetworkProvider struct {
+	allocatedIP string
+}
+
+func (mockNP *staticNetworkProvider) AllocateIP(_ context.Context, _ string, _ string) (string, error) {
+	return mockNP.allocatedIP, nil
+}
+func (mockNP *staticNetworkProvider) ReleaseIP(_ context.Context, _ string, _ string) error {
+	return nil
+}
+func (mockNP *staticNetworkProvider) NodeSubnet(_ string) string { return "10.100.1.0/24" }
+
+// TestDataPlaneEndpointRegistrationCalledWithNetworkProvider verifies that
+// when a network provider allocates an IP, registerEndpointIdentityIfSupported
+// is called with the correct container IP.
+func TestDataPlaneEndpointRegistrationCalledWithNetworkProvider(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetNetworkProvider(&staticNetworkProvider{allocatedIP: "10.100.1.42"})
+	nodeAgent.SetAdvertiseAddress("192.168.1.10")
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "ep-net-1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "ep-net-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "endpoint identity registration called", func() bool {
+		return mockDP.endpointRegCalled
+	})
+
+	cancel()
+
+	if mockDP.endpointRegContainerIP != "10.100.1.42" {
+		t.Errorf("expected container IP '10.100.1.42', got %q", mockDP.endpointRegContainerIP)
+	}
+	if mockDP.endpointRegService != "web" {
+		t.Errorf("expected service 'web', got %q", mockDP.endpointRegService)
+	}
+}
+
+// TestDataPlaneEndpointRegistrationSkippedWithoutNetworkProvider verifies
+// that when no network provider is configured and the runtime doesn't
+// report an IP, endpoint identity registration is skipped (empty IP).
+func TestDataPlaneEndpointRegistrationSkippedWithoutNetworkProvider(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &ciliumCapableDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	// No network provider — simulator runtime doesn't report container IPs.
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "ep-skip-1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "ep-skip-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// Wait for the instance to start (agent reconciles it).
+	waitFor(t, 2*time.Second, "instance started", func() bool {
+		st, err := simulatorRuntime.Status(ctx, "ep-skip-1")
+		return err == nil && st.Running
+	})
+
+	// Small delay for any post-start processing.
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	// Without a network provider, container IP is empty so registration is skipped.
+	if mockDP.endpointRegCalled {
+		t.Error("RegisterEndpointIdentity should not be called when container IP is empty")
+	}
+}
+
+// nonIdentityDataPlane is a mock that implements DataPlaneProvider but NOT
+// EndpointIdentityRegistrar, verifying the agent skips identity registration.
+type nonIdentityDataPlane struct {
+	reconcileCallCount int
+}
+
+func (mockDP *nonIdentityDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
+	mockDP.reconcileCallCount++
+	return nil
+}
+func (mockDP *nonIdentityDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
+	return nil
+}
+func (mockDP *nonIdentityDataPlane) Cleanup(_ context.Context) error { return nil }
+
+// TestDataPlaneNonIdentityProviderSkipsRegistration verifies that data plane
+// providers that don't implement EndpointIdentityRegistrar gracefully skip
+// identity registration without error.
+func TestDataPlaneNonIdentityProviderSkipsRegistration(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	mockDP := &nonIdentityDataPlane{}
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(mockDP)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "non-id-1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "non-id-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// Should still reconcile VIP data plane without crashing.
+	waitFor(t, 2*time.Second, "dataplane reconcile runs", func() bool {
+		return mockDP.reconcileCallCount > 0
+	})
+
+	cancel()
+}

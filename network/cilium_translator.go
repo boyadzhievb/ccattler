@@ -107,7 +107,7 @@ func (ciliumTranslator *CiliumFactTranslator) Initialize(ctx context.Context) er
 	}
 	ciliumTranslator.activeLease = leaseID
 
-	go ciliumTranslator.runLeaseRenewalLoop()
+	go ciliumTranslator.runLeaseRenewalLoop() //nolint:gosec // long-lived goroutine, must outlive request context
 
 	logging.Default().Info("cilium translator initialized",
 		"nextIdentity", strconv.Itoa(ciliumTranslator.nextIdentityID),
@@ -205,11 +205,11 @@ type ciliumNamedPortEntry struct {
 
 // ciliumNodeRegistration is the JSON structure for Cilium node kvstore keys.
 type ciliumNodeRegistration struct {
-	Name        string              `json:"name"`
-	Cluster     string              `json:"cluster"`
-	Addresses   []ciliumNodeAddress `json:"addresses"`
-	PodCIDR     string              `json:"pod_cidr,omitempty"`
-	HealthIP    string              `json:"health_check_ip,omitempty"`
+	Name      string              `json:"name"`
+	Cluster   string              `json:"cluster"`
+	Addresses []ciliumNodeAddress `json:"addresses"`
+	PodCIDR   string              `json:"pod_cidr,omitempty"`
+	HealthIP  string              `json:"health_check_ip,omitempty"`
 }
 
 // ciliumNodeAddress describes an address type for a Cilium node registration.
@@ -232,10 +232,7 @@ func (ciliumTranslator *CiliumFactTranslator) ReconcileServices(ctx context.Cont
 
 		ciliumBackends := make([]ciliumBackendEntry, 0, len(serviceConfig.Backends))
 		for _, backend := range serviceConfig.Backends {
-			ciliumBackends = append(ciliumBackends, ciliumBackendEntry{
-				Address: backend.Address,
-				Port:    backend.Port,
-			})
+			ciliumBackends = append(ciliumBackends, ciliumBackendEntry(backend))
 		}
 
 		serviceEntry := ciliumServiceEntry{
@@ -273,10 +270,7 @@ func (ciliumTranslator *CiliumFactTranslator) ReconcileRoutes(ctx context.Contex
 
 		ciliumBackends := make([]ciliumBackendEntry, 0, len(routeConfig.Backends))
 		for _, backend := range routeConfig.Backends {
-			ciliumBackends = append(ciliumBackends, ciliumBackendEntry{
-				Address: backend.Address,
-				Port:    backend.Port,
-			})
+			ciliumBackends = append(ciliumBackends, ciliumBackendEntry(backend))
 		}
 
 		serviceEntry := ciliumServiceEntry{

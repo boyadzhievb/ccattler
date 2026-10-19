@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/logging"
@@ -86,7 +87,12 @@ func (ciliumPolicyTranslator *CiliumPolicyTranslator) ReconcilePolicies(ctx cont
 
 		destinationPort := 0
 		if portString != "" && portString != "0" {
-			fmt.Sscanf(portString, "%d", &destinationPort)
+			parsedPort, parseError := strconv.Atoi(portString)
+			if parseError != nil {
+				logging.Default().Warn("cilium: invalid port in compiled rule", "key", ruleFact.Key, "port", portString)
+				continue
+			}
+			destinationPort = parsedPort
 		}
 
 		ciliumAction := "allow"
