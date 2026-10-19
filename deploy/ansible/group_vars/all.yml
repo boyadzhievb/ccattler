@@ -18,5 +18,8 @@ vip_cidr: "10.{{ 249 | random(start=150, seed=_deploy_seed + 'vip') }}.0.0/24"
 # network_mode: "local" (bridge only, same-node containers) or "vxlan" (cross-node overlay).
 network_mode: "vxlan"
 
+# dataplane_backend: "auto" (nftables→iptables fallback), "nftables", "iptables", "shadow", or "cilium".
+dataplane_backend: "auto"
+
 # proxy_port: port where the agent reverse proxy listens on each node's physical IP.
 proxy_port: 8080

@@ -1,0 +1,35 @@
+[Unit]
+Description=Cilium Agent — eBPF data plane for {{ node_id | default(inventory_hostname) }}
+After=network.target containerd.service
+Wants=containerd.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cilium-agent \
+  --kvstore etcd \
+  --kvstore-opt etcd.config=/etc/cilium/etcd-config.yaml \
+  --enable-ipv4=true \
+  --enable-ipv6=false \
+  --routing-mode=native \
+  --datapath-mode=veth \
+  --ipv4-native-routing-cidr={{ cluster_cidr }} \
+  --ipv4-range={{ cluster_cidr }} \
+  --enable-endpoint-routes=true \
+  --install-iptables-rules=false \
+  --enable-ipv4-masquerade=false \
+  --bpf-lb-sock=true \
+  --bpf-lb-sock-hostns-only=false \
+  --kube-proxy-replacement=true \
+  --enable-l7-proxy=false \
+  --enable-policy=default \
+  --identity-allocation-mode=kvstore
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+StandardOutput=append:/var/log/ccattler/cilium-agent.log
+StandardError=append:/var/log/ccattler/cilium-agent.log
+
+[Install]
+WantedBy=multi-user.target

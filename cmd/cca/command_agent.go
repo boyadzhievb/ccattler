@@ -196,9 +196,9 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		os.Exit(1)
 	}
 
-	knownDataPlaneBackends := map[string]bool{"auto": true, "nftables": true, "iptables": true, "shadow": true, "cilium": true}
+	knownDataPlaneBackends := map[string]bool{"auto": true, "nftables": true, "iptables": true, "shadow": true, "cilium": true, "ebpf": true}
 	if !knownDataPlaneBackends[parsedConfig.dataPlaneBackend] {
-		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", \"shadow\", or \"cilium\")\n", parsedConfig.dataPlaneBackend)
+		fmt.Fprintf(os.Stderr, "error: unknown dataplane %q (must be \"auto\", \"nftables\", \"iptables\", \"shadow\", \"cilium\", or \"ebpf\")\n", parsedConfig.dataPlaneBackend)
 		os.Exit(1)
 	}
 
@@ -408,7 +408,8 @@ func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string, c
 // createDataPlaneProvider selects the data plane implementation based on
 // the --dataplane flag. "auto" tries nftables first, falling back to
 // iptables. "nftables" or "iptables" forces a specific backend. "cilium"
-// delegates to the Cilium eBPF data plane (requires cilium build tag).
+// delegates to the Cilium eBPF data plane (requires cilium build tag). "ebpf"
+// uses CCattler's independent eBPF socket LB (requires ebpf build tag).
 func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore, clusterName string, nodeID string) network.DataPlaneProvider {
 	switch dataPlaneBackend {
 	case "nftables":
@@ -428,6 +429,14 @@ func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore
 		}
 		fmt.Println("Data plane: cilium eBPF (kvstore mode)")
 		return ciliumFactory(factStore, clusterName, nodeID)
+	case "ebpf":
+		ebpfFactory := network.LookupDataPlaneFactory("ebpf")
+		if ebpfFactory == nil {
+			fmt.Fprintln(os.Stderr, "error: ebpf data plane requested but not compiled in (build with -tags ebpf)")
+			os.Exit(1)
+		}
+		fmt.Println("Data plane: independent eBPF socket LB")
+		return ebpfFactory(factStore, clusterName, nodeID)
 	default:
 		if network.CheckNftablesAvailable() == nil {
 			fmt.Println("Data plane: nftables (auto-detected)")

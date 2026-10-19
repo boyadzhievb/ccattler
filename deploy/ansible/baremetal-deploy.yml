@@ -38,6 +38,14 @@
   roles:
     - worker
 
+- name: Install Cilium eBPF data plane
+  hosts: ccattler
+  become: true
+  tags: [cilium]
+  roles:
+    - role: cilium
+      when: dataplane_backend == "cilium"
+
 - name: Deploy demo workload
   hosts: controlplane
   become: true

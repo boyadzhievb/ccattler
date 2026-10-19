@@ -15,6 +15,13 @@
   hosts: all
   become: true
   tasks:
+    - name: Stop cilium-agent
+      systemd:
+        name: cilium-agent
+        state: stopped
+        enabled: false
+      failed_when: false
+
     - name: Stop cca-agent
       systemd:
         name: cca-agent
@@ -76,6 +83,16 @@
         iptables -t nat -D OUTPUT -j CCA_SERVICES 2>/dev/null || true
         iptables -t nat -X CCA_SERVICES 2>/dev/null || true
       changed_when: false
+
+    - name: Remove Cilium state
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/cilium-agent.service
+        - /etc/cilium
+        - /var/run/cilium
+        - /var/lib/cilium
 
     - name: Remove systemd units and drop-ins
       file:
