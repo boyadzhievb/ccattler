@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M127 — Phase 127 Cilium E2E Integration. M1–M127 complete. Gates A–I resolved.
+**Completed through:** M128 — Phase 128 Independent eBPF Socket LB. M1–M128 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

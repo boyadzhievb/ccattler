@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.53.0-beta <Badge type="tip" text="latest" /> {#v1-53-0-beta}
+## v1.54.0-beta <Badge type="tip" text="latest" /> {#v1-54-0-beta}
+
+**2026-10-19** — Independent eBPF Socket LB.
+
+- **Independent eBPF Socket LB** (M128) — Phase 1 of independent eBPF data plane (no Cilium). BPF C programs: `cca_connect4` (cgroup/connect4 for TCP VIP translation), `cca_sendmsg4` (cgroup/sendmsg4 for UDP), `cca_getpeername4` (cgroup/getpeername4 for reverse VIP). Shared BPF maps: `cca_services` hash map ({VIP,port,proto} → service metadata), `cca_backends` hash map ({service_id,slot} → endpoint), `cca_affinity` LRU hash (client IP sticky), `cca_reverse_nat` LRU hash (getpeername reverse). Go `EbpfDataPlane` implements `DataPlaneProvider` via cilium/ebpf library (bpf2go generated bindings). Map reconciliation from `ServiceVIPConfig` facts — same pattern as nftables. `--dataplane ebpf` flag (build tag `ebpf`, kernel 6.1+). nftables PREROUTING+POSTROUTING kept for bridge traffic and SNAT (Phase 2 replaces). `scripts/build-ebpf.sh` compiles C→ELF on Linux. See `design/ebpf-data-plane-v2.md`.
+
+---
+
+## v1.53.0-beta {#v1-53-0-beta}
 
 **2026-10-19** — Cilium E2E Integration.
 
