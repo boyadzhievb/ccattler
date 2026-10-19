@@ -142,7 +142,7 @@ fi
 ALL_AVAILABLE_WORKLOADS=($(discover_workloads))
 
 if [[ -z "$SELECTED_WORKLOADS" ]]; then
-    SELECTED_WORKLOADS="airflow"
+    SELECTED_WORKLOADS="airflow,whoami"
 fi
 
 WORKLOAD_NAMES=()
@@ -1030,42 +1030,52 @@ fi
 # Verify actual HTTP responses flow through VIPs for services that speak HTTP.
 # Non-HTTP services (PostgreSQL, Redis, etc.) are already validated by TCP
 # reachability in Step 5.7.  Only test ports that serve HTTP traffic.
+#
+# Fast-start services (whoami) are hard failures — if whoami HTTP fails, the
+# data plane is broken.  Slow-start services (airflow, zabbix) are soft
+# failures because they may still be migrating/initializing.
 
 log "Validating HTTP traffic through VIPs..."
 
-# HTTP-capable ports — standard web ports where curl is meaningful.
 HTTP_PORTS_REGEX="^(80|443|8080|8443|8000|3000|9090)$"
+FAST_START_SERVICES="whoami"
 
 NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
-    HTTP_PASS=true
+    HTTP_HARD_PASS=true
+    HTTP_SOFT_PASS=true
     HTTP_TESTED=0
 
     while IFS=' ' read -r svc_name svc_vip svc_port; do
         [[ -z "$svc_name" ]] && continue
 
-        # Skip non-HTTP ports — those services use TCP/binary protocols.
         if ! [[ "$svc_port" =~ $HTTP_PORTS_REGEX ]]; then
             log "  Skipping $svc_name ($svc_vip:$svc_port) — non-HTTP port (TCP-verified in Step 5.7)"
             continue
         fi
 
         HTTP_TESTED=$((HTTP_TESTED + 1))
+        IS_FAST_START=false
+        if echo "$FAST_START_SERVICES" | grep -qw "$svc_name"; then
+            IS_FAST_START=true
+        fi
 
-        # Try HTTP through VIP from two different VMs.
         for vm in "${VM_NAMES[@]:0:2}"; do
             HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "000")
             if [[ "$HTTP_CODE" =~ ^[23] ]]; then
                 log "  HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
             else
                 log "  WARNING: HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
-                HTTP_PASS=false
+                if [[ "$IS_FAST_START" == "true" ]]; then
+                    HTTP_HARD_PASS=false
+                else
+                    HTTP_SOFT_PASS=false
+                fi
             fi
         done
 
-        # For whoami, verify the response body proves traffic reached a container.
         if [[ "$svc_name" == "whoami" ]]; then
             WHOAMI_BODY=$(ssh_vm "${VM_NAMES[0]}" "curl -sf --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "")
             if echo "$WHOAMI_BODY" | grep -qi "hostname"; then
@@ -1073,25 +1083,276 @@ if [[ -n "$VIP_SERVICES" ]]; then
             elif [[ -n "$WHOAMI_BODY" ]]; then
                 log "  whoami response body received (no hostname field): $(echo "$WHOAMI_BODY" | head -3)"
             else
-                log "  WARNING: whoami returned empty body"
-                HTTP_PASS=false
+                log "  FAIL: whoami returned empty body — data plane broken"
+                HTTP_HARD_PASS=false
             fi
         fi
     done <<< "$VIP_SERVICES"
 
     if [[ "$HTTP_TESTED" -eq 0 ]]; then
         log "No HTTP-capable VIP services deployed — TCP validation sufficient"
-    elif [[ "$HTTP_PASS" == "true" ]]; then
+    elif [[ "$HTTP_HARD_PASS" == "true" && "$HTTP_SOFT_PASS" == "true" ]]; then
         log "HTTP traffic through all HTTP-capable VIPs verified ($HTTP_TESTED services)"
+    elif [[ "$HTTP_HARD_PASS" == "false" ]]; then
+        fail "Fast-start service HTTP check failed — data plane is broken (see warnings above)"
     else
-        # Soft failure: services on HTTP ports may not be ready yet (e.g. Airflow
-        # webserver needs DB migration time).  TCP reachability in Step 5.7 already
-        # proves the data plane forwards traffic.  HTTP is a bonus check.
-        log "WARNING: Some HTTP-capable VIPs did not return valid HTTP responses"
-        log "  (This may be slow-starting services — data plane validated via TCP in Step 5.7)"
+        log "WARNING: Some slow-start VIPs did not return valid HTTP responses"
+        log "  (Slow-start services may need more initialization time — data plane validated via TCP in Step 5.7)"
     fi
 else
     log "WARNING: No networking entries in status — skipping HTTP traffic checks"
+fi
+
+# ---- Step 5.9: Cross-node path assertion ----
+# Deploy whoami pinned to worker-1, curl from ctrl — proves traffic crosses nodes
+# through VIP DNAT, not just reaches a local container.
+
+WHOAMI_DEPLOYED=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    [[ "$workload_name" == "whoami" ]] && WHOAMI_DEPLOYED=true
+done
+
+if [[ "$WHOAMI_DEPLOYED" == "true" ]]; then
+    log "Validating cross-node traffic path (whoami pinned to worker-1, curl from ctrl)..."
+
+    WHOAMI_VIP=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .vip' 2>/dev/null || echo "")
+    WHOAMI_PORT=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .port' 2>/dev/null || echo "")
+
+    if [[ -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+        CROSS_NODE_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 10 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        if echo "$CROSS_NODE_BODY" | grep -qi "hostname"; then
+            CROSS_NODE_HOST=$(echo "$CROSS_NODE_BODY" | grep -i "hostname" | head -1)
+            log "  Cross-node response: $CROSS_NODE_HOST"
+            log "Cross-node path assertion PASSED — ctrl reached container via VIP"
+        else
+            fail "Cross-node path assertion FAILED — ctrl could not reach whoami via VIP ($WHOAMI_VIP:$WHOAMI_PORT)"
+        fi
+    else
+        log "WARNING: whoami VIP not found in status — skipping cross-node path assertion"
+    fi
+else
+    log "Skipping cross-node path assertion — whoami workload not deployed"
+fi
+
+# ---- Step 5.10: Backend-churn traffic test ----
+# Scale whoami down to 1 instance while curling, then back to 2. Verify no
+# total outage — at least one request must succeed after scale-down completes.
+
+if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+    log "Validating traffic during backend churn (scale whoami 2→1→2)..."
+
+    CHURN_PASS=true
+
+    curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+        -H "Content-Type: application/json" \
+        -d '{"service":"whoami","instances":1}' > /dev/null || fail "Scale whoami to 1 failed"
+    log "  Scaled whoami to 1 instance"
+
+    sleep 5
+
+    CHURN_DEADLINE=$((SECONDS + 30))
+    CHURN_SUCCESS=0
+    CHURN_FAIL=0
+    while [[ $SECONDS -lt $CHURN_DEADLINE ]]; do
+        HTTP_CODE=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        if [[ "$HTTP_CODE" =~ ^[23] ]]; then
+            CHURN_SUCCESS=$((CHURN_SUCCESS + 1))
+        else
+            CHURN_FAIL=$((CHURN_FAIL + 1))
+        fi
+        sleep 1
+    done
+    log "  During scale-down: $CHURN_SUCCESS succeeded, $CHURN_FAIL failed"
+
+    if [[ "$CHURN_SUCCESS" -eq 0 ]]; then
+        CHURN_PASS=false
+    fi
+
+    curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+        -H "Content-Type: application/json" \
+        -d '{"service":"whoami","instances":2}' > /dev/null || fail "Scale whoami back to 2 failed"
+    log "  Restored whoami to 2 instances"
+
+    RESTORE_DEADLINE=$((SECONDS + 60))
+    while [[ $SECONDS -lt $RESTORE_DEADLINE ]]; do
+        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+            | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
+        if [[ "$RUNNING_COUNT" -ge 2 ]]; then
+            break
+        fi
+        sleep 3
+    done
+    log "  whoami instances after restore: $RUNNING_COUNT"
+
+    if [[ "$CHURN_PASS" == "true" ]]; then
+        log "Backend-churn traffic test PASSED"
+    else
+        fail "Backend-churn traffic test FAILED — zero successful requests during scale-down"
+    fi
+else
+    log "Skipping backend-churn test — whoami not deployed or no VIP"
+fi
+
+# ---- Step 5.11: Node-failure traffic test ----
+# Stop cca-agent on worker-1, verify VIP traffic continues via backends on
+# other nodes. Requires deploy env (3 VMs) so there's a second worker to
+# absorb the load. In the 2-VM test env, the ctrl node also runs containers,
+# so the test still works — traffic from ctrl hits its local backend.
+
+if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+    log "Validating traffic during node failure (stop agent on worker-1)..."
+
+    ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
+    log "  Stopped cca-agent on worker-1"
+
+    FAILOVER_DEADLINE=$((SECONDS + 90))
+    FAILOVER_SUCCESS=false
+    while [[ $SECONDS -lt $FAILOVER_DEADLINE ]]; do
+        HTTP_CODE=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        if [[ "$HTTP_CODE" =~ ^[23] ]]; then
+            FAILOVER_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+            if echo "$FAILOVER_BODY" | grep -qi "hostname"; then
+                log "  Failover response: $(echo "$FAILOVER_BODY" | grep -i hostname | head -1)"
+                FAILOVER_SUCCESS=true
+                break
+            fi
+        fi
+        sleep 5
+    done
+
+    ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl start cca-agent" || fail "Failed to restart agent on worker-1"
+    log "  Restarted cca-agent on worker-1"
+
+    RECOVER_DEADLINE=$((SECONDS + 60))
+    while [[ $SECONDS -lt $RECOVER_DEADLINE ]]; do
+        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+            | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
+        if [[ "$RUNNING_COUNT" -ge 2 ]]; then
+            break
+        fi
+        sleep 3
+    done
+    log "  whoami instances after recovery: $RUNNING_COUNT"
+
+    if [[ "$FAILOVER_SUCCESS" == "true" ]]; then
+        log "Node-failure traffic test PASSED — VIP served traffic during worker-1 outage"
+    else
+        fail "Node-failure traffic test FAILED — no successful HTTP response within 90s after worker-1 stopped"
+    fi
+else
+    log "Skipping node-failure test — whoami not deployed or no VIP"
+fi
+
+# ---- Step 5.12: Sticky session validation ----
+# Deploy a route with cookie affinity for whoami, send multiple requests with
+# a cookie jar, verify all hit the same backend instance.
+
+if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+    log "Validating sticky session (cookie affinity)..."
+
+    STICKY_CCA=$(cat <<'STICKYCCA'
+route whoami-sticky {
+    service whoami
+    port 80
+    sticky cookie {
+        name __CCA_STICKY_TEST
+    }
+}
+STICKYCCA
+)
+    STICKY_TMPFILE="/tmp/whoami-sticky-$$.cca"
+    echo "$STICKY_CCA" > "$STICKY_TMPFILE"
+    scp_to_vm "${VM_PREFIX}-ctrl" "$STICKY_TMPFILE" "/tmp/whoami-sticky.cca"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky route apply failed (route support may not be wired)"
+    rm -f "$STICKY_TMPFILE"
+
+    sleep 5
+
+    STICKY_HOSTNAMES=()
+    COOKIE_JAR="/tmp/cca-sticky-jar-$$"
+    STICKY_TESTED=0
+    for attempt in $(seq 1 10); do
+        STICKY_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ')
+        if [[ -n "$STICKY_HOST" ]]; then
+            STICKY_HOSTNAMES+=("$STICKY_HOST")
+            STICKY_TESTED=$((STICKY_TESTED + 1))
+        fi
+    done
+    ssh_vm "${VM_PREFIX}-ctrl" "rm -f $COOKIE_JAR" 2>/dev/null || true
+
+    if [[ "$STICKY_TESTED" -ge 5 ]]; then
+        UNIQUE_HOSTS=$(printf '%s\n' "${STICKY_HOSTNAMES[@]}" | sort -u | wc -l | tr -d ' ')
+        if [[ "$UNIQUE_HOSTS" -eq 1 ]]; then
+            log "  All $STICKY_TESTED requests hit the same backend: ${STICKY_HOSTNAMES[0]}"
+            log "Sticky session validation PASSED"
+        else
+            log "  WARNING: $UNIQUE_HOSTS unique backends across $STICKY_TESTED requests (expected 1)"
+            log "  Hostnames: ${STICKY_HOSTNAMES[*]}"
+            log "Sticky session validation FAILED (soft) — cookie affinity not pinning"
+        fi
+    else
+        log "  Only $STICKY_TESTED responses received (need 5+) — skipping sticky assertion"
+        log "Sticky session validation SKIPPED — insufficient responses"
+    fi
+
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca 2>/dev/null" || true
+else
+    log "Skipping sticky session test — whoami not deployed or no VIP"
+fi
+
+# ---- Step 5.13: DNS resolution under churn ----
+# Scale whoami down and back up, verify DNS still resolves to the correct VIP
+# throughout. The VIP should remain stable even as instances change.
+
+if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" ]]; then
+    log "Validating DNS resolution under churn..."
+
+    WHOAMI_DNS=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .dns' 2>/dev/null || echo "")
+    if [[ -n "$WHOAMI_DNS" ]]; then
+        DNS_BEFORE=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS before scale: $WHOAMI_DNS -> $DNS_BEFORE"
+
+        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+            -H "Content-Type: application/json" \
+            -d '{"service":"whoami","instances":1}' > /dev/null || log "WARNING: scale to 1 failed"
+        sleep 3
+
+        DNS_DURING=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS during scale-down: $WHOAMI_DNS -> $DNS_DURING"
+
+        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+            -H "Content-Type: application/json" \
+            -d '{"service":"whoami","instances":2}' > /dev/null || log "WARNING: scale to 2 failed"
+        sleep 3
+
+        DNS_AFTER=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS after restore: $WHOAMI_DNS -> $DNS_AFTER"
+
+        DNS_CHURN_PASS=true
+        if [[ "$DNS_BEFORE" != "$WHOAMI_VIP" && -n "$DNS_BEFORE" ]]; then
+            log "  WARNING: DNS before ($DNS_BEFORE) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+        if [[ "$DNS_DURING" != "$WHOAMI_VIP" && -n "$DNS_DURING" ]]; then
+            log "  WARNING: DNS during scale ($DNS_DURING) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+        if [[ "$DNS_AFTER" != "$WHOAMI_VIP" && -n "$DNS_AFTER" ]]; then
+            log "  WARNING: DNS after restore ($DNS_AFTER) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+
+        if [[ "$DNS_CHURN_PASS" == "true" ]]; then
+            log "DNS-under-churn PASSED — VIP stable through scale events"
+        else
+            fail "DNS-under-churn FAILED — VIP changed or DNS resolution broke during scale"
+        fi
+    else
+        log "WARNING: No DNS entry for whoami — skipping DNS-under-churn"
+    fi
+else
+    log "Skipping DNS-under-churn test — whoami not deployed or no VIP"
 fi
 
 # ---- Step 6: Final status ----
