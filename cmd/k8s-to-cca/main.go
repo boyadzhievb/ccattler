@@ -52,10 +52,11 @@ type kubernetesResource struct {
 	Spec       map[string]interface{} `yaml:"spec"`
 }
 
-// kubernetesMetadata holds the name and namespace from K8s resource metadata.
+// kubernetesMetadata holds the name, namespace, and labels from K8s metadata.
 type kubernetesMetadata struct {
-	Name      string `yaml:"name"`
-	Namespace string `yaml:"namespace"`
+	Name      string            `yaml:"name"`
+	Namespace string            `yaml:"namespace"`
+	Labels    map[string]string `yaml:"labels"`
 }
 
 // convertKubernetesYAMLToDSL parses a multi-document K8s YAML stream and
@@ -186,6 +187,13 @@ func convertDeploymentToServiceDecl(
 		serviceDecl.Config = &lang.ConfigDecl{EnvVars: envVars}
 	}
 
+	serviceDecl.Resources = extractResourceRequests(primaryContainer)
+	serviceDecl.Health = extractHealthCheck(primaryContainer)
+
+	serviceDecl.Update = extractRollingUpdateStrategy(deployment.Spec)
+
+	serviceDecl.Tags = extractLabelsAsTags(deployment)
+
 	volumeMounts := extractVolumeMounts(primaryContainer)
 	volumes := extractVolumes(templateSpec)
 	serviceDecl.Secrets = resolveSecretVolumeMounts(volumeMounts, volumes)
@@ -261,7 +269,8 @@ func extractContainerPorts(container map[string]interface{}) []int {
 }
 
 // extractEnvironmentVariables reads the env array from a container spec and
-// converts each entry to a DSL EnvVarDecl.
+// converts each entry to a DSL EnvVarDecl. For secretKeyRef values, the value
+// is set to a placeholder comment since CCattler uses secret blocks instead.
 func extractEnvironmentVariables(container map[string]interface{}) []lang.EnvVarDecl {
 	envRaw, hasEnv := container["env"]
 	if !hasEnv {
@@ -279,11 +288,200 @@ func extractEnvironmentVariables(container map[string]interface{}) []lang.EnvVar
 		}
 		envName := extractStringFromYAML(envMap, "name")
 		envValue := extractStringFromYAML(envMap, "value")
-		if envName != "" {
-			envVars = append(envVars, lang.EnvVarDecl{Name: envName, Value: envValue})
+		if envName == "" {
+			continue
 		}
+		if envValue == "" {
+			envValue = resolveEnvValueFrom(envMap)
+		}
+		envVars = append(envVars, lang.EnvVarDecl{Name: envName, Value: envValue})
 	}
 	return envVars
+}
+
+// resolveEnvValueFrom extracts a human-readable placeholder from a K8s
+// valueFrom reference (secretKeyRef, configMapKeyRef, fieldRef).
+func resolveEnvValueFrom(envMap map[string]interface{}) string {
+	valueFromRaw, hasValueFrom := envMap["valueFrom"]
+	if !hasValueFrom {
+		return ""
+	}
+	valueFromMap, isMap := valueFromRaw.(map[string]interface{})
+	if !isMap {
+		return ""
+	}
+	if secretRef, hasSecret := valueFromMap["secretKeyRef"]; hasSecret {
+		if secretRefMap, isSecretMap := secretRef.(map[string]interface{}); isSecretMap {
+			secretName := extractStringFromYAML(secretRefMap, "name")
+			secretKey := extractStringFromYAML(secretRefMap, "key")
+			return "secret:" + secretName + "/" + secretKey
+		}
+	}
+	if configRef, hasConfig := valueFromMap["configMapKeyRef"]; hasConfig {
+		if configRefMap, isConfigMap := configRef.(map[string]interface{}); isConfigMap {
+			configMapName := extractStringFromYAML(configRefMap, "name")
+			configMapKey := extractStringFromYAML(configRefMap, "key")
+			return "configmap:" + configMapName + "/" + configMapKey
+		}
+	}
+	if fieldRef, hasField := valueFromMap["fieldRef"]; hasField {
+		if fieldRefMap, isFieldMap := fieldRef.(map[string]interface{}); isFieldMap {
+			return "field:" + extractStringFromYAML(fieldRefMap, "fieldPath")
+		}
+	}
+	return ""
+}
+
+// extractResourceRequests reads resources.requests from a container spec and
+// returns a ResourcesDecl with CPU and memory values.
+func extractResourceRequests(container map[string]interface{}) *lang.ResourcesDecl {
+	resourcesRaw, hasResources := container["resources"]
+	if !hasResources {
+		return nil
+	}
+	resourcesMap, isMap := resourcesRaw.(map[string]interface{})
+	if !isMap {
+		return nil
+	}
+	requestsRaw, hasRequests := resourcesMap["requests"]
+	if !hasRequests {
+		requestsRaw = resourcesMap["limits"]
+		if requestsRaw == nil {
+			return nil
+		}
+	}
+	requestsMap, isMap := requestsRaw.(map[string]interface{})
+	if !isMap {
+		return nil
+	}
+	cpuValue := extractStringFromYAML(requestsMap, "cpu")
+	memoryValue := extractStringFromYAML(requestsMap, "memory")
+	if cpuValue == "" && memoryValue == "" {
+		return nil
+	}
+	return &lang.ResourcesDecl{CPU: cpuValue, Memory: memoryValue}
+}
+
+// extractHealthCheck reads livenessProbe or readinessProbe from a container
+// spec and converts it to a CCattler HealthDecl.
+func extractHealthCheck(container map[string]interface{}) *lang.HealthDecl {
+	probeRaw, hasProbe := container["livenessProbe"]
+	if !hasProbe {
+		probeRaw, hasProbe = container["readinessProbe"]
+	}
+	if !hasProbe {
+		return nil
+	}
+	probeMap, isMap := probeRaw.(map[string]interface{})
+	if !isMap {
+		return nil
+	}
+	healthDecl := &lang.HealthDecl{}
+	if httpGetRaw, hasHTTPGet := probeMap["httpGet"]; hasHTTPGet {
+		httpGetMap, isHTTPMap := httpGetRaw.(map[string]interface{})
+		if isHTTPMap {
+			healthDecl.Method = "http"
+			healthDecl.Path = extractStringFromYAML(httpGetMap, "path")
+		}
+	} else if _, hasTCPSocket := probeMap["tcpSocket"]; hasTCPSocket {
+		healthDecl.Method = "tcp"
+	} else {
+		return nil
+	}
+	periodSeconds := extractIntFromYAML(probeMap, "periodSeconds")
+	if periodSeconds > 0 {
+		healthDecl.Interval = strconv.Itoa(periodSeconds) + "s"
+	}
+	timeoutSeconds := extractIntFromYAML(probeMap, "timeoutSeconds")
+	if timeoutSeconds > 0 {
+		healthDecl.Timeout = strconv.Itoa(timeoutSeconds) + "s"
+	}
+	return healthDecl
+}
+
+// extractRollingUpdateStrategy reads spec.strategy.rollingUpdate from a
+// Deployment and converts it to a CCattler UpdateDecl.
+func extractRollingUpdateStrategy(deploymentSpec map[string]interface{}) *lang.UpdateDecl {
+	strategyRaw, hasStrategy := deploymentSpec["strategy"]
+	if !hasStrategy {
+		return nil
+	}
+	strategyMap, isMap := strategyRaw.(map[string]interface{})
+	if !isMap {
+		return nil
+	}
+	strategyType := extractStringFromYAML(strategyMap, "type")
+	if strategyType != "RollingUpdate" {
+		return nil
+	}
+	rollingRaw, hasRolling := strategyMap["rollingUpdate"]
+	if !hasRolling {
+		return nil
+	}
+	rollingMap, isMap := rollingRaw.(map[string]interface{})
+	if !isMap {
+		return nil
+	}
+	updateDecl := &lang.UpdateDecl{}
+	maxUnavailable := extractIntOrPercentAsInt(rollingMap, "maxUnavailable")
+	maxSurge := extractIntOrPercentAsInt(rollingMap, "maxSurge")
+	if maxUnavailable > 0 {
+		updateDecl.MaxUnavailable = maxUnavailable
+	}
+	if maxSurge > 0 {
+		updateDecl.MaxExtra = maxSurge
+	}
+	if updateDecl.MaxUnavailable == 0 && updateDecl.MaxExtra == 0 {
+		return nil
+	}
+	return updateDecl
+}
+
+// extractIntOrPercentAsInt extracts a value that may be an int or a string
+// like "25%", returning just the numeric part.
+func extractIntOrPercentAsInt(yamlMap map[string]interface{}, key string) int {
+	valueRaw, hasKey := yamlMap[key]
+	if !hasKey {
+		return 0
+	}
+	switch typedValue := valueRaw.(type) {
+	case int:
+		return typedValue
+	case float64:
+		return int(typedValue)
+	case string:
+		cleaned := strings.TrimSuffix(typedValue, "%")
+		parsed, parseErr := strconv.Atoi(cleaned)
+		if parseErr != nil {
+			return 0
+		}
+		return parsed
+	default:
+		return 0
+	}
+}
+
+// extractLabelsAsTags reads metadata.labels from a Deployment (excluding
+// standard K8s selector labels like "app") and converts them to CCattler
+// TagDecls. Uses the Deployment-level labels, not pod template labels.
+func extractLabelsAsTags(deployment kubernetesResource) []lang.TagDecl {
+	if len(deployment.Metadata.Labels) == 0 {
+		return nil
+	}
+	skipLabels := map[string]bool{
+		"app": true, "app.kubernetes.io/name": true,
+		"app.kubernetes.io/instance": true, "app.kubernetes.io/version": true,
+		"app.kubernetes.io/component": true, "app.kubernetes.io/part-of": true,
+		"app.kubernetes.io/managed-by": true,
+	}
+	var tags []lang.TagDecl
+	for key, value := range deployment.Metadata.Labels {
+		if skipLabels[key] {
+			continue
+		}
+		tags = append(tags, lang.TagDecl{Key: key, Value: value})
+	}
+	return tags
 }
 
 // volumeMountEntry pairs a K8s volume name with its mount path from a container.

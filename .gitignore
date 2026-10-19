@@ -1,5 +1,6 @@
 /cca
 /cca-linux*
+/k8s-to-cca
 deploy/ansible/cca-linux-*
 deploy/ansible/inventory.ini
 deploy/lima/cca-linux-*

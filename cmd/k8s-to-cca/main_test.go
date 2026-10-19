@@ -235,3 +235,214 @@ spec:
 		t.Errorf("expected ports 8080 and 9090, got %v", serviceDecl.Ports)
 	}
 }
+
+// TestConvertResourceRequests verifies that CPU and memory requests are
+// extracted from the container spec.
+func TestConvertResourceRequests(t *testing.T) {
+	t.Parallel()
+	yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: with-resources
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+`
+	dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+	if convertError != nil {
+		t.Fatalf("conversion failed: %v", convertError)
+	}
+	serviceDecl := dslFile.Services[0]
+	if serviceDecl.Resources == nil {
+		t.Fatal("expected resources, got nil")
+	}
+	if serviceDecl.Resources.CPU != "500m" {
+		t.Errorf("expected CPU 500m, got %q", serviceDecl.Resources.CPU)
+	}
+	if serviceDecl.Resources.Memory != "256Mi" {
+		t.Errorf("expected Memory 256Mi, got %q", serviceDecl.Resources.Memory)
+	}
+}
+
+// TestConvertHealthCheck verifies that a livenessProbe httpGet is converted
+// to a CCattler health block.
+func TestConvertHealthCheck(t *testing.T) {
+	t.Parallel()
+	yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: with-health
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 3
+`
+	dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+	if convertError != nil {
+		t.Fatalf("conversion failed: %v", convertError)
+	}
+	serviceDecl := dslFile.Services[0]
+	if serviceDecl.Health == nil {
+		t.Fatal("expected health check, got nil")
+	}
+	if serviceDecl.Health.Method != "http" {
+		t.Errorf("expected method http, got %q", serviceDecl.Health.Method)
+	}
+	if serviceDecl.Health.Path != "/healthz" {
+		t.Errorf("expected path /healthz, got %q", serviceDecl.Health.Path)
+	}
+	if serviceDecl.Health.Interval != "10s" {
+		t.Errorf("expected interval 10s, got %q", serviceDecl.Health.Interval)
+	}
+	if serviceDecl.Health.Timeout != "3s" {
+		t.Errorf("expected timeout 3s, got %q", serviceDecl.Health.Timeout)
+	}
+}
+
+// TestConvertRollingUpdate verifies that a Deployment RollingUpdate strategy
+// is converted to a CCattler update block.
+func TestConvertRollingUpdate(t *testing.T) {
+	t.Parallel()
+	yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: with-rolling
+spec:
+  replicas: 4
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 2
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+`
+	dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+	if convertError != nil {
+		t.Fatalf("conversion failed: %v", convertError)
+	}
+	serviceDecl := dslFile.Services[0]
+	if serviceDecl.Update == nil {
+		t.Fatal("expected update strategy, got nil")
+	}
+	if serviceDecl.Update.MaxUnavailable != 1 {
+		t.Errorf("expected max_unavailable 1, got %d", serviceDecl.Update.MaxUnavailable)
+	}
+	if serviceDecl.Update.MaxExtra != 2 {
+		t.Errorf("expected max_extra 2, got %d", serviceDecl.Update.MaxExtra)
+	}
+}
+
+// TestConvertLabelsToTags verifies that Deployment metadata labels (excluding
+// standard K8s labels) are converted to CCattler tags.
+func TestConvertLabelsToTags(t *testing.T) {
+	t.Parallel()
+	yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tagged-app
+  labels:
+    app: tagged-app
+    team: payments
+    tier: backend
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+`
+	dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+	if convertError != nil {
+		t.Fatalf("conversion failed: %v", convertError)
+	}
+	serviceDecl := dslFile.Services[0]
+	if len(serviceDecl.Tags) != 2 {
+		t.Fatalf("expected 2 tags (team, tier; app skipped), got %d: %v",
+			len(serviceDecl.Tags), serviceDecl.Tags)
+	}
+	tagMap := make(map[string]string)
+	for _, tag := range serviceDecl.Tags {
+		tagMap[tag.Key] = tag.Value
+	}
+	if tagMap["team"] != "payments" {
+		t.Errorf("expected tag team=payments, got %q", tagMap["team"])
+	}
+	if tagMap["tier"] != "backend" {
+		t.Errorf("expected tag tier=backend, got %q", tagMap["tier"])
+	}
+}
+
+// TestConvertSecretKeyRefEnvVar verifies that secretKeyRef env vars produce
+// a descriptive placeholder value instead of an empty string.
+func TestConvertSecretKeyRefEnvVar(t *testing.T) {
+	t.Parallel()
+	yamlInput := `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secret-env-app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: app
+          image: myapp:v1
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: password
+            - name: PLAIN_VAR
+              value: "hello"
+`
+	dslFile, convertError := convertKubernetesYAMLToDSL([]byte(yamlInput))
+	if convertError != nil {
+		t.Fatalf("conversion failed: %v", convertError)
+	}
+	serviceDecl := dslFile.Services[0]
+	if serviceDecl.Config == nil || len(serviceDecl.Config.EnvVars) != 2 {
+		t.Fatalf("expected 2 env vars, got %v", serviceDecl.Config)
+	}
+	dbPasswordEnv := serviceDecl.Config.EnvVars[0]
+	if dbPasswordEnv.Name != "DB_PASSWORD" {
+		t.Errorf("expected env name DB_PASSWORD, got %q", dbPasswordEnv.Name)
+	}
+	if dbPasswordEnv.Value != "secret:db-credentials/password" {
+		t.Errorf("expected value 'secret:db-credentials/password', got %q", dbPasswordEnv.Value)
+	}
+	plainEnv := serviceDecl.Config.EnvVars[1]
+	if plainEnv.Value != "hello" {
+		t.Errorf("expected value 'hello', got %q", plainEnv.Value)
+	}
+}
