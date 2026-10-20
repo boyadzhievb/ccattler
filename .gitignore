@@ -10,3 +10,4 @@ COMMAND_HISTORY.md
 investigate_airflow/
 .DS_Store
 website/public/logo-candidates/
+.vscode/
