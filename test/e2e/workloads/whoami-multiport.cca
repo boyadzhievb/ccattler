@@ -1,21 +1,14 @@
-# Multi-port whoami service for testing per-port VIP routing.
-#
-# Exposes ports 80 (HTTP, container listens) and 8081 (declared, tests
-# per-port hostport fact publishing and nftables verdict map entries).
-# The container only listens on port 80 — port 8081 validates that the
-# data plane programs per-port DNAT rules correctly.
-
 service whoami-multiport {
     image "traefik/whoami:latest"
     instances 2
     expose 80
     expose 8081
-    resources {
-        cpu 100m
-        memory 64Mi
-    }
     health {
         http /health
         every 10s
+    }
+    resources {
+        cpu 100m
+        memory 64Mi
     }
 }

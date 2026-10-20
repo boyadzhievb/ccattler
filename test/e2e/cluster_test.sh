@@ -1252,8 +1252,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
 
     STICKY_CCA=$(cat <<'STICKYCCA'
 route whoami-sticky {
-    service whoami
-    port 80
+    service whoami port 80
     sticky cookie {
         name __CCA_STICKY_TEST
     }

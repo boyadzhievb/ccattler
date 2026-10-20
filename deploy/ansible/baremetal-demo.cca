@@ -2,13 +2,13 @@ service whoami {
     image "traefik/whoami:latest"
     instances 6
     expose 80
-    resources {
-        cpu 100m
-        memory 64Mi
-    }
     health {
         http /health
         every 10s
+    }
+    resources {
+        cpu 100m
+        memory 64Mi
     }
     placement {
         zone spread
@@ -16,43 +16,58 @@ service whoami {
 }
 
 service nginx {
-    image "nginx:1.27-alpine"
+    image nginx:1.27-alpine
     instances 3
     expose 80
-    resources {
-        cpu 250m
-        memory 128Mi
-    }
     health {
         http /
         every 15s
     }
-}
-
-service redis {
-    image "redis:7-alpine"
-    instances 2
-    expose 6379
     resources {
         cpu 250m
         memory 128Mi
     }
+}
+
+service redis {
+    image redis:7-alpine
+    instances 2
+    expose 6379
     health {
         tcp
         every 10s
     }
+    resources {
+        cpu 250m
+        memory 128Mi
+    }
+}
+
+service whoami-multiport {
+    image "traefik/whoami:latest"
+    instances 2
+    expose 80
+    expose 8081
+    health {
+        http /health
+        every 10s
+    }
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
 }
 
 route whoami-public {
-    host "whoami.demo"
+    host whoami.demo
     service whoami port 80
 }
 
 route nginx-public {
-    host "nginx.demo"
+    host nginx.demo
     service nginx port 80
     sticky cookie {
-        name "srv"
+        name srv
         secure true
     }
 }

@@ -35,6 +35,29 @@
     mode: "0644"
   tags: [dns]
 
+- name: Enable IP forwarding and bridge netfilter for VXLAN overlay
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    sysctl_file: /etc/sysctl.d/99-ccattler.conf
+    reload: true
+  loop:
+    - { name: "net.ipv4.ip_forward", value: "1" }
+    - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+
+- name: Load br_netfilter kernel module
+  modprobe:
+    name: br_netfilter
+    state: present
+  ignore_errors: true
+
+- name: Persist br_netfilter across reboots
+  copy:
+    dest: /etc/modules-load.d/ccattler.conf
+    content: "br_netfilter\n"
+    mode: "0644"
+
 - name: Disable IPv6 to prevent AAAA lookups on IPv4-only networks
   sysctl:
     name: "{{ item }}"
@@ -44,6 +67,19 @@
   loop:
     - net.ipv6.conf.all.disable_ipv6
     - net.ipv6.conf.default.disable_ipv6
+  ignore_errors: true
+
+- name: Allow VXLAN traffic through ufw
+  ufw:
+    rule: allow
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop:
+    - { port: "4789", proto: "udp", comment: "CCattler VXLAN" }
+    - { port: "9770", proto: "tcp", comment: "CCattler API" }
+    - { port: "2379", proto: "tcp", comment: "etcd client" }
+  when: ansible_facts.services is defined and ansible_facts.services.get('ufw.service', {}).get('state') == 'running'
   ignore_errors: true
 
 - name: Install base packages
