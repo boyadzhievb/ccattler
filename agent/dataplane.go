@@ -127,10 +127,6 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	var serviceVIPConfigs []network.ServiceVIPConfig
 	for _, serviceName := range sortedServiceNames {
 		vipConfig := serviceVIPMap[serviceName]
-		if vipConfig.Port == 0 {
-			logging.Default().Warn("skipping service with no VIP port configured", "service", serviceName)
-			continue
-		}
 
 		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
 		if resolveError != nil {

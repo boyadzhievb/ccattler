@@ -89,7 +89,7 @@ func TestDataPlaneNoProviderIsNoop(t *testing.T) {
 	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 }
 
-func TestDataPlaneSkipsServicesWithNoPort(t *testing.T) {
+func TestDataPlaneIncludesServicesWithNoPort(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -104,8 +104,14 @@ func TestDataPlaneSkipsServicesWithNoPort(t *testing.T) {
 	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
 
 	lastReconciled := simulatorDataPlane.LastReconciled()
-	if len(lastReconciled) != 0 {
-		t.Errorf("expected 0 VIP configs for service with no port, got %d", len(lastReconciled))
+	if len(lastReconciled) != 1 {
+		t.Fatalf("expected 1 VIP config (port 0, no backends), got %d", len(lastReconciled))
+	}
+	if lastReconciled[0].Port != 0 {
+		t.Errorf("expected port 0, got %d", lastReconciled[0].Port)
+	}
+	if lastReconciled[0].VirtualIP != "10.200.0.5" {
+		t.Errorf("expected VIP 10.200.0.5, got %s", lastReconciled[0].VirtualIP)
 	}
 }
 
