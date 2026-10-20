@@ -17,10 +17,10 @@ Fact store (etcd-backed + in-memory), instance/endpoint/failure controllers, sch
 Observer/reconciler/reporter, container runtime adapter (nerdctl/containerd), lease management, DNS integration (dnsmasq domain-scoped forwarding), cross-node VIP routing, hairpin NAT fix, host port re-publication on steady-state cycles.
 
 ### Networking & Data Plane (M102, M111, M118, M121)
-nftables data plane with O(1) verdict map dispatch (preferred), iptables fallback. VIP allocation, cross-node DNAT, hairpin NAT, route blocks with sticky sessions (cookie + source-IP), shadow mode migration, `cca benchmark dataplane`. Protocol: `--dataplane auto|nftables|iptables`.
+nftables data plane with O(1) verdict map dispatch (preferred), iptables fallback. VIP allocation, cross-node DNAT, hairpin NAT, gate blocks with sticky sessions (cookie + source-IP), shadow mode migration, `cca benchmark dataplane`. Protocol: `--dataplane auto|nftables|iptables`.
 
 ### DSL & Developer Experience (M1–M5, M98, M104, M119–M120)
-Human-oriented declarative language (no YAML), parser/compiler/emitter, service/volume/group/role/grant/policy/config/secret/tenant/network/route/connection blocks, `cca fmt` + `cca lint`, service tags with cross-service filtering.
+Human-oriented declarative language (no YAML), parser/compiler/emitter, service/volume/group/role/grant/policy/config/secret/tenant/network/gate/connection blocks, `cca fmt` + `cca lint`, service tags with cross-service filtering.
 
 ### Security & Auth (M55–M63, M80, M100–M101, M110)
 mTLS everywhere, CA hierarchy, RBAC+ABAC authorization, per-controller least-privilege, user authentication (local token + OIDC), `cca login`, bearer auth chain, etcd mTLS deployment, CSR-based enrollment, store token hashing, cert permission hardening, audit logging.

@@ -6,12 +6,12 @@ CCattler has VIPs and round-robin DNAT, but no way to:
 1. Route external traffic by hostname or path to specific services
 2. Pin a client to the same backend instance across requests (session affinity)
 
-Traefik calls this IngressRoute, nginx calls it upstream+server, HAProxy calls it frontend+backend. We call it **route**.
+Traefik calls this IngressRoute, nginx calls it upstream+server, HAProxy calls it frontend+backend. We call it **gate**.
 
 ## DSL
 
 ```
-route web-public {
+gate web-public {
     host "app.example.com"       # match by Host header (optional)
     path "/api"                  # match by URL prefix (optional)
     service api port 3000        # target service and port
@@ -27,7 +27,7 @@ route web-public {
 
 Minimal form (just sticky, no host/path filtering):
 ```
-route api-sticky {
+gate api-sticky {
     service api port 3000
     sticky cookie
 }
@@ -35,7 +35,7 @@ route api-sticky {
 
 Source-IP affinity (alternative to cookie):
 ```
-route api-ip {
+gate api-ip {
     service api port 3000
     sticky source-ip
 }
@@ -43,7 +43,7 @@ route api-ip {
 
 ## Fact Model
 
-A `route` block compiles to facts under `desired/route/{name}/`:
+A `gate` block compiles to facts under `desired/route/{name}/`:
 
 ```
 desired/route/web-public              = ""                    # route marker
@@ -63,7 +63,7 @@ desired/route/web-public/cookie/samesite   = "strict"
 ### Components
 
 1. **Parser** — new `parseRouteDeclaration()` in `lang/parser.go`, `RouteDecl` AST node
-2. **Compiler** — `route` → `desired/route/{name}/` facts
+2. **Compiler** — `gate` → `desired/route/{name}/` facts
 3. **Route Controller** (new) — watches `desired/route/` and `observed/endpoint/`, writes `derived/route/{name}/backends` with resolved backend addresses
 4. **Agent Data Plane** — reads `derived/route/` facts, programs:
    - **iptables (current)**: DNAT rules with `--match recent` or `statistic` for source-IP; cookie affinity requires userspace proxy
@@ -121,7 +121,7 @@ The proxy lifecycle is managed by the agent: started when a cookie-sticky route 
 - Compiler: route → facts
 - Parser tests (host, path, sticky cookie, sticky source-ip, minimal forms)
 - Compiler tests (fact generation)
-- Add `route` to `examples/reference.cca`
+- Add `gate` to `examples/reference.cca`
 
 ### Phase 2 — Route Controller
 - New controller in `controllers/route.go`
@@ -139,7 +139,7 @@ The proxy lifecycle is managed by the agent: started when a cookie-sticky route 
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Top-level block name | `route` | Plain English, not K8s jargon |
+| Top-level block name | `gate` | Plain English, not K8s jargon |
 | Cookie vs source-IP | Both, cookie default | Cookie works across NAT/proxies, source-IP for L4 |
 | Cookie value | Instance ID | Debuggable, no extra mapping table |
 | L7 proxy | Go httputil.ReverseProxy | Simple, portable, only for cookie routes |
@@ -152,4 +152,4 @@ The proxy lifecycle is managed by the agent: started when a cookie-sticky route 
 | Nginx | `upstream` + `server` | `sticky cookie` / `ip_hash` | Native |
 | Traefik | `IngressRoute` | `sticky.cookie` | Native |
 | HAProxy | `backend` + `frontend` | `cookie SERVERID insert` | Native |
-| CCattler | `route` | `sticky cookie` / `sticky source-ip` | Embedded proxy |
+| CCattler | `gate` | `sticky cookie` / `sticky source-ip` | Embedded proxy |

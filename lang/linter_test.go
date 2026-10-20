@@ -28,7 +28,7 @@ service web {
     volume app-data /var/lib/data
 }
 
-route web-public {
+gate web-public {
     service web port 8080
 }
 `
@@ -99,7 +99,7 @@ volume data {
 	}
 }
 
-// TestLintDuplicateRouteNames detects duplicate route names.
+// TestLintDuplicateRouteNames detects duplicate gate names.
 func TestLintDuplicateRouteNames(t *testing.T) {
 	input := `service web {
     image nginx:1.28
@@ -107,11 +107,11 @@ func TestLintDuplicateRouteNames(t *testing.T) {
     expose 8080
 }
 
-route api {
+gate api {
     service web port 8080
 }
 
-route api {
+gate api {
     service web port 8080
 }
 `
@@ -123,12 +123,12 @@ route api {
 	diagnostics := Lint(parsedFile)
 	foundDuplicate := false
 	for _, diagnostic := range diagnostics {
-		if strings.Contains(diagnostic.Message, "duplicate route name") {
+		if strings.Contains(diagnostic.Message, "duplicate gate name") {
 			foundDuplicate = true
 		}
 	}
 	if !foundDuplicate {
-		t.Error("expected duplicate route name diagnostic")
+		t.Error("expected duplicate gate name diagnostic")
 	}
 }
 
@@ -186,7 +186,7 @@ func TestLintUndefinedRouteService(t *testing.T) {
     expose 8080
 }
 
-route api {
+gate api {
     service nonexistent port 3000
 }
 `

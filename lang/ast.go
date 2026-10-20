@@ -18,7 +18,7 @@ type File struct {
 	ServiceGroups    []ServiceGroupDecl    // top-level group blocks defining co-scheduled service groups
 	Policies         []PolicyDecl          // top-level policy blocks defining ABAC conditions
 	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
-	Routes           []RouteDecl           // top-level route blocks defining traffic routing with optional sticky sessions
+	Routes           []RouteDecl           // top-level gate blocks defining traffic routing with optional sticky sessions
 	BaseDir          string                // directory of the source file, used to resolve "from" paths
 }
 
@@ -425,11 +425,11 @@ type NetworkRuleDecl struct {
 	Line   int    // source line number for error reporting
 }
 
-// RouteDecl represents a parsed top-level "route" block in the DSL. A route
+// RouteDecl represents a parsed top-level "gate" block in the DSL. A gate
 // directs external traffic to a target service, with optional host/path
 // matching and sticky session affinity.
 //
-//	route web-public {
+//	gate web-public {
 //	    host "app.example.com"
 //	    path "/api"
 //	    service api port 3000

@@ -58,12 +58,12 @@ service whoami-multiport {
     }
 }
 
-route whoami-public {
+gate whoami-public {
     host whoami.demo
     service whoami port 80
 }
 
-route nginx-public {
+gate nginx-public {
     host nginx.demo
     service nginx port 80
     sticky cookie {

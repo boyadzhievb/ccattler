@@ -78,7 +78,7 @@ func lintDuplicateNames(file *File) []LintDiagnostic {
 		if previousLine, alreadySeen := routeNames[routeDecl.Name]; alreadySeen {
 			diagnostics = append(diagnostics, LintDiagnostic{
 				Severity: "error",
-				Message:  fmt.Sprintf("duplicate route name %q (first defined at line %d)", routeDecl.Name, previousLine),
+				Message:  fmt.Sprintf("duplicate gate name %q (first defined at line %d)", routeDecl.Name, previousLine),
 				Line:     routeDecl.Line,
 			})
 		} else {
@@ -120,7 +120,7 @@ func lintMissingRequiredFields(file *File) []LintDiagnostic {
 		if routeDecl.ServiceName == "" {
 			diagnostics = append(diagnostics, LintDiagnostic{
 				Severity: "error",
-				Message:  fmt.Sprintf("route %q requires a service target", routeDecl.Name),
+				Message:  fmt.Sprintf("gate %q requires a service target", routeDecl.Name),
 				Line:     routeDecl.Line,
 			})
 		}

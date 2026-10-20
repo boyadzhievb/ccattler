@@ -200,10 +200,10 @@ service web-api {
 }
 ```
 
-**Ingress / Routes**: Kubernetes Ingress or Gateway API translate to CCattler `route`:
+**Ingress / Gates**: Kubernetes Ingress or Gateway API translate to CCattler `gate`:
 
 ```hcl
-route web-public {
+gate web-public {
     host "api.example.com"
     service web-api
     port 8080

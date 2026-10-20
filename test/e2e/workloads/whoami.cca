@@ -12,7 +12,7 @@ service whoami {
     }
 }
 
-route whoami {
+gate whoami {
     host whoami.home.arpa
     service whoami port 80
 }

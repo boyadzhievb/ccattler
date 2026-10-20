@@ -13,7 +13,7 @@ service whoami-multiport {
     }
 }
 
-route whoami-multiport {
+gate whoami-multiport {
     host whoami-multiport.home.arpa
     service whoami-multiport port 80
 }

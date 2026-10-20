@@ -1337,7 +1337,7 @@ service api {
 }
 
 func TestCompileRouteFullBlock(t *testing.T) {
-	file, parseErr := Parse(`route web-public {
+	file, parseErr := Parse(`gate web-public {
     host "app.example.com"
     path "/api"
     service api port 3000
@@ -1360,7 +1360,7 @@ func TestCompileRouteFullBlock(t *testing.T) {
 	compiledFactMap := factMap(facts)
 
 	if _, exists := compiledFactMap[types.KeyDesiredRoute("web-public")]; !exists {
-		t.Error("route marker fact not found")
+		t.Error("gate marker fact not found")
 	}
 	if compiledFactMap[types.KeyDesiredRouteHost("web-public")] != "app.example.com" {
 		t.Errorf("host: got %q, want %q", compiledFactMap[types.KeyDesiredRouteHost("web-public")], "app.example.com")
@@ -1392,7 +1392,7 @@ func TestCompileRouteFullBlock(t *testing.T) {
 }
 
 func TestCompileRouteMinimal(t *testing.T) {
-	file, parseErr := Parse(`route simple {
+	file, parseErr := Parse(`gate simple {
     service web port 8080
 }`)
 	if parseErr != nil {
@@ -1407,7 +1407,7 @@ func TestCompileRouteMinimal(t *testing.T) {
 	compiledFactMap := factMap(facts)
 
 	if _, exists := compiledFactMap[types.KeyDesiredRoute("simple")]; !exists {
-		t.Error("route marker fact not found")
+		t.Error("gate marker fact not found")
 	}
 	if compiledFactMap[types.KeyDesiredRouteService("simple")] != "web" {
 		t.Errorf("service: got %q, want %q", compiledFactMap[types.KeyDesiredRouteService("simple")], "web")
@@ -1424,7 +1424,7 @@ func TestCompileRouteMinimal(t *testing.T) {
 }
 
 func TestCompileRouteStickySourceIP(t *testing.T) {
-	file, parseErr := Parse(`route ip-affinity {
+	file, parseErr := Parse(`gate ip-affinity {
     service api port 3000
     sticky source-ip
 }`)
@@ -1447,7 +1447,7 @@ func TestCompileRouteStickySourceIP(t *testing.T) {
 }
 
 func TestCompileRouteStickyCookieDefaults(t *testing.T) {
-	file, parseErr := Parse(`route bare-cookie {
+	file, parseErr := Parse(`gate bare-cookie {
     service api port 3000
     sticky cookie
 }`)

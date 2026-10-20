@@ -261,7 +261,7 @@ func TestFormatNetwork(t *testing.T) {
 
 // TestFormatRoute verifies route block formatting with sticky sessions.
 func TestFormatRoute(t *testing.T) {
-	input := `route web-public {
+	input := `gate web-public {
     host "app.example.com"
     path "/api"
     service web port 8080
@@ -279,8 +279,8 @@ func TestFormatRoute(t *testing.T) {
 	}
 
 	formatted := Format(parsedFile)
-	if !strings.Contains(formatted, "route web-public {") {
-		t.Error("missing route header")
+	if !strings.Contains(formatted, "gate web-public {") {
+		t.Error("missing gate header")
 	}
 	if !strings.Contains(formatted, "    service web port 8080") {
 		t.Errorf("missing service line, got:\n%s", formatted)
@@ -294,7 +294,7 @@ func TestFormatRoute(t *testing.T) {
 
 // TestFormatRouteSourceIP verifies source-ip sticky is a single line.
 func TestFormatRouteSourceIP(t *testing.T) {
-	input := `route api-ip {
+	input := `gate api-ip {
     service api port 3000
     sticky source-ip
 }

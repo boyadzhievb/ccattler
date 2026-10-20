@@ -1656,7 +1656,7 @@ func TestParseInitStepNeitherExecNorConnection(t *testing.T) {
 }
 
 func TestParseRouteFullBlock(t *testing.T) {
-	input := `route web-public {
+	input := `gate web-public {
     host "app.example.com"
     path "/api"
     service api port 3000
@@ -1717,7 +1717,7 @@ func TestParseRouteFullBlock(t *testing.T) {
 }
 
 func TestParseRouteMinimal(t *testing.T) {
-	input := `route api-route {
+	input := `gate api-route {
     service api port 8080
 }`
 	file, err := Parse(input)
@@ -1751,7 +1751,7 @@ func TestParseRouteMinimal(t *testing.T) {
 }
 
 func TestParseRouteStickyCookieNoSettings(t *testing.T) {
-	input := `route api-sticky {
+	input := `gate api-sticky {
     service api port 3000
     sticky cookie
 }`
@@ -1773,7 +1773,7 @@ func TestParseRouteStickyCookieNoSettings(t *testing.T) {
 }
 
 func TestParseRouteStickySourceIP(t *testing.T) {
-	input := `route api-ip {
+	input := `gate api-ip {
     service api port 3000
     sticky source-ip
 }`
@@ -1792,7 +1792,7 @@ func TestParseRouteStickySourceIP(t *testing.T) {
 }
 
 func TestParseRouteMissingService(t *testing.T) {
-	input := `route broken {
+	input := `gate broken {
     host "example.com"
 }`
 	_, err := Parse(input)
@@ -1802,7 +1802,7 @@ func TestParseRouteMissingService(t *testing.T) {
 }
 
 func TestParseRouteUnknownField(t *testing.T) {
-	input := `route broken {
+	input := `gate broken {
     service api port 3000
     weight 10
 }`
@@ -1813,7 +1813,7 @@ func TestParseRouteUnknownField(t *testing.T) {
 }
 
 func TestParseRouteUnknownStickyMethod(t *testing.T) {
-	input := `route broken {
+	input := `gate broken {
     service api port 3000
     sticky random
 }`
@@ -1824,7 +1824,7 @@ func TestParseRouteUnknownStickyMethod(t *testing.T) {
 }
 
 func TestParseRouteServiceWithoutPort(t *testing.T) {
-	input := `route minimal {
+	input := `gate minimal {
     service api
 }`
 	file, err := Parse(input)

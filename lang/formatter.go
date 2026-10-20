@@ -721,9 +721,9 @@ func formatServiceTagFields(builder *strings.Builder, serviceDecl ServiceDecl) {
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
 
-// formatRouteDecl emits a route block with optional sticky session config.
+// formatRouteDecl emits a gate block with optional sticky session config.
 func formatRouteDecl(builder *strings.Builder, routeDecl RouteDecl) {
-	fmt.Fprintf(builder, "route %s {\n", routeDecl.Name)
+	fmt.Fprintf(builder, "gate %s {\n", routeDecl.Name)
 	if routeDecl.Host != "" {
 		fmt.Fprintf(builder, "%shost %s\n", indentUnit, quoteIfNeeded(routeDecl.Host))
 	}

@@ -353,7 +353,7 @@ Kubernetes uses Istio (or Linkerd) as a service mesh to solve request-level conc
 | Service discovery | kube-dns → ClusterIP | Built-in DNS → VIP (`network/dns.go`) |
 | L4 load balancing | kube-proxy iptables/IPVS | nftables DNAT with round-robin/sticky (`network/nftables_dataplane.go`) |
 | Circuit breaking | Envoy detects unhealthy backends | Health controller marks unhealthy, endpoint controller removes from VIP backends |
-| Traffic routing | Istio VirtualService + Envoy | `route` block with host matching, sticky sessions (`controllers/route.go`) |
+| Traffic routing | Istio VirtualService + Envoy | `gate` block with host matching, sticky sessions (`controllers/route.go`) |
 
 ### What Cilium adds (no sidecars)
 
@@ -368,8 +368,8 @@ Kubernetes uses Istio (or Linkerd) as a service mesh to solve request-level conc
 
 | Problem | Istio approach | CCattler status |
 |---|---|---|
-| Traffic splitting / canary | VirtualService: 90% v1, 10% v2 | Not yet — add weighted backends to `route` block |
-| Retries / timeouts | Envoy retry policy per route | Not yet — application responsibility or future `route` option |
+| Traffic splitting / canary | VirtualService: 90% v1, 10% v2 | Not yet — add weighted backends to `gate` block |
+| Retries / timeouts | Envoy retry policy per route | Not yet — application responsibility or future `gate` option |
 | Distributed tracing | Envoy propagates trace headers (Jaeger/Zipkin) | Not planned — requires proxy or instrumentation |
 | Fault injection | Istio injects delays/errors for chaos testing | Not planned — could be a test-only controller |
 

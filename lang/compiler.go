@@ -765,13 +765,13 @@ func buildConnectionJSON(connectionDecl ConnectionDecl) string {
 func compileRouteDeclaration(routeDecl RouteDecl, sourceLines []string) ([]Fact, error) {
 	if routeDecl.Name == "" {
 		return nil, &ParseError{
-			Line: routeDecl.Line, Message: "route name is required",
+			Line: routeDecl.Line, Message: "gate name is required",
 			SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
 		}
 	}
 	if routeDecl.ServiceName == "" {
 		return nil, &ParseError{
-			Line: routeDecl.Line, Message: "route must specify a target service",
+			Line: routeDecl.Line, Message: "gate must specify a target service",
 			SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
 		}
 	}

@@ -1214,14 +1214,14 @@ else
 fi
 
 # ---- Step 5.12: Sticky session validation ----
-# Deploy a route with cookie affinity for whoami, send multiple requests with
+# Deploy a gate with cookie affinity for whoami, send multiple requests with
 # a cookie jar, verify all hit the same backend instance.
 
 if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
     log "Validating sticky session (cookie affinity)..."
 
     STICKY_CCA=$(cat <<'STICKYCCA'
-route whoami-sticky {
+gate whoami-sticky {
     service whoami port 80
     sticky cookie {
         name __CCA_STICKY_TEST
@@ -1232,7 +1232,7 @@ STICKYCCA
     STICKY_TMPFILE="/tmp/whoami-sticky-$$.cca"
     echo "$STICKY_CCA" > "$STICKY_TMPFILE"
     scp_to_vm "${VM_PREFIX}-ctrl" "$STICKY_TMPFILE" "/tmp/whoami-sticky.cca"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky route apply failed (route support may not be wired)"
+    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky gate apply failed (gate support may not be wired)"
     rm -f "$STICKY_TMPFILE"
 
     sleep 5

@@ -143,7 +143,7 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Connections = append(file.Connections, *connectionDecl)
-		case "route":
+		case "gate":
 			routeDecl, err := parser.parseRouteDeclaration()
 			if err != nil {
 				return nil, err
@@ -2120,11 +2120,11 @@ func (parser *Parser) parseServicePath() (string, error) {
 	return path, nil
 }
 
-// parseRouteDeclaration parses a top-level "route" block that defines traffic
+// parseRouteDeclaration parses a top-level "gate" block that defines traffic
 // routing to a service with optional host/path matching and sticky sessions.
 func (parser *Parser) parseRouteDeclaration() (*RouteDecl, error) {
 	line := parser.currentToken().Line
-	parser.advanceToken() // skip "route"
+	parser.advanceToken() // skip "gate"
 
 	routeName, err := parser.expectIdentifier()
 	if err != nil {
@@ -2163,7 +2163,7 @@ func (parser *Parser) parseRouteDeclaration() (*RouteDecl, error) {
 	return routeDecl, nil
 }
 
-// parseRouteField dispatches parsing of a single field inside a route block.
+// parseRouteField dispatches parsing of a single field inside a gate block.
 func (parser *Parser) parseRouteField(routeDecl *RouteDecl, fieldName string) error {
 	var err error
 	switch fieldName {

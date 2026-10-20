@@ -229,18 +229,18 @@ service web {
 }
 
 # ---------------------------------------------------------------------------
-# route — traffic routing with optional sticky sessions
+# gate — traffic routing with optional sticky sessions
 # ---------------------------------------------------------------------------
-# Routes direct external traffic to a target service. Optional host/path
+# Gates direct external traffic to a target service. Optional host/path
 # matching selects which requests go where. Sticky sessions pin a client
 # to the same backend instance.
 #
 # Without sticky: round-robin across healthy backends (same as VIP DNAT).
 # With sticky cookie: L7 reverse proxy sets a cookie, subsequent requests
-#   route to the same instance. If the backend dies, a new one is selected.
+#   go to the same instance. If the backend dies, a new one is selected.
 # With sticky source-ip: L4 affinity via client IP (works behind NAT).
 
-route web-public {
+gate web-public {
     host "app.example.com"       # match by Host header (optional)
     path "/api"                  # match by URL path prefix (optional)
     service web port 8080        # target service name and port
@@ -253,14 +253,14 @@ route web-public {
     }
 }
 
-# Minimal route — just sticky, no host/path filtering:
-# route api-sticky {
+# Minimal gate — just sticky, no host/path filtering:
+# gate api-sticky {
 #     service api port 3000
 #     sticky cookie
 # }
 
 # Source-IP affinity (L4, no proxy needed):
-# route api-ip {
+# gate api-ip {
 #     service api port 3000
 #     sticky source-ip
 # }
