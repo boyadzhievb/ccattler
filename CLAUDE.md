@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M130 — Phase 130 BPF SNAT (nftables elimination). M1–M130 complete. Gates A–I resolved.
+**Completed through:** M131 — Phase 131 DSL Gate Keyword. M1–M131 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 
