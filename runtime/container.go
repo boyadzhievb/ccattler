@@ -229,6 +229,14 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	}
 
 	containerName := buildContainerName(spec.ServiceName, spec.ID)
+
+	if containerRuntime.adoptOrRemoveExistingContainer(ctx, spec.ID, containerName) {
+		if configTempDirectoryPath != "" {
+			_ = os.RemoveAll(configTempDirectoryPath)
+		}
+		return nil
+	}
+
 	args, portMappings, validationError := containerRuntime.buildRunArguments(spec, containerName, volumeMountArgs)
 	if validationError != nil {
 		return validationError
@@ -378,6 +386,22 @@ func (containerRuntime *ContainerRuntime) removeExitedContainerLocked(ctx contex
 	delete(containerRuntime.trackedContainers, instanceID)
 	delete(containerRuntime.containerNames, instanceID)
 	delete(containerRuntime.instanceHostPorts, instanceID)
+}
+
+// adoptOrRemoveExistingContainer handles containers left over from a previous
+// agent run. If a container with containerName is running, it is adopted into
+// tracking and returns true. If it exists but is stopped, it is removed and
+// returns false so the caller can create a fresh one. Must be called with mutex held.
+func (containerRuntime *ContainerRuntime) adoptOrRemoveExistingContainer(ctx context.Context, instanceID string, containerName string) bool {
+	if containerRuntime.isContainerActuallyRunning(ctx, containerName) {
+		logging.Default().Info("adopting running container from previous agent run", "instance", instanceID, "container", containerName)
+		containerRuntime.trackedContainers[instanceID] = true
+		containerRuntime.containerNames[instanceID] = containerName
+		return true
+	}
+	removeCommand := containerRuntime.buildExecCommand(ctx, "rm", "-f", containerName)
+	_ = removeCommand.Run()
+	return false
 }
 
 // Status returns the current state of the nerdctl container for the workload
