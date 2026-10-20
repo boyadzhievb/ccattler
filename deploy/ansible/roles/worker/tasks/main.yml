@@ -52,6 +52,12 @@
     state: started
     daemon_reload: true
 
+- name: Clean stale BPF pins from previous agent run
+  file:
+    path: /sys/fs/bpf/cca
+    state: absent
+  when: dataplane_backend | default('auto') == 'ebpf'
+
 - name: Wait for agent to register via API
   shell: >
     curl -sf
@@ -67,3 +73,26 @@
   delay: 3
   until: node_registered.rc == 0
   changed_when: false
+
+- name: Verify eBPF data plane initialized
+  shell: >
+    grep -q 'initialization complete' /var/log/ccattler/agent.log
+  register: ebpf_initialized
+  retries: 5
+  delay: 3
+  until: ebpf_initialized.rc == 0
+  changed_when: false
+  when: dataplane_backend | default('auto') == 'ebpf'
+
+- name: Verify BPF programs loaded
+  shell: >
+    bpftool prog list 2>/dev/null | grep -q 'cca_'
+  register: bpf_programs_loaded
+  changed_when: false
+  failed_when: false
+  when: dataplane_backend | default('auto') == 'ebpf'
+
+- name: Report BPF health
+  debug:
+    msg: "eBPF data plane: {{ 'healthy' if bpf_programs_loaded.rc == 0 else 'FAILED — check /var/log/ccattler/agent.log' }}"
+  when: dataplane_backend | default('auto') == 'ebpf'

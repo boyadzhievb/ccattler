@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/api"
@@ -318,7 +319,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 		fmt.Printf("CCattler server connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	rbacAuthorizer, auditLog, authorizedStore := initializeAuthorizationLayer(factStore)

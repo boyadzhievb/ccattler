@@ -221,6 +221,7 @@ func (ebpfDataPlane *EbpfDataPlane) extractAndPinMaps() error {
 			return fmt.Errorf("BPF map %s not found in ELF object", mapName)
 		}
 		pinFilePath := ebpfDataPlane.pinPath + "/" + mapName
+		_ = os.Remove(pinFilePath)
 		if pinError := bpfMap.Pin(pinFilePath); pinError != nil {
 			return fmt.Errorf("pinning map %s to %s: %w", mapName, pinFilePath, pinError)
 		}
@@ -349,18 +350,18 @@ func (ebpfDataPlane *EbpfDataPlane) buildServiceEntries(
 	protocolNumber := protocolToNumber(serviceConfig.EffectiveProtocol())
 	vipAddr := ipToUint32(serviceConfig.VirtualIP)
 
-	vipPort := portToNetworkOrder(uint16(serviceConfig.Port))
+	vipPort := portToNetworkOrder(safeUint16(serviceConfig.Port))
 	serviceKey := EbpfServiceKey{
 		VIPAddr: vipAddr, Port: vipPort, Protocol: protocolNumber,
 	}
 	serviceValue := EbpfServiceValue{
-		ServiceID: serviceID, BackendCount: uint16(len(serviceConfig.Backends)),
+		ServiceID: serviceID, BackendCount: safeUint16(len(serviceConfig.Backends)),
 	}
 	desiredServices[serviceKey] = serviceValue
 
 	for slotIndex, backend := range serviceConfig.Backends {
 		backendAddr := ipToUint32(backend.Address)
-		backendPort := portToNetworkOrder(uint16(backend.Port))
+		backendPort := portToNetworkOrder(safeUint16(backend.Port))
 
 		desiredBackends[EbpfBackendKey{
 			ServiceID: serviceID, Slot: uint16(slotIndex),
@@ -487,7 +488,7 @@ func (ebpfDataPlane *EbpfDataPlane) ReconcileRouteDataPlane(ctx context.Context,
 func (ebpfDataPlane *EbpfDataPlane) enableStickyAffinityForService(routeConfig RouteDataPlaneConfig) {
 	serviceKey := EbpfServiceKey{
 		VIPAddr:  ipToUint32(routeConfig.VirtualIP),
-		Port:     portToNetworkOrder(uint16(routeConfig.Port)),
+		Port:     portToNetworkOrder(safeUint16(routeConfig.Port)),
 		Protocol: ebpfProtocolTCP,
 	}
 

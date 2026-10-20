@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"syscall"
 
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/logging"
@@ -252,7 +253,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 
 	loadAgentTLSCredentialsIfPresent(parsedConfig.nodeID, parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	registerLocalNode(ctx, factStore, parsedConfig.nodeID)

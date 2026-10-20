@@ -20,41 +20,21 @@ func portToNetworkOrder(hostPort uint16) uint16 {
 	return binary.NativeEndian.Uint16(networkBytes[:])
 }
 
-// portFromNetworkOrder converts a network-order port (as stored in BPF maps)
-// back to host byte order for logging and diagnostics.
-func portFromNetworkOrder(networkPort uint16) uint16 {
-	nativeBytes := [2]byte{}
-	binary.NativeEndian.PutUint16(nativeBytes[:], networkPort)
-	return binary.BigEndian.Uint16(nativeBytes[:])
+// safeUint16 converts an int to uint16, clamping to [0, 65535].
+func safeUint16(value int) uint16 {
+	if value < 0 {
+		return 0
+	}
+	if value > 65535 {
+		return 65535
+	}
+	return uint16(value) //nolint:gosec // bounds checked above
 }
 
 // ebpfServiceFlagStickySourceIP indicates that source-IP session affinity is
 // enabled for this service. The BPF program checks the affinity map before
 // selecting a new backend via round-robin.
 const ebpfServiceFlagStickySourceIP uint16 = 0x01
-
-// ebpfServiceFlagStickyCookie indicates cookie-based session affinity. This
-// is handled by a userspace proxy redirect, not by BPF-only logic.
-const ebpfServiceFlagStickyCookie uint16 = 0x02
-
-// ebpfServiceFlagUDP marks the service as UDP, affecting the sendmsg4 path.
-const ebpfServiceFlagUDP uint16 = 0x04
-
-// ebpfMaxServices is the maximum number of entries in the cca_services BPF
-// hash map. Supports approximately 4000 distinct VIP:port:proto tuples.
-const ebpfMaxServices = 4096
-
-// ebpfMaxBackends is the maximum number of entries in the cca_backends BPF
-// hash map. At 4096 services, this supports ~16 backends per service.
-const ebpfMaxBackends = 65536
-
-// ebpfMaxAffinityEntries is the maximum number of entries in the cca_affinity
-// LRU hash map. Sized for high client cardinality with automatic LRU eviction.
-const ebpfMaxAffinityEntries = 131072
-
-// ebpfMaxReverseNatEntries is the maximum number of entries in the
-// cca_reverse_nat LRU hash map. Matches ebpfMaxBackends.
-const ebpfMaxReverseNatEntries = 65536
 
 // ebpfDefaultAffinityTimeoutSeconds is the default session affinity TTL
 // for source-IP sticky routes (5 minutes).
