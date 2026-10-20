@@ -94,9 +94,6 @@ func (nftablesDataPlane *NftablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 	nftablesDataPlane.initialized = true
 
 	for _, serviceConfig := range serviceConfigs {
-		if len(serviceConfig.Backends) == 0 {
-			continue
-		}
 		if err := nftablesDataPlane.ensureVIPAddress(serviceConfig.VirtualIP); err != nil {
 			logging.Default().Error("failed to add VIP", "vip", serviceConfig.VirtualIP, "error", err.Error())
 		}
@@ -191,13 +188,13 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 	})
 
 	for _, serviceConfig := range sortedConfigs {
+		desiredVIPAddresses[serviceConfig.VirtualIP] = true
 		if len(serviceConfig.Backends) == 0 {
 			continue
 		}
 
 		chainName := nftablesServiceChainPrefix + sanitizeChainName(serviceConfig.ServiceName)
 		desiredServiceChains[chainName] = true
-		desiredVIPAddresses[serviceConfig.VirtualIP] = true
 
 		protocol := serviceConfig.EffectiveProtocol()
 		dispatchEntries = append(dispatchEntries,

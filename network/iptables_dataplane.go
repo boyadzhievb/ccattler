@@ -93,21 +93,20 @@ func (iptablesDataPlane *IptablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 	desiredVIPAddresses := make(map[string]bool)
 
 	for _, serviceConfig := range serviceConfigs {
+		desiredVIPAddresses[serviceConfig.VirtualIP] = true
+		if err := iptablesDataPlane.ensureVIPAddress(serviceConfig.VirtualIP); err != nil {
+			logging.Default().Error("failed to add VIP", "vip", serviceConfig.VirtualIP, "error", err.Error())
+		}
 		if len(serviceConfig.Backends) == 0 {
 			continue
 		}
 
 		chainName := iptablesServiceChainPrefix + sanitizeChainName(serviceConfig.ServiceName)
 		desiredServiceChains[chainName] = true
-		desiredVIPAddresses[serviceConfig.VirtualIP] = true
 
 		if err := iptablesDataPlane.reconcileServiceChain(serviceConfig, chainName); err != nil {
 			logging.Default().Error("failed to reconcile chain", "chain", chainName, "error", err.Error())
 			continue
-		}
-
-		if err := iptablesDataPlane.ensureVIPAddress(serviceConfig.VirtualIP); err != nil {
-			logging.Default().Error("failed to add VIP", "vip", serviceConfig.VirtualIP, "error", err.Error())
 		}
 	}
 
