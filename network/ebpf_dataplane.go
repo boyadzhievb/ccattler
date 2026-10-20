@@ -120,6 +120,18 @@ type EbpfDataPlane struct {
 	tcProgram *ebpf.Program
 	// bridgeInterfaceName is the discovered container bridge device name.
 	bridgeInterfaceName string
+	// snatELFPath is the filesystem path to the tc SNAT BPF ELF object.
+	snatELFPath string
+	// snatCollection holds the loaded tc SNAT BPF program and config map.
+	snatCollection *ebpf.Collection
+	// snatLink is the TCX attachment of the SNAT program to the physical NIC.
+	snatLink link.Link
+	// snatProgram is the loaded tc SNAT BPF program, ready for attachment.
+	snatProgram *ebpf.Program
+	// configMap is a handle to the cca_config BPF array map for node config.
+	configMap *ebpf.Map
+	// physicalInterfaceName is the detected physical NIC carrying node traffic.
+	physicalInterfaceName string
 }
 
 // NewEbpfDataPlane creates an EbpfDataPlane ready to load BPF programs and
@@ -131,6 +143,7 @@ func NewEbpfDataPlane() *EbpfDataPlane {
 		serviceNameToID: make(map[string]uint32),
 		elfPath:         ebpfELFPath,
 		tcELFPath:       ebpfTCDNATELFPath,
+		snatELFPath:     ebpfTCSNATELFPath,
 	}
 }
 
@@ -540,8 +553,10 @@ func (ebpfDataPlane *EbpfDataPlane) loadTCProgram() error {
 }
 
 // RegisterNode discovers the container bridge interface from the overlay
-// subnet CIDR and attaches the tc DNAT program to the bridge ingress.
-// This enables BPF-based VIP DNAT for container-originated traffic.
+// subnet CIDR and attaches the tc DNAT program to the bridge ingress. Then
+// discovers the physical NIC from the node IP and attaches the tc SNAT
+// program to the physical NIC egress. When both are attached, nftables is
+// no longer needed for any VIP data plane function.
 func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error {
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()
@@ -569,7 +584,150 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 
 	logger.Info("ebpf data plane: tc DNAT attached to bridge",
 		"bridge", bridgeName, "subnet", podCIDR)
+
+	if snatError := ebpfDataPlane.attachSNATToPhysicalNIC(nodeIP, podCIDR); snatError != nil {
+		logger.Warn("ebpf data plane: SNAT attachment failed, nftables handles masquerade",
+			"error", snatError.Error())
+	}
+
 	return nil
+}
+
+// attachSNATToPhysicalNIC discovers the physical interface from the node IP,
+// loads the SNAT BPF program, populates the config map with the node address
+// and overlay CIDR, and attaches to the physical NIC tc egress.
+func (ebpfDataPlane *EbpfDataPlane) attachSNATToPhysicalNIC(nodeIP string, podCIDR string) error {
+	logger := logging.Default()
+
+	if snatLoadError := ebpfDataPlane.loadSNATProgram(); snatLoadError != nil {
+		return fmt.Errorf("loading SNAT program: %w", snatLoadError)
+	}
+
+	if configError := ebpfDataPlane.populateConfigMap(nodeIP, podCIDR); configError != nil {
+		return fmt.Errorf("populating config map: %w", configError)
+	}
+
+	physicalInterface, detectError := detectPhysicalInterfaceForNodeIP(nodeIP)
+	if detectError != nil {
+		return fmt.Errorf("detecting physical interface for %s: %w", nodeIP, detectError)
+	}
+	ebpfDataPlane.physicalInterfaceName = physicalInterface
+
+	physInterface, lookupError := net.InterfaceByName(physicalInterface)
+	if lookupError != nil {
+		return fmt.Errorf("looking up physical interface %s: %w", physicalInterface, lookupError)
+	}
+
+	snatTCXLink, attachError := link.AttachTCX(link.TCXOptions{
+		Interface: physInterface.Index,
+		Program:   ebpfDataPlane.snatProgram,
+		Attach:    ebpf.AttachTCXEgress,
+	})
+	if attachError != nil {
+		return fmt.Errorf("attaching tc SNAT to %s (index %d): %w",
+			physicalInterface, physInterface.Index, attachError)
+	}
+	ebpfDataPlane.snatLink = snatTCXLink
+
+	logger.Info("ebpf data plane: tc SNAT attached to physical NIC",
+		"interface", physicalInterface, "node_ip", nodeIP)
+	return nil
+}
+
+// loadSNATProgram loads the tc SNAT BPF ELF. The cca_config map is defined
+// inside the SNAT ELF (not shared with socket LB), so no MapReplacements
+// are needed for it.
+func (ebpfDataPlane *EbpfDataPlane) loadSNATProgram() error {
+	if _, statError := os.Stat(ebpfDataPlane.snatELFPath); os.IsNotExist(statError) {
+		return fmt.Errorf("tc SNAT ELF not found at %s", ebpfDataPlane.snatELFPath)
+	}
+
+	snatCollectionSpec, loadError := ebpf.LoadCollectionSpec(ebpfDataPlane.snatELFPath)
+	if loadError != nil {
+		return fmt.Errorf("loading tc SNAT ELF from %s: %w", ebpfDataPlane.snatELFPath, loadError)
+	}
+
+	snatCollection, createError := ebpf.NewCollection(snatCollectionSpec)
+	if createError != nil {
+		return fmt.Errorf("creating tc SNAT BPF collection: %w", createError)
+	}
+	ebpfDataPlane.snatCollection = snatCollection
+
+	snatProgram := snatCollection.Programs[ebpfTCSNATProgName]
+	if snatProgram == nil {
+		snatCollection.Close()
+		ebpfDataPlane.snatCollection = nil
+		return fmt.Errorf("tc SNAT program %s not found in ELF", ebpfTCSNATProgName)
+	}
+	ebpfDataPlane.snatProgram = snatProgram
+
+	configMapHandle := snatCollection.Maps[ebpfConfigMapName]
+	if configMapHandle == nil {
+		snatCollection.Close()
+		ebpfDataPlane.snatCollection = nil
+		return fmt.Errorf("cca_config map not found in SNAT ELF")
+	}
+	ebpfDataPlane.configMap = configMapHandle
+
+	return nil
+}
+
+// populateConfigMap writes the node IP and overlay CIDR to the cca_config
+// BPF array map so the SNAT program knows which source IPs to rewrite.
+func (ebpfDataPlane *EbpfDataPlane) populateConfigMap(nodeIP string, podCIDR string) error {
+	nodeAddress := ipToUint32(nodeIP)
+	if nodeAddress == 0 {
+		return fmt.Errorf("invalid node IP %q", nodeIP)
+	}
+
+	_, overlayNetwork, parseError := net.ParseCIDR(podCIDR)
+	if parseError != nil {
+		return fmt.Errorf("parsing overlay CIDR %s: %w", podCIDR, parseError)
+	}
+
+	overlayPrefix := ipToUint32(overlayNetwork.IP.String())
+	overlayMaskBytes := overlayNetwork.Mask
+	overlayMask := ipBytesToUint32(overlayMaskBytes)
+
+	if putError := ebpfDataPlane.configMap.Put(ebpfConfigIndexNodeIP, nodeAddress); putError != nil {
+		return fmt.Errorf("writing node_ip to config map: %w", putError)
+	}
+	if putError := ebpfDataPlane.configMap.Put(ebpfConfigIndexOverlayPrefix, overlayPrefix); putError != nil {
+		return fmt.Errorf("writing overlay_prefix to config map: %w", putError)
+	}
+	if putError := ebpfDataPlane.configMap.Put(ebpfConfigIndexOverlayMask, overlayMask); putError != nil {
+		return fmt.Errorf("writing overlay_mask to config map: %w", putError)
+	}
+
+	logging.Default().Info("ebpf data plane: config map populated",
+		"node_ip", nodeIP, "overlay_cidr", podCIDR)
+	return nil
+}
+
+// detectPhysicalInterfaceForNodeIP finds the network interface that carries
+// the given node IP address. This identifies the physical NIC (or bond) for
+// SNAT program attachment.
+func detectPhysicalInterfaceForNodeIP(nodeIP string) (string, error) {
+	networkInterfaces, listError := net.Interfaces()
+	if listError != nil {
+		return "", fmt.Errorf("listing network interfaces: %w", listError)
+	}
+	for _, networkInterface := range networkInterfaces {
+		interfaceAddresses, addrError := networkInterface.Addrs()
+		if addrError != nil {
+			continue
+		}
+		for _, interfaceAddress := range interfaceAddresses {
+			addressIP, _, parseError := net.ParseCIDR(interfaceAddress.String())
+			if parseError != nil {
+				continue
+			}
+			if addressIP.String() == nodeIP {
+				return networkInterface.Name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no interface found with address %s", nodeIP)
 }
 
 // attachTCProgramToBridge attaches the tc DNAT program to the named bridge
@@ -655,10 +813,25 @@ func (ebpfDataPlane *EbpfDataPlane) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// closeAllResources detaches all BPF cgroup and tc links and closes the
-// BPF collections (which close all program and map file descriptors).
+// closeAllResources detaches all BPF cgroup, tc DNAT, and tc SNAT links
+// and closes the BPF collections (which close all program and map FDs).
 func (ebpfDataPlane *EbpfDataPlane) closeAllResources() {
 	logger := logging.Default()
+
+	if ebpfDataPlane.snatLink != nil {
+		if closeError := ebpfDataPlane.snatLink.Close(); closeError != nil {
+			logger.Warn("ebpf: failed to detach tc SNAT program", "error", closeError.Error())
+		}
+		ebpfDataPlane.snatLink = nil
+	}
+
+	if ebpfDataPlane.snatCollection != nil {
+		ebpfDataPlane.snatCollection.Close()
+		ebpfDataPlane.snatCollection = nil
+	}
+	ebpfDataPlane.snatProgram = nil
+	ebpfDataPlane.configMap = nil
+	ebpfDataPlane.physicalInterfaceName = ""
 
 	if ebpfDataPlane.tcLink != nil {
 		if closeError := ebpfDataPlane.tcLink.Close(); closeError != nil {

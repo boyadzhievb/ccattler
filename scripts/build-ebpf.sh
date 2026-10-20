@@ -6,9 +6,10 @@
 #   scripts/build-ebpf.sh                    # output to /usr/lib/cca/
 #   scripts/build-ebpf.sh <output_dir>       # output to custom directory
 #
-# Compiles two ELF files:
+# Compiles three ELF files:
 #   cca_ebpf.o      — cgroup socket LB programs (connect4, sendmsg4, getpeername4)
 #   cca_tc_dnat.o   — tc ingress DNAT for container bridge traffic
+#   cca_tc_snat.o   — tc egress SNAT for outbound container traffic
 
 set -euo pipefail
 
@@ -17,6 +18,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SOCKET_LB_SOURCE="${REPO_ROOT}/network/ebpf/cca_socket_lb.c"
 TC_DNAT_SOURCE="${REPO_ROOT}/network/ebpf/cca_tc_dnat.c"
+TC_SNAT_SOURCE="${REPO_ROOT}/network/ebpf/cca_tc_snat.c"
 OUTPUT_DIR="${1:-/usr/lib/cca}"
 
 if [ ! -f "${SOCKET_LB_SOURCE}" ]; then
@@ -26,6 +28,11 @@ fi
 
 if [ ! -f "${TC_DNAT_SOURCE}" ]; then
     echo "error: tc DNAT source not found: ${TC_DNAT_SOURCE}" >&2
+    exit 1
+fi
+
+if [ ! -f "${TC_SNAT_SOURCE}" ]; then
+    echo "error: tc SNAT source not found: ${TC_SNAT_SOURCE}" >&2
     exit 1
 fi
 
@@ -60,4 +67,8 @@ echo "Compiling tc DNAT: ${TC_DNAT_SOURCE}"
 clang ${BPF_CFLAGS} ${BPF_INCLUDES} -c "${TC_DNAT_SOURCE}" -o "${OUTPUT_DIR}/cca_tc_dnat.o"
 echo "  -> ${OUTPUT_DIR}/cca_tc_dnat.o"
 
-echo "BPF compilation complete: 2 ELF objects in ${OUTPUT_DIR}"
+echo "Compiling tc SNAT: ${TC_SNAT_SOURCE}"
+clang ${BPF_CFLAGS} ${BPF_INCLUDES} -c "${TC_SNAT_SOURCE}" -o "${OUTPUT_DIR}/cca_tc_snat.o"
+echo "  -> ${OUTPUT_DIR}/cca_tc_snat.o"
+
+echo "BPF compilation complete: 3 ELF objects in ${OUTPUT_DIR}"

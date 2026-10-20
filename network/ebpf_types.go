@@ -75,6 +75,30 @@ const ebpfTCDNATELFPath = "/usr/lib/cca/cca_tc_dnat.o"
 // DNAT ELF object.
 const ebpfTCDNATProgName = "cca_tc_dnat"
 
+// ebpfTCSNATELFPath is the default filesystem path to the compiled tc SNAT
+// BPF ELF object. Contains the cca_tc_snat program that rewrites overlay
+// source IPs to the node's advertise address on the physical NIC egress.
+const ebpfTCSNATELFPath = "/usr/lib/cca/cca_tc_snat.o"
+
+// ebpfTCSNATProgName is the name of the tc egress BPF program in the tc
+// SNAT ELF object.
+const ebpfTCSNATProgName = "cca_tc_snat"
+
+// ebpfConfigMapName is the BPF map name for node-level configuration.
+const ebpfConfigMapName = "cca_config"
+
+// ebpfConfigIndexNodeIP is the cca_config array index for the node's
+// advertise address in network byte order.
+const ebpfConfigIndexNodeIP uint32 = 0
+
+// ebpfConfigIndexOverlayPrefix is the cca_config array index for the
+// overlay CIDR network prefix in network byte order.
+const ebpfConfigIndexOverlayPrefix uint32 = 2
+
+// ebpfConfigIndexOverlayMask is the cca_config array index for the
+// overlay CIDR netmask in network byte order.
+const ebpfConfigIndexOverlayMask uint32 = 3
+
 // EbpfServiceKey is the BPF map key for the cca_services hash map.
 // Layout must match the C struct exactly:
 // { vip_addr: u32, port: u16, protocol: u8, _pad: u8 } = 8 bytes.
@@ -198,6 +222,16 @@ func uint32ToIP(bpfAddr uint32) string {
 	ipBytes := make([]byte, 4)
 	binary.NativeEndian.PutUint32(ipBytes, bpfAddr)
 	return fmt.Sprintf("%d.%d.%d.%d", ipBytes[0], ipBytes[1], ipBytes[2], ipBytes[3])
+}
+
+// ipBytesToUint32 converts a 4-byte IP mask or address to the uint32
+// representation used by BPF maps. Uses NativeEndian to match the kernel's
+// in-memory layout of __be32 loaded as a native integer.
+func ipBytesToUint32(ipBytes []byte) uint32 {
+	if len(ipBytes) < 4 {
+		return 0
+	}
+	return binary.NativeEndian.Uint32(ipBytes[:4])
 }
 
 // protocolToNumber converts a protocol name ("tcp" or "udp") to its IANA

@@ -293,9 +293,9 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("ETCD_DATA_DIR=/var/lib/etcd\n\n")
 
 	scriptBuilder.WriteString("echo '==> Enabling IP forwarding and loading bridge netfilter'\n")
+	scriptBuilder.WriteString("modprobe br_netfilter 2>/dev/null || true\n")
 	scriptBuilder.WriteString("sysctl -w net.ipv4.ip_forward=1\n")
 	scriptBuilder.WriteString("sysctl -w net.bridge.bridge-nf-call-iptables=1 2>/dev/null || true\n")
-	scriptBuilder.WriteString("modprobe br_netfilter 2>/dev/null || true\n")
 	scriptBuilder.WriteString("# Persist across reboots.\n")
 	scriptBuilder.WriteString("cat > /etc/sysctl.d/99-ccattler.conf <<'SYSCTL'\n")
 	scriptBuilder.WriteString("net.ipv4.ip_forward = 1\n")
