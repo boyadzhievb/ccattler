@@ -1,0 +1,21 @@
+[Unit]
+Description=CCattler Caddy reverse proxy sync
+Documentation=https://github.com/boyadzhievb/ccattler
+After=network-online.target caddy.service
+Wants=network-online.target
+Requires=caddy.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/caddy-sync.sh
+Restart=on-failure
+RestartSec=10
+Environment=CCA_API=https://192.168.124.10:9770
+Environment=CCA_CA=/etc/ccattler/pki/ca.pem
+Environment=CCA_CERT=/etc/ccattler/pki/node.pem
+Environment=CCA_KEY=/etc/ccattler/pki/node-key.pem
+Environment=CADDY_FILE=/etc/caddy/Caddyfile
+Environment=SYNC_INTERVAL=30
+
+[Install]
+WantedBy=multi-user.target

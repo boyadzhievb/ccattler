@@ -12,3 +12,8 @@ service whoami-multiport {
         memory 64Mi
     }
 }
+
+route whoami-multiport {
+    host whoami-multiport.home.arpa
+    service whoami-multiport port 80
+}

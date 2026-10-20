@@ -749,69 +749,39 @@ done
 
 log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINERS containers"
 
-# ---- Step 4.5: Configure Caddy reverse proxy on testbed host ----
+# ---- Step 4.5: Install Caddy sync daemon on testbed host ----
 # Only for the deploy environment (long-lived cluster). The test environment is
 # ephemeral and halted after tests — no point exposing it.
 #
-# Caddy runs on the testbed host and proxies external traffic to CCattler
-# services inside the libvirt VMs. Each workload manifest declares
-# WORKLOAD_EXPOSE entries as "domain:service_name".
+# The Caddy sync daemon is a reconciliation loop that watches route facts in the
+# CCattler store and regenerates the Caddyfile when routes change. It also
+# maintains host routes to overlay subnets so the testbed host can reach
+# container IPs directly — no VIP DNAT or Host header tricks needed.
 #
-# VIPs (10.100.x.x) are only routable inside the VMs where agent data plane
-# (nftables or iptables) DNAT rules translate them. From the testbed host we
-# proxy through the agent's HTTP proxy (port 80 on each VM) which routes by
-# Host header to the correct service.
+# This is the bare-metal equivalent of the cloud load balancer integration:
+# route facts are the source of truth, Caddy is just another reconciler.
 
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
-    CADDY_CONFIG=""
-    EXPOSE_SUMMARY=""
-    TESTBED_HOST_IP="192.168.100.43"
+    log "Installing Caddy sync daemon on testbed host..."
 
-    # Build upstream list: all VM IPs on port 80 (agent HTTP proxy).
-    PROXY_UPSTREAMS=""
-    for ip in "${ALL_IPS[@]}"; do
-        PROXY_UPSTREAMS+=" ${ip}:80"
-    done
+    sudo cp "$REPO_DIR/scripts/caddy-sync.sh" /usr/local/bin/caddy-sync.sh
+    sudo chmod +x /usr/local/bin/caddy-sync.sh
 
-    for workload_name in "${WORKLOAD_NAMES[@]}"; do
-        # shellcheck source=/dev/null
-        source "$WORKLOADS_DIR/${workload_name}.workload"
-        if [[ -z "${WORKLOAD_EXPOSE+x}" ]] || [[ ${#WORKLOAD_EXPOSE[@]} -eq 0 ]]; then
-            continue
-        fi
-        for expose_entry in "${WORKLOAD_EXPOSE[@]}"; do
-            domain="${expose_entry%%:*}"
-            service_name="${expose_entry#*:}"
-            CADDY_CONFIG+="
-${domain} {
-    tls internal {
-        on_demand
-    }
-    reverse_proxy${PROXY_UPSTREAMS} {
-        header_up Host ${service_name}
-    }
-}
-"
-            EXPOSE_SUMMARY+="  https://${domain} → ${service_name} (via agent proxy)\n"
-        done
-    done
+    sudo cp "$REPO_DIR/deploy/caddy-sync.service" /etc/systemd/system/caddy-sync.service
+    sudo mkdir -p /etc/ccattler/pki
 
-    if [[ -n "$CADDY_CONFIG" ]]; then
-        log "Configuring Caddy reverse proxy on testbed host..."
-        CADDY_FILE="/etc/caddy/Caddyfile"
-        # Global options: disable auto HTTP→HTTPS redirect (avoids port 80
-        # conflict) and skip installing the internal CA into the system trust
-        # store (caddy user has no sudo).
-        {
-            echo "{"
-            echo "    auto_https disable_redirects"
-            echo "    skip_install_trust"
-            echo "}"
-            echo "$CADDY_CONFIG"
-        } | sudo tee "$CADDY_FILE" > /dev/null
-        sudo systemctl restart caddy 2>/dev/null || log "WARNING: Caddy not available on host"
-        log "Caddy configured — services accessible from:"
-        echo -e "$EXPOSE_SUMMARY"
+    sudo cp "$CA_CERT_LOCAL" /etc/ccattler/pki/ca.pem
+    sudo cp "$CLIENT_CERT_LOCAL" /etc/ccattler/pki/node.pem
+    sudo cp "$CLIENT_KEY_LOCAL" /etc/ccattler/pki/node-key.pem
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now caddy-sync.service 2>/dev/null || log "WARNING: caddy-sync failed to start"
+
+    sleep 5
+    if systemctl is-active --quiet caddy-sync.service; then
+        log "Caddy sync daemon running — routes will reconcile automatically"
+    else
+        log "WARNING: caddy-sync service not active, check: journalctl -u caddy-sync"
     fi
 fi
 

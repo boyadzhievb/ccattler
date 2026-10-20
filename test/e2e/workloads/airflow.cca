@@ -1,116 +1,103 @@
-# Apache Airflow CeleryExecutor stack for e2e testing.
-#
-# Validates the command directive, multi-role image deployment,
-# inter-service networking (webserver → postgres, worker → redis),
-# and secret mounts for database and admin credentials.
-#
-# The connection block assembles the DB URL at runtime from structured
-# fields + secret. Airflow reads it via _CMD = "cat /run/connections/...".
-#
-# Before deploying:
-#   cca secret set airflow.db-password <password>
-#   cca secret set airflow.admin-password <password>
-
 connection airflow-db {
     driver "postgresql+psycopg2"
-    user "airflow"
+    user airflow
     secret airflow.db-password
-    host "metadata-db"
+    host metadata-db
     port 5432
-    database "airflow"
+    database airflow
 }
 
 connection airflow-celery-backend {
     driver "db+postgresql"
-    user "airflow"
+    user airflow
     secret airflow.db-password
-    host "metadata-db"
+    host metadata-db
     port 5432
-    database "airflow"
+    database airflow
 }
 
 service metadata-db {
     image postgres:16
     instances 1
     expose 5432
+    health {
+        tcp
+        every 10s
+    }
     resources {
         cpu 500m
         memory 512Mi
     }
     config {
-        env POSTGRES_DB "airflow"
-        env POSTGRES_USER "airflow"
+        env POSTGRES_DB airflow
+        env POSTGRES_USER airflow
         env POSTGRES_PASSWORD_FILE "/run/secrets/db-password"
     }
     secret airflow.db-password "/run/secrets/db-password"
-    health {
-        tcp
-        every 10s
-    }
 }
 
 service redis {
     image redis:7
     instances 1
     expose 6379
-    resources {
-        cpu 250m
-        memory 256Mi
-    }
     health {
         tcp
         every 10s
+    }
+    resources {
+        cpu 250m
+        memory 256Mi
     }
 }
 
 service webserver {
     image "apache/airflow:2.10.5"
-    command "webserver"
+    command webserver
     instances 1
     expose 8080
-    resources {
-        cpu 500m
-        memory 1024Mi
-    }
-    connection airflow-db "/run/connections/airflow-db"
-    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
-    config {
-        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
-        env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
-        env AIRFLOW__CORE__LOAD_EXAMPLES "true"
-        env _AIRFLOW_DB_MIGRATE "true"
-        env _AIRFLOW_WWW_USER_CREATE "true"
-        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
-    }
-    secret airflow.admin-password "/run/secrets/admin-password"
     health {
         tcp
         every 15s
     }
-}
-
-service scheduler {
-    image "apache/airflow:2.10.5"
-    command "scheduler"
-    instances 1
     resources {
         cpu 500m
         memory 1024Mi
     }
-    connection airflow-db "/run/connections/airflow-db"
-    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
     config {
-        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
+        env AIRFLOW__CORE__EXECUTOR CeleryExecutor
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__CORE__LOAD_EXAMPLES true
+        env _AIRFLOW_DB_MIGRATE true
+        env _AIRFLOW_WWW_USER_CREATE true
+        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
+    secret airflow.admin-password "/run/secrets/admin-password"
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
+}
+
+service scheduler {
+    image "apache/airflow:2.10.5"
+    command scheduler
+    instances 1
     health {
         tcp
         every 30s
     }
+    resources {
+        cpu 500m
+        memory 1024Mi
+    }
+    config {
+        env AIRFLOW__CORE__EXECUTOR CeleryExecutor
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
+        env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+    }
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
 }
 
 service worker {
@@ -118,20 +105,25 @@ service worker {
     command "celery worker"
     instances 2
     expose 8793
-    resources {
-        cpu 1000m
-        memory 2048Mi
-    }
-    connection airflow-db "/run/connections/airflow-db"
-    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
-    config {
-        env AIRFLOW__CORE__EXECUTOR "CeleryExecutor"
-        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
-        env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
-        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
-    }
     health {
         tcp
         every 15s
     }
+    resources {
+        cpu 1000m
+        memory 2048Mi
+    }
+    config {
+        env AIRFLOW__CORE__EXECUTOR CeleryExecutor
+        env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
+        env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
+        env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+    }
+    connection airflow-db "/run/connections/airflow-db"
+    connection airflow-celery-backend "/run/connections/airflow-celery-backend"
+}
+
+route airflow {
+    host airflow.home.arpa
+    service webserver port 8080
 }

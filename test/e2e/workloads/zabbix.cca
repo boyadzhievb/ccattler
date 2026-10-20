@@ -1,9 +1,3 @@
-# Zabbix monitoring stack for e2e testing.
-#
-# Three services: PostgreSQL database, Zabbix server, Zabbix web frontend.
-# Validates multi-component deployment, inter-service networking, and
-# container image pulling across multiple nodes.
-
 service postgres {
     image postgres:16
     instances 1
@@ -13,9 +7,9 @@ service postgres {
         memory 512Mi
     }
     config {
-        env POSTGRES_DB "zabbix"
-        env POSTGRES_USER "zabbix"
-        env POSTGRES_PASSWORD "zabbix_pwd"
+        env POSTGRES_DB zabbix
+        env POSTGRES_USER zabbix
+        env POSTGRES_PASSWORD zabbix_pwd
     }
 }
 
@@ -28,10 +22,10 @@ service zabbix-server {
         memory 512Mi
     }
     config {
-        env DB_SERVER_HOST "postgres"
-        env POSTGRES_DB "zabbix"
-        env POSTGRES_USER "zabbix"
-        env POSTGRES_PASSWORD "zabbix_pwd"
+        env DB_SERVER_HOST postgres
+        env POSTGRES_DB zabbix
+        env POSTGRES_USER zabbix
+        env POSTGRES_PASSWORD zabbix_pwd
     }
 }
 
@@ -44,11 +38,16 @@ service zabbix-web {
         memory 256Mi
     }
     config {
-        env ZBX_SERVER_HOST "zabbix-server"
-        env DB_SERVER_HOST "postgres"
-        env POSTGRES_DB "zabbix"
-        env POSTGRES_USER "zabbix"
-        env POSTGRES_PASSWORD "zabbix_pwd"
+        env ZBX_SERVER_HOST zabbix-server
+        env DB_SERVER_HOST postgres
+        env POSTGRES_DB zabbix
+        env POSTGRES_USER zabbix
+        env POSTGRES_PASSWORD zabbix_pwd
         env PHP_TZ "Europe/London"
     }
+}
+
+route zabbix {
+    host zabbix.home.arpa
+    service zabbix-web port 8080
 }
