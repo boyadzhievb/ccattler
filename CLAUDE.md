@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M129 — Phase 129 tc DNAT for Bridge Traffic. M1–M129 complete. Gates A–I resolved.
+**Completed through:** M130 — Phase 130 BPF SNAT (nftables elimination). M1–M130 complete. Gates A–I resolved.
 
 ### Architecture Debt (from external reviews, Sep 19 2026)
 

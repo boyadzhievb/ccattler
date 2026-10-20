@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.55.0-beta <Badge type="tip" text="latest" /> {#v1-55-0-beta}
+## v1.56.0-beta <Badge type="tip" text="latest" /> {#v1-56-0-beta}
+
+**2026-10-20** — BPF SNAT (nftables elimination).
+
+- **BPF SNAT (nftables elimination)** (M130) — Phase 3 of independent eBPF data plane: replace nftables POSTROUTING masquerade with BPF tc egress SNAT, eliminating the last nftables dependency. New tc BPF program `cca_tc_snat` attached to the physical NIC tc egress via TCX link. For every outbound packet, checks whether the source IP falls in the overlay CIDR range (`cca_config` map stores `overlay_prefix` and `overlay_mask`); if so, rewrites source IP to the node's advertise address (from `cca_config` index 0) and recomputes IP + L4 checksums via `bpf_l3_csum_replace`/`bpf_l4_csum_replace`. Non-overlay-sourced packets pass through unchanged. This covers both DNAT paths: container-to-VIP via tc bridge DNAT (M129 conntrack kfuncs) and host-to-VIP via cgroup socket LB (M128 kernel conntrack). Container-to-container cross-node traffic over VXLAN does NOT need SNAT — VXLAN encapsulation preserves overlay addresses and the tunnel mesh provides symmetric routing, so packets leaving via `cca-vxlan0` are skipped. New `cca_config` BPF array map (8 entries, u32 values: index 0 = node_ip, 2 = overlay_prefix, 3 = overlay_mask) populated by Go control plane from `--advertise-address` and `--cluster-cidr`. Physical interface auto-discovered from advertise address via `detectPhysicalInterfaceForAddress` (same as VXLAN reconciler). Go changes: `EbpfDataPlane` gains `snatCollection`, `snatLink`, `configMap` fields; `loadSNATProgram()` loads `cca_tc_snat.o` with `MapReplacements`, creates `cca_config` map; `attachSNATProgram(physInterface)` attaches to physical NIC egress; `RegisterNode()` extended to discover physical interface and attach SNAT after bridge attachment. On `Cleanup()`, nftables `ip cca` table deleted entirely when `--dataplane ebpf` — `writePostRoutingChain` becomes a no-op. Compiled to separate ELF (`cca_tc_snat.o`). Kernel 6.6+ (TCX). `build-ebpf.sh` and Makefile updated. See `design/ebpf-data-plane-v2.md`.
+
+---
+
+## v1.55.0-beta {#v1-55-0-beta}
 
 **2026-10-19** — tc DNAT for Bridge Traffic.
 
