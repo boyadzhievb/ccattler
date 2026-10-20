@@ -36,13 +36,15 @@ func ValidateResourceName(resourceName string) error {
 }
 
 // validSecretNamePattern matches hierarchical secret names: one or more
-// path segments separated by slashes, where each segment is lowercase
-// alphanumeric with hyphens. Prevents path traversal and store key injection.
-var validSecretNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?(/[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?)*$`)
+// path segments separated by dots or slashes, where each segment is
+// lowercase alphanumeric with hyphens. Prevents path traversal and
+// store key injection.
+var validSecretNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?([./][a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?)*$`)
 
 // ValidateSecretName checks that a secret name is safe to use in a store key
-// path. Secret names may contain slashes for hierarchical scoping (e.g.
-// "payments/db-password") but each segment must be a valid resource name.
+// path. Secret names may contain dots or slashes for hierarchical scoping
+// (e.g. "airflow.db-password", "payments/db-password") but each segment
+// must be a valid resource name.
 func ValidateSecretName(secretName string) error {
 	if secretName == "" {
 		return fmt.Errorf("secret name must not be empty")
@@ -54,7 +56,7 @@ func ValidateSecretName(secretName string) error {
 		return fmt.Errorf("secret name %q contains path traversal", secretName)
 	}
 	if !validSecretNamePattern.MatchString(secretName) {
-		return fmt.Errorf("secret name %q is invalid: segments must be lowercase alphanumeric with hyphens", secretName)
+		return fmt.Errorf("secret name %q is invalid: segments must be lowercase alphanumeric with hyphens, separated by dots or slashes", secretName)
 	}
 	return nil
 }
