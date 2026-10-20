@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.57.0-beta <Badge type="tip" text="latest" /> {#v1-57-0-beta}
+## v1.57.1-beta <Badge type="tip" text="latest" /> {#v1-57-1-beta}
+
+**2026-10-20** — DSL Gate Keyword.
+
+- **DSL Gate Keyword** (M131) — Rename user-facing DSL keyword from `route` to `gate` for external traffic blocks. `gate` is shorter, unambiguous, and avoids collision with cloud/VPC route terminology already used by `CloudRouteController`. Parser accepts only `gate`; formatter emits `gate`; compiler error messages say "gate". Internal fact store keys (`desired/route/`, `derived/route/`) unchanged — the rename is DSL-surface only. Updated: parser, compiler, formatter, linter, all tests, examples, workloads, design docs, kubernetes migration guide, STATUS.md.
+
+---
+
+## v1.57.0-beta {#v1-57-0-beta}
 
 **2026-10-20** — DSL Gate Keyword.
 
