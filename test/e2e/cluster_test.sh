@@ -496,6 +496,7 @@ fi
 # cca join + agent service (worker). The creates: guards in each role ensure
 # idempotent re-runs — cleaning the guard files above triggers fresh execution.
 log "Running Ansible deployment..."
+python3 -c "import fcntl,os;[fcntl.fcntl(fd,fcntl.F_SETFL,fcntl.fcntl(fd,fcntl.F_GETFL)&~os.O_NONBLOCK) for fd in range(3)]" 2>/dev/null || true
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup
 
 # ---- Step 3: Verify cluster basics ----
