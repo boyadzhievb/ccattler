@@ -132,10 +132,9 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 			continue
 		}
 
-		backends, err := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
-		if err != nil {
-			logging.Default().Error("dataplane: failed to resolve backends", "agent", dataPlaneReconciler.nodeID, "service", serviceName, "error", err.Error())
-			continue
+		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
+		if resolveError != nil {
+			logging.Default().Error("dataplane: failed to resolve backends", "agent", dataPlaneReconciler.nodeID, "service", serviceName, "error", resolveError.Error())
 		}
 		vipConfig.Backends = backends
 		serviceVIPConfigs = append(serviceVIPConfigs, *vipConfig)
