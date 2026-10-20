@@ -4,14 +4,21 @@
 # Prerequisites:
 #   - 3 Debian/Ubuntu servers with SSH access
 #   - Fill in IPs in baremetal-inventory.ini
-#   - Build cca binary: go build -o /tmp/cca ./cmd/cca/
+#   - Go toolchain on the control machine (cross-compiles the cca binary)
 #
 # Run from your workstation:
 #   cd deploy/ansible
 #   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml
 #
+# Update binary only (skip cleanup and workload deploy):
+#   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --skip-tags cleanup,testapp,cilium
+#
 # Deploy demo workload after cluster is up:
 #   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --tags testapp
+#
+# BPF data plane: set dataplane_backend=ebpf in inventory. The playbook
+# installs clang on nodes and compiles BPF ELFs from source on each node
+# (Linux kernel headers required, cannot cross-compile from macOS).
 
 - name: Clean up old state (skip with --skip-tags cleanup)
   hosts: all

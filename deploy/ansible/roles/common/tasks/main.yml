@@ -6,19 +6,17 @@
       - ansible_distribution_major_version | int >= 22 or ansible_distribution == "Debian"
     fail_msg: "CCattler requires Ubuntu 22.04+ or Debian 12+ (found {{ ansible_distribution }} {{ ansible_distribution_version }}). Python 3.9+ and OpenSSL 3.0+ are needed."
 
-- name: Verify CCattler binary exists
-  stat:
-    path: "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
+- name: Build CCattler binary for target architecture
+  command: go build -o "{{ playbook_dir }}/cca-linux-{{ go_arch }}" ./cmd/cca/
+  args:
+    chdir: "{{ playbook_dir }}/../.."
+  environment:
+    GOOS: linux
+    GOARCH: "{{ go_arch }}"
+    CGO_ENABLED: "0"
   delegate_to: localhost
   run_once: true
   become: false
-  register: ccattler_binary
-
-- name: Fail if binary is missing
-  fail:
-    msg: "cca-linux-{{ go_arch }} not found in {{ playbook_dir }}/ — install.sh downloads it from releases automatically"
-  when: not ccattler_binary.stat.exists
-  run_once: true
 
 - name: Disable systemd-resolved
   systemd:
@@ -86,6 +84,20 @@
     - { port: "9770", proto: "tcp", comment: "CCattler API" }
     - { port: "2379", proto: "tcp", comment: "etcd client" }
   when: ansible_facts.services is defined and ansible_facts.services.get('ufw.service', {}).get('state') == 'running'
+  ignore_errors: true
+
+- name: Set iptables FORWARD policy to ACCEPT for overlay routing
+  iptables:
+    chain: FORWARD
+    policy: ACCEPT
+
+- name: Remove stale CNI iptables chains
+  shell: |
+    for chain in CNI-ISOLATION-STAGE-1 CNI-ISOLATION-STAGE-2 CNI-FORWARD; do
+      iptables -F "$chain" 2>/dev/null
+      iptables -X "$chain" 2>/dev/null
+    done
+  changed_when: false
   ignore_errors: true
 
 - name: Install base packages
@@ -186,6 +198,37 @@
 - name: Verify cca binary
   command: /usr/local/bin/cca version
   changed_when: false
+
+- name: Install clang for BPF compilation
+  apt:
+    name: clang
+    state: present
+  when: dataplane_backend == "ebpf"
+
+- name: Copy BPF source files to node
+  copy:
+    src: "{{ playbook_dir }}/../../network/ebpf/"
+    dest: /tmp/cca-ebpf/
+    mode: "0644"
+  when: dataplane_backend == "ebpf"
+
+- name: Create BPF output directory
+  file:
+    path: /usr/lib/cca
+    state: directory
+    mode: "0755"
+  when: dataplane_backend == "ebpf"
+
+- name: Compile BPF programs on node
+  shell: |
+    clang -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86 \
+      -I/usr/include -I/usr/include/x86_64-linux-gnu \
+      -c /tmp/cca-ebpf/{{ item.src }} -o /usr/lib/cca/{{ item.out }}
+  loop:
+    - { src: "cca_socket_lb.c", out: "cca_ebpf.o" }
+    - { src: "cca_tc_dnat.c", out: "cca_tc_dnat.o" }
+    - { src: "cca_tc_snat.c", out: "cca_tc_snat.o" }
+  when: dataplane_backend == "ebpf"
 
 - name: Create CCattler directories
   file:
