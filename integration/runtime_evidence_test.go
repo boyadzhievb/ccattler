@@ -23,6 +23,7 @@ import (
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/runtime"
 	"github.com/boyadzhievb/ccattler/scheduler"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -505,7 +506,14 @@ func TestAPIStability_StatusEndpointContract(t *testing.T) {
 	factStore.Put(ctx, types.KeyObservedInstanceNode("web-1"), []byte("node-1"))
 
 	apiServer := api.NewServer(factStore)
+	testAuthorizer := security.NewAPIAuthorizer()
+	testAuthorizer.Grant("user:test-admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(testAuthorizer)
+
 	request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "test-admin"}
+	request = request.WithContext(security.WithPrincipalStruct(
+		security.WithPrincipal(request.Context(), "user:test-admin"), adminPrincipal))
 	recorder := httptest.NewRecorder()
 	apiServer.Handler().ServeHTTP(recorder, request)
 
@@ -660,7 +668,16 @@ func TestEcosystem_WatchIntegration(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := api.NewServer(factStore)
-	testServer := httptest.NewServer(apiServer.Handler())
+	watchTestAuthorizer := security.NewAPIAuthorizer()
+	watchTestAuthorizer.Grant("user:test-admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(watchTestAuthorizer)
+
+	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "test-admin"}
+	testServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := security.WithPrincipalStruct(
+			security.WithPrincipal(r.Context(), "user:test-admin"), adminPrincipal)
+		apiServer.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
 	defer testServer.Close()
 
 	// Start a goroutine that will write facts after a brief delay.

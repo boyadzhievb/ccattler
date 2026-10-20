@@ -76,6 +76,8 @@ func (bulkhead *Bulkhead) ActiveWorkers(controllerName string) int {
 	return len(semaphore)
 }
 
+// getOrCreateSemaphore returns the semaphore channel for the named controller,
+// creating it lazily if it doesn't exist yet.
 func (bulkhead *Bulkhead) getOrCreateSemaphore(controllerName string) chan struct{} {
 	bulkhead.mutex.Lock()
 	defer bulkhead.mutex.Unlock()

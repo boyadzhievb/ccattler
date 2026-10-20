@@ -6,6 +6,7 @@ package security
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -71,7 +72,7 @@ func ValidateBootstrapToken(ctx context.Context, factStore store.StateStore, tok
 		return "", fmt.Errorf("no bootstrap token found")
 	}
 
-	if string(storedTokenFact.Value) != token {
+	if subtle.ConstantTimeCompare(storedTokenFact.Value, []byte(token)) != 1 {
 		return "", fmt.Errorf("invalid bootstrap token")
 	}
 

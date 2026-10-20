@@ -53,3 +53,54 @@ func TestValidateResourceNameInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateSecretNameValid(t *testing.T) {
+	validNames := []string{
+		"a",
+		"db-password",
+		"my-secret-v2",
+		"payments/db-password",
+		"frontend/cdn-key",
+		"team/app/secret",
+		"a/b/c",
+		"a1/b2",
+		strings.Repeat("a", 253),
+	}
+
+	for _, name := range validNames {
+		if validateError := ValidateSecretName(name); validateError != nil {
+			t.Errorf("ValidateSecretName(%q) returned error: %v", name, validateError)
+		}
+	}
+}
+
+func TestValidateSecretNameInvalid(t *testing.T) {
+	invalidNames := []struct {
+		name   string
+		reason string
+	}{
+		{"", "empty"},
+		{"-secret", "starts with hyphen"},
+		{"secret-", "ends with hyphen"},
+		{"Secret", "uppercase"},
+		{"my_secret", "underscore"},
+		{"my.secret", "dot"},
+		{"../etc/passwd", "path traversal"},
+		{"team/../admin", "mid-path traversal"},
+		{"secret/..", "trailing path traversal"},
+		{"/absolute/path", "leading slash"},
+		{"trailing/", "trailing slash"},
+		{"team//secret", "empty segment"},
+		{"team/-bad/secret", "segment starts with hyphen"},
+		{"team/bad-/secret", "segment ends with hyphen"},
+		{"secret\x00evil", "null byte"},
+		{"secret name", "space"},
+		{strings.Repeat("a", 254), "exceeds max length"},
+	}
+
+	for _, testCase := range invalidNames {
+		if validateError := ValidateSecretName(testCase.name); validateError == nil {
+			t.Errorf("ValidateSecretName(%q) should fail (%s) but returned nil", testCase.name, testCase.reason)
+		}
+	}
+}

@@ -86,7 +86,7 @@ func (secretAPIServer *SecretAPIServer) Start(ctx context.Context) error {
 
 	go func() { //nolint:gosec // G118: shutdown goroutine needs context.Background — parent ctx is already done
 		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), defaultHTTPShutdownTimeout)
 		defer shutdownCancel()
 		_ = secretAPIServer.httpServer.Shutdown(shutdownCtx)
 	}()

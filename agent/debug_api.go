@@ -21,6 +21,9 @@ const defaultDebugReadTimeout = 10 * time.Second
 // defaultDebugWriteTimeout is the HTTP write timeout for the debug server.
 const defaultDebugWriteTimeout = 30 * time.Second
 
+// defaultHTTPShutdownTimeout is the grace period for HTTP server shutdown.
+const defaultHTTPShutdownTimeout = 5 * time.Second
+
 // DebugServer serves agent-local HTTP debug endpoints that expose runtime
 // state without going through the control plane. It provides three endpoints:
 //
@@ -68,7 +71,7 @@ func (debugServer *DebugServer) Start(ctx context.Context) error {
 
 	go func() { //nolint:gosec // G118: shutdown goroutine needs context.Background — parent ctx is already done
 		<-ctx.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), defaultHTTPShutdownTimeout)
 		defer shutdownCancel()
 		_ = debugServer.httpServer.Shutdown(shutdownCtx)
 	}()

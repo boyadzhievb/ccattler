@@ -2499,49 +2499,24 @@ func TestBearerTokenAuthenticatorSkipsNoHeader(t *testing.T) {
 	}
 }
 
-// TestLocalUserAuthenticatorReadsHeader verifies that the local user
-// authenticator extracts the username from the X-CCattler-User header.
-func TestLocalUserAuthenticatorReadsHeader(t *testing.T) {
-	authenticator := NewLocalUserAuthenticator()
+// alwaysAliceAuthenticator is a test-only authenticator that always returns a
+// "user:alice" principal. Used in chain tests to verify prioritization.
+type alwaysAliceAuthenticator struct{}
 
-	request, _ := http.NewRequest("GET", "/api/state", nil)
-	request.Header.Set("X-CCattler-User", "alice")
-
-	result, authError := authenticator.Authenticate(request)
-	if authError != nil {
-		t.Fatalf("unexpected error: %v", authError)
-	}
-	if result == nil {
-		t.Fatal("expected non-nil result for request with X-CCattler-User header")
-	}
-	if result.Principal != "user:alice" {
-		t.Errorf("principal = %q, want %q", result.Principal, "user:alice")
-	}
-}
-
-// TestLocalUserAuthenticatorSkipsNoHeader verifies that the local user
-// authenticator returns nil (skip) when the header is absent.
-func TestLocalUserAuthenticatorSkipsNoHeader(t *testing.T) {
-	authenticator := NewLocalUserAuthenticator()
-
-	request, _ := http.NewRequest("GET", "/api/state", nil)
-
-	result, authError := authenticator.Authenticate(request)
-	if authError != nil {
-		t.Fatalf("unexpected error: %v", authError)
-	}
-	if result != nil {
-		t.Fatal("expected nil result for request without X-CCattler-User header")
-	}
+func (authenticator *alwaysAliceAuthenticator) Authenticate(_ *http.Request) (*AuthenticationResult, error) {
+	return &AuthenticationResult{
+		Principal:     "user:alice",
+		PrincipalKind: PrincipalKindUser,
+	}, nil
 }
 
 // TestAuthenticatorChainFirstMatchWins verifies that the chain returns the
-// result from the first authenticator that succeeds — mTLS beats bearer
-// when both credentials are present.
+// result from the first authenticator that succeeds — mTLS beats a later
+// authenticator when both would match.
 func TestAuthenticatorChainFirstMatchWins(t *testing.T) {
 	chain := NewAuthenticatorChain(
 		NewMTLSAuthenticator(),
-		NewLocalUserAuthenticator(),
+		&alwaysAliceAuthenticator{},
 	)
 
 	request, _ := http.NewRequest("GET", "/api/state", nil)
@@ -2550,14 +2525,32 @@ func TestAuthenticatorChainFirstMatchWins(t *testing.T) {
 			{Subject: pkix.Name{CommonName: "node-1"}},
 		},
 	}
-	request.Header.Set("X-CCattler-User", "alice")
 
 	result, authError := chain.Authenticate(request)
 	if authError != nil {
 		t.Fatalf("unexpected error: %v", authError)
 	}
 	if result.Principal != "node:node-1" {
-		t.Errorf("principal = %q, want %q (mTLS should win)", result.Principal, "node:node-1")
+		t.Errorf("principal = %q, want %q (mTLS should win over later authenticator)", result.Principal, "node:node-1")
+	}
+}
+
+// TestAuthenticatorChainFallsThrough verifies that when the first authenticator
+// skips (returns nil), the chain tries the next one.
+func TestAuthenticatorChainFallsThrough(t *testing.T) {
+	chain := NewAuthenticatorChain(
+		NewMTLSAuthenticator(),
+		&alwaysAliceAuthenticator{},
+	)
+
+	request, _ := http.NewRequest("GET", "/api/state", nil)
+
+	result, authError := chain.Authenticate(request)
+	if authError != nil {
+		t.Fatalf("unexpected error: %v", authError)
+	}
+	if result.Principal != "user:alice" {
+		t.Errorf("principal = %q, want %q (should fall through to second authenticator)", result.Principal, "user:alice")
 	}
 }
 
@@ -2566,7 +2559,7 @@ func TestAuthenticatorChainFirstMatchWins(t *testing.T) {
 func TestAuthenticatorChainNoMatch(t *testing.T) {
 	chain := NewAuthenticatorChain(
 		NewMTLSAuthenticator(),
-		NewLocalUserAuthenticator(),
+		NewMTLSAuthenticator(),
 	)
 
 	request, _ := http.NewRequest("GET", "/api/state", nil)

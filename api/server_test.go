@@ -27,6 +27,7 @@ func newTestServer(t *testing.T) (string, store.StateStore, func()) {
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	address, err := apiServer.Start(":0")
 	if err != nil {
 		t.Fatalf("start server: %v", err)
@@ -37,6 +38,28 @@ func newTestServer(t *testing.T) (string, store.StateStore, func()) {
 		factStore.Close()
 	}
 	return baseURL, factStore, cleanup
+}
+
+// testAlwaysAdminAuthenticator is a test-only authenticator that always returns
+// a cluster-admin principal, skipping real credential checks.
+type testAlwaysAdminAuthenticator struct{}
+
+func (authenticator *testAlwaysAdminAuthenticator) Authenticate(_ *http.Request) (*security.AuthenticationResult, error) {
+	return &security.AuthenticationResult{
+		Principal:     "user:test-admin",
+		PrincipalKind: security.PrincipalKindUser,
+		Groups:        []string{"platform"},
+	}, nil
+}
+
+// configureTestAuth sets up an allow-all authorizer and test authenticator on
+// the given API server so that all requests are treated as cluster-admin.
+func configureTestAuth(apiServer *Server) {
+	testAuthorizer := security.NewAPIAuthorizer()
+	testAuthorizer.Grant("user:test-admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(testAuthorizer)
+	apiServer.SetAuthenticatorChain(security.NewAuthenticatorChain(&testAlwaysAdminAuthenticator{}))
+	apiServer.SetRequirePrincipal(true)
 }
 
 func TestGetStateByKey(t *testing.T) {
@@ -363,6 +386,7 @@ func newTestServerWithEnrollment(t *testing.T) (string, string, func()) {
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 
 	certificateAuthority, err := security.NewCertificateAuthority(24 * time.Hour)
 	if err != nil {
@@ -722,6 +746,7 @@ func TestDescribeInvalidType(t *testing.T) {
 func TestDescribeServiceWithEvents(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	eventLog := types.NewEventLog(factStore, 100)
 	apiServer.SetEventLog(eventLog)
 
@@ -759,6 +784,7 @@ func TestDescribeServiceWithEvents(t *testing.T) {
 func TestEventStreamSSE(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	eventLog := types.NewEventLog(factStore, 100)
 	apiServer.SetEventLog(eventLog)
 
@@ -814,6 +840,7 @@ func TestEventStreamSSE(t *testing.T) {
 func TestEventStreamServiceFilter(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	eventLog := types.NewEventLog(factStore, 100)
 	apiServer.SetEventLog(eventLog)
 
@@ -1041,6 +1068,7 @@ func TestOIDCDiscoveryEndpoint(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
@@ -1081,6 +1109,7 @@ func TestOIDCJWKSEndpoint(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
@@ -1137,6 +1166,7 @@ func TestStatusIncludesCloudIdentities(t *testing.T) {
 	factStore.Put(ctx, "desired/service/payments/cloud_identity/payments_s3", []byte(""))
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	address, err := apiServer.Start(":0")
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -1179,6 +1209,7 @@ func TestHealthzAPIOnlyModeSkipsControllerCheck(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	apiServer.SetServerMode(ServerModeAPIOnly)
 
 	address, err := apiServer.Start(":0")
@@ -1226,6 +1257,7 @@ func TestHealthzFullModeIncludesControllerCheck(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 
 	address, err := apiServer.Start(":0")
 	if err != nil {
@@ -1269,6 +1301,7 @@ func TestWatchWithMultiplexer(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	multiplexer := NewWatchMultiplexer(factStore)
 	apiServer.SetWatchMultiplexer(multiplexer)
 
@@ -1314,6 +1347,7 @@ func TestOIDCEndpointsMethodNotAllowed(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	tokenIssuer, err := security.NewWorkloadTokenIssuer("https://ccattler.example.com")
 	if err != nil {
 		t.Fatalf("create issuer: %v", err)
@@ -1351,6 +1385,9 @@ func TestRequirePrincipalRejects401(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	testAuthorizer := security.NewAPIAuthorizer()
+	testAuthorizer.Grant("user:test-admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(testAuthorizer)
 	apiServer.SetRequirePrincipal(true)
 	address, err := apiServer.Start(":0")
 	if err != nil {
@@ -1393,6 +1430,7 @@ func TestRequirePrincipalAllowsAuthenticated(t *testing.T) {
 	defer factStore.Close()
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	apiServer.SetRequirePrincipal(true)
 
 	handler := apiServer.Handler()
@@ -1473,6 +1511,7 @@ func TestPolicyGateBlocksUnauthorizedApply(t *testing.T) {
 	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	apiServer.SetPolicyGate(policyGate)
 	apiServer.SetRequirePrincipal(true)
 
@@ -1581,6 +1620,7 @@ func TestSecretAPIRoundTrip(t *testing.T) {
 	}
 
 	apiServer := NewServer(factStore)
+	configureTestAuth(apiServer)
 	apiServer.SetSecretStore(secretStore)
 	address, startErr := apiServer.Start(":0")
 	if startErr != nil {

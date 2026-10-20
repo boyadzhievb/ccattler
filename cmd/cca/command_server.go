@@ -1026,6 +1026,22 @@ func requireClientCertMiddleware(wrappedHandler http.Handler) http.Handler {
 	})
 }
 
+// demoAlwaysAdminAuthenticator is an authenticator that unconditionally returns
+// a local-demo admin principal. It is used by `cca run` and `cca run-container`
+// where no real authentication is needed but the fail-closed API authorizer
+// requires a principal in the request context.
+type demoAlwaysAdminAuthenticator struct{}
+
+// Authenticate always returns a "user:local-demo" principal, granting the demo
+// server full access without requiring credentials.
+func (demoAuthenticator *demoAlwaysAdminAuthenticator) Authenticate(_ *http.Request) (*security.AuthenticationResult, error) {
+	return &security.AuthenticationResult{
+		Principal:     "user:local-demo",
+		PrincipalKind: security.PrincipalKindUser,
+		Groups:        []string{"platform"},
+	}, nil
+}
+
 // launchStatusAPIServer starts the HTTP API server in the background. It hosts
 // both the legacy /status and /metric endpoints and the new /api/* endpoints.
 // When serverTLSConfig is non-nil, the listener is wrapped with TLS for mTLS.
@@ -1039,6 +1055,16 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 	if authenticatorChain != nil {
 		apiServer.SetAuthenticatorChain(authenticatorChain)
 		apiServer.SetRequirePrincipal(true)
+	} else {
+		// Demo/run mode: configure a permissive authenticator and authorizer so
+		// that the fail-closed requireCapability check passes for all requests.
+		// The demo authenticator always returns a "user:local-demo" principal,
+		// and the authorizer grants cluster-admin to that principal.
+		demoChain := security.NewAuthenticatorChain(&demoAlwaysAdminAuthenticator{})
+		apiServer.SetAuthenticatorChain(demoChain)
+		demoAuthorizer := security.NewAPIAuthorizer()
+		demoAuthorizer.Grant("user:local-demo", security.CapabilityClusterAdmin, security.ScopeCluster)
+		apiServer.SetAPIAuthorizer(demoAuthorizer)
 	}
 
 	httpMux := http.NewServeMux()

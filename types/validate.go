@@ -35,6 +35,30 @@ func ValidateResourceName(resourceName string) error {
 	return nil
 }
 
+// validSecretNamePattern matches hierarchical secret names: one or more
+// path segments separated by slashes, where each segment is lowercase
+// alphanumeric with hyphens. Prevents path traversal and store key injection.
+var validSecretNamePattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?(/[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?)*$`)
+
+// ValidateSecretName checks that a secret name is safe to use in a store key
+// path. Secret names may contain slashes for hierarchical scoping (e.g.
+// "payments/db-password") but each segment must be a valid resource name.
+func ValidateSecretName(secretName string) error {
+	if secretName == "" {
+		return fmt.Errorf("secret name must not be empty")
+	}
+	if len(secretName) > MaxResourceNameLength {
+		return fmt.Errorf("secret name %q exceeds maximum length %d", secretName, MaxResourceNameLength)
+	}
+	if strings.Contains(secretName, "..") {
+		return fmt.Errorf("secret name %q contains path traversal", secretName)
+	}
+	if !validSecretNamePattern.MatchString(secretName) {
+		return fmt.Errorf("secret name %q is invalid: segments must be lowercase alphanumeric with hyphens", secretName)
+	}
+	return nil
+}
+
 // ParseDurationSeconds parses a human-friendly duration string like "60s" or
 // "5m" into whole seconds. Falls back to plain integer parsing. Returns 0 if
 // the string cannot be parsed.

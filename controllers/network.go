@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -90,9 +91,13 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 
 	var changes []Change
 
-	// Create VIP + DNS for services that have endpoints and an exposed port
-	// but don't yet have a VIP.
+	sortedServiceNames := make([]string, 0, len(servicesWithEndpoints))
 	for serviceName := range servicesWithEndpoints {
+		sortedServiceNames = append(sortedServiceNames, serviceName)
+	}
+	sort.Strings(sortedServiceNames)
+
+	for _, serviceName := range sortedServiceNames {
 		exposedPorts := servicePorts[serviceName]
 		if len(exposedPorts) == 0 {
 			continue
@@ -196,7 +201,14 @@ func determineNextVIPFourthOctet(existingVIPs map[string]string) int {
 // records belonging to services that no longer have any endpoints.
 func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingDNS map[string]string, servicesWithEndpoints map[string]bool) []Change {
 	var changes []Change
+
+	sortedVIPNames := make([]string, 0, len(existingVIPs))
 	for serviceName := range existingVIPs {
+		sortedVIPNames = append(sortedVIPNames, serviceName)
+	}
+	sort.Strings(sortedVIPNames)
+
+	for _, serviceName := range sortedVIPNames {
 		if !servicesWithEndpoints[serviceName] {
 			removalChanges := groupedChanges("vip-remove/"+serviceName,
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPService(serviceName)},
@@ -212,7 +224,14 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 			changes = append(changes, removalChanges...)
 		}
 	}
+
+	sortedDNSNames := make([]string, 0, len(existingDNS))
 	for serviceName := range existingDNS {
+		sortedDNSNames = append(sortedDNSNames, serviceName)
+	}
+	sort.Strings(sortedDNSNames)
+
+	for _, serviceName := range sortedDNSNames {
 		if !servicesWithEndpoints[serviceName] && existingVIPs[serviceName] == "" {
 			changes = append(changes, Change{
 				Type: store.OpDelete,

@@ -321,11 +321,12 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 
 // requireCapability checks whether the request's principal has the given
 // capability at the given scope. Returns true if the check passes (caller may
-// proceed). Returns false and writes a 403 response if the caller lacks the
-// capability. When no APIAuthorizer is configured, all requests pass through.
+// proceed). Returns false and writes a 403/500 response if the caller lacks
+// the capability or the authorizer is not configured.
 func (apiServer *Server) requireCapability(responseWriter http.ResponseWriter, request *http.Request, capability security.Capability, scope security.Scope) bool {
 	if apiServer.apiAuthorizer == nil {
-		return true
+		writeJSONError(responseWriter, "authorization not configured", http.StatusInternalServerError)
+		return false
 	}
 	principal := security.PrincipalStructFromContext(request.Context())
 	if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, capability, scope, nil); authError != nil {
@@ -1507,6 +1508,13 @@ func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, reques
 
 	secretName := request.URL.Query().Get("name")
 
+	if secretName != "" {
+		if validateError := types.ValidateSecretName(secretName); validateError != nil {
+			writeJSONError(responseWriter, "invalid secret name: "+validateError.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
 	switch request.Method {
 	case http.MethodGet:
 		apiServer.handleSecretGet(responseWriter, request, secretName)
@@ -1612,6 +1620,13 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 // POST creates a user, GET lists users, DELETE removes a user.
 func (apiServer *Server) handleUser(responseWriter http.ResponseWriter, request *http.Request) {
 	userName := request.URL.Query().Get("name")
+
+	if userName != "" {
+		if validateError := types.ValidateResourceName(userName); validateError != nil {
+			writeJSONError(responseWriter, "invalid user name: "+validateError.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	switch request.Method {
 	case http.MethodPost:
