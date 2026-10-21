@@ -19,7 +19,8 @@ import (
 const defaultDebugReadTimeout = 10 * time.Second
 
 // defaultDebugWriteTimeout is the HTTP write timeout for the debug server.
-const defaultDebugWriteTimeout = 30 * time.Second
+// Must accommodate slow operations like image pulls on constrained nodes.
+const defaultDebugWriteTimeout = 120 * time.Second
 
 // defaultHTTPShutdownTimeout is the grace period for HTTP server shutdown.
 const defaultHTTPShutdownTimeout = 5 * time.Second

@@ -852,7 +852,7 @@ else
 fi
 
 log "Testing POST /debug/images/pull on worker-1..."
-PULL_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
+PULL_JSON=$(curl -sf --max-time 120 -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
     -H "Content-Type: application/json" \
     -d '{"image":"alpine:3.20"}' 2>&1) || fail "debug/images/pull request failed"
 echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
