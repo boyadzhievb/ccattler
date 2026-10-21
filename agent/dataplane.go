@@ -9,12 +9,19 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// defaultNodeStalenessThreshold is how long since a node's last heartbeat
+// before the data plane excludes its backends from VIP rules. This is the
+// fast-path eviction: traffic shifts away from unreachable nodes within
+// seconds, without waiting for the full reschedule pipeline.
+const defaultNodeStalenessThreshold = 30 * time.Second
 
 // DataPlaneReconciler encapsulates data plane reconciliation logic, reading
 // VIP and endpoint facts from the store and programming DNAT rules via the
@@ -80,11 +87,14 @@ func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 
 // buildServiceVIPConfigs scans VIP facts and endpoint facts to construct
 // the complete set of service VIP configurations for the data plane.
+// Backends on nodes with stale heartbeats are excluded.
 func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx context.Context) ([]network.ServiceVIPConfig, error) {
 	vipFacts, err := dataPlaneReconciler.factStore.Scan(ctx, types.ScanNetworkVIPs)
 	if err != nil {
 		return nil, fmt.Errorf("scanning VIP facts: %w", err)
 	}
+
+	staleNodeSet := dataPlaneReconciler.identifyStaleNodes(ctx)
 
 	serviceVIPMap := make(map[string]*network.ServiceVIPConfig)
 	for _, vipFact := range vipFacts {
@@ -128,7 +138,7 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	for _, serviceName := range sortedServiceNames {
 		vipConfig := serviceVIPMap[serviceName]
 
-		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
+		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName, staleNodeSet)
 		if resolveError != nil {
 			logging.Default().Error("dataplane: failed to resolve backends", "agent", dataPlaneReconciler.nodeID, "service", serviceName, "error", resolveError.Error())
 		}
@@ -137,6 +147,39 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	}
 
 	return serviceVIPConfigs, nil
+}
+
+// identifyStaleNodes reads all node heartbeat lease timestamps and returns
+// a set of node IDs whose last heartbeat exceeds the staleness threshold.
+// The local node is never considered stale (its heartbeat is authoritative).
+func (dataPlaneReconciler *DataPlaneReconciler) identifyStaleNodes(ctx context.Context) map[string]bool {
+	leaseFacts, err := dataPlaneReconciler.factStore.Scan(ctx, types.ScanLeaseNodes)
+	if err != nil {
+		return nil
+	}
+
+	now := time.Now()
+	staleNodeSet := make(map[string]bool)
+
+	for _, leaseFact := range leaseFacts {
+		nodeID := strings.TrimPrefix(leaseFact.Key, types.ScanLeaseNodes)
+		if nodeID == dataPlaneReconciler.nodeID {
+			continue
+		}
+		heartbeatMillis, parseError := strconv.ParseInt(string(leaseFact.Value), 10, 64)
+		if parseError != nil {
+			continue
+		}
+		lastHeartbeat := time.UnixMilli(heartbeatMillis)
+		if now.Sub(lastHeartbeat) > defaultNodeStalenessThreshold {
+			logging.Default().Info("dataplane: excluding stale node from backends",
+				"agent", dataPlaneReconciler.nodeID, "stale_node", nodeID,
+				"since_heartbeat", now.Sub(lastHeartbeat).Round(time.Second).String())
+			staleNodeSet[nodeID] = true
+		}
+	}
+
+	return staleNodeSet
 }
 
 // buildRouteDataPlaneConfigs reads desired route facts and derived backend
@@ -317,8 +360,9 @@ func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store
 // resolveServiceBackends reads endpoint facts for a service and resolves
 // each endpoint to a host-accessible backend address. Local instances use
 // the container IP:port; remote instances use the node's advertise address
-// and host port.
-func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx context.Context, serviceName string) ([]network.DataPlaneBackend, error) {
+// and host port. Backends on nodes with stale heartbeats are excluded so
+// traffic shifts to healthy nodes within seconds of a node failure.
+func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx context.Context, serviceName string, staleNodeSet map[string]bool) ([]network.DataPlaneBackend, error) {
 	endpointPrefix := fmt.Sprintf("%s/service/%s/", types.PrefixEndpoint, serviceName)
 	endpointFacts, err := dataPlaneReconciler.factStore.Scan(ctx, endpointPrefix)
 	if err != nil {
@@ -354,11 +398,11 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 
 		instanceNodeID := string(instanceNodeFact.Value)
 
+		if staleNodeSet[instanceNodeID] {
+			continue
+		}
+
 		if instanceNodeID == dataPlaneReconciler.nodeID {
-			// Local backends use the container bridge IP directly,
-			// looked up from the observed instance IP fact. This avoids
-			// hairpin NAT (DNAT to the node's own advertise address
-			// routes through loopback where MASQUERADE is excluded).
 			localBackend := dataPlaneReconciler.resolveLocalBackend(ctx, instanceID, containerPort, endpointIP, endpointPort)
 			backends = append(backends, localBackend)
 		} else {
