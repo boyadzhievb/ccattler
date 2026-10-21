@@ -245,6 +245,85 @@ func TestLoadBalancingDistributesTraffic(t *testing.T) {
 	}
 }
 
+// TestNodeFailurePreservesVIPAddress verifies that when a node dies and a
+// service temporarily has zero endpoints, the VIP address is preserved.
+// Before the fix, the network controller deleted VIP facts for services with
+// zero endpoints, causing VIP address instability during recovery.
+func TestNodeFailurePreservesVIPAddress(t *testing.T) {
+	t.Parallel()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
+
+	for _, nodeID := range []string{"node-1", "node-2"} {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+	}
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := scheduler.NewScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	networkController := controllers.NewNetworkController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController, networkController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
+	go controllerRunner.Run(ctx)
+
+	node1Context, cancelNode1Agent := context.WithCancel(ctx)
+	for _, nodeID := range []string{"node-1", "node-2"} {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
+		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
+		if nodeID == "node-1" {
+			go nodeAgent.Run(node1Context)
+		} else {
+			go nodeAgent.Run(ctx)
+		}
+	}
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
+	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("2"))
+
+	waitFor(t, 5*time.Second, "VIP allocated for web", func() bool {
+		vipFact, getError := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+		return getError == nil && len(vipFact.Value) > 0
+	})
+
+	originalVIPFact, _ := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	originalVIPAddress := string(originalVIPFact.Value)
+
+	cancelNode1Agent()
+
+	waitFor(t, 5*time.Second, "node-1 marked unreachable", func() bool {
+		nodeStateFact, getError := factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
+		return getError == nil && string(nodeStateFact.Value) == string(types.NodeUnreachable)
+	})
+
+	time.Sleep(500 * time.Millisecond)
+
+	currentVIPFact, getError := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	if getError != nil {
+		t.Fatal("VIP should persist after node failure, even with zero endpoints on healthy nodes")
+	}
+	if string(currentVIPFact.Value) != originalVIPAddress {
+		t.Errorf("VIP address changed during node failure: %s -> %s", originalVIPAddress, currentVIPFact.Value)
+	}
+}
+
 // TestNodeFailureUpdatesNetworking verifies that when a node dies, its
 // instances' IPs are released, replacements get new IPs from surviving
 // nodes, and the load balancer routes correctly.
