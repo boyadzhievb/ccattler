@@ -44,8 +44,9 @@ const (
 	// which are automatically rotated before expiry.
 	defaultServerCertificateTTL = 24 * time.Hour
 
-	// defaultEnrollmentTokenTTL is the default TTL for node enrollment join tokens.
-	defaultEnrollmentTokenTTL = 24 * time.Hour
+	// defaultNodeCertificateTTL is the lifetime for certificates issued to nodes
+	// during enrollment. This is distinct from the join token TTL (set via --ttl).
+	defaultNodeCertificateTTL = 365 * 24 * time.Hour
 
 	// defaultDNSListenPort is the default port for the built-in DNS server.
 	defaultDNSListenPort = "15353"
@@ -615,7 +616,7 @@ func configureAndStartAPIServer(
 	}
 
 	if clusterCertificateAuthority != nil {
-		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultEnrollmentTokenTTL)
+		enrollmentService := security.NewEnrollmentService(factStore, clusterCertificateAuthority, rbacAuthorizer, defaultNodeCertificateTTL)
 		statusAPIServer.SetEnrollmentService(enrollmentService)
 		fmt.Println("Node enrollment enabled — use 'cca token create' to generate join tokens")
 	}
@@ -782,6 +783,8 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 
 	appendCACertificateToChain(&serverCertificate, caCertPEM)
 
+	warnIfCertificateExpiringSoon(certPath, &serverCertificate)
+
 	fmt.Printf("TLS: cert=%s key=%s ca=%s\n", certPath, keyPath, caCertPath)
 
 	clientAuthPolicy := tls.RequireAndVerifyClientCert
@@ -794,6 +797,31 @@ func loadServerTLSConfig(certPath, keyPath, caCertPath string, enrollmentEnabled
 		ClientCAs:    caCertPool,
 		ClientAuth:   clientAuthPolicy,
 		MinVersion:   tls.VersionTLS13,
+	}
+}
+
+// certificateExpiryWarningThreshold is the lead time before expiry at which
+// a warning is printed during startup.
+const certificateExpiryWarningThreshold = 7 * 24 * time.Hour
+
+// warnIfCertificateExpiringSoon parses the leaf certificate and prints a
+// warning if it expires within the warning threshold, or an error if already
+// expired.
+func warnIfCertificateExpiringSoon(certPath string, tlsCertificate *tls.Certificate) {
+	if len(tlsCertificate.Certificate) == 0 {
+		return
+	}
+	leafCertificate, parseError := x509.ParseCertificate(tlsCertificate.Certificate[0])
+	if parseError != nil {
+		return
+	}
+	remainingValidity := time.Until(leafCertificate.NotAfter)
+	if remainingValidity <= 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: TLS certificate %s EXPIRED on %s\n",
+			certPath, leafCertificate.NotAfter.Format("2006-01-02 15:04 UTC"))
+	} else if remainingValidity < certificateExpiryWarningThreshold {
+		fmt.Fprintf(os.Stderr, "WARNING: TLS certificate %s expires in %s (on %s)\n",
+			certPath, remainingValidity.Round(time.Hour), leafCertificate.NotAfter.Format("2006-01-02 15:04 UTC"))
 	}
 }
 
