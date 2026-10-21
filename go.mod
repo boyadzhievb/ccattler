@@ -1,6 +1,6 @@
 module github.com/boyadzhievb/ccattler
 
-go 1.26.9
+go 1.26.10
 
 require (
 	cloud.google.com/go/compute v1.71.0
@@ -11,9 +11,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.63.1
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.1
+	github.com/cilium/ebpf v0.22.0
 	go.etcd.io/etcd/client/v3 v3.7.2
 	google.golang.org/api v0.300.0
 	google.golang.org/protobuf v1.36.12
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -35,7 +37,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.1 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/cilium/ebpf v0.22.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -67,5 +68,4 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260921155816-b14227669459 // indirect
 	google.golang.org/grpc v1.84.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
