@@ -280,7 +280,7 @@ func TestDataPlaneLocalBackendUsesContainerIPNotAdvertiseAddress(t *testing.T) {
 	}
 }
 
-func TestDataPlaneRunsOnReconciliationTick(t *testing.T) {
+func TestDataPlaneRunsOnIndependentTicker(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -728,6 +728,40 @@ func TestDataPlaneNonIdentityProviderSkipsRegistration(t *testing.T) {
 	// Should still reconcile VIP data plane without crashing.
 	waitFor(t, 2*time.Second, "dataplane reconcile runs", func() bool {
 		return mockDP.reconcileCallCount.Load() > 0
+	})
+
+	cancel()
+}
+
+// TestDataPlaneRunsIndependentlyOfMainLoop verifies that the data plane
+// goroutine fires on its own ticker, decoupled from the main reconciliation
+// loop. The main loop interval is set very long (10s) so it won't tick
+// during the test. If the data plane were still inside the main loop, the
+// test would time out waiting for a reconcile call.
+func TestDataPlaneRunsIndependentlyOfMainLoop(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+	nodeAgent.SetInterval(10 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web", types.PrefixDesired), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
+	factStore.Put(ctx, fmt.Sprintf("%s/service/web/instances", types.PrefixDesired), []byte("0"))
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "web", VIP: "10.200.0.1", Port: 80,
+	})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "dataplane fires before main loop ticks", func() bool {
+		return simulatorDataPlane.ReconcileCallCount() > 0
 	})
 
 	cancel()

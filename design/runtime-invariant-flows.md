@@ -228,6 +228,8 @@ Each agent reads heartbeat lease timestamps for all nodes (`lease/node/{id}`). I
 
 **Key invariant:** The data plane acts on heartbeat staleness alone. It does not wait for the control plane to mark instances as failed, delete endpoints, or reschedule. This is what makes it fast.
 
+**Goroutine isolation:** The data plane reconciler runs in its own goroutine (`dataPlaneLoop`) with an independent ticker (`dataPlaneReconcileInterval`), decoupled from the main agent reconciliation loop. This prevents slow etcd calls in the main loop (reconcile, telemetry) from stalling VIP rule updates and stale-node eviction.
+
 ### Phase 2 — Slow path (control plane, 1–3 minutes)
 
 **Owner:** Node failure controller → instance controller → endpoint controller → network controller.
@@ -271,6 +273,7 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 - **VIP deletion cascade (2026-10-21):** Endpoint controller used `effectiveInstanceState` which treated `node_failure` as `InstanceFailed`, deleting endpoints for instances on failed nodes. Network controller then deleted VIP facts. Fixed by introducing `endpointEligibleState`.
 - **Slow VIP recovery (2026-10-21):** Before fast-path eviction, traffic waited for the full controller pipeline (60–90s). Fixed by adding heartbeat-based stale-node detection in the data plane.
 - **Leader election fragility (2026-10-21):** Single etcd timeout during reconciliation storm caused self-inflicted leadership loss, stalling the entire control plane. Fixed by tolerating transient renewal failures within the lease window.
+- **Data plane stall via main loop coupling (2026-10-21):** Data plane reconciler ran inside the main agent select loop alongside reconcile, telemetry, and VXLAN. A slow/hung etcd call in any of those steps froze the data plane — nftables rules went stale for minutes. Ctrl node lost fast-path eviction because the main loop blocked on etcd. Fixed by extracting data plane + VXLAN into an independent `dataPlaneLoop` goroutine.
 
 ---
 

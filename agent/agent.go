@@ -36,6 +36,12 @@ const watchReconnectDelay = 2 * time.Second
 // delay heartbeats and cause false node-failure detection.
 const heartbeatInterval = 5 * time.Second
 
+// dataPlaneReconcileInterval is the period between independent data plane
+// reconciliation cycles. The data plane goroutine is decoupled from the main
+// reconciliation ticker so that slow etcd calls in the main loop cannot stall
+// VIP rule programming and stale-node eviction — the fast-path traffic shift.
+const dataPlaneReconcileInterval = 1 * time.Second
+
 // ccaSecretHelperPath is the container path where the cca-secret helper script
 // is bind-mounted. Containers use this to fetch secrets from the agent's API.
 const ccaSecretHelperPath = "/usr/local/bin/cca-secret" //nolint:gosec // G101: not a credential, this is a filesystem path
@@ -51,10 +57,11 @@ const ccaSecretMountPrefix = "/run/cca-secrets/" //nolint:gosec // G101: not a c
 
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
-// Delegates to three sub-components:
+// Delegates to four independent goroutines plus the main reconciliation loop:
 //   - ProbeScheduler: health checks and probe execution on an independent timer
-//   - NodeReporter: telemetry collection, heartbeat, and node registration
-//   - DataPlaneReconciler: VIP DNAT rule programming via the data plane provider
+//   - HeartbeatLoop: writes heartbeat timestamps, decoupled from reconciliation
+//   - DataPlaneLoop: VIP DNAT rules and VXLAN tunnels, decoupled from reconciliation
+//   - NodeReporter: telemetry collection and node registration (inline in main loop)
 type Agent struct {
 	nodeID                   string                               // nodeID is the unique identifier for the node this agent manages.
 	store                    store.StateStore                     // store is the fact store used to read desired state and write observed state.
@@ -222,6 +229,11 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	// cycles cannot delay heartbeats and cause false node-failure detection.
 	go nodeAgent.heartbeatLoop(ctx)
 
+	// Start the independent data plane goroutine so that slow etcd calls in
+	// the main reconciliation loop cannot stall VIP rule updates and
+	// stale-node eviction — the fast-path traffic shift.
+	go nodeAgent.dataPlaneLoop(ctx)
+
 	// Retry loop: re-establish watch on channel closure.
 	for {
 		if ctx.Err() != nil {
@@ -265,10 +277,6 @@ func (nodeAgent *Agent) runWatchLoop(ctx context.Context) error {
 				logging.Default().Error("reconcile error", "agent", nodeAgent.nodeID, "error", reconcileErr.Error())
 			}
 			nodeAgent.nodeReporter.CollectAndReportTelemetry(ctx)
-			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
-			if nodeAgent.vxlanReconciler != nil {
-				nodeAgent.vxlanReconciler.Reconcile(ctx)
-			}
 		case watchEvent, ok := <-placementCh:
 			if !ok {
 				return fmt.Errorf("watch channel closed (compaction or store shutdown)")
@@ -364,6 +372,28 @@ func (nodeAgent *Agent) heartbeatLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			nodeAgent.nodeReporter.WriteHeartbeat(ctx)
+		}
+	}
+}
+
+// dataPlaneLoop runs independently of the main reconciliation ticker,
+// programming VIP DNAT rules and VXLAN tunnels at a fixed interval. This
+// decoupling is critical: the fast-path data plane must detect stale nodes
+// and shift traffic within seconds, even if the main loop is blocked on a
+// slow etcd call (reconcile, telemetry, etc.).
+func (nodeAgent *Agent) dataPlaneLoop(ctx context.Context) {
+	ticker := time.NewTicker(dataPlaneReconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+			if nodeAgent.vxlanReconciler != nil {
+				nodeAgent.vxlanReconciler.Reconcile(ctx)
+			}
 		}
 	}
 }
