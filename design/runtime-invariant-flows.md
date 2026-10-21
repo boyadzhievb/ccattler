@@ -2,7 +2,7 @@
 
 Cross-component configuration chains that must stay consistent. Each flow describes a path where a mismatch between components causes a hard-to-diagnose runtime failure.
 
-Updated: 2026-10-14
+Updated: 2026-10-21
 
 ---
 
@@ -214,6 +214,66 @@ etcd must require mTLS for all client connections. The cluster CA signs etcd ser
 - etcdctl in E2E tests passes `--cacert/--cert/--key`
 - etcd cert SANs include `127.0.0.1` (for local health checks)
 
+## 8. Node Failure Recovery — Two-Phase Traffic Continuity
+
+**Chain:** `agent/dataplane.go:identifyStaleNodes` → `controllers/nodefailure.go` → `controllers/endpoint.go` → `controllers/network.go` → `network/nftables_dataplane.go`
+
+When a node becomes unreachable, traffic to VIP-backed services must continue with minimal disruption. Recovery uses two independent, decoupled phases:
+
+### Phase 1 — Fast path (data plane, ~30 seconds)
+
+**Owner:** Each node agent's data plane reconciler.
+
+Each agent reads heartbeat lease timestamps for all nodes (`lease/node/{id}`). If a node's last heartbeat exceeds `defaultNodeStalenessThreshold` (30s), the agent excludes that node's backends from nftables DNAT rules. Traffic shifts to healthy backends within seconds of detection.
+
+**Key invariant:** The data plane acts on heartbeat staleness alone. It does not wait for the control plane to mark instances as failed, delete endpoints, or reschedule. This is what makes it fast.
+
+### Phase 2 — Slow path (control plane, 1–3 minutes)
+
+**Owner:** Node failure controller → instance controller → endpoint controller → network controller.
+
+1. Node failure controller detects stale lease → writes `derived/instance/{id}/node_failure = true`
+2. Instance controller sees failed instances → schedules replacements on healthy nodes
+3. New instances start → agents publish observed state and endpoint facts
+4. Data plane picks up new endpoints on next reconciliation cycle
+
+### Critical decoupling invariant
+
+**`node_failure` is a scheduling signal, not a runtime signal.**
+
+The endpoint controller must NOT treat `node_failure=true` as "instance stopped". The instance may still be physically running (node is unreachable, not necessarily crashed). Endpoint facts must persist as long as the observed runtime state is `running`.
+
+- Endpoint eligibility: use `endpointEligibleState()` — ignores `node_failure`, only checks observed `state` and `controller_stopped`
+- Scheduling decisions: use `effectiveInstanceState()` — includes `node_failure` for rescheduling logic
+
+If the endpoint controller deletes endpoints based on `node_failure`, the following cascade occurs:
+1. Endpoints deleted → network controller sees zero endpoints for some services
+2. Network controller deletes VIP facts from etcd
+3. Data plane scans VIP facts, finds them missing → removes VIP addresses from dummy interface
+4. All traffic to the service fails for the entire recovery window (60–90+ seconds)
+
+This cascade defeats the fast-path eviction because the control plane's scheduling actions destroy the state the data plane needs to route traffic.
+
+### Which controllers use which state function
+
+| Controller | Function | Why |
+|---|---|---|
+| Endpoint | `endpointEligibleState` | Endpoints reflect runtime state, not scheduling intent |
+| Stateful DNS | `effectiveInstanceState` | Per-instance DNS should update when rescheduled |
+| Instance | `effectiveInstanceState` | Needs `node_failure` to trigger replacement |
+| Failure | `effectiveInstanceState` | Needs `node_failure` for failure detection |
+| Autoscale | `effectiveInstanceState` | Failed instances shouldn't count toward replica target |
+| Rollout | `effectiveInstanceState` | Failed instances can't serve as rollout targets |
+| Drain | `effectiveInstanceState` | Failed instances are already effectively drained |
+
+### Past bugs
+
+- **VIP deletion cascade (2026-10-21):** Endpoint controller used `effectiveInstanceState` which treated `node_failure` as `InstanceFailed`, deleting endpoints for instances on failed nodes. Network controller then deleted VIP facts. Fixed by introducing `endpointEligibleState`.
+- **Slow VIP recovery (2026-10-21):** Before fast-path eviction, traffic waited for the full controller pipeline (60–90s). Fixed by adding heartbeat-based stale-node detection in the data plane.
+- **Leader election fragility (2026-10-21):** Single etcd timeout during reconciliation storm caused self-inflicted leadership loss, stalling the entire control plane. Fixed by tolerating transient renewal failures within the lease window.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
@@ -224,3 +284,4 @@ When adding a new feature that touches the runtime:
 4. **Does it use advertise address?** If yes, ensure it's propagated consistently (Flow 6).
 5. **Does it need cross-host networking?** If yes, verify all three endpoint facts exist (Flow 7).
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
+7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
