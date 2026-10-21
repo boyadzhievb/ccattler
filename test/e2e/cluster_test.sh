@@ -618,6 +618,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         UNIQUE_IMAGES["$image"]=1
     done
 done
+UNIQUE_IMAGES["alpine:3.20"]=1
 
 PULL_MAX_ATTEMPTS=5
 PULL_RETRY_DELAY=15
@@ -769,13 +770,17 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     sudo chmod +x /usr/local/bin/caddy-sync.sh
 
     sudo cp "$REPO_DIR/deploy/caddy-sync.service" /etc/systemd/system/caddy-sync.service
-    sudo mkdir -p /etc/ccattler/pki
+    sudo mkdir -p /etc/ccattler/pki /etc/caddy
+    if [[ ! -f /etc/caddy/Caddyfile ]]; then
+        echo '{ }' | sudo tee /etc/caddy/Caddyfile > /dev/null
+    fi
 
     sudo cp "$CA_CERT_LOCAL" /etc/ccattler/pki/ca.pem
     sudo cp "$CLIENT_CERT_LOCAL" /etc/ccattler/pki/node.pem
     sudo cp "$CLIENT_KEY_LOCAL" /etc/ccattler/pki/node-key.pem
 
     sudo systemctl daemon-reload
+    sudo systemctl restart caddy.service 2>/dev/null || log "WARNING: caddy failed to start"
     sudo systemctl enable --now caddy-sync.service 2>/dev/null || log "WARNING: caddy-sync failed to start"
 
     sleep 5
@@ -1119,9 +1124,9 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
         -d '{"service":"whoami","instances":1}' > /dev/null || fail "Scale whoami to 1 failed"
     log "  Scaled whoami to 1 instance"
 
-    sleep 5
+    sleep 3
 
-    CHURN_DEADLINE=$((SECONDS + 30))
+    CHURN_DEADLINE=$((SECONDS + 20))
     CHURN_SUCCESS=0
     CHURN_FAIL=0
     while [[ $SECONDS -lt $CHURN_DEADLINE ]]; do
@@ -1144,7 +1149,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
         -d '{"service":"whoami","instances":2}' > /dev/null || fail "Scale whoami back to 2 failed"
     log "  Restored whoami to 2 instances"
 
-    RESTORE_DEADLINE=$((SECONDS + 60))
+    RESTORE_DEADLINE=$((SECONDS + 30))
     while [[ $SECONDS -lt $RESTORE_DEADLINE ]]; do
         RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
@@ -1176,7 +1181,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
     log "  Stopped cca-agent on worker-1"
 
-    FAILOVER_DEADLINE=$((SECONDS + 90))
+    FAILOVER_DEADLINE=$((SECONDS + 45))
     FAILOVER_SUCCESS=false
     while [[ $SECONDS -lt $FAILOVER_DEADLINE ]]; do
         HTTP_CODE=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
@@ -1194,7 +1199,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl start cca-agent" || fail "Failed to restart agent on worker-1"
     log "  Restarted cca-agent on worker-1"
 
-    RECOVER_DEADLINE=$((SECONDS + 60))
+    RECOVER_DEADLINE=$((SECONDS + 30))
     while [[ $SECONDS -lt $RECOVER_DEADLINE ]]; do
         RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
@@ -1208,7 +1213,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     if [[ "$FAILOVER_SUCCESS" == "true" ]]; then
         log "Node-failure traffic test PASSED — VIP served traffic during worker-1 outage"
     else
-        fail "Node-failure traffic test FAILED — no successful HTTP response within 90s after worker-1 stopped"
+        fail "Node-failure traffic test FAILED — no successful HTTP response within 45s after worker-1 stopped"
     fi
 else
     log "Skipping node-failure test — whoami not deployed or no VIP"
@@ -1236,7 +1241,7 @@ STICKYCCA
     ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky gate apply failed (gate support may not be wired)"
     rm -f "$STICKY_TMPFILE"
 
-    sleep 5
+    sleep 3
 
     STICKY_HOSTNAMES=()
     COOKIE_JAR="/tmp/cca-sticky-jar-$$"
