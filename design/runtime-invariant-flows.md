@@ -274,6 +274,7 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 - **Slow VIP recovery (2026-10-21):** Before fast-path eviction, traffic waited for the full controller pipeline (60–90s). Fixed by adding heartbeat-based stale-node detection in the data plane.
 - **Leader election fragility (2026-10-21):** Single etcd timeout during reconciliation storm caused self-inflicted leadership loss, stalling the entire control plane. Fixed by tolerating transient renewal failures within the lease window.
 - **Data plane stall via main loop coupling (2026-10-21):** Data plane reconciler ran inside the main agent select loop alongside reconcile, telemetry, and VXLAN. A slow/hung etcd call in any of those steps froze the data plane — nftables rules went stale for minutes. Ctrl node lost fast-path eviction because the main loop blocked on etcd. Fixed by extracting data plane + VXLAN into an independent `dataPlaneLoop` goroutine.
+- **VIP address instability during zero-endpoint windows (2026-10-21):** Network controller deleted VIP facts when a service had zero endpoints (e.g. all backends on a failed node). When replacement instances started, the controller allocated a NEW VIP address — clients curling the old VIP got connection refused for the entire recovery window. Root cause: `buildStaleVIPAndDNSRemovalChanges` checked `servicesWithEndpoints` instead of `definedServiceNames`. Fixed by tying VIP lifecycle to the service definition, not endpoint count.
 
 ---
 

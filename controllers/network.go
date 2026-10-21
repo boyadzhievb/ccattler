@@ -80,11 +80,14 @@ func (networkController *NetworkController) Watch() []string {
 
 // Reconcile examines endpoint facts, desired service port configurations,
 // and existing VIP/DNS facts, then emits changes to create missing VIPs and
-// DNS records for services with endpoints, and remove stale VIPs and DNS
-// records for services that no longer have any endpoints.
+// DNS records for services with endpoints, and remove VIPs and DNS records
+// for services whose definition has been deleted. VIPs persist through
+// transient zero-endpoint windows (node failure, rolling updates) to
+// maintain address stability.
 func (networkController *NetworkController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	servicesWithEndpoints := collectServicesWithEndpointsFromFacts(facts)
 	servicePorts := extractServiceExposedPorts(facts)
+	definedServiceNames := collectDefinedServiceNamesFromFacts(facts)
 	existingVIPs, _ := collectExistingVIPAllocations(facts)
 	existingDNS := collectExistingDNSMappings(facts)
 	nextVIPFourthOctet := determineNextVIPFourthOctet(existingVIPs)
@@ -133,7 +136,7 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 		}
 	}
 
-	staleRemovalChanges := buildStaleVIPAndDNSRemovalChanges(existingVIPs, existingDNS, servicesWithEndpoints)
+	staleRemovalChanges := buildStaleVIPAndDNSRemovalChanges(existingVIPs, existingDNS, definedServiceNames)
 	changes = append(changes, staleRemovalChanges...)
 
 	return changes, nil
@@ -197,9 +200,26 @@ func determineNextVIPFourthOctet(existingVIPs map[string]string) int {
 	return nextVIPFourthOctet
 }
 
-// buildStaleVIPAndDNSRemovalChanges generates Delete changes for VIPs and DNS
-// records belonging to services that no longer have any endpoints.
-func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingDNS map[string]string, servicesWithEndpoints map[string]bool) []Change {
+// collectDefinedServiceNamesFromFacts extracts the set of service names
+// that still have a desired/service/ definition. Used to distinguish
+// "service temporarily has zero endpoints" from "service was deleted".
+func collectDefinedServiceNamesFromFacts(facts []store.Fact) map[string]bool {
+	definedServiceNames := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		serviceName := strings.SplitN(relativePath, "/", 2)[0]
+		if serviceName != "" {
+			definedServiceNames[serviceName] = true
+		}
+	}
+	return definedServiceNames
+}
+
+// buildStaleVIPAndDNSRemovalChanges generates Delete changes for VIPs and
+// DNS records belonging to services whose definition has been deleted. VIPs
+// are NOT removed for services that temporarily have zero endpoints (e.g.
+// during node failure recovery) — only when the service itself is gone.
+func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingDNS map[string]string, definedServiceNames map[string]bool) []Change {
 	var changes []Change
 
 	sortedVIPNames := make([]string, 0, len(existingVIPs))
@@ -209,7 +229,7 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 	sort.Strings(sortedVIPNames)
 
 	for _, serviceName := range sortedVIPNames {
-		if !servicesWithEndpoints[serviceName] {
+		if !definedServiceNames[serviceName] {
 			removalChanges := groupedChanges("vip-remove/"+serviceName,
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPService(serviceName)},
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPServicePort(serviceName)},
@@ -232,7 +252,7 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 	sort.Strings(sortedDNSNames)
 
 	for _, serviceName := range sortedDNSNames {
-		if !servicesWithEndpoints[serviceName] && existingVIPs[serviceName] == "" {
+		if !definedServiceNames[serviceName] && existingVIPs[serviceName] == "" {
 			changes = append(changes, Change{
 				Type: store.OpDelete,
 				Key:  types.KeyNetworkDNS(serviceName),

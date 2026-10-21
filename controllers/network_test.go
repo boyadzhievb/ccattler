@@ -171,40 +171,75 @@ func TestNetworkControllerNoVIPWithoutExposedPort(t *testing.T) {
 	}
 }
 
-// TestNetworkControllerRemovesVIPWhenEndpointsDisappear verifies that when a
-// service loses all its endpoints, the VIP and DNS facts are cleaned up.
-func TestNetworkControllerRemovesVIPWhenEndpointsDisappear(t *testing.T) {
+// TestNetworkControllerPreservesVIPWhenEndpointsDisappear verifies that when a
+// service temporarily loses all endpoints (e.g. during node failure), the VIP
+// and DNS facts are preserved as long as the service definition exists.
+func TestNetworkControllerPreservesVIPWhenEndpointsDisappear(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx := context.Background()
 
-	// Setup service with endpoints and get a VIP.
 	helperSetupServiceWithEndpoints(ctx, factStore, "web", 8080, 2)
 	networkController := NewNetworkController()
 	changes, _ := helperReconcileNetworkController(ctx, factStore, networkController)
 	helperApplyChangesToStore(ctx, factStore, changes)
 
-	// Verify VIP exists.
-	_, err := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	originalVIP, err := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
 	if err != nil {
 		t.Fatal("VIP should exist before endpoint removal")
 	}
 
-	// Remove all endpoints.
 	factStore.Delete(ctx, types.KeyEndpoint("web", "web-0", 8080))
 	factStore.Delete(ctx, types.KeyEndpoint("web", "web-1", 8080))
 
-	// Reconcile again — should produce delete changes.
+	changes, _ = helperReconcileNetworkController(ctx, factStore, networkController)
+	helperApplyChangesToStore(ctx, factStore, changes)
+
+	currentVIP, err := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	if err != nil {
+		t.Fatal("VIP should persist when endpoints disappear but service definition exists")
+	}
+	if string(currentVIP.Value) != string(originalVIP.Value) {
+		t.Errorf("VIP address changed: %s -> %s", originalVIP.Value, currentVIP.Value)
+	}
+	_, err = factStore.Get(ctx, types.KeyNetworkDNS("web"))
+	if err != nil {
+		t.Fatal("DNS should persist when endpoints disappear but service definition exists")
+	}
+}
+
+// TestNetworkControllerRemovesVIPWhenServiceDeleted verifies that VIP and DNS
+// facts are cleaned up when the service definition itself is removed, not just
+// when endpoints disappear.
+func TestNetworkControllerRemovesVIPWhenServiceDeleted(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	helperSetupServiceWithEndpoints(ctx, factStore, "web", 8080, 2)
+	networkController := NewNetworkController()
+	changes, _ := helperReconcileNetworkController(ctx, factStore, networkController)
+	helperApplyChangesToStore(ctx, factStore, changes)
+
+	_, err := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	if err != nil {
+		t.Fatal("VIP should exist before service deletion")
+	}
+
+	factStore.Delete(ctx, types.KeyEndpoint("web", "web-0", 8080))
+	factStore.Delete(ctx, types.KeyEndpoint("web", "web-1", 8080))
+	factStore.Delete(ctx, types.KeyDesiredServiceExpose("web", 8080))
+
 	changes, _ = helperReconcileNetworkController(ctx, factStore, networkController)
 	helperApplyChangesToStore(ctx, factStore, changes)
 
 	_, err = factStore.Get(ctx, types.KeyNetworkVIPService("web"))
 	if err == nil {
-		t.Error("VIP should be deleted after all endpoints removed")
+		t.Error("VIP should be deleted after service definition removed")
 	}
 	_, err = factStore.Get(ctx, types.KeyNetworkDNS("web"))
 	if err == nil {
-		t.Error("DNS should be deleted after all endpoints removed")
+		t.Error("DNS should be deleted after service definition removed")
 	}
 }
 
