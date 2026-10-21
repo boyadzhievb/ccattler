@@ -599,3 +599,29 @@ func TestEndpointMultiPortLegacyFallback(t *testing.T) {
 		t.Errorf("port 9090 endpoint (legacy fallback): got %s, want 192.168.1.10:8080", changes[1].Value)
 	}
 }
+
+func TestEndpointPreservedDuringNodeFailure(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
+		kv(types.KeyDerivedInstanceNodeFailure("aaa"), "true"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+	)
+
+	changes, err := endpointController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpointCreated := false
+	for _, change := range changes {
+		if change.Type == store.OpPut && change.Key == types.KeyEndpoint("web", "aaa", 8080) {
+			endpointCreated = true
+		}
+	}
+	if !endpointCreated {
+		t.Fatalf("endpoint must persist when node_failure is set but observed state is still running")
+	}
+}

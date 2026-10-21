@@ -180,6 +180,18 @@ func parseInstanceFieldsFromFacts(facts []store.Fact) map[string]map[string]stri
 	return instanceFields
 }
 
+// endpointEligibleState returns the instance state for endpoint eligibility.
+// Only observed runtime state and the controller_stopped marker matter.
+// node_failure is deliberately ignored: it is a scheduling signal (replace
+// this instance on a healthy node), not a runtime signal (the process exited).
+// The data plane's fast-path eviction handles traffic away from stale nodes.
+func endpointEligibleState(instanceFields map[string]string) types.InstanceState {
+	if instanceFields["controller_stopped"] == "true" {
+		return types.InstanceStopped
+	}
+	return types.InstanceState(instanceFields["state"])
+}
+
 // effectiveInstanceState merges observed state with derived markers.
 // controller_stopped takes priority: once replaced, the instance is stopped
 // even if a node_failure marker also exists.

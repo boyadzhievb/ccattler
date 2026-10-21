@@ -118,7 +118,7 @@ func buildDesiredEndpoints(
 	desiredEndpoints := make(map[string]string)
 	for _, instanceID := range sortedInstanceIDs {
 		fields := instanceFields[instanceID]
-		if effectiveInstanceState(fields) != types.InstanceRunning {
+		if endpointEligibleState(fields) != types.InstanceRunning {
 			continue
 		}
 		instanceIP := fields["ip"]
