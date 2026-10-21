@@ -73,7 +73,7 @@ func TestGenerateVIPRulesetProducesValidRuleset(t *testing.T) {
 	if !strings.Contains(ruleset, "map vip_dispatch") {
 		t.Error("ruleset should contain verdict map")
 	}
-	if !strings.Contains(ruleset, "chain svc_svc-0000") {
+	if !strings.Contains(ruleset, "chain svc_svc_0000") {
 		t.Error("ruleset should contain per-service chains")
 	}
 	if !strings.Contains(ruleset, "numgen inc mod 3") {

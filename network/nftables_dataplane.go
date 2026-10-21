@@ -193,7 +193,7 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 			continue
 		}
 
-		chainName := nftablesServiceChainPrefix + sanitizeChainName(serviceConfig.ServiceName)
+		chainName := nftablesServiceChainPrefix + sanitizeNftablesChainName(serviceConfig.ServiceName)
 		desiredServiceChains[chainName] = true
 
 		protocol := serviceConfig.EffectiveProtocol()
@@ -287,12 +287,12 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 
 		switch routeConfig.StickyMethod {
 		case "source-ip":
-			chainName := nftablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
+			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			writeSourceIPStickyChain(&rulesetBuilder, routeConfig, chainName)
 
 		case "cookie":
-			chainName := nftablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
+			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			proxyPort := nftablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)
 			if proxyPort > 0 {
@@ -334,6 +334,24 @@ func writeCookieProxyChain(rulesetBuilder *strings.Builder, chainName string, pr
 	fmt.Fprintf(rulesetBuilder, "    chain %s {\n", chainName)
 	fmt.Fprintf(rulesetBuilder, "        redirect to :%d\n", proxyPort)
 	rulesetBuilder.WriteString("    }\n\n")
+}
+
+// sanitizeNftablesChainName replaces characters that are invalid in nftables
+// chain names with underscores. Unlike iptables, nftables treats hyphens as
+// the subtraction operator, so only letters, digits, and underscores are safe.
+func sanitizeNftablesChainName(serviceName string) string {
+	var sanitized strings.Builder
+	for _, character := range serviceName {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '_' {
+			sanitized.WriteRune(character)
+		} else {
+			sanitized.WriteRune('_')
+		}
+	}
+	return sanitized.String()
 }
 
 // ensureDummyInterface creates the cca0 dummy interface and brings it up.

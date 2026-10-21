@@ -93,7 +93,7 @@ func compareShadowServices(serviceConfigs []ServiceVIPConfig, nftablesRuleset st
 			continue
 		}
 		expectedChain := fmt.Sprintf("chain %s%s",
-			nftablesServiceChainPrefix, sanitizeChainName(serviceConfig.ServiceName))
+			nftablesServiceChainPrefix, sanitizeNftablesChainName(serviceConfig.ServiceName))
 		if !strings.Contains(nftablesRuleset, expectedChain) {
 			divergences = append(divergences,
 				fmt.Sprintf("service %s: missing nftables chain %s", serviceConfig.ServiceName, expectedChain))

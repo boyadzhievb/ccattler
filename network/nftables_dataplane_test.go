@@ -213,14 +213,14 @@ func TestNftablesBuildRouteRulesetSourceIPSticky(t *testing.T) {
 	desiredRouteChains := make(map[string]bool)
 	ruleset := nftablesDataPlane.buildRouteRuleset(routeConfigs, desiredRouteChains)
 
-	if !strings.Contains(ruleset, "chain rt_web-public") {
-		t.Error("should contain route chain")
+	if !strings.Contains(ruleset, "chain rt_web_public") {
+		t.Error("should contain route chain with hyphen replaced by underscore")
 	}
 	if !strings.Contains(ruleset, "jhash ip saddr mod 2") {
 		t.Error("source-ip sticky should use jhash on source address")
 	}
-	if !desiredRouteChains["rt_web-public"] {
-		t.Error("desiredRouteChains should contain rt_web-public")
+	if !desiredRouteChains["rt_web_public"] {
+		t.Error("desiredRouteChains should contain rt_web_public")
 	}
 }
 
@@ -300,5 +300,30 @@ func TestNftablesEffectiveProtocolExplicit(t *testing.T) {
 	serviceConfig := ServiceVIPConfig{ServiceName: "test", Protocol: "udp"}
 	if serviceConfig.EffectiveProtocol() != "udp" {
 		t.Errorf("explicit udp should remain udp, got %q", serviceConfig.EffectiveProtocol())
+	}
+}
+
+func TestSanitizeNftablesChainNameReplacesHyphens(t *testing.T) {
+	testCases := []struct {
+		input    string
+		expected string
+	}{
+		{"web", "web"},
+		{"my-service", "my_service"},
+		{"whoami-sticky", "whoami_sticky"},
+		{"api_v2", "api_v2"},
+		{"frontend/web", "frontend_web"},
+		{"service.name", "service_name"},
+		{"has spaces", "has_spaces"},
+		{"a-b-c-d", "a_b_c_d"},
+		{"UPPERCASE", "UPPERCASE"},
+	}
+
+	for _, testCase := range testCases {
+		result := sanitizeNftablesChainName(testCase.input)
+		if result != testCase.expected {
+			t.Errorf("sanitizeNftablesChainName(%q) = %q, want %q",
+				testCase.input, result, testCase.expected)
+		}
 	}
 }
