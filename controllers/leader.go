@@ -28,6 +28,8 @@ type LeaderElection struct {
 	renewInterval time.Duration
 	// isLeader tracks whether this node currently holds the lease.
 	isLeader bool
+	// lastSuccessfulRenewal tracks when the lease was last successfully renewed.
+	lastSuccessfulRenewal time.Time
 	// onAcquired is called when this node becomes the leader.
 	onAcquired func()
 	// onLost is called when this node loses leadership.
@@ -162,6 +164,7 @@ func (election *LeaderElection) tryAcquireOrRenew(ctx context.Context) {
 		}
 		if ok {
 			election.isLeader = true
+			election.lastSuccessfulRenewal = time.Now()
 			logging.Default().Info("acquired leadership (expired lease)", "node", election.nodeID)
 			if election.onAcquired != nil {
 				election.onAcquired()
@@ -186,6 +189,7 @@ func (election *LeaderElection) acquireLease(ctx context.Context, nowStr string)
 	}
 	if ok {
 		election.isLeader = true
+		election.lastSuccessfulRenewal = time.Now()
 		logging.Default().Info("acquired leadership (new lease)", "node", election.nodeID)
 		if election.onAcquired != nil {
 			election.onAcquired()
@@ -194,16 +198,19 @@ func (election *LeaderElection) acquireLease(ctx context.Context, nowStr string)
 }
 
 // renewLeaseWithCAS renews the leader lease using compare-and-swap to detect
-// if another node has taken over. If the holder key no longer matches this
-// node, leadership is relinquished.
+// if another node has taken over. Transient etcd errors (timeouts, unavailable)
+// do not immediately relinquish leadership — the node retains leadership as
+// long as the time since the last successful renewal is within the lease
+// duration. Only a confirmed holder change or exceeding the lease window
+// triggers leadership loss.
 func (election *LeaderElection) renewLeaseWithCAS(ctx context.Context, nowStr string) {
 	holderFact, getErr := election.factStore.Get(ctx, leaderLeaseHolderKey)
-	if getErr != nil || string(holderFact.Value) != election.nodeID {
-		election.isLeader = false
-		logging.Default().Warn("lost leadership during renewal (holder changed)", "node", election.nodeID)
-		if election.onLost != nil {
-			election.onLost()
-		}
+	if getErr != nil {
+		election.handleTransientRenewalFailure("holder read failed")
+		return
+	}
+	if string(holderFact.Value) != election.nodeID {
+		election.relinquishLeadership("holder changed")
 		return
 	}
 	renewed, txnErr := election.factStore.Transaction(ctx,
@@ -211,12 +218,38 @@ func (election *LeaderElection) renewLeaseWithCAS(ctx context.Context, nowStr st
 		[]store.Op{{Type: store.OpPut, Key: leaderLeaseKey, Value: []byte(nowStr)}},
 		nil,
 	)
-	if txnErr != nil || !renewed {
-		election.isLeader = false
-		logging.Default().Warn("lost leadership during renewal (CAS failed)", "node", election.nodeID)
-		if election.onLost != nil {
-			election.onLost()
-		}
+	if txnErr != nil {
+		election.handleTransientRenewalFailure("CAS transaction error")
+		return
+	}
+	if !renewed {
+		election.relinquishLeadership("CAS failed")
+		return
+	}
+	election.lastSuccessfulRenewal = time.Now()
+}
+
+// handleTransientRenewalFailure checks whether the cumulative time since the
+// last successful renewal exceeds the lease duration. If so, leadership is
+// relinquished. Otherwise the failure is logged and leadership is retained.
+func (election *LeaderElection) handleTransientRenewalFailure(reason string) {
+	sinceLast := time.Since(election.lastSuccessfulRenewal)
+	if sinceLast > election.leaseDuration {
+		election.relinquishLeadership(fmt.Sprintf("%s (exceeded lease duration: %s since last renewal)", reason, sinceLast.Round(time.Second)))
+		return
+	}
+	logging.Default().Warn("transient renewal failure, retaining leadership",
+		"node", election.nodeID, "reason", reason,
+		"since_last_renewal", sinceLast.Round(time.Second).String(),
+		"lease_duration", election.leaseDuration.String())
+}
+
+// relinquishLeadership gives up the leader role and notifies the callback.
+func (election *LeaderElection) relinquishLeadership(reason string) {
+	election.isLeader = false
+	logging.Default().Warn("lost leadership during renewal", "node", election.nodeID, "reason", reason)
+	if election.onLost != nil {
+		election.onLost()
 	}
 }
 
