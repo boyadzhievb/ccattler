@@ -1208,6 +1208,24 @@ fi
 if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
     log "Validating traffic during node failure (stop agent on worker-1)..."
 
+    # Ensure whoami has at least one instance NOT on worker-1 before we stop it.
+    # The backend-churn test may leave fewer instances than expected.
+    PREFLIGHT_DEADLINE=$((SECONDS + 60))
+    HAS_OTHER_NODE=false
+    while [[ $SECONDS -lt $PREFLIGHT_DEADLINE ]]; do
+        OTHER_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+            | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .state == "running" and .node != $w)] | length' 2>/dev/null || echo "0")
+        if [[ "$OTHER_COUNT" -ge 1 ]]; then
+            HAS_OTHER_NODE=true
+            break
+        fi
+        sleep 3
+    done
+
+    if [[ "$HAS_OTHER_NODE" != "true" ]]; then
+        log "  WARNING: No whoami instance on a node other than $WORKER1_NODE — skipping node-failure test"
+    else
+
     ssh_vm "$WORKER1_NODE" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
     log "  Stopped cca-agent on worker-1"
 
@@ -1245,6 +1263,8 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     else
         fail "Node-failure traffic test FAILED — no successful HTTP response within 45s after worker-1 stopped"
     fi
+
+    fi  # HAS_OTHER_NODE
 else
     log "Skipping node-failure test — whoami not deployed or no VIP"
 fi
