@@ -6,9 +6,9 @@
 #
 # Exit codes: 0 = pass, 1 = fail
 #
-# Two environments (different VM names/IPs so they can coexist):
-#   --env test   (default): 2 VMs on 192.168.122.x, ephemeral (destroyed after)
-#   --env deploy:           3 VMs on 192.168.124.x, long-lived (--no-destroy implied)
+# Two environments:
+#   --env test   (default): 2 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
+#   --env deploy:           3 bare-metal nodes on 100.215/30/31, long-lived (no Vagrant)
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload airflow,zabbix   deploy specific workloads (comma-separated)
@@ -73,6 +73,7 @@ LIST_WORKLOADS=false
 CLEAR_WORKLOADS_ONLY=false
 KEEP_DATA=false
 UPGRADE_TEST=false
+BAREMETAL=false
 
 for arg in "$@"; do
     case "$arg" in
@@ -171,27 +172,36 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 
 # Environment-specific configuration
+#   test:   ephemeral libvirt VMs on testbed-100.43 (Vagrant lifecycle)
+#   deploy: bare-metal 3-node cluster on 100.215/30/31 (always running, no Vagrant)
+declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)
         VAGRANTFILE="test-Vagrantfile"
         INVENTORY="test-inventory.ini"
         PLAYBOOK="test-deploy.yml"
-        VM_PREFIX="cca-test"
         CTRL_IP="192.168.122.10"
         WORKER_IPS=("192.168.122.20")
-        VM_NAMES=("${VM_PREFIX}-ctrl" "${VM_PREFIX}-worker-1")
+        CTRL_NODE="cca-test-ctrl"
+        WORKER1_NODE="cca-test-worker-1"
+        VM_NAMES=("$CTRL_NODE" "$WORKER1_NODE")
+        NODE_IPS=(["cca-test-ctrl"]="192.168.122.10" ["cca-test-worker-1"]="192.168.122.20")
         EXPECTED_NODES=2
+        SSH_USER="vagrant"
         ;;
     deploy)
-        VAGRANTFILE="deploy-Vagrantfile"
-        INVENTORY="deploy-inventory.ini"
-        PLAYBOOK="deploy-deploy.yml"
-        VM_PREFIX="cca-deploy"
-        CTRL_IP="192.168.124.10"
-        WORKER_IPS=("192.168.124.20" "192.168.124.30")
-        VM_NAMES=("${VM_PREFIX}-ctrl" "${VM_PREFIX}-worker-1" "${VM_PREFIX}-worker-2")
+        INVENTORY="baremetal-inventory.ini"
+        PLAYBOOK="baremetal-deploy.yml"
+        CTRL_IP="192.168.100.215"
+        WORKER_IPS=("192.168.100.30" "192.168.100.31")
+        CTRL_NODE="node-1"
+        WORKER1_NODE="node-2"
+        VM_NAMES=("node-1" "node-2" "node-3")
+        NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
         EXPECTED_NODES=3
-        DESTROY_ON_EXIT=false  # deploy cluster is long-lived
+        SSH_USER="bozhan"
+        BAREMETAL=true
+        DESTROY_ON_EXIT=none  # bare-metal, no VM lifecycle
         ;;
     *)
         echo "Unknown --env: $CLUSTER_ENV (must be 'test' or 'deploy')" >&2
@@ -203,14 +213,12 @@ ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 
-# Persisted Vagrant state directory — survives git checkout and workspace cleanup.
-VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
-
-# Each environment gets its own .vagrant directory so test and deploy state don't
-# collide. VAGRANT_DOTFILE_PATH separates the machine registrations (SSH keys,
-# libvirt domain IDs) per environment.
-VAGRANT_DOTFILE="$ANSIBLE_DIR/.vagrant-${CLUSTER_ENV}"
-export VAGRANT_DOTFILE_PATH="$VAGRANT_DOTFILE"
+# Vagrant state (VM environments only — bare-metal skips all Vagrant lifecycle).
+if [[ "$BAREMETAL" != "true" ]]; then
+    VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
+    VAGRANT_DOTFILE="$ANSIBLE_DIR/.vagrant-${CLUSTER_ENV}"
+    export VAGRANT_DOTFILE_PATH="$VAGRANT_DOTFILE"
+fi
 
 # Maximum seconds to wait for convergence checks.
 CONVERGE_TIMEOUT=120
@@ -233,7 +241,9 @@ cleanup() {
     if [[ $exit_code -ne 0 ]]; then
         collect_vm_logs || true
     fi
-    if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
+    if [[ "$BAREMETAL" == "true" ]]; then
+        log "Bare-metal cluster — no VM lifecycle to manage"
+    elif [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
         log "Destroying VMs and wiping persisted state..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant destroy -f 2>/dev/null || true
@@ -278,15 +288,13 @@ wait_for_port() {
 
 ssh_vm() {
     local vm_name="$1"; shift
-    local key_path="$VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
-    local ip
-    case "$vm_name" in
-        *-ctrl)     ip="$CTRL_IP" ;;
-        *-worker-1) ip="${WORKER_IPS[0]}" ;;
-        *-worker-2) ip="${WORKER_IPS[1]:-}" ;;
-        *) fail "Unknown VM: $vm_name" ;;
-    esac
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$key_path" "vagrant@$ip" "$@"
+    local ip="${NODE_IPS[$vm_name]}"
+    [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
+    local ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    if [[ "$BAREMETAL" != "true" ]]; then
+        ssh_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
+    fi
+    ssh $ssh_args "${SSH_USER}@${ip}" "$@"
 }
 
 count_containers() {
@@ -294,19 +302,16 @@ count_containers() {
     ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
-# Copy a local file to a VM via scp.
+# Copy a local file to a node via scp.
 scp_to_vm() {
     local vm_name="$1" local_path="$2" remote_path="$3"
-    local key_path="$VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
-    local ip
-    case "$vm_name" in
-        *-ctrl)     ip="$CTRL_IP" ;;
-        *-worker-1) ip="${WORKER_IPS[0]}" ;;
-        *-worker-2) ip="${WORKER_IPS[1]:-}" ;;
-        *) fail "Unknown VM: $vm_name" ;;
-    esac
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$key_path" "$local_path" "vagrant@${ip}:${remote_path}"
+    local ip="${NODE_IPS[$vm_name]}"
+    [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
+    local scp_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+    if [[ "$BAREMETAL" != "true" ]]; then
+        scp_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
+    fi
+    scp $scp_args "$local_path" "${SSH_USER}@${ip}:${remote_path}"
 }
 
 # ---- Clear workloads mode ----
@@ -315,14 +320,14 @@ scp_to_vm() {
 # cleanup through their normal reconciliation loop. Falls back to nerdctl rm if
 # containers don't drain within the timeout.
 if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
-    # Restore Vagrant state if needed.
-    if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+    # Restore Vagrant state if needed (VM environments only).
+    if [[ "$BAREMETAL" != "true" ]] && [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
         cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
     fi
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
+    ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
+    ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
+    ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/placement/ >/dev/null 2>&1 || true"
     log "Desired state cleared — agents will reconcile and stop containers..."
     deadline=$((SECONDS + 60))
     while [[ $SECONDS -lt $deadline ]]; do
@@ -356,59 +361,58 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
 fi
 
 # ---- Prerequisites ----
-command -v vagrant >/dev/null 2>&1 || fail "vagrant not found in PATH"
 command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found in PATH"
 
-if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
-    log "vagrant-libvirt plugin not found, installing..."
-    vagrant plugin install vagrant-libvirt || fail "failed to install vagrant-libvirt plugin"
-    log "vagrant-libvirt installed"
-fi
+if [[ "$BAREMETAL" != "true" ]]; then
+    command -v vagrant >/dev/null 2>&1 || fail "vagrant not found in PATH"
 
-# ---- Clean start: wipe everything and start fresh ----
-if [[ "$CLEAN_START" == "true" ]]; then
-    log "Clean start requested — destroying VMs and wiping state..."
-    rm -rf "$VAGRANT_STATE_DIR"
-    rm -rf "$VAGRANT_DOTFILE"
-    for vm in "${VM_NAMES[@]}"; do
-        stale_domain="ansible_${vm}"
-        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-            sudo virsh destroy "$stale_domain" 2>/dev/null || true
-            sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
-        fi
-    done
-fi
-
-# ---- Restore persisted Vagrant state ----
-# CI checkout wipes .vagrant-<env>/ — restore from the persisted directory if available.
-if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
-    log "Restoring Vagrant state from $VAGRANT_STATE_DIR"
-    cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
-fi
-
-# ---- Handle orphaned libvirt domains ----
-# If libvirt domains exist but Vagrant state is missing (persisted state was also
-# lost), clean them up so vagrant up can recreate from scratch.
-for vm in "${VM_NAMES[@]}"; do
-    stale_domain="ansible_${vm}"
-    vagrant_state="$VAGRANT_DOTFILE/machines/$vm/libvirt/id"
-    if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1 && [[ ! -f "$vagrant_state" ]]; then
-        log "Cleaning orphaned libvirt domain: $stale_domain (no Vagrant state)"
-        sudo virsh destroy "$stale_domain" 2>/dev/null || true
-        sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+    if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
+        log "vagrant-libvirt plugin not found, installing..."
+        vagrant plugin install vagrant-libvirt || fail "failed to install vagrant-libvirt plugin"
+        log "vagrant-libvirt installed"
     fi
-done
-# With --destroy, also clean domains that Vagrant knows about.
-if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
+
+    # ---- Clean start: wipe everything and start fresh ----
+    if [[ "$CLEAN_START" == "true" ]]; then
+        log "Clean start requested — destroying VMs and wiping state..."
+        rm -rf "$VAGRANT_STATE_DIR"
+        rm -rf "$VAGRANT_DOTFILE"
+        for vm in "${VM_NAMES[@]}"; do
+            stale_domain="ansible_${vm}"
+            if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
+                sudo virsh destroy "$stale_domain" 2>/dev/null || true
+                sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+            fi
+        done
+    fi
+
+    # ---- Restore persisted Vagrant state ----
+    if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
+        log "Restoring Vagrant state from $VAGRANT_STATE_DIR"
+        cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
+    fi
+
+    # ---- Handle orphaned libvirt domains ----
     for vm in "${VM_NAMES[@]}"; do
         stale_domain="ansible_${vm}"
-        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-            log "Removing libvirt domain: $stale_domain (--destroy)"
+        vagrant_state="$VAGRANT_DOTFILE/machines/$vm/libvirt/id"
+        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1 && [[ ! -f "$vagrant_state" ]]; then
+            log "Cleaning orphaned libvirt domain: $stale_domain (no Vagrant state)"
             sudo virsh destroy "$stale_domain" 2>/dev/null || true
             sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
         fi
     done
-    rm -rf "$VAGRANT_DOTFILE"
+    if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
+        for vm in "${VM_NAMES[@]}"; do
+            stale_domain="ansible_${vm}"
+            if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
+                log "Removing libvirt domain: $stale_domain (--destroy)"
+                sudo virsh destroy "$stale_domain" 2>/dev/null || true
+                sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
+            fi
+        done
+        rm -rf "$VAGRANT_DOTFILE"
+    fi
 fi
 
 # ---- Step 0: Obtain binary ----
@@ -444,11 +448,13 @@ else
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 fi
 
-# ---- Step 1: Start VMs (reuse existing or provision new) ----
+# ---- Step 1: Start VMs / verify bare-metal reachability ----
 cd "$ANSIBLE_DIR"
-VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision --no-parallel
+if [[ "$BAREMETAL" != "true" ]]; then
+    VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision --no-parallel
+fi
 
-log "Waiting for SSH on all VMs..."
+log "Waiting for SSH on all nodes..."
 for ip in "${ALL_IPS[@]}"; do
     wait_for_port "$ip" 22 180 "SSH on $ip"
 done
@@ -457,20 +463,20 @@ done
 # If so, clean cluster state so Ansible creates: guards trigger fresh runs of
 # cca init + cca join. This handles both e2e re-runs and deploy env reuse.
 ALREADY_PROVISIONED=false
-if ssh_vm "${VM_PREFIX}-ctrl" "test -f /usr/local/bin/cca" 2>/dev/null; then
+if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     ALREADY_PROVISIONED=true
     log "VMs already provisioned — cleaning cluster state for fresh deployment..."
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+    ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server 2>/dev/null || true"
     for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "sudo rm -rf /etc/ccattler/pki /etc/ccattler/secret-master.key /etc/ccattler/endpoints" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
+    ssh_vm "$CTRL_NODE" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
+    ssh_vm "$CTRL_NODE" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
@@ -497,28 +503,32 @@ fi
 # idempotent re-runs — cleaning the guard files above triggers fresh execution.
 log "Running Ansible deployment..."
 python3 -c "import fcntl,os;[fcntl.fcntl(fd,fcntl.F_SETFL,fcntl.fcntl(fd,fcntl.F_GETFL)&~os.O_NONBLOCK) for fd in range(3)]" 2>/dev/null || true
-ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup
+ANSIBLE_EXTRA_ARGS=""
+if [[ "$BAREMETAL" == "true" ]]; then
+    ANSIBLE_EXTRA_ARGS="-e ansible_ssh_private_key_file=~/.ssh/id_rsa"
+fi
+ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup $ANSIBLE_EXTRA_ARGS
 
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health via cca server API..."
 deadline=$((SECONDS + 30))
 while [[ $SECONDS -lt $deadline ]]; do
-    if ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null 2>&1"; then
+    if ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null 2>&1"; then
         break
     fi
     sleep 2
 done
-ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null" || fail "cca server unreachable (etcd may be unhealthy)"
+ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "cca server unreachable (etcd may be unhealthy)"
 
 log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
-if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
+if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
     fail "etcd accepted unauthenticated connection — mTLS not enforced (T1 CRITICAL)"
 fi
 log "etcd correctly rejects connections without client certificate"
 
 log "Verifying etcd rejects plain HTTP access..."
 ETCD_HTTP_ENDPOINT="http://${CTRL_IP}:2379"
-if ssh_vm "${VM_PREFIX}-ctrl" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
+if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
     fail "etcd accepted plain HTTP connection — TLS not enforced (T1 CRITICAL)"
 fi
 log "etcd correctly rejects plain HTTP — all access requires mTLS"
@@ -527,9 +537,9 @@ log "Fetching cluster TLS certificates for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
 CLIENT_CERT_LOCAL="/tmp/cca-e2e-client.pem"
 CLIENT_KEY_LOCAL="/tmp/cca-e2e-client-key.pem"
-ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT_LOCAL"
-ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT_LOCAL"
-ssh_vm "${VM_PREFIX}-ctrl" "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT_LOCAL"
+ssh_vm "$CTRL_NODE" "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY_LOCAL"
 CCA_API="https://${CTRL_IP}:9770"
 CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LOCAL"
 
@@ -673,16 +683,8 @@ load_images_on_vm() {
             ssh_vm "$vm" "sudo nerdctl pull $image" 2>/dev/null || true
             continue
         fi
-        local vm_ip
-        case "$vm" in
-            *-ctrl)     vm_ip="$CTRL_IP" ;;
-            *-worker-1) vm_ip="${WORKER_IPS[0]}" ;;
-            *-worker-2) vm_ip="${WORKER_IPS[1]:-}" ;;
-        esac
-        local key_path="$VAGRANT_DOTFILE/machines/$vm/libvirt/private_key"
         log "  Loading $image on $vm..."
-        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-            -i "$key_path" "$tar_path" "vagrant@${vm_ip}:/tmp/${safe_name}.tar"
+        scp_to_vm "$vm" "$tar_path" "/tmp/${safe_name}.tar"
         ssh_vm "$vm" "sudo nerdctl load -i /tmp/${safe_name}.tar && rm -f /tmp/${safe_name}.tar" 2>/dev/null
     done
 }
@@ -718,17 +720,14 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         for secret_entry in "${WORKLOAD_SECRETS[@]}"; do
             secret_name="${secret_entry%%=*}"
             secret_value="${secret_entry#*=}"
-            ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca secret set $secret_name $secret_value"
+            ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca secret set $secret_name $secret_value"
         done
     fi
 
     # Copy and apply the .cca file.
     log "Applying $workload_name workload..."
-    scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$VAGRANT_DOTFILE/machines/${VM_PREFIX}-ctrl/libvirt/private_key" \
-        "$WORKLOADS_DIR/${workload_name}.cca" "vagrant@${CTRL_IP}:/tmp/${workload_name}.cca"
-
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca apply /tmp/${workload_name}.cca"
+    scp_to_vm "$CTRL_NODE" "$WORKLOADS_DIR/${workload_name}.cca" "/tmp/${workload_name}.cca"
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca apply /tmp/${workload_name}.cca"
 
     # Wait for containers to converge.
     CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS + WORKLOAD_EXPECTED_CONTAINERS))
@@ -770,6 +769,8 @@ if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     sudo chmod +x /usr/local/bin/caddy-sync.sh
 
     sudo cp "$REPO_DIR/deploy/caddy-sync.service" /etc/systemd/system/caddy-sync.service
+    sudo mkdir -p /etc/systemd/system/caddy-sync.service.d
+    printf "[Service]\nEnvironment=CCA_API=https://%s:9770\n" "$CTRL_IP" | sudo tee /etc/systemd/system/caddy-sync.service.d/api-endpoint.conf > /dev/null
     sudo mkdir -p /etc/ccattler/pki /etc/caddy
     if [[ ! -f /etc/caddy/Caddyfile ]]; then
         echo '{ }' | sudo tee /etc/caddy/Caddyfile > /dev/null
@@ -798,18 +799,15 @@ fi
 # via SSH on the worker node.
 
 log "Testing 'cca agent debug' on worker node (local runtime inspection)..."
-AGENT_DEBUG_OUTPUT=$(ssh_vm "${VM_PREFIX}-worker-1" "sudo /usr/local/bin/cca agent debug 2>&1") || fail "cca agent debug failed"
+AGENT_DEBUG_OUTPUT=$(ssh_vm "$WORKER1_NODE" "sudo /usr/local/bin/cca agent debug 2>&1") || fail "cca agent debug failed"
 echo "$AGENT_DEBUG_OUTPUT" | grep -q "CONTAINERS" || fail "agent debug missing CONTAINERS section"
 echo "$AGENT_DEBUG_OUTPUT" | grep -q "RESOURCE USAGE" || fail "agent debug missing RESOURCE USAGE section"
 echo "$AGENT_DEBUG_OUTPUT" | grep -q "IMAGES" || fail "agent debug missing IMAGES section"
 log "'cca agent debug' OK — shows containers, resource usage, and images"
 
 log "Discovering agent debug addresses from etcd..."
-# The agent publishes its debug address under its node_id, not the VM name.
-case "$CLUSTER_ENV" in
-    test)   WORKER1_NODE_ID="cca-test-worker-1" ;;
-    deploy) WORKER1_NODE_ID="cca-deploy-worker-1" ;;
-esac
+# The agent publishes its debug address under its node_id.
+WORKER1_NODE_ID="$WORKER1_NODE"
 WORKER1_DEBUG_ADDR=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=observed/node/${WORKER1_NODE_ID}/debug_address" 2>/dev/null | jq -r '.[0].value // empty' | tr -d '\r\n')
 if [[ -z "$WORKER1_DEBUG_ADDR" ]]; then
     deadline=$((SECONDS + 30))
@@ -894,13 +892,13 @@ DATAPLANE_DEADLINE=$((SECONDS + 30))
 DNAT_RULE_COUNT=0
 DATAPLANE_TYPE=""
 while [[ $SECONDS -lt $DATAPLANE_DEADLINE ]]; do
-    NFT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto'" || echo "0")
+    NFT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto'" || echo "0")
     if [[ "$NFT_COUNT" -gt 0 ]]; then
         DNAT_RULE_COUNT=$NFT_COUNT
         DATAPLANE_TYPE="nftables"
         break
     fi
-    IPT_COUNT=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
+    IPT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
     if [[ "$IPT_COUNT" -gt 0 ]]; then
         DNAT_RULE_COUNT=$IPT_COUNT
         DATAPLANE_TYPE="iptables"
@@ -912,17 +910,17 @@ log "  Data plane rules on ctrl: $DNAT_RULE_COUNT ($DATAPLANE_TYPE)"
 
 if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null | head -30" || true
+        ssh_vm "$CTRL_NODE" "sudo nft list table ip cca 2>/dev/null | head -30" || true
     else
-        ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" || true
+        ssh_vm "$CTRL_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" || true
     fi
     log "VIP data plane OK — DNAT rules programmed ($DATAPLANE_TYPE)"
 else
     log "WARNING: No data plane rules found — cross-node VIP routing may not work"
     log "  Dumping diagnostics..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list tables 2>/dev/null" || true
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list table ip cca 2>/dev/null" || true
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
+    ssh_vm "$CTRL_NODE" "sudo nft list tables 2>/dev/null" || true
+    ssh_vm "$CTRL_NODE" "sudo nft list table ip cca 2>/dev/null" || true
+    ssh_vm "$CTRL_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
     log "  Networking from API:"
     curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true
     log "  Nodes from API:"
@@ -1095,7 +1093,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" ]]; then
     WHOAMI_PORT=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .port' 2>/dev/null || echo "")
 
     if [[ -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
-        CROSS_NODE_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 10 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        CROSS_NODE_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 10 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
         if echo "$CROSS_NODE_BODY" | grep -qi "hostname"; then
             CROSS_NODE_HOST=$(echo "$CROSS_NODE_BODY" | grep -i "hostname" | head -1)
             log "  Cross-node response: $CROSS_NODE_HOST"
@@ -1130,7 +1128,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     CHURN_SUCCESS=0
     CHURN_FAIL=0
     while [[ $SECONDS -lt $CHURN_DEADLINE ]]; do
-        HTTP_CODE=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        HTTP_CODE=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
         if [[ "$HTTP_CODE" =~ ^[23] ]]; then
             CHURN_SUCCESS=$((CHURN_SUCCESS + 1))
         else
@@ -1178,15 +1176,15 @@ fi
 if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
     log "Validating traffic during node failure (stop agent on worker-1)..."
 
-    ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
+    ssh_vm "$WORKER1_NODE" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
     log "  Stopped cca-agent on worker-1"
 
     FAILOVER_DEADLINE=$((SECONDS + 45))
     FAILOVER_SUCCESS=false
     while [[ $SECONDS -lt $FAILOVER_DEADLINE ]]; do
-        HTTP_CODE=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        HTTP_CODE=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
         if [[ "$HTTP_CODE" =~ ^[23] ]]; then
-            FAILOVER_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+            FAILOVER_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
             if echo "$FAILOVER_BODY" | grep -qi "hostname"; then
                 log "  Failover response: $(echo "$FAILOVER_BODY" | grep -i hostname | head -1)"
                 FAILOVER_SUCCESS=true
@@ -1196,7 +1194,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
         sleep 5
     done
 
-    ssh_vm "${VM_PREFIX}-worker-1" "sudo systemctl start cca-agent" || fail "Failed to restart agent on worker-1"
+    ssh_vm "$WORKER1_NODE" "sudo systemctl start cca-agent" || fail "Failed to restart agent on worker-1"
     log "  Restarted cca-agent on worker-1"
 
     RECOVER_DEADLINE=$((SECONDS + 30))
@@ -1237,8 +1235,8 @@ STICKYCCA
 )
     STICKY_TMPFILE="/tmp/whoami-sticky-$$.cca"
     echo "$STICKY_CCA" > "$STICKY_TMPFILE"
-    scp_to_vm "${VM_PREFIX}-ctrl" "$STICKY_TMPFILE" "/tmp/whoami-sticky.cca"
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky gate apply failed (gate support may not be wired)"
+    scp_to_vm "$CTRL_NODE" "$STICKY_TMPFILE" "/tmp/whoami-sticky.cca"
+    ssh_vm "$CTRL_NODE" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky gate apply failed (gate support may not be wired)"
     rm -f "$STICKY_TMPFILE"
 
     sleep 3
@@ -1247,14 +1245,14 @@ STICKYCCA
     COOKIE_JAR="/tmp/cca-sticky-jar-$$"
     STICKY_TESTED=0
     for attempt in $(seq 1 10); do
-        STICKY_BODY=$(ssh_vm "${VM_PREFIX}-ctrl" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        STICKY_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
         STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ')
         if [[ -n "$STICKY_HOST" ]]; then
             STICKY_HOSTNAMES+=("$STICKY_HOST")
             STICKY_TESTED=$((STICKY_TESTED + 1))
         fi
     done
-    ssh_vm "${VM_PREFIX}-ctrl" "rm -f $COOKIE_JAR" 2>/dev/null || true
+    ssh_vm "$CTRL_NODE" "rm -f $COOKIE_JAR" 2>/dev/null || true
 
     if [[ "$STICKY_TESTED" -ge 5 ]]; then
         UNIQUE_HOSTS=$(printf '%s\n' "${STICKY_HOSTNAMES[@]}" | sort -u | wc -l | tr -d ' ')
@@ -1271,7 +1269,7 @@ STICKYCCA
         log "Sticky session validation SKIPPED — insufficient responses"
     fi
 
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo cca apply /tmp/whoami-sticky.cca 2>/dev/null" || true
+    ssh_vm "$CTRL_NODE" "sudo cca apply /tmp/whoami-sticky.cca 2>/dev/null" || true
 else
     log "Skipping sticky session test — whoami not deployed or no VIP"
 fi
@@ -1285,7 +1283,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" ]]; then
 
     WHOAMI_DNS=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .dns' 2>/dev/null || echo "")
     if [[ -n "$WHOAMI_DNS" ]]; then
-        DNS_BEFORE=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        DNS_BEFORE=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
         log "  DNS before scale: $WHOAMI_DNS -> $DNS_BEFORE"
 
         curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
@@ -1293,7 +1291,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" ]]; then
             -d '{"service":"whoami","instances":1}' > /dev/null || log "WARNING: scale to 1 failed"
         sleep 3
 
-        DNS_DURING=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        DNS_DURING=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
         log "  DNS during scale-down: $WHOAMI_DNS -> $DNS_DURING"
 
         curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
@@ -1301,7 +1299,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" ]]; then
             -d '{"service":"whoami","instances":2}' > /dev/null || log "WARNING: scale to 2 failed"
         sleep 3
 
-        DNS_AFTER=$(ssh_vm "${VM_PREFIX}-ctrl" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        DNS_AFTER=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
         log "  DNS after restore: $WHOAMI_DNS -> $DNS_AFTER"
 
         DNS_CHURN_PASS=true
@@ -1384,7 +1382,7 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
     fi
 
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        VERDICT_MAP=$(ssh_vm "${VM_PREFIX}-ctrl" "sudo nft list map ip cca vip_dispatch 2>/dev/null" || echo "")
+        VERDICT_MAP=$(ssh_vm "$CTRL_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null" || echo "")
         PORT80_IN_MAP=false
         PORT8081_IN_MAP=false
         if echo "$VERDICT_MAP" | grep -q "whoami.multiport.*: 80"; then
@@ -1470,7 +1468,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
         ssh_vm "$vm" "sudo systemctl stop cca-agent 2>/dev/null || true" &
     done
     wait
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl stop cca-server 2>/dev/null || true"
+    ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server 2>/dev/null || true"
 
     # Swap binary on all nodes.
     log "Deploying new binary to all nodes..."
@@ -1481,7 +1479,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
 
     # Restart server then agents — same startup order as initial deploy.
     log "Starting server with new binary..."
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo systemctl start cca-server"
+    ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server"
     sleep 3
     log "Starting agents with new binary..."
     for vm in "${VM_NAMES[@]}"; do
@@ -1520,7 +1518,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     fi
 
     # Verify etcd still healthy.
-    ssh_vm "${VM_PREFIX}-ctrl" "sudo /usr/local/bin/cca status >/dev/null" || fail "Upgrade: cca server unreachable after binary swap"
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "Upgrade: cca server unreachable after binary swap"
 
     log "=== UPGRADE TEST PASSED ==="
 fi

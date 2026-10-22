@@ -158,6 +158,39 @@ Scenarios not yet tested that would strengthen confidence:
 | Store | Watch ordering under concurrent writes | Could |
 | End-to-end | Full lifecycle: deploy → scale → update image → rollback | Future (M7) |
 
+## E2E Test Infrastructure
+
+Two separate clusters, on separate hosts to avoid resource contention:
+
+### E2E cluster (testbed-100.43)
+
+Ephemeral libvirt VMs managed by Vagrant. Created, tested, and halted on every CI push.
+
+| VM | IP | Role | Resources |
+|----|-----|------|-----------|
+| cca-test-ctrl | 192.168.122.10 | etcd + controlplane + worker | 3072 MB / 2 vCPU |
+| cca-test-worker-1 | 192.168.122.20 | worker | 2048 MB / 2 vCPU |
+
+Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
+
+### Deploy cluster (bare-metal on 100.215/30/31)
+
+Long-lived 3-node bare-metal cluster. No Vagrant — nodes are always running.
+
+| Node | IP | Role |
+|------|-----|------|
+| node-1 | 192.168.100.215 | etcd + controlplane + worker |
+| node-2 | 192.168.100.30 | worker |
+| node-3 | 192.168.100.31 | worker |
+
+Run: `./test/e2e/cluster_test.sh --env deploy` (triggered by `deploy-testbed.yml` manual dispatch)
+
+SSH user: `bozhan`, default key. Ansible inventory: `deploy/ansible/baremetal-inventory.ini`.
+
+### Why separate hosts
+
+The E2E host (16 GB) previously ran both clusters. Airflow workloads + orphaned deploy VMs caused OOM kills. Splitting eliminates resource contention, Vagrant state leaks, and host key churn.
+
 ## Demo Commands
 
 Each milestone has a corresponding demo command that exercises its headline feature interactively:
