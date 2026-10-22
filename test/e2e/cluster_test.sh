@@ -181,12 +181,12 @@ case "$CLUSTER_ENV" in
         INVENTORY="test-inventory.ini"
         PLAYBOOK="test-deploy.yml"
         CTRL_IP="192.168.122.10"
-        WORKER_IPS=("192.168.122.20")
+        WORKER_IPS=("192.168.122.20" "192.168.122.30")
         CTRL_NODE="cca-test-ctrl"
         WORKER1_NODE="cca-test-worker-1"
-        VM_NAMES=("$CTRL_NODE" "$WORKER1_NODE")
-        NODE_IPS=(["cca-test-ctrl"]="192.168.122.10" ["cca-test-worker-1"]="192.168.122.20")
-        EXPECTED_NODES=2
+        VM_NAMES=("$CTRL_NODE" "$WORKER1_NODE" "cca-test-worker-2")
+        NODE_IPS=(["cca-test-ctrl"]="192.168.122.10" ["cca-test-worker-1"]="192.168.122.20" ["cca-test-worker-2"]="192.168.122.30")
+        EXPECTED_NODES=3
         SSH_USER="vagrant"
         ;;
     deploy)
@@ -252,6 +252,15 @@ cleanup() {
         log "Stopping VMs (images and state preserved for next run)..."
         cd "$ANSIBLE_DIR"
         VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant halt 2>/dev/null || true
+        # Vagrant halt can time out if SSH is unreachable inside the VM.
+        # Force-stop any VMs that survived the graceful attempt.
+        for vm_name in "${VM_NAMES[@]}"; do
+            local domain="ansible_${vm_name}"
+            if sudo virsh domstate "$domain" 2>/dev/null | grep -q running; then
+                log "  Force-stopping $domain (vagrant halt timed out)"
+                sudo virsh destroy "$domain" 2>/dev/null || true
+            fi
+        done
         if [[ -d "$VAGRANT_DOTFILE" ]]; then
             rm -rf "$VAGRANT_STATE_DIR"
             cp -a "$VAGRANT_DOTFILE" "$VAGRANT_STATE_DIR"
