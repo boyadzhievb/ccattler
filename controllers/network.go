@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -116,6 +117,9 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 			)
 			nextVIPFourthOctet++
 
+			logging.Default().Info("allocating VIP for service",
+				"service", serviceName, "vip", vipAddress,
+				"port", strconv.Itoa(exposedPort))
 			changes = append(changes, groupedChanges("vip-create/"+serviceName,
 				Change{
 					Type:  store.OpPut,
@@ -230,6 +234,8 @@ func buildStaleVIPAndDNSRemovalChanges(existingVIPs map[string]string, existingD
 
 	for _, serviceName := range sortedVIPNames {
 		if !definedServiceNames[serviceName] {
+			logging.Default().Info("removing VIP for deleted service",
+				"service", serviceName, "vip", existingVIPs[serviceName])
 			removalChanges := groupedChanges("vip-remove/"+serviceName,
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPService(serviceName)},
 				Change{Type: store.OpDelete, Key: types.KeyNetworkVIPServicePort(serviceName)},

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -60,6 +61,9 @@ func (initController *InitController) Reconcile(ctx context.Context, facts []sto
 		currentPhase := currentInitPhases[instanceID]
 
 		if string(derivedPhase) != currentPhase {
+			logging.Default().Info("init phase transition",
+				"instance", instanceID, "service", serviceName,
+				"from", currentPhase, "to", string(derivedPhase))
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyDerivedInstanceInitPhase(instanceID),

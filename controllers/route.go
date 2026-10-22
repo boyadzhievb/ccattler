@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -170,6 +172,9 @@ func computeRouteDiffChanges(
 		desiredDerivedKeys[backendsKey] = true
 
 		if existingValue, exists := existingDerivedRouteKeys[backendsKey]; !exists || existingValue != backendsValue {
+			logging.Default().Info("updating route backends",
+				"route", routeName, "service", routeConfig.serviceName,
+				"backends", strconv.Itoa(len(filteredBackends)))
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   backendsKey,
@@ -186,6 +191,7 @@ func computeRouteDiffChanges(
 
 	for _, existingKey := range sortedExistingKeys {
 		if !desiredDerivedKeys[existingKey] {
+			logging.Default().Info("removing stale route", "key", existingKey)
 			changes = append(changes, Change{
 				Type: store.OpDelete,
 				Key:  existingKey,

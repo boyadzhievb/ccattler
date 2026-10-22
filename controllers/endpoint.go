@@ -7,8 +7,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -179,7 +181,13 @@ func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndp
 	for _, endpointKey := range sortedDesiredKeys {
 		desiredValue := desiredEndpoints[endpointKey]
 		existingValue, exists := existingEndpoints[endpointKey]
-		if !exists || existingValue != desiredValue {
+		if !exists {
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.PrefixEndpoint + "/service/" + endpointKey,
+				Value: []byte(desiredValue),
+			})
+		} else if existingValue != desiredValue {
 			changes = append(changes, Change{
 				Type:  store.OpPut,
 				Key:   types.PrefixEndpoint + "/service/" + endpointKey,
@@ -194,13 +202,22 @@ func computeEndpointDiffChanges(desiredEndpoints map[string]string, existingEndp
 	}
 	sort.Strings(sortedExistingKeys)
 
+	var removedEndpointCount int
 	for _, endpointKey := range sortedExistingKeys {
 		if _, stillDesired := desiredEndpoints[endpointKey]; !stillDesired {
 			changes = append(changes, Change{
 				Type: store.OpDelete,
 				Key:  types.PrefixEndpoint + "/service/" + endpointKey,
 			})
+			removedEndpointCount++
 		}
+	}
+
+	createdEndpointCount := len(desiredEndpoints) - (len(existingEndpoints) - removedEndpointCount)
+	if createdEndpointCount > 0 || removedEndpointCount > 0 {
+		logging.Default().Info("endpoint reconciliation",
+			"created", strconv.Itoa(createdEndpointCount),
+			"removed", strconv.Itoa(removedEndpointCount))
 	}
 
 	return changes

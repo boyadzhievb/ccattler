@@ -75,6 +75,8 @@ func (drainController *DrainController) Reconcile(_ context.Context, facts []sto
 		proposedChanges = append(proposedChanges, evictedPerService...)
 
 		if activeCount == 0 && !drainCompleteMarkers[drainingNodeID] {
+			logging.Default().Info("node drain complete, all instances evicted",
+				"node", drainingNodeID)
 			proposedChanges = append(proposedChanges, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyDerivedNodeDrainComplete(drainingNodeID),
@@ -134,8 +136,14 @@ func (drainController *DrainController) evictInstancesFromNode(
 			continue
 		}
 		if !canEvictUnderDisruptionBudget(serviceName, disruptionBudgets, desiredInstanceCounts, globalActiveCountByService) {
+			logging.Default().Info("drain eviction blocked by disruption budget",
+				"node", drainingNodeID, "service", serviceName,
+				"instance", instanceIDs[0])
 			continue
 		}
+		logging.Default().Info("evicting instance from draining node",
+			"node", drainingNodeID, "instance", instanceIDs[0],
+			"service", serviceName)
 		evictionChanges = append(evictionChanges, Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedNodeDrainEvict(drainingNodeID, instanceIDs[0]),

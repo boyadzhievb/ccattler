@@ -185,14 +185,23 @@ func (nodeFailureController *NodeFailureController) identifyUnreachableNodes(
 	sort.Strings(recoveredNodeIDs)
 	var nodeStateChanges []Change
 	for _, nodeID := range recoveredNodeIDs {
+		logging.Default().Info("node recovered, marking alive",
+			"node", nodeID)
 		nodeStateChanges = append(nodeStateChanges, Change{
 			Type:  store.OpPut,
 			Key:   types.KeyObservedNodeState(nodeID),
 			Value: []byte(string(types.NodeAlive)),
 		})
 	}
-	for nodeID := range unreachableNodeSet {
+
+	sortedNewlyUnreachable := sortedMapKeys(unreachableNodeSet)
+	for _, nodeID := range sortedNewlyUnreachable {
 		if currentNodeStates[nodeID] != string(types.NodeUnreachable) {
+			timeSinceHeartbeat := currentTime.Sub(time.UnixMilli(lastHeartbeatMillisByNode[nodeID]))
+			logging.Default().Warn("node heartbeat expired, marking unreachable",
+				"node", nodeID,
+				"last_heartbeat_age", timeSinceHeartbeat.Round(time.Second).String(),
+				"timeout", nodeFailureController.LeaseTimeout.String())
 			nodeStateChanges = append(nodeStateChanges, Change{
 				Type:  store.OpPut,
 				Key:   types.KeyObservedNodeState(nodeID),
@@ -239,6 +248,13 @@ func markInstancesOnUnreachableNodesAsFailed(facts []store.Fact, unreachableNode
 
 	instanceFailureChanges := make([]Change, 0, len(affectedInstanceIDs))
 	for _, instanceID := range affectedInstanceIDs {
+		placedNodeID := instancePlacementNode[instanceID]
+		serviceName := ""
+		if fields := instanceFields[instanceID]; fields != nil {
+			serviceName = fields["service"]
+		}
+		logging.Default().Info("marking instance failed due to node failure",
+			"instance", instanceID, "service", serviceName, "node", placedNodeID)
 		instanceFailureChanges = append(instanceFailureChanges, Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedInstanceNodeFailure(instanceID),

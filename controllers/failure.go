@@ -158,6 +158,8 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 			return nil
 		}
 		counters.replacements++
+		logging.Default().Info("replacing failed instance",
+			"instance", instanceID, "service", serviceName, "reason", "runtime_crash")
 		return failureController.stopAndReplace(instanceID, serviceName)
 	}
 
@@ -170,6 +172,8 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 			return nil
 		}
 		counters.replacements++
+		logging.Default().Info("replacing instance with failed startup probe",
+			"instance", instanceID, "service", serviceName, "reason", "startup_probe_failed")
 		return failureController.stopAndReplace(instanceID, serviceName)
 	}
 
@@ -179,6 +183,8 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 			return nil
 		}
 		counters.recoveries++
+		logging.Default().Info("instance liveness recovered, clearing drain",
+			"instance", instanceID, "service", fields["service"])
 		return failureController.clearDrainState(instanceID)
 	}
 
@@ -198,6 +204,9 @@ func (failureController *FailureController) handleUnhealthyLiveness(instanceID s
 			return nil
 		}
 		counters.drains++
+		logging.Default().Info("liveness unhealthy, beginning drain",
+			"instance", instanceID, "service", serviceName,
+			"grace_period", failureController.DrainGracePeriod.String())
 		return failureController.beginDrain(instanceID, now)
 	}
 
@@ -207,14 +216,20 @@ func (failureController *FailureController) handleUnhealthyLiveness(instanceID s
 			return nil
 		}
 		counters.replacements++
+		logging.Default().Warn("replacing instance with corrupt drain timestamp",
+			"instance", instanceID, "service", serviceName)
 		return failureController.stopAndReplace(instanceID, serviceName)
 	}
 	drainStartTime := time.UnixMilli(drainStartMillis)
-	if now.Sub(drainStartTime) >= failureController.DrainGracePeriod {
+	drainDuration := now.Sub(drainStartTime)
+	if drainDuration >= failureController.DrainGracePeriod {
 		if counters.replacements >= failureController.MaxReplacementsPerCycle {
 			return nil
 		}
 		counters.replacements++
+		logging.Default().Info("drain grace period elapsed, replacing instance",
+			"instance", instanceID, "service", serviceName,
+			"drained_for", drainDuration.String())
 		return failureController.stopAndReplace(instanceID, serviceName)
 	}
 	return nil

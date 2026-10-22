@@ -135,13 +135,19 @@ func (instanceController *InstanceController) reconcileScaleDowns(
 		activeIDs := activeInstanceIDs[serviceName]
 		haveCount := len(activeIDs)
 		if haveCount > wantCount {
+			excessCount := haveCount - wantCount
+			logging.Default().Info("scaling down service",
+				"service", serviceName,
+				"have", strconv.Itoa(haveCount),
+				"want", strconv.Itoa(wantCount),
+				"stopping", strconv.Itoa(excessCount))
 			if statefulServices[serviceName] {
 				changes = append(changes, stopHighestOrdinalInstances(
-					serviceName, parseExistingOrdinals(serviceName, activeIDs), haveCount-wantCount,
+					serviceName, parseExistingOrdinals(serviceName, activeIDs), excessCount,
 				)...)
 			} else {
 				changes = append(changes, markExcessStatelessInstancesAsStopped(
-					activeIDs, stateByInstanceID, haveCount-wantCount,
+					activeIDs, stateByInstanceID, excessCount,
 				)...)
 			}
 		}
@@ -245,6 +251,10 @@ func (instanceController *InstanceController) allocateCreationsFairly(
 		if allocated[deficitIndex] <= 0 {
 			continue
 		}
+		logging.Default().Info("scaling up service",
+			"service", entry.serviceName,
+			"creating", strconv.Itoa(allocated[deficitIndex]),
+			"deficit", strconv.Itoa(entry.deficit))
 		if statefulServices[entry.serviceName] {
 			activeIDs := buildActiveIDsFromFields(entry.serviceName, fieldsByInstanceID, stateByInstanceID)
 			existingOrdinals := parseExistingOrdinals(entry.serviceName, activeIDs)
