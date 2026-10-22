@@ -689,19 +689,51 @@ load_images_on_vm() {
     done
 }
 
-# Pull and cache images on host.
-for image in "${!UNIQUE_IMAGES[@]}"; do
-    ensure_image_cached "$image"
-done
-log "Host image cache ready"
+if [[ "$BAREMETAL" == "true" ]]; then
+    # Bare-metal nodes have direct internet — pull images on each node in parallel.
+    # Faster than pull-on-host + save-tarball + SCP for large images.
+    pull_images_on_node() {
+        local vm="$1"
+        for image in "${!UNIQUE_IMAGES[@]}"; do
+            if ssh_vm "$vm" "sudo nerdctl image inspect $image >/dev/null 2>&1"; then
+                log "  $image already on $vm"
+                continue
+            fi
+            log "  Pulling $image on $vm..."
+            local pull_ok=false
+            for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
+                if ssh_vm "$vm" "sudo nerdctl pull $image" 2>/dev/null; then
+                    pull_ok=true
+                    break
+                fi
+                log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm"
+                sleep "$PULL_RETRY_DELAY"
+            done
+            if [[ "$pull_ok" != "true" ]]; then
+                log "WARNING: failed to pull $image on $vm after $PULL_MAX_ATTEMPTS attempts"
+            fi
+        done
+    }
+    for vm in "${VM_NAMES[@]}"; do
+        pull_images_on_node "$vm" &
+    done
+    log "Pulling images directly on bare-metal nodes..."
+    wait
+    log "Image pulls complete"
+else
+    # VM environments: pull on host, save tarballs, load into VMs over LAN.
+    for image in "${!UNIQUE_IMAGES[@]}"; do
+        ensure_image_cached "$image"
+    done
+    log "Host image cache ready"
 
-# Load images into VMs in parallel (LAN transfer, fast).
-for vm in "${VM_NAMES[@]}"; do
-    load_images_on_vm "$vm" &
-done
-log "Loading images into VMs..."
-wait
-log "Image loading complete"
+    for vm in "${VM_NAMES[@]}"; do
+        load_images_on_vm "$vm" &
+    done
+    log "Loading images into VMs..."
+    wait
+    log "Image loading complete"
+fi
 
 # ---- Step 4: Deploy selected workloads ----
 
