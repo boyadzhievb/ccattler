@@ -1278,7 +1278,7 @@ STICKYCCA
     STICKY_TESTED=0
     for attempt in $(seq 1 10); do
         STICKY_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
-        STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ')
+        STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ' || true)
         if [[ -n "$STICKY_HOST" ]]; then
             STICKY_HOSTNAMES+=("$STICKY_HOST")
             STICKY_TESTED=$((STICKY_TESTED + 1))
