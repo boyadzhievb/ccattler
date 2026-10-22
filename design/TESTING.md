@@ -170,6 +170,7 @@ Ephemeral libvirt VMs managed by Vagrant. Created, tested, and halted on every C
 |----|-----|------|-----------|
 | cca-test-ctrl | 192.168.122.10 | etcd + controlplane + worker | 3072 MB / 2 vCPU |
 | cca-test-worker-1 | 192.168.122.20 | worker | 2048 MB / 2 vCPU |
+| cca-test-worker-2 | 192.168.122.30 | worker | 2048 MB / 2 vCPU |
 
 Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
@@ -177,15 +178,24 @@ Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
 Long-lived 3-node bare-metal cluster. No Vagrant — nodes are always running.
 
-| Node | IP | Role |
-|------|-----|------|
-| node-1 | 192.168.100.215 | etcd + controlplane + worker |
-| node-2 | 192.168.100.30 | worker |
-| node-3 | 192.168.100.31 | worker |
+| Node | IP | Role | RAM |
+|------|-----|------|-----|
+| node-1 | 192.168.100.215 | etcd + controlplane + worker | 2 GB |
+| node-2 | 192.168.100.30 | worker | 2 GB |
+| node-3 | 192.168.100.31 | worker | 2 GB |
 
 Run: `./test/e2e/cluster_test.sh --env deploy` (triggered by `deploy-testbed.yml` manual dispatch)
 
 SSH user: `bozhan`, default key. Ansible inventory: `deploy/ansible/baremetal-inventory.ini`.
+
+### Resource requirements for workloads
+
+The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs at minimum 4 GB per node. On 2 GB nodes the Celery workers alone consume 500 MB–1 GB each, pushing the system deep into swap and causing multi-minute startup times. Lightweight workloads (whoami) run fine on 2 GB.
+
+| Workload | Minimum per node | Recommended per node |
+|----------|-----------------|---------------------|
+| whoami, whoami-multiport | 1 GB | 2 GB |
+| Airflow full stack | 4 GB | 8 GB |
 
 ### Why separate hosts
 
