@@ -97,28 +97,10 @@
     port: 9770
     timeout: 45
 
-- name: Create examples directory
-  file:
-    path: /var/lib/ccattler/examples
-    state: directory
-    mode: "0755"
-  when: inventory_hostname == groups['controlplane'][0]
-
-- name: List example files from GitHub
-  uri:
-    url: "https://api.github.com/repos/boyadzhievb/ccattler/contents/examples"
-    return_content: true
-    headers:
-      Accept: "application/vnd.github.v3+json"
-  register: examples_listing
-  when: inventory_hostname == groups['controlplane'][0]
-
-- name: Download example files
-  get_url:
-    url: "{{ item.download_url }}"
-    dest: "/var/lib/ccattler/examples/{{ item.name }}"
+- name: Copy example configs from local checkout
+  copy:
+    src: "{{ playbook_dir }}/../../examples/"
+    dest: /var/lib/ccattler/examples/
     mode: "0644"
-  loop: "{{ examples_listing.json | selectattr('name', 'match', '.*\\.ccattler$') | list }}"
-  loop_control:
-    label: "{{ item.name }}"
+    directory_mode: "0755"
   when: inventory_hostname == groups['controlplane'][0]
