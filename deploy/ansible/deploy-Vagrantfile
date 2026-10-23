@@ -1,0 +1,53 @@
+# -*- mode: ruby -*-
+# Long-lived CCattler deploy cluster on testbed-100.43 (16GB host)
+#
+# Three-node cluster with a dedicated libvirt private network (192.168.124.0/24).
+# The testbed host (192.168.100.43) acts as gateway — Caddy on the host reverse-
+# proxies external traffic to the VMs.
+#
+#   cca-deploy-ctrl     (124.10) — etcd + control plane + worker (4 GB)
+#   cca-deploy-worker-1 (124.20) — worker (4 GB)
+#   cca-deploy-worker-2 (124.30) — worker (4 GB)
+#
+# Prerequisites:
+#   - vagrant plugin install vagrant-libvirt
+#
+# Vagrant state persisted at /tmp/cca-vagrant-state-deploy/ between runs.
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "generic/ubuntu2204"
+
+  config.vm.provider "libvirt" do |lv|
+    lv.driver = "kvm"
+  end
+
+  config.vm.define "cca-deploy-ctrl" do |node|
+    node.vm.hostname = "cca-deploy-ctrl"
+    node.vm.network "private_network", ip: "192.168.124.10"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 4096
+      lv.cpus   = 2
+    end
+  end
+
+  config.vm.define "cca-deploy-worker-1" do |node|
+    node.vm.hostname = "cca-deploy-worker-1"
+    node.vm.network "private_network", ip: "192.168.124.20"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 4096
+      lv.cpus   = 2
+    end
+  end
+
+  config.vm.define "cca-deploy-worker-2" do |node|
+    node.vm.hostname = "cca-deploy-worker-2"
+    node.vm.network "private_network", ip: "192.168.124.30"
+
+    node.vm.provider "libvirt" do |lv|
+      lv.memory = 4096
+      lv.cpus   = 2
+    end
+  end
+end

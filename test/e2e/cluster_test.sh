@@ -7,8 +7,8 @@
 # Exit codes: 0 = pass, 1 = fail
 #
 # Two environments:
-#   --env test   (default): 2 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
-#   --env deploy:           3 bare-metal nodes on 100.215/30/31, long-lived (no Vagrant)
+#   --env test   (default): 3 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
+#   --env deploy:           3 Vagrant VMs on 192.168.124.x (testbed-100.43), long-lived
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload airflow,zabbix   deploy specific workloads (comma-separated)
@@ -143,7 +143,10 @@ fi
 ALL_AVAILABLE_WORKLOADS=($(discover_workloads))
 
 if [[ -z "$SELECTED_WORKLOADS" ]]; then
-    SELECTED_WORKLOADS="airflow,whoami,whoami-multiport"
+    case "$CLUSTER_ENV" in
+        deploy)  SELECTED_WORKLOADS="airflow,whoami,whoami-multiport" ;;
+        *)       SELECTED_WORKLOADS="whoami,whoami-multiport" ;;
+    esac
 fi
 
 WORKLOAD_NAMES=()
@@ -190,18 +193,18 @@ case "$CLUSTER_ENV" in
         SSH_USER="vagrant"
         ;;
     deploy)
-        INVENTORY="baremetal-inventory.ini"
+        VAGRANTFILE="deploy-Vagrantfile"
+        INVENTORY="deploy-inventory.ini"
         PLAYBOOK="baremetal-deploy.yml"
-        CTRL_IP="192.168.100.215"
-        WORKER_IPS=("192.168.100.30" "192.168.100.31")
-        CTRL_NODE="node-1"
-        WORKER1_NODE="node-2"
-        VM_NAMES=("node-1" "node-2" "node-3")
-        NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
+        CTRL_IP="192.168.124.10"
+        WORKER_IPS=("192.168.124.20" "192.168.124.30")
+        CTRL_NODE="cca-deploy-ctrl"
+        WORKER1_NODE="cca-deploy-worker-1"
+        VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
+        NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
         EXPECTED_NODES=3
-        SSH_USER="bozhan"
-        BAREMETAL=true
-        DESTROY_ON_EXIT=none  # bare-metal, no VM lifecycle
+        SSH_USER="vagrant"
+        DESTROY_ON_EXIT=none  # long-lived, keep VMs running
         ;;
     *)
         echo "Unknown --env: $CLUSTER_ENV (must be 'test' or 'deploy')" >&2

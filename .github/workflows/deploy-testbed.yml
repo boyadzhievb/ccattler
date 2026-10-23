@@ -48,12 +48,16 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
+          ANSIBLE_DIR=deploy/ansible
           SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-          declare -A NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
-          for node in node-1 node-2 node-3; do
-            ip="${NODE_IPS[$node]}"
-            echo "=== $node server.log ==="
-            ssh $SSH_OPTS "bozhan@$ip" "sudo cat /var/log/ccattler/server.log 2>/dev/null || true" || true
-            echo "=== $node agent.log ==="
-            ssh $SSH_OPTS "bozhan@$ip" "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
+          declare -A NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
+          for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
+            ip="${NODE_IPS[$vm]}"
+            key="$ANSIBLE_DIR/.vagrant-deploy/machines/$vm/libvirt/private_key"
+            if [ -f "$key" ]; then
+              echo "=== $vm server.log ==="
+              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo cat /var/log/ccattler/server.log 2>/dev/null || true" || true
+              echo "=== $vm agent.log ==="
+              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
+            fi
           done
