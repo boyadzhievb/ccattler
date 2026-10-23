@@ -11,3 +11,4 @@ investigate_airflow/
 .DS_Store
 website/public/logo-candidates/
 .vscode/
+.mcp.json
