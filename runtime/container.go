@@ -429,7 +429,7 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	defer cancelInspect()
 
 	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect",
-		"--format", "{{.State.Running}}|{{.NetworkSettings.IPAddress}}|{{.State.ExitCode}}|{{.State.OOMKilled}}", containerName)
+		"--format", "{{.State.Running}}|{{.NetworkSettings.IPAddress}}|{{.State.ExitCode}}", containerName)
 	var inspectOutput bytes.Buffer
 	inspectCommand.Stdout = &inspectOutput
 	if err := inspectCommand.Run(); err != nil {
@@ -440,7 +440,7 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	}
 
 	rawOutput := strings.TrimSpace(inspectOutput.String())
-	outputParts := strings.SplitN(rawOutput, "|", 4)
+	outputParts := strings.SplitN(rawOutput, "|", 3)
 	if len(outputParts) < 2 {
 		logging.Default().Warn("unexpected nerdctl inspect format", "id", id, "output", rawOutput)
 		return Status{ID: id, Running: false}, nil
@@ -455,9 +455,17 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 			exitCode = parsedCode
 		}
 	}
+
 	exitReason := ""
-	if len(outputParts) > 3 && outputParts[3] == "true" {
-		exitReason = "OOMKilled"
+	if !running && exitCode != 0 {
+		oomContext, cancelOOM := context.WithTimeout(ctx, nerdctlCommandTimeout)
+		oomCommand := containerRuntime.buildExecCommand(oomContext, "inspect", "--format", "{{.State.OOMKilled}}", containerName)
+		var oomOutput bytes.Buffer
+		oomCommand.Stdout = &oomOutput
+		if oomCommand.Run() == nil && strings.TrimSpace(oomOutput.String()) == "true" {
+			exitReason = "OOMKilled"
+		}
+		cancelOOM()
 	}
 
 	return Status{ID: id, Running: running, IP: containerIP, ExitCode: exitCode, Error: exitReason}, nil
