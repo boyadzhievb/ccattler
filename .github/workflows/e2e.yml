@@ -62,20 +62,17 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          ANSIBLE_DIR=deploy/ansible
-          for vm in cca-test-ctrl cca-test-worker-1; do
-            ip_var=""
-            case "$vm" in
-              cca-test-ctrl)     ip_var="192.168.122.10" ;;
-              cca-test-worker-1) ip_var="192.168.122.20" ;;
+          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i ~/.ssh/id_rsa_dell_bozhan"
+          for node in node-1 node-2 node-3; do
+            case "$node" in
+              node-1) ip="192.168.100.215" ;;
+              node-2) ip="192.168.100.30" ;;
+              node-3) ip="192.168.100.31" ;;
             esac
-            key="$ANSIBLE_DIR/.vagrant/machines/$vm/libvirt/private_key"
-            if [ -f "$key" ]; then
-              echo "=== $vm server.log ==="
-              ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$key" "vagrant@$ip_var" \
-                "sudo cat /var/log/ccattler/server.log 2>/dev/null || true" || true
-              echo "=== $vm agent.log ==="
-              ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$key" "vagrant@$ip_var" \
-                "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
-            fi
+            echo "=== $node cca-server journal ==="
+            ssh $SSH_ARGS "bozhan@$ip" \
+              "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
+            echo "=== $node cca-agent journal ==="
+            ssh $SSH_ARGS "bozhan@$ip" \
+              "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
           done

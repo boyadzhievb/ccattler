@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # cluster_test.sh — End-to-end CCattler cluster test
 #
-# Provisions libvirt VMs, deploys a full CCattler cluster via Ansible,
-# applies test workloads, verifies they converge, and tears down.
+# Deploys a CCattler cluster via Ansible (bare-metal or VMs), applies
+# test workloads, verifies they converge, and cleans up.
 #
 # Exit codes: 0 = pass, 1 = fail
 #
-# Two environments:
-#   --env test   (default): 3 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
-#   --env deploy:           3 Vagrant VMs on 192.168.124.x (testbed-100.43), long-lived
+# Three environments:
+#   --env test     (default): bare-metal 3-node cluster on 100.215/30/31 (always-on)
+#   --env vagrant:            3 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
+#   --env deploy:             3 Vagrant VMs on 192.168.124.x (testbed-100.43), long-lived
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload airflow,zabbix   deploy specific workloads (comma-separated)
@@ -19,8 +20,8 @@
 # Each manifest declares: images to pre-pull, expected container count, secrets.
 #
 # Prerequisites:
-#   - Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
-#   - Go toolchain on testbed (for default rsync+build mode)
+#   - test (bare-metal): SSH access to 100.215/30/31, Ansible, Go toolchain
+#   - vagrant: Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
 #   - Or: CCattler binary at deploy/ansible/cca-linux-amd64 (--skip-build)
 #
 # VM lifecycle: VMs are stopped (not destroyed) after each run, preserving cached
@@ -175,11 +176,26 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 
 # Environment-specific configuration
-#   test:   ephemeral libvirt VMs on testbed-100.43 (Vagrant lifecycle)
-#   deploy: bare-metal 3-node cluster on 100.215/30/31 (always running, no Vagrant)
+#   test:      bare-metal 3-node cluster on 100.215/30/31 (default, always-on nodes)
+#   vagrant:   ephemeral libvirt VMs on testbed-100.43 (Vagrant lifecycle, for local dev)
+#   deploy:    long-lived Vagrant VMs on testbed-100.43 (Airflow, Caddy)
 declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)
+        INVENTORY="baremetal-e2e-inventory.ini"
+        PLAYBOOK="baremetal-deploy.yml"
+        CTRL_IP="192.168.100.215"
+        WORKER_IPS=("192.168.100.30" "192.168.100.31")
+        CTRL_NODE="node-1"
+        WORKER1_NODE="node-2"
+        VM_NAMES=("node-1" "node-2" "node-3")
+        NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
+        EXPECTED_NODES=3
+        SSH_USER="bozhan"
+        BAREMETAL=true
+        DESTROY_ON_EXIT=none
+        ;;
+    vagrant)
         VAGRANTFILE="test-Vagrantfile"
         INVENTORY="test-inventory.ini"
         PLAYBOOK="test-deploy.yml"
@@ -204,10 +220,10 @@ case "$CLUSTER_ENV" in
         NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
         EXPECTED_NODES=3
         SSH_USER="vagrant"
-        DESTROY_ON_EXIT=none  # long-lived, keep VMs running
+        DESTROY_ON_EXIT=none
         ;;
     *)
-        echo "Unknown --env: $CLUSTER_ENV (must be 'test' or 'deploy')" >&2
+        echo "Unknown --env: $CLUSTER_ENV (must be 'test', 'vagrant', or 'deploy')" >&2
         exit 1
         ;;
 esac
@@ -230,10 +246,10 @@ CONTAINER_TIMEOUT=180
 collect_vm_logs() {
     log "Collecting VM logs before teardown..."
     for vm in "${VM_NAMES[@]}"; do
-        echo "=== $vm server.log ==="
-        ssh_vm "$vm" "sudo cat /var/log/ccattler/server.log 2>/dev/null || echo '(no server.log)'" 2>/dev/null || true
-        echo "=== $vm agent.log ==="
-        ssh_vm "$vm" "sudo cat /var/log/ccattler/agent.log 2>/dev/null || echo '(no agent.log)'" 2>/dev/null || true
+        echo "=== $vm cca-server journal ==="
+        ssh_vm "$vm" "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || echo '(no journal)'" 2>/dev/null || true
+        echo "=== $vm cca-agent journal ==="
+        ssh_vm "$vm" "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || echo '(no journal)'" 2>/dev/null || true
         echo "=== $vm systemctl status ==="
         ssh_vm "$vm" "sudo systemctl status cca-server cca-agent 2>/dev/null || true" 2>/dev/null || true
     done
@@ -305,7 +321,9 @@ ssh_vm() {
     local ip="${NODE_IPS[$vm_name]}"
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-    if [[ "$BAREMETAL" != "true" ]]; then
+    if [[ "$BAREMETAL" == "true" ]]; then
+        ssh_args+=" -i ~/.ssh/id_rsa_dell_bozhan"
+    else
         ssh_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
     fi
     ssh $ssh_args "${SSH_USER}@${ip}" "$@"
@@ -322,7 +340,9 @@ scp_to_vm() {
     local ip="${NODE_IPS[$vm_name]}"
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local scp_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-    if [[ "$BAREMETAL" != "true" ]]; then
+    if [[ "$BAREMETAL" == "true" ]]; then
+        scp_args+=" -i ~/.ssh/id_rsa_dell_bozhan"
+    else
         scp_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
     fi
     scp $scp_args "$local_path" "${SSH_USER}@${ip}:${remote_path}"
@@ -505,7 +525,7 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
         wait
     fi
     for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo truncate -s 0 /var/log/ccattler/server.log /var/log/ccattler/agent.log 2>/dev/null || true" &
+        ssh_vm "$vm" "sudo journalctl --rotate --vacuum-time=1s 2>/dev/null || true" &
     done
     wait
     log "Cluster state cleaned"

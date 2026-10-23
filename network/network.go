@@ -6,7 +6,7 @@
 // underlying packet implementation, covering addressing, service discovery,
 // and traffic routing. Implementations range from a pure-simulation allocator
 // (for testing) to Linux namespace/veth/bridge setups (for development) to
-// Cilium/Calico (for production).
+// nftables/eBPF (for production).
 package network
 
 import "context"

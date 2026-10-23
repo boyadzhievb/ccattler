@@ -206,7 +206,7 @@ func (nodeAgent *Agent) VXLANReconciler() *VXLANReconciler {
 
 // SetNodeSubnet configures the pod CIDR allocated to this node (e.g.
 // "10.100.1.0/24"). Used by data plane providers that need node subnet
-// information for registration (e.g. Cilium node entries).
+// information for registration (e.g. eBPF node entries).
 func (nodeAgent *Agent) SetNodeSubnet(nodeSubnet string) {
 	nodeAgent.nodeSubnet = nodeSubnet
 }

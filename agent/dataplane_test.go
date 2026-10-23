@@ -309,11 +309,11 @@ func TestDataPlaneRunsOnIndependentTicker(t *testing.T) {
 	cancel()
 }
 
-// ciliumCapableDataPlane is a test mock that implements both DataPlaneProvider
-// and all optional Cilium interfaces (DataPlaneInitializer,
-// DataPlaneNodeRegistrar, EndpointIdentityRegistrar, DataPlanePolicyReconciler).
+// fullCapableDataPlane is a test mock that implements both DataPlaneProvider
+// and all optional interfaces (DataPlaneInitializer, DataPlaneNodeRegistrar,
+// EndpointIdentityRegistrar, DataPlanePolicyReconciler).
 // All fields are guarded by a mutex for race-detector safety.
-type ciliumCapableDataPlane struct {
+type fullCapableDataPlane struct {
 	mutex                  sync.Mutex
 	initializeCalled       bool
 	registerNodeCalled     bool
@@ -325,22 +325,22 @@ type ciliumCapableDataPlane struct {
 	policyReconcileCalled  bool
 }
 
-func (mockDP *ciliumCapableDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
+func (mockDP *fullCapableDataPlane) ReconcileVIPDataPlane(_ context.Context, _ []network.ServiceVIPConfig) error {
 	return nil
 }
-func (mockDP *ciliumCapableDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
+func (mockDP *fullCapableDataPlane) ReconcileRouteDataPlane(_ context.Context, _ []network.RouteDataPlaneConfig) error {
 	return nil
 }
-func (mockDP *ciliumCapableDataPlane) Cleanup(_ context.Context) error { return nil }
+func (mockDP *fullCapableDataPlane) Cleanup(_ context.Context) error { return nil }
 
-func (mockDP *ciliumCapableDataPlane) Initialize(_ context.Context) error {
+func (mockDP *fullCapableDataPlane) Initialize(_ context.Context) error {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	mockDP.initializeCalled = true
 	return nil
 }
 
-func (mockDP *ciliumCapableDataPlane) RegisterNode(_ context.Context, nodeIP string, podCIDR string) error {
+func (mockDP *fullCapableDataPlane) RegisterNode(_ context.Context, nodeIP string, podCIDR string) error {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	mockDP.registerNodeCalled = true
@@ -349,7 +349,7 @@ func (mockDP *ciliumCapableDataPlane) RegisterNode(_ context.Context, nodeIP str
 	return nil
 }
 
-func (mockDP *ciliumCapableDataPlane) RegisterEndpointIdentity(_ context.Context, containerIP string, _ string, serviceName string, _ int) error {
+func (mockDP *fullCapableDataPlane) RegisterEndpointIdentity(_ context.Context, containerIP string, _ string, serviceName string, _ int) error {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	mockDP.endpointRegCalled = true
@@ -358,56 +358,56 @@ func (mockDP *ciliumCapableDataPlane) RegisterEndpointIdentity(_ context.Context
 	return nil
 }
 
-func (mockDP *ciliumCapableDataPlane) ReconcilePolicies(_ context.Context) error {
+func (mockDP *fullCapableDataPlane) ReconcilePolicies(_ context.Context) error {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	mockDP.policyReconcileCalled = true
 	return nil
 }
 
-func (mockDP *ciliumCapableDataPlane) isInitializeCalled() bool {
+func (mockDP *fullCapableDataPlane) isInitializeCalled() bool {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.initializeCalled
 }
 
-func (mockDP *ciliumCapableDataPlane) isRegisterNodeCalled() bool {
+func (mockDP *fullCapableDataPlane) isRegisterNodeCalled() bool {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.registerNodeCalled
 }
 
-func (mockDP *ciliumCapableDataPlane) isEndpointRegCalled() bool {
+func (mockDP *fullCapableDataPlane) isEndpointRegCalled() bool {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.endpointRegCalled
 }
 
-func (mockDP *ciliumCapableDataPlane) isPolicyReconcileCalled() bool {
+func (mockDP *fullCapableDataPlane) isPolicyReconcileCalled() bool {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.policyReconcileCalled
 }
 
-func (mockDP *ciliumCapableDataPlane) getEndpointRegContainerIP() string {
+func (mockDP *fullCapableDataPlane) getEndpointRegContainerIP() string {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.endpointRegContainerIP
 }
 
-func (mockDP *ciliumCapableDataPlane) getEndpointRegService() string {
+func (mockDP *fullCapableDataPlane) getEndpointRegService() string {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.endpointRegService
 }
 
-func (mockDP *ciliumCapableDataPlane) getRegisterNodeIP() string {
+func (mockDP *fullCapableDataPlane) getRegisterNodeIP() string {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.registerNodeIP
 }
 
-func (mockDP *ciliumCapableDataPlane) getRegisterNodeCIDR() string {
+func (mockDP *fullCapableDataPlane) getRegisterNodeCIDR() string {
 	mockDP.mutex.Lock()
 	defer mockDP.mutex.Unlock()
 	return mockDP.registerNodeCIDR
@@ -421,7 +421,7 @@ func TestDataPlaneInitializerCalledOnStartup(t *testing.T) {
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	nodeAgent.SetAdvertiseAddress("192.168.1.10")
@@ -453,7 +453,7 @@ func TestDataPlanePolicyReconcilerCalledOnTick(t *testing.T) {
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	nodeAgent.SetInterval(50 * time.Millisecond)
@@ -549,7 +549,7 @@ func TestDataPlaneNoSubnetSkipsNodeRegistration(t *testing.T) {
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	nodeAgent.SetAdvertiseAddress("192.168.1.10")
@@ -578,7 +578,7 @@ func TestDataPlaneNoAdvertiseAddressSkipsNodeRegistration(t *testing.T) {
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	// Deliberately NOT setting advertise address.
@@ -622,7 +622,7 @@ func TestDataPlaneEndpointRegistrationCalledWithNetworkProvider(t *testing.T) {
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	nodeAgent.SetNetworkProvider(&staticNetworkProvider{allocatedIP: "10.100.1.42"})
@@ -659,7 +659,7 @@ func TestDataPlaneEndpointRegistrationSkippedWithoutNetworkProvider(t *testing.T
 	defer factStore.Close()
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 
-	mockDP := &ciliumCapableDataPlane{}
+	mockDP := &fullCapableDataPlane{}
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetDataPlaneProvider(mockDP)
 	// No network provider — simulator runtime doesn't report container IPs.

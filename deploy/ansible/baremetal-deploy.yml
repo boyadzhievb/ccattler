@@ -11,7 +11,7 @@
 #   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml
 #
 # Update binary only (skip cleanup and workload deploy):
-#   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --skip-tags cleanup,testapp,cilium
+#   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --skip-tags cleanup,testapp
 #
 # Deploy demo workload after cluster is up:
 #   ansible-playbook -i baremetal-inventory.ini baremetal-deploy.yml --tags testapp
@@ -44,14 +44,6 @@
   become: true
   roles:
     - worker
-
-- name: Install Cilium eBPF data plane
-  hosts: ccattler
-  become: true
-  tags: [cilium]
-  roles:
-    - role: cilium
-      when: dataplane_backend == "cilium"
 
 - name: Deploy demo workload
   hosts: controlplane

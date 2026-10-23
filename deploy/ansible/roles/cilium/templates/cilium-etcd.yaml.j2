@@ -1,9 +1,0 @@
----
-# Cilium etcd configuration — points at CCattler's etcd cluster.
-endpoints:
-{% for node in groups['etcd'] %}
-  - https://{{ hostvars[node].ansible_host }}:2379
-{% endfor %}
-trusted-ca-file: /etc/cilium/etcd-ca.pem
-cert-file: /etc/cilium/etcd-cert.pem
-key-file: /etc/cilium/etcd-key.pem

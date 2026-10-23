@@ -126,8 +126,20 @@ func configureLogger(logLevel string, logFormat string) {
 	format := logging.FormatHuman
 	if logFormat == "json" {
 		format = logging.FormatJSON
+	} else if logFormat == "" && !isTerminal(os.Stderr) {
+		// Under systemd (journald), default to JSON for structured log capture.
+		format = logging.FormatJSON
 	}
 	logging.SetDefault(logging.New(os.Stderr, level, format))
+}
+
+// isTerminal reports whether the given file is connected to an interactive terminal.
+func isTerminal(file *os.File) bool {
+	fileInfo, statError := file.Stat()
+	if statError != nil {
+		return false
+	}
+	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }
 
 // createStateStoreFromServerConfig builds the appropriate StateStore for

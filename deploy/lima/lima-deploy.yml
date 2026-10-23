@@ -312,8 +312,9 @@
             --etcd-ca {{ cca_cert_dir }}/ca.pem
           Restart=on-failure
           RestartSec=5
-          StandardOutput=append:/var/log/ccattler/server.log
-          StandardError=append:/var/log/ccattler/server.log
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=cca-server
 
           [Install]
           WantedBy=multi-user.target
@@ -369,8 +370,9 @@
             --etcd-ca {{ cca_cert_dir }}/ca.pem
           Restart=on-failure
           RestartSec=5
-          StandardOutput=append:/var/log/ccattler/agent.log
-          StandardError=append:/var/log/ccattler/agent.log
+          StandardOutput=journal
+          StandardError=journal
+          SyslogIdentifier=cca-agent
 
           [Install]
           WantedBy=multi-user.target

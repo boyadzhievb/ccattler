@@ -6,13 +6,12 @@ package network
 import "github.com/boyadzhievb/ccattler/store"
 
 // DataPlaneFactory creates a DataPlaneProvider. The factStore is needed by
-// providers that write to etcd (e.g. Cilium kvstore translation). The
-// clusterName identifies the cluster in multi-cluster setups. The nodeID
-// identifies this node for per-node key writes.
+// providers that write to etcd. The clusterName identifies the cluster in
+// multi-cluster setups. The nodeID identifies this node for per-node key writes.
 type DataPlaneFactory func(factStore store.StateStore, clusterName string, nodeID string) DataPlaneProvider
 
 // dataPlaneFactories holds registered data plane provider factories keyed
-// by name (e.g. "cilium"). Populated by init() in build-tagged files.
+// by name (e.g. "ebpf"). Populated by init() in build-tagged files.
 var dataPlaneFactories = map[string]DataPlaneFactory{}
 
 // RegisterDataPlaneFactory registers a factory for the given data plane name.

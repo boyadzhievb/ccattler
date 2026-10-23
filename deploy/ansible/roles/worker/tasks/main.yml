@@ -76,7 +76,7 @@
 
 - name: Verify eBPF data plane initialized
   shell: >
-    grep -q 'initialization complete' /var/log/ccattler/agent.log
+    journalctl -u cca-agent --no-pager -o cat | grep -q 'initialization complete'
   register: ebpf_initialized
   retries: 5
   delay: 3
@@ -94,5 +94,5 @@
 
 - name: Report BPF health
   debug:
-    msg: "eBPF data plane: {{ 'healthy' if bpf_programs_loaded.rc == 0 else 'FAILED — check /var/log/ccattler/agent.log' }}"
+    msg: "eBPF data plane: {{ 'healthy' if bpf_programs_loaded.rc == 0 else 'FAILED — check: journalctl -u cca-agent' }}"
   when: dataplane_backend | default('auto') == 'ebpf'

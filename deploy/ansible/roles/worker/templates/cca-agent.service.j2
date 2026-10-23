@@ -22,8 +22,9 @@ ExecStart=/usr/local/bin/cca agent \
   --dataplane {{ dataplane_backend | default('auto') }}
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/var/log/ccattler/agent.log
-StandardError=append:/var/log/ccattler/agent.log
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cca-agent
 
 [Install]
 WantedBy=multi-user.target
