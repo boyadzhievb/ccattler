@@ -183,6 +183,14 @@ func (simulator *SimulatorRuntime) ExecCapture(_ context.Context, instanceID str
 	return []byte(fmt.Sprintf("[simulated] exec %q in %s\n", execSpec.Command, instanceID)), nil
 }
 
+// ClearPullFailure removes a previously injected pull failure so subsequent
+// PullImage calls for this image succeed. Safe for concurrent use.
+func (simulator *SimulatorRuntime) ClearPullFailure(imageReference string) {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	delete(simulator.PullFailures, imageReference)
+}
+
 // PullImage simulates pulling a container image. If a PullFailures entry
 // exists for this image, returns an error. Otherwise records the pull.
 func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference string) error {

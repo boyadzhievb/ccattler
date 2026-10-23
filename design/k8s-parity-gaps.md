@@ -40,11 +40,10 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **Files**: `agent/agent.go`, `types/keys.go`.
 **Remaining**: Secret rotation (automatic re-encryption with new master key).
 
-### 6. Pod Disruption Budgets
+### 6. Pod Disruption Budgets — DONE (pre-existing)
 
 **K8s**: PDB minAvailable/maxUnavailable during voluntary disruption.
-**CCattler**: Drain controller evicts during node drain, rollout has maxUnavailable. No explicit PDB for maintenance.
-**Fix needed**: Explicit min-available constraint during maintenance/upgrades.
+**CCattler**: Already implemented. DSL `disruption { min_available N }` or `max_unavailable N`. Drain controller enforces budget during node drain (`canEvictUnderDisruptionBudget`). Rollout controller constrains maxUnavailable via `applyDisruptionBudgetToUpdatePolicy`. 14 tests in `drain_test.go`.
 
 ## Nice-to-Have
 

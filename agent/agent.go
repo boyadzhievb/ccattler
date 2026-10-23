@@ -109,6 +109,7 @@ type Agent struct {
 	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
+	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -228,6 +229,40 @@ func (nodeAgent *Agent) SetHeartbeatInterval(heartbeatFrequency time.Duration) {
 		heartbeatFrequency = heartbeatInterval
 	}
 	nodeAgent.heartbeatFrequency = heartbeatFrequency
+}
+
+// EnableTestHooks activates the test hook channel so RunInAgentLoop can inject
+// closures into the agent goroutine. Must be called before Run.
+func (nodeAgent *Agent) EnableTestHooks() {
+	nodeAgent.testHookChannel = make(chan func())
+}
+
+// RunInAgentLoop sends a closure to the agent goroutine and blocks until it
+// executes. The closure runs inside the reconciliation loop, so it can safely
+// access agent-internal state (imagePullBackoffs, etc.) without races.
+func (nodeAgent *Agent) RunInAgentLoop(hookFunction func()) {
+	done := make(chan struct{})
+	nodeAgent.testHookChannel <- func() {
+		hookFunction()
+		close(done)
+	}
+	<-done
+}
+
+// drainTestHooks executes all pending test closures queued via RunInAgentLoop.
+// No-op when testHookChannel is nil (production).
+func (nodeAgent *Agent) drainTestHooks() {
+	if nodeAgent.testHookChannel == nil {
+		return
+	}
+	for {
+		select {
+		case hookFunction := <-nodeAgent.testHookChannel:
+			hookFunction()
+		default:
+			return
+		}
+	}
 }
 
 // Run starts the agent loop. It blocks until ctx is cancelled.
@@ -434,6 +469,7 @@ func (nodeAgent *Agent) dataPlaneLoop(ctx context.Context) {
 // reports as actually running, starts missing instances, stops stale ones,
 // and reports health for every desired instance that has a health probe.
 func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
+	nodeAgent.drainTestHooks()
 	reconcileTrace := tracing.NewTraceContext()
 	ctx = tracing.ContextWithTrace(ctx, reconcileTrace)
 

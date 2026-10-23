@@ -1803,6 +1803,7 @@ func TestAgentImagePullBackoffCleanedOnSuccess(t *testing.T) {
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.EnableTestHooks()
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("flaky-image:v1"))
 	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-retry", Service: "web", State: types.InstancePending})
@@ -1815,9 +1816,12 @@ func TestAgentImagePullBackoffCleanedOnSuccess(t *testing.T) {
 		return err == nil && string(factEntry.Value) == string(types.InstanceImagePullBackoff)
 	})
 
-	// Fix the pull failure and override the backoff timer for fast test.
-	delete(simulatorRuntime.PullFailures, "flaky-image:v1")
-	nodeAgent.imagePullBackoffs["pull-retry"].retryAfter = time.Now().Add(-1 * time.Second)
+	// Fix the pull failure and expire the backoff timer inside the agent
+	// goroutine to avoid a data race on agent-internal state.
+	simulatorRuntime.ClearPullFailure("flaky-image:v1")
+	nodeAgent.RunInAgentLoop(func() {
+		nodeAgent.imagePullBackoffs["pull-retry"].retryAfter = time.Now().Add(-1 * time.Second)
+	})
 
 	waitFor(t, 2*time.Second, "instance running after retry", func() bool {
 		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-retry"))
