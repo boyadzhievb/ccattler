@@ -95,6 +95,7 @@ service scheduler {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__CORE__LOAD_EXAMPLES true
     }
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
@@ -118,6 +119,7 @@ service worker {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__CORE__LOAD_EXAMPLES true
     }
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
