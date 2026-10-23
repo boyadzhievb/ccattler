@@ -24,7 +24,8 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **K8s**: Requests vs limits, OOM kill handling, eviction under pressure, QoS classes.
 **CCattler**: Resource limits wired end-to-end: DSL `resources { cpu "500m" memory "512Mi" cpu_limit "1000m" memory_limit "1Gi" }` → scheduler → agent → `--cpus`/`--memory` on nerdctl run. Separate request/limit fields. QoS classes derived at compile time: Guaranteed (request==limit), Burstable (partial resources), BestEffort (none). OOM detection via nerdctl inspect ExitCode/OOMKilled.
 **Files**: `runtime/container.go`, `agent/agent.go`, `lang/ast.go`, `lang/compiler.go`, `types/keys.go`.
-**Remaining**: Node-pressure eviction (controller to evict BestEffort→Burstable→Guaranteed under memory pressure).
+Node-pressure eviction controller (`controllers/eviction.go`) monitors per-node memory utilization and evicts instances in QoS priority order (BestEffort → Burstable → Guaranteed) when usage exceeds the hard 90% threshold.
+**Files**: `runtime/container.go`, `agent/agent.go`, `lang/ast.go`, `lang/compiler.go`, `controllers/eviction.go`, `types/keys.go`.
 
 ### 4. Rolling Update MaxSurge — DONE
 
@@ -37,7 +38,8 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **K8s**: ConfigMap/Secret watch → pod restart or volume refresh, secret rotation.
 **CCattler**: Agent computes SHA256 hash of all config inputs (env vars, config files, secrets) at start time. On steady-state cycle, recomputes and compares — if different, stops and restarts with new config. Secret rotation library exists (`security/secrets.go:RotateKeyProvider`).
 **Files**: `agent/agent.go`, `security/secrets.go`, `types/keys.go`.
-**Remaining**: `cca secret rotate` CLI command, agent key distribution after rotation.
+`cca secret rotate` CLI command generates a new master key and re-wraps all DEKs via the `/api/secret/rotate` API endpoint. New nodes receive the rotated key at enrollment.
+**Files**: `agent/agent.go`, `security/secrets.go`, `api/server.go`, `cmd/cca/command_status.go`, `types/keys.go`.
 
 ### 6. Pod Disruption Budgets — DONE (pre-existing)
 
@@ -52,10 +54,12 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **CCattler**: DSL `lifecycle { pre_stop "cmd" post_start "cmd" }`. Agent executes pre_stop via `runtime.Exec` before every `runtime.Stop` call (scale-down, config change, resize). Post-start executed after successful `runtime.Start`. Hooks are best-effort with 30s timeout — failures logged but don't block the operation.
 **Files**: `agent/agent.go`, `lang/ast.go`, `lang/parser.go`, `lang/compiler.go`, `types/keys.go`.
 
-### 8. Job/Batch Workloads
+### 8. Job/Batch Workloads — DONE
 
 **K8s**: Jobs (run-to-completion), CronJobs, parallelism, completions.
-**CCattler**: None — all services are long-running.
+**CCattler**: DSL `job "name" { image "img" command "cmd" completions N parallelism N backoff_limit N }`. JobController creates instances that run to completion, tracks succeeded/failed counts, marks job "complete" when completions met or "failed" when backoff limit exceeded. Failure controller skips job-owned instances.
+**Files**: `controllers/job.go`, `lang/ast.go`, `lang/parser.go`, `lang/compiler.go`, `lang/formatter.go`, `types/keys.go`.
+**Remaining**: CronJobs (scheduled recurring jobs).
 
 ### 9. Log Rotation — DONE
 

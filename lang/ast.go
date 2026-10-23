@@ -6,6 +6,7 @@ package lang
 // File is the root of the AST — a list of top-level declarations.
 type File struct {
 	Services         []ServiceDecl         // top-level service blocks in the source file
+	Jobs             []JobDecl             // top-level job blocks for run-to-completion workloads
 	Volumes          []VolumeDecl          // top-level volume blocks in the source file
 	Connections      []ConnectionDecl      // top-level connection blocks defining structured connection strings
 	Tenants          []TenantDecl          // top-level tenant blocks in the source file
@@ -206,6 +207,19 @@ type LoggingDecl struct {
 type LifecycleDecl struct {
 	PreStop   string // command to execute before stopping the container
 	PostStart string // command to execute after starting the container
+}
+
+// JobDecl represents a parsed "job" block in the DSL. Jobs are
+// run-to-completion workloads that exit after finishing their task,
+// unlike services which are long-running.
+type JobDecl struct {
+	Name         string // unique job identifier from the block header
+	Image        string // container image reference (e.g. "app:v2")
+	Command      string // container command to execute (e.g. "migrate up")
+	Completions  int    // target number of successful completions (default 1)
+	Parallelism  int    // maximum concurrent instances (default 1)
+	BackoffLimit int    // maximum failures before marking job failed (default 3)
+	Line         int    // source line number for error reporting
 }
 
 // ConfigDecl holds configuration declarations for a service — environment

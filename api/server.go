@@ -349,6 +349,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/diff", apiServer.instrumentedHandler("diff", apiServer.handleDiff))
 	apiServer.mux.HandleFunc("/api/metric", apiServer.instrumentedHandler("metric", apiServer.handleMetric))
 	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
+	apiServer.mux.HandleFunc("/api/secret/rotate", apiServer.instrumentedHandler("secret-rotate", apiServer.handleSecretRotate))
 	apiServer.mux.HandleFunc("/api/secret", apiServer.instrumentedHandler("secret", apiServer.handleSecret))
 	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
 	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))
@@ -1613,6 +1614,56 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 	_ = json.NewEncoder(responseWriter).Encode(map[string]string{
 		"ok":   "true",
 		"name": secretName,
+	})
+}
+
+// handleSecretRotate generates a new master key and re-wraps all stored
+// secret DEKs under it. Running agents are not disrupted — they already
+// decrypted secrets at startup. New node enrollments receive the new key.
+func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if apiServer.secretStore == nil {
+		writeJSONError(responseWriter, "secret store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+		return
+	}
+
+	requestContext := request.Context()
+
+	secretNames, listErr := apiServer.secretStore.ListSecrets(requestContext)
+	if listErr != nil {
+		writeJSONError(responseWriter, "list secrets: "+listErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	newMasterKey, generateErr := security.GenerateMasterKey()
+	if generateErr != nil {
+		writeJSONError(responseWriter, "generate key: "+generateErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	newKeyProvider, providerErr := security.NewLocalKeyProvider(newMasterKey)
+	if providerErr != nil {
+		writeJSONError(responseWriter, "create key provider: "+providerErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if rotateErr := apiServer.secretStore.RotateKeyProvider(requestContext, newKeyProvider); rotateErr != nil {
+		writeJSONError(responseWriter, "rotate: "+rotateErr.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	apiServer.secretMasterKey = newMasterKey
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{
+		"rotated": len(secretNames),
+		"message": "master key rotated successfully",
 	})
 }
 

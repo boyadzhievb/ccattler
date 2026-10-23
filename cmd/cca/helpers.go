@@ -279,6 +279,8 @@ func coreControllers() []controllers.Controller {
 		controllers.NewStatefulDNSController(),
 		controllers.NewStatefulVolumeController(),
 		controllers.NewRouteController(),
+		controllers.NewEvictionController(),
+		controllers.NewJobController(),
 	}
 }
 

@@ -535,6 +535,117 @@ The existing rollout controller implements `max_unavailable` but ignores `max_ex
 
 ---
 
+## 16. Node-Pressure Eviction
+
+**Chain:** Agent reports `observed/node/{id}/available/memory` → EvictionController reads available vs capacity → compares against thresholds → evicts lowest-QoS instances first → FailureController replaces on healthy nodes
+
+Node-pressure eviction protects the cluster from out-of-memory cascades. When a node's available memory drops below a threshold, the eviction controller marks the node as under pressure and selects instances to evict in QoS priority order.
+
+### Eviction flow
+
+```
+1. Agent reports observed/node/{id}/available/memory = "200Mi" (capacity = "4Gi")
+2. EvictionController reads all node capacity and available facts
+3. Node memory usage = (4096 - 200) / 4096 = 95% → exceeds hard threshold (90%)
+4. Controller emits: derived/node/{id}/pressure = "memory"
+5. Controller scans instances on this node via observed/instance/{id}/node
+6. For each instance, reads derived/service/{svc}/qos_class
+7. Sorts eviction candidates: BestEffort first, then Burstable, then Guaranteed
+8. Emits desired/instance/{id}/state = "stopped" for lowest-priority instances
+9. Stops evicting once projected available memory rises above soft threshold (80%)
+10. FailureController detects stopped instances, replaces on other nodes
+11. When available memory recovers above soft threshold, deletes pressure fact
+```
+
+### Thresholds
+
+- **Hard eviction threshold**: 90% memory utilization — eviction begins immediately.
+- **Soft eviction threshold**: 80% memory utilization — eviction target, pressure cleared below this.
+- Both are package-level constants, not configurable (simplicity over flexibility for now).
+
+### What must match
+
+- QoS class is read from `derived/service/{svc}/qos_class`, set by the compiler at apply time.
+- Instance-to-node mapping is read from `observed/instance/{id}/node`, set by the agent.
+- The eviction controller only stops instances — it never deletes or reschedules them directly. The failure controller handles replacement on healthy nodes.
+- Eviction respects disruption budgets via the same `canEvictUnderDisruptionBudget` check used by the drain controller.
+- A node under pressure is not the same as a node failure — evicted instances get a clean stop (with preStop hooks), not an immediate replacement.
+
+---
+
+## 17. Secret Key Rotation
+
+**Chain:** `cca secret rotate` CLI → POST `/api/secret/rotate` → `SecretStore.RotateKeyProvider()` re-wraps DEKs → new master key distributed to agents via enrollment refresh
+
+Secret rotation re-wraps all stored secrets' data encryption keys (DEKs) under a new master key without decrypting the secret payloads themselves. This is envelope encryption rotation.
+
+### Rotation flow
+
+```
+1. Admin runs: cca secret rotate
+2. CLI sends POST /api/secret/rotate (authenticated, requires secret.admin capability)
+3. API handler generates a new 32-byte master key via GenerateMasterKey()
+4. API handler creates a new LocalKeyProvider with the new key
+5. API handler calls SecretStore.RotateKeyProvider(ctx, newKeyProvider)
+6. RotateKeyProvider re-wraps each secret's DEK from old key to new key
+7. API handler updates its secretMasterKey field for future node enrollments
+8. API returns success with count of rotated secrets
+9. Existing agents continue working — they have the old DEK-encrypted secrets in memory
+10. New node joins get the new master key via the enrollment response
+11. Existing nodes pick up the new key on next agent restart or re-enrollment
+```
+
+### What must match
+
+- The master key in the API server must match what `RotateKeyProvider` set — both are updated atomically within the handler.
+- DEKs are re-wrapped, not regenerated — secret payloads remain unchanged.
+- Running agents are not disrupted — they already decrypted secrets at startup. The new key takes effect on next restart.
+
+---
+
+## 18. Job/Batch Workloads
+
+**Chain:** DSL `job "name" { ... }` → `desired/job/{name}/image`, `desired/job/{name}/completions`, `desired/job/{name}/parallelism` → JobController creates instances → Agent runs to completion → JobController tracks completions → marks job complete/failed
+
+Jobs are run-to-completion workloads, unlike services which are long-running. A job creates instances that run until they exit successfully, tracking completions toward a target.
+
+### Job flow
+
+```
+1. User applies: job "migrate-db" { image "app:v2" command "migrate up" completions 1 }
+2. Compiler emits desired/job/migrate-db/image, /command, /completions=1, /parallelism=1
+3. JobController reads desired job facts, creates instance with unique ID
+4. Agent picks up instance, runs container — container exits 0
+5. Agent reports observed/instance/{id}/state = "exited" with exit_code = 0
+6. JobController reads exit state, increments derived/job/migrate-db/succeeded = 1
+7. succeeded (1) >= completions (1) → JobController emits derived/job/migrate-db/status = "complete"
+8. No more instances created. Job facts remain for inspection.
+```
+
+### Failure handling
+
+```
+1. Container exits non-zero → Agent reports state = "exited", exit_reason = "failed"
+2. JobController increments derived/job/migrate-db/failed count
+3. If failed < backoff_limit (default 3), JobController creates a replacement instance
+4. If failed >= backoff_limit → derived/job/migrate-db/status = "failed"
+```
+
+### Parallelism
+
+- `parallelism N` controls how many instances run concurrently. JobController creates up to N instances at a time.
+- `completions M` is the total successful exits needed. Default 1 for simple jobs.
+- Default parallelism is 1 (sequential).
+
+### What must match
+
+- Job instances use the same runtime path as service instances — same image pull, networking, lifecycle hooks.
+- Job instances are NOT replaced by the FailureController — the JobController owns their lifecycle. Distinguished by `desired/job/{name}` prefix vs `desired/service/{name}`.
+- The instance controller ignores job instances (they have no desired count to reconcile toward).
+- Job status is a derived fact — only the JobController writes it.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

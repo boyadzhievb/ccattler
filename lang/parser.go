@@ -149,6 +149,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Routes = append(file.Routes, *routeDecl)
+		case "job":
+			jobDecl, err := parser.parseJobDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.Jobs = append(file.Jobs, *jobDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -1031,6 +1037,62 @@ func parseTargetValue(raw string) (int, error) {
 		cleaned = cleaned[:len(cleaned)-1]
 	}
 	return strconv.Atoi(cleaned)
+}
+
+// parseJobDeclaration parses a job block: name, image, command,
+// completions, parallelism, and backoff_limit.
+func (parser *Parser) parseJobDeclaration() (*JobDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "job"
+
+	jobName, nameError := parser.expectStringOrIdentifier()
+	if nameError != nil {
+		return nil, nameError
+	}
+
+	if braceError := parser.expectToken(TokenLBrace); braceError != nil {
+		return nil, braceError
+	}
+	parser.skipNewlineTokens()
+
+	jobDecl := &JobDecl{Name: jobName, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		fieldKeyword, fieldError := parser.expectIdentifier()
+		if fieldError != nil {
+			return nil, fieldError
+		}
+		if parseError := parser.parseJobField(jobDecl, fieldKeyword); parseError != nil {
+			return nil, parseError
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if closeError := parser.expectToken(TokenRBrace); closeError != nil {
+		return nil, closeError
+	}
+
+	return jobDecl, nil
+}
+
+// parseJobField dispatches parsing of a single field inside a job block.
+func (parser *Parser) parseJobField(jobDecl *JobDecl, fieldName string) error {
+	var err error
+	switch fieldName {
+	case "image":
+		jobDecl.Image, err = parser.expectStringOrIdentifier()
+	case "command":
+		jobDecl.Command, err = parser.expectStringOrIdentifier()
+	case "completions":
+		jobDecl.Completions, err = parser.expectInteger()
+	case "parallelism":
+		jobDecl.Parallelism, err = parser.expectInteger()
+	case "backoff_limit":
+		jobDecl.BackoffLimit, err = parser.expectInteger()
+	default:
+		return parser.parserErrorf("unknown job field %q", fieldName)
+	}
+	return err
 }
 
 // parseVolumeDeclaration parses a volume block, including its name and all

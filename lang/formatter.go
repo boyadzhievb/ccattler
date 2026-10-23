@@ -110,6 +110,13 @@ func Format(file *File) string {
 		formatServiceDecl(&builder, serviceDecl)
 		needsBlank = true
 	}
+	for _, jobDecl := range file.Jobs {
+		if needsBlank {
+			builder.WriteString("\n")
+		}
+		formatJobDecl(&builder, jobDecl)
+		needsBlank = true
+	}
 	for _, routeDecl := range file.Routes {
 		if needsBlank {
 			builder.WriteString("\n")
@@ -371,6 +378,27 @@ func formatServiceDecl(builder *strings.Builder, serviceDecl ServiceDecl) {
 	formatServicePullPolicyField(builder, serviceDecl)
 	formatServiceLoggingFields(builder, serviceDecl)
 	formatServiceLifecycleFields(builder, serviceDecl)
+	builder.WriteString("}\n")
+}
+
+// formatJobDecl emits a job block with its fields.
+func formatJobDecl(builder *strings.Builder, jobDecl JobDecl) {
+	fmt.Fprintf(builder, "job %s {\n", quoteIfNeeded(jobDecl.Name))
+	if jobDecl.Image != "" {
+		fmt.Fprintf(builder, "%simage %s\n", indentUnit, quoteIfNeeded(jobDecl.Image))
+	}
+	if jobDecl.Command != "" {
+		fmt.Fprintf(builder, "%scommand %s\n", indentUnit, quoteIfNeeded(jobDecl.Command))
+	}
+	if jobDecl.Completions > 0 {
+		fmt.Fprintf(builder, "%scompletions %d\n", indentUnit, jobDecl.Completions)
+	}
+	if jobDecl.Parallelism > 0 {
+		fmt.Fprintf(builder, "%sparallelism %d\n", indentUnit, jobDecl.Parallelism)
+	}
+	if jobDecl.BackoffLimit > 0 {
+		fmt.Fprintf(builder, "%sbackoff_limit %d\n", indentUnit, jobDecl.BackoffLimit)
+	}
 	builder.WriteString("}\n")
 }
 

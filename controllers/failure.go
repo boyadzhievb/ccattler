@@ -150,6 +150,9 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
 	for _, instanceID := range sortedInstanceIDs {
 		fields := instanceFields[instanceID]
+		if fields["job_owner"] != "" {
+			continue
+		}
 		instanceChanges := failureController.processInstanceForRecovery(instanceID, fields, now, cycleCounters, crashLoopCounters)
 		changes = append(changes, instanceChanges...)
 		if effectiveInstanceState(fields) == types.InstanceFailed {

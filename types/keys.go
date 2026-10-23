@@ -1543,6 +1543,13 @@ func KeyDerivedNodeDrainEvict(nodeID string, instanceID string) string {
 	return fmt.Sprintf("%s/node/%s/drain/evict/%s", PrefixDerived, nodeID, instanceID)
 }
 
+// KeyDerivedNodePressure returns the store path for a node's resource pressure marker.
+// Written by the eviction controller when memory utilization exceeds the hard threshold.
+// Path: derived/node/{nodeID}/pressure
+func KeyDerivedNodePressure(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/pressure", PrefixDerived, nodeID)
+}
+
 // KeyDerivedCredentialState returns the broker-derived credential state for an
 // instance's cloud identity binding.
 // Path: derived/credential/{instanceID}/{identityName}/state
@@ -1963,3 +1970,76 @@ func KeyDerivedRouteBackends(routeName string) string {
 
 // ScanDerivedRoutes is the prefix for scanning all derived route facts.
 const ScanDerivedRoutes = PrefixDerived + "/route/"
+
+// ScanDesiredJobs is the prefix for scanning all desired job definitions.
+const ScanDesiredJobs = PrefixDesired + "/job/"
+
+// ScanDerivedJobs is the prefix for scanning all derived job-level facts.
+const ScanDerivedJobs = PrefixDerived + "/job/"
+
+// KeyDesiredJob returns the store path for a job's root marker key.
+// Path: desired/job/{name}
+func KeyDesiredJob(jobName string) string {
+	return fmt.Sprintf("%s/job/%s", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobImage returns the store path for a job's container image.
+// Path: desired/job/{name}/image
+func KeyDesiredJobImage(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/image", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobCommand returns the store path for a job's container command.
+// Path: desired/job/{name}/command
+func KeyDesiredJobCommand(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/command", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobCompletions returns the store path for a job's target
+// number of successful completions.
+// Path: desired/job/{name}/completions
+func KeyDesiredJobCompletions(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/completions", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobParallelism returns the store path for a job's maximum
+// number of concurrently running instances.
+// Path: desired/job/{name}/parallelism
+func KeyDesiredJobParallelism(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/parallelism", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobBackoffLimit returns the store path for a job's maximum
+// number of failures before the job is marked failed.
+// Path: desired/job/{name}/backoff_limit
+func KeyDesiredJobBackoffLimit(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/backoff_limit", PrefixDesired, jobName)
+}
+
+// KeyDerivedJobStatus returns the store path for a job's computed status.
+// Values: "running", "complete", "failed".
+// Path: derived/job/{name}/status
+func KeyDerivedJobStatus(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/status", PrefixDerived, jobName)
+}
+
+// KeyDerivedJobSucceeded returns the store path for a job's count of
+// successfully completed instances.
+// Path: derived/job/{name}/succeeded
+func KeyDerivedJobSucceeded(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/succeeded", PrefixDerived, jobName)
+}
+
+// KeyDerivedJobFailed returns the store path for a job's count of
+// failed instances.
+// Path: derived/job/{name}/failed
+func KeyDerivedJobFailed(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/failed", PrefixDerived, jobName)
+}
+
+// KeyDerivedJobInstanceOwner returns the store path marking an instance
+// as owned by a job. This prevents the FailureController from replacing it.
+// Path: derived/instance/{instanceID}/job_owner
+func KeyDerivedJobInstanceOwner(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/job_owner", PrefixDerived, instanceID)
+}

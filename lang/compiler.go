@@ -55,6 +55,14 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		facts = append(facts, serviceFacts...)
 	}
 
+	for _, jobDecl := range file.Jobs {
+		jobFacts, jobErr := compileJobDeclaration(jobDecl, sourceLines)
+		if jobErr != nil {
+			return nil, jobErr
+		}
+		facts = append(facts, jobFacts...)
+	}
+
 	accessControlFacts, accessControlErr := compileAccessControlDeclarations(file, sourceLines)
 	if accessControlErr != nil {
 		return nil, accessControlErr
@@ -1483,3 +1491,52 @@ func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]Fac
 	}
 	return changes, nil
 }
+
+// compileJobDeclaration compiles a JobDecl into desired/job/{name}/ facts.
+func compileJobDeclaration(jobDecl JobDecl, sourceLines []string) ([]Fact, error) {
+	if jobDecl.Name == "" {
+		return nil, &ParseError{
+			Line: jobDecl.Line, Message: "job name is required",
+			SourceLine: sourceLineAt(sourceLines, jobDecl.Line),
+		}
+	}
+	if jobDecl.Image == "" {
+		return nil, &ParseError{
+			Line: jobDecl.Line, Message: fmt.Sprintf("job %q requires an image", jobDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, jobDecl.Line),
+		}
+	}
+
+	completions := jobDecl.Completions
+	if completions == 0 {
+		completions = 1
+	}
+	parallelism := jobDecl.Parallelism
+	if parallelism == 0 {
+		parallelism = 1
+	}
+	backoffLimit := jobDecl.BackoffLimit
+	if backoffLimit == 0 {
+		backoffLimit = defaultJobBackoffLimit
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredJob(jobDecl.Name), Value: ""},
+		{Key: types.KeyDesiredJobImage(jobDecl.Name), Value: jobDecl.Image},
+		{Key: types.KeyDesiredJobCompletions(jobDecl.Name), Value: strconv.Itoa(completions)},
+		{Key: types.KeyDesiredJobParallelism(jobDecl.Name), Value: strconv.Itoa(parallelism)},
+		{Key: types.KeyDesiredJobBackoffLimit(jobDecl.Name), Value: strconv.Itoa(backoffLimit)},
+	}
+
+	if jobDecl.Command != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredJobCommand(jobDecl.Name), Value: jobDecl.Command,
+		})
+	}
+
+	return facts, nil
+}
+
+// defaultJobBackoffLimit is the default number of failures before a job
+// is marked failed, when no backoff_limit is specified in the DSL.
+const defaultJobBackoffLimit = 3

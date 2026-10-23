@@ -1434,8 +1434,10 @@ func executeSecretCommand(args []string) {
 			os.Exit(1)
 		}
 		executeSecretDelete(args[1])
+	case "rotate":
+		executeSecretRotate()
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete> [name] [value]")
+		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate> [name] [value]")
 		os.Exit(1)
 	}
 }
@@ -1531,4 +1533,35 @@ func executeSecretDelete(secretName string) {
 		os.Exit(1)
 	}
 	fmt.Printf("secret %q deleted\n", secretName)
+}
+
+// executeSecretRotate rotates the master encryption key by re-wrapping all
+// stored secret DEKs under a new key via the API.
+func executeSecretRotate() {
+	requestURL := fmt.Sprintf("%s/api/secret/rotate", statusAPIBaseURL())
+	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "application/json", nil) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		os.Exit(1)
+	}
+
+	var rotateResult map[string]interface{}
+	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&rotateResult); decodeErr != nil {
+		fmt.Fprintf(os.Stderr, "decode: %v\n", decodeErr)
+		os.Exit(1)
+	}
+	rotatedValue, rotatedOK := rotateResult["rotated"].(float64)
+	if !rotatedOK {
+		fmt.Fprintln(os.Stderr, "unexpected response format")
+		os.Exit(1)
+	}
+	rotatedCount := int(rotatedValue)
+	fmt.Printf("master key rotated — %d secret(s) re-wrapped\n", rotatedCount)
 }
