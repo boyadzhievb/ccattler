@@ -31,12 +31,12 @@ on:
           - "release"
 
 concurrency:
-  group: testbed-e2e
+  group: baremetal-e2e
   cancel-in-progress: false
 
 jobs:
   e2e:
-    runs-on: self-hosted
+    runs-on: [self-hosted, e2e]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -62,7 +62,7 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i ~/.ssh/id_rsa_dell_bozhan"
+          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
           for node in node-1 node-2 node-3; do
             case "$node" in
               node-1) ip="192.168.100.215" ;;

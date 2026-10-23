@@ -321,9 +321,7 @@ ssh_vm() {
     local ip="${NODE_IPS[$vm_name]}"
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-    if [[ "$BAREMETAL" == "true" ]]; then
-        ssh_args+=" -i ~/.ssh/id_rsa_dell_bozhan"
-    else
+    if [[ "$BAREMETAL" != "true" ]]; then
         ssh_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
     fi
     ssh $ssh_args "${SSH_USER}@${ip}" "$@"
@@ -340,9 +338,7 @@ scp_to_vm() {
     local ip="${NODE_IPS[$vm_name]}"
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local scp_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-    if [[ "$BAREMETAL" == "true" ]]; then
-        scp_args+=" -i ~/.ssh/id_rsa_dell_bozhan"
-    else
+    if [[ "$BAREMETAL" != "true" ]]; then
         scp_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
     fi
     scp $scp_args "$local_path" "${SSH_USER}@${ip}:${remote_path}"
