@@ -68,12 +68,14 @@ service webserver {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env _AIRFLOW_DB_MIGRATE true
         env _AIRFLOW_WWW_USER_CREATE true
         env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
     secret airflow.admin-password "/run/secrets/admin-password"
+    secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
 }
@@ -95,8 +97,10 @@ service scheduler {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
     }
+    secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
 }
@@ -119,8 +123,10 @@ service worker {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
+        env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
     }
+    secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
 }

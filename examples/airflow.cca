@@ -115,6 +115,7 @@ service webserver {
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__WEBSERVER__EXPOSE_CONFIG "false"
+        env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
         env AIRFLOW__CORE__DAGS_FOLDER "/opt/airflow/dags"
         env AIRFLOW__LOGGING__BASE_LOG_FOLDER "/opt/airflow/logs"
