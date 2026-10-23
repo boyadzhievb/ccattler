@@ -81,10 +81,21 @@ fi
 
 # ---- Check 2: etcd health (via healthz endpoint) ----
 log "Check 2: control plane health"
-if ssh_vm cca-deploy-ctrl "curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/healthz" >/dev/null 2>&1; then
+HEALTHZ_OK=false
+HEALTHZ_MAX_RETRIES=3
+for healthz_attempt in $(seq 1 "$HEALTHZ_MAX_RETRIES"); do
+    if ssh_vm cca-deploy-ctrl "curl -sf --connect-timeout 10 --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/healthz" >/dev/null 2>&1; then
+        HEALTHZ_OK=true
+        break
+    fi
+    if [[ "$healthz_attempt" -lt "$HEALTHZ_MAX_RETRIES" ]]; then
+        sleep 5
+    fi
+done
+if [[ "$HEALTHZ_OK" == "true" ]]; then
     log "  healthz: OK"
 else
-    warn "healthz: UNHEALTHY"
+    warn "healthz: UNHEALTHY (failed after $HEALTHZ_MAX_RETRIES attempts)"
 fi
 
 # ---- Check 3: cca server API ----
@@ -170,10 +181,17 @@ if [[ -n "$STATUS_JSON" ]]; then
         echo "$STATUS_JSON" | jq -r '.instances[] | select(.state == "failed") | "    \(.id) (\(.service)) on \(.node)"'
     fi
 
-    unhealthy_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.health != null and .health != "" and .health != "healthy")] | length')
+    # health="-" means no probe configured yet — not unhealthy, just unprobed
+    unhealthy_filter='[.instances[] | select(.health != null and .health != "" and .health != "healthy" and .health != "-")] | length'
+    unhealthy_instances=$(echo "$STATUS_JSON" | jq "$unhealthy_filter")
     if [[ "$unhealthy_instances" -gt 0 ]]; then
         warn "$unhealthy_instances instance(s) unhealthy"
-        echo "$STATUS_JSON" | jq -r '.instances[] | select(.health != null and .health != "" and .health != "healthy") | "    \(.id) (\(.service)) health=\(.health)"'
+        echo "$STATUS_JSON" | jq -r '.instances[] | select(.health != null and .health != "" and .health != "healthy" and .health != "-") | "    \(.id) (\(.service)) health=\(.health)"'
+    fi
+
+    unprobed_instances=$(echo "$STATUS_JSON" | jq '[.instances[] | select(.health == "-")] | length')
+    if [[ "$unprobed_instances" -gt 0 ]]; then
+        log "  Info: $unprobed_instances instance(s) have no health probe data yet"
     fi
 else
     log "  Skipped (no status JSON)"
@@ -213,8 +231,8 @@ for vm in "${ALL_VM_NAMES[@]}"; do
     fi
 done
 
-# ---- Check 9: HTTP endpoint reachability ----
-log "Check 9: HTTP endpoint reachability"
+# ---- Check 9: Endpoint reachability ----
+log "Check 9: Endpoint reachability"
 if [[ -n "$STATUS_JSON" ]]; then
     networking_count=$(echo "$STATUS_JSON" | jq '.networking | length')
     if [[ "$networking_count" -gt 0 ]]; then
@@ -229,7 +247,15 @@ if [[ -n "$STATUS_JSON" ]]; then
             if [[ "$http_status" =~ ^[23] ]]; then
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status — ok"
             elif [[ "$http_status" == "000" ]]; then
-                log "  $svc_name (${svc_vip}:${svc_port}): connection failed"
+                # HTTP failed — try TCP connectivity as fallback (for non-HTTP services like databases)
+                tcp_ok=$(ssh_vm cca-deploy-ctrl \
+                    "timeout 5 bash -c 'echo > /dev/tcp/${svc_vip}/${svc_port}' 2>/dev/null && echo yes || echo no" \
+                    2>/dev/null)
+                if [[ "$tcp_ok" == "yes" ]]; then
+                    log "  $svc_name (${svc_vip}:${svc_port}): TCP open (non-HTTP service)"
+                else
+                    log "  $svc_name (${svc_vip}:${svc_port}): unreachable"
+                fi
             else
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status"
             fi
