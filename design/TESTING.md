@@ -1,6 +1,6 @@
 # CCattler Test Plan
 
-512 tests across 13 packages. Every milestone has a "must test" headline scenario, supported by unit and integration tests.
+1836 tests across 19 packages. Every milestone has a "must test" headline scenario, supported by unit and integration tests.
 
 ## How to Run
 
@@ -174,19 +174,17 @@ Ephemeral libvirt VMs managed by Vagrant. Created, tested, and halted on every C
 
 Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
-### Deploy cluster (bare-metal on 100.215/30/31)
+### Deploy cluster (Vagrant VMs on testbed-100.43)
 
-Long-lived 3-node bare-metal cluster. No Vagrant — nodes are always running.
+Long-lived 3-node Vagrant/libvirt cluster on testbed-100.43. Runs Airflow and other heavy workloads.
 
-| Node | IP | Role | RAM |
-|------|-----|------|-----|
-| node-1 | 192.168.100.215 | etcd + controlplane + worker | 2 GB |
-| node-2 | 192.168.100.30 | worker | 2 GB |
-| node-3 | 192.168.100.31 | worker | 2 GB |
+| VM | IP | Role | RAM |
+|----|-----|------|-----|
+| cca-deploy-ctrl | 192.168.124.10 | etcd + controlplane + worker | 4 GB |
+| cca-deploy-worker-1 | 192.168.124.20 | worker | 4 GB |
+| cca-deploy-worker-2 | 192.168.124.30 | worker | 4 GB |
 
-Run: `./test/e2e/cluster_test.sh --env deploy` (triggered by `deploy-testbed.yml` manual dispatch)
-
-SSH user: `bozhan`, default key. Ansible inventory: `deploy/ansible/baremetal-inventory.ini`.
+Vagrant state: `/tmp/cca-vagrant-state-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
 
 ### Resource requirements for workloads
 
@@ -197,9 +195,9 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 | whoami, whoami-multiport | 1 GB | 2 GB |
 | Airflow full stack | 4 GB | 8 GB |
 
-### Why separate hosts
+### Two clusters, one host
 
-The E2E host (16 GB) previously ran both clusters. Airflow workloads + orphaned deploy VMs caused OOM kills. Splitting eliminates resource contention, Vagrant state leaks, and host key churn.
+Both clusters run on testbed-100.43 (16 GB). They use separate Vagrant state directories and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived.
 
 ## Demo Commands
 
