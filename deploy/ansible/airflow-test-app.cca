@@ -11,9 +11,17 @@ service metadata-db {
         env POSTGRES_USER "airflow"
         env POSTGRES_PASSWORD "airflow"
     }
-    health {
+    startup {
+        tcp
+        every 5s
+        timeout 3s
+        failure_threshold 12
+        initial_delay 5s
+    }
+    liveness {
         tcp
         every 10s
+        failure_threshold 3
     }
     init {
         exec "pg_isready -U airflow"
@@ -30,9 +38,17 @@ service redis {
         cpu 250m
         memory 256Mi
     }
-    health {
+    startup {
+        tcp
+        every 5s
+        timeout 3s
+        failure_threshold 6
+        initial_delay 3s
+    }
+    liveness {
         tcp
         every 10s
+        failure_threshold 3
     }
 }
 
@@ -58,9 +74,17 @@ service webserver {
     secret airflow-tls-cert "/opt/airflow/certs/tls.crt"
     secret airflow-tls-key "/opt/airflow/certs/tls.key"
     secret fernet-key "/opt/airflow/fernet-key"
-    health {
+    startup {
+        tcp
+        every 10s
+        timeout 5s
+        failure_threshold 60
+        initial_delay 120s
+    }
+    liveness {
         tcp
         every 15s
+        failure_threshold 3
     }
     init {
         exec "airflow db migrate"
@@ -90,9 +114,19 @@ service scheduler {
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
     }
     secret fernet-key "/opt/airflow/fernet-key"
-    health {
+    startup {
         tcp
+        port 8793
+        every 10s
+        timeout 5s
+        failure_threshold 30
+        initial_delay 30s
+    }
+    liveness {
+        tcp
+        port 8793
         every 30s
+        failure_threshold 3
     }
 }
 
@@ -113,8 +147,16 @@ service worker {
         env AIRFLOW__CORE__LOAD_EXAMPLES "true"
     }
     secret fernet-key "/opt/airflow/fernet-key"
-    health {
+    startup {
+        tcp
+        every 10s
+        timeout 5s
+        failure_threshold 18
+        initial_delay 30s
+    }
+    liveness {
         tcp
         every 15s
+        failure_threshold 3
     }
 }

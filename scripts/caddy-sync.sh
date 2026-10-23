@@ -28,7 +28,7 @@ SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
 
 CURL_TLS="--cacert $CCA_CA --cert $CCA_CERT --key $CCA_KEY"
 
-log() { echo "[$(date '+%H:%M:%S')] caddy-sync: $*"; }
+log() { echo "[$(date '+%H:%M:%S')] caddy-sync: $*" >&2; }
 
 # query_api fetches a CCattler API endpoint and returns the JSON body.
 query_api() {

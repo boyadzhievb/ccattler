@@ -42,6 +42,15 @@ func TestLocalTokenAuthenticatorAcceptsCorrectToken(t *testing.T) {
 	if result.PrincipalKind != PrincipalKindUser {
 		t.Errorf("principal kind: got %q, want %q", result.PrincipalKind, PrincipalKindUser)
 	}
+	hasPlatformGroup := false
+	for _, groupName := range result.Groups {
+		if groupName == "platform" {
+			hasPlatformGroup = true
+		}
+	}
+	if !hasPlatformGroup {
+		t.Error("local-admin should have the platform group for full store visibility")
+	}
 }
 
 func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
