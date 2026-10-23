@@ -190,6 +190,18 @@ func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference s
 	return nil
 }
 
+// IsImageCached returns true if the image was previously pulled in this simulator.
+func (simulator *SimulatorRuntime) IsImageCached(_ context.Context, imageReference string) bool {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	for _, pulledImage := range simulator.PulledImages {
+		if pulledImage == imageReference {
+			return true
+		}
+	}
+	return false
+}
+
 // ExecInit runs an initialization command against an image in the simulator.
 // The simulator records the call and succeeds.
 func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, execSpec ExecSpec) error {

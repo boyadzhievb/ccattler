@@ -265,6 +265,13 @@ func KeyObservedInstanceImage(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/image", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstancePullStatus returns the store path for image pull progress.
+// Value is JSON: {"error":"...","attempts":N,"retryAfter":"RFC3339","image":"ref"}.
+// Path: observed/instance/{instanceID}/pull-status
+func KeyObservedInstancePullStatus(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/pull-status", PrefixObserved, instanceID)
+}
+
 // KeyObservedInstanceIP returns the store path for an instance's assigned IP address.
 // Path: observed/instance/{instanceID}/ip
 func KeyObservedInstanceIP(instanceID string) string {

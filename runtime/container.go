@@ -268,7 +268,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 // for all exposed ports, and a validation error if the image reference is
 // invalid. This function is separated from Start for testability.
 func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, containerName string, volumeMountArgs []string) ([]string, map[int]int, error) {
-	args := []string{"run", "-d", "--name", containerName}
+	args := []string{"run", "-d", "--pull", "never", "--name", containerName}
 
 	if containerRuntime.networkName != "" {
 		args = append(args, "--network", containerRuntime.networkName)
@@ -884,7 +884,8 @@ func parseContainerStatsOutput(output string) []ContainerResourceUsage {
 }
 
 // PullImage pulls a container image from a registry by shelling out to
-// nerdctl/docker pull. Blocks until the pull completes or fails.
+// nerdctl/docker pull. Blocks until the pull completes or the context
+// is cancelled. The agent should set a timeout on the context (default 5m).
 func (containerRuntime *ContainerRuntime) PullImage(ctx context.Context, imageReference string) error {
 	if !validImageReferencePattern.MatchString(imageReference) {
 		return fmt.Errorf("invalid image reference: %q", imageReference)
@@ -896,6 +897,14 @@ func (containerRuntime *ContainerRuntime) PullImage(ctx context.Context, imageRe
 		return fmt.Errorf("pulling image %s: %v: %s", imageReference, pullError, stderrOutput.String())
 	}
 	return nil
+}
+
+// IsImageCached checks whether a container image exists in the local store.
+func (containerRuntime *ContainerRuntime) IsImageCached(ctx context.Context, imageReference string) bool {
+	inspectCommand := containerRuntime.buildExecCommand(ctx, "image", "inspect", imageReference)
+	inspectCommand.Stdout = nil
+	inspectCommand.Stderr = nil
+	return inspectCommand.Run() == nil
 }
 
 // buildContainerName generates a deterministic nerdctl container name

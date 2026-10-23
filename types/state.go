@@ -24,6 +24,15 @@ const (
 	// the container or process is alive.
 	InstanceRunning InstanceState = "running"
 
+	// InstancePulling means the agent is downloading the container image for
+	// this instance. Not a failure — the failure controller ignores it.
+	InstancePulling InstanceState = "pulling"
+
+	// InstanceImagePullBackoff means an image pull failed and the agent is
+	// waiting before retrying. Shows the error reason and next retry time
+	// via the pull-status/{instanceID} fact.
+	InstanceImagePullBackoff InstanceState = "image-pull-backoff"
+
 	// InstanceFailed means the instance encountered an error and is no longer
 	// running. The failure controller will create a replacement instance.
 	InstanceFailed InstanceState = "failed"

@@ -134,6 +134,7 @@ type ExecCapturer interface {
 // and SimulatorRuntime do not pull real images.
 type ImagePuller interface {
 	PullImage(ctx context.Context, imageReference string) error
+	IsImageCached(ctx context.Context, imageReference string) bool
 }
 
 // ExecSpec describes a command to execute inside or alongside a workload.

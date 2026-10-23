@@ -5,8 +5,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"strconv"
@@ -41,6 +43,30 @@ const heartbeatInterval = 5 * time.Second
 // reconciliation ticker so that slow etcd calls in the main loop cannot stall
 // VIP rule programming and stale-node eviction — the fast-path traffic shift.
 const dataPlaneReconcileInterval = 1 * time.Second
+
+// imagePullBaseDelay is the initial backoff delay after a failed image pull.
+const imagePullBaseDelay = 10 * time.Second
+
+// imagePullMaxDelay is the maximum backoff delay between image pull retries.
+const imagePullMaxDelay = 5 * time.Minute
+
+// imagePullTimeout is the context deadline for a single image pull attempt.
+const imagePullTimeout = 5 * time.Minute
+
+// imagePullBackoffEntry tracks retry state for a single instance's image pull.
+type imagePullBackoffEntry struct {
+	attempts   int       // attempts is the number of consecutive failed pull attempts.
+	retryAfter time.Time // retryAfter is the earliest time the next pull attempt should start.
+	lastError  string    // lastError is the error message from the most recent failure.
+}
+
+// imagePullStatus is the JSON-serialized pull progress written to the store.
+type imagePullStatus struct {
+	Error      string `json:"error,omitempty"`       // Error is the reason for the most recent failure.
+	Attempts   int    `json:"attempts"`              // Attempts is the number of consecutive failures.
+	RetryAfter string `json:"retry_after,omitempty"` // RetryAfter is the RFC3339 time of the next retry.
+	Image      string `json:"image"`                 // Image is the reference being pulled.
+}
 
 // ccaSecretHelperPath is the container path where the cca-secret helper script
 // is bind-mounted. Containers use this to fetch secrets from the agent's API.
@@ -79,6 +105,7 @@ type Agent struct {
 	secretAPIServer          *SecretAPIServer                     // secretAPIServer serves per-instance secret retrieval over HTTP; nil means secrets use file materialization.
 	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
+	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
 }
 
 // New creates a new Agent for the given node, wired to the provided state store
@@ -93,6 +120,7 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		interval:                 defaultAgentReconcileInterval,
 		heartbeatFrequency:       heartbeatInterval,
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
+		imagePullBackoffs:        make(map[string]*imagePullBackoffEntry),
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
 		nodeReporter:             NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
 		dataPlaneReconciler:      NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
@@ -533,6 +561,10 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		return
 	}
 
+	if !nodeAgent.ensureImageAvailable(ctx, instanceInfo, image) {
+		return
+	}
+
 	var secretAPIToken string
 	var secretAPIBaseURL string
 	if nodeAgent.secretAPIServer != nil {
@@ -576,6 +608,89 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
 	nodeAgent.startInstanceAndPublishState(ctx, instanceInfo, image, runtimeSpec)
+}
+
+// ensureImageAvailable checks that the container image is locally cached,
+// pulling it if necessary. Returns true when the image is ready. Returns
+// false when the runtime does not support pulling, the image is being
+// pulled, or the pull is in backoff — the caller should skip this instance.
+func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo placedInstanceInfo, image string) bool {
+	imagePuller, supportsPull := nodeAgent.runtime.(runtime.ImagePuller)
+	if !supportsPull {
+		return true
+	}
+
+	if imagePuller.IsImageCached(ctx, image) {
+		delete(nodeAgent.imagePullBackoffs, instanceInfo.id)
+		nodeAgent.clearPullStatusFromStore(ctx, instanceInfo.id)
+		return true
+	}
+
+	if backoffEntry, hasBackoff := nodeAgent.imagePullBackoffs[instanceInfo.id]; hasBackoff {
+		if time.Now().Before(backoffEntry.retryAfter) {
+			return false
+		}
+	}
+
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstancePulling, "")
+	logging.Default().Info("pulling image", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image)
+
+	pullContext, cancelPull := context.WithTimeout(ctx, imagePullTimeout)
+	defer cancelPull()
+
+	if pullError := imagePuller.PullImage(pullContext, image); pullError != nil {
+		nodeAgent.recordImagePullFailure(ctx, instanceInfo, image, pullError.Error())
+		return false
+	}
+
+	delete(nodeAgent.imagePullBackoffs, instanceInfo.id)
+	nodeAgent.clearPullStatusFromStore(ctx, instanceInfo.id)
+	logging.Default().Info("image pulled", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image)
+	return true
+}
+
+// recordImagePullFailure increments the backoff counter for an instance and
+// writes the pull status to the store so it's visible via cca get instances.
+func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo placedInstanceInfo, image string, errorMessage string) {
+	backoffEntry, exists := nodeAgent.imagePullBackoffs[instanceInfo.id]
+	if !exists {
+		backoffEntry = &imagePullBackoffEntry{}
+		nodeAgent.imagePullBackoffs[instanceInfo.id] = backoffEntry
+	}
+	backoffEntry.attempts++
+	backoffEntry.lastError = errorMessage
+
+	delaySeconds := float64(imagePullBaseDelay/time.Second) * math.Pow(2, float64(backoffEntry.attempts-1))
+	if delaySeconds > float64(imagePullMaxDelay/time.Second) {
+		delaySeconds = float64(imagePullMaxDelay / time.Second)
+	}
+	backoffEntry.retryAfter = time.Now().Add(time.Duration(delaySeconds) * time.Second)
+
+	logging.Default().Warn("image pull failed",
+		"agent", nodeAgent.nodeID, "instance", instanceInfo.id, "image", image,
+		"attempt", strconv.Itoa(backoffEntry.attempts), "retry_after", backoffEntry.retryAfter.Format(time.RFC3339),
+		"error", errorMessage)
+
+	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceImagePullBackoff, "")
+
+	pullStatus := imagePullStatus{
+		Error:      errorMessage,
+		Attempts:   backoffEntry.attempts,
+		RetryAfter: backoffEntry.retryAfter.Format(time.RFC3339),
+		Image:      image,
+	}
+	statusJSON, marshalError := json.Marshal(pullStatus)
+	if marshalError != nil {
+		return
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstancePullStatus(instanceInfo.id), statusJSON); putError != nil {
+		logging.Default().Error("failed to write pull status", "instance", instanceInfo.id, "error", putError.Error())
+	}
+}
+
+// clearPullStatusFromStore removes the pull-status fact after a successful pull.
+func (nodeAgent *Agent) clearPullStatusFromStore(ctx context.Context, instanceID string) {
+	nodeAgent.store.Delete(ctx, types.KeyObservedInstancePullStatus(instanceID))
 }
 
 // buildRuntimeSpecForInstance resolves the complete runtime specification for an
@@ -668,6 +783,8 @@ func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceI
 // allocation fact, and removes the applied resource tracking entry.
 func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID string) {
 	delete(nodeAgent.appliedInstanceResources, instanceID)
+	delete(nodeAgent.imagePullBackoffs, instanceID)
+	nodeAgent.clearPullStatusFromStore(ctx, instanceID)
 	if nodeAgent.secretAPIServer != nil {
 		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceID)
 	}
