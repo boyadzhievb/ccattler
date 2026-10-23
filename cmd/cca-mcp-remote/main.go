@@ -27,10 +27,10 @@ type jsonRPCRequest struct {
 
 // jsonRPCResponse represents an outgoing JSON-RPC 2.0 response to the MCP client.
 type jsonRPCResponse struct {
-	JSONRPC string         `json:"jsonrpc"`
+	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
-	Result  any            `json:"result,omitempty"`
-	Error   *jsonRPCError  `json:"error,omitempty"`
+	Result  any             `json:"result,omitempty"`
+	Error   *jsonRPCError   `json:"error,omitempty"`
 }
 
 // jsonRPCError represents a JSON-RPC 2.0 error object.
@@ -232,7 +232,7 @@ func executeShellCommand(arguments map[string]any) (string, bool) {
 	commandContext, cancelFunc := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancelFunc()
 
-	shellCommand := exec.CommandContext(commandContext, "/bin/sh", "-c", commandString)
+	shellCommand := exec.CommandContext(commandContext, "/bin/sh", "-c", commandString) //nolint:gosec // MCP remote tool: command execution is the intended purpose
 	if workingDirectory != "" {
 		shellCommand.Dir = workingDirectory
 	}
@@ -253,7 +253,7 @@ func readFileContents(arguments map[string]any) (string, bool) {
 		return "error: 'path' argument is required", true
 	}
 
-	fileContent, readError := os.ReadFile(filePath)
+	fileContent, readError := os.ReadFile(filePath) //nolint:gosec // MCP remote tool: file read is the intended purpose
 	if readError != nil {
 		return fmt.Sprintf("error reading %s: %v", filePath, readError), true
 	}
@@ -273,11 +273,11 @@ func writeFileContents(arguments map[string]any) (string, bool) {
 	}
 
 	parentDir := filepath.Dir(filePath)
-	if mkdirError := os.MkdirAll(parentDir, 0755); mkdirError != nil {
+	if mkdirError := os.MkdirAll(parentDir, 0750); mkdirError != nil {
 		return fmt.Sprintf("error creating directory %s: %v", parentDir, mkdirError), true
 	}
 
-	if writeError := os.WriteFile(filePath, []byte(content), 0644); writeError != nil {
+	if writeError := os.WriteFile(filePath, []byte(content), 0600); writeError != nil {
 		return fmt.Sprintf("error writing %s: %v", filePath, writeError), true
 	}
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), filePath), false
