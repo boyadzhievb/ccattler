@@ -1380,6 +1380,55 @@ User-defined key=value tags on services for grouping and filtering. Not used for
 - [x] Formatter tests (round-trip for every DSL construct)
 - [x] Lint tests (error cases for each check)
 
+### Phase 132 — Image Pull Secrets (M132)
+
+Registry authentication for pulling container images from private registries. Services and jobs reference a named secret containing registry credentials. The agent resolves the secret at pull time and passes credentials directly to nerdctl.
+
+- [ ] `ImagePullSecret string` field on `ServiceDecl` and `JobDecl` in `lang/ast.go`
+- [ ] `image_pull_secret` keyword in `lang/parser.go` (service and job blocks)
+- [ ] `compileServiceImagePullSecretFact` in `lang/compiler.go` — emits `desired/service/{name}/image_pull_secret`
+- [ ] `compileJobImagePullSecretFact` — emits `desired/job/{name}/image_pull_secret`
+- [ ] `formatServiceImagePullSecretField` in `lang/formatter.go`
+- [ ] `KeyDesiredServiceImagePullSecret(name)` and `KeyDesiredJobImagePullSecret(name)` in `types/keys.go`
+- [ ] `Credentials string` field on `PullOptions` struct (or parameter) in `runtime/runtime.go`
+- [ ] `--creds user:pass` flag in `runtime/container.go` `PullImage` when credentials provided
+- [ ] Agent: `lookupImagePullSecret` reads secret name from store, resolves JSON `{"username":"...","password":"..."}` via secret API
+- [ ] Agent: pass resolved credentials to `runtime.PullImage` in `ensureImageAvailable`
+- [ ] Simulator: track pull credentials in `PullImage` for test assertions
+- [ ] Parser test: `image_pull_secret` round-trip parse and format
+- [ ] Compiler test: secret name emitted as fact
+- [ ] Agent test: pull with credentials passes `--creds` to runtime
+- [ ] Agent test: pull without secret works as before (no `--creds`)
+- [ ] Design flow #19 in `design/runtime-invariant-flows.md`
+
+### Phase 133 — CronJobs (M133)
+
+Scheduled recurring jobs using standard cron expressions. A CronController creates job instances on schedule, leveraging the existing JobController for run-to-completion tracking. Hand-rolled 5-field cron parser — no external dependency.
+
+- [ ] `CronJobDecl` struct in `lang/ast.go`: Name, Schedule, Image, Command, Completions, Parallelism, BackoffLimit
+- [ ] `cronjob` top-level keyword in `lang/parser.go` with `parseCronJobDeclaration`
+- [ ] Fields: `schedule` (string, required), `image`, `command`, `completions`, `parallelism`, `backoff_limit`
+- [ ] `compileCronJobFacts` in `lang/compiler.go` — emits `desired/cronjob/{name}/schedule`, `/image`, `/command`, `/completions`, `/backoff_limit`
+- [ ] `formatCronJobDecl` in `lang/formatter.go`
+- [ ] Store keys in `types/keys.go`: `ScanDesiredCronJobs`, `KeyDesiredCronJobSchedule`, `KeyDesiredCronJobImage`, `KeyDesiredCronJobCommand`, `KeyDesiredCronJobCompletions`, `KeyDesiredCronJobBackoffLimit`
+- [ ] Derived keys: `KeyDerivedCronJobLastScheduled(name)`, `KeyDerivedCronJobLastStatus(name)`, `ScanDerivedCronJobs`
+- [ ] `matchesCronSchedule(expression string, currentTime time.Time) bool` — 5-field parser (min hour dom month dow), supports `*`, fixed values, comma-separated lists
+- [ ] `parseCronField(field string, min int, max int) ([]int, error)` — validates ranges
+- [ ] `CronController` in `controllers/cronjob.go` implementing `Controller` interface
+- [ ] Watch: `ScanDesiredCronJobs`, `ScanDerivedCronJobs`, `ScanDesiredJobs` (to check active jobs)
+- [ ] Reconcile: for each desired cronjob, check if schedule matches current minute
+- [ ] Skip if `last_scheduled` timestamp is within current minute (double-fire prevention)
+- [ ] Skip if an active job instance for this cronjob already exists
+- [ ] On match: create job facts (`desired/job/{name}-{timestamp}/...`), update `last_scheduled`
+- [ ] Mirror latest job status to `derived/cronjob/{name}/last_status`
+- [ ] Register `NewCronController()` in `cmd/cca/helpers.go`
+- [ ] Test: `TestCronScheduleMatching` — various expressions against known times
+- [ ] Test: `TestCronControllerCreatesJobOnSchedule` — matching schedule creates job
+- [ ] Test: `TestCronControllerSkipsDuplicateWithinMinute` — no double-fire
+- [ ] Test: `TestCronControllerSkipsWhenJobActive` — won't create while previous runs
+- [ ] Test: `TestCronFieldParsing` — edge cases (ranges, commas, wildcards, invalid)
+- [ ] Design flow #20 in `design/runtime-invariant-flows.md`
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)
@@ -1511,6 +1560,8 @@ User-defined key=value tags on services for grouping and filtering. Not used for
 | M129 — tc DNAT for Bridge Traffic | 129 | Phase 2 of independent eBPF data plane. tc BPF program `cca_tc_dnat` attached to `cca-net` bridge ingress replaces nftables PREROUTING DNAT for container-to-VIP traffic. Uses conntrack kfuncs (`bpf_skb_ct_alloc`, `bpf_ct_set_nat_info`, `bpf_ct_insert_entry`) to create kernel conntrack DNAT entries — the kernel's nf_nat applies actual packet rewriting and handles return-path reverse NAT automatically. Fast path: `bpf_skb_ct_lookup` for established connections (one hash lookup, no backend selection). Shares `cca_services`/`cca_backends`/`cca_affinity` maps with socket LB via `MapReplacements`. Bridge interface auto-discovered from overlay CIDR. Compiled to separate ELF (`cca_tc_dnat.o`), loaded with cilium/ebpf `link.AttachTCX` (kernel 6.6+). After this phase, nftables is only used for POSTROUTING masquerade (SNAT). See `design/tc-dnat-design.md`. |
 | M130 — BPF SNAT (nftables elimination) | 130 | Phase 3 of independent eBPF data plane: replace nftables POSTROUTING masquerade with BPF tc egress SNAT, eliminating the last nftables dependency. New tc BPF program `cca_tc_snat` attached to the physical NIC tc egress via TCX link. For every outbound packet, checks whether the source IP falls in the overlay CIDR range (`cca_config` map stores `overlay_prefix` and `overlay_mask`); if so, rewrites source IP to the node's advertise address (from `cca_config` index 0) and recomputes IP + L4 checksums via `bpf_l3_csum_replace`/`bpf_l4_csum_replace`. Non-overlay-sourced packets pass through unchanged. This covers both DNAT paths: container-to-VIP via tc bridge DNAT (M129 conntrack kfuncs) and host-to-VIP via cgroup socket LB (M128 kernel conntrack). Container-to-container cross-node traffic over VXLAN does NOT need SNAT — VXLAN encapsulation preserves overlay addresses and the tunnel mesh provides symmetric routing, so packets leaving via `cca-vxlan0` are skipped. New `cca_config` BPF array map (8 entries, u32 values: index 0 = node_ip, 2 = overlay_prefix, 3 = overlay_mask) populated by Go control plane from `--advertise-address` and `--cluster-cidr`. Physical interface auto-discovered from advertise address via `detectPhysicalInterfaceForAddress` (same as VXLAN reconciler). Go changes: `EbpfDataPlane` gains `snatCollection`, `snatLink`, `configMap` fields; `loadSNATProgram()` loads `cca_tc_snat.o` with `MapReplacements`, creates `cca_config` map; `attachSNATProgram(physInterface)` attaches to physical NIC egress; `RegisterNode()` extended to discover physical interface and attach SNAT after bridge attachment. On `Cleanup()`, nftables `ip cca` table deleted entirely when `--dataplane ebpf` — `writePostRoutingChain` becomes a no-op. Compiled to separate ELF (`cca_tc_snat.o`). Kernel 6.6+ (TCX). `build-ebpf.sh` and Makefile updated. See `design/ebpf-data-plane-v2.md`. |
 | M131 — DSL Gate Keyword | 131 | Rename user-facing DSL keyword from `route` to `gate` for external traffic blocks. `gate` is shorter, unambiguous, and avoids collision with cloud/VPC route terminology already used by `CloudRouteController`. Parser accepts only `gate`; formatter emits `gate`; compiler error messages say "gate". Internal fact store keys (`desired/route/`, `derived/route/`) unchanged — the rename is DSL-surface only. Updated: parser, compiler, formatter, linter, all tests, examples, workloads, design docs, kubernetes migration guide, STATUS.md. |
+| M132 — Image Pull Secrets | 132 | Registry authentication for pulling from private registries. DSL `image_pull_secret "secret-name"` field on services and jobs. Secret value is JSON `{"username":"...","password":"..."}` stored via `cca secret set`. Agent reads pull secret name from store, resolves credential via API, passes `--creds user:pass` to `nerdctl pull`. No docker config.json manipulation — direct nerdctl `--creds` flag. `runtime.PullImage` gains credentials parameter. Compiler emits `desired/service/{name}/image_pull_secret` fact. Simulator tracks credentials for test assertions. Design flow #19 in runtime-invariant-flows.md. |
+| M133 — CronJobs | 133 | Scheduled recurring jobs using cron expressions. DSL `cronjob "name" { schedule "0 2 * * *" image "img" command "cmd" completions N backoff_limit N }`. Hand-rolled 5-field cron parser (`min hour dom month dow`) — supports wildcards, fixed values, comma-separated lists. CronController piggybacks on the 30s runner resync cycle: checks if schedule matches current minute, creates job instance if match and no active job. `derived/cronjob/{name}/last_scheduled` prevents double-firing within same minute. JobController owns created instances from there. Design flow #20 in runtime-invariant-flows.md. |
 | *(future)* HTTP Secret API | — | Replace bind-mount secret delivery with an agent-side HTTP API (`GET /v1/secrets/{name}`). Containers fetch secrets at runtime from the local agent, authenticated by per-instance bearer tokens. No files on host disk, no bind-mounts, no permission issues. Agent registers/revokes tokens on instance lifecycle. Current bind-mount approach (M92) works but requires host filesystem access. |
 | *(future)* Cloud InfrastructureProviders | — | AWS EC2, GCP Compute, and Azure VM implementations of `InfrastructureProvider` for real cloud node provisioning. Cluster autoscaling controller works end-to-end with `SimulatorInfraProvider`; real cloud backends require SDK integration and cloud-specific testing. |
 | *(future)* BPF Binary Consolidation | — | Consolidate the three separate BPF ELF objects (`cca_connect4.o`, `cca_tc_dnat.o`, `cca_tc_snat.o`) into a single multi-program ELF or embed them in the `cca` binary via `go:embed`. Eliminates separate `/usr/lib/cca/*.o` install step, simplifies agent startup (one load, shared maps without `MapReplacements`), and removes the need for `build-ebpf.sh` to produce multiple artifacts. The `bpf2go` generator already supports multi-program ELFs. |
