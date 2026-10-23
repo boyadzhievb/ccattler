@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -30,8 +31,8 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(changes) != 4 {
-		t.Fatalf("expected 4 changes, got %d", len(changes))
+	if len(changes) != 5 {
+		t.Fatalf("expected 5 changes (4 replacement + 1 crash-loop counter), got %d", len(changes))
 	}
 	if changes[0].Key != types.KeyDerivedInstanceControllerStopped("aaa") {
 		t.Errorf("expected controller_stopped key for aaa, got %s", changes[0].Key)
@@ -44,6 +45,9 @@ func TestFailureReplacesFailedInstance(t *testing.T) {
 	}
 	if string(changes[3].Value) != "pending" {
 		t.Errorf("replacement state: got %s, want pending", changes[3].Value)
+	}
+	if changes[4].Key != types.KeyDerivedCrashLoopCounter("web") {
+		t.Errorf("expected crash-loop counter key, got %s", changes[4].Key)
 	}
 }
 
@@ -121,8 +125,14 @@ func TestFailureMultipleFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(changes) != 8 {
-		t.Fatalf("expected 8 changes (2 replacements), got %d", len(changes))
+	// 2 replacements × (4 changes + 1 crash-loop counter) = 10, but "web" service
+	// has a running instance (ccc) so its crash-loop counter gets deleted = 10 + 1 delete - but
+	// the counter was just created in this same cycle. Actually: aaa (web, failed) → 5 changes,
+	// bbb (api, failed) → 5 changes, then recovery sweep: web has ccc running → delete counter = 11 total.
+	// But wait: "web" has both a failed (aaa) and running (ccc) instance, so failedServiceNames["web"]=true,
+	// and the counter is NOT deleted. Total: 5 + 5 = 10.
+	if len(changes) != 10 {
+		t.Fatalf("expected 10 changes (2 replacements with crash-loop counters), got %d", len(changes))
 	}
 
 	controllerStoppedCount := 0
@@ -160,14 +170,17 @@ func TestFailureReplacesStartupFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(changes) != 4 {
-		t.Fatalf("expected 4 changes (immediate stop + replacement), got %d", len(changes))
+	if len(changes) != 5 {
+		t.Fatalf("expected 5 changes (stop + replacement + crash-loop counter), got %d", len(changes))
 	}
 	if string(changes[0].Value) != "true" || !strings.HasSuffix(changes[0].Key, "/controller_stopped") {
 		t.Errorf("expected controller_stopped=true, got key=%s value=%s", changes[0].Key, changes[0].Value)
 	}
 	if string(changes[2].Value) != "api" {
 		t.Errorf("replacement service: got %s, want api", changes[2].Value)
+	}
+	if changes[4].Key != types.KeyDerivedCrashLoopCounter("api") {
+		t.Errorf("expected crash-loop counter key, got %s", changes[4].Key)
 	}
 }
 
@@ -577,5 +590,117 @@ func TestFailureIgnoresImagePullBackoffInstance(t *testing.T) {
 	}
 	if len(changes) != 0 {
 		t.Fatalf("expected 0 changes for image-pull-backoff instance, got %d", len(changes))
+	}
+}
+
+// TestFailureCrashLoopDelaysReplacement verifies that when a crash-loop counter
+// exists and the backoff has not elapsed, the controller skips replacement.
+func TestFailureCrashLoopDelaysReplacement(t *testing.T) {
+	firstFailureTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.NowFunc = func() time.Time { return firstFailureTime.Add(5 * time.Second) }
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 1, Since: firstFailureTime.UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes (backoff not elapsed), got %d", len(changes))
+	}
+}
+
+// TestFailureCrashLoopAllowsReplacementAfterBackoff verifies that once the
+// backoff delay has elapsed, the controller replaces the failed instance and
+// increments the crash-loop counter.
+func TestFailureCrashLoopAllowsReplacementAfterBackoff(t *testing.T) {
+	firstFailureTime := time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.NowFunc = func() time.Time { return firstFailureTime.Add(11 * time.Second) }
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 1, Since: firstFailureTime.UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 5 {
+		t.Fatalf("expected 5 changes (replacement + counter), got %d", len(changes))
+	}
+
+	var updatedCounter crashLoopCounter
+	if jsonErr := json.Unmarshal(changes[4].Value, &updatedCounter); jsonErr != nil {
+		t.Fatalf("failed to parse counter: %v", jsonErr)
+	}
+	if updatedCounter.Count != 2 {
+		t.Errorf("expected counter count=2, got %d", updatedCounter.Count)
+	}
+}
+
+// TestFailureCrashLoopCounterResetsOnRecovery verifies that when all instances
+// of a service are running (none failed), the crash-loop counter is deleted.
+func TestFailureCrashLoopCounterResetsOnRecovery(t *testing.T) {
+	failureController := NewFailureController()
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 3, Since: time.Now().UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change (delete counter), got %d", len(changes))
+	}
+	if changes[0].Type != store.OpDelete {
+		t.Errorf("expected delete, got type %d", changes[0].Type)
+	}
+	if changes[0].Key != types.KeyDerivedCrashLoopCounter("web") {
+		t.Errorf("expected crash-loop counter key, got %s", changes[0].Key)
+	}
+}
+
+// TestFailureCrashLoopBackoffCalculation verifies the exponential backoff
+// formula with cap at 5 minutes.
+func TestFailureCrashLoopBackoffCalculation(t *testing.T) {
+	testCases := []struct {
+		crashCount      int
+		expectedSeconds float64
+	}{
+		{1, 10},
+		{2, 20},
+		{3, 40},
+		{4, 80},
+		{5, 160},
+		{6, 300},
+		{7, 300},
+		{100, 300},
+	}
+	for _, testCase := range testCases {
+		result := calculateCrashLoopBackoff(testCase.crashCount)
+		expected := time.Duration(testCase.expectedSeconds) * time.Second
+		if result != expected {
+			t.Errorf("count=%d: got %v, want %v", testCase.crashCount, result, expected)
+		}
 	}
 }

@@ -1408,6 +1408,16 @@ func KeyDerivedInstanceControllerStopped(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/controller_stopped", PrefixDerived, instanceID)
 }
 
+// KeyDerivedCrashLoopCounter returns the crash-loop backoff counter path for a
+// service. Value is JSON: {"count":N,"since":<unix_ms>}.
+// Path: derived/crash-loop/{serviceName}
+func KeyDerivedCrashLoopCounter(serviceName string) string {
+	return fmt.Sprintf("%s/crash-loop/%s", PrefixDerived, serviceName)
+}
+
+// ScanDerivedCrashLoops scans all crash-loop backoff counters.
+const ScanDerivedCrashLoops = PrefixDerived + "/crash-loop/"
+
 // KeyDerivedNodeDrainStarted returns the path for a node's drain start timestamp.
 // The value is a Unix-millisecond timestamp recorded when the drain was initiated.
 // Path: derived/node/{nodeID}/drain/started

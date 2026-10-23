@@ -703,7 +703,9 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 
 // clearPullStatusFromStore removes the pull-status fact after a successful pull.
 func (nodeAgent *Agent) clearPullStatusFromStore(ctx context.Context, instanceID string) {
-	nodeAgent.store.Delete(ctx, types.KeyObservedInstancePullStatus(instanceID))
+	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedInstancePullStatus(instanceID)); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
+		logging.Default().Error("failed to delete pull status", "instance", instanceID, "error", deleteError.Error())
+	}
 }
 
 // buildRuntimeSpecForInstance resolves the complete runtime specification for an

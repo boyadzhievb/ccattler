@@ -363,6 +363,76 @@ The pull-status fact is queryable: `cca watch pull-status/` shows all active pul
 
 ---
 
+## 12. Crash Loop Backoff
+
+**Chain:** `controllers/failure.go:processInstanceForRecovery` → crash-loop counter → delayed replacement
+
+When a container crashes immediately after starting, the failure controller replaces it. If the replacement also crashes, this loops at full speed — thousands of container starts per hour. Crash loop backoff breaks this cycle.
+
+### Mechanism
+
+The failure controller maintains a per-service crash-loop counter in the fact store:
+`derived/crash-loop/{serviceName}` = `{"count": N, "since": <unix_ms>}`
+
+### Failure controller flow
+
+```
+1. Instance state is "failed" and service has crash-loop counter:
+   → Calculate backoff: min(10s × 2^(count-1), 300s)
+   → If now < since + backoff:
+     - Skip replacement (leave instance in failed state)
+     - Log: "crash-loop-backoff for {service}, retry in Xs"
+   → If backoff expired:
+     - Replace normally (stopAndReplace)
+     - Emit counter increment: count+1, since=now
+
+2. Instance state is "failed" and NO crash-loop counter:
+   → Replace normally (stopAndReplace)
+   → Emit counter creation: count=1, since=now
+
+3. Service recovery (no failed instances, all running):
+   → Emit counter deletion for that service
+```
+
+### Backoff schedule
+
+| Count | Delay |
+|-------|-------|
+| 1 | 10s |
+| 2 | 20s |
+| 3 | 40s |
+| 4 | 80s |
+| 5 | 160s |
+| 6+ | 300s (cap) |
+
+### Status visibility
+
+`cca get instances` for a crash-looping service:
+```
+ID          SERVICE    STATE    NODE      HEALTH
+a1b2c3d4    web        failed   node-1    -        (crash-loop-backoff, retry in 40s)
+```
+
+The crash-loop counter is queryable: `cca watch derived/crash-loop/` shows all services in backoff.
+
+### What must match
+
+- Counter is per-service, not per-instance (each replacement has a new ID).
+- Counter tracks the most recent replacement time, not creation time.
+- Instance controller must NOT create extra instances for a service in crash-loop — the failed instance is "active" (not stopped), counting toward the desired replica count.
+- Backoff resets when any instance of the service reaches running state and stays healthy.
+
+### Controller interaction
+
+| Controller | Behavior during crash-loop-backoff |
+|---|---|
+| Instance | Failed instance counts as active — no extra replacements |
+| Endpoint | No endpoints for failed instance — same as normal failure |
+| Failure | Delays replacement until backoff expires |
+| Autoscale | Failed instances count toward desired, not running |
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

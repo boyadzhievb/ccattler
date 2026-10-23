@@ -5,8 +5,11 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
@@ -17,6 +20,18 @@ import (
 // DefaultDrainGracePeriod is the time an instance remains draining (removed
 // from endpoints) before it is stopped and replaced.
 const DefaultDrainGracePeriod = 5 * time.Second
+
+// crashLoopBaseDelay is the initial backoff delay after the first rapid failure.
+const crashLoopBaseDelay = 10 * time.Second
+
+// crashLoopMaxDelay is the maximum backoff between crash-loop replacement retries.
+const crashLoopMaxDelay = 5 * time.Minute
+
+// crashLoopCounter is the JSON-serialized per-service crash-loop backoff state.
+type crashLoopCounter struct {
+	Count int   `json:"count"` // Count is the number of consecutive rapid failures.
+	Since int64 `json:"since"` // Since is the Unix-millisecond timestamp of the last replacement.
+}
 
 // defaultMaxReplacementsPerCycle limits how many failed instances the
 // FailureController replaces in a single reconciliation cycle. Each
@@ -112,6 +127,7 @@ func (failureController *FailureController) Watch() []string {
 	return []string{
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
+		types.ScanDerivedCrashLoops,
 	}
 }
 
@@ -122,15 +138,49 @@ func (failureController *FailureController) Watch() []string {
 //  3. Startup failed on running instance — immediate stop and replace
 func (failureController *FailureController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	instanceFields := parseInstanceFieldsFromFacts(facts)
+	crashLoopCounters := parseCrashLoopCounters(facts)
 
 	now := failureController.NowFunc()
 	var changes []Change
-	cycleCounters := &failureCycleCounters{}
+	cycleCounters := &failureCycleCounters{
+		replacedServices: make(map[string]int),
+	}
 
+	failedServiceNames := make(map[string]bool)
 	sortedInstanceIDs := sortedMapKeys(instanceFields)
 	for _, instanceID := range sortedInstanceIDs {
-		instanceChanges := failureController.processInstanceForRecovery(instanceID, instanceFields[instanceID], now, cycleCounters)
+		fields := instanceFields[instanceID]
+		instanceChanges := failureController.processInstanceForRecovery(instanceID, fields, now, cycleCounters, crashLoopCounters)
 		changes = append(changes, instanceChanges...)
+		if effectiveInstanceState(fields) == types.InstanceFailed {
+			failedServiceNames[fields["service"]] = true
+		}
+	}
+
+	// Emit one crash-loop counter per service that had replacements this cycle.
+	for serviceName, replacementCount := range cycleCounters.replacedServices {
+		existingCount := 0
+		if existing, hasCounter := crashLoopCounters[serviceName]; hasCounter {
+			existingCount = existing.Count
+		}
+		counterJSON, _ := json.Marshal(crashLoopCounter{
+			Count: existingCount + replacementCount,
+			Since: now.UnixMilli(),
+		})
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedCrashLoopCounter(serviceName),
+			Value: counterJSON,
+		})
+	}
+	// Reset crash-loop counters for services that have no failed instances.
+	for serviceName := range crashLoopCounters {
+		if !failedServiceNames[serviceName] {
+			changes = append(changes, Change{
+				Type: store.OpDelete,
+				Key:  types.KeyDerivedCrashLoopCounter(serviceName),
+			})
+		}
 	}
 
 	return failureController.capOutputChanges(changes)
@@ -139,14 +189,15 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 // failureCycleCounters tracks how many of each action type have been emitted
 // in the current reconciliation cycle to enforce per-type caps.
 type failureCycleCounters struct {
-	replacements int
-	drains       int
-	recoveries   int
+	replacements     int
+	drains           int
+	recoveries       int
+	replacedServices map[string]int // per-service replacement count for crash-loop tracking
 }
 
 // processInstanceForRecovery evaluates a single instance and returns changes
 // for failure replacement, drain initiation, drain completion, or recovery.
-func (failureController *FailureController) processInstanceForRecovery(instanceID string, fields map[string]string, now time.Time, counters *failureCycleCounters) []Change {
+func (failureController *FailureController) processInstanceForRecovery(instanceID string, fields map[string]string, now time.Time, counters *failureCycleCounters, crashLoopCounters map[string]*crashLoopCounter) []Change {
 	instanceState := effectiveInstanceState(fields)
 	serviceName := fields["service"]
 	if serviceName == "" {
@@ -157,7 +208,21 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 		if counters.replacements >= failureController.MaxReplacementsPerCycle {
 			return nil
 		}
+
+		if counter, hasCrashLoop := crashLoopCounters[serviceName]; hasCrashLoop {
+			backoffDelay := calculateCrashLoopBackoff(counter.Count)
+			retryAfter := time.UnixMilli(counter.Since).Add(backoffDelay)
+			if now.Before(retryAfter) {
+				logging.Default().Info("crash-loop-backoff, delaying replacement",
+					"instance", instanceID, "service", serviceName,
+					"attempt", strconv.Itoa(counter.Count),
+					"retry_after", retryAfter.Format(time.RFC3339))
+				return nil
+			}
+		}
+
 		counters.replacements++
+		counters.replacedServices[serviceName]++
 		logging.Default().Info("replacing failed instance",
 			"instance", instanceID, "service", serviceName, "reason", "runtime_crash")
 		return failureController.stopAndReplace(instanceID, serviceName)
@@ -172,6 +237,7 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 			return nil
 		}
 		counters.replacements++
+		counters.replacedServices[serviceName]++
 		logging.Default().Info("replacing instance with failed startup probe",
 			"instance", instanceID, "service", serviceName, "reason", "startup_probe_failed")
 		return failureController.stopAndReplace(instanceID, serviceName)
@@ -291,4 +357,28 @@ func (failureController *FailureController) stopAndReplace(instanceID string, se
 		Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(replacementID), Value: []byte(serviceName)},
 		Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(replacementID), Value: []byte(string(types.InstancePending))},
 	)
+}
+
+// calculateCrashLoopBackoff returns the backoff delay for a given crash count.
+func calculateCrashLoopBackoff(crashCount int) time.Duration {
+	delaySeconds := float64(crashLoopBaseDelay/time.Second) * math.Pow(2, float64(crashCount-1))
+	maxSeconds := float64(crashLoopMaxDelay / time.Second)
+	if delaySeconds > maxSeconds {
+		delaySeconds = maxSeconds
+	}
+	return time.Duration(delaySeconds) * time.Second
+}
+
+// parseCrashLoopCounters extracts per-service crash-loop backoff state from
+// the input facts.
+func parseCrashLoopCounters(facts []store.Fact) map[string]*crashLoopCounter {
+	counters := make(map[string]*crashLoopCounter)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedCrashLoops) {
+		serviceName := strings.TrimPrefix(fact.Key, types.ScanDerivedCrashLoops)
+		var counter crashLoopCounter
+		if json.Unmarshal(fact.Value, &counter) == nil {
+			counters[serviceName] = &counter
+		}
+	}
+	return counters
 }
