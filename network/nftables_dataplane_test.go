@@ -24,7 +24,7 @@ func TestNftablesBuildVIPRulesetSingleService(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if !strings.Contains(ruleset, "table ip cca") {
 		t.Error("ruleset should contain table declaration")
@@ -74,7 +74,7 @@ func TestNftablesBuildVIPRulesetSingleBackend(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if strings.Contains(ruleset, "numgen") {
 		t.Error("single-backend service should use direct dnat, not numgen")
@@ -97,7 +97,7 @@ func TestNftablesBuildVIPRulesetEmptyBackendsSkipped(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if strings.Contains(ruleset, "svc_empty") {
 		t.Error("service with no backends should not generate a chain")
@@ -131,7 +131,7 @@ func TestNftablesBuildVIPRulesetMultipleServices(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if !strings.Contains(ruleset, "chain svc_web") {
 		t.Error("should contain svc_web chain")
@@ -160,7 +160,7 @@ func TestNftablesBuildVIPRulesetDeterministicOrder(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	alphaIndex := strings.Index(ruleset, "chain svc_alpha")
 	midIndex := strings.Index(ruleset, "chain svc_mid")
@@ -187,7 +187,7 @@ func TestNftablesBuildVIPRulesetUDPProtocol(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if !strings.Contains(ruleset, "10.200.0.10 . udp . 53 : goto svc_dns") {
 		t.Error("UDP service should have udp in the verdict map entry")
@@ -237,6 +237,51 @@ func TestNftablesBuildRouteRulesetEmptyReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestNftablesRouteOverridesVIPDispatch(t *testing.T) {
+	nftablesDataPlane := NewNftablesDataPlane()
+	serviceConfigs := []ServiceVIPConfig{
+		{ServiceName: "web", VirtualIP: "10.200.0.1", Port: 80,
+			Backends: []DataPlaneBackend{{Address: "10.0.0.1", Port: 8080}, {Address: "10.0.0.2", Port: 8080}}},
+	}
+	routeConfigs := []RouteDataPlaneConfig{
+		{
+			RouteName:    "web-public",
+			ServiceName:  "web",
+			VirtualIP:    "10.200.0.1",
+			Port:         80,
+			StickyMethod: "source-ip",
+			Backends: []DataPlaneBackend{
+				{Address: "10.0.0.1", Port: 8080},
+				{Address: "10.0.0.2", Port: 8080},
+			},
+		},
+	}
+
+	desiredServiceChains := make(map[string]bool)
+	desiredRouteChains := make(map[string]bool)
+	desiredVIPAddresses := make(map[string]bool)
+
+	routeOverrides := buildRouteDispatchOverrides(routeConfigs)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, routeOverrides)
+	nftablesDataPlane.appendRouteChains(&ruleset, routeConfigs, desiredRouteChains)
+
+	if !strings.Contains(ruleset, "10.200.0.1 . tcp . 80 : goto rt_web_public") {
+		t.Error("dispatch map should route to rt_web_public instead of svc_web when route exists")
+	}
+	if !strings.Contains(ruleset, "chain svc_web") {
+		t.Error("service chain should still be generated for fallback")
+	}
+	if !strings.Contains(ruleset, "chain rt_web_public") {
+		t.Error("route chain should be included in the same atomic ruleset")
+	}
+	if !strings.Contains(ruleset, "jhash ip saddr mod 2") {
+		t.Error("route chain should use jhash for source-ip sticky")
+	}
+	if !desiredRouteChains["rt_web_public"] {
+		t.Error("desiredRouteChains should track rt_web_public")
+	}
+}
+
 func TestNftablesBuildVIPRulesetAtomicFlush(t *testing.T) {
 	nftablesDataPlane := NewNftablesDataPlane()
 	serviceConfigs := []ServiceVIPConfig{
@@ -246,7 +291,7 @@ func TestNftablesBuildVIPRulesetAtomicFlush(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if !strings.HasPrefix(ruleset, "table ip cca {}\ndelete table ip cca\n") {
 		t.Error("ruleset should begin with create+delete for safe table replacement")
@@ -279,7 +324,7 @@ func TestNftablesBuildVIPRulesetVerdictMapHooksPresent(t *testing.T) {
 
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 
 	if !strings.Contains(ruleset, "hook prerouting priority -100") {
 		t.Error("prerouting chain should hook at dstnat priority (-100)")

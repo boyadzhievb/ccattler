@@ -11,7 +11,7 @@ import "fmt"
 func (nftablesDataPlane *NftablesDataPlane) GenerateVIPRuleset(serviceConfigs []ServiceVIPConfig) string {
 	desiredServiceChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
-	return nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	return nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
 }
 
 // CountIptablesVIPCommands returns the number of sequential iptables command

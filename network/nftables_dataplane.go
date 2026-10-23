@@ -44,6 +44,7 @@ const nftablesRouteChainPrefix = "rt_"
 //	    chain postrouting { type nat hook postrouting priority srcnat; masquerade }
 //	    map vip_dispatch { type ipv4_addr . inet_proto . inet_service : verdict }
 //	    chain svc_web { dnat to numgen inc mod N map { ... } }
+//	    chain rt_web_public { jhash ip saddr ... }
 //	}
 type NftablesDataPlane struct {
 	// mutex serializes reconciliation calls.
@@ -54,6 +55,9 @@ type NftablesDataPlane struct {
 	activeRouteChains map[string]bool
 	// activeVIPAddresses tracks VIP addresses assigned to the dummy interface.
 	activeVIPAddresses map[string]bool
+	// lastRouteConfigs stores the most recent route configs so VIP reconcile
+	// can include route chains and dispatch overrides in the atomic ruleset.
+	lastRouteConfigs []RouteDataPlaneConfig
 	// cookieProxy manages per-route cookie-sticky reverse proxy listeners.
 	cookieProxy *CookieStickyProxy
 	// initialized tracks whether the nftables table has been created.
@@ -83,9 +87,12 @@ func (nftablesDataPlane *NftablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 	}
 
 	desiredServiceChains := make(map[string]bool)
+	desiredRouteChains := make(map[string]bool)
 	desiredVIPAddresses := make(map[string]bool)
 
-	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses)
+	routeDispatchOverrides := buildRouteDispatchOverrides(nftablesDataPlane.lastRouteConfigs)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, routeDispatchOverrides)
+	nftablesDataPlane.appendRouteChains(&ruleset, nftablesDataPlane.lastRouteConfigs, desiredRouteChains)
 
 	if err := applyNftablesRuleset(ruleset); err != nil {
 		return fmt.Errorf("applying nftables ruleset: %w", err)
@@ -101,29 +108,89 @@ func (nftablesDataPlane *NftablesDataPlane) ReconcileVIPDataPlane(ctx context.Co
 
 	nftablesDataPlane.removeStaleVIPAddresses(desiredVIPAddresses)
 	nftablesDataPlane.activeServiceChains = desiredServiceChains
+	nftablesDataPlane.activeRouteChains = desiredRouteChains
 
 	return nil
 }
 
-// ReconcileRouteDataPlane programs nftables chains for route-based traffic
-// distribution. Source-IP sticky routes use jhash. Cookie-sticky routes
-// redirect to the userspace cookie proxy.
+// vipPortKey builds a lookup key for VIP+port dispatch overrides.
+func vipPortKey(virtualIP string, port int) string {
+	return fmt.Sprintf("%s:%d", virtualIP, port)
+}
+
+// buildRouteDispatchOverrides creates a map from VIP:port to route chain name.
+// When a route exists for a VIP+port, the VIP dispatch map should goto the
+// route chain instead of the service chain.
+func buildRouteDispatchOverrides(routeConfigs []RouteDataPlaneConfig) map[string]string {
+	overrides := make(map[string]string, len(routeConfigs))
+	for _, routeConfig := range routeConfigs {
+		if len(routeConfig.Backends) == 0 || routeConfig.VirtualIP == "" || routeConfig.StickyMethod == "" {
+			continue
+		}
+		chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
+		overrides[vipPortKey(routeConfig.VirtualIP, routeConfig.Port)] = chainName
+	}
+	return overrides
+}
+
+// appendRouteChains appends route chain definitions to an existing ruleset
+// string, inserting them before the closing table brace. This keeps route
+// chains in the same atomic ruleset as VIP chains.
+func (nftablesDataPlane *NftablesDataPlane) appendRouteChains(
+	ruleset *string, routeConfigs []RouteDataPlaneConfig, desiredRouteChains map[string]bool,
+) {
+	if len(routeConfigs) == 0 {
+		return
+	}
+
+	var chainsBuilder strings.Builder
+	sortedRoutes := make([]RouteDataPlaneConfig, len(routeConfigs))
+	copy(sortedRoutes, routeConfigs)
+	sort.Slice(sortedRoutes, func(i, j int) bool {
+		return sortedRoutes[i].RouteName < sortedRoutes[j].RouteName
+	})
+
+	for _, routeConfig := range sortedRoutes {
+		if len(routeConfig.Backends) == 0 || routeConfig.VirtualIP == "" {
+			continue
+		}
+		switch routeConfig.StickyMethod {
+		case "source-ip":
+			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
+			desiredRouteChains[chainName] = true
+			writeSourceIPStickyChain(&chainsBuilder, routeConfig, chainName)
+		case "cookie":
+			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
+			desiredRouteChains[chainName] = true
+			proxyPort := nftablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)
+			if proxyPort > 0 {
+				writeCookieProxyChain(&chainsBuilder, chainName, proxyPort)
+			}
+		}
+	}
+
+	chainContent := chainsBuilder.String()
+	if chainContent == "" {
+		return
+	}
+
+	// Insert route chains before the closing "}\n" of the table block.
+	closingBrace := "}\n"
+	if idx := strings.LastIndex(*ruleset, closingBrace); idx >= 0 {
+		*ruleset = (*ruleset)[:idx] + chainContent + closingBrace
+	}
+}
+
+// ReconcileRouteDataPlane stores route configs and updates the cookie proxy.
+// Route chains and dispatch overrides are included in the next VIP reconcile
+// cycle's atomic ruleset, ensuring they aren't wiped by the table recreate.
 func (nftablesDataPlane *NftablesDataPlane) ReconcileRouteDataPlane(ctx context.Context, routeConfigs []RouteDataPlaneConfig) error {
 	nftablesDataPlane.mutex.Lock()
 	defer nftablesDataPlane.mutex.Unlock()
 
 	nftablesDataPlane.cookieProxy.ReconcileRoutes(routeConfigs)
+	nftablesDataPlane.lastRouteConfigs = routeConfigs
 
-	desiredRouteChains := make(map[string]bool)
-	ruleset := nftablesDataPlane.buildRouteRuleset(routeConfigs, desiredRouteChains)
-
-	if ruleset != "" {
-		if err := applyNftablesRuleset(ruleset); err != nil {
-			return fmt.Errorf("applying route nftables ruleset: %w", err)
-		}
-	}
-
-	nftablesDataPlane.activeRouteChains = desiredRouteChains
 	return nil
 }
 
@@ -151,11 +218,13 @@ func (nftablesDataPlane *NftablesDataPlane) Cleanup(ctx context.Context) error {
 }
 
 // buildVIPRuleset generates a complete nftables ruleset for the given
-// service configurations. The ruleset is applied atomically with nft -f.
+// service configurations. Route dispatch overrides redirect VIP+port
+// entries to route chains instead of service chains when routes are active.
 func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 	serviceConfigs []ServiceVIPConfig,
 	desiredServiceChains map[string]bool,
 	desiredVIPAddresses map[string]bool,
+	routeDispatchOverrides map[string]string,
 ) string {
 	var rulesetBuilder strings.Builder
 
@@ -193,15 +262,20 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 			continue
 		}
 
-		chainName := nftablesServiceChainPrefix + sanitizeNftablesChainName(serviceConfig.ServiceName)
-		desiredServiceChains[chainName] = true
+		serviceChainName := nftablesServiceChainPrefix + sanitizeNftablesChainName(serviceConfig.ServiceName)
+		desiredServiceChains[serviceChainName] = true
 
 		protocol := serviceConfig.EffectiveProtocol()
+		dispatchTarget := serviceChainName
+		overrideKey := vipPortKey(serviceConfig.VirtualIP, serviceConfig.Port)
+		if routeChain, hasOverride := routeDispatchOverrides[overrideKey]; hasOverride {
+			dispatchTarget = routeChain
+		}
 		dispatchEntries = append(dispatchEntries,
 			fmt.Sprintf("        %s . %s . %d : goto %s",
-				serviceConfig.VirtualIP, protocol, serviceConfig.Port, chainName))
+				serviceConfig.VirtualIP, protocol, serviceConfig.Port, dispatchTarget))
 
-		fmt.Fprintf(&rulesetBuilder, "    chain %s {\n", chainName)
+		fmt.Fprintf(&rulesetBuilder, "    chain %s {\n", serviceChainName)
 		writeBackendDNATRules(&rulesetBuilder, serviceConfig.Backends, protocol)
 		rulesetBuilder.WriteString("    }\n\n")
 	}
