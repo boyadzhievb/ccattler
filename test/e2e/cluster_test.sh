@@ -39,7 +39,6 @@
 #   ./test/e2e/cluster_test.sh --clear-workloads               # remove all workloads (agents reconcile)
 #   ./test/e2e/cluster_test.sh --clean                         # destroy VMs + wipe state (fresh start)
 #   ./test/e2e/cluster_test.sh --no-destroy                    # keep VMs running after test
-#   ./test/e2e/cluster_test.sh --keep-on-fail                  # keep VMs running only on failure
 #   ./test/e2e/cluster_test.sh --from-release                  # download latest release binary
 #   ./test/e2e/cluster_test.sh --skip-build                    # use pre-built binary (no go build)
 #   ./test/e2e/cluster_test.sh --cross-compile                 # cross-compile locally (old behavior)
@@ -66,7 +65,6 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 WORKLOADS_DIR="$SCRIPT_DIR/workloads"
 DESTROY_ON_EXIT=halt
-KEEP_ON_FAIL=false
 BINARY_SOURCE=rsync
 CLUSTER_ENV=test
 CLEAN_START=false
@@ -80,7 +78,6 @@ BAREMETAL=false
 for arg in "$@"; do
     case "$arg" in
         --no-destroy)        DESTROY_ON_EXIT=none ;;
-        --keep-on-fail)      KEEP_ON_FAIL=true ;;
         --clean)             CLEAN_START=true; DESTROY_ON_EXIT=destroy ;;
         --clear-workloads)   CLEAR_WORKLOADS_ONLY=true ;;
         --from-release)      BINARY_SOURCE=release ;;
@@ -246,13 +243,8 @@ cleanup() {
     local exit_code=$?
     if [[ $exit_code -ne 0 ]]; then
         collect_vm_logs || true
-        if [[ "$KEEP_ON_FAIL" == "true" ]]; then
-            log "Test FAILED — keeping VMs running for investigation (--keep-on-fail)"
-            log "  SSH: ssh -i ~/.ssh/id_rsa_lenovo_bojan bojan@192.168.100.43"
-            log "  VMs: sudo virsh list --all"
-            log "  Stop manually: cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE VAGRANT_DOTFILE_PATH=$VAGRANT_DOTFILE vagrant halt"
-            DESTROY_ON_EXIT=none
-        fi
+        log "Test FAILED — keeping VMs running for investigation"
+        DESTROY_ON_EXIT=none
     fi
     if [[ "$BAREMETAL" == "true" ]]; then
         log "Bare-metal cluster — no VM lifecycle to manage"
