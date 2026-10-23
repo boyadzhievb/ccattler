@@ -413,10 +413,11 @@ func writeSourceIPStickyChain(rulesetBuilder *strings.Builder, routeConfig Route
 }
 
 // writeCookieProxyChain writes an nftables chain that redirects traffic
-// to the local cookie proxy port.
+// to the local cookie proxy port. The protocol match is required because
+// nftables needs a transport protocol context for the port in redirect.
 func writeCookieProxyChain(rulesetBuilder *strings.Builder, chainName string, proxyPort int) {
 	fmt.Fprintf(rulesetBuilder, "    chain %s {\n", chainName)
-	fmt.Fprintf(rulesetBuilder, "        redirect to :%d\n", proxyPort)
+	fmt.Fprintf(rulesetBuilder, "        meta l4proto tcp redirect to :%d\n", proxyPort)
 	rulesetBuilder.WriteString("    }\n\n")
 }
 
