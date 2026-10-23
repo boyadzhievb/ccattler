@@ -433,6 +433,75 @@ The crash-loop counter is queryable: `cca watch derived/crash-loop/` shows all s
 
 ---
 
+## 13. Config/Secret Reload
+
+**Chain:** `agent/agent.go:reconcileDesiredInstance` → config hash → `observed/instance/{id}/config-hash` → steady-state comparison → restart
+
+Configs and secrets are resolved at container start time. Without change detection, updating a config requires a full redeploy. This flow adds automatic restart when config or secrets change.
+
+### Mechanism
+
+The agent computes a SHA256 hash of all config inputs (env vars, config files, secrets) at start time and stores it as `observed/instance/{id}/config-hash`. On each steady-state cycle, the agent recomputes the hash from the current desired config and compares it to the stored value. If different, the agent stops the container — the next cycle restarts it with the new config.
+
+### Agent flow
+
+```
+Start path (reconcileDesiredInstance):
+  1. Resolve config env vars, config files, secrets
+  2. Compute SHA256 hash of all config inputs
+  3. Start container with resolved config
+  4. Store hash: observed/instance/{id}/config-hash = hex(sha256)
+
+Steady-state path (else branch):
+  1. Read stored config-hash from observed/instance/{id}/config-hash
+  2. Recompute hash from current desired config
+  3. If hashes differ:
+     → Log: "config changed, restarting instance"
+     → Stop the container via runtime.Stop()
+     → Next cycle detects !Running → reconcileDesiredInstance → fresh start
+```
+
+### What must match
+
+- Hash includes env vars, config files, and secrets — any change triggers restart.
+- Hash computation must be deterministic: sort keys before hashing.
+- The rollout controller is not involved — config reload is agent-local.
+- Init containers re-run on config-triggered restart (same as any restart).
+
+---
+
+## 14. OOM Kill Detection
+
+**Chain:** `nerdctl inspect` → `runtime/container.go:Status()` → `agent/agent.go:observeInstanceState()` → exit-reason fact
+
+Resource limits (`--cpus`, `--memory`) are already passed to `nerdctl run` via `runtime/container.go:buildRunArguments`. However, when a container is OOM-killed, the agent cannot distinguish it from a normal crash because `Status()` only queries `.State.Running` — not `.State.ExitCode` or `.State.OOMKilled`.
+
+### Detection flow
+
+```
+1. Container exits due to OOM
+2. nerdctl inspect reports:
+   - .State.Running = false
+   - .State.ExitCode = 137
+   - .State.OOMKilled = true
+3. ContainerRuntime.Status() parses all three fields:
+   - ExitCode → Status.ExitCode
+   - OOMKilled → Status.Error = "OOMKilled"
+4. Agent.observeInstanceState() sees ExitCode != 0 → InstanceFailed
+5. Agent publishes exit-reason fact:
+   observed/instance/{id}/exit-reason = "OOMKilled" | "exit(N)"
+6. cca get instances shows the reason in the STATUS column
+```
+
+### What must match
+
+- OOM detection is informational only — the failure controller replaces OOM-killed instances identically to crashed instances.
+- The exit-reason fact is ephemeral — deleted when the instance is cleaned up.
+- ProcessRuntime already populates ExitCode correctly; only ContainerRuntime was missing it.
+- SimulatorRuntime's KillWorkload already supports exit code 137 for testing.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

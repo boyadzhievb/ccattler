@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -418,7 +419,7 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	defer cancelInspect()
 
 	inspectCommand := containerRuntime.buildExecCommand(inspectContext, "inspect",
-		"--format", "{{.State.Running}}|{{.NetworkSettings.IPAddress}}", containerName)
+		"--format", "{{.State.Running}}|{{.NetworkSettings.IPAddress}}|{{.State.ExitCode}}|{{.State.OOMKilled}}", containerName)
 	var inspectOutput bytes.Buffer
 	inspectCommand.Stdout = &inspectOutput
 	if err := inspectCommand.Run(); err != nil {
@@ -429,15 +430,27 @@ func (containerRuntime *ContainerRuntime) Status(ctx context.Context, id string)
 	}
 
 	rawOutput := strings.TrimSpace(inspectOutput.String())
-	outputParts := strings.SplitN(rawOutput, "|", 2)
-	running := outputParts[0] == "true"
-	containerIP := ""
-	if len(outputParts) > 1 {
-		containerIP = outputParts[1]
-	} else {
+	outputParts := strings.SplitN(rawOutput, "|", 4)
+	if len(outputParts) < 2 {
 		logging.Default().Warn("unexpected nerdctl inspect format", "id", id, "output", rawOutput)
+		return Status{ID: id, Running: false}, nil
 	}
-	return Status{ID: id, Running: running, IP: containerIP}, nil
+	running := outputParts[0] == "true"
+	containerIP := outputParts[1]
+
+	exitCode := 0
+	if len(outputParts) > 2 {
+		parsedCode, parseErr := strconv.Atoi(outputParts[2])
+		if parseErr == nil {
+			exitCode = parsedCode
+		}
+	}
+	exitReason := ""
+	if len(outputParts) > 3 && outputParts[3] == "true" {
+		exitReason = "OOMKilled"
+	}
+
+	return Status{ID: id, Running: running, IP: containerIP, ExitCode: exitCode, Error: exitReason}, nil
 }
 
 // List returns the status of every container the runtime has tracked, querying

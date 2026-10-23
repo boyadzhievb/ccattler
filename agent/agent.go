@@ -5,12 +5,15 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -464,16 +467,20 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
 		if !exists || !runtimeStatus.Running {
+			if exists && runtimeStatus.ExitCode != 0 {
+				nodeAgent.publishExitReasonFromStatus(ctx, instanceInfo.id, runtimeStatus)
+			}
 			logging.Default().Info("starting instance",
 				"agent", nodeAgent.nodeID,
 				"instance", instanceInfo.id,
 				"service", instanceInfo.service)
 			nodeAgent.reconcileDesiredInstance(ctx, instanceInfo)
-		} else {
+		} else if !nodeAgent.detectConfigChange(ctx, instanceInfo) {
 			nodeAgent.reconcileResourceChanges(ctx, instanceInfo)
 			nodeAgent.republishHostPortIfNeeded(ctx, instanceInfo.id)
-			observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+			observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 			nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeStatus.IP)
+			nodeAgent.publishExitReasonIfFailed(ctx, instanceInfo.id, observedState, exitReason)
 		}
 		delete(runningByID, instanceInfo.id)
 	}
@@ -708,6 +715,34 @@ func (nodeAgent *Agent) clearPullStatusFromStore(ctx context.Context, instanceID
 	}
 }
 
+// publishExitReasonFromStatus publishes an exit-reason fact from the runtime
+// status when a stopped workload has a non-zero exit code.
+func (nodeAgent *Agent) publishExitReasonFromStatus(ctx context.Context, instanceID string, runtimeStatus runtime.Status) {
+	exitReason := runtimeStatus.Error
+	if exitReason == "" && runtimeStatus.ExitCode != 0 {
+		exitReason = fmt.Sprintf("exit(%d)", runtimeStatus.ExitCode)
+	}
+	if exitReason != "" {
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceExitReason(instanceID), []byte(exitReason)); putError != nil {
+			logging.Default().Error("failed to publish exit reason", "instance", instanceID, "error", putError.Error())
+		}
+	}
+}
+
+// publishExitReasonIfFailed writes the exit-reason fact when an instance is
+// failed, or deletes it when the instance has recovered.
+func (nodeAgent *Agent) publishExitReasonIfFailed(ctx context.Context, instanceID string, state types.InstanceState, exitReason string) {
+	if state == types.InstanceFailed && exitReason != "" {
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceExitReason(instanceID), []byte(exitReason)); putError != nil {
+			logging.Default().Error("failed to publish exit reason", "instance", instanceID, "error", putError.Error())
+		}
+	} else {
+		if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedInstanceExitReason(instanceID)); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
+			logging.Default().Error("failed to delete exit reason", "instance", instanceID, "error", deleteError.Error())
+		}
+	}
+}
+
 // buildRuntimeSpecForInstance resolves the complete runtime specification for an
 // instance by reading config env vars, config files, exposed ports, resource
 // limits, and allocating a network IP address from the configured provider.
@@ -774,10 +809,17 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		}
 	}
 
-	observedState := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
+	observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
+	nodeAgent.publishExitReasonIfFailed(ctx, instanceInfo.id, observedState, exitReason)
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
+	}
+	configHash := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
+	if configHash != "" {
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id), []byte(configHash)); putError != nil {
+			logging.Default().Error("failed to write config hash", "instance", instanceInfo.id, "error", putError.Error())
+		}
 	}
 }
 
@@ -948,6 +990,76 @@ func (nodeAgent *Agent) resolveServiceConfigFiles(ctx context.Context, serviceNa
 		}
 	}
 	return configFileMounts
+}
+
+// detectConfigChange checks whether the config hash for a running instance has
+// changed since it was started. If so, stops the container so the next cycle
+// restarts it with the new config. Returns true if the instance was stopped.
+func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo placedInstanceInfo) bool {
+	storedHashFact, getError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceConfigHash(instanceInfo.id))
+	if getError != nil {
+		return false
+	}
+	storedHash := string(storedHashFact.Value)
+	currentHash := nodeAgent.computeServiceConfigHash(ctx, instanceInfo.service)
+	if currentHash == "" || currentHash == storedHash {
+		return false
+	}
+	logging.Default().Info("config changed, restarting instance",
+		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
+		"service", instanceInfo.service)
+	if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
+		logging.Default().Error("failed to stop instance for config reload",
+			"instance", instanceInfo.id, "error", stopError.Error())
+	}
+	return true
+}
+
+// computeServiceConfigHash computes a deterministic SHA256 hash of all config
+// inputs (env vars, config files, secrets) for a service. Returns empty string
+// if the service has no config.
+func (nodeAgent *Agent) computeServiceConfigHash(ctx context.Context, serviceName string) string {
+	hasher := sha256.New()
+	hasAnyInput := false
+
+	envVars := nodeAgent.resolveServiceConfigEnvVars(ctx, serviceName)
+	if len(envVars) > 0 {
+		hasAnyInput = true
+		sortedEnvKeys := make([]string, 0, len(envVars))
+		for envKey := range envVars {
+			sortedEnvKeys = append(sortedEnvKeys, envKey)
+		}
+		sort.Strings(sortedEnvKeys)
+		for _, envKey := range sortedEnvKeys {
+			hasher.Write([]byte("env:" + envKey + "=" + envVars[envKey] + "\n"))
+		}
+	}
+
+	configFiles := nodeAgent.resolveServiceConfigFiles(ctx, serviceName)
+	if len(configFiles) > 0 {
+		hasAnyInput = true
+		sortedFilePaths := make([]string, 0, len(configFiles))
+		for filePath := range configFiles {
+			sortedFilePaths = append(sortedFilePaths, filePath)
+		}
+		sort.Strings(sortedFilePaths)
+		for _, filePath := range sortedFilePaths {
+			hasher.Write([]byte("file:" + filePath + "=" + configFiles[filePath] + "\n"))
+		}
+	}
+
+	secretFacts, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceSecrets(serviceName))
+	if scanError == nil && len(secretFacts) > 0 {
+		hasAnyInput = true
+		for _, secretFact := range secretFacts {
+			hasher.Write([]byte("secret:" + secretFact.Key + "=" + string(secretFact.Value) + "\n"))
+		}
+	}
+
+	if !hasAnyInput {
+		return ""
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 // resolveSecretAPIBaseURL computes the HTTP base URL for the secret API server,
@@ -1276,7 +1388,6 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 	}
 }
 
-// observeInstanceState queries the runtime for the actual state of an instance
 // isInstanceMarkedForSkip checks derived/ markers (node_failure,
 // controller_stopped) that signal the agent to skip this instance.
 func (nodeAgent *Agent) isInstanceMarkedForSkip(ctx context.Context, instanceID string) bool {
@@ -1290,19 +1401,23 @@ func (nodeAgent *Agent) isInstanceMarkedForSkip(ctx context.Context, instanceID 
 }
 
 // observeInstanceState queries the runtime for the current state of an instance
-// and returns the corresponding InstanceState.
-func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) types.InstanceState {
+// and returns the corresponding InstanceState and exit reason (if failed).
+func (nodeAgent *Agent) observeInstanceState(ctx context.Context, instanceID string) (types.InstanceState, string) {
 	observedStatus, statusError := nodeAgent.runtime.Status(ctx, instanceID)
 	if statusError != nil {
-		return types.InstanceStarting
+		return types.InstanceStarting, ""
 	}
 	if observedStatus.Running {
-		return types.InstanceRunning
+		return types.InstanceRunning, ""
 	}
 	if observedStatus.ExitCode != 0 || observedStatus.Error != "" {
-		return types.InstanceFailed
+		exitReason := observedStatus.Error
+		if exitReason == "" {
+			exitReason = fmt.Sprintf("exit(%d)", observedStatus.ExitCode)
+		}
+		return types.InstanceFailed, exitReason
 	}
-	return types.InstanceStarting
+	return types.InstanceStarting, ""
 }
 
 // publishInstanceStateToStore writes a complete set of observed-state facts for

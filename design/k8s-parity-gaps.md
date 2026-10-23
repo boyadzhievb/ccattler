@@ -20,11 +20,12 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 
 ## Important
 
-### 3. Resource Limits Enforcement
+### 3. Resource Limits Enforcement — DONE
 
 **K8s**: Requests vs limits, OOM kill handling, eviction under pressure, QoS classes.
-**CCattler**: Resource-aware scheduling (`scheduler/scheduler.go`) but containers run unbounded. No `--memory`/`--cpus` on nerdctl run. No OOM detection or eviction.
-**Fix needed**: Pass resource limits to nerdctl run args, detect OOM kills from runtime status, implement node-pressure eviction.
+**CCattler**: Resource limits already wired end-to-end: DSL → scheduler → agent → `--cpus`/`--memory` on nerdctl run. Container runtime `Status()` now parses ExitCode and OOMKilled from nerdctl inspect. Agent publishes `exit-reason` fact ("OOMKilled" or "exit(N)").
+**Files**: `runtime/container.go`, `agent/agent.go`, `types/keys.go`.
+**Remaining**: Node-pressure eviction, QoS classes (BestEffort/Burstable/Guaranteed).
 
 ### 4. Rolling Update MaxSurge
 
@@ -32,11 +33,12 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **CCattler**: RolloutController with maxUnavailable and auto-rollback (`controllers/rollout.go`). No maxSurge, no revision history, no pause.
 **Fix needed**: maxSurge (over-provision during update), revision history for multi-step rollback.
 
-### 5. Config/Secret Reload
+### 5. Config/Secret Reload — DONE
 
 **K8s**: ConfigMap/Secret watch → pod restart or volume refresh, secret rotation.
-**CCattler**: Config files bind-mounted at start (`runtime/container.go`). No watch, no reload, no rotation. Change requires new deployment.
-**Fix needed**: Watch config facts, trigger instance restart or file refresh when config changes.
+**CCattler**: Agent computes SHA256 hash of all config inputs (env vars, config files, secrets) at start time, stores as `observed/instance/{id}/config-hash`. On each steady-state cycle, recomputes and compares — if different, stops and restarts the container with new config.
+**Files**: `agent/agent.go`, `types/keys.go`.
+**Remaining**: Secret rotation (automatic re-encryption with new master key).
 
 ### 6. Pod Disruption Budgets
 
@@ -61,8 +63,7 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **K8s**: Container log rotation, `kubectl logs --previous`.
 **CCattler**: `cca logs --follow` streams via nerdctl. No rotation config, no previous-container logs.
 
-### 10. Events CLI
+### 10. Events CLI — DONE (pre-existing)
 
 **K8s**: Event objects with reason/message, visible via `kubectl describe`.
-**CCattler**: EventLog exists internally (`types/eventlog.go`) with decision logging. Not surfaced via CLI.
-**Fix needed**: `cca events` command to surface decision log entries.
+**CCattler**: Already implemented. `cca events [--follow] [--service <name>]` queries the EventLog via `/api/logs` and `/api/events/stream` SSE. EventProjector in `controllers/event_projector.go` maps store changes to semantic events.

@@ -272,6 +272,20 @@ func KeyObservedInstancePullStatus(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/pull-status", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceConfigHash returns the store path for the SHA256 hash of
+// all config inputs (env vars, config files, secrets) applied at start time.
+// Path: observed/instance/{instanceID}/config-hash
+func KeyObservedInstanceConfigHash(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/config-hash", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceExitReason returns the store path for an instance's exit
+// reason. Value is "OOMKilled" or "exit(N)" for non-zero exit codes.
+// Path: observed/instance/{instanceID}/exit-reason
+func KeyObservedInstanceExitReason(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/exit-reason", PrefixObserved, instanceID)
+}
+
 // KeyObservedInstanceIP returns the store path for an instance's assigned IP address.
 // Path: observed/instance/{instanceID}/ip
 func KeyObservedInstanceIP(instanceID string) string {

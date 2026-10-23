@@ -1863,3 +1863,116 @@ func TestAgentCleanupRemovesPullBackoff(t *testing.T) {
 		return err != nil
 	})
 }
+
+// TestAgentPublishesExitReasonOnOOMKill verifies that when a container is
+// OOM-killed (exit code 137), the agent publishes the exit-reason fact.
+func TestAgentPublishesExitReasonOnOOMKill(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "oom1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "oom1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		observedStatus, statusErr := simulatorRuntime.Status(ctx, "oom1")
+		return statusErr == nil && observedStatus.Running
+	})
+
+	// Kill with OOM and block restart so the failed state persists.
+	simulatorRuntime.InjectStartFailure("oom1", "still OOM")
+	simulatorRuntime.KillWorkload("oom1", 137, "OOMKilled")
+
+	waitFor(t, 2*time.Second, "instance state=failed in store", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("oom1"))
+		return err == nil && string(factEntry.Value) == "failed"
+	})
+
+	waitFor(t, 2*time.Second, "exit-reason=OOMKilled in store", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceExitReason("oom1"))
+		return err == nil && string(factEntry.Value) == "OOMKilled"
+	})
+}
+
+// TestAgentRestartsOnConfigChange verifies that when a config env var changes,
+// the agent detects the hash mismatch and restarts the instance.
+func TestAgentRestartsOnConfigChange(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.old.local"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "cfg1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "cfg1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	// Wait for the instance to start and the config hash to be written.
+	waitFor(t, 2*time.Second, "config-hash stored", func() bool {
+		_, err := factStore.Get(ctx, types.KeyObservedInstanceConfigHash("cfg1"))
+		return err == nil
+	})
+
+	// Record the original config hash.
+	originalHashFact, _ := factStore.Get(ctx, types.KeyObservedInstanceConfigHash("cfg1"))
+	originalHash := string(originalHashFact.Value)
+
+	// Change the config.
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("web", "DB_HOST"), []byte("db.new.local"))
+
+	// The agent should detect the mismatch, stop, and restart with new config.
+	waitFor(t, 3*time.Second, "config-hash updated after config change", func() bool {
+		hashFact, err := factStore.Get(ctx, types.KeyObservedInstanceConfigHash("cfg1"))
+		return err == nil && string(hashFact.Value) != originalHash
+	})
+}
+
+// TestAgentPublishesExitReasonOnNonZeroExit verifies that a non-OOM crash
+// publishes the numeric exit code as the reason.
+func TestAgentPublishesExitReasonOnNonZeroExit(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "crash1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "crash1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		observedStatus, statusErr := simulatorRuntime.Status(ctx, "crash1")
+		return statusErr == nil && observedStatus.Running
+	})
+
+	// Kill and block restart so the failed state persists.
+	simulatorRuntime.InjectStartFailure("crash1", "segfault")
+	simulatorRuntime.KillWorkload("crash1", 1, "")
+
+	waitFor(t, 2*time.Second, "exit-reason=exit(1) in store", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceExitReason("crash1"))
+		return err == nil && string(factEntry.Value) == "exit(1)"
+	})
+}
