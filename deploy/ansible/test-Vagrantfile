@@ -8,7 +8,7 @@
 # VMs are created without provisioning — use test-deploy.yml for that.
 
 Vagrant.configure("2") do |config|
-  config.vm.box = "generic/ubuntu2204"
+  config.vm.box = "generic/ubuntu2404"
 
   config.vm.provider "libvirt" do |lv|
     lv.driver = "kvm"
