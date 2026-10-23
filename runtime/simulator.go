@@ -31,6 +31,7 @@ type SimulatorRuntime struct {
 	StartFailures  map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
 	ExecInitCalls  []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
 	PulledImages   []string                      // PulledImages records image references passed to PullImage for test verification.
+	PullFailures   map[string]string             // PullFailures maps image references to error reasons returned by PullImage.
 	ReconcileDelay time.Duration                 // ReconcileDelay adds artificial latency to Start and List to simulate slow operations.
 }
 
@@ -182,10 +183,14 @@ func (simulator *SimulatorRuntime) ExecCapture(_ context.Context, instanceID str
 	return []byte(fmt.Sprintf("[simulated] exec %q in %s\n", execSpec.Command, instanceID)), nil
 }
 
-// PullImage simulates pulling a container image. Records the pull and succeeds.
+// PullImage simulates pulling a container image. If a PullFailures entry
+// exists for this image, returns an error. Otherwise records the pull.
 func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference string) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
+	if reason, shouldFail := simulator.PullFailures[imageReference]; shouldFail {
+		return fmt.Errorf("pull failed: %s", reason)
+	}
 	simulator.PulledImages = append(simulator.PulledImages, imageReference)
 	return nil
 }

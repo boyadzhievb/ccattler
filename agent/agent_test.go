@@ -1726,3 +1726,140 @@ func TestBuildConnectionURL(t *testing.T) { //nolint:funlen // table-driven test
 		}
 	}
 }
+
+func TestAgentPullsImageBeforeStart(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-ok", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "pull-ok", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running after pull", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-ok"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	if !simulatorRuntime.IsImageCached(ctx, "nginx:1.28") {
+		t.Error("image should have been pulled before start")
+	}
+}
+
+func TestAgentImagePullFailureEntersBackoff(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.PullFailures = map[string]string{
+		"bad-image:latest": "registry unreachable",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("bad-image:latest"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-fail", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "pull-fail", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance in image-pull-backoff", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-fail"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceImagePullBackoff)
+	})
+
+	waitFor(t, 2*time.Second, "pull-status fact written", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstancePullStatus("pull-fail"))
+		return err == nil && strings.Contains(string(factEntry.Value), "registry unreachable")
+	})
+
+	runtimeStatus, err := simulatorRuntime.Status(ctx, "pull-fail")
+	if err != runtime.ErrNotFound {
+		t.Errorf("instance should not be started when pull fails, got status: %+v", runtimeStatus)
+	}
+}
+
+func TestAgentImagePullBackoffCleanedOnSuccess(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.PullFailures = map[string]string{
+		"flaky-image:v1": "timeout",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("flaky-image:v1"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-retry", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "pull-retry", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance in backoff", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-retry"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceImagePullBackoff)
+	})
+
+	// Fix the pull failure and override the backoff timer for fast test.
+	delete(simulatorRuntime.PullFailures, "flaky-image:v1")
+	nodeAgent.imagePullBackoffs["pull-retry"].retryAfter = time.Now().Add(-1 * time.Second)
+
+	waitFor(t, 2*time.Second, "instance running after retry", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-retry"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	_, pullStatusErr := factStore.Get(ctx, types.KeyObservedInstancePullStatus("pull-retry"))
+	if pullStatusErr == nil {
+		t.Error("pull-status fact should be removed after successful pull")
+	}
+}
+
+func TestAgentCleanupRemovesPullBackoff(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.PullFailures = map[string]string{
+		"bad-image:latest": "not found",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("bad-image:latest"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-clean", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "pull-clean", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance in backoff", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-clean"))
+		return err == nil && string(factEntry.Value) == string(types.InstanceImagePullBackoff)
+	})
+
+	// Remove placement — agent should clean up the instance and its backoff state.
+	factStore.Delete(ctx, types.ScanPlacementsForNode("node-1")+"pull-clean")
+
+	waitFor(t, 2*time.Second, "pull-status fact cleaned up", func() bool {
+		_, err := factStore.Get(ctx, types.KeyObservedInstancePullStatus("pull-clean"))
+		return err != nil
+	})
+}

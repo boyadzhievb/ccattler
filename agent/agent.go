@@ -455,6 +455,11 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		"desired", strconv.Itoa(len(desired)),
 		"running", strconv.Itoa(len(running)))
 
+	desiredByID := make(map[string]bool, len(desired))
+	for _, instanceInfo := range desired {
+		desiredByID[instanceInfo.id] = true
+	}
+
 	// Reconcile each desired instance: start missing, observe running, resize if needed.
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
@@ -477,6 +482,14 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 	for instanceID, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
 			nodeAgent.cleanupUndesiredInstance(ctx, instanceID)
+		}
+	}
+
+	// Clean up pull-backoff state for instances no longer placed on this node.
+	for backoffInstanceID := range nodeAgent.imagePullBackoffs {
+		if !desiredByID[backoffInstanceID] {
+			delete(nodeAgent.imagePullBackoffs, backoffInstanceID)
+			nodeAgent.clearPullStatusFromStore(ctx, backoffInstanceID)
 		}
 	}
 

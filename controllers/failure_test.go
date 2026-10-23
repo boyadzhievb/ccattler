@@ -545,3 +545,37 @@ func TestFailureClearsDrainOnRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestFailureIgnoresPullingInstance(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), string(types.InstancePulling)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for pulling instance, got %d", len(changes))
+	}
+}
+
+func TestFailureIgnoresImagePullBackoffInstance(t *testing.T) {
+	failureController := NewFailureController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), string(types.InstanceImagePullBackoff)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes for image-pull-backoff instance, got %d", len(changes))
+	}
+}
