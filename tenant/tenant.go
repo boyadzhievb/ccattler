@@ -107,9 +107,9 @@ func (registry *TenantRegistry) GetTenant(ctx context.Context, tenantName string
 	tenant := &Tenant{Name: tenantName}
 
 	if cpuFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaCPU(tenantName)); getErr == nil {
-		parsedCPU, parseError := strconv.Atoi(string(cpuFact.Value))
+		parsedCPU, parseError := parseQuotaInt(string(cpuFact.Value))
 		if parseError != nil {
-			return nil, fmt.Errorf("tenant %s: corrupt quota CPU value %q", tenantName, string(cpuFact.Value))
+			return nil, fmt.Errorf("tenant %s: corrupt quota CPU value %q: %w", tenantName, string(cpuFact.Value), parseError)
 		}
 		tenant.Quota.CPU = parsedCPU
 	}
@@ -117,16 +117,16 @@ func (registry *TenantRegistry) GetTenant(ctx context.Context, tenantName string
 		tenant.Quota.Memory = string(memFact.Value)
 	}
 	if instFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaInstances(tenantName)); getErr == nil {
-		parsedInstances, parseError := strconv.Atoi(string(instFact.Value))
+		parsedInstances, parseError := parseQuotaInt(string(instFact.Value))
 		if parseError != nil {
-			return nil, fmt.Errorf("tenant %s: corrupt quota instances value %q", tenantName, string(instFact.Value))
+			return nil, fmt.Errorf("tenant %s: corrupt quota instances value %q: %w", tenantName, string(instFact.Value), parseError)
 		}
 		tenant.Quota.Instances = parsedInstances
 	}
 	if volFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName)); getErr == nil {
-		parsedVolumes, parseError := strconv.Atoi(string(volFact.Value))
+		parsedVolumes, parseError := parseQuotaInt(string(volFact.Value))
 		if parseError != nil {
-			return nil, fmt.Errorf("tenant %s: corrupt quota volumes value %q", tenantName, string(volFact.Value))
+			return nil, fmt.Errorf("tenant %s: corrupt quota volumes value %q: %w", tenantName, string(volFact.Value), parseError)
 		}
 		tenant.Quota.Volumes = parsedVolumes
 	}
@@ -134,14 +134,29 @@ func (registry *TenantRegistry) GetTenant(ctx context.Context, tenantName string
 		tenant.Quota.Storage = string(storageFact.Value)
 	}
 	if weightFact, getErr := registry.factStore.Get(ctx, types.KeyDesiredTenantWeight(tenantName)); getErr == nil {
-		parsedWeight, parseError := strconv.Atoi(string(weightFact.Value))
+		parsedWeight, parseError := parseQuotaInt(string(weightFact.Value))
 		if parseError != nil {
-			return nil, fmt.Errorf("tenant %s: corrupt weight value %q", tenantName, string(weightFact.Value))
+			return nil, fmt.Errorf("tenant %s: corrupt weight value %q: %w", tenantName, string(weightFact.Value), parseError)
 		}
 		tenant.Weight = parsedWeight
 	}
 
 	return tenant, nil
+}
+
+// maxQuotaValue is the upper bound for tenant quota integers (10 million).
+const maxQuotaValue = 10_000_000
+
+// parseQuotaInt parses a quota string as an integer with range validation.
+func parseQuotaInt(rawValue string) (int, error) {
+	parsedValue, parseError := strconv.ParseInt(rawValue, 10, 32)
+	if parseError != nil {
+		return 0, parseError
+	}
+	if parsedValue < 0 || parsedValue > maxQuotaValue {
+		return 0, fmt.Errorf("value %d out of range [0, %d]", parsedValue, maxQuotaValue)
+	}
+	return int(parsedValue), nil
 }
 
 // ListServicesForTenant returns all service names owned by the given tenant.

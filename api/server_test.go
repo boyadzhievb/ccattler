@@ -6,9 +6,16 @@ package api
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -414,11 +421,24 @@ func newTestServerWithEnrollment(t *testing.T) (string, string, func()) {
 	return baseURL, joinToken.Token, cleanup
 }
 
+// generateTestCSRPEM creates a PEM-encoded CSR for enrollment API tests.
+func generateTestCSRPEM(t *testing.T, nodeID string) string {
+	t.Helper()
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrTemplate := &x509.CertificateRequest{
+		Subject:     pkix.Name{Organization: []string{"CCattler"}, CommonName: nodeID},
+		IPAddresses: []net.IP{net.ParseIP("192.168.1.10")},
+	}
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER}))
+}
+
 func TestEnrollNodeSuccess(t *testing.T) {
 	baseURL, tokenValue, cleanup := newTestServerWithEnrollment(t)
 	defer cleanup()
 
-	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1","ip_addresses":["192.168.1.10"]}`, tokenValue)
+	csrPEM := generateTestCSRPEM(t, "worker-1")
+	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1","ip_addresses":["192.168.1.10"],"csr_pem":%q}`, tokenValue, csrPEM)
 	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
 	if err != nil {
 		t.Fatal(err)
@@ -441,9 +461,6 @@ func TestEnrollNodeSuccess(t *testing.T) {
 	}
 	if enrollResponse.CertificatePEM == "" {
 		t.Fatal("expected certificate PEM, got empty")
-	}
-	if enrollResponse.PrivateKeyPEM == "" {
-		t.Fatal("expected private key PEM, got empty")
 	}
 	if enrollResponse.CACertPEM == "" {
 		t.Fatal("expected CA cert PEM, got empty")
@@ -476,7 +493,8 @@ func TestEnrollNodeTokenConsumed(t *testing.T) {
 	baseURL, tokenValue, cleanup := newTestServerWithEnrollment(t)
 	defer cleanup()
 
-	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1"}`, tokenValue)
+	csrPEM := generateTestCSRPEM(t, "worker-1")
+	requestBody := fmt.Sprintf(`{"token":"%s","node_id":"worker-1","csr_pem":%q}`, tokenValue, csrPEM)
 
 	resp, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
 	if err != nil {
@@ -487,7 +505,9 @@ func TestEnrollNodeTokenConsumed(t *testing.T) {
 		t.Fatalf("first enrollment expected 200, got %d", resp.StatusCode)
 	}
 
-	resp2, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody))
+	csrPEM2 := generateTestCSRPEM(t, "worker-2")
+	requestBody2 := fmt.Sprintf(`{"token":"%s","node_id":"worker-2","csr_pem":%q}`, tokenValue, csrPEM2)
+	resp2, err := http.Post(baseURL+"/api/enroll", "application/json", strings.NewReader(requestBody2))
 	if err != nil {
 		t.Fatal(err)
 	}

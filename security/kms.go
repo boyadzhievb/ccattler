@@ -16,7 +16,7 @@ import (
 
 // KeyProvider wraps and unwraps data encryption keys (DEKs). Each
 // implementation delegates to a different key management backend: a local
-// 32-byte file, AWS KMS, GCP KMS, or HashiCorp Vault Transit.
+// 32-byte file, AWS KMS, or GCP KMS.
 //
 // The CCattler secret store uses envelope encryption: each secret is encrypted
 // with a random DEK, and the DEK is wrapped (encrypted) by the KeyProvider.
@@ -32,7 +32,7 @@ type KeyProvider interface {
 	UnwrapKey(ctx context.Context, wrappedDEK []byte) ([]byte, error)
 
 	// ProviderName returns a short identifier for this provider (e.g. "local",
-	// "aws-kms", "gcp-kms", "vault-transit").
+	// "aws-kms", "gcp-kms").
 	ProviderName() string
 }
 
@@ -214,36 +214,4 @@ func decryptWithDEK(dataEncryptionKey []byte, ciphertext []byte) ([]byte, error)
 	}
 	nonce, ciphertextBody := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return aesGCM.Open(nil, nonce, ciphertextBody, nil)
-}
-
-// VaultTransitKeyProvider wraps and unwraps DEKs using HashiCorp Vault's
-// Transit secrets engine. The keyName is the name of the Transit key.
-type VaultTransitKeyProvider struct {
-	vaultAddress string // vaultAddress is the Vault server URL (e.g. "https://vault:8200").
-	keyName      string // keyName is the Transit key name.
-	mountPath    string // mountPath is the Transit engine mount (default "transit").
-}
-
-// NewVaultTransitKeyProvider creates a provider that delegates wrap/unwrap to
-// Vault Transit. Requires VAULT_TOKEN or Vault agent authentication.
-func NewVaultTransitKeyProvider(vaultAddress string, keyName string, mountPath string) *VaultTransitKeyProvider {
-	if mountPath == "" {
-		mountPath = "transit"
-	}
-	return &VaultTransitKeyProvider{vaultAddress: vaultAddress, keyName: keyName, mountPath: mountPath}
-}
-
-// WrapKey encrypts the DEK using Vault Transit encrypt.
-func (vaultProvider *VaultTransitKeyProvider) WrapKey(ctx context.Context, plaintextDEK []byte) ([]byte, error) {
-	return nil, fmt.Errorf("vault-transit: WrapKey not yet connected (addr=%s, key=%s) — requires vault API client", vaultProvider.vaultAddress, vaultProvider.keyName)
-}
-
-// UnwrapKey decrypts the wrapped DEK using Vault Transit decrypt.
-func (vaultProvider *VaultTransitKeyProvider) UnwrapKey(ctx context.Context, wrappedDEK []byte) ([]byte, error) {
-	return nil, fmt.Errorf("vault-transit: UnwrapKey not yet connected (addr=%s, key=%s) — requires vault API client", vaultProvider.vaultAddress, vaultProvider.keyName)
-}
-
-// ProviderName returns "vault-transit".
-func (vaultProvider *VaultTransitKeyProvider) ProviderName() string {
-	return "vault-transit"
 }

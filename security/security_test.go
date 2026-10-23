@@ -30,6 +30,24 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// generateTestCSR creates a PEM-encoded CSR for enrollment tests.
+func generateTestCSR(t *testing.T, nodeID string, ipAddresses []net.IP) []byte {
+	t.Helper()
+	nodePrivateKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatalf("generate key for CSR: %v", err)
+	}
+	csrTemplate := &x509.CertificateRequest{
+		Subject:     pkix.Name{Organization: []string{"CCattler"}, CommonName: nodeID},
+		IPAddresses: ipAddresses,
+	}
+	csrDER, err := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
+	if err != nil {
+		t.Fatalf("create CSR: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csrDER})
+}
+
 func TestCertificateAuthorityCreation(t *testing.T) {
 	certificateAuthority, err := NewCertificateAuthority(24 * time.Hour)
 	if err != nil {
@@ -1072,11 +1090,13 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 		t.Fatalf("expected 64 hex chars, got %d", len(joinToken.Token))
 	}
 
-	// Enroll a node.
+	// Enroll a node with CSR.
+	csrPEM := generateTestCSR(t, "node-1", []net.IP{net.ParseIP("10.0.0.1")})
 	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
 		Token:       joinToken.Token,
 		NodeID:      "node-1",
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.1")},
+		CSRPEM:      csrPEM,
 	})
 	if err != nil {
 		t.Fatalf("enroll: %v", err)
@@ -1106,6 +1126,7 @@ func TestEnrollmentFullLifecycle(t *testing.T) {
 	_, err = enrollmentService.EnrollNode(ctx, EnrollmentRequest{
 		Token:  joinToken.Token,
 		NodeID: "node-2",
+		CSRPEM: generateTestCSR(t, "node-2", nil),
 	})
 	if err == nil {
 		t.Fatal("reused token should fail")
@@ -1225,6 +1246,7 @@ func TestEnrollNodeAcceptsRawTokenFromComposite(t *testing.T) {
 		Token:       joinToken.Token,
 		NodeID:      "node-fingerprint-test",
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.5")},
+		CSRPEM:      generateTestCSR(t, "node-fingerprint-test", []net.IP{net.ParseIP("10.0.0.5")}),
 	})
 	if enrollError != nil {
 		t.Fatalf("enroll with raw token: %v", enrollError)
@@ -1271,6 +1293,7 @@ func TestEnrollmentTokenForSpecificNode(t *testing.T) {
 	_, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
 		Token:  joinToken.Token,
 		NodeID: "node-99",
+		CSRPEM: generateTestCSR(t, "node-99", nil),
 	})
 	if err == nil {
 		t.Fatal("wrong node should be rejected")
@@ -1280,6 +1303,7 @@ func TestEnrollmentTokenForSpecificNode(t *testing.T) {
 	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
 		Token:  joinToken.Token,
 		NodeID: "node-5",
+		CSRPEM: generateTestCSR(t, "node-5", nil),
 	})
 	if err != nil {
 		t.Fatalf("correct node failed: %v", err)
@@ -1324,8 +1348,8 @@ func TestEnrollmentListAndRemove(t *testing.T) {
 	token1, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
 	token2, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
 
-	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token1.Token, NodeID: "node-a"})
-	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token2.Token, NodeID: "node-b"})
+	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token1.Token, NodeID: "node-a", CSRPEM: generateTestCSR(t, "node-a", nil)})
+	enrollmentService.EnrollNode(ctx, EnrollmentRequest{Token: token2.Token, NodeID: "node-b", CSRPEM: generateTestCSR(t, "node-b", nil)})
 
 	nodes, _ := enrollmentService.ListEnrolledNodes(ctx)
 	if len(nodes) != 2 {
@@ -1522,7 +1546,7 @@ func TestEnrollNode_CSRFlow(t *testing.T) {
 	}
 }
 
-func TestEnrollNode_LegacyFlow(t *testing.T) {
+func TestEnrollNode_LegacyFlowRejected(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
@@ -1532,25 +1556,17 @@ func TestEnrollNode_LegacyFlow(t *testing.T) {
 
 	joinToken, _ := enrollmentService.GenerateJoinToken(ctx, "", 5*time.Minute)
 
-	// Enroll without a CSR — should use legacy server-side keypair generation.
-	response, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
+	// Enroll without a CSR — must be rejected (legacy flow removed).
+	_, err := enrollmentService.EnrollNode(ctx, EnrollmentRequest{
 		Token:       joinToken.Token,
 		NodeID:      "node-legacy",
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.10")},
 	})
-	if err != nil {
-		t.Fatalf("legacy enroll: %v", err)
+	if err == nil {
+		t.Fatal("enrollment without CSR should be rejected")
 	}
-
-	// Legacy flow should return a private key.
-	if len(response.PrivateKeyPEM) == 0 {
-		t.Fatal("legacy flow should return PrivateKeyPEM")
-	}
-	if len(response.CertificatePEM) == 0 {
-		t.Fatal("no certificate returned")
-	}
-	if response.Principal != "node:node-legacy" {
-		t.Fatalf("expected node:node-legacy, got %s", response.Principal)
+	if !strings.Contains(err.Error(), "CSR required") {
+		t.Fatalf("expected CSR required error, got: %v", err)
 	}
 }
 
@@ -1606,6 +1622,7 @@ func TestTokenHashing(t *testing.T) {
 		Token:       joinToken.Token,
 		NodeID:      "node-hash-test",
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.99")},
+		CSRPEM:      generateTestCSR(t, "node-hash-test", []net.IP{net.ParseIP("10.0.0.99")}),
 	})
 	if enrollError != nil {
 		t.Fatalf("enrollment with raw token should work via hashed lookup: %v", enrollError)

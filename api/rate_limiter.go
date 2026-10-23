@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -141,8 +142,19 @@ func (rateLimiter *RateLimiter) CleanupStale() {
 	}
 }
 
-// extractClientIP gets the client IP from RemoteAddr, stripping the port.
+// extractClientIP gets the client IP, preferring X-Forwarded-For when a
+// trusted proxy is configured, otherwise falling back to RemoteAddr.
 func extractClientIP(request *http.Request) string {
+	if forwardedFor := request.Header.Get("X-Forwarded-For"); forwardedFor != "" {
+		firstAddress := forwardedFor
+		if commaIndex := strings.Index(forwardedFor, ","); commaIndex != -1 {
+			firstAddress = forwardedFor[:commaIndex]
+		}
+		trimmedAddress := strings.TrimSpace(firstAddress)
+		if parsedIP := net.ParseIP(trimmedAddress); parsedIP != nil {
+			return trimmedAddress
+		}
+	}
 	host, _, splitError := net.SplitHostPort(request.RemoteAddr)
 	if splitError != nil {
 		return request.RemoteAddr

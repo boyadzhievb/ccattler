@@ -242,8 +242,7 @@ func (enrollmentService *EnrollmentService) issueOrSignCertificate(
 	if len(request.CSRPEM) > 0 {
 		return enrollmentService.signCSRFromRequest(request, dnsNames)
 	}
-	logging.Default().Warn("legacy enrollment: server generated keypair (CSR-based enrollment preferred)")
-	return enrollmentService.issueLegacyCertificate(request, dnsNames)
+	return nil, nil, time.Time{}, fmt.Errorf("enrollment rejected: CSR required (legacy server-generated keypair is no longer supported)")
 }
 
 // signCSRFromRequest decodes the PEM-encoded CSR from the enrollment request,
@@ -273,23 +272,6 @@ func (enrollmentService *EnrollmentService) signCSRFromRequest(
 	}
 
 	return signResponse.CertificatePEM, nil, signResponse.NotAfter, nil
-}
-
-// issueLegacyCertificate generates a full keypair and certificate on the server.
-// This is the backward-compatible flow for nodes that do not send a CSR.
-func (enrollmentService *EnrollmentService) issueLegacyCertificate(
-	request EnrollmentRequest, dnsNames []string,
-) ([]byte, []byte, time.Time, error) {
-	issuedCertificate, err := enrollmentService.certificateAuthority.IssueCertificate(IssueCertificateRequest{
-		CommonName:  request.NodeID,
-		DNSNames:    dnsNames,
-		IPAddresses: request.IPAddresses,
-		TTL:         enrollmentService.certificateTTL,
-	})
-	if err != nil {
-		return nil, nil, time.Time{}, fmt.Errorf("issue certificate: %w", err)
-	}
-	return issuedCertificate.CertificatePEM, issuedCertificate.PrivateKeyPEM, issuedCertificate.NotAfter, nil
 }
 
 // bindRBACRoleForNode binds the node-agent RBAC role to the given principal.

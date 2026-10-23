@@ -87,6 +87,7 @@ service scheduler {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN "postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND "db+postgresql://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__CORE__LOAD_EXAMPLES "true"
     }
     secret fernet-key "/opt/airflow/fernet-key"
     health {
@@ -109,6 +110,7 @@ service worker {
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN "postgresql+psycopg2://airflow:airflow@metadata-db:5432/airflow"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND "db+postgresql://airflow:airflow@metadata-db:5432/airflow"
+        env AIRFLOW__CORE__LOAD_EXAMPLES "true"
     }
     secret fernet-key "/opt/airflow/fernet-key"
     health {
