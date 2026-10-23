@@ -55,9 +55,9 @@ jobs:
             ip="${NODE_IPS[$vm]}"
             key="$ANSIBLE_DIR/.vagrant-deploy/machines/$vm/libvirt/private_key"
             if [ -f "$key" ]; then
-              echo "=== $vm server.log ==="
-              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo cat /var/log/ccattler/server.log 2>/dev/null || true" || true
-              echo "=== $vm agent.log ==="
-              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo cat /var/log/ccattler/agent.log 2>/dev/null || true" || true
+              echo "=== $vm cca-server journal ==="
+              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
+              echo "=== $vm cca-agent journal ==="
+              ssh $SSH_OPTS -i "$key" "vagrant@$ip" "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
             fi
           done
