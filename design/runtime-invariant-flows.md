@@ -278,6 +278,91 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 
 ---
 
+## 11. Image Pull Lifecycle
+
+**Chain:** `agent/agent.go:reconcileInstance` → `runtime.ImagePuller.PullImage` → `runtime/container.go:Start` (with `--pull=never`)
+
+Container orchestrators must handle image availability as a first-class lifecycle phase. Unlike Kubernetes (which hides pull status behind opaque pod conditions), CCattler surfaces pull state explicitly in the instance status.
+
+### Instance states
+
+```
+placed → pulling → running
+                ↘ image-pull-backoff → pulling (retry)
+```
+
+- **`pulling`**: Agent is actively pulling the image. Visible via `cca get instances` with pull progress.
+- **`image-pull-backoff`**: Pull failed, waiting for retry. Shows reason (timeout, auth failure, not found) and next retry time.
+
+Neither state triggers replacement by the failure controller — the instance is not failed, it's waiting for its image.
+
+### Agent reconcile flow
+
+```
+1. Instance placed on this node and image not cached locally?
+   → Write instance state: pulling
+   → Call runtime.PullImage(ctx, imageReference)
+   
+2. Pull succeeds?
+   → Clear backoff counter
+   → Call runtime.Start(ctx, spec) with --pull=never
+   → Write instance state: running
+   
+3. Pull fails?
+   → Increment backoff counter for this instance
+   → Calculate delay: min(10s × 2^(attempts-1), 300s)
+     [10s, 20s, 40s, 80s, 160s, 300s, 300s, ...]
+   → Write instance state: image-pull-backoff
+   → Write pull failure reason as instance metadata fact:
+     pull-status/{instanceID} = {"error": "...", "attempts": N, "retryAfter": "..."}
+   → Skip this instance on subsequent reconcile cycles until retryAfter
+   
+4. On next reconcile after retryAfter:
+   → Go to step 1
+```
+
+### ContainerRuntime changes
+
+- `Start()` adds `--pull=never` to nerdctl run args — it must not attempt an implicit pull.
+- `PullImage()` already exists but needs a configurable timeout (default 5 minutes).
+- New: `IsImageCached(ctx, imageReference) bool` — check if image exists locally before pulling.
+
+### Status visibility
+
+`cca get instances` output for a pulling instance:
+```
+ID          SERVICE    STATE              NODE         HEALTH
+a1b2c3d4    web        pulling            node-1       -
+e5f6g7h8    web        image-pull-backoff node-2       -
+```
+
+`cca status` includes pull detail:
+```
+instance a1b2c3d4: pulling nginx:1.25 (12% downloaded)
+instance e5f6g7h8: image-pull-backoff nginx:1.25 — registry timeout, retry in 40s (attempt 3/∞)
+```
+
+The pull-status fact is queryable: `cca watch pull-status/` shows all active pulls.
+
+### What must match
+
+- Pull timeout must be longer than the agent reconcile interval (default 10s), otherwise pulls get cancelled every cycle.
+- Backoff counter must be per-instance, not per-image — two instances of the same image can be at different backoff stages.
+- Instance controller must treat `pulling` and `image-pull-backoff` like `pending` — do not create replacements, do not count toward failed quota.
+
+### Controller interaction
+
+| Controller | Behavior for pulling/image-pull-backoff |
+|---|---|
+| Instance | Do not replace — treat like pending |
+| Endpoint | No endpoints — same as pending |
+| Failure | Ignore — not a failure state |
+| Autoscale | Count toward desired but not running |
+| Rollout | Do not advance — wait for pull to complete |
+| Drain | Can be evicted (cancel pull, reschedule elsewhere) |
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
@@ -289,3 +374,4 @@ When adding a new feature that touches the runtime:
 5. **Does it need cross-host networking?** If yes, verify all three endpoint facts exist (Flow 7).
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
 7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
+8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 11) — pull first, start with `--pull=never`. Never assume the image is cached.
