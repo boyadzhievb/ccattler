@@ -213,6 +213,9 @@ func TestNftablesBuildRouteRulesetSourceIPSticky(t *testing.T) {
 	desiredRouteChains := make(map[string]bool)
 	ruleset := nftablesDataPlane.buildRouteRuleset(routeConfigs, desiredRouteChains)
 
+	if !strings.Contains(ruleset, "table ip cca {") {
+		t.Error("route ruleset must be wrapped in table ip cca block")
+	}
 	if !strings.Contains(ruleset, "chain rt_web_public") {
 		t.Error("should contain route chain with hyphen replaced by underscore")
 	}

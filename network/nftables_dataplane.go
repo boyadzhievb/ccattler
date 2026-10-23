@@ -264,6 +264,7 @@ func writeBackendDNATRules(rulesetBuilder *strings.Builder, backends []DataPlane
 }
 
 // buildRouteRuleset generates nftables rules for route-specific chains.
+// Chains are wrapped in the cca table block so nft -f accepts them.
 func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 	routeConfigs []RouteDataPlaneConfig,
 	desiredRouteChains map[string]bool,
@@ -272,7 +273,7 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 		return ""
 	}
 
-	var rulesetBuilder strings.Builder
+	var chainsBuilder strings.Builder
 
 	sortedRoutes := make([]RouteDataPlaneConfig, len(routeConfigs))
 	copy(sortedRoutes, routeConfigs)
@@ -289,18 +290,27 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 		case "source-ip":
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
-			writeSourceIPStickyChain(&rulesetBuilder, routeConfig, chainName)
+			writeSourceIPStickyChain(&chainsBuilder, routeConfig, chainName)
 
 		case "cookie":
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			proxyPort := nftablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)
 			if proxyPort > 0 {
-				writeCookieProxyChain(&rulesetBuilder, chainName, proxyPort)
+				writeCookieProxyChain(&chainsBuilder, chainName, proxyPort)
 			}
 		}
 	}
 
+	chainContent := chainsBuilder.String()
+	if chainContent == "" {
+		return ""
+	}
+
+	var rulesetBuilder strings.Builder
+	fmt.Fprintf(&rulesetBuilder, "table ip %s {\n", nftablesTableName)
+	rulesetBuilder.WriteString(chainContent)
+	rulesetBuilder.WriteString("}\n")
 	return rulesetBuilder.String()
 }
 
