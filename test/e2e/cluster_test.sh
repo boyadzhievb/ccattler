@@ -1501,6 +1501,51 @@ else
     log "Skipping multi-port test — whoami-multiport workload not deployed"
 fi
 
+# ---- Step 5.15: Multi-port cross-node traffic assertion ----
+# Verify that whoami-multiport VIP traffic crosses nodes: find a node that does
+# NOT host an instance, curl port 80 from there, confirm a response arrives.
+# This proves DNAT routes multi-port traffic across the overlay, not just locally.
+
+if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
+    log "Validating multi-port cross-node traffic (whoami-multiport port 80)..."
+
+    MULTIPORT_STATUS_FRESH=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    MULTIPORT_INSTANCE_NODES=$(echo "$MULTIPORT_STATUS_FRESH" | jq -r '[.instances[] | select(.service == "whoami-multiport" and .state == "running")] | .[].node' 2>/dev/null || echo "")
+
+    log "  whoami-multiport backends on: $(echo $MULTIPORT_INSTANCE_NODES | tr '\n' ' ')"
+
+    CROSS_NODE_SENDER=""
+    for vm in "${VM_NAMES[@]}"; do
+        if ! echo "$MULTIPORT_INSTANCE_NODES" | grep -qw "$vm"; then
+            CROSS_NODE_SENDER="$vm"
+            break
+        fi
+    done
+
+    if [[ -n "$CROSS_NODE_SENDER" ]]; then
+        log "  Sending from $CROSS_NODE_SENDER (no local whoami-multiport backend)..."
+        MULTIPORT_CROSS_BODY=$(ssh_vm "$CROSS_NODE_SENDER" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
+        if echo "$MULTIPORT_CROSS_BODY" | grep -qi "hostname"; then
+            MULTIPORT_CROSS_HOST=$(echo "$MULTIPORT_CROSS_BODY" | grep -i "hostname" | head -1)
+            log "  Cross-node response: $MULTIPORT_CROSS_HOST"
+            log "Multi-port cross-node traffic PASSED"
+        else
+            fail "Multi-port cross-node traffic FAILED — $CROSS_NODE_SENDER could not reach whoami-multiport:80 via VIP ($MULTIPORT_PORT80_VIP)"
+        fi
+    else
+        log "  All nodes host a whoami-multiport backend — cross-node assertion not possible, validating from ctrl instead..."
+        MULTIPORT_CTRL_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
+        if echo "$MULTIPORT_CTRL_BODY" | grep -qi "hostname"; then
+            log "  Response from ctrl: $(echo "$MULTIPORT_CTRL_BODY" | grep -i hostname | head -1)"
+            log "Multi-port traffic PASSED (all-node placement, cross-node not testable)"
+        else
+            fail "Multi-port traffic FAILED — ctrl could not reach whoami-multiport:80 via VIP"
+        fi
+    fi
+else
+    log "Skipping multi-port cross-node test — whoami-multiport not deployed or no port-80 VIP"
+fi
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true

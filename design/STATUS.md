@@ -2,11 +2,11 @@
 
 ## Current Milestone
 
-M121 — nftables Data Plane (Phase 121)
+M131 — DSL Gate Keyword (Phase 131)
 
 - Status: complete
-- Release: v1.48.0-beta
-- Milestones complete: M1–M121
+- Release: v1.57.2-beta
+- Milestones complete: M1–M131
 
 ## Capabilities by Area
 
@@ -16,11 +16,11 @@ Fact store (etcd-backed + in-memory), instance/endpoint/failure controllers, sch
 ### Node Agent (M11–M15, M96–M97, M102, M111)
 Observer/reconciler/reporter, container runtime adapter (nerdctl/containerd), lease management, DNS integration (dnsmasq domain-scoped forwarding), cross-node VIP routing, hairpin NAT fix, host port re-publication on steady-state cycles.
 
-### Networking & Data Plane (M102, M111, M118, M121)
-nftables data plane with O(1) verdict map dispatch (preferred), iptables fallback. VIP allocation, cross-node DNAT, hairpin NAT, gate blocks with sticky sessions (cookie + source-IP), shadow mode migration, `cca benchmark dataplane`. Protocol: `--dataplane auto|nftables|iptables`.
+### Networking & Data Plane (M102, M111, M118, M121–M122, M128–M130)
+nftables data plane with O(1) verdict map dispatch (preferred), iptables fallback, independent eBPF data plane (socket LB + tc bridge DNAT + BPF SNAT, kernel 6.6+). VXLAN overlay mesh for cross-node container connectivity (`--network-mode vxlan`). VIP allocation, cross-node DNAT, hairpin NAT, gate blocks with sticky sessions (cookie + source-IP), shadow mode migration, `cca benchmark dataplane`. Protocol: `--dataplane auto|nftables|iptables|ebpf`.
 
-### DSL & Developer Experience (M1–M5, M98, M104, M119–M120)
-Human-oriented declarative language (no YAML), parser/compiler/emitter, service/volume/group/role/grant/policy/config/secret/tenant/network/gate/connection blocks, `cca fmt` + `cca lint`, service tags with cross-service filtering.
+### DSL & Developer Experience (M1–M5, M98, M104, M119–M120, M131)
+Human-oriented declarative language (no YAML), parser/compiler/emitter, service/volume/group/role/grant/policy/config/secret/tenant/network/gate/connection blocks, `cca fmt` + `cca lint`, service tags with cross-service filtering. `gate` keyword for external traffic blocks (renamed from `route`, M131).
 
 ### Security & Auth (M55–M63, M80, M100–M101, M110)
 mTLS everywhere, CA hierarchy, RBAC+ABAC authorization, per-controller least-privilege, user authentication (local token + OIDC), `cca login`, bearer auth chain, etcd mTLS deployment, CSR-based enrollment, store token hashing, cert permission hardening, audit logging.
@@ -28,8 +28,8 @@ mTLS everywhere, CA hierarchy, RBAC+ABAC authorization, per-controller least-pri
 ### Multi-Tenancy (M46–M50, M109)
 Hierarchical naming, ownership model, quotas, fair scheduling, scoped store access, node principal tenant visibility.
 
-### Cloud Integration (M27–M33, M77–M78, M113)
-Cloud provider adapters (AWS, GCP, Azure stub) for LB/routes/lifecycle, OIDC workload identity, credential broker, cloud identity DSL, cluster autoscale controller (SimulatorInfraProvider). AWS/GCP SDK gated behind build tag (slim binary ~25MB vs full ~62MB).
+### Cloud Integration (M27–M33, M77–M78, M113, M126–M127)
+Cloud provider adapters (AWS, GCP, Azure stub) for LB/routes/lifecycle, OIDC workload identity, credential broker, cloud identity DSL, cluster autoscale controller (SimulatorInfraProvider). Cilium eBPF integration (kvstore mode, Cilium reads CCattler etcd directly). AWS/GCP SDK gated behind build tag (slim binary ~25MB vs full ~62MB).
 
 ### Observability & Operations (M64–M69, M99, M106, M112, M114–M117)
 `cca top`, `cca node-inspect`, `cca exec`, `cca images`, JSON API errors, `cca init` bootstrap, join token TLS chain, health check scripts, deploy script audit.
@@ -54,8 +54,8 @@ nftables generates a single atomic ruleset (O(1) lookup per connection) vs iptab
 - Test files: 150
 - Total Go lines: ~108K
 - Test count: 1,803 across 20 packages
-- Latest release: v1.48.0-beta
-- Milestones complete: M1–M121
+- Latest release: v1.57.2-beta
+- Milestones complete: M1–M131
 
 ## Known Issues
 
@@ -66,6 +66,6 @@ nftables generates a single atomic ruleset (O(1) lookup per connection) vs iptab
 ## CI & Testing
 
 - **Required PR checks (10):** unit tests, integration tests, golangci-lint, CodeQL, Trivy, E2E (libvirt VMs on testbed), deploy testbed, pages, release build
-- **E2E tests:** multi-node libvirt cluster (ctrl + 2 workers), deploys real services (whoami, airflow), validates VIP data plane (nftables/iptables), cross-node connectivity, DNS resolution, HTTP traffic through VIPs
+- **E2E tests:** 3-node libvirt cluster (ctrl + 2 workers), deploys real services (whoami, whoami-multiport), validates VIP data plane (nftables/iptables), cross-node connectivity, DNS resolution, HTTP traffic through VIPs, sticky sessions, node-failure failover, backend-churn resilience, multi-port per-port hostport facts
 - **Load tests:** synthetic in-memory clusters at 50/100/200 node scale (`//go:build loadtest`)
 - **Branch protection:** required reviews, status checks, no force push to master
