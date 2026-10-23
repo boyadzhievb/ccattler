@@ -64,6 +64,9 @@ type ServiceDecl struct {
 	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
 	Disruption      *DisruptionDecl            // optional disruption budget for drain/rollout safety
 	Tags            []TagDecl                  // optional user-defined key-value tags for grouping and filtering
+	PullPolicy      string                     // image pull policy: "always", "if_not_present", or "never"
+	Logging         *LoggingDecl               // optional log rotation configuration
+	Lifecycle       *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
 	Stateful        bool                       // true if service uses ordinal instance IDs and ordered startup
 	Line            int                        // source line number for error reporting
 }
@@ -93,8 +96,10 @@ type VolumeMountDecl struct {
 
 // ResourcesDecl holds CPU and memory resource constraints for a service.
 type ResourcesDecl struct {
-	CPU    string // CPU request in Kubernetes-style units (e.g. "500m")
-	Memory string // memory request in Kubernetes-style units (e.g. "512Mi")
+	CPU         string // CPU request in Kubernetes-style units (e.g. "500m")
+	Memory      string // memory request in Kubernetes-style units (e.g. "512Mi")
+	CPULimit    string // CPU limit (e.g. "1000m"); empty means same as request
+	MemoryLimit string // memory limit (e.g. "1Gi"); empty means same as request
 }
 
 // HealthDecl holds health check configuration for a service.
@@ -189,6 +194,18 @@ type UpdateDecl struct {
 type DisruptionDecl struct {
 	MinAvailable   int // minimum instances that must remain running (0 = unset)
 	MaxUnavailable int // maximum instances that may be unavailable (0 = unset)
+}
+
+// LoggingDecl holds log rotation configuration for a service's container output.
+type LoggingDecl struct {
+	MaxSize  string // maximum size per log file (e.g. "10m", "100k")
+	MaxFiles int    // maximum number of rotated log files to retain
+}
+
+// LifecycleDecl holds container lifecycle hook commands.
+type LifecycleDecl struct {
+	PreStop   string // command to execute before stopping the container
+	PostStart string // command to execute after starting the container
 }
 
 // ConfigDecl holds configuration declarations for a service — environment

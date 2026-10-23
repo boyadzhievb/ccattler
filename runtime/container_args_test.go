@@ -373,3 +373,79 @@ func TestBuildRunArgumentsNoDNSFlagWhenUnset(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildRunArgumentsLogRotation verifies that log rotation flags are emitted
+// when LogMaxSize or LogMaxFiles are set on the Spec.
+func TestBuildRunArgumentsLogRotation(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:          "test-log",
+		Image:       "nginx:1.27",
+		LogMaxSize:  "10m",
+		LogMaxFiles: 3,
+	}
+
+	args, _, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	argsJoined := strings.Join(args, " ")
+	if !strings.Contains(argsJoined, "--log-driver json-file") {
+		t.Error("expected --log-driver json-file when log rotation is configured")
+	}
+	if !strings.Contains(argsJoined, "--log-opt max-size=10m") {
+		t.Error("expected --log-opt max-size=10m")
+	}
+	if !strings.Contains(argsJoined, "--log-opt max-file=3") {
+		t.Error("expected --log-opt max-file=3")
+	}
+}
+
+// TestBuildRunArgumentsLogRotationOmittedWhenUnset verifies that no log driver
+// flags are added when neither LogMaxSize nor LogMaxFiles are set.
+func TestBuildRunArgumentsLogRotationOmittedWhenUnset(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:    "test-nolog",
+		Image: "nginx:1.27",
+	}
+
+	args, _, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, argValue := range args {
+		if argValue == "--log-driver" {
+			t.Error("--log-driver should not be present when log rotation is not configured")
+		}
+	}
+}
+
+// TestBuildRunArgumentsLogRotationMaxSizeOnly verifies that setting only
+// LogMaxSize still emits the log driver and the max-size opt.
+func TestBuildRunArgumentsLogRotationMaxSizeOnly(t *testing.T) {
+	containerRuntime := NewContainerRuntime()
+	spec := Spec{
+		ID:         "test-logsize",
+		Image:      "nginx:1.27",
+		LogMaxSize: "50m",
+	}
+
+	args, _, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	argsJoined := strings.Join(args, " ")
+	if !strings.Contains(argsJoined, "--log-driver json-file") {
+		t.Error("expected --log-driver json-file")
+	}
+	if !strings.Contains(argsJoined, "--log-opt max-size=50m") {
+		t.Error("expected --log-opt max-size=50m")
+	}
+	if strings.Contains(argsJoined, "max-file") {
+		t.Error("--log-opt max-file should not be present when LogMaxFiles is 0")
+	}
+}

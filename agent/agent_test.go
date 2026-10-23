@@ -1868,6 +1868,68 @@ func TestAgentCleanupRemovesPullBackoff(t *testing.T) {
 	})
 }
 
+func TestAgentPullPolicyNeverSkipsPull(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("myapp:v1"))
+	factStore.Put(ctx, types.KeyDesiredServicePullPolicy("web"), []byte("never"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "no-pull", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "no-pull", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running without pull", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("no-pull"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	if simulatorRuntime.IsImageCached(ctx, "myapp:v1") {
+		t.Error("pull_policy=never should not pull the image")
+	}
+}
+
+func TestAgentPullPolicyAlwaysRepulls(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("myapp:v2"))
+	factStore.Put(ctx, types.KeyDesiredServicePullPolicy("web"), []byte("always"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "always-pull", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "always-pull", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running after pull", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("always-pull"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	pullCount := 0
+	for _, pulledImage := range simulatorRuntime.PulledImages {
+		if pulledImage == "myapp:v2" {
+			pullCount++
+		}
+	}
+	if pullCount == 0 {
+		t.Error("pull_policy=always should pull even if image could be cached")
+	}
+}
+
 // TestAgentPublishesExitReasonOnOOMKill verifies that when a container is
 // OOM-killed (exit code 137), the agent publishes the exit-reason fact.
 func TestAgentPublishesExitReasonOnOOMKill(t *testing.T) {
@@ -1979,4 +2041,86 @@ func TestAgentPublishesExitReasonOnNonZeroExit(t *testing.T) {
 		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceExitReason("crash1"))
 		return err == nil && string(factEntry.Value) == "exit(1)"
 	})
+}
+
+func TestAgentPreStopHookExecutedBeforeStop(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	// Configure a pre_stop hook for the "web" service.
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceLifecyclePreStop("web"), []byte("echo draining"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "hook1", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "hook1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		runtimeStatus, statusErr := simulatorRuntime.Status(ctx, "hook1")
+		return statusErr == nil && runtimeStatus.Running
+	})
+
+	// Remove placement to trigger cleanup (which should run the pre_stop hook).
+	factStore.Delete(ctx, types.ScanPlacementsForNode("node-1")+"hook1")
+
+	waitFor(t, 2*time.Second, "instance stopped", func() bool {
+		factEntry, getErr := factStore.Get(ctx, types.KeyObservedInstanceState("hook1"))
+		return getErr == nil && string(factEntry.Value) == string(types.InstanceStopped)
+	})
+
+	execCalls := simulatorRuntime.GetExecCalls()
+	foundPreStop := false
+	for _, execCall := range execCalls {
+		if execCall.InstanceID == "hook1" && execCall.Command == "echo draining" {
+			foundPreStop = true
+			break
+		}
+	}
+	if !foundPreStop {
+		t.Errorf("expected pre_stop hook to be executed, got exec calls: %v", execCalls)
+	}
+}
+
+func TestAgentPostStartHookExecutedAfterStart(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	// Configure a post_start hook for the "web" service.
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	factStore.Put(ctx, types.KeyDesiredServiceLifecyclePostStart("web"), []byte("echo started"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "hook2", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "hook2", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running", func() bool {
+		runtimeStatus, statusErr := simulatorRuntime.Status(ctx, "hook2")
+		return statusErr == nil && runtimeStatus.Running
+	})
+
+	execCalls := simulatorRuntime.GetExecCalls()
+	foundPostStart := false
+	for _, execCall := range execCalls {
+		if execCall.InstanceID == "hook2" && execCall.Command == "echo started" {
+			foundPostStart = true
+			break
+		}
+	}
+	if !foundPostStart {
+		t.Errorf("expected post_start hook to be executed, got exec calls: %v", execCalls)
+	}
 }

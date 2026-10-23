@@ -317,6 +317,14 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 	facts = append(facts, compileServiceInitStepFacts(serviceDecl.Name, serviceDecl.InitSteps)...)
 	facts = append(facts, compileServiceDisruptionFacts(serviceDecl.Name, serviceDecl.Disruption)...)
 	facts = append(facts, compileServiceTagFacts(serviceDecl.Name, serviceDecl.Tags)...)
+	facts = append(facts, compileServiceLoggingFacts(serviceDecl.Name, serviceDecl.Logging)...)
+	facts = append(facts, compileServiceLifecycleFacts(serviceDecl.Name, serviceDecl.Lifecycle)...)
+
+	if serviceDecl.PullPolicy != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServicePullPolicy(serviceDecl.Name), Value: serviceDecl.PullPolicy,
+		})
+	}
 
 	if serviceDecl.Stateful {
 		facts = append(facts,
@@ -378,7 +386,48 @@ func compileServiceResourceFacts(serviceName string, resourcesDecl *ResourcesDec
 			Key: types.KeyDesiredServiceResourcesMemory(serviceName), Value: resourcesDecl.Memory,
 		})
 	}
+	if resourcesDecl.CPULimit != "" {
+		resourceFacts = append(resourceFacts, Fact{
+			Key: types.KeyDesiredServiceResourcesCPULimit(serviceName), Value: resourcesDecl.CPULimit,
+		})
+	}
+	if resourcesDecl.MemoryLimit != "" {
+		resourceFacts = append(resourceFacts, Fact{
+			Key: types.KeyDesiredServiceResourcesMemoryLimit(serviceName), Value: resourcesDecl.MemoryLimit,
+		})
+	}
+	qosClass := classifyQoS(resourcesDecl)
+	resourceFacts = append(resourceFacts, Fact{
+		Key: types.KeyDerivedServiceQoSClass(serviceName), Value: qosClass,
+	})
 	return resourceFacts
+}
+
+// classifyQoS determines the QoS class based on resource requests and limits.
+// Guaranteed: both CPU and memory have requests equal to limits.
+// Burstable: at least one resource request is set.
+// BestEffort: no resource requests or limits set.
+func classifyQoS(resourcesDecl *ResourcesDecl) string {
+	hasCPU := resourcesDecl.CPU != ""
+	hasMemory := resourcesDecl.Memory != ""
+	hasCPULimit := resourcesDecl.CPULimit != ""
+	hasMemoryLimit := resourcesDecl.MemoryLimit != ""
+
+	if !hasCPU && !hasMemory && !hasCPULimit && !hasMemoryLimit {
+		return "BestEffort"
+	}
+
+	cpuGuaranteed := hasCPU && hasCPULimit && resourcesDecl.CPU == resourcesDecl.CPULimit
+	memoryGuaranteed := hasMemory && hasMemoryLimit && resourcesDecl.Memory == resourcesDecl.MemoryLimit
+	if hasCPU && cpuGuaranteed && hasMemory && memoryGuaranteed {
+		return "Guaranteed"
+	}
+
+	if hasCPU && !hasCPULimit && hasMemory && !hasMemoryLimit {
+		return "Guaranteed"
+	}
+
+	return "Burstable"
 }
 
 // compileServiceVolumeMountFacts produces volume mount binding facts that connect
@@ -597,6 +646,44 @@ func compileServiceTagFacts(serviceName string, tagDecls []TagDecl) []Fact {
 		})
 	}
 	return tagFacts
+}
+
+// compileServiceLoggingFacts produces log rotation configuration facts.
+func compileServiceLoggingFacts(serviceName string, loggingDecl *LoggingDecl) []Fact {
+	if loggingDecl == nil {
+		return nil
+	}
+	var loggingFacts []Fact
+	if loggingDecl.MaxSize != "" {
+		loggingFacts = append(loggingFacts, Fact{
+			Key: types.KeyDesiredServiceLoggingMaxSize(serviceName), Value: loggingDecl.MaxSize,
+		})
+	}
+	if loggingDecl.MaxFiles > 0 {
+		loggingFacts = append(loggingFacts, Fact{
+			Key: types.KeyDesiredServiceLoggingMaxFiles(serviceName), Value: strconv.Itoa(loggingDecl.MaxFiles),
+		})
+	}
+	return loggingFacts
+}
+
+// compileServiceLifecycleFacts produces lifecycle hook facts.
+func compileServiceLifecycleFacts(serviceName string, lifecycleDecl *LifecycleDecl) []Fact {
+	if lifecycleDecl == nil {
+		return nil
+	}
+	var lifecycleFacts []Fact
+	if lifecycleDecl.PreStop != "" {
+		lifecycleFacts = append(lifecycleFacts, Fact{
+			Key: types.KeyDesiredServiceLifecyclePreStop(serviceName), Value: lifecycleDecl.PreStop,
+		})
+	}
+	if lifecycleDecl.PostStart != "" {
+		lifecycleFacts = append(lifecycleFacts, Fact{
+			Key: types.KeyDesiredServiceLifecyclePostStart(serviceName), Value: lifecycleDecl.PostStart,
+		})
+	}
+	return lifecycleFacts
 }
 
 // compileServiceHealthProbeFacts produces health check configuration facts for a

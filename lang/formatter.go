@@ -368,6 +368,9 @@ func formatServiceDecl(builder *strings.Builder, serviceDecl ServiceDecl) {
 	formatServiceConfigFields(builder, serviceDecl)
 	formatServiceMountFields(builder, serviceDecl)
 	formatServiceTagFields(builder, serviceDecl)
+	formatServicePullPolicyField(builder, serviceDecl)
+	formatServiceLoggingFields(builder, serviceDecl)
+	formatServiceLifecycleFields(builder, serviceDecl)
 	builder.WriteString("}\n")
 }
 
@@ -502,6 +505,12 @@ func formatServiceResourceFields(builder *strings.Builder, serviceDecl ServiceDe
 	}
 	if serviceDecl.Resources.Memory != "" {
 		fmt.Fprintf(builder, "%smemory %s\n", indent2, serviceDecl.Resources.Memory)
+	}
+	if serviceDecl.Resources.CPULimit != "" {
+		fmt.Fprintf(builder, "%scpu_limit %s\n", indent2, serviceDecl.Resources.CPULimit)
+	}
+	if serviceDecl.Resources.MemoryLimit != "" {
+		fmt.Fprintf(builder, "%smemory_limit %s\n", indent2, serviceDecl.Resources.MemoryLimit)
 	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
@@ -717,6 +726,45 @@ func formatServiceTagFields(builder *strings.Builder, serviceDecl ServiceDecl) {
 	indent2 := indentUnit + indentUnit
 	for _, tagDecl := range serviceDecl.Tags {
 		fmt.Fprintf(builder, "%s%s %s\n", indent2, tagDecl.Key, quoteIfNeeded(tagDecl.Value))
+	}
+	fmt.Fprintf(builder, "%s}\n", indentUnit)
+}
+
+// formatServicePullPolicyField emits the pull_policy field.
+func formatServicePullPolicyField(builder *strings.Builder, serviceDecl ServiceDecl) {
+	if serviceDecl.PullPolicy != "" {
+		fmt.Fprintf(builder, "%spull_policy %s\n", indentUnit, serviceDecl.PullPolicy)
+	}
+}
+
+// formatServiceLoggingFields emits the logging block.
+func formatServiceLoggingFields(builder *strings.Builder, serviceDecl ServiceDecl) {
+	if serviceDecl.Logging == nil {
+		return
+	}
+	fmt.Fprintf(builder, "%slogging {\n", indentUnit)
+	indent2 := indentUnit + indentUnit
+	if serviceDecl.Logging.MaxSize != "" {
+		fmt.Fprintf(builder, "%smax_size %s\n", indent2, quoteIfNeeded(serviceDecl.Logging.MaxSize))
+	}
+	if serviceDecl.Logging.MaxFiles > 0 {
+		fmt.Fprintf(builder, "%smax_files %d\n", indent2, serviceDecl.Logging.MaxFiles)
+	}
+	fmt.Fprintf(builder, "%s}\n", indentUnit)
+}
+
+// formatServiceLifecycleFields emits the lifecycle block.
+func formatServiceLifecycleFields(builder *strings.Builder, serviceDecl ServiceDecl) {
+	if serviceDecl.Lifecycle == nil {
+		return
+	}
+	fmt.Fprintf(builder, "%slifecycle {\n", indentUnit)
+	indent2 := indentUnit + indentUnit
+	if serviceDecl.Lifecycle.PreStop != "" {
+		fmt.Fprintf(builder, "%spre_stop %s\n", indent2, quoteIfNeeded(serviceDecl.Lifecycle.PreStop))
+	}
+	if serviceDecl.Lifecycle.PostStart != "" {
+		fmt.Fprintf(builder, "%spost_start %s\n", indent2, quoteIfNeeded(serviceDecl.Lifecycle.PostStart))
 	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }

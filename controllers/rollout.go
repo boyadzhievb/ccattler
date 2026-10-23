@@ -50,6 +50,7 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 	rolloutState := extractRolloutState(facts)
 	rolloutDisruptionBudgets := extractRolloutDisruptionBudgets(facts)
 	desiredInstancesByService := extractDesiredInstanceCounts(facts)
+	pausedServices := extractRolloutPausedServices(facts)
 
 	var changes []Change
 
@@ -77,12 +78,17 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 		}
 
 		previousImage := rolloutState[serviceName+"/previous_image"]
-		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName])
+		currentRevision, _ := strconv.Atoi(rolloutState[serviceName+"/revision"])
+		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName], currentRevision)
 		changes = append(changes, trackingChanges...)
 
 		if shouldTriggerRollback(newImageFailedCount, previousImage) {
 			rollbackChanges := buildRollbackChanges(serviceName, previousImage)
 			changes = append(changes, rollbackChanges...)
+			continue
+		}
+
+		if pausedServices[serviceName] {
 			continue
 		}
 
@@ -129,10 +135,11 @@ func classifyInstancesByImage(
 // buildRolloutTrackingChanges returns changes that record the previous image,
 // set the rollout state to "rolling", and emit a surge allowance when a rollout
 // is first detected (i.e. when no previous image has been recorded yet).
-func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string, policy extractedUpdatePolicy) []Change {
+func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string, policy extractedUpdatePolicy, currentRevision int) []Change {
 	if previousImage != "" {
 		return nil
 	}
+	nextRevision := currentRevision + 1
 	trackingChanges := groupedChanges("rollout-track/"+serviceName,
 		Change{
 			Type:  store.OpPut,
@@ -143,6 +150,16 @@ func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rollout
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutState(serviceName),
 			Value: []byte("rolling"),
+		},
+		Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutRevision(serviceName),
+			Value: []byte(strconv.Itoa(nextRevision)),
+		},
+		Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutHistory(serviceName, nextRevision),
+			Value: []byte(oldImageInstances[0].image),
 		},
 	)
 	if policy.maxExtra > 0 {
@@ -395,7 +412,24 @@ func extractRolloutState(facts []store.Fact) map[string]string {
 			state[serviceName] = string(fact.Value)
 		case "previous_image":
 			state[serviceName+"/previous_image"] = string(fact.Value)
+		case "revision":
+			state[serviceName+"/revision"] = string(fact.Value)
 		}
 	}
 	return state
+}
+
+// extractRolloutPausedServices returns a set of service names with paused rollouts.
+func extractRolloutPausedServices(facts []store.Fact) map[string]bool {
+	paused := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix || suffix != "rollout/paused" {
+			continue
+		}
+		if string(fact.Value) == "true" {
+			paused[serviceName] = true
+		}
+	}
+	return paused
 }

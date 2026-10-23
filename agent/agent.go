@@ -56,6 +56,9 @@ const imagePullMaxDelay = 5 * time.Minute
 // imagePullTimeout is the context deadline for a single image pull attempt.
 const imagePullTimeout = 5 * time.Minute
 
+// lifecycleHookTimeout is the context deadline for a single lifecycle hook execution.
+const lifecycleHookTimeout = 30 * time.Second
+
 // imagePullBackoffEntry tracks retry state for a single instance's image pull.
 type imagePullBackoffEntry struct {
 	attempts   int       // attempts is the number of consecutive failed pull attempts.
@@ -670,13 +673,21 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 // pulling it if necessary. Returns true when the image is ready. Returns
 // false when the runtime does not support pulling, the image is being
 // pulled, or the pull is in backoff — the caller should skip this instance.
+// Respects the service's pull_policy fact: "never" skips pulling, "always"
+// re-pulls even when cached, "if_not_present" or empty uses cache-first.
 func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo placedInstanceInfo, image string) bool {
 	imagePuller, supportsPull := nodeAgent.runtime.(runtime.ImagePuller)
 	if !supportsPull {
 		return true
 	}
 
-	if imagePuller.IsImageCached(ctx, image) {
+	pullPolicy := nodeAgent.lookupServicePullPolicyFromStore(ctx, instanceInfo.service)
+
+	if pullPolicy == "never" {
+		return true
+	}
+
+	if pullPolicy != "always" && imagePuller.IsImageCached(ctx, image) {
 		delete(nodeAgent.imagePullBackoffs, instanceInfo.id)
 		nodeAgent.clearPullStatusFromStore(ctx, instanceInfo.id)
 		return true
@@ -836,6 +847,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		memoryBytes:   runtimeSpec.MemoryB,
 	}
 
+	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "post_start")
+
 	runtimeIP := ""
 	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
 		portMappings := containerRuntime.HostPortsForInstance(instanceInfo.id)
@@ -884,6 +897,9 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 	if nodeAgent.storageProvider != nil {
 		nodeAgent.detachVolumesForInstance(ctx, instanceID)
 	}
+	if serviceName := nodeAgent.lookupServiceNameForInstance(ctx, instanceID); serviceName != "" {
+		nodeAgent.executeLifecycleHook(ctx, instanceID, serviceName, "pre_stop")
+	}
 	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
 		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
 	}
@@ -906,6 +922,16 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 // string if the image fact is missing.
 func (nodeAgent *Agent) lookupServiceImageFromStore(ctx context.Context, service string) string {
 	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceImage(service))
+	if err != nil {
+		return ""
+	}
+	return string(factEntry.Value)
+}
+
+// lookupServicePullPolicyFromStore retrieves the image pull policy for the given
+// service. Returns empty string (meaning "if_not_present") when no policy is set.
+func (nodeAgent *Agent) lookupServicePullPolicyFromStore(ctx context.Context, service string) string {
+	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServicePullPolicy(service))
 	if err != nil {
 		return ""
 	}
@@ -1044,11 +1070,56 @@ func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo pla
 	logging.Default().Info("config changed, restarting instance",
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
 		"service", instanceInfo.service)
+	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
 	if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
 		logging.Default().Error("failed to stop instance for config reload",
 			"instance", instanceInfo.id, "error", stopError.Error())
 	}
 	return true
+}
+
+// executeLifecycleHook runs a pre_stop or post_start hook command inside a
+// running instance. Hooks are best-effort: failures are logged but do not
+// block the stop/start operation.
+func (nodeAgent *Agent) executeLifecycleHook(ctx context.Context, instanceID string, serviceName string, hookType string) {
+	var hookKey string
+	switch hookType {
+	case "pre_stop":
+		hookKey = types.KeyDesiredServiceLifecyclePreStop(serviceName)
+	case "post_start":
+		hookKey = types.KeyDesiredServiceLifecyclePostStart(serviceName)
+	default:
+		return
+	}
+
+	hookFact, getError := nodeAgent.store.Get(ctx, hookKey)
+	if getError != nil || len(hookFact.Value) == 0 {
+		return
+	}
+	hookCommand := string(hookFact.Value)
+
+	hookContext, cancelHook := context.WithTimeout(ctx, lifecycleHookTimeout)
+	defer cancelHook()
+
+	logging.Default().Info("executing lifecycle hook",
+		"agent", nodeAgent.nodeID, "instance", instanceID,
+		"hook", hookType, "command", hookCommand)
+
+	if execError := nodeAgent.runtime.Exec(hookContext, instanceID, runtime.ExecSpec{Command: hookCommand}); execError != nil {
+		logging.Default().Warn("lifecycle hook failed",
+			"agent", nodeAgent.nodeID, "instance", instanceID,
+			"hook", hookType, "error", execError.Error())
+	}
+}
+
+// lookupServiceNameForInstance reads the observed service name for an instance
+// from the store. Returns empty string if not found.
+func (nodeAgent *Agent) lookupServiceNameForInstance(ctx context.Context, instanceID string) string {
+	serviceFact, getError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
+	if getError != nil {
+		return ""
+	}
+	return string(serviceFact.Value)
 }
 
 // computeServiceConfigHash computes a deterministic SHA256 hash of all config
@@ -1552,6 +1623,7 @@ func (nodeAgent *Agent) reconcileResourceChanges(ctx context.Context, instanceIn
 			"agent", nodeAgent.nodeID,
 			"instance", instanceInfo.id,
 		)
+		nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
 		if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
 			logging.Default().Error("failed to stop instance for resize",
 				"agent", nodeAgent.nodeID,

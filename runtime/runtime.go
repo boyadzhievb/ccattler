@@ -40,6 +40,8 @@ type Spec struct {
 	CPUm        int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
 	MemoryB     int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
 	IP          string            // IP is the cluster-network IP address allocated to this workload. Used by ContainerRuntime to assign a specific IP via --network/--ip.
+	LogMaxSize  string            // LogMaxSize is the max size per log file (e.g. "10m"). Empty means unlimited (runtime default).
+	LogMaxFiles int               // LogMaxFiles is the max number of rotated log files. Zero means unlimited (runtime default).
 }
 
 // Status describes the current observed state of a running or stopped workload.

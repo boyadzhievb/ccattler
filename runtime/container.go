@@ -299,6 +299,16 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 		args = append(args, fmt.Sprintf("--memory=%d", spec.MemoryB))
 	}
 
+	if spec.LogMaxSize != "" || spec.LogMaxFiles > 0 {
+		args = append(args, "--log-driver", "json-file")
+		if spec.LogMaxSize != "" {
+			args = append(args, "--log-opt", fmt.Sprintf("max-size=%s", spec.LogMaxSize))
+		}
+		if spec.LogMaxFiles > 0 {
+			args = append(args, "--log-opt", fmt.Sprintf("max-file=%d", spec.LogMaxFiles))
+		}
+	}
+
 	portMappings := make(map[int]int, len(spec.Ports))
 	for _, containerPort := range spec.Ports {
 		hostPort := containerPort + containerRuntime.allocatedHostPorts[containerPort]

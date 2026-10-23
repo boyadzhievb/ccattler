@@ -29,6 +29,7 @@ type SimulatorRuntime struct {
 	workloads      map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
 	ExecFailures   map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
 	StartFailures  map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
+	ExecCalls      []ExecCall                    // ExecCalls records all Exec calls for test verification.
 	ExecInitCalls  []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
 	PulledImages   []string                      // PulledImages records image references passed to PullImage for test verification.
 	PullFailures   map[string]string             // PullFailures maps image references to error reasons returned by PullImage.
@@ -161,6 +162,7 @@ func (simulator *SimulatorRuntime) Exec(_ context.Context, id string, execSpec E
 	if simulator.ExecFailures[id] {
 		return &StartError{ID: id, Reason: "exec probe failed (injected)"}
 	}
+	simulator.ExecCalls = append(simulator.ExecCalls, ExecCall{InstanceID: id, Command: execSpec.Command})
 	return nil
 }
 
@@ -222,6 +224,21 @@ func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, exe
 	defer simulator.mutex.Unlock()
 	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command, Env: execSpec.Env})
 	return nil
+}
+
+// ExecCall records a call to Exec for test verification.
+type ExecCall struct {
+	InstanceID string // InstanceID is the workload ID passed to Exec.
+	Command    string // Command is the shell command passed to Exec.
+}
+
+// GetExecCalls returns a snapshot of recorded Exec calls. Safe for concurrent use.
+func (simulator *SimulatorRuntime) GetExecCalls() []ExecCall {
+	simulator.mutex.Lock()
+	defer simulator.mutex.Unlock()
+	result := make([]ExecCall, len(simulator.ExecCalls))
+	copy(result, simulator.ExecCalls)
+	return result
 }
 
 // ExecInitCall records a call to ExecInit for test verification.

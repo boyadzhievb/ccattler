@@ -936,13 +936,15 @@ DATAPLANE_DEADLINE=$((SECONDS + 30))
 DNAT_RULE_COUNT=0
 DATAPLANE_TYPE=""
 while [[ $SECONDS -lt $DATAPLANE_DEADLINE ]]; do
-    NFT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto'" || echo "0")
+    NFT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto' || true" | tail -1)
+    NFT_COUNT=${NFT_COUNT:-0}
     if [[ "$NFT_COUNT" -gt 0 ]]; then
         DNAT_RULE_COUNT=$NFT_COUNT
         DATAPLANE_TYPE="nftables"
         break
     fi
-    IPT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_'" || echo "0")
+    IPT_COUNT=$(ssh_vm "$CTRL_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_' || true" | tail -1)
+    IPT_COUNT=${IPT_COUNT:-0}
     if [[ "$IPT_COUNT" -gt 0 ]]; then
         DNAT_RULE_COUNT=$IPT_COUNT
         DATAPLANE_TYPE="iptables"

@@ -295,6 +295,19 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 			return bindErr
 		}
 		serviceDecl.CloudIdentities = append(serviceDecl.CloudIdentities, cloudIdentityBinding)
+	case "pull_policy":
+		serviceDecl.PullPolicy, err = parser.expectIdentifier()
+		if err == nil {
+			switch serviceDecl.PullPolicy {
+			case "always", "if_not_present", "never":
+			default:
+				return parser.parserErrorf("invalid pull_policy %q (want always, if_not_present, or never)", serviceDecl.PullPolicy)
+			}
+		}
+	case "logging":
+		serviceDecl.Logging, err = parser.parseLoggingBlock()
+	case "lifecycle":
+		serviceDecl.Lifecycle, err = parser.parseLifecycleBlock()
 	default:
 		return parser.parserErrorf("unknown service field %q", fieldName)
 	}
@@ -327,6 +340,10 @@ func (parser *Parser) parseResourcesBlock() (*ResourcesDecl, error) {
 			resourcesDecl.CPU = valueToken.Value
 		case "memory":
 			resourcesDecl.Memory = valueToken.Value
+		case "cpu_limit":
+			resourcesDecl.CPULimit = valueToken.Value
+		case "memory_limit":
+			resourcesDecl.MemoryLimit = valueToken.Value
 		default:
 			return nil, parser.parserErrorf("unknown resource field %q", key)
 		}
@@ -911,6 +928,64 @@ func (parser *Parser) parseDisruptionBlock() (*DisruptionDecl, error) {
 	}
 
 	return disruptionDecl, nil
+}
+
+// parseLoggingBlock parses a logging { max_size "10m" max_files 3 } block.
+func (parser *Parser) parseLoggingBlock() (*LoggingDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	loggingDecl := &LoggingDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+		switch key {
+		case "max_size":
+			loggingDecl.MaxSize, err = parser.expectStringOrIdentifier()
+		case "max_files":
+			loggingDecl.MaxFiles, err = parser.expectInteger()
+		default:
+			return nil, parser.parserErrorf("unknown logging field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+	return loggingDecl, parser.expectToken(TokenRBrace)
+}
+
+// parseLifecycleBlock parses a lifecycle { pre_stop "cmd" post_start "cmd" } block.
+func (parser *Parser) parseLifecycleBlock() (*LifecycleDecl, error) {
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	lifecycleDecl := &LifecycleDecl{}
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		key, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+		switch key {
+		case "pre_stop":
+			lifecycleDecl.PreStop, err = parser.expectStringOrIdentifier()
+		case "post_start":
+			lifecycleDecl.PostStart, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown lifecycle field %q", key)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+	return lifecycleDecl, parser.expectToken(TokenRBrace)
 }
 
 // parseTagsBlock parses a tags { key "value" ... } block containing

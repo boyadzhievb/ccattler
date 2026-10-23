@@ -103,6 +103,36 @@ func KeyDesiredServiceCommand(name string) string {
 	return fmt.Sprintf("%s/service/%s/command", PrefixDesired, name)
 }
 
+// KeyDesiredServicePullPolicy returns the store path for a service's image pull policy.
+// Path: desired/service/{name}/pull_policy
+func KeyDesiredServicePullPolicy(name string) string {
+	return fmt.Sprintf("%s/service/%s/pull_policy", PrefixDesired, name)
+}
+
+// KeyDesiredServiceLoggingMaxSize returns the store path for the max log file size.
+// Path: desired/service/{name}/logging/max_size
+func KeyDesiredServiceLoggingMaxSize(name string) string {
+	return fmt.Sprintf("%s/service/%s/logging/max_size", PrefixDesired, name)
+}
+
+// KeyDesiredServiceLoggingMaxFiles returns the store path for the max rotated log file count.
+// Path: desired/service/{name}/logging/max_files
+func KeyDesiredServiceLoggingMaxFiles(name string) string {
+	return fmt.Sprintf("%s/service/%s/logging/max_files", PrefixDesired, name)
+}
+
+// KeyDesiredServiceLifecyclePreStop returns the store path for the pre-stop hook command.
+// Path: desired/service/{name}/lifecycle/pre_stop
+func KeyDesiredServiceLifecyclePreStop(name string) string {
+	return fmt.Sprintf("%s/service/%s/lifecycle/pre_stop", PrefixDesired, name)
+}
+
+// KeyDesiredServiceLifecyclePostStart returns the store path for the post-start hook command.
+// Path: desired/service/{name}/lifecycle/post_start
+func KeyDesiredServiceLifecyclePostStart(name string) string {
+	return fmt.Sprintf("%s/service/%s/lifecycle/post_start", PrefixDesired, name)
+}
+
 // KeyDesiredServiceInstances returns the store path for a service's desired instance count.
 // Path: desired/service/{name}/instances
 func KeyDesiredServiceInstances(name string) string {
@@ -125,6 +155,24 @@ func KeyDesiredServiceResourcesCPU(name string) string {
 // Path: desired/service/{name}/resources/memory
 func KeyDesiredServiceResourcesMemory(name string) string {
 	return fmt.Sprintf("%s/service/%s/resources/memory", PrefixDesired, name)
+}
+
+// KeyDesiredServiceResourcesCPULimit returns the store path for a service's CPU limit.
+// Path: desired/service/{name}/resources/cpu_limit
+func KeyDesiredServiceResourcesCPULimit(name string) string {
+	return fmt.Sprintf("%s/service/%s/resources/cpu_limit", PrefixDesired, name)
+}
+
+// KeyDesiredServiceResourcesMemoryLimit returns the store path for a service's memory limit.
+// Path: desired/service/{name}/resources/memory_limit
+func KeyDesiredServiceResourcesMemoryLimit(name string) string {
+	return fmt.Sprintf("%s/service/%s/resources/memory_limit", PrefixDesired, name)
+}
+
+// KeyDerivedServiceQoSClass returns the store path for a service's derived QoS class.
+// Path: derived/service/{name}/qos_class
+func KeyDerivedServiceQoSClass(name string) string {
+	return fmt.Sprintf("%s/service/%s/qos_class", PrefixDerived, name)
 }
 
 // KeyDesiredServiceHealthMethod returns the store path for a service's health check method (http, tcp, exec).
@@ -1393,6 +1441,32 @@ func KeyDerivedServiceRolloutFailures(name string) string {
 // Path: derived/service/{name}/rollout/surge_allowance
 func KeyDerivedServiceRolloutSurgeAllowance(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/surge_allowance", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutRevision returns the store path for a service's current
+// rollout revision counter (monotonically increasing integer).
+// Path: derived/service/{name}/rollout/revision
+func KeyDerivedServiceRolloutRevision(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/revision", PrefixDerived, name)
+}
+
+// KeyDerivedServiceRolloutHistory returns the store path for a historical image
+// at a specific revision number. Used for multi-step rollback.
+// Path: derived/service/{name}/rollout/history/{revision}
+func KeyDerivedServiceRolloutHistory(name string, revision int) string {
+	return fmt.Sprintf("%s/service/%s/rollout/history/%d", PrefixDerived, name, revision)
+}
+
+// ScanDerivedServiceRolloutHistory returns the prefix for scanning all history entries.
+// Path: derived/service/{name}/rollout/history/
+func ScanDerivedServiceRolloutHistory(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/history/", PrefixDerived, name)
+}
+
+// KeyDesiredServiceRolloutPaused returns the store path for pausing a rolling update.
+// Path: desired/service/{name}/rollout/paused
+func KeyDesiredServiceRolloutPaused(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/paused", PrefixDesired, name)
 }
 
 // KeyDerivedInstanceInitPhase returns the store path for a controller-derived init

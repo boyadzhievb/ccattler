@@ -213,3 +213,72 @@ func TestRolloutDeletesSurgeOnCompletion(t *testing.T) {
 		t.Error("expected surge allowance to be deleted on rollout completion")
 	}
 }
+
+func TestRolloutEmitsRevisionHistory(t *testing.T) {
+	rolloutController := NewRolloutController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.27")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	foundRevision := false
+	foundHistory := false
+	for _, change := range proposedChanges {
+		if change.Key == types.KeyDerivedServiceRolloutRevision("web") {
+			foundRevision = true
+			if string(change.Value) != "1" {
+				t.Errorf("first revision should be 1, got %s", string(change.Value))
+			}
+		}
+		if change.Key == types.KeyDerivedServiceRolloutHistory("web", 1) {
+			foundHistory = true
+			if string(change.Value) != "nginx:1.27" {
+				t.Errorf("history should record old image nginx:1.27, got %s", string(change.Value))
+			}
+		}
+	}
+	if !foundRevision {
+		t.Error("expected revision counter to be emitted")
+	}
+	if !foundHistory {
+		t.Error("expected history entry to be emitted")
+	}
+}
+
+func TestRolloutPausedSkipsStops(t *testing.T) {
+	rolloutController := NewRolloutController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDesiredServiceRolloutPaused("web"), Value: []byte("true")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-2"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
+		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	for _, change := range proposedChanges {
+		if string(change.Value) == string(types.InstanceStopped) {
+			t.Error("paused rollout should not stop any instances")
+		}
+	}
+}
