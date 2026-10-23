@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M131 — Phase 131 DSL Gate Keyword. M1–M131 complete. Gates A–I resolved. All architecture debt resolved.
+**Completed through:** M131 — Phase 131 DSL Gate Keyword. M1–M131 complete. Gates A–I resolved.
 
 ### Performance Optimization Principle
 
