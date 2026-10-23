@@ -68,12 +68,16 @@ func (rolloutController *RolloutController) Reconcile(_ context.Context, facts [
 					Key:   types.KeyDerivedServiceRolloutState(serviceName),
 					Value: []byte("complete"),
 				})
+				changes = append(changes, Change{
+					Type: store.OpDelete,
+					Key:  types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
+				})
 			}
 			continue
 		}
 
 		previousImage := rolloutState[serviceName+"/previous_image"]
-		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage)
+		trackingChanges := buildRolloutTrackingChanges(serviceName, oldImageInstances, previousImage, updatePolicies[serviceName])
 		changes = append(changes, trackingChanges...)
 
 		if shouldTriggerRollback(newImageFailedCount, previousImage) {
@@ -122,14 +126,14 @@ func classifyInstancesByImage(
 	return oldImageInstances, newImageInstances, newImageFailedCount
 }
 
-// buildRolloutTrackingChanges returns changes that record the previous image
-// and set the rollout state to "rolling" when a rollout is first detected
-// (i.e. when no previous image has been recorded yet).
-func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string) []Change {
+// buildRolloutTrackingChanges returns changes that record the previous image,
+// set the rollout state to "rolling", and emit a surge allowance when a rollout
+// is first detected (i.e. when no previous image has been recorded yet).
+func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rolloutInstanceInfo, previousImage string, policy extractedUpdatePolicy) []Change {
 	if previousImage != "" {
 		return nil
 	}
-	return groupedChanges("rollout-track/"+serviceName,
+	trackingChanges := groupedChanges("rollout-track/"+serviceName,
 		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutImage(serviceName),
@@ -141,6 +145,14 @@ func buildRolloutTrackingChanges(serviceName string, oldImageInstances []rollout
 			Value: []byte("rolling"),
 		},
 	)
+	if policy.maxExtra > 0 {
+		trackingChanges = append(trackingChanges, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
+			Value: []byte(strconv.Itoa(policy.maxExtra)),
+		})
+	}
+	return trackingChanges
 }
 
 // shouldTriggerRollback returns true when the number of failed new-image
@@ -164,6 +176,10 @@ func buildRollbackChanges(serviceName string, previousImage string) []Change {
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedServiceRolloutState(serviceName),
 			Value: []byte("rollback"),
+		},
+		Change{
+			Type: store.OpDelete,
+			Key:  types.KeyDerivedServiceRolloutSurgeAllowance(serviceName),
 		},
 	)
 }

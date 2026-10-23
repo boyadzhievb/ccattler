@@ -66,6 +66,7 @@ func (instanceController *InstanceController) Watch() []string {
 		types.ScanEffectiveServices,
 		types.ScanObservedInstances,
 		types.ScanDerivedInstances,
+		types.ScanDerivedServices,
 	}
 }
 
@@ -75,6 +76,10 @@ func (instanceController *InstanceController) Watch() []string {
 // ordinal IDs and ordered startup; stateless services use random IDs.
 func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	desiredCounts, statefulServices := parseEffectiveServiceFacts(facts)
+	surgeAllowances := extractSurgeAllowances(facts)
+	for serviceName, surgeCount := range surgeAllowances {
+		desiredCounts[serviceName] += surgeCount
+	}
 	fieldsByInstanceID := parseInstanceFieldsFromFacts(facts)
 	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
 	activeInstanceIDs := buildActiveInstanceIDsByService(serviceByInstanceID, stateByInstanceID)
@@ -317,6 +322,25 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 	}
 
 	return desiredCounts, statefulServices
+}
+
+// extractSurgeAllowances reads rollout surge allowance facts emitted by the
+// rollout controller. Returns a map of service name to surge count.
+func extractSurgeAllowances(facts []store.Fact) map[string]int {
+	allowances := make(map[string]int)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedServices) {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDerivedServices)
+		if !hasSuffix || suffix != "rollout/surge_allowance" {
+			continue
+		}
+		parsedValue, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			logging.Default().Warn("corrupt surge allowance", "service", serviceName, "value", string(fact.Value))
+			continue
+		}
+		allowances[serviceName] = parsedValue
+	}
+	return allowances
 }
 
 // buildInstanceMapsFromFields derives effective instance states and service

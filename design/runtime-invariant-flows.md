@@ -502,6 +502,39 @@ Resource limits (`--cpus`, `--memory`) are already passed to `nerdctl run` via `
 
 ---
 
+## 15. Rolling Update MaxSurge (max_extra)
+
+**Chain:** DSL `update { max_extra N }` → `desired/service/{name}/update/max_extra` → RolloutController emits surge allowance → InstanceController creates extra instances → RolloutController stops old instances → surge cleared on completion
+
+The existing rollout controller implements `max_unavailable` but ignores `max_extra`. Without surge, rolling updates stop old instances first, causing temporary capacity dips. With surge, the instance controller pre-creates extra new-image instances before old ones are stopped.
+
+### Surge flow
+
+```
+1. User deploys new image for service "web" (desired=4, max_extra=2)
+2. RolloutController detects image mismatch, enters "rolling" state
+3. RolloutController emits: derived/service/web/rollout/surge_allowance = 2
+4. InstanceController reads surge allowance, effective desired = 4 + 2 = 6
+5. InstanceController creates 2 extra instances (new image), total active = 6
+6. New instances become healthy (running state)
+7. RolloutController sees healthy new instances, stops old instances
+   (paced by max_unavailable as before)
+8. As old instances stop, InstanceController replaces them (maintains ceiling of 6)
+9. Last old instance stopped → RolloutController sets state = "complete"
+10. RolloutController deletes surge_allowance fact
+11. InstanceController sees effective desired = 4, scales down excess → final count = 4
+```
+
+### What must match
+
+- Surge allowance is a derived fact, not desired — only the rollout controller writes it.
+- The instance controller scale-down path handles the post-surge cleanup naturally.
+- Surge allowance is only emitted while rollout state is "rolling". When complete or rollback, it is deleted.
+- max_extra = 0 (default) means no surge — behavior identical to before.
+- The rollout controller's max_unavailable pacing is unchanged — surge only affects creation rate, not stop rate.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

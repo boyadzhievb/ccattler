@@ -282,8 +282,8 @@ func TestControllerInterface(t *testing.T) {
 	if instanceController.Name() != "instance" {
 		t.Fatalf("name: got %s, want instance", instanceController.Name())
 	}
-	if len(instanceController.Watch()) != 3 {
-		t.Fatalf("expected 3 watch prefixes, got %d", len(instanceController.Watch()))
+	if len(instanceController.Watch()) != 4 {
+		t.Fatalf("expected 4 watch prefixes, got %d", len(instanceController.Watch()))
 	}
 }
 
@@ -544,4 +544,61 @@ func extractServiceFromInstanceChanges(stateKey string, changes []Change) string
 		}
 	}
 	return ""
+}
+
+func TestInstanceControllerRespectsSurgeAllowance(t *testing.T) {
+	instanceController := NewInstanceController()
+	instanceController.NewID = func() string { return "new-inst" }
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyEffectiveServiceInstances("web"), Value: []byte("3")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+		// Surge allowance of 2 from rolling update.
+		{Key: types.KeyDerivedServiceRolloutSurgeAllowance("web"), Value: []byte("2")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := instanceController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	createdCount := 0
+	for _, change := range proposedChanges {
+		if change.Type == store.OpPut && change.Key == types.KeyObservedInstanceState("new-inst") {
+			createdCount++
+		}
+	}
+	if createdCount == 0 {
+		t.Error("expected instance controller to create instances to fill surge allowance (effective desired = 3 + 2 = 5, have 3)")
+	}
+}
+
+func TestInstanceControllerNoSurgeWhenAllowanceAbsent(t *testing.T) {
+	instanceController := NewInstanceController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyEffectiveServiceInstances("web"), Value: []byte("3")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceState("inst-3"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-3"), Value: []byte("web")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := instanceController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	if len(proposedChanges) != 0 {
+		t.Errorf("expected no changes when count matches desired without surge, got %d changes", len(proposedChanges))
+	}
 }

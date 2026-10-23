@@ -27,11 +27,12 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 **Files**: `runtime/container.go`, `agent/agent.go`, `types/keys.go`.
 **Remaining**: Node-pressure eviction, QoS classes (BestEffort/Burstable/Guaranteed).
 
-### 4. Rolling Update MaxSurge
+### 4. Rolling Update MaxSurge — DONE
 
 **K8s**: maxSurge, maxUnavailable, revision history, pause/resume.
-**CCattler**: RolloutController with maxUnavailable and auto-rollback (`controllers/rollout.go`). No maxSurge, no revision history, no pause.
-**Fix needed**: maxSurge (over-provision during update), revision history for multi-step rollback.
+**CCattler**: RolloutController with maxUnavailable, auto-rollback, and maxSurge (`controllers/rollout.go`). DSL `update { max_extra N }` emits a surge allowance fact during rolling updates. The instance controller reads it and temporarily increases effective desired count, pre-creating new-image instances before old ones are stopped. Surge is cleared on rollout completion or rollback.
+**Files**: `controllers/rollout.go`, `controllers/instance.go`, `types/keys.go`.
+**Remaining**: Revision history for multi-step rollback, pause/resume.
 
 ### 5. Config/Secret Reload — DONE
 

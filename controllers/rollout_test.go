@@ -118,3 +118,98 @@ func TestRolloutControllerRespectsDisruptionBudget(t *testing.T) {
 		t.Errorf("expected 1 old instance stopped (disruption budget caps to 1), got %d", stoppedCount)
 	}
 }
+
+func TestRolloutEmitsSurgeAllowanceOnStart(t *testing.T) {
+	rolloutController := NewRolloutController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDesiredServiceUpdateMaxExtra("web"), Value: []byte("2")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyObservedInstanceState("inst-2"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-2"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-2"), Value: []byte("nginx:1.27")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	foundSurge := false
+	for _, change := range proposedChanges {
+		if change.Key == types.KeyDerivedServiceRolloutSurgeAllowance("web") {
+			foundSurge = true
+			if string(change.Value) != "2" {
+				t.Errorf("surge allowance value: got %s, want 2", string(change.Value))
+			}
+		}
+	}
+	if !foundSurge {
+		t.Error("expected surge allowance fact to be emitted when max_extra > 0")
+	}
+}
+
+func TestRolloutNoSurgeWhenMaxExtraZero(t *testing.T) {
+	rolloutController := NewRolloutController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.27")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	for _, change := range proposedChanges {
+		if change.Key == types.KeyDerivedServiceRolloutSurgeAllowance("web") {
+			t.Error("surge allowance should not be emitted when max_extra is 0")
+		}
+	}
+}
+
+func TestRolloutDeletesSurgeOnCompletion(t *testing.T) {
+	rolloutController := NewRolloutController()
+
+	inputFacts := []store.Fact{
+		{Key: types.KeyDesiredServiceImage("web"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDesiredServiceUpdateMaxExtra("web"), Value: []byte("2")},
+		{Key: types.KeyObservedInstanceState("inst-1"), Value: []byte("running")},
+		{Key: types.KeyObservedInstanceService("inst-1"), Value: []byte("web")},
+		{Key: types.KeyObservedInstanceImage("inst-1"), Value: []byte("nginx:1.28")},
+		{Key: types.KeyDerivedServiceRolloutState("web"), Value: []byte("rolling")},
+		{Key: types.KeyDerivedServiceRolloutImage("web"), Value: []byte("nginx:1.27")},
+		{Key: types.KeyDerivedServiceRolloutSurgeAllowance("web"), Value: []byte("2")},
+	}
+	store.SortFacts(inputFacts)
+
+	proposedChanges, reconcileError := rolloutController.Reconcile(context.Background(), inputFacts)
+	if reconcileError != nil {
+		t.Fatalf("unexpected error: %v", reconcileError)
+	}
+
+	foundComplete := false
+	foundSurgeDelete := false
+	for _, change := range proposedChanges {
+		if change.Key == types.KeyDerivedServiceRolloutState("web") && string(change.Value) == "complete" {
+			foundComplete = true
+		}
+		if change.Key == types.KeyDerivedServiceRolloutSurgeAllowance("web") && change.Type == store.OpDelete {
+			foundSurgeDelete = true
+		}
+	}
+	if !foundComplete {
+		t.Error("expected rollout state to be set to 'complete'")
+	}
+	if !foundSurgeDelete {
+		t.Error("expected surge allowance to be deleted on rollout completion")
+	}
+}

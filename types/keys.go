@@ -1387,6 +1387,14 @@ func KeyDerivedServiceRolloutFailures(name string) string {
 	return fmt.Sprintf("%s/service/%s/rollout/failures", PrefixDerived, name)
 }
 
+// KeyDerivedServiceRolloutSurgeAllowance returns the store path for the surge
+// allowance during a rolling update. The instance controller reads this to
+// temporarily increase the effective desired count by max_extra.
+// Path: derived/service/{name}/rollout/surge_allowance
+func KeyDerivedServiceRolloutSurgeAllowance(name string) string {
+	return fmt.Sprintf("%s/service/%s/rollout/surge_allowance", PrefixDerived, name)
+}
+
 // KeyDerivedInstanceInitPhase returns the store path for a controller-derived init
 // phase. The init controller is the sole authority for this key; it derives the
 // phase from per-step observed results written by the agent.
