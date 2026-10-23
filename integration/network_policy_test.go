@@ -21,8 +21,9 @@ import (
 
 // helperSetupNetworkPolicyCluster creates a 2-node simulated cluster with
 // the full controller set including the NetworkPolicyController and simulator
-// agents. Returns the store, cancel function, and network provider.
-func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, context.CancelFunc, *network.SimulatorNetworkProvider) {
+// agents. Lifecycle is managed via t.Cleanup — callers should not defer
+// cancel() or Close().
+func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, *network.SimulatorNetworkProvider) {
 	t.Helper()
 
 	factStore := store.NewMemoryStore()
@@ -47,9 +48,8 @@ func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, context.Ca
 		controllers.NewNetworkPolicyController(),
 	)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go func() {
-		_ = controllerRunner.Run(ctx)
-	}()
+	runnerDone := make(chan struct{})
+	go func() { controllerRunner.Run(ctx); close(runnerDone) }()
 
 	for _, nodeID := range []string{"node-1", "node-2"} {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -62,7 +62,13 @@ func helperSetupNetworkPolicyCluster(t *testing.T) (store.StateStore, context.Ca
 		}()
 	}
 
-	return factStore, cancel, simulatorNetworkProvider
+	t.Cleanup(func() {
+		cancel()
+		<-runnerDone
+		factStore.Close()
+	})
+
+	return factStore, simulatorNetworkProvider
 }
 
 // TestNetworkPolicyDSLToCompiledRules verifies the full pipeline: DSL
@@ -73,9 +79,7 @@ func TestNetworkPolicyDSLToCompiledRules(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	factStore, cancel, _ := helperSetupNetworkPolicyCluster(t)
-	defer cancel()
-	defer factStore.Close()
+	factStore, _ := helperSetupNetworkPolicyCluster(t)
 
 	ctx := context.Background()
 
@@ -173,9 +177,7 @@ func TestNetworkPolicyDenyRule(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	factStore, cancel, _ := helperSetupNetworkPolicyCluster(t)
-	defer cancel()
-	defer factStore.Close()
+	factStore, _ := helperSetupNetworkPolicyCluster(t)
 
 	ctx := context.Background()
 
@@ -256,9 +258,7 @@ func TestNetworkPolicyMultipleRules(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	factStore, cancel, _ := helperSetupNetworkPolicyCluster(t)
-	defer cancel()
-	defer factStore.Close()
+	factStore, _ := helperSetupNetworkPolicyCluster(t)
 
 	ctx := context.Background()
 

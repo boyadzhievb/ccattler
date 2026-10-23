@@ -20,9 +20,10 @@ import (
 )
 
 // helperSetupNetworkingCluster creates a 3-node simulated cluster with
-// networking enabled. Returns the store, cancel function, network provider,
-// and resolver. The caller must defer cancel() and factStore.Close().
-func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.CancelFunc, *network.SimulatorNetworkProvider, *network.StoreBackedResolver) {
+// networking enabled. Returns the store, context, network provider, and
+// resolver. Cleanup (cancel, runner wait, store close) is handled via
+// t.Cleanup — callers should not defer cancel() or factStore.Close().
+func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Context, *network.SimulatorNetworkProvider, *network.StoreBackedResolver) {
 	t.Helper()
 
 	factStore := store.NewMemoryStore()
@@ -52,7 +53,7 @@ func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Cance
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Start 3 agents, each with its own simulator runtime and the shared network provider.
 	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -65,17 +66,14 @@ func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Cance
 	}
 
 	storeBackedResolver := network.NewStoreBackedResolver(factStore)
-	return factStore, cancel, simulatorNetworkProvider, storeBackedResolver
+	return factStore, ctx, simulatorNetworkProvider, storeBackedResolver
 }
 
 // TestInstancesGetUniqueIPsFromNodeSubnet verifies that instances deployed
 // across 3 nodes receive unique IPs from their respective node subnets.
 func TestInstancesGetUniqueIPsFromNodeSubnet(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	// Deploy 6 instances across 3 nodes.
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
@@ -113,10 +111,7 @@ func TestInstancesGetUniqueIPsFromNodeSubnet(t *testing.T) {
 // allocated IPs from the network provider, not the default 127.0.0.1.
 func TestEndpointsReflectAllocatedIPs(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -149,10 +144,7 @@ func TestEndpointsReflectAllocatedIPs(t *testing.T) {
 // and DNS facts for a service with running instances and an exposed port.
 func TestServiceGetsVIPAndDNS(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -183,10 +175,7 @@ func TestServiceGetsVIPAndDNS(t *testing.T) {
 // the correct VIP for a deployed service.
 func TestDNSResolvesServiceToVIP(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -207,10 +196,7 @@ func TestDNSResolvesServiceToVIP(t *testing.T) {
 // distributes requests across all running instances using round-robin.
 func TestLoadBalancingDistributesTraffic(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -252,10 +238,8 @@ func TestLoadBalancingDistributesTraffic(t *testing.T) {
 func TestNodeFailurePreservesVIPAddress(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 
@@ -278,7 +262,7 @@ func TestNodeFailurePreservesVIPAddress(t *testing.T) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	node1Context, cancelNode1Agent := context.WithCancel(ctx)
 	for _, nodeID := range []string{"node-1", "node-2"} {
@@ -330,10 +314,8 @@ func TestNodeFailurePreservesVIPAddress(t *testing.T) {
 func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
 
@@ -356,7 +338,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Start 3 agents — node-1 gets a separate cancel context.
 	node1Context, cancelNode1Agent := context.WithCancel(ctx)
@@ -412,10 +394,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 // causes new instances to appear in the load balancer pool.
 func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -448,10 +427,7 @@ func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
 // each service balances across its instances.
 func TestServiceReachableByName(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 
 	// Deploy web (4 instances, port 8080) and api (2 instances, port 3000).
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
@@ -524,10 +500,7 @@ func TestServiceReachableByName(t *testing.T) {
 // have independent VIPs, DNS records, endpoint sets, and load balancing.
 func TestMultipleServicesIndependentNetworking(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, storeBackedResolver := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, storeBackedResolver := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
@@ -569,10 +542,7 @@ func TestMultipleServicesIndependentNetworking(t *testing.T) {
 // the network allocation facts for stopped instances.
 func TestInstanceIPReleasedOnStop(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("4"))
@@ -624,10 +594,7 @@ func TestInstanceIPReleasedOnStop(t *testing.T) {
 // host-port addresses — exercising the value-update path.
 func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	// Deploy a service with two exposed ports and 3 instances (spread across nodes).
 	factStore.Put(ctx, types.KeyDesiredServiceImage("multiport"), []byte("nginx:1.28"))
@@ -754,10 +721,7 @@ func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 // does not affect port 8080's endpoint resolution.
 func TestMultiPortPerPortHostPortIsolation(t *testing.T) {
 	t.Parallel()
-	factStore, cancel, _, _ := helperSetupNetworkingCluster(t)
-	defer cancel()
-	defer factStore.Close()
-	ctx := context.Background()
+	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("isolated"), []byte("app:v1"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("isolated", 80), []byte(""))

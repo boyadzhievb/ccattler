@@ -104,9 +104,7 @@ func (slowStore *slowStore) Close() error {
 func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 	testHandle.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
-	defer clusterCancel()
 
 	nodeIDs := []string{"node-1", "node-2", "node-3"}
 	for _, nodeID := range nodeIDs {
@@ -117,7 +115,12 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 		})
 	}
 
-	helperStartControllers(factStore, clusterContext)
+	controllerRunnerDone := helperStartControllers(factStore, clusterContext)
+	testHandle.Cleanup(func() {
+		clusterCancel()
+		<-controllerRunnerDone
+		factStore.Close()
+	})
 
 	partitionedStores := make(map[string]*chaos.PartitionedStore, len(nodeIDs))
 	agentRuntimes := make(map[string]*runtime.SimulatorRuntime, len(nodeIDs))
@@ -189,8 +192,6 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -247,9 +248,7 @@ func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
 func TestLeaderElectionFencing(testHandle *testing.T) {
 	testHandle.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
-	defer clusterCancel()
 
 	types.WriteNode(clusterContext, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -276,8 +275,22 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 		controllers.NewEndpointController(), controllers.NewFailureController())
 	runner2.SetDebounce(10 * time.Millisecond)
 
-	go runner1.Run(clusterContext)
-	go runner2.Run(clusterContext)
+	runner1Done := make(chan struct{})
+	runner2Done := make(chan struct{})
+	go func() {
+		runner1.Run(clusterContext)
+		close(runner1Done)
+	}()
+	go func() {
+		runner2.Run(clusterContext)
+		close(runner2Done)
+	}()
+	testHandle.Cleanup(func() {
+		clusterCancel()
+		<-runner1Done
+		<-runner2Done
+		factStore.Close()
+	})
 
 	helperDeployService(clusterContext, factStore, "web", "nginx:1.28", "5")
 
@@ -314,7 +327,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	helperStartControllers(originalStore, clusterContext)
+	originalRunnerDone := helperStartControllers(originalStore, clusterContext)
 
 	partitionedStore := chaos.NewPartitionedStore(originalStore)
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -337,12 +350,11 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 	}
 
 	clusterCancel()
+	<-originalRunnerDone
 	originalStore.Close()
 
 	restoredStore := store.NewMemoryStore()
-	defer restoredStore.Close()
 	restoreContext, restoreCancel := context.WithCancel(context.Background())
-	defer restoreCancel()
 
 	desiredFactCount := 0
 	for _, fact := range allFacts {
@@ -354,7 +366,12 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 		testHandle.Fatal("snapshot contained 0 facts")
 	}
 
-	helperStartControllers(restoredStore, restoreContext)
+	restoredRunnerDone := helperStartControllers(restoredStore, restoreContext)
+	testHandle.Cleanup(func() {
+		restoreCancel()
+		<-restoredRunnerDone
+		restoredStore.Close()
+	})
 
 	restoredPartitioned := chaos.NewPartitionedStore(restoredStore)
 	restoredRuntime := runtime.NewSimulatorRuntime()
@@ -375,8 +392,6 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 func TestSplitBrainHeal(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupResilienceCluster(testHandle)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -427,8 +442,6 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupResilienceCluster(testHandle)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	cluster.factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte("8080"))
@@ -540,12 +553,10 @@ func TestStorageFailure_VolumeDisappears(testHandle *testing.T) {
 func TestStorageFailure_SlowStore(testHandle *testing.T) {
 	testHandle.Parallel()
 	memStore := store.NewMemoryStore()
-	defer memStore.Close()
 
 	latencyInjectedStore := newSlowStore(memStore, 20*time.Millisecond)
 
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
-	defer clusterCancel()
 
 	types.WriteNode(clusterContext, memStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -563,10 +574,17 @@ func TestStorageFailure_SlowStore(testHandle *testing.T) {
 	controllerRunner.SetDebounce(50 * time.Millisecond)
 
 	var runnerExited atomic.Bool
+	runnerDone := make(chan struct{})
 	go func() {
 		controllerRunner.Run(clusterContext)
 		runnerExited.Store(true)
+		close(runnerDone)
 	}()
+	testHandle.Cleanup(func() {
+		clusterCancel()
+		<-runnerDone
+		memStore.Close()
+	})
 
 	partitionedStore := chaos.NewPartitionedStore(memStore)
 	simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -593,8 +611,6 @@ func TestStorageFailure_SlowStore(testHandle *testing.T) {
 func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")

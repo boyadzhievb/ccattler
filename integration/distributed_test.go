@@ -21,10 +21,8 @@ import (
 func TestDistributedSpreadAcrossNodes(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Register 3 nodes with equal capacity.
 	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -45,7 +43,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Start 3 agents, each with its own simulator runtime.
 	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -90,10 +88,8 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 func TestDistributedNodeFailureReschedules(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Register 3 nodes with equal capacity.
 	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -114,7 +110,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Start 3 agents — node-1 gets its own cancellable context so we can simulate a crash.
 	node1Context, cancelNode1Agent := context.WithCancel(ctx)
@@ -180,10 +176,9 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 func TestDistributedHeartbeatsVisibleInStore(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(func() { cancel(); factStore.Close() })
 
 	types.WriteNode(ctx, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -215,10 +210,8 @@ func TestDistributedHeartbeatsVisibleInStore(t *testing.T) {
 func TestDistributedMultiServiceSpread(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	for _, nodeID := range []string{"node-1", "node-2"} {
 		types.WriteNode(ctx, factStore, types.Node{
@@ -235,7 +228,7 @@ func TestDistributedMultiServiceSpread(t *testing.T) {
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, failureController, nodeFailureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	for _, nodeID := range []string{"node-1", "node-2"} {
 		simulatorRuntime := runtime.NewSimulatorRuntime()

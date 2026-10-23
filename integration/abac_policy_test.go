@@ -20,7 +20,6 @@ import (
 func TestABACPolicyDSLRoundTrip(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	input := `
 policy team-isolation {
@@ -47,12 +46,11 @@ policy restricted-teams {
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	paymentsDev := security.Principal{
 		Kind: security.PrincipalKindUser,
@@ -183,7 +181,6 @@ policy restricted-teams {
 func TestABACPolicyWithRBACGrants(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	input := `
 role admin {
@@ -206,12 +203,11 @@ policy team-isolation {
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	superAdmin := security.Principal{
 		Kind: security.PrincipalKindUser,
@@ -257,7 +253,6 @@ policy team-isolation {
 func TestABACPolicyAuditLogging(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	input := `
 policy team-isolation {
@@ -276,12 +271,11 @@ policy team-isolation {
 	apiAuthorizer.SetAuditLogger(auditLog)
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	paymentsDev := security.Principal{
 		Kind:       security.PrincipalKindUser,
@@ -322,7 +316,6 @@ policy team-isolation {
 func TestABACPolicyMultiCondition(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	input := `
 policy strict-update {
@@ -340,12 +333,11 @@ policy strict-update {
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	stagingDev := security.Principal{
 		Kind: security.PrincipalKindUser,

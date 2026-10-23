@@ -30,6 +30,8 @@ type isolationCluster struct {
 	clusterCancel context.CancelFunc
 	// controllerCancels maps controller name to its cancel function.
 	controllerCancels map[string]context.CancelFunc
+	// controllerRunnerDones maps controller group name to its done channel.
+	controllerRunnerDones map[string]<-chan struct{}
 	// partitionedStores maps nodeID to its PartitionedStore wrapper.
 	partitionedStores map[string]*chaos.PartitionedStore
 	// nodeAgentCancels maps nodeID to its agent's cancel function.
@@ -66,12 +68,18 @@ func helperSetupIsolationCluster(testHandle *testing.T, groups []controllerGroup
 	}
 
 	controllerCancels := make(map[string]context.CancelFunc, len(groups))
+	controllerRunnerDones := make(map[string]<-chan struct{}, len(groups))
 	for _, group := range groups {
 		groupContext, groupCancel := context.WithCancel(clusterContext)
 		controllerCancels[group.name] = groupCancel
 		controllerRunner := controllers.NewRunner(factStore, group.controllers...)
 		controllerRunner.SetDebounce(10 * time.Millisecond)
-		go controllerRunner.Run(groupContext)
+		runnerDone := make(chan struct{})
+		go func() {
+			controllerRunner.Run(groupContext)
+			close(runnerDone)
+		}()
+		controllerRunnerDones[group.name] = runnerDone
 	}
 
 	partitionedStores := make(map[string]*chaos.PartitionedStore, len(nodeIDs))
@@ -94,14 +102,23 @@ func helperSetupIsolationCluster(testHandle *testing.T, groups []controllerGroup
 		go nodeAgent.Run(nodeContext)
 	}
 
+	testHandle.Cleanup(func() {
+		clusterCancel()
+		for _, runnerDone := range controllerRunnerDones {
+			<-runnerDone
+		}
+		factStore.Close()
+	})
+
 	return &isolationCluster{
-		factStore:         factStore,
-		clusterContext:    clusterContext,
-		clusterCancel:     clusterCancel,
-		controllerCancels: controllerCancels,
-		partitionedStores: partitionedStores,
-		nodeAgentCancels:  nodeAgentCancels,
-		agentRuntimes:     agentRuntimes,
+		factStore:             factStore,
+		clusterContext:        clusterContext,
+		clusterCancel:         clusterCancel,
+		controllerCancels:     controllerCancels,
+		controllerRunnerDones: controllerRunnerDones,
+		partitionedStores:     partitionedStores,
+		nodeAgentCancels:      nodeAgentCancels,
+		agentRuntimes:         agentRuntimes,
 	}
 }
 
@@ -112,19 +129,26 @@ func (isolationCluster *isolationCluster) killControllerGroup(groupName string) 
 	}
 }
 
-// restartControllerGroup cancels the old group and starts a fresh Runner with
-// the given controllers under a new context.
+// restartControllerGroup cancels the old group, waits for it to exit, then
+// starts a fresh Runner with the given controllers under a new context.
 func (isolationCluster *isolationCluster) restartControllerGroup(groupName string, controllerList []controllers.Controller) {
 	if cancelFunc, exists := isolationCluster.controllerCancels[groupName]; exists {
 		cancelFunc()
 	}
-	time.Sleep(20 * time.Millisecond)
+	if runnerDone, exists := isolationCluster.controllerRunnerDones[groupName]; exists {
+		<-runnerDone
+	}
 
 	groupContext, groupCancel := context.WithCancel(isolationCluster.clusterContext)
 	isolationCluster.controllerCancels[groupName] = groupCancel
 	controllerRunner := controllers.NewRunner(isolationCluster.factStore, controllerList...)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(groupContext)
+	newRunnerDone := make(chan struct{})
+	go func() {
+		controllerRunner.Run(groupContext)
+		close(newRunnerDone)
+	}()
+	isolationCluster.controllerRunnerDones[groupName] = newRunnerDone
 }
 
 // defaultIsolationGroups returns the standard controller groups split by
@@ -150,8 +174,6 @@ func defaultIsolationGroups() []controllerGroup {
 func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -195,8 +217,6 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
@@ -222,8 +242,6 @@ func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -249,8 +267,6 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -295,8 +311,6 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 func TestConcurrentControllerRecovery(testHandle *testing.T) {
 	testHandle.Parallel()
 	cluster := helperSetupIsolationCluster(testHandle, defaultIsolationGroups())
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")

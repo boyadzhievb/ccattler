@@ -14,6 +14,24 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// startRunner launches the controller runner in a background goroutine and
+// registers a t.Cleanup that cancels the context, waits for the runner to
+// fully stop, then closes the store. This prevents "store closed" races
+// where controllers are still reconciling when the store is torn down.
+func startRunner(t *testing.T, factStore store.StateStore, ctx context.Context, cancel context.CancelFunc, controllerRunner *controllers.Runner) {
+	t.Helper()
+	runnerDone := make(chan struct{})
+	go func() {
+		controllerRunner.Run(ctx)
+		close(runnerDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-runnerDone
+		factStore.Close()
+	})
+}
+
 func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -29,16 +47,15 @@ func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool
 func TestDesiredToPlaced(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Register 3 alive nodes.
 	for _, id := range []string{"node-1", "node-2", "node-3"} {
@@ -48,8 +65,6 @@ func TestDesiredToPlaced(t *testing.T) {
 			AvailableCPU: 4000, AvailableMemory: 8192,
 		})
 	}
-
-	go runner.Run(ctx)
 
 	// User intent: web service wants 3 instances.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
@@ -91,21 +106,18 @@ func TestDesiredToPlaced(t *testing.T) {
 func TestScaleUpPlacesNewInstances(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	types.WriteNode(ctx, factStore, types.Node{ID: "node-1", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
 	types.WriteNode(ctx, factStore, types.Node{ID: "node-2", State: types.NodeAlive, CapacityCPU: 4000, CapacityMemory: 8192, AvailableCPU: 4000, AvailableMemory: 8192})
-
-	go runner.Run(ctx)
 
 	// Start with 2 instances.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
@@ -137,18 +149,15 @@ func TestScaleUpPlacesNewInstances(t *testing.T) {
 func TestNoPlacementWithoutNodes(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 
-	runner := controllers.NewRunner(factStore, instanceController, schedulerController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Desired 3 but no nodes registered.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))

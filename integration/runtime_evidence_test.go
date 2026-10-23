@@ -39,9 +39,7 @@ import (
 func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	types.WriteNode(ctx, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -54,7 +52,7 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Deploy the service and wait for placement — agent not running yet.
 	helperDeployService(ctx, factStore, "broken", "nonexistent-registry.example.com/bad:latest", "1")
@@ -94,9 +92,7 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 func TestContainerRuntime_OOMKill(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	types.WriteNode(ctx, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -108,7 +104,7 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
@@ -154,9 +150,7 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	types.WriteNode(ctx, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -168,7 +162,7 @@ func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	simulatorRuntime := runtime.NewSimulatorRuntime()
 	nodeAgent := agent.New("node-1", factStore, simulatorRuntime)
@@ -207,9 +201,7 @@ func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 func TestObservability_DecisionAuditTrail(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	eventLog := types.NewEventLog(factStore, 100)
 
@@ -224,7 +216,7 @@ func TestObservability_DecisionAuditTrail(t *testing.T) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Let the EventProjector establish its watches before writing facts,
 	// otherwise the initial effective/service write can race the watch setup.
@@ -308,9 +300,7 @@ func TestObservability_DecisionAuditTrail(t *testing.T) {
 func TestObservability_ReconciliationExplainability(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	eventLog := types.NewEventLog(factStore, 200)
 
@@ -333,7 +323,7 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 		schedulerController, failureController, nodeFailureController, endpointController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	controllerRunner.SetEventLog(eventLog)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	runtimes := make(map[string]*runtime.SimulatorRuntime)
 	agentCancels := make(map[string]context.CancelFunc)
@@ -597,9 +587,7 @@ func TestAPIStability_StatusEndpointContract(t *testing.T) {
 func TestEcosystem_ControllerSDKPlugin(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Build a custom "alert-controller" that watches observed instance states
 	// and writes a derived alert fact when any instance is failed.
@@ -623,7 +611,7 @@ func TestEcosystem_ControllerSDKPlugin(t *testing.T) {
 	instanceController := controllers.NewInstanceController()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, alertController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Write a failed instance into observed state.
 	factStore.Put(ctx, types.KeyObservedInstanceState("api-1"), []byte(string(types.InstanceFailed)))

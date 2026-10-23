@@ -20,7 +20,6 @@ import (
 func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	controllerList := []controllers.Controller{
 		controllers.NewInstanceController(),
@@ -36,7 +35,6 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	types.WriteNode(ctx, factStore, types.Node{
 		ID: "node-1", State: types.NodeAlive,
@@ -44,7 +42,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 		AvailableCPU: 4000, AvailableMemory: 8192,
 	})
 
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Deploy a stateful service with 3 instances.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("3"))
@@ -131,7 +129,6 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 func TestStatefulServiceScaleDown(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	controllerList := []controllers.Controller{
 		controllers.NewInstanceController(),
@@ -142,7 +139,6 @@ func TestStatefulServiceScaleDown(t *testing.T) {
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Pre-populate 3 running stateful instances.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("3"))
@@ -155,7 +151,7 @@ func TestStatefulServiceScaleDown(t *testing.T) {
 		factStore.Put(ctx, types.KeyObservedInstanceOrdinal(instanceID), []byte(itoa(ordinal)))
 	}
 
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Scale down to 1.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("1"))

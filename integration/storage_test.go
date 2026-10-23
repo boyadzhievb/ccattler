@@ -18,10 +18,10 @@ import (
 )
 
 // storageCluster holds all components of a 3-node simulated cluster with
-// storage support. The caller must defer cancel() and factStore.Close().
+// storage support. Lifecycle is managed via t.Cleanup — callers should not
+// call cancel() or factStore.Close().
 type storageCluster struct {
 	factStore       store.StateStore
-	cancel          context.CancelFunc
 	storageProvider *storage.SimulatorStorageProvider
 	killNode        map[string]context.CancelFunc
 }
@@ -59,7 +59,8 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 		endpointController, failureController, nodeFailureController, storageController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	controllerRunner.SetResyncInterval(500 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	runnerDone := make(chan struct{})
+	go func() { controllerRunner.Run(ctx); close(runnerDone) }()
 
 	killFunctions := make(map[string]context.CancelFunc)
 	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -74,9 +75,14 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 		go nodeAgent.Run(nodeContext)
 	}
 
+	t.Cleanup(func() {
+		cancel()
+		<-runnerDone
+		factStore.Close()
+	})
+
 	return &storageCluster{
 		factStore:       factStore,
-		cancel:          cancel,
 		storageProvider: simulatorStorageProvider,
 		killNode:        killFunctions,
 	}
@@ -88,8 +94,7 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 func TestVolumeCreatedFromDesiredState(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	types.WriteDesiredVolume(ctx, cluster.factStore, "pgdata", "100Gi", true)
@@ -111,8 +116,7 @@ func TestVolumeCreatedFromDesiredState(t *testing.T) {
 func TestVolumeAttachedWhenInstanceStarts(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -134,8 +138,7 @@ func TestVolumeAttachedWhenInstanceStarts(t *testing.T) {
 func TestVolumeDetachedWhenInstanceStops(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -165,8 +168,7 @@ func TestVolumeDetachedWhenInstanceStops(t *testing.T) {
 func TestVolumeSurvivesNodeFailure(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024)
@@ -228,8 +230,7 @@ func TestVolumeSurvivesNodeFailure(t *testing.T) {
 func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -263,8 +264,7 @@ func TestVolumeForceDetachOnUnreachableNode(t *testing.T) {
 func TestMultipleServicesIndependentVolumes(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -302,8 +302,7 @@ func TestMultipleServicesIndependentVolumes(t *testing.T) {
 func TestServiceWithoutVolumeUnaffected(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -345,8 +344,7 @@ func TestServiceWithoutVolumeUnaffected(t *testing.T) {
 func TestVolumeStateReflectedInStore(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 100*1024*1024*1024)
@@ -400,8 +398,7 @@ func TestVolumeStateReflectedInStore(t *testing.T) {
 func TestVolumeReattachAfterForceDetach(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupStorageCluster(t)
-	defer cluster.cancel()
-	defer cluster.factStore.Close()
+
 	ctx := context.Background()
 
 	cluster.storageProvider.CreateVolume(ctx, "pgdata", 50*1024*1024*1024)

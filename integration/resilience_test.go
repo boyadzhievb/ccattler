@@ -29,6 +29,8 @@ type resilienceCluster struct {
 	clusterContext context.Context
 	// controllerCancel stops just the controller runner for restart testing.
 	controllerCancel context.CancelFunc
+	// controllerRunnerDone is closed when the current controller runner exits.
+	controllerRunnerDone <-chan struct{}
 	// partitionedStores maps nodeID to its PartitionedStore wrapper.
 	partitionedStores map[string]*chaos.PartitionedStore
 	// killNode maps nodeID to its agent's cancel function.
@@ -57,7 +59,7 @@ func helperSetupResilienceCluster(t *testing.T) *resilienceCluster {
 	}
 
 	controllerContext, controllerCancel := context.WithCancel(clusterContext)
-	helperStartControllers(factStore, controllerContext)
+	controllerRunnerDone := helperStartControllers(factStore, controllerContext)
 
 	partitionedStores := make(map[string]*chaos.PartitionedStore)
 	killFunctions := make(map[string]context.CancelFunc)
@@ -79,20 +81,31 @@ func helperSetupResilienceCluster(t *testing.T) *resilienceCluster {
 		go nodeAgent.Run(nodeContext)
 	}
 
-	return &resilienceCluster{
-		factStore:         factStore,
-		clusterCancel:     clusterCancel,
-		clusterContext:    clusterContext,
-		controllerCancel:  controllerCancel,
-		partitionedStores: partitionedStores,
-		killNode:          killFunctions,
-		agentRuntimes:     agentRuntimes,
+	cluster := &resilienceCluster{
+		factStore:            factStore,
+		clusterCancel:        clusterCancel,
+		clusterContext:       clusterContext,
+		controllerCancel:     controllerCancel,
+		controllerRunnerDone: controllerRunnerDone,
+		partitionedStores:    partitionedStores,
+		killNode:             killFunctions,
+		agentRuntimes:        agentRuntimes,
 	}
+
+	t.Cleanup(func() {
+		clusterCancel()
+		<-controllerRunnerDone
+		factStore.Close()
+	})
+
+	return cluster
 }
 
 // helperStartControllers creates and starts all controllers on a Runner with
-// a short lease timeout and debounce suitable for testing.
-func helperStartControllers(factStore store.StateStore, ctx context.Context) {
+// a short lease timeout and debounce suitable for testing. Returns a channel
+// that is closed when the runner goroutine exits, so callers can wait for a
+// clean shutdown before closing the store.
+func helperStartControllers(factStore store.StateStore, ctx context.Context) <-chan struct{} {
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 	endpointController := controllers.NewEndpointController()
@@ -104,7 +117,12 @@ func helperStartControllers(factStore store.StateStore, ctx context.Context) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
 		endpointController, failureController, nodeFailureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	runnerDone := make(chan struct{})
+	go func() {
+		controllerRunner.Run(ctx)
+		close(runnerDone)
+	}()
+	return runnerDone
 }
 
 // helperDeployService writes the desired state for a simple service.
@@ -141,13 +159,15 @@ func (cluster *resilienceCluster) restartAgentForNode(nodeID string) {
 	go nodeAgent.Run(nodeContext)
 }
 
-// restartControllers cancels the current controller runner and starts a new
-// one, updating controllerCancel.
+// restartControllers cancels the current controller runner, waits for it to
+// exit, then starts a new one, updating controllerCancel and
+// controllerRunnerDone.
 func (cluster *resilienceCluster) restartControllers() {
 	cluster.controllerCancel()
+	<-cluster.controllerRunnerDone
 	controllerContext, controllerCancel := context.WithCancel(cluster.clusterContext)
 	cluster.controllerCancel = controllerCancel
-	helperStartControllers(cluster.factStore, controllerContext)
+	cluster.controllerRunnerDone = helperStartControllers(cluster.factStore, controllerContext)
 }
 
 // TestControllerRestartRecovery verifies that after controllers are stopped,
@@ -156,8 +176,6 @@ func (cluster *resilienceCluster) restartControllers() {
 func TestControllerRestartRecovery(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
@@ -189,8 +207,6 @@ func TestControllerRestartRecovery(t *testing.T) {
 func TestControllerRestartPreservesExistingState(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -215,8 +231,6 @@ func TestControllerRestartPreservesExistingState(t *testing.T) {
 func TestAgentRestartRejoin(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -249,8 +263,6 @@ func TestAgentRestartRejoin(t *testing.T) {
 func TestMultipleSimultaneousNodeFailures(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -280,8 +292,6 @@ func TestMultipleSimultaneousNodeFailures(t *testing.T) {
 func TestNetworkPartitionAndHeal(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -311,8 +321,6 @@ func TestNetworkPartitionAndHeal(t *testing.T) {
 func TestPartitionedAgentInstancesRescheduled(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -343,8 +351,6 @@ func TestPartitionedAgentInstancesRescheduled(t *testing.T) {
 func TestRapidNodeCycling(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
@@ -374,8 +380,6 @@ func TestRapidNodeCycling(t *testing.T) {
 func TestScaleChangeDuringNodeFailure(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
@@ -408,8 +412,6 @@ func TestScaleChangeDuringNodeFailure(t *testing.T) {
 func TestFullResilienceCycle(t *testing.T) {
 	t.Parallel()
 	cluster := helperSetupResilienceCluster(t)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")

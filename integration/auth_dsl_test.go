@@ -19,7 +19,6 @@ import (
 func TestAuthDSLRoundTrip(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	input := `
 role developer {
@@ -54,12 +53,11 @@ grant operator to user "carol@example.com"
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
 	bob := security.Principal{Kind: security.PrincipalKindUser, Name: "bob@example.com"}
@@ -101,7 +99,6 @@ grant operator to user "carol@example.com"
 func TestAuthDSLAdditionalGrantTakesEffect(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	initialInput := `
 role viewer {
@@ -118,12 +115,11 @@ grant viewer to user "alice@example.com"
 	apiAuthorizer := security.NewAPIAuthorizer()
 	authController := controllers.NewAuthController(apiAuthorizer)
 
-	runner := controllers.NewRunner(factStore, authController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, authController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	alice := security.Principal{Kind: security.PrincipalKindUser, Name: "alice@example.com"}
 

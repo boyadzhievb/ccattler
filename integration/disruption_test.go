@@ -23,17 +23,16 @@ import (
 func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	instanceController := controllers.NewInstanceController()
 	schedulerController := scheduler.NewScheduler()
 	drainController := controllers.NewDrainController()
 
-	runner := controllers.NewRunner(factStore, instanceController, schedulerController, drainController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, drainController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Register 2 nodes with enough capacity for 5 instances.
 	for _, nodeID := range []string{"node-1", "node-2"} {
@@ -43,8 +42,6 @@ func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 			AvailableCPU: 4000, AvailableMemory: 8192,
 		})
 	}
-
-	go runner.Run(ctx)
 
 	// Deploy service with 5 instances.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("5"))
@@ -125,10 +122,8 @@ func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 func TestDrainNodeMigratesInstances(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	clusterContext, clusterCancel := context.WithCancel(context.Background())
-	defer clusterCancel()
 
 	nodeIdentifiers := []string{"node-1", "node-2", "node-3"}
 	for _, nodeID := range nodeIdentifiers {
@@ -148,14 +143,23 @@ func TestDrainNodeMigratesInstances(t *testing.T) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController,
 		schedulerController, endpointController, failureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(clusterContext)
+	mainRunnerDone := make(chan struct{})
+	go func() { controllerRunner.Run(clusterContext); close(mainRunnerDone) }()
 
 	// The drain controller runs in a separate runner with no input-key guards.
 	// This avoids transaction conflicts with agent writes to observed/instance/.
 	drainRunner := controllers.NewRunner(factStore, drainController)
 	drainRunner.SetDebounce(10 * time.Millisecond)
 	drainRunner.SetMaxInputKeyGuards(0)
-	go drainRunner.Run(clusterContext)
+	drainRunnerDone := make(chan struct{})
+	go func() { drainRunner.Run(clusterContext); close(drainRunnerDone) }()
+
+	t.Cleanup(func() {
+		clusterCancel()
+		<-mainRunnerDone
+		<-drainRunnerDone
+		factStore.Close()
+	})
 
 	for _, nodeID := range nodeIdentifiers {
 		simulatorRuntime := runtime.NewSimulatorRuntime()

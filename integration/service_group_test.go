@@ -20,8 +20,9 @@ import (
 )
 
 // helperSetupServiceGroupCluster creates a 2-node simulated cluster with the
-// full controller set needed for service group integration testing.
-func helperSetupServiceGroupCluster(t *testing.T) (store.StateStore, context.CancelFunc) {
+// full controller set needed for service group integration testing. Lifecycle
+// is managed via t.Cleanup — callers should not defer cancel() or Close().
+func helperSetupServiceGroupCluster(t *testing.T) store.StateStore {
 	t.Helper()
 
 	factStore := store.NewMemoryStore()
@@ -44,9 +45,8 @@ func helperSetupServiceGroupCluster(t *testing.T) (store.StateStore, context.Can
 		controllers.NewIntentResolverController(),
 	)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go func() {
-		_ = controllerRunner.Run(ctx)
-	}()
+	runnerDone := make(chan struct{})
+	go func() { controllerRunner.Run(ctx); close(runnerDone) }()
 
 	for _, nodeID := range []string{"node-1", "node-2"} {
 		simulatorRuntime := runtime.NewSimulatorRuntime()
@@ -59,7 +59,13 @@ func helperSetupServiceGroupCluster(t *testing.T) (store.StateStore, context.Can
 		}()
 	}
 
-	return factStore, cancel
+	t.Cleanup(func() {
+		cancel()
+		<-runnerDone
+		factStore.Close()
+	})
+
+	return factStore
 }
 
 // TestServiceGroupCoScheduled verifies the full pipeline: DSL group block →
@@ -71,9 +77,7 @@ func TestServiceGroupCoScheduled(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	factStore, cancel := helperSetupServiceGroupCluster(t)
-	defer cancel()
-	defer factStore.Close()
+	factStore := helperSetupServiceGroupCluster(t)
 
 	ctx := context.Background()
 
@@ -153,9 +157,7 @@ func TestServiceGroupWithUngroupedService(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	factStore, cancel := helperSetupServiceGroupCluster(t)
-	defer cancel()
-	defer factStore.Close()
+	factStore := helperSetupServiceGroupCluster(t)
 
 	ctx := context.Background()
 

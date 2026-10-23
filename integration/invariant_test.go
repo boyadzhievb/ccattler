@@ -29,6 +29,8 @@ type invariantCluster struct {
 	clusterContext context.Context
 	// clusterCancel stops all cluster components when called.
 	clusterCancel context.CancelFunc
+	// controllerRunnerDone is closed when the controller runner goroutine exits.
+	controllerRunnerDone <-chan struct{}
 	// controllerList holds references to the individual controllers for
 	// direct reconciliation testing (e.g. the idempotent fixed-point check).
 	controllerList []controllers.Controller
@@ -74,7 +76,11 @@ func setupInvariantCluster(testContext *testing.T, nodeCount int) *invariantClus
 		instanceController, schedulerController,
 		endpointController, failureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(clusterContext)
+	controllerRunnerDone := make(chan struct{})
+	go func() {
+		controllerRunner.Run(clusterContext)
+		close(controllerRunnerDone)
+	}()
 
 	// Launch simulator-backed node agents with a fast reconciliation interval.
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
@@ -88,11 +94,18 @@ func setupInvariantCluster(testContext *testing.T, nodeCount int) *invariantClus
 		go nodeAgent.Run(clusterContext)
 	}
 
+	testContext.Cleanup(func() {
+		clusterCancel()
+		<-controllerRunnerDone
+		factStore.Close()
+	})
+
 	return &invariantCluster{
-		factStore:      factStore,
-		clusterContext: clusterContext,
-		clusterCancel:  clusterCancel,
-		controllerList: allControllers,
+		factStore:            factStore,
+		clusterContext:       clusterContext,
+		clusterCancel:        clusterCancel,
+		controllerRunnerDone: controllerRunnerDone,
+		controllerList:       allControllers,
 	}
 }
 
@@ -152,8 +165,6 @@ func countRunningInstancesForServiceInStore(backgroundContext context.Context, f
 func TestInvariantDesiredObservedSeparation(t *testing.T) {
 	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 
 	deployServiceAndWaitForConvergence(t, cluster, "web", "nginx:1.28", 3, 0)
 
@@ -220,8 +231,6 @@ func TestInvariantDesiredObservedSeparation(t *testing.T) {
 func TestInvariantPlacementOnlyOnAliveNodes(t *testing.T) {
 	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 
 	deployServiceAndWaitForConvergence(t, cluster, "api", "api-server:2.0", 3, 0)
 
@@ -271,8 +280,6 @@ func TestInvariantPlacementOnlyOnAliveNodes(t *testing.T) {
 func TestInvariantInstanceCountMatchesDesired(t *testing.T) {
 	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 
 	desiredCount := 5
 
@@ -350,8 +357,6 @@ func TestInvariantInstanceCountMatchesDesired(t *testing.T) {
 func TestInvariantIdempotentReconciliation(t *testing.T) {
 	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 
 	deployServiceAndWaitForConvergence(t, cluster, "stable", "stable:1.0", 3, 8080)
 
@@ -453,8 +458,6 @@ func TestInvariantIdempotentReconciliation(t *testing.T) {
 func TestInvariantEndpointsMatchRunningInstances(t *testing.T) {
 	t.Parallel()
 	cluster := setupInvariantCluster(t, 3)
-	defer cluster.clusterCancel()
-	defer cluster.factStore.Close()
 
 	serviceName := "frontend"
 	servicePort := 8080

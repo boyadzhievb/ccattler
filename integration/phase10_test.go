@@ -21,10 +21,8 @@ import (
 func TestStabilizationWindowPreventsOscillation(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -34,15 +32,15 @@ func TestStabilizationWindowPreventsOscillation(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController,
 		autoscaleController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
-	runner.SetResyncInterval(500 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetResyncInterval(500 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	input := `
 service web {
@@ -81,10 +79,8 @@ service web {
 func TestEventDrivenScalingWithQueueDepth(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 5)
 
@@ -93,14 +89,14 @@ func TestEventDrivenScalingWithQueueDepth(t *testing.T) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController,
 		autoscaleController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 5)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	input := `
 service worker {
@@ -134,10 +130,8 @@ service worker {
 func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 5)
 
@@ -154,14 +148,14 @@ func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController,
 		autoscaleController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 5)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	factStore.Put(ctx, types.KeyDesiredService("api"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("api:1.0"))
@@ -184,18 +178,16 @@ func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
 func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore, autoscaleController, intentResolverController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, autoscaleController, intentResolverController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("web"), []byte("500"))
@@ -230,10 +222,8 @@ func TestVerticalAutoscalingAdjustsResources(t *testing.T) {
 func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -242,14 +232,14 @@ func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController,
 		autoscaleController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
@@ -286,10 +276,8 @@ func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start with just 1 node that can fit 1 instance.
 	types.WriteNode(ctx, factStore, types.Node{
@@ -304,13 +292,13 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(simulatorInfraProvider, factStore)
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController, clusterAutoscaleController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 1)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	factStore.Put(ctx, types.KeyDesiredClusterAutoscaleMaxNodes(), []byte("5"))
 
@@ -330,10 +318,8 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 func TestPlacementConstraintArchitecture(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// node-1: amd64, node-2: arm64, node-3: amd64
 	types.WriteNode(ctx, factStore, types.Node{
@@ -359,13 +345,13 @@ func TestPlacementConstraintArchitecture(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	input := `
 service web {
@@ -402,10 +388,8 @@ service web {
 func TestPlacementConstraintZoneSpread(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// 3 nodes across 3 zones.
 	for zoneIndex, nodeID := range []string{"node-1", "node-2", "node-3"} {
@@ -422,13 +406,13 @@ func TestPlacementConstraintZoneSpread(t *testing.T) {
 	schedulerController := scheduler.NewScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController, intentResolverController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	input := `
 service web {
@@ -468,10 +452,8 @@ service web {
 func TestRollingUpdateGraduallyReplacesInstances(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -480,14 +462,14 @@ func TestRollingUpdateGraduallyReplacesInstances(t *testing.T) {
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 
-	runner := controllers.NewRunner(factStore,
+	controllerRunner := controllers.NewRunner(factStore,
 		instanceController, schedulerController,
 		intentResolverController, rolloutController,
 	)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	input := `
 service web {
@@ -525,17 +507,15 @@ service web {
 func TestRollbackOnHealthFailure(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	rolloutController := controllers.NewRolloutController()
 
-	runner := controllers.NewRunner(factStore, rolloutController)
-	runner.SetDebounce(10 * time.Millisecond)
+	controllerRunner := controllers.NewRunner(factStore, rolloutController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
 
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Set up a service with desired image v2 and 3 instances that still have v1.
 	factStore.Put(ctx, types.KeyDesiredService("web"), []byte(""))

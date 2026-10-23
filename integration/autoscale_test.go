@@ -22,10 +22,8 @@ import (
 func TestAutoscaleScalesUpOnHighCPU(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -43,7 +41,7 @@ func TestAutoscaleScalesUpOnHighCPU(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service web {
@@ -84,10 +82,8 @@ service web {
 func TestAutoscaleScalesDownOnLowCPU(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -104,7 +100,7 @@ func TestAutoscaleScalesDownOnLowCPU(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service api {
@@ -174,10 +170,8 @@ service api {
 func TestAutoscaleRespectsMaxBound(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -194,7 +188,7 @@ func TestAutoscaleRespectsMaxBound(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service worker {
@@ -237,10 +231,8 @@ service worker {
 func TestAutoscaleMultipleMetricsTakesMax(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -257,7 +249,7 @@ func TestAutoscaleMultipleMetricsTakesMax(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service gateway {
@@ -295,16 +287,14 @@ service gateway {
 func TestIntentResolverMergesUserAndAutoscaler(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	intentResolverController := controllers.NewIntentResolverController()
 	runner := controllers.NewRunner(factStore, intentResolverController)
 	runner.SetDebounce(10 * time.Millisecond)
 
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	// User wants 3.
 	factStore.Put(ctx, types.KeyIntentUserServiceInstances("web"), []byte("3"))
@@ -404,10 +394,8 @@ service web {
 func TestAutoscaleEndToEndWithDistributedCluster(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 3)
 
@@ -427,7 +415,7 @@ func TestAutoscaleEndToEndWithDistributedCluster(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 3)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service web {
@@ -482,10 +470,8 @@ service web {
 func TestWarmZeroActivationLifecycle(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 2)
 
@@ -505,7 +491,7 @@ func TestWarmZeroActivationLifecycle(t *testing.T) {
 	runner.SetDebounce(10 * time.Millisecond)
 
 	startTestAgents(ctx, factStore, 2)
-	go runner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, runner)
 
 	input := `
 service webhook {
@@ -576,10 +562,8 @@ service webhook {
 func TestVerticalAutoscaleAgentResizesOnEffectiveChange(t *testing.T) {
 	t.Parallel()
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	registerTestNodes(ctx, factStore, 1)
 
@@ -602,8 +586,16 @@ func TestVerticalAutoscaleAgentResizesOnEffectiveChange(t *testing.T) {
 	nodeAgent.SetInterval(50 * time.Millisecond)
 	nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
 
-	go runner.Run(ctx)
-	go nodeAgent.Run(ctx)
+	runnerDone := make(chan struct{})
+	agentDone := make(chan struct{})
+	go func() { runner.Run(ctx); close(runnerDone) }()
+	go func() { nodeAgent.Run(ctx); close(agentDone) }()
+	t.Cleanup(func() {
+		cancel()
+		<-runnerDone
+		<-agentDone
+		factStore.Close()
+	})
 
 	input := `
 service api {

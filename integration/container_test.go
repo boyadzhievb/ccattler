@@ -77,10 +77,8 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	containerCommand := skipIfContainerUnavailable(t)
 
 	factStore := store.NewMemoryStore()
-	defer factStore.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Register a single node with sufficient capacity.
 	localNodeID := "test-node"
@@ -100,12 +98,12 @@ func TestContainerGetsIPAndServesConfigFile(t *testing.T) {
 	controllerRunner := controllers.NewRunner(factStore, instanceController,
 		schedulerController, endpointController, failureController, networkController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
-	go controllerRunner.Run(ctx)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
 
 	// Create ContainerRuntime with a dedicated test nerdctl network.
 	containerRuntime := runtime.NewContainerRuntime()
 	containerRuntime.SetNetwork(testNetworkName, network.DefaultClusterCIDR)
-	defer containerRuntime.StopAll(context.Background())
+	t.Cleanup(func() { containerRuntime.StopAll(context.Background()) })
 
 	// Create a network provider for IP allocation.
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
