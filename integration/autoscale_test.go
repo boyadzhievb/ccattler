@@ -156,15 +156,19 @@ service api {
 	// Now drop CPU to 10%. Recommendation: ceil(currentCount * 10 / 50) should be small.
 	factStore.Put(ctx, types.KeyObservedMetric("api", "cpu"), []byte("10"))
 
-	waitFor(t, 5*time.Second, "scale down to 2 (min)", func() bool {
+	// Wait for scale-down and verify it stays stable. A single-point check
+	// can race with the reconciliation loop under the race detector, so we
+	// require the count to remain at <=2 for several consecutive polls.
+	stableCount := 0
+	waitFor(t, 5*time.Second, "scale down to 2 (min) and stabilize", func() bool {
 		count := countRunningInstancesForService(ctx, factStore, "api")
-		return count <= 2
+		if count <= 2 {
+			stableCount++
+		} else {
+			stableCount = 0
+		}
+		return stableCount >= 5
 	})
-
-	finalCount := countRunningInstancesForService(ctx, factStore, "api")
-	if finalCount > 2 {
-		t.Fatalf("expected scale-down to 2 (min), got %d", finalCount)
-	}
 }
 
 func TestAutoscaleRespectsMaxBound(t *testing.T) {
