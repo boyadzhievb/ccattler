@@ -27,7 +27,7 @@ ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
 
 # Restore persisted Vagrant state — CI checkout wipes .vagrant/ but the deploy
 # workflow saves keys and machine IDs to this directory.
-VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-deploy"
+VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-deploy"
 if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
     cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
 fi

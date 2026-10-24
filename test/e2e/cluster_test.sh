@@ -28,7 +28,7 @@
 # container images. On the next run, stopped VMs boot in seconds and skip Ansible
 # provisioning. The binary is updated and services restarted automatically.
 #
-# Vagrant state is persisted at /tmp/cca-vagrant-state-<env> between runs so that
+# Vagrant state is persisted at ~/.local/share/cca-vagrant-state-<env> between runs so that
 # CI checkout doesn't lose track of existing VMs.
 #
 # Usage:
@@ -234,7 +234,7 @@ ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.
 
 # Vagrant state (VM environments only — bare-metal skips all Vagrant lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
-    VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-${CLUSTER_ENV}"
+    VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-${CLUSTER_ENV}"
     VAGRANT_DOTFILE="$ANSIBLE_DIR/.vagrant-${CLUSTER_ENV}"
     export VAGRANT_DOTFILE_PATH="$VAGRANT_DOTFILE"
 fi
@@ -473,7 +473,7 @@ else
     # From a remote workstation: rsync -az --exclude='.git' repo/ testbed:~/ccattler/
     # Then: ssh testbed 'cd ~/ccattler && test/e2e/cluster_test.sh'
     log "Building cca binary from local source tree..."
-    TESTBED_GO="${TESTBED_GO:-/usr/local/go/bin/go}"
+    TESTBED_GO="${TESTBED_GO:-go}"
     (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 fi
@@ -1582,7 +1582,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
 
     # Build current binary from source.
     log "Building local binary..."
-    TESTBED_GO="${TESTBED_GO:-/usr/local/go/bin/go}"
+    TESTBED_GO="${TESTBED_GO:-go}"
     (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Local binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 

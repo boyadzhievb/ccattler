@@ -184,7 +184,7 @@ Long-lived 3-node Vagrant/libvirt cluster on testbed-100.43. Runs Airflow and ot
 | cca-deploy-worker-1 | 192.168.124.20 | worker | 4 GB |
 | cca-deploy-worker-2 | 192.168.124.30 | worker | 4 GB |
 
-Vagrant state: `/tmp/cca-vagrant-state-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
+Vagrant state: `~/.local/share/cca-vagrant-state-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
 
 ### Resource requirements for workloads
 

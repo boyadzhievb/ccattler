@@ -12,7 +12,7 @@
 # Prerequisites:
 #   - vagrant plugin install vagrant-libvirt
 #
-# Vagrant state persisted at /tmp/cca-vagrant-state-deploy/ between runs.
+# Vagrant state persisted at ~/.local/share/cca-vagrant-state-deploy/ between runs.
 
 Vagrant.configure("2") do |config|
   config.vm.box = "generic/ubuntu2404"

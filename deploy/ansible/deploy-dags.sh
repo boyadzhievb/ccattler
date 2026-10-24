@@ -13,7 +13,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DAG_DIR="${1:-$SCRIPT_DIR/dags}"
-VAGRANT_STATE_DIR="/tmp/cca-vagrant-state-deploy"
+VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-deploy"
 
 if [ ! -d "$DAG_DIR" ] || [ -z "$(ls "$DAG_DIR"/*.py 2>/dev/null)" ]; then
     echo "ERROR: No .py files found in $DAG_DIR"
