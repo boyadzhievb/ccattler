@@ -5,7 +5,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -100,10 +99,22 @@ func parsePortValue(portString string) int {
 	return portValue
 }
 
+// routeBackend holds a backend address and the container port it was
+// registered under (from the endpoint key), which may differ from the
+// host-mapped port in the address value.
+type routeBackend struct {
+	address       string // host-mapped address (host:hostPort)
+	containerPort int    // container port from the endpoint key path
+}
+
 // collectServiceBackendsFromEndpoints scans endpoint facts and returns a map
-// from service name to a sorted list of backend addresses (host:port).
-func collectServiceBackendsFromEndpoints(facts []store.Fact) map[string][]string {
-	serviceBackendSet := make(map[string]map[string]bool)
+// from service name to a sorted list of route backends.
+func collectServiceBackendsFromEndpoints(facts []store.Fact) map[string][]routeBackend {
+	type backendKey struct {
+		serviceName    string
+		backendAddress string
+	}
+	serviceBackendSet := make(map[backendKey]int)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
@@ -113,25 +124,27 @@ func collectServiceBackendsFromEndpoints(facts []store.Fact) map[string][]string
 			continue
 		}
 		serviceName := pathParts[0]
+		containerPort := parsePortValue(pathParts[2])
 		backendAddress := string(fact.Value)
 		if backendAddress == "" {
 			continue
 		}
 
-		if serviceBackendSet[serviceName] == nil {
-			serviceBackendSet[serviceName] = make(map[string]bool)
-		}
-		serviceBackendSet[serviceName][backendAddress] = true
+		key := backendKey{serviceName: serviceName, backendAddress: backendAddress}
+		serviceBackendSet[key] = containerPort
 	}
 
-	serviceBackends := make(map[string][]string, len(serviceBackendSet))
-	for serviceName, addressSet := range serviceBackendSet {
-		sortedAddresses := make([]string, 0, len(addressSet))
-		for address := range addressSet {
-			sortedAddresses = append(sortedAddresses, address)
-		}
-		sort.Strings(sortedAddresses)
-		serviceBackends[serviceName] = sortedAddresses
+	serviceBackends := make(map[string][]routeBackend)
+	for key, containerPort := range serviceBackendSet {
+		serviceBackends[key.serviceName] = append(serviceBackends[key.serviceName], routeBackend{
+			address:       key.backendAddress,
+			containerPort: containerPort,
+		})
+	}
+	for serviceName := range serviceBackends {
+		sort.Slice(serviceBackends[serviceName], func(i, j int) bool {
+			return serviceBackends[serviceName][i].address < serviceBackends[serviceName][j].address
+		})
 	}
 	return serviceBackends
 }
@@ -150,7 +163,7 @@ func parseExistingDerivedRouteKeys(facts []store.Fact) map[string]string {
 // and returns changes to create/update backend lists and remove stale entries.
 func computeRouteDiffChanges(
 	desiredRoutes map[string]parsedRoute,
-	serviceBackends map[string][]string,
+	serviceBackends map[string][]routeBackend,
 	existingDerivedRouteKeys map[string]string,
 ) []Change {
 	var changes []Change
@@ -202,19 +215,14 @@ func computeRouteDiffChanges(
 	return changes
 }
 
-// filterBackendsByPort returns backends that match the route's target port.
-// If targetPort is 0, all backends are returned (port not specified in route).
-func filterBackendsByPort(backends []string, targetPort int) []string {
-	if targetPort == 0 {
-		return backends
-	}
-
-	targetSuffix := fmt.Sprintf(":%d", targetPort)
-	var filteredBackends []string
+// filterBackendsByPort returns backend addresses matching the route's target
+// container port. If targetPort is 0, all backends are returned.
+func filterBackendsByPort(backends []routeBackend, targetPort int) []string {
+	var filteredAddresses []string
 	for _, backend := range backends {
-		if strings.HasSuffix(backend, targetSuffix) {
-			filteredBackends = append(filteredBackends, backend)
+		if targetPort == 0 || backend.containerPort == targetPort {
+			filteredAddresses = append(filteredAddresses, backend.address)
 		}
 	}
-	return filteredBackends
+	return filteredAddresses
 }

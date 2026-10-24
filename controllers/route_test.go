@@ -84,6 +84,30 @@ func TestRouteControllerFiltersPort(t *testing.T) {
 	}
 }
 
+func TestRouteControllerFiltersPortWithHostMappedAddress(t *testing.T) {
+	routeController := NewRouteController()
+
+	// Container port is 8080 (in the key), but host-mapped address uses port 8089
+	facts := buildFacts(
+		kv(types.KeyDesiredRoute("airflow"), "route"),
+		kv(types.KeyDesiredRouteService("airflow"), "webserver"),
+		kv(types.KeyDesiredRoutePort("airflow"), "8080"),
+		kv(types.KeyEndpoint("webserver", "ws-1", 8080), "192.168.124.30:8089"),
+	)
+
+	changes, err := routeController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change, got %d", len(changes))
+	}
+	expectedBackends := "192.168.124.30:8089"
+	if string(changes[0].Value) != expectedBackends {
+		t.Errorf("value: got %s, want %s", changes[0].Value, expectedBackends)
+	}
+}
+
 func TestRouteControllerNoPortReturnsAll(t *testing.T) {
 	routeController := NewRouteController()
 
