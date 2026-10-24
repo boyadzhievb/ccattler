@@ -2055,3 +2055,63 @@ func KeyDerivedJobFailed(jobName string) string {
 func KeyDerivedJobInstanceOwner(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/job_owner", PrefixDerived, instanceID)
 }
+
+// ScanDesiredCronJobs is the prefix for scanning all desired cronjob facts.
+const ScanDesiredCronJobs = "desired/cronjob/"
+
+// ScanDerivedCronJobs is the prefix for scanning all derived cronjob facts.
+const ScanDerivedCronJobs = "derived/cronjob/"
+
+// KeyDesiredCronJob returns the store path for a cronjob's existence marker.
+// Path: desired/cronjob/{name}
+func KeyDesiredCronJob(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobSchedule returns the store path for a cronjob's cron expression.
+// Path: desired/cronjob/{name}/schedule
+func KeyDesiredCronJobSchedule(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/schedule", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobImage returns the store path for a cronjob's container image.
+// Path: desired/cronjob/{name}/image
+func KeyDesiredCronJobImage(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/image", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobCommand returns the store path for a cronjob's container command.
+// Path: desired/cronjob/{name}/command
+func KeyDesiredCronJobCommand(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/command", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobCompletions returns the store path for a cronjob's completions-per-run target.
+// Path: desired/cronjob/{name}/completions
+func KeyDesiredCronJobCompletions(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/completions", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobParallelism returns the store path for a cronjob's parallelism-per-run limit.
+// Path: desired/cronjob/{name}/parallelism
+func KeyDesiredCronJobParallelism(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/parallelism", PrefixDesired, name)
+}
+
+// KeyDesiredCronJobBackoffLimit returns the store path for a cronjob's failure tolerance per run.
+// Path: desired/cronjob/{name}/backoff_limit
+func KeyDesiredCronJobBackoffLimit(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/backoff_limit", PrefixDesired, name)
+}
+
+// KeyDerivedCronJobLastScheduled returns the store path for the last time a cronjob was triggered.
+// Path: derived/cronjob/{name}/last_scheduled
+func KeyDerivedCronJobLastScheduled(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/last_scheduled", PrefixDerived, name)
+}
+
+// KeyDerivedCronJobLastStatus returns the store path for the latest job status of a cronjob.
+// Path: derived/cronjob/{name}/last_status
+func KeyDerivedCronJobLastStatus(name string) string {
+	return fmt.Sprintf("%s/cronjob/%s/last_status", PrefixDerived, name)
+}

@@ -7,6 +7,7 @@ package lang
 type File struct {
 	Services         []ServiceDecl         // top-level service blocks in the source file
 	Jobs             []JobDecl             // top-level job blocks for run-to-completion workloads
+	CronJobs         []CronJobDecl         // top-level cronjob blocks for scheduled recurring jobs
 	Volumes          []VolumeDecl          // top-level volume blocks in the source file
 	Connections      []ConnectionDecl      // top-level connection blocks defining structured connection strings
 	Tenants          []TenantDecl          // top-level tenant blocks in the source file
@@ -222,6 +223,20 @@ type JobDecl struct {
 	BackoffLimit    int    // maximum failures before marking job failed (default 3)
 	ImagePullSecret string // name of secret containing registry credentials for private image pulls
 	Line            int    // source line number for error reporting
+}
+
+// CronJobDecl represents a parsed "cronjob" block in the DSL. CronJobs are
+// recurring jobs fired on a cron schedule — the CronController creates job
+// instances at the scheduled times.
+type CronJobDecl struct {
+	Name         string // unique cronjob identifier from the block header
+	Schedule     string // 5-field cron expression (min hour dom month dow)
+	Image        string // container image reference
+	Command      string // container command to execute
+	Completions  int    // target completions per job run (default 1)
+	Parallelism  int    // max concurrent instances per run (default 1)
+	BackoffLimit int    // max failures per run (default 3)
+	Line         int    // source line number for error reporting
 }
 
 // ConfigDecl holds configuration declarations for a service — environment

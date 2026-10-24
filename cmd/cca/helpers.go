@@ -274,8 +274,7 @@ func registerSimulatedNodes(ctx context.Context, factStore store.StateStore, nod
 	}
 }
 
-// coreControllers creates the 8 reconciliation controllers present in every mode:
-// instance, scheduler, endpoint, failure, autoscale, intent resolver, rollout, init.
+// coreControllers creates the reconciliation controllers present in every mode.
 // Commands append mode-specific controllers (nodeFailure, network, storage, warmZero,
 // clusterAutoscale) before passing the slice to startControllerRunner or NewRunner.
 func coreControllers() []controllers.Controller {
@@ -293,6 +292,7 @@ func coreControllers() []controllers.Controller {
 		controllers.NewRouteController(),
 		controllers.NewEvictionController(),
 		controllers.NewJobController(),
+		controllers.NewCronController(),
 	}
 }
 

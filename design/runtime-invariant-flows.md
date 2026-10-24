@@ -686,6 +686,56 @@ Image pull secrets let services and jobs authenticate against private container 
 
 ---
 
+## 20. CronJobs (Scheduled Recurring Jobs)
+
+**Chain:** DSL `cronjob "name" { schedule "*/5 * * * *" image "img" command "cmd" }` → `desired/cronjob/{name}/schedule`, `/image`, `/command` → CronController checks schedule each resync → creates `desired/job/{name}-{timestamp}/...` → JobController takes over run-to-completion
+
+CronJobs are recurring jobs fired on a cron schedule. The CronController piggybacks on the 30-second runner resync cycle, checks whether the current minute matches the schedule, and creates a one-shot job for the JobController to execute.
+
+### Scheduling flow
+
+```
+1. User applies: cronjob "cleanup" { schedule "0 2 * * *" image "app:v1" command "cleanup.sh" }
+2. Compiler emits desired/cronjob/cleanup/schedule = "0 2 * * *"
+3. Compiler emits desired/cronjob/cleanup/image = "app:v1"
+4. Compiler emits desired/cronjob/cleanup/command = "cleanup.sh"
+5. CronController resync fires at 02:00:xx — schedule matches current minute
+6. CronController checks derived/cronjob/cleanup/last_scheduled — not within current minute
+7. CronController checks for active job with prefix "cleanup-" — none found
+8. CronController creates desired/job/cleanup-20260301-0200/{image,command,completions,backoff_limit}
+9. CronController writes derived/cronjob/cleanup/last_scheduled = "2026-03-01T02:00:00Z"
+10. JobController picks up the new job, creates instances, runs to completion
+11. CronController mirrors job status to derived/cronjob/cleanup/last_status
+```
+
+### Double-fire prevention
+
+```
+1. CronController resync fires twice within the same minute (e.g. 02:00:05 and 02:00:35)
+2. Second resync: last_scheduled = "2026-03-01T02:00:00Z" — same minute as now
+3. CronController skips — no duplicate job created
+```
+
+### Active job suppression
+
+```
+1. Schedule matches but a job "cleanup-20260301-0200" is still running (status != "complete", != "failed")
+2. CronController skips — waits for previous run to finish before creating next
+```
+
+### Cron expression format
+
+5-field standard: `minute hour day-of-month month day-of-week`. Supports `*` (any), fixed values, comma-separated lists. No ranges, no step values — keeps the parser simple.
+
+### What must match
+
+- CronController only creates job facts — the JobController owns the job lifecycle from there. No direct instance management.
+- Job names include a timestamp suffix (`{cronjob}-{YYYYMMDD-HHMM}`) to avoid collision.
+- The `last_scheduled` derived fact is the sole mechanism for double-fire prevention. It must be written atomically with job creation.
+- CronController watches `ScanDesiredCronJobs`, `ScanDerivedCronJobs`, and `ScanDesiredJobs` to detect active jobs.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

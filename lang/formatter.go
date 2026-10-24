@@ -117,6 +117,13 @@ func Format(file *File) string {
 		formatJobDecl(&builder, jobDecl)
 		needsBlank = true
 	}
+	for _, cronJobDecl := range file.CronJobs {
+		if needsBlank {
+			builder.WriteString("\n")
+		}
+		formatCronJobDecl(&builder, cronJobDecl)
+		needsBlank = true
+	}
 	for _, routeDecl := range file.Routes {
 		if needsBlank {
 			builder.WriteString("\n")
@@ -402,6 +409,28 @@ func formatJobDecl(builder *strings.Builder, jobDecl JobDecl) {
 	}
 	if jobDecl.ImagePullSecret != "" {
 		fmt.Fprintf(builder, "%simage_pull_secret %s\n", indentUnit, quoteIfNeeded(jobDecl.ImagePullSecret))
+	}
+	builder.WriteString("}\n")
+}
+
+// formatCronJobDecl emits a cronjob block with its fields.
+func formatCronJobDecl(builder *strings.Builder, cronJobDecl CronJobDecl) {
+	fmt.Fprintf(builder, "cronjob %s {\n", quoteIfNeeded(cronJobDecl.Name))
+	fmt.Fprintf(builder, "%sschedule %s\n", indentUnit, quoteIfNeeded(cronJobDecl.Schedule))
+	if cronJobDecl.Image != "" {
+		fmt.Fprintf(builder, "%simage %s\n", indentUnit, quoteIfNeeded(cronJobDecl.Image))
+	}
+	if cronJobDecl.Command != "" {
+		fmt.Fprintf(builder, "%scommand %s\n", indentUnit, quoteIfNeeded(cronJobDecl.Command))
+	}
+	if cronJobDecl.Completions > 0 {
+		fmt.Fprintf(builder, "%scompletions %d\n", indentUnit, cronJobDecl.Completions)
+	}
+	if cronJobDecl.Parallelism > 0 {
+		fmt.Fprintf(builder, "%sparallelism %d\n", indentUnit, cronJobDecl.Parallelism)
+	}
+	if cronJobDecl.BackoffLimit > 0 {
+		fmt.Fprintf(builder, "%sbackoff_limit %d\n", indentUnit, cronJobDecl.BackoffLimit)
 	}
 	builder.WriteString("}\n")
 }

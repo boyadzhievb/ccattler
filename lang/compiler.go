@@ -63,6 +63,14 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		facts = append(facts, jobFacts...)
 	}
 
+	for _, cronJobDecl := range file.CronJobs {
+		cronJobFacts, cronJobErr := compileCronJobDeclaration(cronJobDecl, sourceLines)
+		if cronJobErr != nil {
+			return nil, cronJobErr
+		}
+		facts = append(facts, cronJobFacts...)
+	}
+
 	accessControlFacts, accessControlErr := compileAccessControlDeclarations(file, sourceLines)
 	if accessControlErr != nil {
 		return nil, accessControlErr
@@ -1543,6 +1551,59 @@ func compileJobDeclaration(jobDecl JobDecl, sourceLines []string) ([]Fact, error
 	if jobDecl.ImagePullSecret != "" {
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredJobImagePullSecret(jobDecl.Name), Value: jobDecl.ImagePullSecret,
+		})
+	}
+
+	return facts, nil
+}
+
+// compileCronJobDeclaration validates a cronjob block and emits facts for its
+// schedule, image, command, completions, and backoff limit.
+func compileCronJobDeclaration(cronJobDecl CronJobDecl, sourceLines []string) ([]Fact, error) {
+	if cronJobDecl.Name == "" {
+		return nil, &ParseError{
+			Line: cronJobDecl.Line, Message: "cronjob requires a name",
+			SourceLine: sourceLineAt(sourceLines, cronJobDecl.Line),
+		}
+	}
+	if cronJobDecl.Image == "" {
+		return nil, &ParseError{
+			Line: cronJobDecl.Line, Message: fmt.Sprintf("cronjob %q requires an image", cronJobDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, cronJobDecl.Line),
+		}
+	}
+	if cronJobDecl.Schedule == "" {
+		return nil, &ParseError{
+			Line: cronJobDecl.Line, Message: fmt.Sprintf("cronjob %q requires a schedule", cronJobDecl.Name),
+			SourceLine: sourceLineAt(sourceLines, cronJobDecl.Line),
+		}
+	}
+
+	completions := cronJobDecl.Completions
+	if completions == 0 {
+		completions = 1
+	}
+	parallelism := cronJobDecl.Parallelism
+	if parallelism == 0 {
+		parallelism = 1
+	}
+	backoffLimit := cronJobDecl.BackoffLimit
+	if backoffLimit == 0 {
+		backoffLimit = defaultJobBackoffLimit
+	}
+
+	facts := []Fact{
+		{Key: types.KeyDesiredCronJob(cronJobDecl.Name), Value: ""},
+		{Key: types.KeyDesiredCronJobSchedule(cronJobDecl.Name), Value: cronJobDecl.Schedule},
+		{Key: types.KeyDesiredCronJobImage(cronJobDecl.Name), Value: cronJobDecl.Image},
+		{Key: types.KeyDesiredCronJobCompletions(cronJobDecl.Name), Value: strconv.Itoa(completions)},
+		{Key: types.KeyDesiredCronJobParallelism(cronJobDecl.Name), Value: strconv.Itoa(parallelism)},
+		{Key: types.KeyDesiredCronJobBackoffLimit(cronJobDecl.Name), Value: strconv.Itoa(backoffLimit)},
+	}
+
+	if cronJobDecl.Command != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredCronJobCommand(cronJobDecl.Name), Value: cronJobDecl.Command,
 		})
 	}
 

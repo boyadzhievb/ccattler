@@ -1405,29 +1405,29 @@ Registry authentication for pulling container images from private registries. Se
 
 Scheduled recurring jobs using standard cron expressions. A CronController creates job instances on schedule, leveraging the existing JobController for run-to-completion tracking. Hand-rolled 5-field cron parser — no external dependency.
 
-- [ ] `CronJobDecl` struct in `lang/ast.go`: Name, Schedule, Image, Command, Completions, Parallelism, BackoffLimit
-- [ ] `cronjob` top-level keyword in `lang/parser.go` with `parseCronJobDeclaration`
-- [ ] Fields: `schedule` (string, required), `image`, `command`, `completions`, `parallelism`, `backoff_limit`
-- [ ] `compileCronJobFacts` in `lang/compiler.go` — emits `desired/cronjob/{name}/schedule`, `/image`, `/command`, `/completions`, `/backoff_limit`
-- [ ] `formatCronJobDecl` in `lang/formatter.go`
-- [ ] Store keys in `types/keys.go`: `ScanDesiredCronJobs`, `KeyDesiredCronJobSchedule`, `KeyDesiredCronJobImage`, `KeyDesiredCronJobCommand`, `KeyDesiredCronJobCompletions`, `KeyDesiredCronJobBackoffLimit`
-- [ ] Derived keys: `KeyDerivedCronJobLastScheduled(name)`, `KeyDerivedCronJobLastStatus(name)`, `ScanDerivedCronJobs`
-- [ ] `matchesCronSchedule(expression string, currentTime time.Time) bool` — 5-field parser (min hour dom month dow), supports `*`, fixed values, comma-separated lists
-- [ ] `parseCronField(field string, min int, max int) ([]int, error)` — validates ranges
-- [ ] `CronController` in `controllers/cronjob.go` implementing `Controller` interface
-- [ ] Watch: `ScanDesiredCronJobs`, `ScanDerivedCronJobs`, `ScanDesiredJobs` (to check active jobs)
-- [ ] Reconcile: for each desired cronjob, check if schedule matches current minute
-- [ ] Skip if `last_scheduled` timestamp is within current minute (double-fire prevention)
-- [ ] Skip if an active job instance for this cronjob already exists
-- [ ] On match: create job facts (`desired/job/{name}-{timestamp}/...`), update `last_scheduled`
-- [ ] Mirror latest job status to `derived/cronjob/{name}/last_status`
-- [ ] Register `NewCronController()` in `cmd/cca/helpers.go`
-- [ ] Test: `TestCronScheduleMatching` — various expressions against known times
-- [ ] Test: `TestCronControllerCreatesJobOnSchedule` — matching schedule creates job
-- [ ] Test: `TestCronControllerSkipsDuplicateWithinMinute` — no double-fire
-- [ ] Test: `TestCronControllerSkipsWhenJobActive` — won't create while previous runs
-- [ ] Test: `TestCronFieldParsing` — edge cases (ranges, commas, wildcards, invalid)
-- [ ] Design flow #20 in `design/runtime-invariant-flows.md`
+- [x] `CronJobDecl` struct in `lang/ast.go`: Name, Schedule, Image, Command, Completions, Parallelism, BackoffLimit
+- [x] `cronjob` top-level keyword in `lang/parser.go` with `parseCronJobDeclaration`
+- [x] Fields: `schedule` (string, required), `image`, `command`, `completions`, `parallelism`, `backoff_limit`
+- [x] `compileCronJobFacts` in `lang/compiler.go` — emits `desired/cronjob/{name}/schedule`, `/image`, `/command`, `/completions`, `/backoff_limit`
+- [x] `formatCronJobDecl` in `lang/formatter.go`
+- [x] Store keys in `types/keys.go`: `ScanDesiredCronJobs`, `KeyDesiredCronJobSchedule`, `KeyDesiredCronJobImage`, `KeyDesiredCronJobCommand`, `KeyDesiredCronJobCompletions`, `KeyDesiredCronJobBackoffLimit`
+- [x] Derived keys: `KeyDerivedCronJobLastScheduled(name)`, `KeyDerivedCronJobLastStatus(name)`, `ScanDerivedCronJobs`
+- [x] `matchesCronSchedule(expression string, currentTime time.Time) bool` — 5-field parser (min hour dom month dow), supports `*`, fixed values, comma-separated lists
+- [x] `parseCronField(field string, min int, max int) ([]int, error)` — validates ranges
+- [x] `CronController` in `controllers/cronjob.go` implementing `Controller` interface
+- [x] Watch: `ScanDesiredCronJobs`, `ScanDerivedCronJobs`, `ScanDesiredJobs` (to check active jobs)
+- [x] Reconcile: for each desired cronjob, check if schedule matches current minute
+- [x] Skip if `last_scheduled` timestamp is within current minute (double-fire prevention)
+- [x] Skip if an active job instance for this cronjob already exists
+- [x] On match: create job facts (`desired/job/{name}-{timestamp}/...`), update `last_scheduled`
+- [x] Mirror latest job status to `derived/cronjob/{name}/last_status`
+- [x] Register `NewCronController()` in `cmd/cca/helpers.go`
+- [x] Test: `TestCronScheduleMatching` — various expressions against known times
+- [x] Test: `TestCronControllerCreatesJobOnSchedule` — matching schedule creates job
+- [x] Test: `TestCronControllerSkipsDuplicateWithinMinute` — no double-fire
+- [x] Test: `TestCronControllerSkipsWhenJobActive` — won't create while previous runs
+- [x] Test: `TestCronFieldParsing` — edge cases (ranges, commas, wildcards, invalid)
+- [x] Design flow #20 in `design/runtime-invariant-flows.md`
 
 ### Backlog
 

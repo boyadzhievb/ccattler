@@ -155,6 +155,12 @@ func (parser *Parser) ParseFile() (*File, error) {
 				return nil, err
 			}
 			file.Jobs = append(file.Jobs, *jobDecl)
+		case "cronjob":
+			cronJobDecl, err := parser.parseCronJobDeclaration()
+			if err != nil {
+				return nil, err
+			}
+			file.CronJobs = append(file.CronJobs, *cronJobDecl)
 		default:
 			return nil, parser.parserErrorf("unknown declaration %q", token.Value)
 		}
@@ -1095,6 +1101,71 @@ func (parser *Parser) parseJobField(jobDecl *JobDecl, fieldName string) error {
 		jobDecl.ImagePullSecret, err = parser.expectStringOrIdentifier()
 	default:
 		return parser.parserErrorf("unknown job field %q", fieldName)
+	}
+	return err
+}
+
+// parseCronJobDeclaration parses a cronjob block with schedule, image, command,
+// and optional completions/parallelism/backoff_limit fields.
+func (parser *Parser) parseCronJobDeclaration() (*CronJobDecl, error) {
+	line := parser.currentToken().Line
+	parser.advanceToken() // skip "cronjob"
+
+	name, nameError := parser.expectStringOrIdentifier()
+	if nameError != nil {
+		return nil, nameError
+	}
+
+	if braceError := parser.expectToken(TokenLBrace); braceError != nil {
+		return nil, braceError
+	}
+	parser.skipNewlineTokens()
+
+	cronJobDecl := &CronJobDecl{Name: name, Line: line}
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		fieldKeyword, fieldError := parser.expectIdentifier()
+		if fieldError != nil {
+			return nil, fieldError
+		}
+		if parseError := parser.parseCronJobField(cronJobDecl, fieldKeyword); parseError != nil {
+			return nil, parseError
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if closeError := parser.expectToken(TokenRBrace); closeError != nil {
+		return nil, closeError
+	}
+
+	if cronJobDecl.Schedule == "" {
+		return nil, parser.parserErrorf("cronjob %q requires a schedule", name)
+	}
+	if cronJobDecl.Image == "" {
+		return nil, parser.parserErrorf("cronjob %q requires an image", name)
+	}
+
+	return cronJobDecl, nil
+}
+
+// parseCronJobField dispatches parsing of a single field inside a cronjob block.
+func (parser *Parser) parseCronJobField(cronJobDecl *CronJobDecl, fieldName string) error {
+	var err error
+	switch fieldName {
+	case "schedule":
+		cronJobDecl.Schedule, err = parser.expectStringOrIdentifier()
+	case "image":
+		cronJobDecl.Image, err = parser.expectStringOrIdentifier()
+	case "command":
+		cronJobDecl.Command, err = parser.expectStringOrIdentifier()
+	case "completions":
+		cronJobDecl.Completions, err = parser.expectInteger()
+	case "parallelism":
+		cronJobDecl.Parallelism, err = parser.expectInteger()
+	case "backoff_limit":
+		cronJobDecl.BackoffLimit, err = parser.expectInteger()
+	default:
+		return parser.parserErrorf("unknown cronjob field %q", fieldName)
 	}
 	return err
 }
