@@ -9,7 +9,7 @@
 #
 # Prerequisites:
 #   - Cluster deployed via cluster_test.sh --env deploy or deploy workflow
-#   - Vagrant SSH keys present at deploy/ansible/.vagrant/
+#   - VM SSH key at ~/.local/share/cca-vms-deploy/id_ed25519
 
 set -euo pipefail
 
@@ -25,12 +25,7 @@ ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
 ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
 
-# Restore persisted Vagrant state — CI checkout wipes .vagrant/ but the deploy
-# workflow saves keys and machine IDs to this directory.
-VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-deploy"
-if [[ ! -d "$ANSIBLE_DIR/.vagrant" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
-    cp -a "$VAGRANT_STATE_DIR" "$ANSIBLE_DIR/.vagrant"
-fi
+VM_SSH_KEY="${HOME}/.local/share/cca-vms-deploy/id_ed25519"
 
 HEALTHY=true
 WARNINGS=0
@@ -45,7 +40,6 @@ warn() {
 
 ssh_vm() {
     local vm_name="$1"; shift
-    local key_path="$ANSIBLE_DIR/.vagrant/machines/$vm_name/libvirt/private_key"
     local ip
     case "$vm_name" in
         cca-deploy-ctrl)     ip="$CTRL_IP" ;;
@@ -55,7 +49,7 @@ ssh_vm() {
     esac
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -o ConnectTimeout=10 \
-        -i "$key_path" "vagrant@$ip" "$@"
+        -i "$VM_SSH_KEY" "cca@$ip" "$@"
 }
 
 count_containers() {

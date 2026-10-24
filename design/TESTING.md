@@ -164,7 +164,7 @@ Two separate clusters, on separate hosts to avoid resource contention:
 
 ### E2E cluster (testbed-100.43)
 
-Ephemeral libvirt VMs managed by Vagrant. Created, tested, and halted on every CI push.
+Ephemeral libvirt VMs using official Ubuntu cloud images (cloud-init). Created, tested, and halted on every CI push.
 
 | VM | IP | Role | Resources |
 |----|-----|------|-----------|
@@ -174,9 +174,9 @@ Ephemeral libvirt VMs managed by Vagrant. Created, tested, and halted on every C
 
 Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
-### Deploy cluster (Vagrant VMs on testbed-100.43)
+### Deploy cluster (libvirt VMs on testbed-100.43)
 
-Long-lived 3-node Vagrant/libvirt cluster on testbed-100.43. Runs Airflow and other heavy workloads.
+Long-lived 3-node libvirt/cloud-init cluster on testbed-100.43. Runs Airflow and other heavy workloads.
 
 | VM | IP | Role | RAM |
 |----|-----|------|-----|
@@ -184,7 +184,7 @@ Long-lived 3-node Vagrant/libvirt cluster on testbed-100.43. Runs Airflow and ot
 | cca-deploy-worker-1 | 192.168.124.20 | worker | 4 GB |
 | cca-deploy-worker-2 | 192.168.124.30 | worker | 4 GB |
 
-Vagrant state: `~/.local/share/cca-vagrant-state-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
+VM state: `~/.local/share/cca-vms-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
 
 ### Resource requirements for workloads
 
@@ -197,7 +197,7 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 
 ### Two clusters, one host
 
-Both clusters run on testbed-100.43 (16 GB). They use separate Vagrant state directories and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived.
+Both clusters run on testbed-100.43 (16 GB). They use separate state directories (`~/.local/share/cca-vms-{env}/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by `scripts/libvirt-vm.sh`.
 
 ## Demo Commands
 

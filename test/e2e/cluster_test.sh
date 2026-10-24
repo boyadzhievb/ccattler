@@ -9,7 +9,7 @@
 # Three environments:
 #   --env test     (default): bare-metal 3-node cluster on 100.215/30/31 (always-on)
 #   --env vagrant:            3 libvirt VMs on 192.168.122.x (testbed-100.43), ephemeral
-#   --env deploy:             3 Vagrant VMs on 192.168.124.x (testbed-100.43), long-lived
+#   --env deploy:             3 libvirt VMs on 192.168.124.x (testbed-100.43), long-lived
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload airflow,zabbix   deploy specific workloads (comma-separated)
@@ -21,15 +21,15 @@
 #
 # Prerequisites:
 #   - test (bare-metal): SSH access to 100.215/30/31, Ansible, Go toolchain
-#   - vagrant: Linux host with libvirt/KVM, Vagrant (vagrant-libvirt), Ansible
+#   - vagrant/deploy: Linux host with libvirt/KVM, cloud-image-utils, Ansible
 #   - Or: CCattler binary at deploy/ansible/cca-linux-amd64 (--skip-build)
 #
-# VM lifecycle: VMs are stopped (not destroyed) after each run, preserving cached
-# container images. On the next run, stopped VMs boot in seconds and skip Ansible
-# provisioning. The binary is updated and services restarted automatically.
+# VM lifecycle: VMs are managed via scripts/libvirt-vm.sh using official Ubuntu
+# cloud images (cloud-images.ubuntu.com) with cloud-init. VMs are stopped (not
+# destroyed) after each run, preserving cached container images. On the next run,
+# stopped VMs boot in seconds and skip Ansible provisioning.
 #
-# Vagrant state is persisted at ~/.local/share/cca-vagrant-state-<env> between runs so that
-# CI checkout doesn't lose track of existing VMs.
+# VM state is persisted at ~/.local/share/cca-vms-<env>/ (SSH keys, cloud-init ISOs).
 #
 # Usage:
 #   ./test/e2e/cluster_test.sh                                 # default workload (airflow)
@@ -196,7 +196,6 @@ case "$CLUSTER_ENV" in
         DESTROY_ON_EXIT=none
         ;;
     vagrant)
-        VAGRANTFILE="test-Vagrantfile"
         INVENTORY="test-inventory.ini"
         PLAYBOOK="test-deploy.yml"
         CTRL_IP="192.168.122.10"
@@ -206,10 +205,9 @@ case "$CLUSTER_ENV" in
         VM_NAMES=("$CTRL_NODE" "$WORKER1_NODE" "cca-test-worker-2")
         NODE_IPS=(["cca-test-ctrl"]="192.168.122.10" ["cca-test-worker-1"]="192.168.122.20" ["cca-test-worker-2"]="192.168.122.30")
         EXPECTED_NODES=3
-        SSH_USER="vagrant"
+        SSH_USER="cca"
         ;;
     deploy)
-        VAGRANTFILE="deploy-Vagrantfile"
         INVENTORY="deploy-inventory.ini"
         PLAYBOOK="baremetal-deploy.yml"
         CTRL_IP="192.168.124.10"
@@ -219,7 +217,7 @@ case "$CLUSTER_ENV" in
         VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
         NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
         EXPECTED_NODES=3
-        SSH_USER="vagrant"
+        SSH_USER="cca"
         DESTROY_ON_EXIT=none
         ;;
     *)
@@ -232,11 +230,11 @@ ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 
-# Vagrant state (VM environments only — bare-metal skips all Vagrant lifecycle).
+# VM state directory (VM environments only — bare-metal skips all VM lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
-    VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-${CLUSTER_ENV}"
-    VAGRANT_DOTFILE="$ANSIBLE_DIR/.vagrant-${CLUSTER_ENV}"
-    export VAGRANT_DOTFILE_PATH="$VAGRANT_DOTFILE"
+    LIBVIRT_VM_SCRIPT="$REPO_DIR/scripts/libvirt-vm.sh"
+    VM_STATE_DIR="${HOME}/.local/share/cca-vms-${CLUSTER_ENV}"
+    VM_SSH_KEY="${VM_STATE_DIR}/id_ed25519"
 fi
 
 # Maximum seconds to wait for convergence checks.
@@ -265,37 +263,15 @@ cleanup() {
     if [[ "$BAREMETAL" == "true" ]]; then
         log "Bare-metal cluster — no VM lifecycle to manage"
     elif [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
-        log "Destroying VMs and wiping persisted state..."
-        cd "$ANSIBLE_DIR"
-        VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant destroy -f 2>/dev/null || true
-        rm -rf "$VAGRANT_STATE_DIR"
+        log "Destroying VMs..."
+        "$LIBVIRT_VM_SCRIPT" destroy --env "$CLUSTER_ENV"
     elif [[ "$DESTROY_ON_EXIT" == "halt" ]]; then
         log "Stopping VMs (images and state preserved for next run)..."
-        cd "$ANSIBLE_DIR"
-        VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant halt 2>/dev/null || true
-        # Vagrant halt can time out if SSH is unreachable inside the VM.
-        # Force-stop any VMs that survived the graceful attempt.
-        for vm_name in "${VM_NAMES[@]}"; do
-            local domain="ansible_${vm_name}"
-            if sudo virsh domstate "$domain" 2>/dev/null | grep -q running; then
-                log "  Force-stopping $domain (vagrant halt timed out)"
-                sudo virsh destroy "$domain" 2>/dev/null || true
-            fi
-        done
-        if [[ -d "$VAGRANT_DOTFILE" ]]; then
-            rm -rf "$VAGRANT_STATE_DIR"
-            cp -a "$VAGRANT_DOTFILE" "$VAGRANT_STATE_DIR"
-            log "Vagrant state saved to $VAGRANT_STATE_DIR"
-        fi
+        "$LIBVIRT_VM_SCRIPT" stop --env "$CLUSTER_ENV"
     else
         log "Keeping VMs running (--no-destroy). Stop manually:"
-        log "  cd $ANSIBLE_DIR && VAGRANT_VAGRANTFILE=$VAGRANTFILE VAGRANT_DOTFILE_PATH=$VAGRANT_DOTFILE vagrant halt"
-        if [[ -d "$VAGRANT_DOTFILE" ]]; then
-            rm -rf "$VAGRANT_STATE_DIR"
-            cp -a "$VAGRANT_DOTFILE" "$VAGRANT_STATE_DIR"
-        fi
+        log "  $LIBVIRT_VM_SCRIPT stop --env $CLUSTER_ENV"
     fi
-    rm -f /tmp/cca-e2e-ca.pem /tmp/cca-e2e-client.pem /tmp/cca-e2e-client-key.pem
     if [[ $exit_code -eq 0 ]]; then
         log "TEST PASSED"
     else
@@ -322,7 +298,7 @@ ssh_vm() {
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     if [[ "$BAREMETAL" != "true" ]]; then
-        ssh_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
+        ssh_args+=" -i $VM_SSH_KEY"
     fi
     ssh $ssh_args "${SSH_USER}@${ip}" "$@"
 }
@@ -339,7 +315,7 @@ scp_to_vm() {
     [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
     local scp_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     if [[ "$BAREMETAL" != "true" ]]; then
-        scp_args+=" -i $VAGRANT_DOTFILE/machines/$vm_name/libvirt/private_key"
+        scp_args+=" -i $VM_SSH_KEY"
     fi
     scp $scp_args "$local_path" "${SSH_USER}@${ip}:${remote_path}"
 }
@@ -350,10 +326,6 @@ scp_to_vm() {
 # cleanup through their normal reconciliation loop. Falls back to nerdctl rm if
 # containers don't drain within the timeout.
 if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
-    # Restore Vagrant state if needed (VM environments only).
-    if [[ "$BAREMETAL" != "true" ]] && [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
-        cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
-    fi
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
     ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/desired/ >/dev/null 2>&1 || true"
     ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del --prefix /ccattler/derived/ >/dev/null 2>&1 || true"
@@ -394,54 +366,13 @@ fi
 command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found in PATH"
 
 if [[ "$BAREMETAL" != "true" ]]; then
-    command -v vagrant >/dev/null 2>&1 || fail "vagrant not found in PATH"
+    [[ -x "$LIBVIRT_VM_SCRIPT" ]] || fail "libvirt-vm.sh not found at $LIBVIRT_VM_SCRIPT"
+    command -v virsh >/dev/null 2>&1 || fail "virsh not found in PATH (install libvirt)"
 
-    if ! vagrant plugin list 2>/dev/null | grep -q vagrant-libvirt; then
-        log "vagrant-libvirt plugin not found, installing..."
-        vagrant plugin install vagrant-libvirt || fail "failed to install vagrant-libvirt plugin"
-        log "vagrant-libvirt installed"
-    fi
-
-    # ---- Clean start: wipe everything and start fresh ----
+    # ---- Clean start: destroy VMs and recreate from scratch ----
     if [[ "$CLEAN_START" == "true" ]]; then
-        log "Clean start requested — destroying VMs and wiping state..."
-        rm -rf "$VAGRANT_STATE_DIR"
-        rm -rf "$VAGRANT_DOTFILE"
-        for vm in "${VM_NAMES[@]}"; do
-            stale_domain="ansible_${vm}"
-            if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-                sudo virsh destroy "$stale_domain" 2>/dev/null || true
-                sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
-            fi
-        done
-    fi
-
-    # ---- Restore persisted Vagrant state ----
-    if [[ ! -d "$VAGRANT_DOTFILE" ]] && [[ -d "$VAGRANT_STATE_DIR" ]]; then
-        log "Restoring Vagrant state from $VAGRANT_STATE_DIR"
-        cp -a "$VAGRANT_STATE_DIR" "$VAGRANT_DOTFILE"
-    fi
-
-    # ---- Handle orphaned libvirt domains ----
-    for vm in "${VM_NAMES[@]}"; do
-        stale_domain="ansible_${vm}"
-        vagrant_state="$VAGRANT_DOTFILE/machines/$vm/libvirt/id"
-        if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1 && [[ ! -f "$vagrant_state" ]]; then
-            log "Cleaning orphaned libvirt domain: $stale_domain (no Vagrant state)"
-            sudo virsh destroy "$stale_domain" 2>/dev/null || true
-            sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
-        fi
-    done
-    if [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
-        for vm in "${VM_NAMES[@]}"; do
-            stale_domain="ansible_${vm}"
-            if sudo virsh dominfo "$stale_domain" >/dev/null 2>&1; then
-                log "Removing libvirt domain: $stale_domain (--destroy)"
-                sudo virsh destroy "$stale_domain" 2>/dev/null || true
-                sudo virsh undefine "$stale_domain" --remove-all-storage 2>/dev/null || true
-            fi
-        done
-        rm -rf "$VAGRANT_DOTFILE"
+        log "Clean start requested — destroying VMs..."
+        "$LIBVIRT_VM_SCRIPT" destroy --env "$CLUSTER_ENV"
     fi
 fi
 
@@ -481,7 +412,7 @@ fi
 # ---- Step 1: Start VMs / verify bare-metal reachability ----
 cd "$ANSIBLE_DIR"
 if [[ "$BAREMETAL" != "true" ]]; then
-    VAGRANT_VAGRANTFILE="$VAGRANTFILE" vagrant up --no-provision --no-parallel
+    "$LIBVIRT_VM_SCRIPT" create --env "$CLUSTER_ENV"
 fi
 
 log "Waiting for SSH on all nodes..."

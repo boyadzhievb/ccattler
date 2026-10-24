@@ -174,8 +174,8 @@ cleanup_scenario() {
 }
 
 ssh_ctrl() {
-    local key="$ANSIBLE_DIR/.vagrant/machines/cca-deploy-ctrl/libvirt/private_key"
-    ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "vagrant@${CTRL_IP}" "$@"
+    local key="${HOME}/.local/share/cca-vms-deploy/id_ed25519"
+    ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "cca@${CTRL_IP}" "$@"
 }
 
 # ── Provisioning (optional) ──────────────────────────────────────

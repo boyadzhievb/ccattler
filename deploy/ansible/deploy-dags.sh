@@ -13,7 +13,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DAG_DIR="${1:-$SCRIPT_DIR/dags}"
-VAGRANT_STATE_DIR="${HOME}/.local/share/cca-vagrant-state-deploy"
+VM_STATE_DIR="${HOME}/.local/share/cca-vms-deploy"
+SSH_KEY="${VM_STATE_DIR}/id_ed25519"
 
 if [ ! -d "$DAG_DIR" ] || [ -z "$(ls "$DAG_DIR"/*.py 2>/dev/null)" ]; then
     echo "ERROR: No .py files found in $DAG_DIR"
@@ -41,13 +42,12 @@ ssh_vm() {
         fi
         idx=$((idx + 1))
     done
-    local key_path="$VAGRANT_STATE_DIR/machines/$vm_name/libvirt/private_key"
-    if [ ! -f "$key_path" ]; then
-        echo "WARNING: SSH key not found for $vm_name at $key_path"
+    if [ ! -f "$SSH_KEY" ]; then
+        echo "WARNING: SSH key not found at $SSH_KEY"
         return 1
     fi
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$key_path" "vagrant@$ip" "$@"
+        -i "$SSH_KEY" "cca@$ip" "$@"
 }
 
 scp_vm() {
@@ -63,9 +63,8 @@ scp_vm() {
         fi
         idx=$((idx + 1))
     done
-    local key_path="$VAGRANT_STATE_DIR/machines/$vm_name/libvirt/private_key"
     scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
-        -i "$key_path" "$local_path" "vagrant@${ip}:${remote_path}"
+        -i "$SSH_KEY" "$local_path" "cca@${ip}:${remote_path}"
 }
 
 total_copied=0
