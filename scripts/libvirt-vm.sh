@@ -134,6 +134,22 @@ ensure_network() {
         return
     fi
 
+    # Remove any stale network using the same subnet (e.g. ansible0 from
+    # the Vagrant era) so the new network can claim the address range.
+    local conflicting_network
+    conflicting_network=$(sudo virsh net-list --all --name 2>/dev/null | while read -r netname; do
+        [[ -z "$netname" ]] && continue
+        if sudo virsh net-dumpxml "$netname" 2>/dev/null | grep -q "address='${NETWORK_SUBNET}.1'"; then
+            echo "$netname"
+            break
+        fi
+    done)
+    if [[ -n "$conflicting_network" ]]; then
+        log "Removing conflicting network: $conflicting_network (uses ${NETWORK_SUBNET}.0/24)"
+        sudo virsh net-destroy "$conflicting_network" 2>/dev/null || true
+        sudo virsh net-undefine "$conflicting_network" 2>/dev/null || true
+    fi
+
     log "Creating libvirt network: $NETWORK_NAME (${NETWORK_SUBNET}.0/24)"
     local net_xml="${STATE_DIR}/${NETWORK_NAME}-net.xml"
     mkdir -p "$STATE_DIR"
@@ -141,7 +157,7 @@ ensure_network() {
 <network>
   <name>${NETWORK_NAME}</name>
   <forward mode='nat'/>
-  <bridge name='${NETWORK_NAME}' stp='on' delay='0'/>
+  <bridge stp='on' delay='0'/>
   <ip address='${NETWORK_SUBNET}.1' netmask='255.255.255.0'>
     <dhcp>
       <range start='${NETWORK_SUBNET}.100' end='${NETWORK_SUBNET}.200'/>
