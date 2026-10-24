@@ -41,8 +41,8 @@ jobs:
         run: |
           VMHERD_VERSION=$(curl -sS "https://api.github.com/repos/boyadzhievb/vmherd/releases/latest" | jq -r '.tag_name')
           curl -sSL "https://github.com/boyadzhievb/vmherd/releases/download/${VMHERD_VERSION}/vmherd-${VMHERD_VERSION}-linux-amd64.tar.gz" -o /tmp/vmherd.tar.gz
-          tar xzf /tmp/vmherd.tar.gz -C /usr/local/bin/ vmherd
-          chmod +x /usr/local/bin/vmherd
+          sudo tar xzf /tmp/vmherd.tar.gz -C /usr/local/bin/ vmherd
+          sudo chmod +x /usr/local/bin/vmherd
           vmherd version
 
       - name: Build binary from source
