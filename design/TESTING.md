@@ -164,7 +164,7 @@ Two separate clusters, on separate hosts to avoid resource contention:
 
 ### E2E cluster (testbed-100.43)
 
-Ephemeral libvirt VMs using official Ubuntu cloud images (cloud-init). Created, tested, and halted on every CI push.
+Ephemeral VMs managed by vmherd using official Ubuntu cloud images (cloud-init). Created, tested, and halted on every CI push.
 
 | VM | IP | Role | Resources |
 |----|-----|------|-----------|
@@ -176,7 +176,7 @@ Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
 ### Deploy cluster (libvirt VMs on testbed-100.43)
 
-Long-lived 3-node libvirt/cloud-init cluster on testbed-100.43. Runs Airflow and other heavy workloads.
+Long-lived 3-node cluster on testbed-100.43, managed by vmherd. Runs Airflow and other heavy workloads.
 
 | VM | IP | Role | RAM |
 |----|-----|------|-----|
@@ -184,7 +184,7 @@ Long-lived 3-node libvirt/cloud-init cluster on testbed-100.43. Runs Airflow and
 | cca-deploy-worker-1 | 192.168.124.20 | worker | 4 GB |
 | cca-deploy-worker-2 | 192.168.124.30 | worker | 4 GB |
 
-VM state: `~/.local/share/cca-vms-deploy/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
+VM state: `test/e2e/vm-deploy/.vmherd/`. Health check: `./test/e2e/health_check.sh` (hourly cron via `health-check.yml`).
 
 ### Resource requirements for workloads
 
@@ -197,7 +197,7 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 
 ### Two clusters, one host
 
-Both clusters run on testbed-100.43 (16 GB). They use separate state directories (`~/.local/share/cca-vms-{env}/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by `scripts/libvirt-vm.sh`.
+Both clusters run on testbed-100.43 (16 GB). They use separate Herdfiles (`test/e2e/vm-test/` and `test/e2e/vm-deploy/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by vmherd.
 
 ## Demo Commands
 

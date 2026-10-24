@@ -24,12 +24,12 @@
 #   - vagrant/deploy: Linux host with libvirt/KVM, cloud-image-utils, Ansible
 #   - Or: CCattler binary at deploy/ansible/cca-linux-amd64 (--skip-build)
 #
-# VM lifecycle: VMs are managed via scripts/libvirt-vm.sh using official Ubuntu
-# cloud images (cloud-images.ubuntu.com) with cloud-init. VMs are stopped (not
+# VM lifecycle: VMs are managed via vmherd (https://github.com/boyadzhievb/vmherd)
+# using official Ubuntu cloud images with cloud-init. VMs are stopped (not
 # destroyed) after each run, preserving cached container images. On the next run,
 # stopped VMs boot in seconds and skip Ansible provisioning.
 #
-# VM state is persisted at ~/.local/share/cca-vms-<env>/ (SSH keys, cloud-init ISOs).
+# VM state is persisted at .vmherd/ under the Herdfile directory (SSH keys, cloud-init ISOs).
 #
 # Usage:
 #   ./test/e2e/cluster_test.sh                                 # default workload (airflow)
@@ -205,7 +205,8 @@ case "$CLUSTER_ENV" in
         VM_NAMES=("$CTRL_NODE" "$WORKER1_NODE" "cca-test-worker-2")
         NODE_IPS=(["cca-test-ctrl"]="192.168.122.10" ["cca-test-worker-1"]="192.168.122.20" ["cca-test-worker-2"]="192.168.122.30")
         EXPECTED_NODES=3
-        SSH_USER="cca"
+        SSH_USER="vmherd"
+        VMHERD_DIR="$SCRIPT_DIR/vm-test"
         ;;
     deploy)
         INVENTORY="deploy-inventory.ini"
@@ -217,7 +218,8 @@ case "$CLUSTER_ENV" in
         VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
         NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
         EXPECTED_NODES=3
-        SSH_USER="cca"
+        SSH_USER="vmherd"
+        VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
         DESTROY_ON_EXIT=none
         ;;
     *)
@@ -232,8 +234,8 @@ ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.
 
 # VM state directory (VM environments only — bare-metal skips all VM lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
-    LIBVIRT_VM_SCRIPT="$REPO_DIR/scripts/libvirt-vm.sh"
-    VM_STATE_DIR="${HOME}/.local/share/cca-vms-${CLUSTER_ENV}"
+    VMHERD_BIN="${VMHERD_BIN:-vmherd}"
+    VM_STATE_DIR="${VMHERD_DIR}/.vmherd"
     VM_SSH_KEY="${VM_STATE_DIR}/id_ed25519"
 fi
 
@@ -264,13 +266,13 @@ cleanup() {
         log "Bare-metal cluster — no VM lifecycle to manage"
     elif [[ "$DESTROY_ON_EXIT" == "destroy" ]]; then
         log "Destroying VMs..."
-        "$LIBVIRT_VM_SCRIPT" destroy --env "$CLUSTER_ENV"
+        (cd "$VMHERD_DIR" && "$VMHERD_BIN" destroy)
     elif [[ "$DESTROY_ON_EXIT" == "halt" ]]; then
         log "Stopping VMs (images and state preserved for next run)..."
-        "$LIBVIRT_VM_SCRIPT" stop --env "$CLUSTER_ENV"
+        (cd "$VMHERD_DIR" && "$VMHERD_BIN" down)
     else
         log "Keeping VMs running (--no-destroy). Stop manually:"
-        log "  $LIBVIRT_VM_SCRIPT stop --env $CLUSTER_ENV"
+        log "  cd $VMHERD_DIR && $VMHERD_BIN down"
     fi
     if [[ $exit_code -eq 0 ]]; then
         log "TEST PASSED"
@@ -366,13 +368,13 @@ fi
 command -v ansible-playbook >/dev/null 2>&1 || fail "ansible-playbook not found in PATH"
 
 if [[ "$BAREMETAL" != "true" ]]; then
-    [[ -x "$LIBVIRT_VM_SCRIPT" ]] || fail "libvirt-vm.sh not found at $LIBVIRT_VM_SCRIPT"
+    command -v "$VMHERD_BIN" >/dev/null 2>&1 || fail "vmherd not found in PATH (install from https://github.com/boyadzhievb/vmherd/releases)"
     command -v virsh >/dev/null 2>&1 || fail "virsh not found in PATH (install libvirt)"
 
     # ---- Clean start: destroy VMs and recreate from scratch ----
     if [[ "$CLEAN_START" == "true" ]]; then
         log "Clean start requested — destroying VMs..."
-        "$LIBVIRT_VM_SCRIPT" destroy --env "$CLUSTER_ENV"
+        (cd "$VMHERD_DIR" && "$VMHERD_BIN" destroy)
     fi
 fi
 
@@ -412,7 +414,7 @@ fi
 # ---- Step 1: Start VMs / verify bare-metal reachability ----
 cd "$ANSIBLE_DIR"
 if [[ "$BAREMETAL" != "true" ]]; then
-    "$LIBVIRT_VM_SCRIPT" create --env "$CLUSTER_ENV"
+    (cd "$VMHERD_DIR" && "$VMHERD_BIN" up)
 fi
 
 log "Waiting for SSH on all nodes..."

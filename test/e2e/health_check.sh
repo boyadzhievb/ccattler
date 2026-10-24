@@ -9,7 +9,7 @@
 #
 # Prerequisites:
 #   - Cluster deployed via cluster_test.sh --env deploy or deploy workflow
-#   - VM SSH key at ~/.local/share/cca-vms-deploy/id_ed25519
+#   - VM SSH key at test/e2e/vm-deploy/.vmherd/id_ed25519
 
 set -euo pipefail
 
@@ -25,7 +25,7 @@ ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
 ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
 
-VM_SSH_KEY="${HOME}/.local/share/cca-vms-deploy/id_ed25519"
+VM_SSH_KEY="${REPO_DIR}/test/e2e/vm-deploy/.vmherd/id_ed25519"
 
 HEALTHY=true
 WARNINGS=0
@@ -49,7 +49,7 @@ ssh_vm() {
     esac
     ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -o LogLevel=ERROR -o ConnectTimeout=10 \
-        -i "$VM_SSH_KEY" "cca@$ip" "$@"
+        -i "$VM_SSH_KEY" "vmherd@$ip" "$@"
 }
 
 count_containers() {

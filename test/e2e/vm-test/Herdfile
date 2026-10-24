@@ -1,0 +1,32 @@
+vms:
+  - name: cca-test-ctrl
+    image: ubuntu:noble
+    cpus: 2
+    memory: 4096
+    disk: 20G
+    network:
+      ip: 192.168.122.10
+
+  - name: cca-test-worker-1
+    image: ubuntu:noble
+    cpus: 2
+    memory: 3072
+    disk: 20G
+    network:
+      ip: 192.168.122.20
+
+  - name: cca-test-worker-2
+    image: ubuntu:noble
+    cpus: 2
+    memory: 3072
+    disk: 20G
+    network:
+      ip: 192.168.122.30
+
+network:
+  name: cca-test
+  subnet: 192.168.122.0/24
+  dns: auto
+
+ssh:
+  user: vmherd

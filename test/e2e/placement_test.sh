@@ -174,8 +174,8 @@ cleanup_scenario() {
 }
 
 ssh_ctrl() {
-    local key="${HOME}/.local/share/cca-vms-deploy/id_ed25519"
-    ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "cca@${CTRL_IP}" "$@"
+    local key="$(cd "$(dirname "$0")" && pwd)/vm-deploy/.vmherd/id_ed25519"
+    ssh -o StrictHostKeyChecking=no -o LogLevel=ERROR -i "$key" "vmherd@${CTRL_IP}" "$@"
 }
 
 # ── Provisioning (optional) ──────────────────────────────────────
