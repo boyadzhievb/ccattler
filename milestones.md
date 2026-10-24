@@ -1384,22 +1384,22 @@ User-defined key=value tags on services for grouping and filtering. Not used for
 
 Registry authentication for pulling container images from private registries. Services and jobs reference a named secret containing registry credentials. The agent resolves the secret at pull time and passes credentials directly to nerdctl.
 
-- [ ] `ImagePullSecret string` field on `ServiceDecl` and `JobDecl` in `lang/ast.go`
-- [ ] `image_pull_secret` keyword in `lang/parser.go` (service and job blocks)
-- [ ] `compileServiceImagePullSecretFact` in `lang/compiler.go` — emits `desired/service/{name}/image_pull_secret`
-- [ ] `compileJobImagePullSecretFact` — emits `desired/job/{name}/image_pull_secret`
-- [ ] `formatServiceImagePullSecretField` in `lang/formatter.go`
-- [ ] `KeyDesiredServiceImagePullSecret(name)` and `KeyDesiredJobImagePullSecret(name)` in `types/keys.go`
-- [ ] `Credentials string` field on `PullOptions` struct (or parameter) in `runtime/runtime.go`
-- [ ] `--creds user:pass` flag in `runtime/container.go` `PullImage` when credentials provided
-- [ ] Agent: `lookupImagePullSecret` reads secret name from store, resolves JSON `{"username":"...","password":"..."}` via secret API
-- [ ] Agent: pass resolved credentials to `runtime.PullImage` in `ensureImageAvailable`
-- [ ] Simulator: track pull credentials in `PullImage` for test assertions
-- [ ] Parser test: `image_pull_secret` round-trip parse and format
-- [ ] Compiler test: secret name emitted as fact
-- [ ] Agent test: pull with credentials passes `--creds` to runtime
-- [ ] Agent test: pull without secret works as before (no `--creds`)
-- [ ] Design flow #19 in `design/runtime-invariant-flows.md`
+- [x] `ImagePullSecret string` field on `ServiceDecl` and `JobDecl` in `lang/ast.go`
+- [x] `image_pull_secret` keyword in `lang/parser.go` (service and job blocks)
+- [x] `compileServiceImagePullSecretFact` in `lang/compiler.go` — emits `desired/service/{name}/image_pull_secret`
+- [x] `compileJobImagePullSecretFact` — emits `desired/job/{name}/image_pull_secret`
+- [x] `formatServiceImagePullSecretField` in `lang/formatter.go`
+- [x] `KeyDesiredServiceImagePullSecret(name)` and `KeyDesiredJobImagePullSecret(name)` in `types/keys.go`
+- [x] `Credentials string` parameter on `ImagePuller.PullImage` in `runtime/runtime.go`
+- [x] `--creds user:pass` flag in `runtime/container.go` `PullImage` when credentials provided
+- [x] Agent: `lookupImagePullSecretFromStore` + `resolveImagePullCredentials` reads secret name, resolves JSON `{"username":"...","password":"..."}` via secret provider
+- [x] Agent: pass resolved credentials to `runtime.PullImage` in `ensureImageAvailable`
+- [x] Simulator: track pull credentials in `PullImage` for test assertions
+- [x] Parser test: `image_pull_secret` round-trip parse and format
+- [x] Compiler test: secret name emitted as fact
+- [x] Agent test: pull with credentials passes `--creds` to runtime
+- [x] Agent test: pull without secret works as before (no `--creds`)
+- [x] Design flow #19 in `design/runtime-invariant-flows.md`
 
 ### Phase 133 — CronJobs (M133)
 

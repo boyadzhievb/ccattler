@@ -342,7 +342,7 @@ func (debugServer *DebugServer) handleDebugImagePull(responseWriter http.Respons
 		return
 	}
 
-	pullError := imagePuller.PullImage(request.Context(), pullRequest.ImageReference)
+	pullError := imagePuller.PullImage(request.Context(), pullRequest.ImageReference, "")
 	response := DebugImagePullResponse{
 		NodeID:         debugServer.nodeID,
 		ImageReference: pullRequest.ImageReference,

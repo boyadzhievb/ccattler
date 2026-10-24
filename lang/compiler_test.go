@@ -1531,3 +1531,84 @@ func TestCompileServiceTagFactKeyFormat(t *testing.T) {
 		t.Errorf("tag fact: got %q at key %q, want %q", compiledFactMap[expectedKey], expectedKey, "engineering")
 	}
 }
+
+func TestCompileServiceImagePullSecret(t *testing.T) {
+	file, _ := Parse(`service api {
+    image "registry.example.com/api:v1"
+    instances 1
+    image_pull_secret "registry-creds"
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServiceImagePullSecret("api")] != "registry-creds" {
+		t.Errorf("image_pull_secret fact: got %q", compiledFactMap[types.KeyDesiredServiceImagePullSecret("api")])
+	}
+}
+
+func TestCompileJobImagePullSecret(t *testing.T) {
+	file, _ := Parse(`job migrate {
+    image "registry.example.com/migrate:v2"
+    command "migrate up"
+    image_pull_secret "registry-creds"
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredJobImagePullSecret("migrate")] != "registry-creds" {
+		t.Errorf("job image_pull_secret fact: got %q", compiledFactMap[types.KeyDesiredJobImagePullSecret("migrate")])
+	}
+}
+
+func TestImagePullSecretRoundTrip(t *testing.T) {
+	input := `service api {
+    image "registry.example.com/api:v1"
+    instances 2
+    pull_policy always
+    image_pull_secret "registry-creds"
+}
+`
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	formatted := Format(file)
+	if !strings.Contains(formatted, "image_pull_secret") || !strings.Contains(formatted, "registry-creds") {
+		t.Errorf("formatted output missing image_pull_secret:\n%s", formatted)
+	}
+	reparsed, reparseErr := Parse(formatted)
+	if reparseErr != nil {
+		t.Fatalf("re-parse failed: %v", reparseErr)
+	}
+	if reparsed.Services[0].ImagePullSecret != "registry-creds" {
+		t.Errorf("round-trip lost image_pull_secret: got %q", reparsed.Services[0].ImagePullSecret)
+	}
+}
+
+func TestJobImagePullSecretRoundTrip(t *testing.T) {
+	input := `job migrate {
+    image "registry.example.com/migrate:v2"
+    command "migrate up"
+    image_pull_secret "registry-creds"
+}
+`
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	formatted := Format(file)
+	if !strings.Contains(formatted, "image_pull_secret") || !strings.Contains(formatted, "registry-creds") {
+		t.Errorf("formatted output missing image_pull_secret:\n%s", formatted)
+	}
+	reparsed, reparseErr := Parse(formatted)
+	if reparseErr != nil {
+		t.Fatalf("re-parse failed: %v", reparseErr)
+	}
+	if reparsed.Jobs[0].ImagePullSecret != "registry-creds" {
+		t.Errorf("round-trip lost image_pull_secret: got %q", reparsed.Jobs[0].ImagePullSecret)
+	}
+}

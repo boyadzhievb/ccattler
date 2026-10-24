@@ -646,6 +646,46 @@ Jobs are run-to-completion workloads, unlike services which are long-running. A 
 
 ---
 
+## 19. Image Pull Secrets
+
+**Chain:** DSL `image_pull_secret "secret-name"` on service/job → `desired/service/{name}/image_pull_secret` → Agent reads secret name at pull time → resolves credentials via secret API → passes `--creds user:pass` to `nerdctl pull`
+
+Image pull secrets let services and jobs authenticate against private container registries. The secret value is a JSON object `{"username":"...","password":"..."}` stored via `cca secret set`. Credentials are resolved at pull time on each agent, never stored in the fact store.
+
+### Pull flow with credentials
+
+```
+1. User creates secret: cca secret set registry-creds '{"username":"bot","password":"token123"}'
+2. User applies: service "api" { image "registry.example.com/api:v1" image_pull_secret "registry-creds" }
+3. Compiler emits desired/service/api/image = "registry.example.com/api:v1"
+4. Compiler emits desired/service/api/image_pull_secret = "registry-creds"
+5. Scheduler assigns instance to node, agent picks it up
+6. Agent reads desired/service/api/image_pull_secret = "registry-creds"
+7. Agent calls secret API: GET /secrets/registry-creds → {"username":"bot","password":"token123"}
+8. Agent calls runtime.PullImage("registry.example.com/api:v1", credentials="bot:token123")
+9. Container runtime: nerdctl pull --creds bot:token123 registry.example.com/api:v1
+10. Pull succeeds → agent starts container with --pull=never (standard Flow 11)
+```
+
+### Pull flow without credentials
+
+```
+1. User applies: service "web" { image "nginx:latest" }
+2. No image_pull_secret field → no credential lookup
+3. Agent calls runtime.PullImage("nginx:latest", credentials="")
+4. Container runtime: nerdctl pull nginx:latest (no --creds flag)
+```
+
+### What must match
+
+- Image pull secrets use the existing secret infrastructure (Flow 3) — same encryption, same API, same key distribution via `cca join`.
+- Credentials are resolved per-pull, not cached — a rotated secret takes effect on the next pull without restarting the agent.
+- Job instances follow the same pull path as service instances — `image_pull_secret` on `JobDecl` emits `desired/job/{name}/image_pull_secret`.
+- The secret value is opaque JSON. The agent parses `username` and `password` fields and joins them as `user:pass` for `--creds`.
+- Pull failure due to bad credentials is reported the same way as any pull failure — the instance stays in `pulling` state, agent retries on next reconcile cycle.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

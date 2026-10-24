@@ -334,6 +334,12 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		})
 	}
 
+	if serviceDecl.ImagePullSecret != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredServiceImagePullSecret(serviceDecl.Name), Value: serviceDecl.ImagePullSecret,
+		})
+	}
+
 	if serviceDecl.Stateful {
 		facts = append(facts,
 			Fact{Key: types.KeyDesiredServiceStateful(serviceDecl.Name), Value: "true"},
@@ -1531,6 +1537,12 @@ func compileJobDeclaration(jobDecl JobDecl, sourceLines []string) ([]Fact, error
 	if jobDecl.Command != "" {
 		facts = append(facts, Fact{
 			Key: types.KeyDesiredJobCommand(jobDecl.Name), Value: jobDecl.Command,
+		})
+	}
+
+	if jobDecl.ImagePullSecret != "" {
+		facts = append(facts, Fact{
+			Key: types.KeyDesiredJobImagePullSecret(jobDecl.Name), Value: jobDecl.ImagePullSecret,
 		})
 	}
 

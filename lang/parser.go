@@ -310,6 +310,8 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 				return parser.parserErrorf("invalid pull_policy %q (want always, if_not_present, or never)", serviceDecl.PullPolicy)
 			}
 		}
+	case "image_pull_secret":
+		serviceDecl.ImagePullSecret, err = parser.expectStringOrIdentifier()
 	case "logging":
 		serviceDecl.Logging, err = parser.parseLoggingBlock()
 	case "lifecycle":
@@ -1089,6 +1091,8 @@ func (parser *Parser) parseJobField(jobDecl *JobDecl, fieldName string) error {
 		jobDecl.Parallelism, err = parser.expectInteger()
 	case "backoff_limit":
 		jobDecl.BackoffLimit, err = parser.expectInteger()
+	case "image_pull_secret":
+		jobDecl.ImagePullSecret, err = parser.expectStringOrIdentifier()
 	default:
 		return parser.parserErrorf("unknown job field %q", fieldName)
 	}

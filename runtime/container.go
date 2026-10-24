@@ -917,11 +917,17 @@ func parseContainerStatsOutput(output string) []ContainerResourceUsage {
 // PullImage pulls a container image from a registry by shelling out to
 // nerdctl/docker pull. Blocks until the pull completes or the context
 // is cancelled. The agent should set a timeout on the context (default 5m).
-func (containerRuntime *ContainerRuntime) PullImage(ctx context.Context, imageReference string) error {
+// When credentials is non-empty, it is passed as --creds user:pass to nerdctl.
+func (containerRuntime *ContainerRuntime) PullImage(ctx context.Context, imageReference string, credentials string) error {
 	if !validImageReferencePattern.MatchString(imageReference) {
 		return fmt.Errorf("invalid image reference: %q", imageReference)
 	}
-	pullCommand := containerRuntime.buildExecCommand(ctx, "pull", imageReference)
+	pullArgs := []string{"pull"}
+	if credentials != "" {
+		pullArgs = append(pullArgs, "--creds", credentials)
+	}
+	pullArgs = append(pullArgs, imageReference)
+	pullCommand := containerRuntime.buildExecCommand(ctx, pullArgs...)
 	var stderrOutput bytes.Buffer
 	pullCommand.Stderr = &stderrOutput
 	if pullError := pullCommand.Run(); pullError != nil {

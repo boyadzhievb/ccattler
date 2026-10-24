@@ -25,15 +25,16 @@ var ErrResizeUnsupported = errors.New("live resize not supported")
 // It tracks workload state in memory without launching any real processes or
 // containers, allowing the full reconciliation loop to be exercised cheaply.
 type SimulatorRuntime struct {
-	mutex          sync.Mutex                    // mutex guards concurrent access to the workloads map.
-	workloads      map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
-	ExecFailures   map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
-	StartFailures  map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
-	ExecCalls      []ExecCall                    // ExecCalls records all Exec calls for test verification.
-	ExecInitCalls  []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
-	PulledImages   []string                      // PulledImages records image references passed to PullImage for test verification.
-	PullFailures   map[string]string             // PullFailures maps image references to error reasons returned by PullImage.
-	ReconcileDelay time.Duration                 // ReconcileDelay adds artificial latency to Start and List to simulate slow operations.
+	mutex           sync.Mutex                    // mutex guards concurrent access to the workloads map.
+	workloads       map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
+	ExecFailures    map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
+	StartFailures   map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
+	ExecCalls       []ExecCall                    // ExecCalls records all Exec calls for test verification.
+	ExecInitCalls   []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
+	PulledImages    []string                      // PulledImages records image references passed to PullImage for test verification.
+	PullCredentials map[string]string             // PullCredentials maps image references to the credentials used during pull.
+	PullFailures    map[string]string             // PullFailures maps image references to error reasons returned by PullImage.
+	ReconcileDelay  time.Duration                 // ReconcileDelay adds artificial latency to Start and List to simulate slow operations.
 }
 
 // simulatedWorkload holds the in-memory state of a single workload managed by
@@ -194,14 +195,21 @@ func (simulator *SimulatorRuntime) ClearPullFailure(imageReference string) {
 }
 
 // PullImage simulates pulling a container image. If a PullFailures entry
-// exists for this image, returns an error. Otherwise records the pull.
-func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference string) error {
+// exists for this image, returns an error. Otherwise records the pull
+// and any credentials used.
+func (simulator *SimulatorRuntime) PullImage(_ context.Context, imageReference string, credentials string) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 	if reason, shouldFail := simulator.PullFailures[imageReference]; shouldFail {
 		return fmt.Errorf("pull failed: %s", reason)
 	}
 	simulator.PulledImages = append(simulator.PulledImages, imageReference)
+	if credentials != "" {
+		if simulator.PullCredentials == nil {
+			simulator.PullCredentials = make(map[string]string)
+		}
+		simulator.PullCredentials[imageReference] = credentials
+	}
 	return nil
 }
 

@@ -620,7 +620,9 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		return
 	}
 
-	if !nodeAgent.ensureImageAvailable(ctx, instanceInfo, image) {
+	credentials := nodeAgent.resolveImagePullCredentials(ctx, instanceInfo.service)
+
+	if !nodeAgent.ensureImageAvailable(ctx, instanceInfo, image, credentials) {
 		return
 	}
 
@@ -675,7 +677,8 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 // pulled, or the pull is in backoff — the caller should skip this instance.
 // Respects the service's pull_policy fact: "never" skips pulling, "always"
 // re-pulls even when cached, "if_not_present" or empty uses cache-first.
-func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo placedInstanceInfo, image string) bool {
+// When credentials is non-empty, it is passed as user:pass to the runtime.
+func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo placedInstanceInfo, image string, credentials string) bool {
 	imagePuller, supportsPull := nodeAgent.runtime.(runtime.ImagePuller)
 	if !supportsPull {
 		return true
@@ -705,7 +708,7 @@ func (nodeAgent *Agent) ensureImageAvailable(ctx context.Context, instanceInfo p
 	pullContext, cancelPull := context.WithTimeout(ctx, imagePullTimeout)
 	defer cancelPull()
 
-	if pullError := imagePuller.PullImage(pullContext, image); pullError != nil {
+	if pullError := imagePuller.PullImage(pullContext, image, credentials); pullError != nil {
 		nodeAgent.recordImagePullFailure(ctx, instanceInfo, image, pullError.Error())
 		return false
 	}
@@ -936,6 +939,48 @@ func (nodeAgent *Agent) lookupServicePullPolicyFromStore(ctx context.Context, se
 		return ""
 	}
 	return string(factEntry.Value)
+}
+
+// lookupImagePullSecretFromStore retrieves the image pull secret name for the
+// given service. Returns empty string when no secret is configured.
+func (nodeAgent *Agent) lookupImagePullSecretFromStore(ctx context.Context, service string) string {
+	factEntry, err := nodeAgent.store.Get(ctx, types.KeyDesiredServiceImagePullSecret(service))
+	if err != nil {
+		return ""
+	}
+	return string(factEntry.Value)
+}
+
+// resolveImagePullCredentials looks up the image pull secret name for a service,
+// fetches the secret value via the secret provider, and returns "user:pass" for
+// nerdctl --creds. Returns empty string if no secret is configured or resolution fails.
+func (nodeAgent *Agent) resolveImagePullCredentials(ctx context.Context, service string) string {
+	secretName := nodeAgent.lookupImagePullSecretFromStore(ctx, service)
+	if secretName == "" {
+		return ""
+	}
+	if nodeAgent.secretProvider == nil {
+		logging.Default().Warn("image_pull_secret requires secret provider", "agent", nodeAgent.nodeID, "service", service, "secret", secretName)
+		return ""
+	}
+	plaintext, _, resolveError := nodeAgent.secretProvider.GetSecretForService(ctx, service, secretName)
+	if resolveError != nil {
+		logging.Default().Error("failed to resolve image pull secret", "agent", nodeAgent.nodeID, "service", service, "secret", secretName, "error", resolveError.Error())
+		return ""
+	}
+	var registryCredentials struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if parseError := json.Unmarshal(plaintext, &registryCredentials); parseError != nil {
+		logging.Default().Error("invalid image pull secret JSON", "agent", nodeAgent.nodeID, "service", service, "secret", secretName, "error", parseError.Error())
+		return ""
+	}
+	if registryCredentials.Username == "" || registryCredentials.Password == "" {
+		logging.Default().Error("image pull secret missing username or password", "agent", nodeAgent.nodeID, "service", service, "secret", secretName)
+		return ""
+	}
+	return registryCredentials.Username + ":" + registryCredentials.Password
 }
 
 // lookupServiceCommandFromStore retrieves the container command override for the

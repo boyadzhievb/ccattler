@@ -1930,6 +1930,73 @@ func TestAgentPullPolicyAlwaysRepulls(t *testing.T) {
 	}
 }
 
+func TestAgentImagePullSecretPassesCredentials(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetSecretProvider(&mockSecretProvider{
+		secrets: map[string][]byte{
+			"registry-creds": []byte(`{"username":"bot","password":"token123"}`),
+		},
+		grants: map[string]string{ //nolint:gosec // test fixture, not real credentials
+			"api/registry-creds": "/run/secrets/registry-creds",
+		},
+	})
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("registry.example.com/api:v1"))
+	factStore.Put(ctx, types.KeyDesiredServiceImagePullSecret("api"), []byte("registry-creds"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "pull-creds", Service: "api", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "pull-creds", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running after authenticated pull", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("pull-creds"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	credentials, hasCredentials := simulatorRuntime.PullCredentials["registry.example.com/api:v1"]
+	if !hasCredentials {
+		t.Fatal("PullImage should have received credentials for registry.example.com/api:v1")
+	}
+	if credentials != "bot:token123" {
+		t.Errorf("credentials: got %q, want %q", credentials, "bot:token123")
+	}
+}
+
+func TestAgentImagePullWithoutSecretOmitsCredentials(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "no-creds", Service: "web", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "no-creds", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running without credentials", func() bool {
+		factEntry, err := factStore.Get(ctx, types.KeyObservedInstanceState("no-creds"))
+		return err == nil && string(factEntry.Value) == "running"
+	})
+
+	if len(simulatorRuntime.PullCredentials) > 0 {
+		t.Errorf("PullImage should not have received credentials, got: %v", simulatorRuntime.PullCredentials)
+	}
+}
+
 // TestAgentPublishesExitReasonOnOOMKill verifies that when a container is
 // OOM-killed (exit code 137), the agent publishes the exit-reason fact.
 func TestAgentPublishesExitReasonOnOOMKill(t *testing.T) {

@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M131 — Phase 131 DSL Gate Keyword. M1–M131 complete. Gates A–I resolved.
+**Completed through:** M132 — Phase 132 Image Pull Secrets. M1–M132 complete. Gates A–I resolved.
 
 ### Performance Optimization Principle
 
@@ -134,4 +134,4 @@ E2E tests run on `testbed-100.43` using libvirt VMs. Deploy cluster on bare-meta
 
 ## Implementation Phases & Milestones
 
-See [milestones.md](milestones.md) for the full phase checklist and milestone table.
+wSee [milestones.md](milestones.md) for the full phase checklist and milestone table.

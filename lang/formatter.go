@@ -376,6 +376,7 @@ func formatServiceDecl(builder *strings.Builder, serviceDecl ServiceDecl) {
 	formatServiceMountFields(builder, serviceDecl)
 	formatServiceTagFields(builder, serviceDecl)
 	formatServicePullPolicyField(builder, serviceDecl)
+	formatServiceImagePullSecretField(builder, serviceDecl)
 	formatServiceLoggingFields(builder, serviceDecl)
 	formatServiceLifecycleFields(builder, serviceDecl)
 	builder.WriteString("}\n")
@@ -398,6 +399,9 @@ func formatJobDecl(builder *strings.Builder, jobDecl JobDecl) {
 	}
 	if jobDecl.BackoffLimit > 0 {
 		fmt.Fprintf(builder, "%sbackoff_limit %d\n", indentUnit, jobDecl.BackoffLimit)
+	}
+	if jobDecl.ImagePullSecret != "" {
+		fmt.Fprintf(builder, "%simage_pull_secret %s\n", indentUnit, quoteIfNeeded(jobDecl.ImagePullSecret))
 	}
 	builder.WriteString("}\n")
 }
@@ -762,6 +766,13 @@ func formatServiceTagFields(builder *strings.Builder, serviceDecl ServiceDecl) {
 func formatServicePullPolicyField(builder *strings.Builder, serviceDecl ServiceDecl) {
 	if serviceDecl.PullPolicy != "" {
 		fmt.Fprintf(builder, "%spull_policy %s\n", indentUnit, serviceDecl.PullPolicy)
+	}
+}
+
+// formatServiceImagePullSecretField emits the image_pull_secret field.
+func formatServiceImagePullSecretField(builder *strings.Builder, serviceDecl ServiceDecl) {
+	if serviceDecl.ImagePullSecret != "" {
+		fmt.Fprintf(builder, "%simage_pull_secret %s\n", indentUnit, quoteIfNeeded(serviceDecl.ImagePullSecret))
 	}
 }
 

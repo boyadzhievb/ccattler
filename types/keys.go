@@ -109,6 +109,12 @@ func KeyDesiredServicePullPolicy(name string) string {
 	return fmt.Sprintf("%s/service/%s/pull_policy", PrefixDesired, name)
 }
 
+// KeyDesiredServiceImagePullSecret returns the store path for a service's registry credential secret name.
+// Path: desired/service/{name}/image_pull_secret
+func KeyDesiredServiceImagePullSecret(name string) string {
+	return fmt.Sprintf("%s/service/%s/image_pull_secret", PrefixDesired, name)
+}
+
 // KeyDesiredServiceLoggingMaxSize returns the store path for the max log file size.
 // Path: desired/service/{name}/logging/max_size
 func KeyDesiredServiceLoggingMaxSize(name string) string {
@@ -1993,6 +1999,12 @@ func KeyDesiredJobImage(jobName string) string {
 // Path: desired/job/{name}/command
 func KeyDesiredJobCommand(jobName string) string {
 	return fmt.Sprintf("%s/job/%s/command", PrefixDesired, jobName)
+}
+
+// KeyDesiredJobImagePullSecret returns the store path for a job's registry credential secret name.
+// Path: desired/job/{name}/image_pull_secret
+func KeyDesiredJobImagePullSecret(jobName string) string {
+	return fmt.Sprintf("%s/job/%s/image_pull_secret", PrefixDesired, jobName)
 }
 
 // KeyDesiredJobCompletions returns the store path for a job's target

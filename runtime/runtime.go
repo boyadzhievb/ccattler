@@ -135,7 +135,7 @@ type ExecCapturer interface {
 // images from a registry. Not all runtimes support this — ProcessRuntime
 // and SimulatorRuntime do not pull real images.
 type ImagePuller interface {
-	PullImage(ctx context.Context, imageReference string) error
+	PullImage(ctx context.Context, imageReference string, credentials string) error
 	IsImageCached(ctx context.Context, imageReference string) bool
 }
 
