@@ -414,7 +414,7 @@ fi
 # ---- Step 1: Start VMs / verify bare-metal reachability ----
 cd "$ANSIBLE_DIR"
 if [[ "$BAREMETAL" != "true" ]]; then
-    (cd "$VMHERD_DIR" && "$VMHERD_BIN" up)
+    (cd "$VMHERD_DIR" && "$VMHERD_BIN" up -q)
 fi
 
 log "Waiting for SSH on all nodes..."
