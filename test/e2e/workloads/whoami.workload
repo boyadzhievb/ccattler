@@ -2,7 +2,7 @@
 # Sourced by cluster_test.sh to discover deployment requirements.
 
 WORKLOAD_DESCRIPTION="Whoami echo server (2 instances, HTTP health check)"
-WORKLOAD_IMAGES=("traefik/whoami:latest")
+WORKLOAD_IMAGES=("192.168.100.43:5000/whoami:latest")
 WORKLOAD_EXPECTED_CONTAINERS=2
 WORKLOAD_SECRETS=()
 

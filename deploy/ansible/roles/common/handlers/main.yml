@@ -3,3 +3,8 @@
   systemd:
     name: dnsmasq
     state: restarted
+
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted

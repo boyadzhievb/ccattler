@@ -1,5 +1,5 @@
 service whoami {
-    image "traefik/whoami:latest"
+    image "192.168.100.43:5000/whoami:latest"
     instances 2
     expose 80
     health {

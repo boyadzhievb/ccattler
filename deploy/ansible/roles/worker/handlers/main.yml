@@ -3,3 +3,8 @@
   systemd:
     name: cca-agent
     state: restarted
+
+- name: Restart containerd
+  systemd:
+    name: containerd
+    state: restarted

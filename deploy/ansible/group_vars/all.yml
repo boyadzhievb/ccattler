@@ -23,3 +23,7 @@ dataplane_backend: "auto"
 
 # proxy_port: port where the agent reverse proxy listens on each node's physical IP.
 proxy_port: 8080
+
+# insecure_registry: local Docker registry for image caching (HTTP, no TLS).
+# Set to "" to disable. Images in .cca files use this as prefix.
+insecure_registry: "192.168.100.43:5000"

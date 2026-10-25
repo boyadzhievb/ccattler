@@ -170,6 +170,25 @@
     state: present
     update_cache: true
 
+- name: Create containerd hosts directory for insecure registry
+  file:
+    path: "/etc/containerd/certs.d/{{ insecure_registry }}"
+    state: directory
+    mode: "0755"
+  when: insecure_registry | default('') | length > 0
+
+- name: Configure insecure registry for containerd
+  copy:
+    dest: "/etc/containerd/certs.d/{{ insecure_registry }}/hosts.toml"
+    content: |
+      server = "http://{{ insecure_registry }}"
+
+      [host."http://{{ insecure_registry }}"]
+        capabilities = ["pull", "resolve"]
+    mode: "0644"
+  when: insecure_registry | default('') | length > 0
+  notify: Restart containerd
+
 - name: Check if nerdctl is already installed
   stat:
     path: /usr/local/bin/nerdctl

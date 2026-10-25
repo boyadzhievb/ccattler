@@ -584,8 +584,10 @@ for vm in "${VM_NAMES[@]}"; do
 done
 log "DNS resolution OK"
 
-# ---- Step 3.6: Pre-pull container images for selected workloads ----
-# Collect unique images from all selected workload manifests.
+# ---- Step 3.6: Image pull skipped — cca agent pulls from local registry ----
+# Images are served by the Docker registry at 192.168.100.43:5000.
+# Containerd on each node is configured via hosts.toml to use HTTP for that registry.
+# The cca agent pulls images on demand during instance reconciliation.
 declare -A UNIQUE_IMAGES
 for workload_name in "${WORKLOAD_NAMES[@]}"; do
     # shellcheck source=/dev/null
@@ -594,112 +596,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         UNIQUE_IMAGES["$image"]=1
     done
 done
-UNIQUE_IMAGES["alpine:3.20"]=1
-
-PULL_MAX_ATTEMPTS=5
-PULL_RETRY_DELAY=15
-IMAGE_CACHE_DIR="/tmp/cca-image-cache"
-mkdir -p "$IMAGE_CACHE_DIR"
-
-log "Pre-pulling ${#UNIQUE_IMAGES[@]} images for ${#WORKLOAD_NAMES[@]} workloads..."
-
-# Strategy: pull images on the testbed host (fast internet), save as tarballs,
-# load into VMs over the local network. Avoids Docker Hub rate limits and slow
-# pulls from inside libvirt VMs.
-ensure_image_cached() {
-    local image="$1"
-    local safe_name="${image//\//_}"
-    safe_name="${safe_name//:/_}"
-    local tar_path="${IMAGE_CACHE_DIR}/${safe_name}.tar"
-    if [[ -f "$tar_path" ]]; then
-        log "  $image — cached tarball exists"
-        return 0
-    fi
-    if ! sudo nerdctl image inspect "$image" >/dev/null 2>&1; then
-        log "  $image — pulling on host..."
-        local pull_output
-        for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
-            if pull_output=$(sudo nerdctl pull "$image" 2>&1); then
-                break
-            fi
-            log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image — ${pull_output##*$'\n'}"
-            sleep "$PULL_RETRY_DELAY"
-            if [[ "$attempt" -eq "$PULL_MAX_ATTEMPTS" ]]; then
-                log "WARNING: failed to pull $image on host after $PULL_MAX_ATTEMPTS attempts"
-                return 1
-            fi
-        done
-    fi
-    log "  $image — saving tarball..."
-    sudo nerdctl save -o "$tar_path" "$image" 2>&1 || { log "WARNING: failed to save $image"; return 1; }
-}
-
-load_images_on_vm() {
-    local vm="$1"
-    for image in "${!UNIQUE_IMAGES[@]}"; do
-        if ssh_vm "$vm" "sudo nerdctl image inspect $image >/dev/null 2>&1"; then
-            log "  $image already cached on $vm"
-            continue
-        fi
-        local safe_name="${image//\//_}"
-        safe_name="${safe_name//:/_}"
-        local tar_path="${IMAGE_CACHE_DIR}/${safe_name}.tar"
-        if [[ ! -f "$tar_path" ]]; then
-            log "WARNING: no tarball for $image, pulling directly on $vm..."
-            ssh_vm "$vm" "sudo nerdctl pull $image" 2>/dev/null || true
-            continue
-        fi
-        log "  Loading $image on $vm..."
-        scp_to_vm "$vm" "$tar_path" "/tmp/${safe_name}.tar"
-        ssh_vm "$vm" "sudo nerdctl load -i /tmp/${safe_name}.tar && rm -f /tmp/${safe_name}.tar" 2>/dev/null
-    done
-}
-
-if [[ "$BAREMETAL" == "true" ]]; then
-    # Bare-metal nodes have direct internet — pull images on each node in parallel.
-    # Faster than pull-on-host + save-tarball + SCP for large images.
-    pull_images_on_node() {
-        local vm="$1"
-        for image in "${!UNIQUE_IMAGES[@]}"; do
-            if ssh_vm "$vm" "sudo nerdctl image inspect $image >/dev/null 2>&1"; then
-                log "  $image already on $vm"
-                continue
-            fi
-            log "  Pulling $image on $vm..."
-            local pull_ok=false
-            for attempt in $(seq 1 "$PULL_MAX_ATTEMPTS"); do
-                if ssh_vm "$vm" "sudo nerdctl pull $image" 2>/dev/null; then
-                    pull_ok=true
-                    break
-                fi
-                log "  Pull retry $attempt/$PULL_MAX_ATTEMPTS: $image on $vm"
-                sleep "$PULL_RETRY_DELAY"
-            done
-            if [[ "$pull_ok" != "true" ]]; then
-                log "WARNING: failed to pull $image on $vm after $PULL_MAX_ATTEMPTS attempts"
-            fi
-        done
-    }
-    for vm in "${VM_NAMES[@]}"; do
-        pull_images_on_node "$vm" &
-    done
-    log "Pulling images directly on bare-metal nodes..."
-    wait
-    log "Image pulls complete"
-else
-    # VM environments: pull on host, save tarballs, load into VMs over LAN.
-    for image in "${!UNIQUE_IMAGES[@]}"; do
-        ensure_image_cached "$image"
-    done
-    log "Host image cache ready"
-
-    for vm in "${VM_NAMES[@]}"; do
-        load_images_on_vm "$vm" &
-    done
-    log "Loading images into VMs..."
-    wait
-    log "Image loading complete"
-fi
+log "Workloads need ${#UNIQUE_IMAGES[@]} images — cca agent will pull from local registry on demand"
 
 # ---- Step 4: Deploy selected workloads ----
 

@@ -1,4 +1,4 @@
 service no-toleration {
-    image nginx:1.27
+    image "192.168.100.43:5000/nginx:1.27"
     instances 1
 }
