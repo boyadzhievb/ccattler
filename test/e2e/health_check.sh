@@ -18,19 +18,31 @@ REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
 
-CTRL_IP="192.168.124.10"
-WORKER1_IP="192.168.124.20"
-WORKER2_IP="192.168.124.30"
-ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
-
-ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
-ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
-
 VMHERD_BIN=$(command -v vmherd 2>/dev/null || echo "")
 if [[ -z "$VMHERD_BIN" ]]; then
     echo "ERROR: vmherd not found in PATH" >&2
     exit 1
 fi
+
+# Discover VM names and IPs from vmherd status.
+ALL_VM_NAMES=()
+ALL_VM_IPS=()
+declare -A VM_IP_MAP
+while read -r vm_name _ vm_ip _; do
+    [[ "$vm_name" == "NAME" || "$vm_name" == "----" ]] && continue
+    ALL_VM_NAMES+=("$vm_name")
+    ALL_VM_IPS+=("$vm_ip")
+    VM_IP_MAP["$vm_name"]="$vm_ip"
+done < <(cd "$VMHERD_DIR" && "$VMHERD_BIN" status 2>/dev/null)
+
+if [[ ${#ALL_VM_NAMES[@]} -eq 0 ]]; then
+    echo "ERROR: no VMs found in $VMHERD_DIR — is the Herdfile present?" >&2
+    exit 1
+fi
+
+# First VM is the control plane node.
+CTRL_NAME="${ALL_VM_NAMES[0]}"
+CTRL_IP="${VM_IP_MAP[$CTRL_NAME]}"
 
 HEALTHY=true
 WARNINGS=0
@@ -69,8 +81,9 @@ for vm in "${ALL_VM_NAMES[@]}"; do
     fi
 done
 
-if [[ "$REACHABLE_COUNT" -lt 3 ]]; then
-    log "Only $REACHABLE_COUNT/3 VMs reachable — remaining checks may fail"
+EXPECTED_NODES=${#ALL_VM_NAMES[@]}
+if [[ "$REACHABLE_COUNT" -lt "$EXPECTED_NODES" ]]; then
+    log "Only $REACHABLE_COUNT/$EXPECTED_NODES VMs reachable — remaining checks may fail"
 fi
 
 # ---- Check 2: control plane health (via cca status) ----
@@ -78,7 +91,7 @@ log "Check 2: control plane health"
 HEALTHZ_OK=false
 HEALTHZ_MAX_RETRIES=3
 for healthz_attempt in $(seq 1 "$HEALTHZ_MAX_RETRIES"); do
-    if ssh_vm cca-deploy-ctrl "sudo cca status" >/dev/null 2>&1; then
+    if ssh_vm $CTRL_NAME "sudo cca status" >/dev/null 2>&1; then
         HEALTHZ_OK=true
         break
     fi
@@ -95,7 +108,8 @@ fi
 # ---- Check 3: cca server API (JSON via curl on node) ----
 log "Check 3: cca server API"
 STATUS_JSON=""
-if STATUS_JSON=$(ssh_vm cca-deploy-ctrl "sudo curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/api/status" 2>/dev/null); then
+CCA_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+if STATUS_JSON=$(ssh_vm "$CTRL_NAME" "sudo curl -sf $CCA_TLS_FLAGS https://localhost:9770/api/status" 2>/dev/null); then
     log "  API /status: reachable"
 else
     warn "API /status: UNREACHABLE"
@@ -105,9 +119,9 @@ fi
 log "Check 4: Node count"
 if [[ -n "$STATUS_JSON" ]]; then
     alive_count=$(echo "$STATUS_JSON" | jq '[.nodes[] | select(.state == "alive")] | length')
-    log "  Alive nodes: $alive_count/3"
-    if [[ "$alive_count" -lt 3 ]]; then
-        warn "expected 3 alive nodes, got $alive_count"
+    log "  Alive nodes: $alive_count/$EXPECTED_NODES"
+    if [[ "$alive_count" -lt "$EXPECTED_NODES" ]]; then
+        warn "expected $EXPECTED_NODES alive nodes, got $alive_count"
     fi
 else
     log "  Skipped (no status JSON)"
@@ -213,14 +227,14 @@ if [[ -n "$STATUS_JSON" ]]; then
                 log "  $svc_name: no VIP assigned, skipping"
                 continue
             fi
-            http_status=$(ssh_vm cca-deploy-ctrl \
+            http_status=$(ssh_vm $CTRL_NAME \
                 "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null || echo 000" \
                 2>/dev/null | tr -d "'")
             if [[ "$http_status" =~ ^[23] ]]; then
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status — ok"
             elif [[ "$http_status" == "000" ]]; then
                 # HTTP failed — try TCP connectivity as fallback (for non-HTTP services like databases)
-                tcp_ok=$(ssh_vm cca-deploy-ctrl \
+                tcp_ok=$(ssh_vm $CTRL_NAME \
                     "timeout 5 bash -c 'echo > /dev/tcp/${svc_vip}/${svc_port}' 2>/dev/null && echo yes || echo no" \
                     2>/dev/null)
                 if [[ "$tcp_ok" == "yes" ]]; then
