@@ -1347,7 +1347,17 @@ func TestParseAllWorkloadAndExampleFiles(t *testing.T) {
 				if fileReadError != nil {
 					t.Fatalf("failed to read %s: %v", filePath, fileReadError)
 				}
-				_, parseError := Parse(string(content))
+				dslContent := string(content)
+				if strings.Contains(dslContent, "{{") {
+					rendered, renderError := RenderTemplate(dslContent, map[string]any{
+						"registry": "localhost:5000",
+					})
+					if renderError != nil {
+						t.Fatalf("template render error in %s: %v", filePath, renderError)
+					}
+					dslContent = rendered
+				}
+				_, parseError := Parse(dslContent)
 				if parseError != nil {
 					t.Errorf("parse error in %s: %v", filePath, parseError)
 				}

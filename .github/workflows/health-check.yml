@@ -12,5 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - name: Install vmherd
+        run: |
+          if ! command -v vmherd &>/dev/null; then
+            VMHERD_VERSION=$(curl -sS "https://api.github.com/repos/boyadzhievb/vmherd/releases/latest" | jq -r '.tag_name')
+            curl -sSL "https://github.com/boyadzhievb/vmherd/releases/download/${VMHERD_VERSION}/vmherd-${VMHERD_VERSION}-linux-amd64.tar.gz" -o /tmp/vmherd.tar.gz
+            sudo tar xzf /tmp/vmherd.tar.gz -C /usr/local/bin/ vmherd
+            sudo chmod +x /usr/local/bin/vmherd
+          fi
+          vmherd version
+
       - name: Run health check
         run: ./test/e2e/health_check.sh

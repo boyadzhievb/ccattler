@@ -9,13 +9,14 @@
 #
 # Prerequisites:
 #   - Cluster deployed via cluster_test.sh --env deploy or deploy workflow
-#   - VM SSH key at test/e2e/vm-deploy/.vmherd/id_ed25519
+#   - vmherd installed and in PATH
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
+VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
 
 CTRL_IP="192.168.124.10"
 WORKER1_IP="192.168.124.20"
@@ -25,7 +26,11 @@ ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ALL_VM_IPS=("$CTRL_IP" "$WORKER1_IP" "$WORKER2_IP")
 ALL_VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
 
-VM_SSH_KEY="${REPO_DIR}/test/e2e/vm-deploy/.vmherd/id_ed25519"
+VMHERD_BIN=$(command -v vmherd 2>/dev/null || echo "")
+if [[ -z "$VMHERD_BIN" ]]; then
+    echo "ERROR: vmherd not found in PATH" >&2
+    exit 1
+fi
 
 HEALTHY=true
 WARNINGS=0
@@ -40,21 +45,12 @@ warn() {
 
 ssh_vm() {
     local vm_name="$1"; shift
-    local ip
-    case "$vm_name" in
-        cca-deploy-ctrl)     ip="$CTRL_IP" ;;
-        cca-deploy-worker-1) ip="$WORKER1_IP" ;;
-        cca-deploy-worker-2) ip="$WORKER2_IP" ;;
-        *) echo "Unknown VM: $vm_name" >&2; return 1 ;;
-    esac
-    ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-        -o LogLevel=ERROR -o ConnectTimeout=10 \
-        -i "$VM_SSH_KEY" "vmherd@$ip" "$@"
+    (cd "$VMHERD_DIR" && "$VMHERD_BIN" ssh "$vm_name" -- "$@")
 }
 
 count_containers() {
     local vm_name="$1"
-    ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" 2>/dev/null | tr -d ' ' || echo "0"
+    ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" 2>/dev/null | tr -d ' \n' || echo "0"
 }
 
 # ---- Check 1: VM reachability ----
