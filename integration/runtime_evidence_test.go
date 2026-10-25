@@ -428,12 +428,23 @@ func TestAPIVersioning_BackwardsCompatibility(t *testing.T) {
 					t.Fatalf("read %s: %v", fileName, readError)
 				}
 
+				dslContent := string(fileContents)
+				if strings.Contains(dslContent, "{{") {
+					rendered, renderError := lang.RenderTemplate(dslContent, map[string]any{
+						"registry": "localhost:5000",
+					})
+					if renderError != nil {
+						t.Fatalf("template render error in %s: %v", fileName, renderError)
+					}
+					dslContent = rendered
+				}
+
 				factStore := store.NewMemoryStore()
 				defer factStore.Close()
 				ctx := context.Background()
 
 				fileBaseDir := filepath.Dir(ccaFilePath)
-				if applyError := lang.ApplyWithBaseDir(ctx, factStore, string(fileContents), fileBaseDir); applyError != nil {
+				if applyError := lang.ApplyWithBaseDir(ctx, factStore, dslContent, fileBaseDir); applyError != nil {
 					t.Fatalf("backwards compatibility broken for %s: %v", fileName, applyError)
 				}
 
