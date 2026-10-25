@@ -48,9 +48,13 @@ ssh_vm() {
     (cd "$VMHERD_DIR" && "$VMHERD_BIN" ssh "$vm_name" -- "$@")
 }
 
-count_containers() {
-    local vm_name="$1"
-    ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" 2>/dev/null | tr -d ' \n' || echo "0"
+count_running_instances() {
+    local node_name="$1"
+    if [[ -n "$STATUS_JSON" ]]; then
+        echo "$STATUS_JSON" | jq --arg node "$node_name" '[.instances[] | select(.node == $node and .state == "running")] | length'
+    else
+        echo "0"
+    fi
 }
 
 # ---- Check 1: VM reachability ----
@@ -69,12 +73,12 @@ if [[ "$REACHABLE_COUNT" -lt 3 ]]; then
     log "Only $REACHABLE_COUNT/3 VMs reachable — remaining checks may fail"
 fi
 
-# ---- Check 2: etcd health (via healthz endpoint) ----
+# ---- Check 2: control plane health (via cca status) ----
 log "Check 2: control plane health"
 HEALTHZ_OK=false
 HEALTHZ_MAX_RETRIES=3
 for healthz_attempt in $(seq 1 "$HEALTHZ_MAX_RETRIES"); do
-    if ssh_vm cca-deploy-ctrl "curl -sf --connect-timeout 10 --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/healthz" >/dev/null 2>&1; then
+    if ssh_vm cca-deploy-ctrl "sudo cca status" >/dev/null 2>&1; then
         HEALTHZ_OK=true
         break
     fi
@@ -83,35 +87,15 @@ for healthz_attempt in $(seq 1 "$HEALTHZ_MAX_RETRIES"); do
     fi
 done
 if [[ "$HEALTHZ_OK" == "true" ]]; then
-    log "  healthz: OK"
+    log "  cca status: OK"
 else
-    warn "healthz: UNHEALTHY (failed after $HEALTHZ_MAX_RETRIES attempts)"
+    warn "cca status: UNHEALTHY (failed after $HEALTHZ_MAX_RETRIES attempts)"
 fi
 
-# ---- Check 3: cca server API ----
+# ---- Check 3: cca server API (JSON via curl on node) ----
 log "Check 3: cca server API"
-CA_CERT="/tmp/cca-healthcheck-ca.pem"
-CLIENT_CERT="/tmp/cca-healthcheck-client.pem"
-CLIENT_KEY="/tmp/cca-healthcheck-client-key.pem"
-
-CERTS_FETCHED=true
-if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/ca.pem" > "$CA_CERT" 2>/dev/null; then
-    CERTS_FETCHED=false
-fi
-if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node.pem" > "$CLIENT_CERT" 2>/dev/null; then
-    CERTS_FETCHED=false
-fi
-if ! ssh_vm cca-deploy-ctrl "sudo cat /etc/ccattler/pki/node-key.pem" > "$CLIENT_KEY" 2>/dev/null; then
-    CERTS_FETCHED=false
-fi
-
-CCA_API="https://${CTRL_IP}:9770"
-CURL_TLS="--cacert $CA_CERT --cert $CLIENT_CERT --key $CLIENT_KEY"
-
 STATUS_JSON=""
-if [[ "$CERTS_FETCHED" != "true" ]]; then
-    warn "API: could not fetch TLS certs from ctrl node"
-elif STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null); then
+if STATUS_JSON=$(ssh_vm cca-deploy-ctrl "sudo curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${CTRL_IP}:9770/api/status" 2>/dev/null); then
     log "  API /status: reachable"
 else
     warn "API /status: UNREACHABLE"
@@ -187,27 +171,25 @@ else
     log "  Skipped (no status JSON)"
 fi
 
-# ---- Check 7: Container count ----
-log "Check 7: Container count"
-total_containers=0
-for vm in "${ALL_VM_NAMES[@]}"; do
-    count=$(count_containers "$vm")
-    log "  $vm: $count containers"
-    total_containers=$((total_containers + count))
-done
-log "  Total containers: $total_containers"
-
-expected_from_api=0
+# ---- Check 7: Running instance count (from API) ----
+log "Check 7: Running instances"
 if [[ -n "$STATUS_JSON" ]]; then
-    expected_from_api=$(echo "$STATUS_JSON" | jq '[.services[].desired] | add // 0')
-fi
+    total_running=0
+    for vm in "${ALL_VM_NAMES[@]}"; do
+        count=$(count_running_instances "$vm")
+        log "  $vm: $count running instances"
+        total_running=$((total_running + count))
+    done
+    log "  Total running: $total_running"
 
-if [[ "$expected_from_api" -gt 0 ]]; then
-    if [[ "$total_containers" -lt "$expected_from_api" ]]; then
-        warn "expected at least $expected_from_api containers (from API desired count), found $total_containers"
+    expected_total=$(echo "$STATUS_JSON" | jq '[.services[].desired] | add // 0')
+    if [[ "$expected_total" -gt 0 && "$total_running" -lt "$expected_total" ]]; then
+        warn "expected $expected_total running instances, found $total_running"
+    elif [[ "$total_running" -lt 1 ]]; then
+        warn "no running instances on any node"
     fi
-elif [[ "$total_containers" -lt 1 ]]; then
-    warn "no containers running on any node"
+else
+    log "  Skipped (no status JSON)"
 fi
 
 # ---- Check 8: systemd services ----
@@ -256,9 +238,6 @@ if [[ -n "$STATUS_JSON" ]]; then
 else
     log "  Skipped (no status JSON)"
 fi
-
-# ---- Cleanup temp files ----
-rm -f "$CA_CERT" "$CLIENT_CERT" "$CLIENT_KEY"
 
 # ---- Result ----
 echo ""
