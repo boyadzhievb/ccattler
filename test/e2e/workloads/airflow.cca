@@ -56,11 +56,10 @@ service webserver {
     instances 1
     expose 8080
     startup {
-        http /health
-        port 8080
+        exec "pgrep -f 'gunicorn.*master'"
         every 10s
-        failure_threshold 6
-        initial_delay 15s
+        failure_threshold 30
+        initial_delay 10s
     }
     liveness {
         http /health
