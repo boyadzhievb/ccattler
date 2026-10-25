@@ -1466,6 +1466,20 @@ Prevent thundering-herd placement on cluster startup and detect/correct load imb
 - [x] Update benchmark and fuzz tests to use `newTestScheduler()`
 - [x] Design document: `design/scheduler-rebalancing.md`
 
+### Phase 136 — HA Etcd Cluster Validation (M136)
+
+First end-to-end validation of HA control plane on vmherd: 3-node etcd raft cluster, leader-elected cca-server, control plane failover, and etcd member failure recovery.
+
+- [ ] vmherd Herdfile: 3 ctrl (4GB) + 1 worker (2GB) on 192.168.125.0/24
+- [ ] Ansible inventory mapping vmherd VMs to HA groups (etcd, controlplane, workers)
+- [ ] Test workload: whoami (3 instances) + whoami-multiport (2 instances)
+- [ ] HA validation script: 9 checks (reachability, etcd health, API, leader election, nodes, workload, VIP, failover, etcd failure)
+- [ ] Deploy cluster via `ha-deploy.yml` with existing HA Ansible roles
+- [ ] Verify etcd 3-member quorum, leader election, workload placement
+- [ ] Control plane failover: stop leader cca-server, verify new leader within 30s
+- [ ] etcd member failure: stop one member, verify quorum holds (2/3), API works
+- [ ] Recovery: restart failed components, verify they rejoin
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)
@@ -1603,6 +1617,7 @@ Prevent thundering-herd placement on cluster startup and detect/correct load imb
 | *(future)* Cloud InfrastructureProviders | — | AWS EC2, GCP Compute, and Azure VM implementations of `InfrastructureProvider` for real cloud node provisioning. Cluster autoscaling controller works end-to-end with `SimulatorInfraProvider`; real cloud backends require SDK integration and cloud-specific testing. |
 | M134 — BPF Binary Consolidation | 134 | Consolidated three separate BPF ELF objects into a single multi-program ELF (`cca_dataplane.o`) embedded in the Go binary via `go:embed`. All 5 BPF programs (socket LB, tc DNAT, tc SNAT) share maps from one `ebpf.Collection` — no more `MapReplacements`. Eliminated `/usr/lib/cca/*.o` install step, Ansible on-node BPF compilation, and separate `loadTCProgram`/`loadSNATProgram` methods. `build-ebpf.sh` produces one file; `deploy-ebpf` copies only the binary. |
 | M135 — Scheduler Rebalancing & Pressure Detection | 135 | Prevent thundering-herd placement on cluster startup via 10s grace period (waits for all agents to register before initial placement). Reactive rebalancing detects load imbalance (max-min > 2) and migrates up to 2 instances per cycle from overloaded to underloaded nodes, respecting architecture/zone/label/restrict constraints. Node allocation pressure detection logs WARN when CPU or memory exceeds 80%. WARNING when all valid targets are restricted. 9 new tests, design doc at `design/scheduler-rebalancing.md`. |
+| M136 — HA Etcd Cluster Validation | 136 | First end-to-end HA validation on vmherd: 3 ctrl (4GB, etcd + cca-server) + 1 worker (2GB) on 192.168.125.0/24. HA test script validates 9 areas: VM reachability, etcd 3-member quorum, cca-server API on all 3 ctrl, leader election (one active controller), 4-node registration, whoami/whoami-multiport workload convergence, VIP routing from all nodes, control plane failover (stop leader → new leader in 30s), etcd member failure (2/3 quorum holds). Uses existing `ha-deploy.yml`, `etcd-cluster` and `ha-controlplane` Ansible roles — no Go code changes. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |

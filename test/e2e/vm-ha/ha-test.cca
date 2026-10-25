@@ -1,0 +1,22 @@
+service "whoami" {
+  image "traefik/whoami:v1.10"
+  instances 3
+  port 80
+
+  resources {
+    cpu 100
+    memory 67108864
+  }
+}
+
+service "whoami-multiport" {
+  image "traefik/whoami:v1.10"
+  instances 2
+  port 80
+  port 8081
+
+  resources {
+    cpu 100
+    memory 67108864
+  }
+}
