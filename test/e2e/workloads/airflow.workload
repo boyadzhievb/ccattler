@@ -2,7 +2,7 @@
 # Sourced by cluster_test.sh to discover deployment requirements.
 
 WORKLOAD_DESCRIPTION="Airflow CeleryExecutor (postgres + redis + webserver + scheduler + 2 workers)"
-WORKLOAD_IMAGES=("192.168.100.43:5000/airflow:2.10.5" "192.168.100.43:5000/postgres:16" "192.168.100.43:5000/redis:7")
+WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/airflow:2.10.5" "${LOCAL_REGISTRY}/postgres:16" "${LOCAL_REGISTRY}/redis:7")
 WORKLOAD_EXPECTED_CONTAINERS=6
 WORKLOAD_SECRETS=("airflow.db-password=airflow-e2e-pass" "airflow.admin-password=admin-e2e-pass" "airflow.webserver-secret-key=$(openssl rand -hex 16)")
 

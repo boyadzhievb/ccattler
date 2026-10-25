@@ -179,7 +179,9 @@ fi
 # Check 6: deploy test workload and verify placement
 # ============================================================
 log "Check 6: workload deployment"
-ssh_vm "${CTRL_NAMES[0]}" "sudo /usr/local/bin/cca apply /dev/stdin" < "$SCRIPT_DIR/ha-test.cca" 2>/dev/null
+scp_to_vm "${CTRL_NAMES[0]}" "$SCRIPT_DIR/../deploy.ccv" "/tmp/e2e-values.ccv"
+scp_to_vm "${CTRL_NAMES[0]}" "$SCRIPT_DIR/ha-test.cca" "/tmp/ha-test.cca"
+ssh_vm "${CTRL_NAMES[0]}" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/ha-test.cca" 2>/dev/null
 log "  Waiting for workload convergence (90s max)..."
 
 workload_converged() {

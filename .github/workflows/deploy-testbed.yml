@@ -21,6 +21,15 @@ on:
         required: false
         default: false
         type: boolean
+      dataplane:
+        description: "Data plane backend"
+        required: false
+        default: "ebpf"
+        type: choice
+        options:
+          - "ebpf"
+          - "nftables"
+          - "auto"
 
 concurrency:
   group: testbed-deploy
@@ -46,12 +55,13 @@ jobs:
           vmherd version
 
       - name: Build binary from source
-        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o deploy/ansible/cca-linux-amd64 ./cmd/cca/
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags ebpf -o deploy/ansible/cca-linux-amd64 ./cmd/cca/
 
       - name: Deploy cluster (3-node, no teardown, source-built binary)
         run: |
           WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport' }}"
-          ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD"
+          DATAPLANE="${{ inputs.dataplane || 'ebpf' }}"
+          ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" --dataplane "$DATAPLANE"
 
       - name: Collect logs on failure
         if: failure()

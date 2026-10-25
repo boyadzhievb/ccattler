@@ -1,5 +1,5 @@
 service "whoami" {
-  image "192.168.100.43:5000/whoami:v1.10"
+  image "{{ default "docker.io" .registry }}/whoami:v1.10"
   instances 3
   port 80
 
@@ -10,7 +10,7 @@ service "whoami" {
 }
 
 service "whoami-multiport" {
-  image "192.168.100.43:5000/whoami:v1.10"
+  image "{{ default "docker.io" .registry }}/whoami:v1.10"
   instances 2
   port 80
   port 8081

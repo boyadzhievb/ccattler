@@ -17,7 +17,7 @@ connection airflow-celery-backend {
 }
 
 service metadata-db {
-    image "192.168.100.43:5000/postgres:16"
+    image "{{ default "docker.io" .registry }}/postgres:16"
     instances 1
     expose 5432
     health {
@@ -37,7 +37,7 @@ service metadata-db {
 }
 
 service redis {
-    image "192.168.100.43:5000/redis:7"
+    image "{{ default "docker.io" .registry }}/redis:7"
     instances 1
     expose 6379
     health {
@@ -51,7 +51,7 @@ service redis {
 }
 
 service webserver {
-    image "192.168.100.43:5000/airflow:2.10.5"
+    image "{{ default "docker.io" .registry }}/airflow:2.10.5"
     command webserver
     instances 1
     expose 8080
@@ -81,7 +81,7 @@ service webserver {
 }
 
 service scheduler {
-    image "192.168.100.43:5000/airflow:2.10.5"
+    image "{{ default "docker.io" .registry }}/airflow:2.10.5"
     command scheduler
     instances 1
     health {
@@ -106,7 +106,7 @@ service scheduler {
 }
 
 service worker {
-    image "192.168.100.43:5000/airflow:2.10.5"
+    image "{{ default "docker.io" .registry }}/airflow:2.10.5"
     command "celery worker"
     instances 2
     expose 8793

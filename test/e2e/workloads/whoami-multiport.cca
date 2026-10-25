@@ -1,5 +1,5 @@
 service whoami-multiport {
-    image "192.168.100.43:5000/whoami:latest"
+    image "{{ default "docker.io" .registry }}/whoami:latest"
     instances 2
     expose 80
     expose 8081

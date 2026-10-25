@@ -1,0 +1,4 @@
+# Values for bare-metal E2E tests (--env test).
+# Registry runs on 192.168.100.215 alongside the control plane node.
+
+registry: 192.168.100.215:5000

@@ -25,5 +25,5 @@ dataplane_backend: "auto"
 proxy_port: 8080
 
 # insecure_registry: local Docker registry for image caching (HTTP, no TLS).
-# Set to "" to disable. Images in .cca files use this as prefix.
-insecure_registry: "192.168.100.43:5000"
+# Set to "" to disable. Overridden per-environment by cluster_test.sh via -e.
+insecure_registry: ""

@@ -75,6 +75,7 @@ CLEAR_WORKLOADS_ONLY=false
 KEEP_DATA=false
 UPGRADE_TEST=false
 BAREMETAL=false
+DATAPLANE_OVERRIDE=""
 
 for arg in "$@"; do
     case "$arg" in
@@ -91,6 +92,8 @@ for arg in "$@"; do
         --env)               ;; # handled below with next arg
         --workload=*)        SELECTED_WORKLOADS="${arg#--workload=}" ;;
         --workload)          ;; # handled below with next arg
+        --dataplane=*)       DATAPLANE_OVERRIDE="${arg#--dataplane=}" ;;
+        --dataplane)         ;; # handled below with next arg
     esac
 done
 # Handle two-arg forms: --env <value>, --workload <value>
@@ -105,6 +108,12 @@ for ((i=1; i<=$#; i++)); do
         next=$((i+1))
         if [[ $next -le $# ]]; then
             SELECTED_WORKLOADS="${!next}"
+        fi
+    fi
+    if [[ "${!i}" == "--dataplane" ]]; then
+        next=$((i+1))
+        if [[ $next -le $# ]]; then
+            DATAPLANE_OVERRIDE="${!next}"
         fi
     fi
 done
@@ -194,6 +203,7 @@ case "$CLUSTER_ENV" in
         SSH_USER="bozhan"
         BAREMETAL=true
         DESTROY_ON_EXIT=none
+        VALUES_FILE="$SCRIPT_DIR/e2e.ccv"
         ;;
     vagrant)
         INVENTORY="test-inventory.ini"
@@ -207,6 +217,7 @@ case "$CLUSTER_ENV" in
         EXPECTED_NODES=3
         SSH_USER="vmherd"
         VMHERD_DIR="$SCRIPT_DIR/vm-test"
+        VALUES_FILE="$SCRIPT_DIR/deploy.ccv"
         ;;
     deploy)
         INVENTORY="deploy-inventory.ini"
@@ -221,6 +232,7 @@ case "$CLUSTER_ENV" in
         SSH_USER="vmherd"
         VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
         DESTROY_ON_EXIT=none
+        VALUES_FILE="$SCRIPT_DIR/deploy.ccv"
         ;;
     *)
         echo "Unknown --env: $CLUSTER_ENV (must be 'test', 'vagrant', or 'deploy')" >&2
@@ -473,6 +485,13 @@ else
         ANSIBLE_EXTRA_ARGS="-e vmherd_ssh_key=$VMHERD_SSH_KEY"
     fi
 fi
+LOCAL_REGISTRY=$(grep '^registry:' "$VALUES_FILE" | awk '{print $2}')
+if [[ -n "$LOCAL_REGISTRY" ]]; then
+    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e insecure_registry=$LOCAL_REGISTRY"
+fi
+if [[ -n "$DATAPLANE_OVERRIDE" ]]; then
+    ANSIBLE_EXTRA_ARGS="$ANSIBLE_EXTRA_ARGS -e dataplane_backend=$DATAPLANE_OVERRIDE"
+fi
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup $ANSIBLE_EXTRA_ARGS
 
 # ---- Step 3: Verify cluster basics ----
@@ -619,10 +638,11 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         done
     fi
 
-    # Copy and apply the .cca file.
+    # Copy values file and apply the .cca file with environment-specific registry.
     log "Applying $workload_name workload..."
+    scp_to_vm "$CTRL_NODE" "$VALUES_FILE" "/tmp/e2e-values.ccv"
     scp_to_vm "$CTRL_NODE" "$WORKLOADS_DIR/${workload_name}.cca" "/tmp/${workload_name}.cca"
-    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca apply /tmp/${workload_name}.cca"
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/${workload_name}.cca"
 
     # Wait for containers to converge.
     CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS + WORKLOAD_EXPECTED_CONTAINERS))

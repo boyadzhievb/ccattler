@@ -117,6 +117,68 @@ export platform/dns {
 }
 ```
 
+## Templates and Values
+
+`.cca` files support Go `text/template` syntax for parameterization. Values are
+provided via `.ccv` files or CLI flags.
+
+### Values files (.ccv)
+
+Flat `key: value` format with dot-separated keys for nesting:
+
+```
+# values.ccv
+registry: 192.168.100.215:5000
+db.image: postgres:16
+db.cpu: 500m
+airflow.image: apache/airflow:2.10.5
+```
+
+### Using values in .cca files
+
+```
+service metadata-db {
+    image "{{ .db.image }}"
+    resources {
+        cpu {{ .db.cpu }}
+    }
+}
+```
+
+The `default` function provides a fallback when a value is not set:
+
+```
+service web {
+    image "{{ default "docker.io" .registry }}/nginx:1.27"
+}
+```
+
+### CLI flags
+
+```bash
+# Explicit values file (multiple allowed, later overrides earlier)
+cca apply --values prod.ccv app.cca
+
+# Inline override (highest precedence after env vars)
+cca apply --set registry=192.168.100.43:5000 app.cca
+
+# Override from environment variable
+cca apply --set-from-env DB_HOST app.cca
+
+# Preview rendered output without applying
+cca apply --dry-run --values prod.ccv app.cca
+```
+
+### Auto-discovery
+
+For a template `airflow.cca`, the parser automatically loads
+`airflow/values.ccv` from the same directory if it exists — no `--values`
+flag needed.
+
+### Available functions
+
+`default`, `required`, `quote`, `upper`, `lower`, `title`, `toJson`, `indent`, `nindent`, `ternary`.
+
 ## Compilation
 
 The parser compiles DSL into facts:
