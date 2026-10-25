@@ -6,15 +6,6 @@
       - ansible_distribution_major_version | int >= 22 or ansible_distribution == "Debian"
     fail_msg: "CCattler requires Ubuntu 22.04+ or Debian 12+ (found {{ ansible_distribution }} {{ ansible_distribution_version }}). Python 3.9+ and OpenSSL 3.0+ are needed."
 
-- name: Compile BPF data plane (when dataplane_backend is ebpf)
-  command: make bpf
-  args:
-    chdir: "{{ playbook_dir }}/../.."
-  delegate_to: localhost
-  run_once: true
-  become: false
-  when: dataplane_backend | default('auto') == 'ebpf'
-
 - name: Build CCattler binary for target architecture
   command: >-
     go build
