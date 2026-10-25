@@ -467,6 +467,11 @@ python3 -c "import fcntl,os;[fcntl.fcntl(fd,fcntl.F_SETFL,fcntl.fcntl(fd,fcntl.F
 ANSIBLE_EXTRA_ARGS=""
 if [[ "$BAREMETAL" == "true" ]]; then
     ANSIBLE_EXTRA_ARGS="-e ansible_ssh_private_key_file=~/.ssh/id_rsa"
+else
+    VMHERD_SSH_KEY=$(cd "$VMHERD_DIR" && "$VMHERD_BIN" info ssh-key 2>/dev/null)
+    if [[ -n "$VMHERD_SSH_KEY" ]]; then
+        ANSIBLE_EXTRA_ARGS="-e vmherd_ssh_key=$VMHERD_SSH_KEY"
+    fi
 fi
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags vagrant,testapp,cleanup $ANSIBLE_EXTRA_ARGS
 

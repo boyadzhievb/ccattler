@@ -1,0 +1,181 @@
+# Storage in CCattler
+
+## What CCattler Provides
+
+CCattler has a storage layer with three components:
+
+### 1. StorageProvider Interface (`storage/storage.go`)
+
+Eight methods covering the full volume lifecycle:
+
+| Method | Purpose |
+|--------|---------|
+| `CreateVolume` | Ensure a named volume exists |
+| `DeleteVolume` | Remove a volume (fails if attached) |
+| `AttachVolume` | Bind a volume to a node, return mount path |
+| `DetachVolume` | Unbind a volume from a node |
+| `IsAttached` | Report attachment status |
+| `SnapshotVolume` | Point-in-time snapshot |
+| `VolumeUsage` | Used/total bytes |
+| `ResizeVolume` | Expand capacity (shrink not allowed) |
+
+The only implementation is `SimulatorStorageProvider` — an in-memory backend for integration tests. There is no production storage driver because CCattler delegates actual storage to the operator (see below).
+
+### 2. StorageController (`controllers/storage.go`)
+
+A reconciliation controller that watches volume facts and manages lifecycle:
+
+- Creates observed volumes when desired volumes are declared
+- Force-detaches volumes from unreachable nodes so they can be reattached
+- Executes resize and snapshot operations after store transactions commit
+- Replicates and migrates volumes when nodes fail
+
+### 3. DSL Volume Blocks
+
+The `.cca` language supports volume declarations and service-level mounts:
+
+```
+volume shared-content {
+    size 10Gi
+    persistent true
+}
+
+service webserver {
+    image nginx:1.27
+    instances 2
+    port 80
+    volume shared-content /usr/share/nginx/html
+}
+```
+
+The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent tracks volume attach/detach state via the StorageProvider, but does not yet pass mount paths to the container runtime — this is the design intent, not current behavior. Today only the SimulatorStorageProvider is implemented.
+
+## How to Use NFS with CCattler
+
+CCattler follows the same model as Docker Compose: the operator mounts shared storage on the host, and the container runtime binds the host path into the container. Currently the volume mount pass-through from DSL facts to `nerdctl --volume` is not yet wired — operators use host-level bind mounts directly. The design intent is for the node agent to resolve volume facts to host paths and pass them to the runtime.
+
+### Example: Two Webservers Serving Files from NFS
+
+**Step 1: Mount NFS on every node**
+
+On each node that will run the webserver containers:
+
+```bash
+# Install NFS client
+apt install -y nfs-common
+
+# Create mount point
+mkdir -p /mnt/nfs/web-content
+
+# Mount the NFS share
+mount -t nfs 192.168.1.100:/exports/web-content /mnt/nfs/web-content
+
+# Make it persistent across reboots
+echo "192.168.1.100:/exports/web-content /mnt/nfs/web-content nfs defaults 0 0" >> /etc/fstab
+```
+
+**Step 2: Write the workload file**
+
+```
+# web-cluster.cca
+
+volume web-content {
+    size 10Gi
+    persistent true
+}
+
+service nginx-frontend {
+    image nginx:1.27
+    instances 2
+    port 80
+    volume web-content /usr/share/nginx/html
+
+    resources {
+        cpu 200
+        memory 134217728
+    }
+}
+```
+
+Both instances of `nginx-frontend` mount the same NFS share at `/usr/share/nginx/html`. Any file written to the NFS share is immediately visible to both containers.
+
+**Step 3: Deploy**
+
+```bash
+cca apply web-cluster.cca
+```
+
+The scheduler places the two instances on available nodes. Each node already has `/mnt/nfs/web-content` mounted, so the container runtime binds it into the container at the declared mount path.
+
+**Step 4: Update content**
+
+Write files to the NFS share from any machine that has the share mounted:
+
+```bash
+echo "<h1>Hello from NFS</h1>" > /mnt/nfs/web-content/index.html
+```
+
+Both containers serve the updated file immediately — no redeploy needed.
+
+### NFS with Ansible
+
+For multi-node clusters, use Ansible to mount NFS on all nodes:
+
+```yaml
+# roles/nfs-client/tasks/main.yml
+- name: Install NFS client
+  apt:
+    name: nfs-common
+    state: present
+
+- name: Create NFS mount point
+  file:
+    path: /mnt/nfs/web-content
+    state: directory
+
+- name: Mount NFS share
+  mount:
+    path: /mnt/nfs/web-content
+    src: "{{ nfs_server }}:/exports/web-content"
+    fstype: nfs
+    opts: defaults
+    state: mounted
+```
+
+Run before deploying the workload:
+
+```bash
+ansible-playbook -i inventory.ini nfs-setup.yml
+cca apply web-cluster.cca
+```
+
+## Why No Plugin System
+
+Kubernetes needs CSI (Container Storage Interface) because it manages storage lifecycle end-to-end: provisioning cloud disks, attaching them to VMs, formatting filesystems, and mounting into pods. This requires a plugin protocol so cloud providers (AWS EBS, GCE PD, Azure Disk) and storage vendors (Ceph, NetApp, Portworx) can implement their own drivers.
+
+CCattler does not need this because:
+
+1. **CCattler runs on bare metal or known VMs.** There is no cloud provider API to abstract. The operator knows their storage infrastructure.
+
+2. **NFS already solves shared storage.** Multiple containers across multiple nodes can read and write the same files with no orchestrator involvement. The operator mounts NFS once per node, and every container that needs it gets a bind mount.
+
+3. **The operator owns the mount.** CCattler does not provision, format, or attach storage. It passes host paths to `nerdctl --volume`. This is the same model Docker Compose uses, and it works because the operator is responsible for making storage available on the host.
+
+4. **The StorageProvider interface exists for internal use.** The controller uses it to track volume state in etcd (which node has what attached), enforce exclusive access, and handle cleanup when nodes fail. It is not a plugin boundary — it is an internal adapter for testing (SimulatorStorageProvider) and future local-disk management.
+
+5. **Adding a CSI-like protocol would add complexity without value.** It requires a gRPC sidecar per node, a registration mechanism, health checking, and versioned protocol negotiation. For bare-metal NFS this is pure overhead.
+
+### When You Might Want More
+
+If your deployment needs block storage (local SSDs with replication), the path forward is implementing `StorageProvider` for that specific backend — not building a generic plugin protocol. One Go file, eight methods, compiled into the binary. No sidecars, no gRPC, no discovery protocol.
+
+## Comparison with Kubernetes CSI
+
+| Aspect | Kubernetes | CCattler |
+|--------|-----------|----------|
+| Storage model | Orchestrator provisions and mounts | Operator mounts, orchestrator passes through |
+| Plugin protocol | CSI (gRPC, sidecars) | None — internal Go interface |
+| NFS usage | Requires PV/PVC/StorageClass + CSI driver | Mount on host, reference in workload |
+| Cloud disks | CSI driver per cloud provider | Not applicable (bare metal) |
+| Complexity | High (CSI spec, node plugin, controller plugin) | Low (operator manages mounts) |
+| Shared volumes | ReadWriteMany requires CSI driver support | NFS provides this natively |

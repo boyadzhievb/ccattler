@@ -84,7 +84,7 @@ Both via `cca init`, `cca server`, `cca agent`. Must not overlap each other or p
 
 ## Design Documents
 
-See `design/` directory: security-model, multi-tenancy, controllers, config-secrets, node-agent, cloud-integration, dsl-reference, runtime-invariant-flows, threat-model, etcd-schema, networking, TESTING.
+See `design/` directory: security-model, multi-tenancy, controllers, config-secrets, node-agent, cloud-integration, dsl-reference, runtime-invariant-flows, threat-model, etcd-schema, networking, storage, TESTING.
 
 ## CLI
 
