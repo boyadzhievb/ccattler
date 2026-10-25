@@ -25,13 +25,10 @@ import (
 const testNetworkName = "cca-test-net"
 
 // detectTestContainerCommand returns the container CLI to use for tests,
-// checking nerdctl, docker, and lima in order. Returns empty string if none found.
+// checking nerdctl and lima in order. Returns empty string if none found.
 func detectTestContainerCommand() string {
 	if _, err := exec.LookPath("nerdctl"); err == nil {
 		return "nerdctl"
-	}
-	if _, err := exec.LookPath("docker"); err == nil {
-		return "docker"
 	}
 	if _, err := exec.LookPath("lima"); err == nil {
 		return "lima"
@@ -48,13 +45,13 @@ func buildTestContainerExecCommand(containerCommand string, args ...string) *exe
 	return exec.Command(containerCommand, args...) //nolint:gosec // test runs container commands
 }
 
-// skipIfContainerUnavailable skips the test when no container runtime (nerdctl,
-// docker, or lima) is installed or responding.
+// skipIfContainerUnavailable skips the test when nerdctl (or lima nerdctl) is
+// not installed or not responding.
 func skipIfContainerUnavailable(t *testing.T) string {
 	t.Helper()
 	containerCommand := detectTestContainerCommand()
 	if containerCommand == "" {
-		t.Skip("no container runtime found (nerdctl/docker/lima), skipping container integration test")
+		t.Skip("no container runtime found (nerdctl/lima), skipping container integration test")
 	}
 	infoCommand := buildTestContainerExecCommand(containerCommand, "info")
 	if err := infoCommand.Run(); err != nil {

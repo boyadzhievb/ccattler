@@ -107,6 +107,12 @@ type DataPlaneNodeRegistrar interface {
 	RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error
 }
 
+// DataPlaneBridgeRetrier can be implemented by data plane providers that defer
+// bridge attachment until the first container creates the CNI bridge interface.
+type DataPlaneBridgeRetrier interface {
+	RetryBridgeAttachment(ctx context.Context, podCIDR string) error
+}
+
 // EndpointIdentityRegistrar can be implemented by data plane providers that
 // need to register container IP-to-identity mappings when instances start.
 type EndpointIdentityRegistrar interface {

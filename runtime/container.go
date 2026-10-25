@@ -33,7 +33,7 @@ const defaultDNSSearchDomain = "cca.local"
 // nerdctl hangs on exited containers.
 const nerdctlCommandTimeout = 10 * time.Second
 
-// ContainerRuntime runs workloads as OCI containers via the nerdctl or docker CLI.
+// ContainerRuntime runs workloads as OCI containers via the nerdctl CLI.
 // Spec.Image is the OCI image reference (e.g., "nginx:1.28"). Resource limits
 // (CPU millicores and memory bytes) are translated to --cpus and --memory
 // flags when provided. When a network name and subnet are configured via
@@ -52,24 +52,20 @@ type ContainerRuntime struct {
 	networkReady              bool                   // networkReady is true once the container network has been verified or created.
 	dnsAddress                string                 // dnsAddress is the DNS server address passed to containers via --dns (empty = use runtime default).
 	dnsSearchDomain           string                 // dnsSearchDomain is the search domain passed to containers via --dns-search (e.g. "cca.local").
-	containerCommand          string                 // containerCommand is the CLI binary to use: "nerdctl" or "docker".
+	containerCommand          string                 // containerCommand is the CLI binary to use: "nerdctl" or "lima".
 }
 
-// detectContainerCommand returns the first available container CLI. Checks in
-// order: nerdctl (Linux), docker (Linux/macOS via Docker Desktop), lima (macOS
-// with Lima+nerdctl). Returns "docker" as default if none found (will fail at
-// runtime with a clear error).
+// detectContainerCommand returns the first available container CLI. Checks
+// nerdctl (Linux) then lima (macOS with Lima+nerdctl). Returns "nerdctl" as
+// default if none found (will fail at runtime with a clear error).
 func detectContainerCommand() string {
 	if _, lookupError := exec.LookPath("nerdctl"); lookupError == nil {
 		return "nerdctl"
 	}
-	if _, lookupError := exec.LookPath("docker"); lookupError == nil {
-		return "docker"
-	}
 	if _, lookupError := exec.LookPath("lima"); lookupError == nil {
 		return "lima"
 	}
-	return "docker"
+	return "nerdctl"
 }
 
 // buildExecCommand creates an exec.Cmd for the detected container CLI. When
@@ -78,9 +74,9 @@ func (containerRuntime *ContainerRuntime) buildExecCommand(ctx context.Context, 
 	var command *exec.Cmd
 	if containerRuntime.containerCommand == "lima" {
 		limaArgs := append([]string{"nerdctl"}, args...)
-		command = exec.CommandContext(ctx, "lima", limaArgs...) //nolint:gosec // container runtime executes docker commands
+		command = exec.CommandContext(ctx, "lima", limaArgs...) //nolint:gosec // container runtime executes nerdctl commands
 	} else {
-		command = exec.CommandContext(ctx, containerRuntime.containerCommand, args...) //nolint:gosec // container runtime executes docker commands
+		command = exec.CommandContext(ctx, containerRuntime.containerCommand, args...) //nolint:gosec // container runtime executes nerdctl commands
 	}
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
@@ -91,7 +87,7 @@ func (containerRuntime *ContainerRuntime) buildExecCommand(ctx context.Context, 
 }
 
 // NewContainerRuntime creates a ContainerRuntime with an empty container
-// registry. Automatically detects whether to use nerdctl or docker.
+// registry. Automatically detects whether to use nerdctl or lima.
 func NewContainerRuntime() *ContainerRuntime {
 	return &ContainerRuntime{
 		trackedContainers:         make(map[string]bool),
@@ -264,7 +260,7 @@ func (containerRuntime *ContainerRuntime) Start(ctx context.Context, spec Spec) 
 	return nil
 }
 
-// buildRunArguments constructs the nerdctl/docker run argument list from a
+// buildRunArguments constructs the nerdctl run argument list from a
 // workload spec. Returns the args slice, a map of containerPort→hostPort
 // for all exposed ports, and a validation error if the image reference is
 // invalid. This function is separated from Start for testability.
@@ -277,11 +273,7 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 			args = append(args, "--ip", spec.IP)
 		}
 		if spec.ServiceName != "" {
-			if containerRuntime.containerCommand == "docker" {
-				args = append(args, "--network-alias", spec.ServiceName)
-			} else {
-				args = append(args, "--hostname", spec.ServiceName)
-			}
+			args = append(args, "--hostname", spec.ServiceName)
 		}
 	}
 
@@ -637,7 +629,7 @@ func parseFloat64Safe(value string) (float64, error) {
 	return result, parseError
 }
 
-// parseMemoryValue parses a Docker/nerdctl memory string like "45.6MiB" or
+// parseMemoryValue parses a nerdctl memory string like "45.6MiB" or
 // "1.2GiB" into bytes.
 func parseMemoryValue(memoryString string) int64 {
 	memoryString = strings.TrimSpace(memoryString)
@@ -676,9 +668,9 @@ func parseMemoryValue(memoryString string) int64 {
 
 // Logs returns the stdout/stderr output of a container via `nerdctl logs`.
 // When follow is true, the returned reader streams new output as it arrives.
-// Resize is not supported by the Docker container runtime. Live cgroup
+// Resize is not supported by the nerdctl container runtime. Live cgroup
 // updates require direct cgroup v2 manipulation, which is not available
-// through the Docker CLI. The caller should stop and restart the container.
+// through the nerdctl CLI. The caller should stop and restart the container.
 func (containerRuntime *ContainerRuntime) Resize(_ context.Context, _ string, _ int64, _ int64) error {
 	return ErrResizeUnsupported
 }
@@ -764,7 +756,7 @@ func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 }
 
 // ListImages returns all locally cached container images by running
-// `nerdctl images` (or `docker images`). Implements the ImageLister interface.
+// `nerdctl images`. Implements the ImageLister interface.
 func (containerRuntime *ContainerRuntime) ListImages(ctx context.Context) ([]ImageInfo, error) {
 	listCommand := containerRuntime.buildExecCommand(ctx, "images",
 		"--format", "{{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.Size}}")
@@ -796,7 +788,7 @@ func (containerRuntime *ContainerRuntime) ListImages(ctx context.Context) ([]Ima
 }
 
 // DiscoveredContainer describes a container found by scanning the local
-// container runtime directly via nerdctl/docker ps, without requiring
+// container runtime directly via nerdctl ps, without requiring
 // an agent or tracked state.
 type DiscoveredContainer struct {
 	Name    string // Name is the container name assigned at creation.
@@ -815,7 +807,7 @@ type ContainerResourceUsage struct {
 }
 
 // DetectedCommand returns the container CLI binary that this runtime uses
-// (e.g. "nerdctl", "docker", "lima").
+// (e.g. "nerdctl", "lima").
 func (containerRuntime *ContainerRuntime) DetectedCommand() string {
 	return containerRuntime.containerCommand
 }

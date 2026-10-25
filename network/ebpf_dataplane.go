@@ -563,6 +563,37 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 	return nil
 }
 
+// RetryBridgeAttachment re-attempts bridge discovery and tc program attachment
+// if the initial RegisterNode call failed to find the bridge (it didn't exist
+// yet because no containers were running). Called by the agent after the first
+// container starts and the CNI bridge is created. No-op if already attached.
+func (ebpfDataPlane *EbpfDataPlane) RetryBridgeAttachment(ctx context.Context, podCIDR string) error {
+	ebpfDataPlane.mutex.Lock()
+	defer ebpfDataPlane.mutex.Unlock()
+
+	if ebpfDataPlane.tcLink != nil {
+		return nil
+	}
+	if ebpfDataPlane.tcProgram == nil {
+		return nil
+	}
+
+	logger := logging.Default()
+
+	bridgeName, discoveryError := discoverBridgeInterfaceBySubnet(podCIDR)
+	if discoveryError != nil {
+		return discoveryError
+	}
+	ebpfDataPlane.bridgeInterfaceName = bridgeName
+
+	if attachError := ebpfDataPlane.attachTCProgramToBridge(bridgeName); attachError != nil {
+		return attachError
+	}
+
+	logger.Info("ebpf data plane: tc DNAT attached to bridge (deferred)", "bridge", bridgeName, "subnet", podCIDR)
+	return nil
+}
+
 // attachSNATToPhysicalNIC discovers the physical interface from the node IP,
 // populates the config map with the node address and overlay CIDR, and
 // attaches the SNAT program to the physical NIC tc egress.

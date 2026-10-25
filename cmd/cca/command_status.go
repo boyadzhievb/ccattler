@@ -346,13 +346,10 @@ func findInstanceIDsForService(facts []struct {
 }
 
 // streamContainerLogs runs nerdctl logs for the given instance and streams
-// output to stdout. Falls back to docker if nerdctl is not available.
-// The container name is built from the service name and instance ID.
+// output to stdout. The container name is built from the service name and
+// instance ID. Requires nerdctl to be installed on the node.
 func streamContainerLogs(serviceName string, instanceID string, follow bool) {
 	containerTool := "nerdctl"
-	if _, lookupErr := exec.LookPath("nerdctl"); lookupErr != nil {
-		containerTool = "docker"
-	}
 
 	logsArgs := []string{"logs"}
 	if follow {

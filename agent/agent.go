@@ -112,6 +112,7 @@ type Agent struct {
 	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
+	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
 	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
 }
 
@@ -393,6 +394,34 @@ func (nodeAgent *Agent) initializeDataPlaneIfSupported(ctx context.Context) {
 				logging.Default().Info("data plane node registered", "agent", nodeAgent.nodeID, "ip", nodeAgent.advertiseAddress, "subnet", nodeAgent.nodeSubnet)
 			}
 		}
+	}
+}
+
+// retryBridgeAttachmentIfNeeded attempts deferred eBPF tc bridge attachment
+// after the first container start creates the CNI bridge interface. Called once
+// per agent lifetime — subsequent container starts skip the retry because the
+// bridge is already attached or the provider does not support deferred retry.
+func (nodeAgent *Agent) retryBridgeAttachmentIfNeeded(ctx context.Context) {
+	if nodeAgent.bridgeRetryAttempted {
+		return
+	}
+	nodeAgent.bridgeRetryAttempted = true
+
+	dataPlaneProvider := nodeAgent.dataPlaneReconciler.dataPlaneProvider
+	if dataPlaneProvider == nil {
+		return
+	}
+	bridgeRetrier, supportsBridgeRetry := dataPlaneProvider.(network.DataPlaneBridgeRetrier)
+	if !supportsBridgeRetry {
+		return
+	}
+	if nodeAgent.nodeSubnet == "" {
+		return
+	}
+	if retryError := bridgeRetrier.RetryBridgeAttachment(ctx, nodeAgent.nodeSubnet); retryError != nil {
+		logging.Default().Error("deferred bridge attachment failed", "agent", nodeAgent.nodeID, "error", retryError.Error())
+	} else {
+		logging.Default().Info("deferred bridge attachment succeeded", "agent", nodeAgent.nodeID, "subnet", nodeAgent.nodeSubnet)
 	}
 }
 
@@ -849,6 +878,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 		cpuMillicores: runtimeSpec.CPUm,
 		memoryBytes:   runtimeSpec.MemoryB,
 	}
+
+	nodeAgent.retryBridgeAttachmentIfNeeded(ctx)
 
 	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "post_start")
 
