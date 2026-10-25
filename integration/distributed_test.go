@@ -11,7 +11,6 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -35,7 +34,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 
 	// Start all reconciliation controllers including the node failure detector.
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
@@ -102,7 +101,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 
 	// Start controllers with a short lease timeout for fast failure detection.
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
@@ -222,7 +221,7 @@ func TestDistributedMultiServiceSpread(t *testing.T) {
 	}
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
 

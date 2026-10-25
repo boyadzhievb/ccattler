@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -49,7 +48,7 @@ func TestDesiredToPlaced(t *testing.T) {
 	factStore := store.NewMemoryStore()
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
@@ -108,7 +107,7 @@ func TestScaleUpPlacesNewInstances(t *testing.T) {
 	factStore := store.NewMemoryStore()
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
@@ -151,7 +150,7 @@ func TestNoPlacementWithoutNodes(t *testing.T) {
 	factStore := store.NewMemoryStore()
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)

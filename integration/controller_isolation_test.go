@@ -12,7 +12,6 @@ import (
 	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -159,7 +158,7 @@ func defaultIsolationGroups() []controllerGroup {
 
 	return []controllerGroup{
 		{name: "instance", controllers: []controllers.Controller{controllers.NewInstanceController()}},
-		{name: "scheduler", controllers: []controllers.Controller{scheduler.NewScheduler()}},
+		{name: "scheduler", controllers: []controllers.Controller{newTestScheduler()}},
 		{name: "endpoint", controllers: []controllers.Controller{controllers.NewEndpointController()}},
 		{name: "failure", controllers: []controllers.Controller{controllers.NewFailureController()}},
 		{name: "node-failure", controllers: []controllers.Controller{nodeFailureController}},
@@ -203,7 +202,7 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 		testHandle.Errorf("web instances changed while scheduler was down: got %d, want 6", webStillRunning)
 	}
 
-	cluster.restartControllerGroup("scheduler", []controllers.Controller{scheduler.NewScheduler()})
+	cluster.restartControllerGroup("scheduler", []controllers.Controller{newTestScheduler()})
 
 	waitFor(testHandle, 5*time.Second, "api=3 and web=6 after scheduler restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3 &&
@@ -327,7 +326,7 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 	cluster.killControllerGroup("endpoint")
 	time.Sleep(50 * time.Millisecond)
 
-	cluster.restartControllerGroup("scheduler", []controllers.Controller{scheduler.NewScheduler()})
+	cluster.restartControllerGroup("scheduler", []controllers.Controller{newTestScheduler()})
 	cluster.restartControllerGroup("instance", []controllers.Controller{controllers.NewInstanceController()})
 	cluster.restartControllerGroup("endpoint", []controllers.Controller{controllers.NewEndpointController()})
 

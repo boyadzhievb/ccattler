@@ -13,7 +13,6 @@ import (
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/infra"
 	"github.com/boyadzhievb/ccattler/lang"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -29,7 +28,7 @@ func TestStabilizationWindowPreventsOscillation(t *testing.T) {
 	autoscaleController := controllers.NewAutoscaleController()
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore,
@@ -85,7 +84,7 @@ func TestEventDrivenScalingWithQueueDepth(t *testing.T) {
 	registerTestNodes(ctx, factStore, 5)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 
@@ -145,7 +144,7 @@ func TestScheduledScalingSetsMinimumDuringWindow(t *testing.T) {
 	}
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore,
@@ -228,7 +227,7 @@ func TestQuotaAwareScalingClampsToQuota(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
 
@@ -289,7 +288,7 @@ func TestClusterAutoscaleProvisionesNodesForUnplacedInstances(t *testing.T) {
 	simulatorInfraProvider := infra.NewSimulatorInfraProvider(factStore)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	clusterAutoscaleController := controllers.NewClusterAutoscaleController(simulatorInfraProvider, factStore)
 
 	controllerRunner := controllers.NewRunner(factStore,
@@ -342,7 +341,7 @@ func TestPlacementConstraintArchitecture(t *testing.T) {
 	})
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore,
@@ -403,7 +402,7 @@ func TestPlacementConstraintZoneSpread(t *testing.T) {
 	}
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 
 	controllerRunner := controllers.NewRunner(factStore,
@@ -458,7 +457,7 @@ func TestRollingUpdateGraduallyReplacesInstances(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	intentResolverController := controllers.NewIntentResolverController()
 	rolloutController := controllers.NewRolloutController()
 

@@ -14,7 +14,6 @@ import (
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -28,7 +27,7 @@ func TestAutoscaleScalesUpOnHighCPU(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
@@ -88,7 +87,7 @@ func TestAutoscaleScalesDownOnLowCPU(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
@@ -180,7 +179,7 @@ func TestAutoscaleRespectsMaxBound(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
@@ -241,7 +240,7 @@ func TestAutoscaleMultipleMetricsTakesMax(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
 	intentResolverController := controllers.NewIntentResolverController()
@@ -404,7 +403,7 @@ func TestAutoscaleEndToEndWithDistributedCluster(t *testing.T) {
 	registerTestNodes(ctx, factStore, 3)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
@@ -480,7 +479,7 @@ func TestWarmZeroActivationLifecycle(t *testing.T) {
 	registerTestNodes(ctx, factStore, 2)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	autoscaleController := controllers.NewAutoscaleController()
@@ -572,7 +571,7 @@ func TestVerticalAutoscaleAgentResizesOnEffectiveChange(t *testing.T) {
 	registerTestNodes(ctx, factStore, 1)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	intentResolverController := controllers.NewIntentResolverController()

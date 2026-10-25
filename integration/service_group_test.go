@@ -14,7 +14,6 @@ import (
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -39,7 +38,7 @@ func helperSetupServiceGroupCluster(t *testing.T) store.StateStore {
 
 	controllerRunner := controllers.NewRunner(factStore,
 		controllers.NewInstanceController(),
-		scheduler.NewScheduler(),
+		newTestScheduler(),
 		controllers.NewEndpointController(),
 		controllers.NewFailureController(),
 		controllers.NewIntentResolverController(),

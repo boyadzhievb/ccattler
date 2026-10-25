@@ -22,7 +22,6 @@ import (
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/lang"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -49,7 +48,7 @@ func TestContainerRuntime_ImagePullFailure(t *testing.T) {
 
 	// Start controllers to create and place instances.
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	startRunner(t, factStore, ctx, cancel, controllerRunner)
@@ -101,7 +100,7 @@ func TestContainerRuntime_OOMKill(t *testing.T) {
 	})
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	startRunner(t, factStore, ctx, cancel, controllerRunner)
@@ -159,7 +158,7 @@ func TestContainerRuntime_GracefulShutdown(t *testing.T) {
 	})
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	startRunner(t, factStore, ctx, cancel, controllerRunner)
@@ -212,7 +211,7 @@ func TestObservability_DecisionAuditTrail(t *testing.T) {
 	})
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
 	controllerRunner.SetEventLog(eventLog)
@@ -313,7 +312,7 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 	}
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
 	nodeFailureController.LeaseTimeout = 300 * time.Millisecond

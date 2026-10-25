@@ -14,7 +14,6 @@ import (
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -59,7 +58,7 @@ func setupInvariantCluster(testContext *testing.T, nodeCount int) *invariantClus
 
 	// Assemble core controllers.
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	networkController := controllers.NewNetworkController()

@@ -12,7 +12,6 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -25,7 +24,7 @@ func TestDisruptionBudgetMinAvailableDuringDrain(t *testing.T) {
 	factStore := store.NewMemoryStore()
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	drainController := controllers.NewDrainController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, drainController)
@@ -135,7 +134,7 @@ func TestDrainNodeMigratesInstances(t *testing.T) {
 	}
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	drainController := controllers.NewDrainController()

@@ -13,7 +13,6 @@ import (
 	"github.com/boyadzhievb/ccattler/agent"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -96,7 +95,7 @@ func TestSlowStartDoesNotCauseNodeUnreachable(t *testing.T) {
 
 	nodeFailureController := controllers.NewNodeFailureController()
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 
 	controllerRunner := controllers.NewRunner(memStore,
 		instanceController, schedulerController, nodeFailureController)
@@ -176,7 +175,7 @@ func TestMemoryBytesPassedDirectlyToRuntime(t *testing.T) {
 	go nodeAgent.Run(ctx)
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	controllerRunner := controllers.NewRunner(memStore, instanceController, schedulerController)
 	controllerRunner.SetDebounce(50 * time.Millisecond)
 	go controllerRunner.Run(ctx)

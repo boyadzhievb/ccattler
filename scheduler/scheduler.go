@@ -51,6 +51,11 @@ func NewScheduler() *Scheduler {
 	return &Scheduler{placementGracePeriod: initialPlacementGracePeriod}
 }
 
+// SetPlacementGracePeriod overrides the initial placement grace period.
+func (placementScheduler *Scheduler) SetPlacementGracePeriod(duration time.Duration) {
+	placementScheduler.placementGracePeriod = duration
+}
+
 // Name returns the controller identifier used for logging and registration.
 func (placementScheduler *Scheduler) Name() string { return "scheduler" }
 

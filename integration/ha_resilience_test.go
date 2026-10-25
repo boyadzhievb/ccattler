@@ -14,7 +14,6 @@ import (
 	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -266,12 +265,12 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 	}
 
 	runner1 := controllers.NewRunner(factStore,
-		controllers.NewInstanceController(), scheduler.NewScheduler(),
+		controllers.NewInstanceController(), newTestScheduler(),
 		controllers.NewEndpointController(), controllers.NewFailureController())
 	runner1.SetDebounce(10 * time.Millisecond)
 
 	runner2 := controllers.NewRunner(factStore,
-		controllers.NewInstanceController(), scheduler.NewScheduler(),
+		controllers.NewInstanceController(), newTestScheduler(),
 		controllers.NewEndpointController(), controllers.NewFailureController())
 	runner2.SetDebounce(10 * time.Millisecond)
 
@@ -565,7 +564,7 @@ func TestStorageFailure_SlowStore(testHandle *testing.T) {
 	})
 
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 
@@ -624,7 +623,7 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 	controllerGroupOrder := []string{"instance", "scheduler", "endpoint", "failure", "node-failure", "network"}
 	groupControllers := map[string][]controllers.Controller{
 		"instance":  {controllers.NewInstanceController()},
-		"scheduler": {scheduler.NewScheduler()},
+		"scheduler": {newTestScheduler()},
 		"endpoint":  {controllers.NewEndpointController()},
 		"failure":   {controllers.NewFailureController()},
 		"node-failure": {func() controllers.Controller {

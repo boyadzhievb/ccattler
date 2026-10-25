@@ -12,7 +12,6 @@ import (
 	"github.com/boyadzhievb/ccattler/chaos"
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/runtime"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -107,7 +106,7 @@ func helperSetupResilienceCluster(t *testing.T) *resilienceCluster {
 // clean shutdown before closing the store.
 func helperStartControllers(factStore store.StateStore, ctx context.Context) <-chan struct{} {
 	instanceController := controllers.NewInstanceController()
-	schedulerController := scheduler.NewScheduler()
+	schedulerController := newTestScheduler()
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()

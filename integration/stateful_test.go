@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
-	"github.com/boyadzhievb/ccattler/scheduler"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -23,7 +22,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 
 	controllerList := []controllers.Controller{
 		controllers.NewInstanceController(),
-		scheduler.NewScheduler(),
+		newTestScheduler(),
 		controllers.NewEndpointController(),
 		controllers.NewFailureController(),
 		controllers.NewIntentResolverController(),
