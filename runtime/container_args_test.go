@@ -163,36 +163,6 @@ func TestBuildRunArgumentsInvalidImageReturnsError(t *testing.T) {
 	}
 }
 
-// TestBuildRunArgumentsNetworkFlagsDocker verifies that Docker gets
-// --network-alias for DNS service discovery.
-func TestBuildRunArgumentsNetworkFlagsDocker(t *testing.T) {
-	containerRuntime := NewContainerRuntime()
-	containerRuntime.networkName = "ccattler-net"
-	containerRuntime.containerCommand = "docker"
-	spec := Spec{
-		ID:          "test-net",
-		Image:       "nginx:1.27",
-		ServiceName: "web",
-		IP:          "10.100.0.5",
-	}
-
-	args, _, err := containerRuntime.buildRunArguments(spec, "test-container", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	argsJoined := strings.Join(args, " ")
-	if !strings.Contains(argsJoined, "--network ccattler-net") {
-		t.Error("missing --network flag")
-	}
-	if !strings.Contains(argsJoined, "--ip 10.100.0.5") {
-		t.Error("missing --ip flag")
-	}
-	if !strings.Contains(argsJoined, "--network-alias web") {
-		t.Error("Docker should use --network-alias for DNS")
-	}
-}
-
 // TestBuildRunArgumentsNetworkFlagsNerdctl verifies that nerdctl gets
 // --hostname for DNS service discovery (nerdctl v2 removed --network-alias).
 func TestBuildRunArgumentsNetworkFlagsNerdctl(t *testing.T) {

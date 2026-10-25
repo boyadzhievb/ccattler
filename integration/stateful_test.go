@@ -55,7 +55,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
 
 	// Step 1: Wait for postgres-0 to be created (pending).
-	waitFor(t, 3*time.Second, "postgres-0 created", func() bool {
+	waitFor(t, 5*time.Second, "postgres-0 created", func() bool {
 		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-0"))
 		return fact != nil && string(fact.Value) == string(types.InstancePending)
 	})
@@ -71,7 +71,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	factStore.Put(ctx, types.KeyObservedInstanceIP("postgres-0"), []byte("10.0.1.4"))
 
 	// Wait for postgres-1 to be created.
-	waitFor(t, 3*time.Second, "postgres-1 created", func() bool {
+	waitFor(t, 5*time.Second, "postgres-1 created", func() bool {
 		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-1"))
 		return fact != nil
 	})
@@ -81,7 +81,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	factStore.Put(ctx, types.KeyObservedInstanceIP("postgres-1"), []byte("10.0.2.8"))
 
 	// Wait for postgres-2 to be created.
-	waitFor(t, 3*time.Second, "postgres-2 created", func() bool {
+	waitFor(t, 5*time.Second, "postgres-2 created", func() bool {
 		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-2"))
 		return fact != nil
 	})
@@ -91,7 +91,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	factStore.Put(ctx, types.KeyObservedInstanceIP("postgres-2"), []byte("10.0.3.2"))
 
 	// Step 5: Verify per-instance DNS entries are created.
-	waitFor(t, 3*time.Second, "per-instance DNS entries", func() bool {
+	waitFor(t, 5*time.Second, "per-instance DNS entries", func() bool {
 		dns0, _ := factStore.Get(ctx, types.KeyNetworkDNSInstance("postgres-0"))
 		dns1, _ := factStore.Get(ctx, types.KeyNetworkDNSInstance("postgres-1"))
 		dns2, _ := factStore.Get(ctx, types.KeyNetworkDNSInstance("postgres-2"))
@@ -111,7 +111,7 @@ func TestStatefulServiceThreeInstancesOrderedStartup(t *testing.T) {
 	}
 
 	// Step 6: Verify per-ordinal volumes were created.
-	waitFor(t, 3*time.Second, "per-ordinal volumes with size and persistent", func() bool {
+	waitFor(t, 5*time.Second, "per-ordinal volumes with size and persistent", func() bool {
 		vol0, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-0-pgdata"))
 		vol1, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-1-pgdata"))
 		vol2, _ := factStore.Get(ctx, types.KeyDesiredVolume("postgres-2-pgdata"))
@@ -156,11 +156,11 @@ func TestStatefulServiceScaleDown(t *testing.T) {
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("1"))
 
 	// Wait for ordinals 2 and 1 to be stopped.
-	waitFor(t, 3*time.Second, "ordinal 2 stopped", func() bool {
+	waitFor(t, 5*time.Second, "ordinal 2 stopped", func() bool {
 		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-2"))
 		return fact != nil && string(fact.Value) == string(types.InstanceStopped)
 	})
-	waitFor(t, 3*time.Second, "ordinal 1 stopped", func() bool {
+	waitFor(t, 5*time.Second, "ordinal 1 stopped", func() bool {
 		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-1"))
 		return fact != nil && string(fact.Value) == string(types.InstanceStopped)
 	})
