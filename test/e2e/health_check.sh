@@ -209,8 +209,8 @@ fi
 # ---- Check 8: systemd services ----
 log "Check 8: systemd services"
 for vm in "${ALL_VM_NAMES[@]}"; do
-    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null)
-    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null)
+    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r')
+    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r')
     log "  $vm: server=$server_active agent=$agent_active"
     if [[ "$agent_active" != "active" ]]; then
         warn "$vm cca-agent not running"
@@ -227,16 +227,17 @@ if [[ -n "$STATUS_JSON" ]]; then
                 log "  $svc_name: no VIP assigned, skipping"
                 continue
             fi
-            http_status=$(ssh_vm $CTRL_NAME \
-                "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null || echo 000" \
-                2>/dev/null | tr -d "'")
+            http_status=$(ssh_vm "$CTRL_NAME" \
+                "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/" \
+                2>/dev/null | tr -d "'\n\r")
+            http_status="${http_status:-000}"
             if [[ "$http_status" =~ ^[23] ]]; then
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status — ok"
             elif [[ "$http_status" == "000" ]]; then
                 # HTTP failed — try TCP connectivity as fallback (for non-HTTP services like databases)
-                tcp_ok=$(ssh_vm $CTRL_NAME \
+                tcp_ok=$(ssh_vm "$CTRL_NAME" \
                     "timeout 5 bash -c 'echo > /dev/tcp/${svc_vip}/${svc_port}' 2>/dev/null && echo yes || echo no" \
-                    2>/dev/null)
+                    2>/dev/null | tr -d '\n\r')
                 if [[ "$tcp_ok" == "yes" ]]; then
                     log "  $svc_name (${svc_vip}:${svc_port}): TCP open (non-HTTP service)"
                 else
