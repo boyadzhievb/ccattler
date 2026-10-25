@@ -102,6 +102,7 @@ func buildPendingSchedulingFacts(nodeCount int, pendingCount int) []store.Fact {
 func BenchmarkScheduler50Nodes1000Instances(b *testing.B) {
 	facts := buildPendingSchedulingFacts(50, 1000)
 	schedulerController := scheduler.NewScheduler()
+	schedulerController.SetPlacementGracePeriod(0)
 
 	b.ResetTimer()
 	for range b.N {

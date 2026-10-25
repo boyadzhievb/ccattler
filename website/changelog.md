@@ -1,7 +1,31 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.57.3-beta <Badge type="tip" text="latest" /> {#v1-57-3-beta}
+## v1.60.0-beta <Badge type="tip" text="latest" /> {#v1-60-0-beta}
+
+**2026-10-25** — HA Etcd Cluster Validation.
+
+- **HA Etcd Cluster Validation** (M136) — First end-to-end HA validation on vmherd: 3 ctrl (4GB, etcd + cca-server) + 1 worker (2GB) on 192.168.125.0/24. HA test script validates 9 areas: VM reachability, etcd 3-member quorum, cca-server API on all 3 ctrl, leader election, 4-node registration, whoami/whoami-multiport workload convergence, VIP routing from all nodes, control plane failover, etcd member failure recovery. Uses existing HA Ansible roles — no Go code changes.
+
+---
+
+## v1.59.0-beta {#v1-59-0-beta}
+
+**2026-10-25** — Scheduler Rebalancing & Pressure Detection.
+
+- **Scheduler Rebalancing & Pressure Detection** (M135) — Prevent thundering-herd placement on cluster startup via 10s grace period. Reactive rebalancing detects load imbalance and migrates up to 2 instances per cycle from overloaded to underloaded nodes, respecting architecture/zone/label/restrict constraints. Node allocation pressure detection logs WARNING when CPU or memory allocation exceeds 80%. 9 new tests, design doc at `design/scheduler-rebalancing.md`.
+
+---
+
+## v1.58.0-beta {#v1-58-0-beta}
+
+**2026-10-25** — BPF Binary Consolidation.
+
+- **BPF Binary Consolidation** (M134) — Consolidated three separate BPF ELF objects into a single multi-program ELF (`cca_dataplane.o`) embedded in the Go binary via `go:embed`. All 5 BPF programs (socket LB, tc DNAT, tc SNAT) share maps from one `ebpf.Collection` — no more `MapReplacements`. Eliminated `/usr/lib/cca/*.o` install step, Ansible on-node BPF compilation, and separate load methods. `build-ebpf.sh` produces one file; deploy copies only the binary.
+
+---
+
+## v1.57.3-beta {#v1-57-3-beta}
 
 **2026-10-24** — DSL Gate Keyword.
 

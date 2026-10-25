@@ -426,6 +426,7 @@ func (simulatedCluster *SimulatedChaosCluster) startControllers(ctx context.Cont
 		instanceController.MaxCreationsPerCycle = simulatedCluster.maxCreationsPerCycle
 	}
 	schedulerController := scheduler.NewScheduler()
+	schedulerController.SetPlacementGracePeriod(0)
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	if simulatedCluster.maxReplacementsPerCycle > 0 {
