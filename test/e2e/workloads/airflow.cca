@@ -55,9 +55,24 @@ service webserver {
     command webserver
     instances 1
     expose 8080
-    health {
-        tcp
-        every 15s
+    startup {
+        http /health
+        port 8080
+        every 10s
+        failure_threshold 6
+        initial_delay 15s
+    }
+    liveness {
+        http /health
+        port 8080
+        every 10s
+        failure_threshold 5
+    }
+    readiness {
+        http /health
+        port 8080
+        every 10s
+        failure_threshold 5
     }
     resources {
         cpu 500m
