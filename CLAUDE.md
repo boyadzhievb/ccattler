@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M133 — Phase 133 CronJobs. M1–M133 complete. Gates A–I resolved.
+**Completed through:** M135 — Phase 135 Scheduler Rebalancing & Pressure Detection. M1–M135 complete. Gates A–I resolved.
 
 ### Performance Optimization Principle
 

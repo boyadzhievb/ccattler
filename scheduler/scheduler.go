@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/logging"
@@ -22,13 +23,33 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// Scheduler is the placement controller that assigns pending instances to
-// alive nodes. It implements the controllers.Controller interface so it can
-// participate in the reconciliation loop.
-type Scheduler struct{}
+const (
+	// initialPlacementGracePeriod lets agents register before first placement.
+	initialPlacementGracePeriod = 10 * time.Second
 
-// NewScheduler creates and returns a new Scheduler instance.
-func NewScheduler() *Scheduler { return &Scheduler{} }
+	// maxRebalanceMovesPerCycle caps migrations per cycle to prevent oscillation.
+	maxRebalanceMovesPerCycle = 2
+
+	// rebalanceLoadImbalanceThreshold is the min max-min difference to trigger rebalancing.
+	rebalanceLoadImbalanceThreshold = 2
+
+	// nodeAllocationPressurePercent triggers a warning when allocation exceeds this ratio.
+	nodeAllocationPressurePercent = 80
+)
+
+// Scheduler is the placement controller that assigns pending instances to
+// alive nodes. It also rebalances load and detects resource pressure.
+type Scheduler struct {
+	// firstPendingSeenAt tracks when pending instances first appeared with no placements.
+	firstPendingSeenAt time.Time
+	// placementGracePeriod is the wait time before initial placement.
+	placementGracePeriod time.Duration
+}
+
+// NewScheduler creates a Scheduler with the default grace period.
+func NewScheduler() *Scheduler {
+	return &Scheduler{placementGracePeriod: initialPlacementGracePeriod}
+}
 
 // Name returns the controller identifier used for logging and registration.
 func (placementScheduler *Scheduler) Name() string { return "scheduler" }
@@ -52,6 +73,11 @@ func (placementScheduler *Scheduler) Watch() []string {
 // spread) are applied as filters before selecting the least-loaded node.
 // Service group members are co-scheduled onto the same node. Instances that
 // cannot be placed emit unplaced-demand facts for the cluster autoscaler.
+//
+// After initial placement, the scheduler checks for load imbalance across
+// alive nodes and migrates instances from overloaded nodes to underloaded
+// ones (up to maxRebalanceMovesPerCycle per cycle). It also detects and logs
+// resource allocation pressure on individual nodes.
 func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
@@ -63,7 +89,9 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	unplaced := findUnplacedPendingInstances(instances, placements)
 	var changes []controllers.Change
 
-	if len(unplaced) > 0 {
+	if placementScheduler.shouldDeferInitialPlacement(placements, unplaced, nodes) {
+		// Grace period active — skip placement but still emit unplaced demand facts
+	} else if len(unplaced) > 0 {
 		changes = append(changes, attemptPlacements(
 			unplaced, nodes, instances, placements, serviceResources,
 			placementConstraints, serviceToGroup,
@@ -77,7 +105,304 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	)
 	changes = append(changes, unplacedChanges...)
 	changes = append(changes, cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)...)
+
+	rebalanceChanges := rebalancePlacedInstances(
+		nodes, instances, placements, serviceResources,
+		placementConstraints, serviceToGroup, placedInThisCycle,
+	)
+	changes = append(changes, rebalanceChanges...)
+
+	detectAndLogNodePressure(nodes, placements, instances, serviceResources)
+
 	return changes, nil
+}
+
+// shouldDeferInitialPlacement returns true when the scheduler should wait
+// for more agents to register before placing the first batch of instances.
+// See design/scheduler-rebalancing.md for the full rationale.
+func (placementScheduler *Scheduler) shouldDeferInitialPlacement(
+	existingPlacements map[string]string,
+	unplaced []string,
+	nodes map[string]*schedulerNodeInfo,
+) bool {
+	if len(existingPlacements) > 0 || len(unplaced) == 0 {
+		placementScheduler.firstPendingSeenAt = time.Time{}
+		return false
+	}
+	if placementScheduler.placementGracePeriod <= 0 {
+		return false
+	}
+	if placementScheduler.firstPendingSeenAt.IsZero() {
+		placementScheduler.firstPendingSeenAt = time.Now()
+		logging.Default().Warn("scheduler: initial placement grace period started",
+			"duration", placementScheduler.placementGracePeriod.String(),
+			"pending_instances", strconv.Itoa(len(unplaced)),
+			"alive_nodes", strconv.Itoa(countAliveNodes(nodes)))
+		return true
+	}
+	if time.Since(placementScheduler.firstPendingSeenAt) < placementScheduler.placementGracePeriod {
+		return true
+	}
+	logging.Default().Info("scheduler: grace period expired, proceeding with placement",
+		"pending_instances", strconv.Itoa(len(unplaced)),
+		"alive_nodes", strconv.Itoa(countAliveNodes(nodes)))
+	placementScheduler.firstPendingSeenAt = time.Time{}
+	return false
+}
+
+// rebalancePlacedInstances detects load imbalance across alive nodes and
+// migrates instances from overloaded to underloaded nodes.
+func rebalancePlacedInstances(
+	nodes map[string]*schedulerNodeInfo,
+	instances map[string]*schedulerInstanceInfo,
+	placements map[string]string,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+	serviceToGroup map[string]string,
+	placedInThisCycle map[string]bool,
+) []controllers.Change {
+	aliveNodeIDs := collectAliveNodeIDs(nodes)
+	if len(aliveNodeIDs) < 2 {
+		return nil
+	}
+
+	nodeLoad := computeRunningLoadPerNode(placements, instances, aliveNodeIDs)
+	maxLoad, minLoad := computeMaxMinLoad(nodeLoad, aliveNodeIDs)
+	if maxLoad-minLoad <= rebalanceLoadImbalanceThreshold {
+		return nil
+	}
+
+	totalLoad := sumNodeLoad(nodeLoad)
+	idealLoad := totalLoad / len(aliveNodeIDs)
+
+	logging.Default().Warn("scheduler: load imbalance detected, rebalancing",
+		"max_load", strconv.Itoa(maxLoad), "min_load", strconv.Itoa(minLoad),
+		"ideal_load", strconv.Itoa(idealLoad), "alive_nodes", strconv.Itoa(len(aliveNodeIDs)))
+
+	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
+	aliveCandidates := buildAliveCandidateNodes(nodes, usedCPU, usedMemory)
+	overloadedNodes := findOverloadedNodes(nodeLoad, aliveNodeIDs, idealLoad)
+
+	return executeRebalanceMoves(
+		overloadedNodes, nodeLoad, aliveCandidates,
+		placements, instances, serviceToGroup,
+		placementConstraints, placedInThisCycle,
+	)
+}
+
+// executeRebalanceMoves migrates movable instances from overloaded to
+// underloaded nodes, capped at maxRebalanceMovesPerCycle.
+func executeRebalanceMoves(
+	overloadedNodes []string,
+	nodeLoad map[string]int,
+	aliveCandidates []candidateNode,
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	serviceToGroup map[string]string,
+	placementConstraints map[string]*servicePlacementConstraint,
+	placedInThisCycle map[string]bool,
+) []controllers.Change {
+	var changes []controllers.Change
+	moveCount := 0
+
+	for _, sourceNodeID := range overloadedNodes {
+		if moveCount >= maxRebalanceMovesPerCycle {
+			break
+		}
+		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle)
+		for _, instanceID := range movable {
+			if moveCount >= maxRebalanceMovesPerCycle {
+				break
+			}
+			instanceInfo := instances[instanceID]
+			if instanceInfo == nil {
+				continue
+			}
+			targetNodeID := selectRebalanceTarget(
+				instanceInfo.service, sourceNodeID,
+				aliveCandidates, nodeLoad, placementConstraints,
+			)
+			if targetNodeID == "" || nodeLoad[targetNodeID] >= nodeLoad[sourceNodeID]-1 {
+				continue
+			}
+			logging.Default().Warn("scheduler: rebalancing instance",
+				"instance", instanceID, "service", instanceInfo.service,
+				"from", sourceNodeID, "to", targetNodeID)
+			changes = append(changes, buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID)...)
+			nodeLoad[sourceNodeID]--
+			nodeLoad[targetNodeID]++
+			moveCount++
+		}
+	}
+	return changes
+}
+
+// collectAliveNodeIDs returns a sorted list of node IDs in the alive state.
+func collectAliveNodeIDs(nodes map[string]*schedulerNodeInfo) []string {
+	var alive []string
+	for _, node := range nodes {
+		if node.state == types.NodeAlive {
+			alive = append(alive, node.id)
+		}
+	}
+	sort.Strings(alive)
+	return alive
+}
+
+// computeRunningLoadPerNode counts placed running or pending instances per
+// alive node. All alive nodes appear in the result even with zero load.
+func computeRunningLoadPerNode(
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	aliveNodeIDs []string,
+) map[string]int {
+	nodeLoad := make(map[string]int, len(aliveNodeIDs))
+	for _, nodeID := range aliveNodeIDs {
+		nodeLoad[nodeID] = 0
+	}
+	for instanceID, nodeID := range placements {
+		if instanceInfo := instances[instanceID]; instanceInfo != nil {
+			if instanceInfo.state == types.InstanceRunning || instanceInfo.state == types.InstancePending {
+				nodeLoad[nodeID]++
+			}
+		}
+	}
+	return nodeLoad
+}
+
+// computeMaxMinLoad returns the maximum and minimum instance counts among the
+// given alive nodes.
+func computeMaxMinLoad(nodeLoad map[string]int, aliveNodeIDs []string) (int, int) {
+	maxLoad := 0
+	minLoad := math.MaxInt
+	for _, nodeID := range aliveNodeIDs {
+		load := nodeLoad[nodeID]
+		if load > maxLoad {
+			maxLoad = load
+		}
+		if load < minLoad {
+			minLoad = load
+		}
+	}
+	return maxLoad, minLoad
+}
+
+// sumNodeLoad returns the total instance count across all nodes.
+func sumNodeLoad(nodeLoad map[string]int) int {
+	total := 0
+	for _, count := range nodeLoad {
+		total += count
+	}
+	return total
+}
+
+// findOverloadedNodes returns node IDs sorted by load descending where the
+// load exceeds idealLoad + 1.
+func findOverloadedNodes(nodeLoad map[string]int, aliveNodeIDs []string, idealLoad int) []string {
+	var overloaded []string
+	for _, nodeID := range aliveNodeIDs {
+		if nodeLoad[nodeID] > idealLoad+1 {
+			overloaded = append(overloaded, nodeID)
+		}
+	}
+	sort.Slice(overloaded, func(i, j int) bool {
+		return nodeLoad[overloaded[i]] > nodeLoad[overloaded[j]]
+	})
+	return overloaded
+}
+
+// findMovableInstances returns running, non-grouped instances on sourceNodeID
+// that were not freshly placed in the current cycle.
+func findMovableInstances(
+	sourceNodeID string,
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	serviceToGroup map[string]string,
+	placedInThisCycle map[string]bool,
+) []string {
+	var movable []string
+	for instanceID, nodeID := range placements {
+		if nodeID != sourceNodeID {
+			continue
+		}
+		if placedInThisCycle[instanceID] {
+			continue
+		}
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil || instanceInfo.state != types.InstanceRunning {
+			continue
+		}
+		if _, inGroup := serviceToGroup[instanceInfo.service]; inGroup {
+			continue
+		}
+		movable = append(movable, instanceID)
+	}
+	sort.Strings(movable)
+	return movable
+}
+
+// selectRebalanceTarget finds the least-loaded constraint-compatible node
+// that is not the source. Returns empty string if no target exists.
+func selectRebalanceTarget(
+	serviceName string,
+	sourceNodeID string,
+	aliveCandidates []candidateNode,
+	nodeLoad map[string]int,
+	placementConstraints map[string]*servicePlacementConstraint,
+) string {
+	candidates := filterByConstraints(aliveCandidates, serviceName, placementConstraints)
+	bestNode := ""
+	bestLoad := math.MaxInt
+	for _, candidate := range candidates {
+		if candidate.id == sourceNodeID {
+			continue
+		}
+		load := nodeLoad[candidate.id]
+		if load < bestLoad {
+			bestLoad = load
+			bestNode = candidate.id
+		}
+	}
+	return bestNode
+}
+
+// buildRebalanceMoveChanges generates store changes to migrate an instance
+// from sourceNodeID to targetNodeID.
+func buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID string) []controllers.Change {
+	groupID := "rebalance/" + instanceID
+	return []controllers.Change{
+		{Type: store.OpPut, Key: types.KeyPlacementInstance(instanceID), Value: []byte(targetNodeID), Group: groupID},
+		{Type: store.OpDelete, Key: types.KeyPlacementNodeInstance(sourceNodeID, instanceID), Group: groupID},
+		{Type: store.OpPut, Key: types.KeyPlacementNodeInstance(targetNodeID, instanceID), Value: []byte(""), Group: groupID},
+	}
+}
+
+// detectAndLogNodePressure emits a warning when a node's resource allocation
+// exceeds nodeAllocationPressurePercent.
+func detectAndLogNodePressure(
+	nodes map[string]*schedulerNodeInfo,
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+	serviceResources map[string]serviceResourceRequirements,
+) {
+	_, usedCPU, usedMemory := computeNodeLoadAndResourceUsage(placements, instances, serviceResources)
+	for _, node := range nodes {
+		if node.state != types.NodeAlive || node.availCPU <= 0 {
+			continue
+		}
+		cpuPercent := (usedCPU[node.id] * 100) / node.availCPU
+		memoryPercent := int64(0)
+		if node.availMemory > 0 {
+			memoryPercent = (usedMemory[node.id] * 100) / node.availMemory
+		}
+		if cpuPercent >= nodeAllocationPressurePercent || memoryPercent >= nodeAllocationPressurePercent {
+			logging.Default().Warn("scheduler: node under allocation pressure",
+				"node", node.id,
+				"cpu_allocation_percent", strconv.FormatInt(cpuPercent, 10),
+				"memory_allocation_percent", strconv.FormatInt(memoryPercent, 10),
+				"threshold_percent", strconv.Itoa(nodeAllocationPressurePercent))
+		}
+	}
 }
 
 // attemptPlacements runs the full placement pipeline for unplaced instances.

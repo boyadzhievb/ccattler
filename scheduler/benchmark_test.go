@@ -40,7 +40,7 @@ func buildSchedulerBenchFacts(nodeCount int, pendingInstances int) []store.Fact 
 }
 
 func BenchmarkSchedule10Nodes10Instances(b *testing.B) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 	facts := buildSchedulerBenchFacts(10, 10)
 	benchContext := context.Background()
 
@@ -51,7 +51,7 @@ func BenchmarkSchedule10Nodes10Instances(b *testing.B) {
 }
 
 func BenchmarkSchedule100Nodes100Instances(b *testing.B) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 	facts := buildSchedulerBenchFacts(100, 100)
 	benchContext := context.Background()
 
@@ -62,7 +62,7 @@ func BenchmarkSchedule100Nodes100Instances(b *testing.B) {
 }
 
 func BenchmarkSchedule100Nodes1000Instances(b *testing.B) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 	facts := buildSchedulerBenchFacts(100, 1000)
 	benchContext := context.Background()
 
@@ -73,7 +73,7 @@ func BenchmarkSchedule100Nodes1000Instances(b *testing.B) {
 }
 
 func BenchmarkSchedule200Nodes5000Instances(b *testing.B) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 	facts := buildSchedulerBenchFacts(200, 5000)
 	benchContext := context.Background()
 

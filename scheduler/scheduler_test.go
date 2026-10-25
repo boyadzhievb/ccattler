@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
 	"github.com/boyadzhievb/ccattler/store"
@@ -25,6 +26,12 @@ func testKeyObservedNodeLabel(nodeID, label string) string {
 // Production code reads this via prefix scan, not through a shared key function.
 func testKeyObservedNodeRestrict(nodeID, label string) string {
 	return fmt.Sprintf("%s/node/%s/restrict/%s", types.PrefixObserved, nodeID, label)
+}
+
+// newTestScheduler creates a Scheduler with grace period disabled for tests
+// that need immediate placement on first reconcile call.
+func newTestScheduler() *Scheduler {
+	return &Scheduler{placementGracePeriod: 0}
 }
 
 func buildFacts(entries ...struct{ k, v string }) []store.Fact {
@@ -67,7 +74,7 @@ func filterUnplacedDemandChanges(changes []controllers.Change) []controllers.Cha
 }
 
 func TestPlacePendingInstance(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -92,7 +99,7 @@ func TestPlacePendingInstance(t *testing.T) {
 }
 
 func TestSkipAlreadyPlaced(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -112,7 +119,7 @@ func TestSkipAlreadyPlaced(t *testing.T) {
 }
 
 func TestSkipRunningInstances(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -131,7 +138,7 @@ func TestSkipRunningInstances(t *testing.T) {
 }
 
 func TestSpreadAcrossNodes(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// 3 pending instances, no placements yet.
@@ -169,7 +176,7 @@ func TestSpreadAcrossNodes(t *testing.T) {
 }
 
 func TestSpreadWithExistingLoad(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// Existing placement: node-1 already has one.
@@ -198,7 +205,7 @@ func TestSpreadWithExistingLoad(t *testing.T) {
 }
 
 func TestSkipUnreachableNodes(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -221,7 +228,7 @@ func TestSkipUnreachableNodes(t *testing.T) {
 }
 
 func TestNoAliveNodes(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -244,7 +251,7 @@ func TestNoAliveNodes(t *testing.T) {
 }
 
 func TestNoInstancesToPlace(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
@@ -261,7 +268,7 @@ func TestNoInstancesToPlace(t *testing.T) {
 }
 
 func TestResourceFit(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -293,7 +300,7 @@ func TestResourceFit(t *testing.T) {
 }
 
 func TestResourceExhaustion(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// 3 pending instances each needing 2000 CPU.
@@ -325,7 +332,7 @@ func TestResourceExhaustion(t *testing.T) {
 }
 
 func TestResourceSpreadWithAccounting(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// 2 pending instances each needing 1000 CPU.
@@ -363,7 +370,7 @@ func TestResourceSpreadWithAccounting(t *testing.T) {
 }
 
 func TestNoResourceRequirements(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	// No resource requirements → place anywhere (backwards compatible).
 	facts := buildFacts(
@@ -384,7 +391,7 @@ func TestNoResourceRequirements(t *testing.T) {
 }
 
 func TestRequireLabelPlacement(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
@@ -412,7 +419,7 @@ func TestRequireLabelPlacement(t *testing.T) {
 }
 
 func TestRequireLabelMismatch(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
@@ -438,7 +445,7 @@ func TestRequireLabelMismatch(t *testing.T) {
 }
 
 func TestMultipleRequireLabels(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "special"),
@@ -469,7 +476,7 @@ func TestMultipleRequireLabels(t *testing.T) {
 }
 
 func TestPreferLabelScoring(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -498,7 +505,7 @@ func TestPreferLabelScoring(t *testing.T) {
 }
 
 func TestPreferFallsBackToLeastLoaded(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -525,7 +532,7 @@ func TestPreferFallsBackToLeastLoaded(t *testing.T) {
 }
 
 func TestRestrictedNodeExcluded(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -551,7 +558,7 @@ func TestRestrictedNodeExcluded(t *testing.T) {
 }
 
 func TestAcceptRestrictedNode(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
@@ -580,7 +587,7 @@ func TestAcceptRestrictedNode(t *testing.T) {
 }
 
 func TestAcceptMissingRestrictionLabel(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -608,7 +615,7 @@ func TestAcceptMissingRestrictionLabel(t *testing.T) {
 }
 
 func TestRequireAndPreferCombined(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
@@ -643,7 +650,7 @@ func TestRequireAndPreferCombined(t *testing.T) {
 }
 
 func TestRestrictAndRequireCombined(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "ml-training"),
@@ -674,7 +681,7 @@ func TestRestrictAndRequireCombined(t *testing.T) {
 }
 
 func TestZoneSpreadPlacement(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -713,7 +720,7 @@ func TestZoneSpreadPlacement(t *testing.T) {
 }
 
 func TestZoneSpreadUnbalanced(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// One new pending instance to schedule.
@@ -753,7 +760,7 @@ func TestZoneSpreadUnbalanced(t *testing.T) {
 }
 
 func TestArchitectureFilterAmd64(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "amd-app"),
@@ -782,7 +789,7 @@ func TestArchitectureFilterAmd64(t *testing.T) {
 }
 
 func TestArchitectureFilterArm64(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "arm-app"),
@@ -815,7 +822,7 @@ func TestArchitectureFilterArm64(t *testing.T) {
 }
 
 func TestArchitectureEmptyPassesAny(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "any-arch"),
@@ -843,7 +850,7 @@ func TestArchitectureEmptyPassesAny(t *testing.T) {
 }
 
 func TestControllerInterface(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
@@ -853,7 +860,7 @@ func TestControllerInterface(t *testing.T) {
 }
 
 func TestGroupCoSchedulingSameNode(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// Two instances from two different services, both in group "frontend"
@@ -892,7 +899,7 @@ func TestGroupCoSchedulingSameNode(t *testing.T) {
 }
 
 func TestGroupCoSchedulingJoinsExistingPlacement(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// proxy-1 is already running and placed on node-2
@@ -929,7 +936,7 @@ func TestGroupCoSchedulingJoinsExistingPlacement(t *testing.T) {
 }
 
 func TestGroupDoesNotAffectUngroupedInstances(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		// Group instances
@@ -1028,7 +1035,7 @@ func TestPartitionUnplacedByGroup(t *testing.T) {
 }
 
 func TestDisabledNodeExcludedFromScheduler(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	// Two nodes: node-1 is disabled, node-2 is alive.
 	// A pending instance should only be placed on node-2.
@@ -1062,7 +1069,7 @@ func TestDisabledNodeExcludedFromScheduler(t *testing.T) {
 }
 
 func TestDrainingNodeExcludedFromScheduler(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	// Two nodes: node-1 is draining, node-2 is alive.
 	facts := buildFacts(
@@ -1095,7 +1102,7 @@ func TestDrainingNodeExcludedFromScheduler(t *testing.T) {
 }
 
 func TestUnplacedDemandEmittedForInsufficientCapacity(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -1137,7 +1144,7 @@ func TestUnplacedDemandEmittedForInsufficientCapacity(t *testing.T) {
 }
 
 func TestUnplacedDemandEmittedForUnsatisfiableConstraint(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	// Instance requires arm64 and 8000 CPU (more than the node has). The node
 	// is amd64. The scheduler's constraint filter falls back when no candidates
@@ -1181,7 +1188,7 @@ func TestUnplacedDemandEmittedForUnsatisfiableConstraint(t *testing.T) {
 }
 
 func TestUnplacedDemandCleanedUpWhenInstancePlaced(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -1216,7 +1223,7 @@ func TestUnplacedDemandCleanedUpWhenInstancePlaced(t *testing.T) {
 }
 
 func TestNoNodesEmitsUnplacedDemand(t *testing.T) {
-	placementScheduler := NewScheduler()
+	placementScheduler := newTestScheduler()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
@@ -1240,5 +1247,270 @@ func TestNoNodesEmitsUnplacedDemand(t *testing.T) {
 	}
 	if !foundReason {
 		t.Error("expected unplaced reason fact for instance aaa with no_nodes")
+	}
+}
+
+// --- Grace period tests ---
+
+func TestGracePeriodDefersInitialPlacement(t *testing.T) {
+	placementScheduler := NewScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 0 {
+		t.Fatalf("grace period should defer placement, got %d changes", len(placements))
+	}
+}
+
+func TestGracePeriodNotAppliedWithExistingPlacements(t *testing.T) {
+	placementScheduler := NewScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("existing"), "api"),
+		kv(types.KeyObservedInstanceState("existing"), "running"),
+		kv(types.KeyPlacementInstance("existing"), "node-1"),
+		kv(types.KeyObservedInstanceService("new"), "web"),
+		kv(types.KeyObservedInstanceState("new"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placements := filterPlacementChanges(changes)
+	if len(placements) != 1 {
+		t.Fatalf("grace period should not apply with existing placements, got %d", len(placements))
+	}
+}
+
+func TestGracePeriodExpiresAndPlaces(t *testing.T) {
+	placementScheduler := &Scheduler{placementGracePeriod: 1 * time.Millisecond}
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+	)
+	// First call starts grace period
+	changes, _ := placementScheduler.Reconcile(context.Background(), facts)
+	if len(filterPlacementChanges(changes)) != 0 {
+		t.Fatal("first call should defer")
+	}
+	time.Sleep(5 * time.Millisecond)
+	// Second call after grace period expires
+	changes, _ = placementScheduler.Reconcile(context.Background(), facts)
+	if len(filterPlacementChanges(changes)) != 1 {
+		t.Fatalf("expected 1 placement after grace period, got %d", len(filterPlacementChanges(changes)))
+	}
+}
+
+// --- Rebalancing tests ---
+
+func TestRebalanceSpreadsFromOverloadedNode(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 4 running instances all placed on node-1
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "api"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceService("ddd"), "api"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		// Two empty nodes
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should produce rebalance moves (up to maxRebalanceMovesPerCycle=2)
+	moveCount := 0
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) &&
+			strings.HasPrefix(change.Group, "rebalance/") {
+			moveCount++
+		}
+	}
+	if moveCount != maxRebalanceMovesPerCycle {
+		t.Errorf("expected %d rebalance placements, got %d", maxRebalanceMovesPerCycle, moveCount)
+	}
+}
+
+func TestRebalanceSkipsBalancedCluster(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 1 instance per node — balanced
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "rebalance/") {
+			t.Error("balanced cluster should not produce rebalance changes")
+		}
+	}
+}
+
+func TestRebalanceSkipsGroupedInstances(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 3 grouped instances on node-1, node-2 empty
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "api"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "db"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		// All services belong to the same group
+		kv(types.ScanDesiredGroups+"mygroup/process/web", ""),
+		kv(types.ScanDesiredGroups+"mygroup/process/api", ""),
+		kv(types.ScanDesiredGroups+"mygroup/process/db", ""),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "rebalance/") {
+			t.Error("grouped instances should not be rebalanced individually")
+		}
+	}
+}
+
+func TestRebalanceRespectsConstraints(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 4 instances on node-1 (amd64), node-2 is arm64
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "web"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceService("ddd"), "web"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		// web requires amd64
+		kv(types.ScanDesiredServices+"web/placement/architecture", "amd64"),
+		// node-1 is amd64, node-2 is arm64
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.ScanObservedNodes+"node-1/architecture", "amd64"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.ScanObservedNodes+"node-2/architecture", "arm64"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "rebalance/") {
+			t.Error("should not rebalance to incompatible architecture node")
+		}
+	}
+}
+
+func TestRebalanceMaxMovesPerCycle(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	// 8 instances on node-1, node-2 and node-3 empty
+	var factEntries []struct{ k, v string }
+	for index := 0; index < 8; index++ {
+		instanceID := fmt.Sprintf("inst-%02d", index)
+		factEntries = append(factEntries,
+			kv(types.KeyObservedInstanceService(instanceID), "web"),
+			kv(types.KeyObservedInstanceState(instanceID), "running"),
+			kv(types.KeyPlacementInstance(instanceID), "node-1"),
+		)
+	}
+	factEntries = append(factEntries,
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	facts := buildFacts(factEntries...)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moveCount := 0
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) &&
+			strings.HasPrefix(change.Group, "rebalance/") {
+			moveCount++
+		}
+	}
+	if moveCount != maxRebalanceMovesPerCycle {
+		t.Errorf("expected exactly %d moves per cycle, got %d", maxRebalanceMovesPerCycle, moveCount)
+	}
+}
+
+func TestRebalanceMoveTargetsLeastLoaded(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 4 on node-1, 1 on node-2, 0 on node-3
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "web"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceService("ddd"), "web"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		kv(types.KeyObservedInstanceService("eee"), "web"),
+		kv(types.KeyObservedInstanceState("eee"), "running"),
+		kv(types.KeyPlacementInstance("eee"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, _ := placementScheduler.Reconcile(context.Background(), facts)
+	// First move should go to node-3 (0 instances), second to node-2 (1 instance).
+	// After first move: node-1=3, node-2=1, node-3=1 → second targets node-2 or node-3.
+	targets := make(map[string]int)
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) &&
+			strings.HasPrefix(change.Group, "rebalance/") && !strings.Contains(change.Key, "/node/") {
+			targets[string(change.Value)]++
+		}
+	}
+	if targets["node-3"] == 0 {
+		t.Error("first rebalance move should target the empty node-3")
+	}
+	if targets["node-1"] > 0 {
+		t.Error("should never move instances to the overloaded source node")
 	}
 }

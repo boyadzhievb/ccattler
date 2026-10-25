@@ -34,7 +34,7 @@ func FuzzSchedulerReconcile(f *testing.F) {
 
 		syntheticFacts := buildSyntheticFactSlice(serviceName, clampedInstanceCount, clampedNodeCount)
 
-		placementScheduler := NewScheduler()
+		placementScheduler := newTestScheduler()
 		changes, reconcileError := placementScheduler.Reconcile(context.Background(), syntheticFacts)
 
 		// The scheduler must never return an error for well-formed fact slices.

@@ -1429,6 +1429,43 @@ Scheduled recurring jobs using standard cron expressions. A CronController creat
 - [x] Test: `TestCronFieldParsing` — edge cases (ranges, commas, wildcards, invalid)
 - [x] Design flow #20 in `design/runtime-invariant-flows.md`
 
+### Phase 134 — BPF Binary Consolidation (M134)
+
+Consolidate three separate BPF ELF objects (`cca_ebpf.o`, `cca_tc_dnat.o`, `cca_tc_snat.o`) into a single multi-program ELF embedded in the Go binary via `go:embed`. Eliminates `/usr/lib/cca/*.o` install step, removes `MapReplacements` hack, and simplifies deploy pipeline.
+
+- [x] Create unified `network/ebpf/cca_dataplane.c` containing all 5 BPF programs (connect4, sendmsg4, getpeername4, tc_dnat, tc_snat)
+- [x] Move `cca_config` map definition from `cca_tc_snat.c` into shared `cca_maps.h`
+- [x] Delete individual C source files (`cca_socket_lb.c`, `cca_tc_dnat.c`, `cca_tc_snat.c`)
+- [x] Create `network/ebpf_embed.go` with `//go:embed ebpf/cca_dataplane.o` directive
+- [x] Rewrite `network/ebpf_dataplane.go` — single `ebpf.Collection` loaded from embedded bytes, no `MapReplacements`
+- [x] Remove `EbpfDataPlane` fields: `elfPath`, `tcELFPath`, `snatELFPath`, `tcCollection`, `snatCollection`
+- [x] Remove `loadTCProgram()` and `loadSNATProgram()` methods — programs extracted from unified collection
+- [x] New `extractTCPrograms()` method extracts DNAT, SNAT programs and config map from single collection
+- [x] Remove filesystem path constants: `ebpfELFPath`, `ebpfTCDNATELFPath`, `ebpfTCSNATELFPath`
+- [x] Simplify `closeAllResources()` — one `bpfCollection.Close()` instead of three
+- [x] Update `scripts/build-ebpf.sh` — compiles single `cca_dataplane.o` to `network/ebpf/`
+- [x] Simplify `Makefile` — `bpf` target produces one file, `deploy-ebpf` no longer copies BPF source
+- [x] Remove Ansible on-node BPF compilation tasks (clang install, source copy, compile loop, /usr/lib/cca)
+- [x] Update `ebpf_gen.go` bpf2go directive to target `cca_dataplane.c`
+
+### Phase 135 — Scheduler Rebalancing & Pressure Detection (M135)
+
+Prevent thundering-herd placement on cluster startup and detect/correct load imbalance at runtime. Three complementary features: grace period, reactive rebalancing, node pressure warnings.
+
+- [x] Add `initialPlacementGracePeriod` (10s) — defer placement when zero existing placements to let all agents register
+- [x] Add `shouldDeferInitialPlacement()` with `firstPendingSeenAt` tracking and configurable grace period
+- [x] Implement reactive rebalancing: `rebalancePlacedInstances()` detects max-min load imbalance > threshold
+- [x] Rebalance respects constraints: architecture, zone, require labels, restrict/accept (taints/tolerations)
+- [x] Rebalance skips grouped instances (co-scheduled services stay together)
+- [x] Rebalance capped at `maxRebalanceMovesPerCycle` (2) to prevent oscillation
+- [x] Move mechanics: PUT instance placement, DEL source node index, PUT target node index — atomic change group
+- [x] Add `detectAndLogNodePressure()` — WARN log when CPU or memory allocation exceeds 80%
+- [x] Log WARNING when all valid target nodes are restricted/tainted and rebalance cannot proceed
+- [x] `newTestScheduler()` helper with zero grace period for all existing tests
+- [x] 9 new tests: grace period (3), rebalancing (6) covering spread, balanced skip, groups, constraints, max moves, target selection
+- [x] Update benchmark and fuzz tests to use `newTestScheduler()`
+- [x] Design document: `design/scheduler-rebalancing.md`
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)
@@ -1560,10 +1597,12 @@ Scheduled recurring jobs using standard cron expressions. A CronController creat
 | M131 — DSL Gate Keyword | 131 | Rename user-facing DSL keyword from `route` to `gate` for external traffic blocks. `gate` is shorter, unambiguous, and avoids collision with cloud/VPC route terminology already used by `CloudRouteController`. Parser accepts only `gate`; formatter emits `gate`; compiler error messages say "gate". Internal fact store keys (`desired/route/`, `derived/route/`) unchanged — the rename is DSL-surface only. Updated: parser, compiler, formatter, linter, all tests, examples, workloads, design docs, kubernetes migration guide, STATUS.md. |
 | M132 — Image Pull Secrets | 132 | Registry authentication for pulling from private registries. DSL `image_pull_secret "secret-name"` field on services and jobs. Secret value is JSON `{"username":"...","password":"..."}` stored via `cca secret set`. Agent reads pull secret name from store, resolves credential via API, passes `--creds user:pass` to `nerdctl pull`. No docker config.json manipulation — direct nerdctl `--creds` flag. `runtime.PullImage` gains credentials parameter. Compiler emits `desired/service/{name}/image_pull_secret` fact. Simulator tracks credentials for test assertions. Design flow #19 in runtime-invariant-flows.md. |
 | M133 — CronJobs | 133 | Scheduled recurring jobs using cron expressions. DSL `cronjob "name" { schedule "0 2 * * *" image "img" command "cmd" completions N backoff_limit N }`. Hand-rolled 5-field cron parser (`min hour dom month dow`) — supports wildcards, fixed values, comma-separated lists. CronController piggybacks on the 30s runner resync cycle: checks if schedule matches current minute, creates job instance if match and no active job. `derived/cronjob/{name}/last_scheduled` prevents double-firing within same minute. JobController owns created instances from there. Design flow #20 in runtime-invariant-flows.md. |
+| *(future)* Vagrant Cleanup | — | Remove Vagrant files and references now that vmherd manages all VM clusters. Delete 3 Vagrantfiles (`deploy/ansible/demo-Vagrantfile`, `deploy-Vagrantfile`, `test-Vagrantfile`) and `deploy/ccattler-vagrant-test-cluster-deploy.sh`. Update Vagrant SSH key paths and inventory references in `demo-deploy.yml`, `baremetal-deploy.yml`, `test-deploy.yml`, `cluster_test.sh`, and `placement_test.sh` to use vmherd equivalents. Remove any `/tmp/cca-vagrant-state-*` path assumptions. |
 | *(future)* Agent Dependency Bootstrap | — | `cca agent` auto-installs CNI plugins and nerdctl on startup if missing. Checks `/opt/cni/bin/bridge` and `/usr/local/bin/nerdctl` — downloads, verifies SHA256, extracts. URLs configurable via priority chain: `/etc/ccattler/agent.conf` (`cni_url`, `nerdctl_url`) > env vars (`CCA_CNI_URL`, `CCA_NERDCTL_URL`) > flags (`--cni-url`, `--nerdctl-url`) > compiled defaults (GitHub releases for `containernetworking/plugins` and `containerd/nerdctl`). Supports local mirrors, S3 buckets, or air-gapped HTTP servers. Skips download if binaries already present and version matches. Eliminates Ansible dependency for CNI and nerdctl installation. Same pattern as k3s bundled dependencies. |
 | *(future)* HTTP Secret API | — | Replace bind-mount secret delivery with an agent-side HTTP API (`GET /v1/secrets/{name}`). Containers fetch secrets at runtime from the local agent, authenticated by per-instance bearer tokens. No files on host disk, no bind-mounts, no permission issues. Agent registers/revokes tokens on instance lifecycle. Current bind-mount approach (M92) works but requires host filesystem access. |
 | *(future)* Cloud InfrastructureProviders | — | AWS EC2, GCP Compute, and Azure VM implementations of `InfrastructureProvider` for real cloud node provisioning. Cluster autoscaling controller works end-to-end with `SimulatorInfraProvider`; real cloud backends require SDK integration and cloud-specific testing. |
-| *(future)* BPF Binary Consolidation | — | Consolidate the three separate BPF ELF objects (`cca_connect4.o`, `cca_tc_dnat.o`, `cca_tc_snat.o`) into a single multi-program ELF or embed them in the `cca` binary via `go:embed`. Eliminates separate `/usr/lib/cca/*.o` install step, simplifies agent startup (one load, shared maps without `MapReplacements`), and removes the need for `build-ebpf.sh` to produce multiple artifacts. The `bpf2go` generator already supports multi-program ELFs. |
+| M134 — BPF Binary Consolidation | 134 | Consolidated three separate BPF ELF objects into a single multi-program ELF (`cca_dataplane.o`) embedded in the Go binary via `go:embed`. All 5 BPF programs (socket LB, tc DNAT, tc SNAT) share maps from one `ebpf.Collection` — no more `MapReplacements`. Eliminated `/usr/lib/cca/*.o` install step, Ansible on-node BPF compilation, and separate `loadTCProgram`/`loadSNATProgram` methods. `build-ebpf.sh` produces one file; `deploy-ebpf` copies only the binary. |
+| M135 — Scheduler Rebalancing & Pressure Detection | 135 | Prevent thundering-herd placement on cluster startup via 10s grace period (waits for all agents to register before initial placement). Reactive rebalancing detects load imbalance (max-min > 2) and migrates up to 2 instances per cycle from overloaded to underloaded nodes, respecting architecture/zone/label/restrict constraints. Node allocation pressure detection logs WARN when CPU or memory exceeds 80%. WARNING when all valid targets are restricted. 9 new tests, design doc at `design/scheduler-rebalancing.md`. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |
