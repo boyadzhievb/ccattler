@@ -14,6 +14,7 @@
     ./cmd/cca/
   args:
     chdir: "{{ playbook_dir }}/../.."
+    creates: "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
   environment:
     GOOS: linux
     GOARCH: "{{ go_arch }}"
@@ -21,6 +22,28 @@
   delegate_to: localhost
   run_once: true
   become: false
+
+- name: Ensure Docker is running on deploy host
+  service:
+    name: docker
+    state: started
+  delegate_to: localhost
+  run_once: true
+  become: true
+  when: insecure_registry | default('') | length > 0
+
+- name: Ensure local Docker registry is running
+  shell: |
+    if docker ps --format '{{.Names}}' | grep -q '^registry$'; then
+      echo "registry already running"
+    else
+      docker run -d --name registry --restart always -p 5000:5000 registry:2 2>/dev/null || \
+      docker start registry
+    fi
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: insecure_registry | default('') | length > 0
 
 - name: Disable systemd-resolved
   systemd:
