@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M135 — Phase 135 Scheduler Rebalancing & Pressure Detection. M1–M135 complete. Gates A–I resolved.
+**Completed through:** M136 — Phase 136 HA Etcd Cluster Validation. M1–M136 complete. Gates A–I resolved.
 
 ### Performance Optimization Principle
 

@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.60.0-beta <Badge type="tip" text="latest" /> {#v1-60-0-beta}
+## v1.60.1-beta <Badge type="tip" text="latest" /> {#v1-60-1-beta}
+
+**2026-10-25** — HA Etcd Cluster Validation.
+
+- **HA Etcd Cluster Validation** (M136) — First end-to-end HA validation on vmherd: 3 ctrl (4GB, etcd + cca-server) + 1 worker (2GB) on 192.168.125.0/24. HA test script validates 9 areas: VM reachability, etcd 3-member quorum, cca-server API on all 3 ctrl, leader election (one active controller), 4-node registration, whoami/whoami-multiport workload convergence, VIP routing from all nodes, control plane failover (stop leader → new leader in 30s), etcd member failure (2/3 quorum holds). Uses existing `ha-deploy.yml`, `etcd-cluster` and `ha-controlplane` Ansible roles — no Go code changes.
+
+---
+
+## v1.60.0-beta {#v1-60-0-beta}
 
 **2026-10-25** — HA Etcd Cluster Validation.
 
