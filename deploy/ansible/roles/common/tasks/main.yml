@@ -6,8 +6,21 @@
       - ansible_distribution_major_version | int >= 22 or ansible_distribution == "Debian"
     fail_msg: "CCattler requires Ubuntu 22.04+ or Debian 12+ (found {{ ansible_distribution }} {{ ansible_distribution_version }}). Python 3.9+ and OpenSSL 3.0+ are needed."
 
+- name: Compile BPF data plane (when dataplane_backend is ebpf)
+  command: make bpf
+  args:
+    chdir: "{{ playbook_dir }}/../.."
+  delegate_to: localhost
+  run_once: true
+  become: false
+  when: dataplane_backend | default('auto') == 'ebpf'
+
 - name: Build CCattler binary for target architecture
-  command: go build -o "{{ playbook_dir }}/cca-linux-{{ go_arch }}" ./cmd/cca/
+  command: >-
+    go build
+    {% if dataplane_backend | default('auto') == 'ebpf' %}-tags ebpf{% endif %}
+    -o "{{ playbook_dir }}/cca-linux-{{ go_arch }}"
+    ./cmd/cca/
   args:
     chdir: "{{ playbook_dir }}/../.."
   environment:
@@ -209,36 +222,8 @@
   command: /usr/local/bin/cca version
   changed_when: false
 
-- name: Install clang for BPF compilation
-  apt:
-    name: clang
-    state: present
-  when: dataplane_backend == "ebpf"
-
-- name: Copy BPF source files to node
-  copy:
-    src: "{{ playbook_dir }}/../../network/ebpf/"
-    dest: /tmp/cca-ebpf/
-    mode: "0644"
-  when: dataplane_backend == "ebpf"
-
-- name: Create BPF output directory
-  file:
-    path: /usr/lib/cca
-    state: directory
-    mode: "0755"
-  when: dataplane_backend == "ebpf"
-
-- name: Compile BPF programs on node
-  shell: |
-    clang -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86 \
-      -I/usr/include -I/usr/include/x86_64-linux-gnu \
-      -c /tmp/cca-ebpf/{{ item.src }} -o /usr/lib/cca/{{ item.out }}
-  loop:
-    - { src: "cca_socket_lb.c", out: "cca_ebpf.o" }
-    - { src: "cca_tc_dnat.c", out: "cca_tc_dnat.o" }
-    - { src: "cca_tc_snat.c", out: "cca_tc_snat.o" }
-  when: dataplane_backend == "ebpf"
+# BPF programs are embedded in the cca binary via go:embed (M134).
+# No on-node compilation or /usr/lib/cca/*.o installation needed.
 
 - name: Create CCattler directories
   file:

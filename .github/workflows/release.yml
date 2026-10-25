@@ -50,6 +50,29 @@ jobs:
           version="${GITHUB_REF#refs/tags/}"
           go build -trimpath -tags cloudprovider -ldflags "-s -w -X main.version=${version}" -o cca-cloud ./cmd/cca/
 
+      - name: Install BPF build dependencies
+        if: matrix.goos == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libbpf-dev linux-headers-generic
+
+      - name: Compile BPF data plane
+        if: matrix.goos == 'linux'
+        run: |
+          clang -O2 -g -Wall -Werror -target bpf -D__TARGET_ARCH_x86 \
+            -I/usr/include -I/usr/include/x86_64-linux-gnu \
+            -c network/ebpf/cca_dataplane.c -o network/ebpf/cca_dataplane.o
+
+      - name: Build (ebpf)
+        if: matrix.goos == 'linux'
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          version="${GITHUB_REF#refs/tags/}"
+          go build -trimpath -tags ebpf -ldflags "-s -w -X main.version=${version}" -o cca-ebpf ./cmd/cca/
+
       - name: Build k8s-to-cca converter
         env:
           GOOS: ${{ matrix.goos }}
@@ -62,6 +85,7 @@ jobs:
         run: |
           ./cca version
           ./cca-cloud version
+          ./cca-ebpf version
 
       - name: Package
         run: |
@@ -72,6 +96,11 @@ jobs:
           cloud_archive="cca-cloud-${version}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
           tar czf "${cloud_archive}" cca-cloud k8s-to-cca
           sha256sum "${cloud_archive}" > "${cloud_archive}.sha256"
+          if [ -f cca-ebpf ]; then
+            ebpf_archive="cca-ebpf-${version}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+            tar czf "${ebpf_archive}" cca-ebpf k8s-to-cca
+            sha256sum "${ebpf_archive}" > "${ebpf_archive}.sha256"
+          fi
           echo "ARCHIVE=${archive}" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -80,8 +109,8 @@ jobs:
           path: |
             cca-*.tar.gz
             cca-cloud-*.tar.gz
-            cca-*.tar.gz.sha256
-            cca-cloud-*.tar.gz.sha256
+            cca-ebpf-*.tar.gz
+            *.sha256
 
   release:
     needs: [build]
@@ -102,8 +131,8 @@ jobs:
           files: |
             cca-v*-*.tar.gz
             cca-cloud-v*-*.tar.gz
-            cca-v*-*.tar.gz.sha256
-            cca-cloud-v*-*.tar.gz.sha256
+            cca-ebpf-v*-*.tar.gz
+            *.sha256
             install.sh
             install-demo.sh
             checksums.txt

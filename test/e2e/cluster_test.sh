@@ -232,11 +232,9 @@ ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 
-# VM state directory (VM environments only — bare-metal skips all VM lifecycle).
+# VM lifecycle tools (VM environments only — bare-metal skips all VM lifecycle).
 if [[ "$BAREMETAL" != "true" ]]; then
     VMHERD_BIN="${VMHERD_BIN:-vmherd}"
-    VM_STATE_DIR="${VMHERD_DIR}/.vmherd"
-    VM_SSH_KEY="${VM_STATE_DIR}/id_ed25519"
 fi
 
 # Maximum seconds to wait for convergence checks.
@@ -296,13 +294,13 @@ wait_for_port() {
 
 ssh_vm() {
     local vm_name="$1"; shift
-    local ip="${NODE_IPS[$vm_name]}"
-    [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
-    local ssh_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     if [[ "$BAREMETAL" != "true" ]]; then
-        ssh_args+=" -i $VM_SSH_KEY"
+        (cd "$VMHERD_DIR" && "$VMHERD_BIN" ssh "$vm_name" -- "$@")
+    else
+        local ip="${NODE_IPS[$vm_name]}"
+        [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
+        ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "${SSH_USER}@${ip}" "$@"
     fi
-    ssh $ssh_args "${SSH_USER}@${ip}" "$@"
 }
 
 count_containers() {
@@ -313,13 +311,13 @@ count_containers() {
 # Copy a local file to a node via scp.
 scp_to_vm() {
     local vm_name="$1" local_path="$2" remote_path="$3"
-    local ip="${NODE_IPS[$vm_name]}"
-    [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
-    local scp_args="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
     if [[ "$BAREMETAL" != "true" ]]; then
-        scp_args+=" -i $VM_SSH_KEY"
+        (cd "$VMHERD_DIR" && "$VMHERD_BIN" scp "$local_path" "${vm_name}:${remote_path}")
+    else
+        local ip="${NODE_IPS[$vm_name]}"
+        [[ -n "$ip" ]] || fail "Unknown node: $vm_name (not in NODE_IPS)"
+        scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$local_path" "${SSH_USER}@${ip}:${remote_path}"
     fi
-    scp $scp_args "$local_path" "${SSH_USER}@${ip}:${remote_path}"
 }
 
 # ---- Clear workloads mode ----

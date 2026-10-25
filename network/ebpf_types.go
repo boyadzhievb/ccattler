@@ -46,22 +46,10 @@ const ebpfProtocolTCP uint8 = 6
 // ebpfProtocolUDP is the IANA protocol number for UDP.
 const ebpfProtocolUDP uint8 = 17
 
-// ebpfTCDNATELFPath is the default filesystem path to the compiled tc DNAT
-// BPF ELF object. Contains the cca_tc_dnat program that creates conntrack
-// DNAT entries for container-to-VIP traffic on the bridge.
-const ebpfTCDNATELFPath = "/usr/lib/cca/cca_tc_dnat.o"
-
-// ebpfTCDNATProgName is the name of the tc ingress BPF program in the tc
-// DNAT ELF object.
+// ebpfTCDNATProgName is the BPF function name for the tc ingress DNAT program.
 const ebpfTCDNATProgName = "cca_tc_dnat"
 
-// ebpfTCSNATELFPath is the default filesystem path to the compiled tc SNAT
-// BPF ELF object. Contains the cca_tc_snat program that rewrites overlay
-// source IPs to the node's advertise address on the physical NIC egress.
-const ebpfTCSNATELFPath = "/usr/lib/cca/cca_tc_snat.o"
-
-// ebpfTCSNATProgName is the name of the tc egress BPF program in the tc
-// SNAT ELF object.
+// ebpfTCSNATProgName is the BPF function name for the tc egress SNAT program.
 const ebpfTCSNATProgName = "cca_tc_snat"
 
 // ebpfConfigMapName is the BPF map name for node-level configuration.

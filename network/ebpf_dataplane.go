@@ -6,6 +6,7 @@
 package network
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -27,11 +28,6 @@ const ebpfPinPath = "/sys/fs/bpf/cca"
 // ebpfCgroupPath is the cgroup v2 unified mount point where socket LB
 // programs are attached. On systemd-based systems this is the root cgroup.
 const ebpfCgroupPath = "/sys/fs/cgroup"
-
-// ebpfELFPath is the default filesystem path to the compiled BPF ELF object.
-// In production, the Rust/aya-ebpf pipeline compiles programs to this path.
-// The agent loads BPF programs and map definitions from this ELF file.
-const ebpfELFPath = "/usr/lib/cca/cca_ebpf.o"
 
 // ebpfServiceMapName is the BPF map name for the service lookup table.
 const ebpfServiceMapName = "cca_services"
@@ -79,12 +75,11 @@ var ebpfCgroupPrograms = []ebpfCgroupAttachment{
 	{ebpfGetpeername4ProgName, ebpf.AttachCgroupInet4GetPeername},
 }
 
-// EbpfDataPlane implements DataPlaneProvider by loading BPF programs that
-// intercept socket syscalls (connect4, sendmsg4, getpeername4) on the host
-// cgroup and translating VIP destinations to backend endpoints via BPF hash
-// maps. Also loads a tc ingress program on the container bridge for
-// container-to-VIP DNAT via conntrack kfuncs. Implements DataPlaneInitializer
-// for one-time program loading and DataPlaneNodeRegistrar for bridge discovery.
+// EbpfDataPlane implements DataPlaneProvider by loading all BPF programs from
+// a single embedded ELF object. Programs share maps without MapReplacements
+// because they originate from the same compilation unit. Socket LB programs
+// attach to the root cgroup; tc DNAT attaches to the container bridge; tc
+// SNAT attaches to the physical NIC.
 type EbpfDataPlane struct {
 	// pinPath is the BPF filesystem directory where maps are pinned.
 	pinPath string
@@ -96,6 +91,8 @@ type EbpfDataPlane struct {
 	affinityMap *ebpf.Map
 	// reverseNatMap is a handle to the cca_reverse_nat BPF LRU hash map.
 	reverseNatMap *ebpf.Map
+	// configMap is a handle to the cca_config BPF array map for node config.
+	configMap *ebpf.Map
 	// bpfCollection holds all loaded BPF programs and maps from the ELF.
 	bpfCollection *ebpf.Collection
 	// attachedLinks tracks BPF program cgroup attachments for orderly cleanup.
@@ -106,56 +103,43 @@ type EbpfDataPlane struct {
 	serviceNameToID map[string]uint32
 	// mutex serializes reconciliation calls and service ID allocation.
 	mutex sync.Mutex
-	// elfPath is the filesystem path to the compiled BPF ELF object.
-	elfPath string
 	// initialized tracks whether Initialize completed successfully.
 	initialized bool
-	// tcELFPath is the filesystem path to the tc DNAT BPF ELF object.
-	tcELFPath string
-	// tcCollection holds the loaded tc BPF program for bridge DNAT.
-	tcCollection *ebpf.Collection
-	// tcLink is the TCX attachment of the tc program to the bridge.
-	tcLink link.Link
 	// tcProgram is the loaded tc DNAT BPF program, ready for attachment.
 	tcProgram *ebpf.Program
+	// tcLink is the TCX attachment of the tc program to the bridge.
+	tcLink link.Link
 	// bridgeInterfaceName is the discovered container bridge device name.
 	bridgeInterfaceName string
-	// snatELFPath is the filesystem path to the tc SNAT BPF ELF object.
-	snatELFPath string
-	// snatCollection holds the loaded tc SNAT BPF program and config map.
-	snatCollection *ebpf.Collection
-	// snatLink is the TCX attachment of the SNAT program to the physical NIC.
-	snatLink link.Link
 	// snatProgram is the loaded tc SNAT BPF program, ready for attachment.
 	snatProgram *ebpf.Program
-	// configMap is a handle to the cca_config BPF array map for node config.
-	configMap *ebpf.Map
+	// snatLink is the TCX attachment of the SNAT program to the physical NIC.
+	snatLink link.Link
 	// physicalInterfaceName is the detected physical NIC carrying node traffic.
 	physicalInterfaceName string
 }
 
-// NewEbpfDataPlane creates an EbpfDataPlane ready to load BPF programs and
-// manage BPF maps for socket-level VIP load balancing and tc bridge DNAT.
+// NewEbpfDataPlane creates an EbpfDataPlane ready to load BPF programs from
+// the embedded ELF and manage BPF maps for socket-level VIP load balancing,
+// tc bridge DNAT, and tc physical NIC SNAT.
 func NewEbpfDataPlane() *EbpfDataPlane {
 	return &EbpfDataPlane{
 		pinPath:         ebpfPinPath,
 		nextServiceID:   ebpfInitialServiceID,
 		serviceNameToID: make(map[string]uint32),
-		elfPath:         ebpfELFPath,
-		tcELFPath:       ebpfTCDNATELFPath,
-		snatELFPath:     ebpfTCSNATELFPath,
 	}
 }
 
-// Initialize loads BPF programs from the compiled ELF, pins maps to the BPF
-// filesystem for persistence, and attaches cgroup programs for socket-level
-// VIP interception. Must be called before the first reconciliation cycle.
+// Initialize loads all BPF programs from the embedded ELF, pins maps to the
+// BPF filesystem for persistence, attaches cgroup programs for socket-level
+// VIP interception, and extracts tc programs for later bridge/NIC attachment.
 func (ebpfDataPlane *EbpfDataPlane) Initialize(ctx context.Context) error {
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()
 
 	logger := logging.Default()
-	logger.Info("ebpf data plane: initializing", "elf_path", ebpfDataPlane.elfPath)
+	logger.Info("ebpf data plane: initializing from embedded ELF",
+		"elf_size", strconv.Itoa(len(embeddedDataplaneELF)))
 
 	if rlimitError := rlimit.RemoveMemlock(); rlimitError != nil {
 		return fmt.Errorf("removing memlock rlimit for BPF: %w", rlimitError)
@@ -165,9 +149,10 @@ func (ebpfDataPlane *EbpfDataPlane) Initialize(ctx context.Context) error {
 		return fmt.Errorf("creating BPF pin directory %s: %w", ebpfDataPlane.pinPath, directoryError)
 	}
 
-	collectionSpec, loadError := ebpf.LoadCollectionSpec(ebpfDataPlane.elfPath)
+	elfReader := bytes.NewReader(embeddedDataplaneELF)
+	collectionSpec, loadError := ebpf.LoadCollectionSpecFromReader(elfReader)
 	if loadError != nil {
-		return fmt.Errorf("loading BPF ELF from %s: %w", ebpfDataPlane.elfPath, loadError)
+		return fmt.Errorf("loading BPF ELF from embedded bytes: %w", loadError)
 	}
 
 	collection, createError := ebpf.NewCollection(collectionSpec)
@@ -191,14 +176,41 @@ func (ebpfDataPlane *EbpfDataPlane) Initialize(ctx context.Context) error {
 			"error", scanError.Error())
 	}
 
-	if tcLoadError := ebpfDataPlane.loadTCProgram(); tcLoadError != nil {
-		logger.Warn("ebpf data plane: tc DNAT program not loaded (nftables handles bridge traffic)",
-			"error", tcLoadError.Error())
-	}
+	ebpfDataPlane.extractTCPrograms()
 
 	ebpfDataPlane.initialized = true
 	logger.Info("ebpf data plane: initialization complete")
 	return nil
+}
+
+// extractTCPrograms retrieves the tc DNAT, tc SNAT, and config map handles
+// from the single loaded collection. Programs are stored for later attachment
+// in RegisterNode when the bridge and physical interfaces are known.
+func (ebpfDataPlane *EbpfDataPlane) extractTCPrograms() {
+	logger := logging.Default()
+
+	tcProgram := ebpfDataPlane.bpfCollection.Programs[ebpfTCDNATProgName]
+	if tcProgram != nil {
+		ebpfDataPlane.tcProgram = tcProgram
+		logger.Info("ebpf data plane: tc DNAT program loaded, awaiting bridge discovery")
+	} else {
+		logger.Warn("ebpf data plane: tc DNAT program not found in embedded ELF")
+	}
+
+	snatProgram := ebpfDataPlane.bpfCollection.Programs[ebpfTCSNATProgName]
+	if snatProgram != nil {
+		ebpfDataPlane.snatProgram = snatProgram
+		logger.Info("ebpf data plane: tc SNAT program loaded, awaiting NIC discovery")
+	} else {
+		logger.Warn("ebpf data plane: tc SNAT program not found in embedded ELF")
+	}
+
+	configMapHandle := ebpfDataPlane.bpfCollection.Maps[ebpfConfigMapName]
+	if configMapHandle != nil {
+		ebpfDataPlane.configMap = configMapHandle
+	} else {
+		logger.Warn("ebpf data plane: cca_config map not found in embedded ELF")
+	}
 }
 
 // ensurePinDirectory creates the BPF filesystem directory for pinned maps.
@@ -510,49 +522,6 @@ func (ebpfDataPlane *EbpfDataPlane) enableStickyAffinityForService(routeConfig R
 	}
 }
 
-// loadTCProgram loads the tc DNAT BPF ELF with map replacements so it
-// shares cca_services, cca_backends, and cca_affinity maps with socket LB.
-// The program is stored but not attached — attachment happens in RegisterNode
-// when the bridge interface is known.
-func (ebpfDataPlane *EbpfDataPlane) loadTCProgram() error {
-	logger := logging.Default()
-
-	if _, statError := os.Stat(ebpfDataPlane.tcELFPath); os.IsNotExist(statError) {
-		return fmt.Errorf("tc DNAT ELF not found at %s", ebpfDataPlane.tcELFPath)
-	}
-
-	tcCollectionSpec, loadError := ebpf.LoadCollectionSpec(ebpfDataPlane.tcELFPath)
-	if loadError != nil {
-		return fmt.Errorf("loading tc DNAT ELF from %s: %w", ebpfDataPlane.tcELFPath, loadError)
-	}
-
-	sharedMapReplacements := map[string]*ebpf.Map{
-		ebpfServiceMapName:    ebpfDataPlane.serviceMap,
-		ebpfBackendMapName:    ebpfDataPlane.backendMap,
-		ebpfAffinityMapName:   ebpfDataPlane.affinityMap,
-		ebpfReverseNatMapName: ebpfDataPlane.reverseNatMap,
-	}
-
-	tcCollection, createError := ebpf.NewCollectionWithOptions(tcCollectionSpec, ebpf.CollectionOptions{
-		MapReplacements: sharedMapReplacements,
-	})
-	if createError != nil {
-		return fmt.Errorf("creating tc DNAT BPF collection: %w", createError)
-	}
-	ebpfDataPlane.tcCollection = tcCollection
-
-	tcProgram := tcCollection.Programs[ebpfTCDNATProgName]
-	if tcProgram == nil {
-		tcCollection.Close()
-		ebpfDataPlane.tcCollection = nil
-		return fmt.Errorf("tc DNAT program %s not found in ELF", ebpfTCDNATProgName)
-	}
-	ebpfDataPlane.tcProgram = tcProgram
-
-	logger.Info("ebpf data plane: tc DNAT program loaded, awaiting bridge discovery")
-	return nil
-}
-
 // RegisterNode discovers the container bridge interface from the overlay
 // subnet CIDR and attaches the tc DNAT program to the bridge ingress. Then
 // discovers the physical NIC from the node IP and attaches the tc SNAT
@@ -595,13 +564,17 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 }
 
 // attachSNATToPhysicalNIC discovers the physical interface from the node IP,
-// loads the SNAT BPF program, populates the config map with the node address
-// and overlay CIDR, and attaches to the physical NIC tc egress.
+// populates the config map with the node address and overlay CIDR, and
+// attaches the SNAT program to the physical NIC tc egress.
 func (ebpfDataPlane *EbpfDataPlane) attachSNATToPhysicalNIC(nodeIP string, podCIDR string) error {
 	logger := logging.Default()
 
-	if snatLoadError := ebpfDataPlane.loadSNATProgram(); snatLoadError != nil {
-		return fmt.Errorf("loading SNAT program: %w", snatLoadError)
+	if ebpfDataPlane.snatProgram == nil {
+		return fmt.Errorf("tc SNAT program not loaded from embedded ELF")
+	}
+
+	if ebpfDataPlane.configMap == nil {
+		return fmt.Errorf("cca_config map not found in embedded ELF")
 	}
 
 	if configError := ebpfDataPlane.populateConfigMap(nodeIP, podCIDR); configError != nil {
@@ -632,44 +605,6 @@ func (ebpfDataPlane *EbpfDataPlane) attachSNATToPhysicalNIC(nodeIP string, podCI
 
 	logger.Info("ebpf data plane: tc SNAT attached to physical NIC",
 		"interface", physicalInterface, "node_ip", nodeIP)
-	return nil
-}
-
-// loadSNATProgram loads the tc SNAT BPF ELF. The cca_config map is defined
-// inside the SNAT ELF (not shared with socket LB), so no MapReplacements
-// are needed for it.
-func (ebpfDataPlane *EbpfDataPlane) loadSNATProgram() error {
-	if _, statError := os.Stat(ebpfDataPlane.snatELFPath); os.IsNotExist(statError) {
-		return fmt.Errorf("tc SNAT ELF not found at %s", ebpfDataPlane.snatELFPath)
-	}
-
-	snatCollectionSpec, loadError := ebpf.LoadCollectionSpec(ebpfDataPlane.snatELFPath)
-	if loadError != nil {
-		return fmt.Errorf("loading tc SNAT ELF from %s: %w", ebpfDataPlane.snatELFPath, loadError)
-	}
-
-	snatCollection, createError := ebpf.NewCollection(snatCollectionSpec)
-	if createError != nil {
-		return fmt.Errorf("creating tc SNAT BPF collection: %w", createError)
-	}
-	ebpfDataPlane.snatCollection = snatCollection
-
-	snatProgram := snatCollection.Programs[ebpfTCSNATProgName]
-	if snatProgram == nil {
-		snatCollection.Close()
-		ebpfDataPlane.snatCollection = nil
-		return fmt.Errorf("tc SNAT program %s not found in ELF", ebpfTCSNATProgName)
-	}
-	ebpfDataPlane.snatProgram = snatProgram
-
-	configMapHandle := snatCollection.Maps[ebpfConfigMapName]
-	if configMapHandle == nil {
-		snatCollection.Close()
-		ebpfDataPlane.snatCollection = nil
-		return fmt.Errorf("cca_config map not found in SNAT ELF")
-	}
-	ebpfDataPlane.configMap = configMapHandle
-
 	return nil
 }
 
@@ -814,8 +749,8 @@ func (ebpfDataPlane *EbpfDataPlane) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// closeAllResources detaches all BPF cgroup, tc DNAT, and tc SNAT links
-// and closes the BPF collections (which close all program and map FDs).
+// closeAllResources detaches all BPF links (SNAT, DNAT, cgroup) and closes
+// the single BPF collection which releases all program and map FDs.
 func (ebpfDataPlane *EbpfDataPlane) closeAllResources() {
 	logger := logging.Default()
 
@@ -826,27 +761,12 @@ func (ebpfDataPlane *EbpfDataPlane) closeAllResources() {
 		ebpfDataPlane.snatLink = nil
 	}
 
-	if ebpfDataPlane.snatCollection != nil {
-		ebpfDataPlane.snatCollection.Close()
-		ebpfDataPlane.snatCollection = nil
-	}
-	ebpfDataPlane.snatProgram = nil
-	ebpfDataPlane.configMap = nil
-	ebpfDataPlane.physicalInterfaceName = ""
-
 	if ebpfDataPlane.tcLink != nil {
 		if closeError := ebpfDataPlane.tcLink.Close(); closeError != nil {
 			logger.Warn("ebpf: failed to detach tc DNAT program", "error", closeError.Error())
 		}
 		ebpfDataPlane.tcLink = nil
 	}
-
-	if ebpfDataPlane.tcCollection != nil {
-		ebpfDataPlane.tcCollection.Close()
-		ebpfDataPlane.tcCollection = nil
-	}
-	ebpfDataPlane.tcProgram = nil
-	ebpfDataPlane.bridgeInterfaceName = ""
 
 	for _, attachedLink := range ebpfDataPlane.attachedLinks {
 		if closeError := attachedLink.Close(); closeError != nil {
@@ -860,10 +780,15 @@ func (ebpfDataPlane *EbpfDataPlane) closeAllResources() {
 		ebpfDataPlane.bpfCollection = nil
 	}
 
+	ebpfDataPlane.tcProgram = nil
+	ebpfDataPlane.snatProgram = nil
+	ebpfDataPlane.configMap = nil
 	ebpfDataPlane.serviceMap = nil
 	ebpfDataPlane.backendMap = nil
 	ebpfDataPlane.affinityMap = nil
 	ebpfDataPlane.reverseNatMap = nil
+	ebpfDataPlane.bridgeInterfaceName = ""
+	ebpfDataPlane.physicalInterfaceName = ""
 }
 
 // removePinnedMaps removes all pinned map files from the BPF filesystem

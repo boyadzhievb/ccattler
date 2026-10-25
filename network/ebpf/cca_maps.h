@@ -100,4 +100,21 @@ struct {
 	__type(value, struct reverse_nat_value);
 } cca_reverse_nat SEC(".maps");
 
+/* cca_config stores node-level configuration values for SNAT.
+ * Index 0: node_ip       — node's advertise address (network byte order)
+ * Index 1: reserved
+ * Index 2: overlay_prefix — overlay CIDR network address (network byte order)
+ * Index 3: overlay_mask   — overlay CIDR netmask (network byte order) */
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 8);
+	__type(key, __u32);
+	__type(value, __u32);
+} cca_config SEC(".maps");
+
+/* Config map indices. */
+#define CCA_CONFIG_NODE_IP        0
+#define CCA_CONFIG_OVERLAY_PREFIX 2
+#define CCA_CONFIG_OVERLAY_MASK   3
+
 #endif /* CCA_MAPS_H */

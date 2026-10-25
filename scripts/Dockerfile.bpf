@@ -1,0 +1,8 @@
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    clang llvm libbpf-dev linux-headers-generic && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+ENTRYPOINT ["clang", "-O2", "-g", "-Wall", "-Werror", \
+            "-target", "bpf", "-D__TARGET_ARCH_x86", \
+            "-I/usr/include", "-I/usr/include/x86_64-linux-gnu"]

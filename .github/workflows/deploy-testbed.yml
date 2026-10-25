@@ -56,15 +56,10 @@ jobs:
       - name: Collect logs on failure
         if: failure()
         run: |
-          SSH_KEY="test/e2e/vm-deploy/.vmherd/id_ed25519"
-          SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
-          declare -A NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
+          cd test/e2e/vm-deploy
           for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
-            ip="${NODE_IPS[$vm]}"
-            if [ -f "$SSH_KEY" ]; then
-              echo "=== $vm cca-server journal ==="
-              ssh $SSH_OPTS -i "$SSH_KEY" "vmherd@$ip" "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
-              echo "=== $vm cca-agent journal ==="
-              ssh $SSH_OPTS -i "$SSH_KEY" "vmherd@$ip" "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
-            fi
+            echo "=== $vm cca-server journal ==="
+            vmherd ssh "$vm" -- "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
+            echo "=== $vm cca-agent journal ==="
+            vmherd ssh "$vm" -- "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
           done
