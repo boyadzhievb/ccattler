@@ -144,6 +144,7 @@ service scheduler {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
+        env _AIRFLOW_DB_MIGRATE true
     }
     init {
         connection airflow-db
@@ -191,6 +192,7 @@ service worker {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
+        env _AIRFLOW_DB_MIGRATE true
     }
     init {
         connection airflow-db
