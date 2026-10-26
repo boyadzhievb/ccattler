@@ -1582,6 +1582,16 @@ Agent-embedded caching DNS forwarder on advertise-addr:53. Routes `*.cca.local` 
 - [x] `deploy/ansible/roles/worker/templates/cca-agent.service.j2` — `--dns-upstream` from control plane host
 - [x] `network/dns_forwarder_test.go` — routing, cache hit/expiry, TTL extraction, resolv.conf parsing
 
+### Phase 147 — Init Container Secret and Connection Mounts (M147)
+
+Init containers receive the same secret/connection file mounts as the main workload container, enforcing the architectural rule "init containers must match main containers."
+
+- [x] `runtime/runtime.go` — `ConfigFiles` field added to `ExecSpec`
+- [x] `agent/init.go` — `materializeInitConfigFiles()` resolves secrets + connections for init steps
+- [x] `runtime/containerd.go` — `ExecInit` bind-mounts `ConfigFiles` alongside resolv.conf
+- [x] `runtime/container.go` — `ExecInit` mounts `ConfigFiles` via `-v` flags
+- [x] `runtime/simulator.go` — `ExecInitCall` records `ConfigFiles` for test verification
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)
@@ -1730,6 +1740,7 @@ Agent-embedded caching DNS forwarder on advertise-addr:53. Routes `*.cca.local` 
 | M144 — DNS Configuration | 144 | resolv.conf injection with configured nameserver/search domain, webserver probe tuning |
 | M145 — Agent IP Publishing Fix | 145 | HostPortProvider interface, fix type assertions so containerd IPs reach fact store |
 | M146 — Per-Node DNS Forwarder | 146 | Agent-embedded caching DNS forwarder on advertise-addr:53, routes cca.local to server:15353. Init backoff capped at 30s. |
+| M147 — Init Container Mounts | 147 | Init containers receive secret/connection file mounts matching the main workload container. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |

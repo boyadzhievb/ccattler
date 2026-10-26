@@ -168,10 +168,12 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, servic
 	}
 
 	serviceEnvVars := nodeAgent.resolveServiceConfigEnvVars(execCtx, serviceName)
-	return nodeAgent.runtime.ExecInit(execCtx, image, goruntime.ExecSpec{
+	initSpec := goruntime.ExecSpec{
 		Command: stepDefinition.exec,
 		Env:     serviceEnvVars,
-	})
+	}
+	nodeAgent.materializeInitConfigFiles(execCtx, serviceName, &initSpec)
+	return nodeAgent.runtime.ExecInit(execCtx, image, initSpec)
 }
 
 // loadInitStepDefinitions reads the desired init step configuration for a service
@@ -326,4 +328,58 @@ func (nodeAgent *Agent) hasInitSteps(ctx context.Context, serviceName string) bo
 		}
 	}
 	return false
+}
+
+// materializeInitConfigFiles resolves secrets and connection files for an init
+// container so it has the same file mounts as the main workload container.
+func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, serviceName string, initSpec *goruntime.ExecSpec) {
+	if initSpec.ConfigFiles == nil {
+		initSpec.ConfigFiles = make(map[string]string)
+	}
+
+	if nodeAgent.secretProvider != nil {
+		grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
+		grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
+		if scanError == nil {
+			for _, grantFact := range grantFacts {
+				secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
+				if secretName == "" {
+					continue
+				}
+				explicitMountPath := string(grantFact.Value)
+				plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, secretName)
+				if decryptError != nil {
+					logging.Default().Error("init: failed to decrypt secret",
+						"agent", nodeAgent.nodeID, "service", serviceName,
+						"secret", secretName, "error", decryptError.Error())
+					continue
+				}
+				secretValue := string(plaintext)
+				initSpec.ConfigFiles[ccaSecretMountPrefix+secretName] = secretValue
+				if explicitMountPath != "" && strings.HasPrefix(explicitMountPath, "/") {
+					initSpec.ConfigFiles[explicitMountPath] = secretValue
+				}
+			}
+		}
+	}
+
+	connectionRefs, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConnections(serviceName))
+	if scanError == nil {
+		for _, connectionRef := range connectionRefs {
+			connectionName := strings.TrimPrefix(connectionRef.Key, types.ScanDesiredServiceConnections(serviceName))
+			if connectionName == "" {
+				continue
+			}
+			mountPath := string(connectionRef.Value)
+			connectionURL := nodeAgent.assembleConnectionURL(ctx, connectionName, serviceName)
+			if connectionURL == "" {
+				continue
+			}
+			initSpec.ConfigFiles[mountPath] = connectionURL
+		}
+	}
+
+	if len(initSpec.ConfigFiles) == 0 {
+		initSpec.ConfigFiles = nil
+	}
 }

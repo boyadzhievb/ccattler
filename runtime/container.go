@@ -580,6 +580,13 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 		}
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
+	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
+	for containerPath, fileContent := range execSpec.ConfigFiles {
+		hostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
+		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0600) // #nosec G306
+		args = append(args, "-v", hostPath+":"+containerPath+":ro")
+	}
 	args = append(args, "--entrypoint", "bash", image, "-c", execSpec.Command)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer

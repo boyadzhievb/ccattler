@@ -806,17 +806,32 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	if containerdRuntime.dnsSearchDomain != "" {
 		ociOptions = append(ociOptions, oci.WithHostname(initContainerName))
 	}
+	var bindMounts []specs.Mount
 	if containerdRuntime.dnsAddress != "" {
 		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
 		resolvHostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", "resolv.conf")
 		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
 		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
-		ociOptions = append(ociOptions, oci.WithMounts([]specs.Mount{{
+		bindMounts = append(bindMounts, specs.Mount{
 			Destination: "/etc/resolv.conf",
 			Type:        "bind",
 			Source:      resolvHostPath,
 			Options:     []string{"rbind", "ro"},
-		}}))
+		})
+	}
+	for containerPath, fileContent := range execSpec.ConfigFiles {
+		hostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
+		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0600) // #nosec G306
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: containerPath,
+			Type:        "bind",
+			Source:      hostPath,
+			Options:     []string{"rbind", "ro"},
+		})
+	}
+	if len(bindMounts) > 0 {
+		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}
 
 	initContainer, createError := containerdRuntime.client.NewContainer(

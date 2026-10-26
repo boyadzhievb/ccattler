@@ -163,6 +163,7 @@ type ImagePuller interface {
 
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
-	Command string            // Command is the shell command to execute.
-	Env     map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
+	Command     string            // Command is the shell command to execute.
+	Env         map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
+	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. Init containers get the same secret/connection mounts as the main container.
 }

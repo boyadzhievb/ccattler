@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M146 — Phase 146 Per-Node DNS Forwarder. M1–M146 complete (M141 future placeholder). Gates A–I resolved.
+**Completed through:** M147 — Phase 147 Init Container Mounts. M1–M147 complete (M141 future placeholder). Gates A–I resolved.
 
 ### Performance Optimization Principle
 
