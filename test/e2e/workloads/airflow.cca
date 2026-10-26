@@ -163,6 +163,7 @@ service worker {
     command "celery worker"
     instances 2
     expose 8793
+    termination_grace_period 600s
     startup {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 10s

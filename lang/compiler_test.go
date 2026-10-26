@@ -1612,3 +1612,36 @@ func TestJobImagePullSecretRoundTrip(t *testing.T) {
 		t.Errorf("round-trip lost image_pull_secret: got %q", reparsed.Jobs[0].ImagePullSecret)
 	}
 }
+
+func TestCompileServiceWithTerminationGracePeriod(t *testing.T) {
+	file, _ := Parse(`service worker {
+    image myapp:latest
+    instances 2
+    termination_grace_period 600s
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	graceValue := compiledFactMap[types.KeyDesiredServiceTerminationGracePeriod("worker")]
+	if graceValue != "600s" {
+		t.Errorf("termination_grace_period fact: got %q, want %q", graceValue, "600s")
+	}
+}
+
+func TestCompileServiceWithoutTerminationGracePeriod(t *testing.T) {
+	file, _ := Parse(`service web {
+    image nginx:1.28
+    instances 1
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	graceValue := compiledFactMap[types.KeyDesiredServiceTerminationGracePeriod("web")]
+	if graceValue != "" {
+		t.Errorf("termination_grace_period fact should be absent, got %q", graceValue)
+	}
+}

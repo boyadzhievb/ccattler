@@ -936,3 +936,24 @@ func verifyIdempotent(t *testing.T, formatted string) {
 		t.Errorf("format is not idempotent:\nfirst:\n%s\nsecond:\n%s", formatted, reformatted)
 	}
 }
+
+func TestFormatTerminationGracePeriodRoundTrip(t *testing.T) {
+	input := `service worker {
+    image myapp:latest
+    instances 2
+    termination_grace_period 600s
+}
+`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted := Format(file)
+	reparsed, reparseError := Parse(formatted)
+	if reparseError != nil {
+		t.Fatalf("re-parse failed: %v\nformatted:\n%s", reparseError, formatted)
+	}
+	if reparsed.Services[0].TerminationGracePeriod != "600s" {
+		t.Errorf("round-trip lost termination_grace_period: got %q", reparsed.Services[0].TerminationGracePeriod)
+	}
+}

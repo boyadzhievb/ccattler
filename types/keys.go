@@ -139,6 +139,13 @@ func KeyDesiredServiceLifecyclePostStart(name string) string {
 	return fmt.Sprintf("%s/service/%s/lifecycle/post_start", PrefixDesired, name)
 }
 
+// KeyDesiredServiceTerminationGracePeriod returns the store path for the
+// service's SIGTERM-to-SIGKILL grace period override (e.g. "600s").
+// Path: desired/service/{name}/termination_grace_period
+func KeyDesiredServiceTerminationGracePeriod(name string) string {
+	return fmt.Sprintf("%s/service/%s/termination_grace_period", PrefixDesired, name)
+}
+
 // KeyDesiredServiceInstances returns the store path for a service's desired instance count.
 // Path: desired/service/{name}/instances
 func KeyDesiredServiceInstances(name string) string {

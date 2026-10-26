@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"io"
+	"time"
 )
 
 // isValidEnvVarName checks whether name is a valid POSIX environment variable
@@ -99,6 +100,13 @@ type Runtime interface {
 	// runtime does not support live resize, in which case the caller should
 	// stop and restart the workload with the new resources.
 	Resize(ctx context.Context, id string, cpuMillicores int64, memoryBytes int64) error
+}
+
+// GracefulStopper is an optional interface for runtimes that support
+// a per-stop grace period between SIGTERM and SIGKILL. Runtimes that
+// implement this are used when a service has termination_grace_period set.
+type GracefulStopper interface {
+	StopWithGracePeriod(ctx context.Context, instanceID string, gracePeriod time.Duration) error
 }
 
 // LogsOptions controls how container logs are retrieved.

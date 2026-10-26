@@ -360,6 +360,29 @@ func (containerRuntime *ContainerRuntime) Stop(ctx context.Context, id string) e
 	return nil
 }
 
+// StopWithGracePeriod stops a container using a custom nerdctl stop -t timeout
+// instead of the default 10 seconds.
+func (containerRuntime *ContainerRuntime) StopWithGracePeriod(ctx context.Context, instanceID string, gracePeriod time.Duration) error {
+	containerRuntime.mutex.Lock()
+	defer containerRuntime.mutex.Unlock()
+
+	containerName := containerRuntime.resolveContainerName(instanceID)
+	timeoutSeconds := strconv.Itoa(int(gracePeriod.Seconds()))
+	stopCommand := containerRuntime.buildExecCommand(ctx, "stop", "-t", timeoutSeconds, containerName)
+	_ = stopCommand.Run()
+
+	removeCommand := containerRuntime.buildExecCommand(ctx, "rm", "-f", containerName)
+	_ = removeCommand.Run()
+
+	if configTempDir, hasConfigFiles := containerRuntime.configFileTempDirectories[instanceID]; hasConfigFiles {
+		_ = os.RemoveAll(configTempDir)
+		delete(containerRuntime.configFileTempDirectories, instanceID)
+	}
+
+	containerRuntime.trackedContainers[instanceID] = false
+	return nil
+}
+
 // isContainerActuallyRunning checks if a container is truly running by calling
 // nerdctl inspect. Must be called with the mutex held.
 func (containerRuntime *ContainerRuntime) isContainerActuallyRunning(ctx context.Context, containerName string) bool {

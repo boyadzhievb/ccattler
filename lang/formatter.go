@@ -386,6 +386,7 @@ func formatServiceDecl(builder *strings.Builder, serviceDecl ServiceDecl) {
 	formatServiceImagePullSecretField(builder, serviceDecl)
 	formatServiceLoggingFields(builder, serviceDecl)
 	formatServiceLifecycleFields(builder, serviceDecl)
+	formatServiceTerminationGracePeriodField(builder, serviceDecl)
 	builder.WriteString("}\n")
 }
 
@@ -835,6 +836,13 @@ func formatServiceLifecycleFields(builder *strings.Builder, serviceDecl ServiceD
 		fmt.Fprintf(builder, "%spost_start %s\n", indent2, quoteIfNeeded(serviceDecl.Lifecycle.PostStart))
 	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
+}
+
+// formatServiceTerminationGracePeriodField emits the termination_grace_period field.
+func formatServiceTerminationGracePeriodField(builder *strings.Builder, serviceDecl ServiceDecl) {
+	if serviceDecl.TerminationGracePeriod != "" {
+		fmt.Fprintf(builder, "%stermination_grace_period %s\n", indentUnit, serviceDecl.TerminationGracePeriod)
+	}
 }
 
 // formatRouteDecl emits a gate block with optional sticky session config.

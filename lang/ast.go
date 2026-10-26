@@ -69,8 +69,9 @@ type ServiceDecl struct {
 	PullPolicy      string                     // image pull policy: "always", "if_not_present", or "never"
 	ImagePullSecret string                     // name of secret containing registry credentials for private image pulls
 	Logging         *LoggingDecl               // optional log rotation configuration
-	Lifecycle       *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
-	Stateful        bool                       // true if service uses ordinal instance IDs and ordered startup
+	Lifecycle               *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
+	TerminationGracePeriod  string                     // optional SIGTERM-to-SIGKILL grace period (e.g. "600s", "10m")
+	Stateful                bool                       // true if service uses ordinal instance IDs and ordered startup
 	Line            int                        // source line number for error reporting
 }
 

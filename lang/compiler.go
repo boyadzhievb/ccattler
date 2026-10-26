@@ -355,6 +355,13 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		)
 	}
 
+	if serviceDecl.TerminationGracePeriod != "" {
+		facts = append(facts, Fact{
+			Key:   types.KeyDesiredServiceTerminationGracePeriod(serviceDecl.Name),
+			Value: serviceDecl.TerminationGracePeriod,
+		})
+	}
+
 	return facts, nil
 }
 

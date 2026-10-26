@@ -931,10 +931,11 @@ func (nodeAgent *Agent) cleanupUndesiredInstance(ctx context.Context, instanceID
 	if nodeAgent.storageProvider != nil {
 		nodeAgent.detachVolumesForInstance(ctx, instanceID)
 	}
-	if serviceName := nodeAgent.lookupServiceNameForInstance(ctx, instanceID); serviceName != "" {
+	serviceName := nodeAgent.lookupServiceNameForInstance(ctx, instanceID)
+	if serviceName != "" {
 		nodeAgent.executeLifecycleHook(ctx, instanceID, serviceName, "pre_stop")
 	}
-	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
+	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceID, serviceName); stopError != nil {
 		logging.Default().Error("failed to stop instance", "instance", instanceID, "error", stopError.Error())
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
@@ -1147,7 +1148,7 @@ func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo pla
 		"agent", nodeAgent.nodeID, "instance", instanceInfo.id,
 		"service", instanceInfo.service)
 	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
-	if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
+	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceInfo.id, instanceInfo.service); stopError != nil {
 		logging.Default().Error("failed to stop instance for config reload",
 			"instance", instanceInfo.id, "error", stopError.Error())
 	}
@@ -1186,6 +1187,23 @@ func (nodeAgent *Agent) executeLifecycleHook(ctx context.Context, instanceID str
 			"agent", nodeAgent.nodeID, "instance", instanceID,
 			"hook", hookType, "error", execError.Error())
 	}
+}
+
+// stopInstanceWithGracePeriod stops an instance, using the per-service
+// termination_grace_period if configured, otherwise the default runtime Stop.
+func (nodeAgent *Agent) stopInstanceWithGracePeriod(ctx context.Context, instanceID string, serviceName string) error {
+	if serviceName != "" {
+		if gracefulStopper, supportsGrace := nodeAgent.runtime.(runtime.GracefulStopper); supportsGrace {
+			graceFact, graceError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceTerminationGracePeriod(serviceName))
+			if graceError == nil && len(graceFact.Value) > 0 {
+				graceDuration, parseError := time.ParseDuration(string(graceFact.Value))
+				if parseError == nil {
+					return gracefulStopper.StopWithGracePeriod(ctx, instanceID, graceDuration)
+				}
+			}
+		}
+	}
+	return nodeAgent.runtime.Stop(ctx, instanceID)
 }
 
 // lookupServiceNameForInstance reads the observed service name for an instance
@@ -1700,7 +1718,7 @@ func (nodeAgent *Agent) reconcileResourceChanges(ctx context.Context, instanceIn
 			"instance", instanceInfo.id,
 		)
 		nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "pre_stop")
-		if stopError := nodeAgent.runtime.Stop(ctx, instanceInfo.id); stopError != nil {
+		if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceInfo.id, instanceInfo.service); stopError != nil {
 			logging.Default().Error("failed to stop instance for resize",
 				"agent", nodeAgent.nodeID,
 				"instance", instanceInfo.id,

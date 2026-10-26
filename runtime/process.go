@@ -156,6 +156,29 @@ func (processRuntime *ProcessRuntime) Stop(_ context.Context, id string) error {
 	}
 }
 
+// StopWithGracePeriod stops the process using a custom grace period between
+// SIGTERM and SIGKILL instead of the runtime's default.
+func (processRuntime *ProcessRuntime) StopWithGracePeriod(_ context.Context, instanceID string, gracePeriod time.Duration) error {
+	processRuntime.mutex.Lock()
+	process, processExists := processRuntime.processes[instanceID]
+	processRuntime.mutex.Unlock()
+
+	if !processExists || !process.isRunning() {
+		return nil
+	}
+
+	_ = process.command.Process.Signal(syscall.SIGTERM)
+
+	select {
+	case <-process.completionSignal:
+		return nil
+	case <-time.After(gracePeriod):
+		_ = process.command.Process.Signal(syscall.SIGKILL)
+		<-process.completionSignal
+		return nil
+	}
+}
+
 // Status returns the current observed state of the process identified by id,
 // including its PID and exit code. Returns ErrNotFound if the workload has
 // never been started.

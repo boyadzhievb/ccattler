@@ -322,6 +322,13 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 		serviceDecl.Logging, err = parser.parseLoggingBlock()
 	case "lifecycle":
 		serviceDecl.Lifecycle, err = parser.parseLifecycleBlock()
+	case "termination_grace_period":
+		token := parser.currentToken()
+		if token.Type != TokenNumber && token.Type != TokenIdent && token.Type != TokenString {
+			return parser.parserErrorf("expected duration value, got %s", token.Type)
+		}
+		serviceDecl.TerminationGracePeriod = token.Value
+		parser.advanceToken()
 	default:
 		return parser.parserErrorf("unknown service field %q", fieldName)
 	}

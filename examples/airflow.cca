@@ -181,6 +181,7 @@ service worker {
     command "celery worker"
     instances 3
     expose 8793
+    termination_grace_period 600s
     resources {
         cpu 1000m
         memory 2048Mi

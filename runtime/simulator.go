@@ -96,6 +96,12 @@ func (simulator *SimulatorRuntime) Stop(_ context.Context, id string) error {
 	return nil
 }
 
+// StopWithGracePeriod stops a simulated workload. The grace period is ignored
+// in simulation since there is no real process to signal.
+func (simulator *SimulatorRuntime) StopWithGracePeriod(ctx context.Context, instanceID string, _ time.Duration) error {
+	return simulator.Stop(ctx, instanceID)
+}
+
 // Status returns the current simulated state of the workload identified by id.
 // Returns ErrNotFound if the workload has never been started. When a workload
 // has been killed via KillWorkload, the returned Status includes the exit code

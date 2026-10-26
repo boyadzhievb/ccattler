@@ -1930,3 +1930,50 @@ func TestParseServiceTagsBlockIdentifierValue(t *testing.T) {
 		t.Errorf("tag value: got %q, want %q", serviceDecl.Tags[0].Value, "production")
 	}
 }
+
+func TestParseServiceWithTerminationGracePeriod(t *testing.T) {
+	input := `service worker {
+    image myapp:latest
+    instances 2
+    termination_grace_period 600s
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.TerminationGracePeriod != "600s" {
+		t.Errorf("termination_grace_period: got %q, want %q", serviceDecl.TerminationGracePeriod, "600s")
+	}
+}
+
+func TestParseServiceWithTerminationGracePeriodQuoted(t *testing.T) {
+	input := `service worker {
+    image myapp:latest
+    instances 2
+    termination_grace_period "10m"
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.TerminationGracePeriod != "10m" {
+		t.Errorf("termination_grace_period: got %q, want %q", serviceDecl.TerminationGracePeriod, "10m")
+	}
+}
+
+func TestParseServiceWithoutTerminationGracePeriod(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 1
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.TerminationGracePeriod != "" {
+		t.Errorf("termination_grace_period should be empty, got %q", serviceDecl.TerminationGracePeriod)
+	}
+}

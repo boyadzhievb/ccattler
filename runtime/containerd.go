@@ -440,6 +440,44 @@ func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID
 	return nil
 }
 
+// StopWithGracePeriod stops a containerd container by sending SIGTERM first,
+// waiting up to gracePeriod, then escalating to SIGKILL.
+func (containerdRuntime *ContainerdRuntime) StopWithGracePeriod(ctx context.Context, instanceID string, gracePeriod time.Duration) error {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+	containerName := containerdRuntime.resolveContainerName(instanceID)
+
+	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
+	if loadError != nil {
+		containerdRuntime.mutex.Lock()
+		containerdRuntime.trackedContainers[instanceID] = false
+		containerdRuntime.mutex.Unlock()
+		return nil
+	}
+
+	task, taskError := container.Task(namespacedCtx, nil)
+	if taskError == nil {
+		exitChannel, waitError := task.Wait(namespacedCtx)
+		if waitError == nil {
+			_ = task.Kill(namespacedCtx, syscall.SIGTERM)
+			select {
+			case <-exitChannel:
+			case <-time.After(gracePeriod):
+				_ = task.Kill(namespacedCtx, syscall.SIGKILL)
+				select {
+				case <-exitChannel:
+				case <-time.After(10 * time.Second):
+				}
+			}
+		}
+		_, _ = task.Delete(namespacedCtx)
+	}
+
+	_ = container.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+
+	containerdRuntime.removeContainerResources(ctx, instanceID)
+	return nil
+}
+
 // removeContainerResources cleans up tracking state and log files for a container.
 func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.Context, instanceID string) {
 	containerdRuntime.mutex.Lock()
