@@ -4,7 +4,7 @@
 WORKLOAD_DESCRIPTION="Airflow CeleryExecutor (postgres + redis + webserver + scheduler + 2 workers)"
 WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/airflow:2.10.5" "${LOCAL_REGISTRY}/postgres:16" "${LOCAL_REGISTRY}/redis:7")
 WORKLOAD_EXPECTED_CONTAINERS=6
-WORKLOAD_SECRETS=("airflow.db-password=airflow-e2e-pass" "airflow.admin-password=admin-e2e-pass" "airflow.webserver-secret-key=$(openssl rand -hex 16)")
+WORKLOAD_SECRETS=("airflow.db-password=airflow-e2e-pass" "airflow.admin-password=admin-e2e-pass" "airflow.webserver-secret-key=$(openssl rand -hex 16)" "airflow.fernet-key=$(openssl rand -base64 32)")
 
 # Caddy reverse proxy: domain → service_name (all on port 443 with TLS).
 WORKLOAD_EXPOSE=("airflow.home.arpa:webserver")

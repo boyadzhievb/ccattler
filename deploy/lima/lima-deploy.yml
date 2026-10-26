@@ -405,14 +405,13 @@
   tags: [testapp]
   tasks:
     - name: Create Airflow secrets
-      command: /usr/local/bin/cca secret create {{ item.name }} --value "{{ item.value }}"
+      command: /usr/local/bin/cca secret set {{ item.name }} {{ item.value }}
       loop:
         - { name: "airflow.db-password", value: "airflow" }
         - { name: "airflow.admin-password", value: "airflow" }
         - { name: "airflow.webserver-secret-key", value: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') }}" }
         - { name: "airflow.fernet-key", value: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode }}" }
-      register: secret_result
-      failed_when: secret_result.rc != 0 and 'already exists' not in secret_result.stderr
+      changed_when: true
 
     - name: Copy Airflow deployment config
       copy:
