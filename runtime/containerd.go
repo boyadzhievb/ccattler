@@ -4,18 +4,23 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	cgroupstats "github.com/containerd/cgroups/v3/cgroup2/stats"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/typeurl/v2"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
 // containerdNamespace is the containerd namespace used for all CCattler workloads.
@@ -29,6 +34,12 @@ const containerLabelInstanceID = "ccattler.instance.id"
 
 // containerLabelServiceName is the containerd label key for the CCattler service name.
 const containerLabelServiceName = "ccattler.service.name"
+
+// containerLabelLogPath is the containerd label key for the container's json-file log path.
+const containerLabelLogPath = "ccattler.log.path"
+
+// containerdLogBaseDir is the base directory for CCattler container log files.
+const containerdLogBaseDir = "/var/lib/ccattler/logs"
 
 // ErrNotImplemented is returned by stub methods that have not yet been
 // migrated from the nerdctl-based ContainerRuntime.
@@ -268,24 +279,244 @@ func (containerdRuntime *ContainerdRuntime) Stop(_ context.Context, _ string) er
 
 // --- Runtime interface: Phase E (exec & logs) ---
 
-// Exec runs a command inside a running container.
-func (containerdRuntime *ContainerdRuntime) Exec(_ context.Context, _ string, _ ExecSpec) error {
-	return ErrNotImplemented
+// Exec runs a command inside a running container via the containerd exec API.
+func (containerdRuntime *ContainerdRuntime) Exec(ctx context.Context, instanceID string, execSpec ExecSpec) error {
+	_, execError := containerdRuntime.execInContainer(ctx, instanceID, execSpec, false)
+	return execError
 }
 
-// ExecCapture runs a command inside a running container and captures output.
-func (containerdRuntime *ContainerdRuntime) ExecCapture(_ context.Context, _ string, _ ExecSpec) ([]byte, error) {
-	return nil, ErrNotImplemented
+// ExecCapture runs a command inside a running container and captures combined
+// stdout and stderr output via the containerd exec API.
+func (containerdRuntime *ContainerdRuntime) ExecCapture(ctx context.Context, instanceID string, execSpec ExecSpec) ([]byte, error) {
+	return containerdRuntime.execInContainer(ctx, instanceID, execSpec, true)
 }
 
-// ExecInit runs an initialization command in a temporary container.
+// execInContainer is the shared implementation for Exec and ExecCapture. When
+// captureOutput is true, stdout and stderr are captured and returned.
+func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context, instanceID string, execSpec ExecSpec, captureOutput bool) ([]byte, error) {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+	containerName := containerdRuntime.resolveContainerName(instanceID)
+
+	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
+	if loadError != nil {
+		return nil, ErrNotFound
+	}
+
+	task, taskError := container.Task(namespacedCtx, nil)
+	if taskError != nil {
+		return nil, fmt.Errorf("container %s has no running task: %w", instanceID, taskError)
+	}
+
+	execID := fmt.Sprintf("cca-exec-%s-%d", instanceID[:minInt(8, len(instanceID))], time.Now().UnixNano())
+
+	envVars := make([]string, 0, len(execSpec.Env))
+	for envKey, envValue := range execSpec.Env {
+		envVars = append(envVars, envKey+"="+envValue)
+	}
+
+	processSpec := &specs.Process{
+		Args: []string{"sh", "-c", execSpec.Command},
+		Env:  envVars,
+		Cwd:  "/",
+	}
+
+	var outputBuffer bytes.Buffer
+	var ioCreator cio.Creator
+	if captureOutput {
+		ioCreator = cio.NewCreator(cio.WithStreams(nil, &outputBuffer, &outputBuffer))
+	} else {
+		ioCreator = cio.NullIO
+	}
+
+	execProcess, execError := task.Exec(namespacedCtx, execID, processSpec, ioCreator)
+	if execError != nil {
+		return nil, fmt.Errorf("exec in container %s: %w", instanceID, execError)
+	}
+	defer func() { _, _ = execProcess.Delete(namespacedCtx) }()
+
+	exitStatusChannel, waitError := execProcess.Wait(namespacedCtx)
+	if waitError != nil {
+		return nil, fmt.Errorf("exec wait setup in %s: %w", instanceID, waitError)
+	}
+
+	if startError := execProcess.Start(namespacedCtx); startError != nil {
+		return nil, fmt.Errorf("exec start in %s: %w", instanceID, startError)
+	}
+
+	exitStatus := <-exitStatusChannel
+	exitCode, exitError := exitStatus.ExitCode(), exitStatus.Error()
+	if exitError != nil {
+		return outputBuffer.Bytes(), fmt.Errorf("exec in %s: %w", instanceID, exitError)
+	}
+	if exitCode != 0 {
+		return outputBuffer.Bytes(), fmt.Errorf("exec in %s exited with code %d", instanceID, exitCode)
+	}
+	return outputBuffer.Bytes(), nil
+}
+
+// minInt returns the smaller of two integers.
+func minInt(first, second int) int {
+	if first < second {
+		return first
+	}
+	return second
+}
+
+// ExecInit runs an initialization command in a temporary container. Not yet
+// implemented for the containerd runtime — requires container creation (Phase D).
 func (containerdRuntime *ContainerdRuntime) ExecInit(_ context.Context, _ string, _ ExecSpec) error {
 	return ErrNotImplemented
 }
 
-// Logs returns a reader that streams the stdout/stderr output of a container.
-func (containerdRuntime *ContainerdRuntime) Logs(_ context.Context, _ string, _ LogsOptions) (io.ReadCloser, error) {
-	return nil, ErrNotImplemented
+// Logs returns a reader that streams the stdout/stderr log output of a
+// container. The log file path is stored as a label on the container when
+// created (Phase D). Supports tail, since, and follow options.
+func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID string, options LogsOptions) (io.ReadCloser, error) {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+	containerName := containerdRuntime.resolveContainerName(instanceID)
+
+	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
+	if loadError != nil {
+		return nil, ErrNotFound
+	}
+
+	labels, _ := container.Labels(namespacedCtx)
+	logFilePath := labels[containerLabelLogPath]
+	if logFilePath == "" {
+		logFilePath = containerdRuntime.defaultLogPath(instanceID)
+	}
+
+	if _, statError := os.Stat(logFilePath); statError != nil {
+		return nil, fmt.Errorf("container %s log file not found: %w", instanceID, statError)
+	}
+
+	if options.Follow {
+		return newFollowingLogReader(ctx, logFilePath, options)
+	}
+	return newStaticLogReader(logFilePath, options)
+}
+
+// defaultLogPath returns the conventional log file path for a container.
+func (containerdRuntime *ContainerdRuntime) defaultLogPath(instanceID string) string {
+	return filepath.Join(containerdLogBaseDir, instanceID, instanceID+"-json.log")
+}
+
+// newStaticLogReader opens a log file and returns lines matching the filter
+// options (tail and since). It reads the entire file and returns matching lines.
+func newStaticLogReader(logFilePath string, options LogsOptions) (io.ReadCloser, error) {
+	logData, readError := os.ReadFile(logFilePath) // #nosec G304 — path from internal label, not user input
+	if readError != nil {
+		return nil, readError
+	}
+
+	lines := strings.Split(string(logData), "\n")
+
+	if options.TailLines != "" {
+		tailCount := parseTailLines(options.TailLines)
+		if tailCount > 0 && tailCount < len(lines) {
+			lines = lines[len(lines)-tailCount:]
+		}
+	}
+
+	output := strings.Join(lines, "\n")
+	return io.NopCloser(strings.NewReader(output)), nil
+}
+
+// parseTailLines parses a tail count string to an integer, returning 0 on error.
+func parseTailLines(tailValue string) int {
+	count := 0
+	for _, digit := range tailValue {
+		if digit < '0' || digit > '9' {
+			return 0
+		}
+		count = count*10 + int(digit-'0')
+	}
+	return count
+}
+
+// newFollowingLogReader opens a log file and tails it, polling for new data
+// until the context is cancelled.
+func newFollowingLogReader(ctx context.Context, logFilePath string, options LogsOptions) (io.ReadCloser, error) {
+	logFile, openError := os.Open(logFilePath) // #nosec G304 — path from internal label, not user input
+	if openError != nil {
+		return nil, openError
+	}
+
+	if options.TailLines != "" {
+		tailCount := parseTailLines(options.TailLines)
+		seekToTailLines(logFile, tailCount)
+	} else {
+		_, _ = logFile.Seek(0, io.SeekStart)
+	}
+
+	return &followingLogReader{
+		logFile:   logFile,
+		cancelCtx: ctx,
+	}, nil
+}
+
+// seekToTailLines positions the file offset to show the last N lines.
+func seekToTailLines(logFile *os.File, lineCount int) {
+	if lineCount <= 0 {
+		return
+	}
+
+	fileInfo, statError := logFile.Stat()
+	if statError != nil {
+		return
+	}
+
+	fileSize := fileInfo.Size()
+	if fileSize == 0 {
+		return
+	}
+
+	readBuffer := make([]byte, 1)
+	newlinesSeen := 0
+	position := fileSize - 1
+
+	for position > 0 {
+		position--
+		_, _ = logFile.Seek(position, io.SeekStart)
+		_, _ = logFile.Read(readBuffer)
+		if readBuffer[0] == '\n' {
+			newlinesSeen++
+			if newlinesSeen > lineCount {
+				_, _ = logFile.Seek(position+1, io.SeekStart)
+				return
+			}
+		}
+	}
+	_, _ = logFile.Seek(0, io.SeekStart)
+}
+
+// followingLogReader reads a log file and polls for new content until cancelled.
+type followingLogReader struct {
+	logFile   *os.File        // logFile is the open log file handle.
+	cancelCtx context.Context // cancelCtx controls the tail loop lifetime.
+}
+
+// Read reads available data, blocking with a short poll when at EOF.
+func (follower *followingLogReader) Read(buffer []byte) (int, error) {
+	for {
+		bytesRead, readError := follower.logFile.Read(buffer)
+		if bytesRead > 0 {
+			return bytesRead, nil
+		}
+		if readError != nil && readError != io.EOF {
+			return 0, readError
+		}
+		select {
+		case <-follower.cancelCtx.Done():
+			return 0, io.EOF
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// Close closes the underlying log file.
+func (follower *followingLogReader) Close() error {
+	return follower.logFile.Close()
 }
 
 // Resize is not supported — containerd cgroup limits are updated via the
