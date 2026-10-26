@@ -330,7 +330,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
 
 	if runControllers {
-		startControllersWithLeaderElection(ctx, factStore, parsedConfig)
+		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig)
 	}
 
 	if runAPIServer {
@@ -359,7 +359,7 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 // controllers plus optional cloud controllers) and starts them inside an HA
 // runner with leader election. The runner goroutine runs until the context is
 // cancelled.
-func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, parsedConfig serverCommandConfig) {
+func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig) {
 	networkController := controllers.NewNetworkController()
 	if parsedConfig.vipCIDR != "" {
 		networkController = controllers.NewNetworkControllerWithCIDR(parsedConfig.vipCIDR)
@@ -387,6 +387,7 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 
 	haControllerRunner := controllers.NewHARunner(factStore, parsedConfig.nodeID, metricsCollector,
 		controllerList...)
+	haControllerRunner.SetEventLog(eventLog)
 
 	go func() {
 		if runError := haControllerRunner.Run(ctx); runError != nil && ctx.Err() == nil {

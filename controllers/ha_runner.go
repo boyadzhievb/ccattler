@@ -10,6 +10,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // stopControllersTimeout is how long stopControllers waits for the runner
@@ -38,10 +39,18 @@ type HARunner struct {
 	runner *Runner
 	// cancelRunner stops the active controller runner.
 	cancelRunner context.CancelFunc
+	// eventLog is an optional event log passed to the inner runner.
+	eventLog *types.EventLog
 	// runnerDone is closed when the runner goroutine exits, signaling
 	// that all controller goroutines have terminated.
 	runnerDone chan struct{}
 	mutex      sync.Mutex
+}
+
+// SetEventLog attaches an event log to the HA runner. When the runner becomes
+// leader, it passes this log to the inner Runner so the event projector starts.
+func (haRunner *HARunner) SetEventLog(eventLog *types.EventLog) {
+	haRunner.eventLog = eventLog
 }
 
 // NewHARunner creates a high-availability runner for the given controllers.
@@ -105,6 +114,9 @@ func (haRunner *HARunner) startControllers() {
 	}
 
 	haRunner.runner = NewRunner(haRunner.factStore, wrappedControllers...)
+	if haRunner.eventLog != nil {
+		haRunner.runner.SetEventLog(haRunner.eventLog)
+	}
 	haRunner.runnerDone = make(chan struct{})
 	go func() {
 		defer close(haRunner.runnerDone)

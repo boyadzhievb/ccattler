@@ -150,6 +150,10 @@ func executeEventsFollowMode(serviceFilter string) {
 		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
 		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
 	}
+	if scanError := scanner.Err(); scanError != nil {
+		fmt.Fprintf(os.Stderr, "event stream error: %v\n", scanError)
+		os.Exit(1)
+	}
 }
 
 // logsCommandConfig holds parsed flags for the "logs" command.
