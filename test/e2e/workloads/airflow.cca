@@ -122,7 +122,8 @@ service scheduler {
         exec "airflow jobs check --job-type SchedulerJob --local"
         every 10s
         timeout 20s
-        failure_threshold 6
+        failure_threshold 12
+        initial_delay 30s
     }
     liveness {
         exec "airflow jobs check --job-type SchedulerJob --local"
