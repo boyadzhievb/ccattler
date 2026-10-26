@@ -478,7 +478,7 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 	for containerPath, fileContent := range spec.ConfigFiles {
 		hostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — config files are not secrets
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
 		bindMounts = append(bindMounts, specs.Mount{
 			Destination: containerPath,
 			Type:        "bind",
@@ -822,7 +822,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — container user may not be root
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
 		bindMounts = append(bindMounts, specs.Mount{
 			Destination: containerPath,
 			Type:        "bind",

@@ -379,6 +379,17 @@ func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, serviceN
 		}
 	}
 
+	hasSecrets := false
+	for path := range initSpec.ConfigFiles {
+		if strings.HasPrefix(path, ccaSecretMountPrefix) {
+			hasSecrets = true
+			break
+		}
+	}
+	if hasSecrets {
+		initSpec.ConfigFiles[ccaSecretHelperPath] = ccaSecretHelperScript
+	}
+
 	if len(initSpec.ConfigFiles) == 0 {
 		initSpec.ConfigFiles = nil
 	}

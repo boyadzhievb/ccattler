@@ -1201,6 +1201,67 @@ func TestAgentExecInitUsesRuntimeInterface(t *testing.T) {
 	}
 }
 
+// TestInitContainerGetsCCASecretHelper verifies that when a service has secrets,
+// init containers receive the cca-secret helper script in their ConfigFiles.
+func TestInitContainerGetsCCASecretHelper(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "init-secret-svc"
+	instanceID := "init-secret-aaa"
+	serviceImage := "myapp:3.0"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte(serviceImage))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 0), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 0), []byte("myapp db-check"))
+	factStore.Put(ctx, types.KeyDesiredServiceSecret(serviceName, "db-password"), []byte("/run/secrets/db-password"))
+
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+	nodeAgent.SetSecretProvider(&mockSecretProvider{
+		secrets: map[string][]byte{
+			"db-password": []byte("s3cret"),
+		},
+		grants: map[string]string{
+			serviceName + "/db-password": "/run/secrets/db-password",
+		},
+	})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "instance running after init with secrets", func() bool {
+		stateFact, getError := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return getError == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	if len(simulatorRuntime.ExecInitCalls) < 1 {
+		t.Fatalf("expected at least 1 ExecInit call, got %d", len(simulatorRuntime.ExecInitCalls))
+	}
+
+	initCall := simulatorRuntime.ExecInitCalls[0]
+	helperContent, hasHelper := initCall.ConfigFiles[ccaSecretHelperPath]
+	if !hasHelper {
+		t.Fatalf("init container ConfigFiles missing cca-secret helper at %s", ccaSecretHelperPath)
+	}
+	if helperContent != ccaSecretHelperScript {
+		t.Errorf("cca-secret helper content: got %q, want %q", helperContent, ccaSecretHelperScript)
+	}
+	secretContent, hasSecret := initCall.ConfigFiles[ccaSecretMountPrefix+"db-password"]
+	if !hasSecret {
+		t.Fatal("init container ConfigFiles missing secret at /run/cca-secrets/db-password")
+	}
+	if secretContent != "s3cret" {
+		t.Errorf("secret content: got %q, want %q", secretContent, "s3cret")
+	}
+}
+
 // TestAgentReconcileDesiredInstanceStartsMissing verifies that the extracted
 // reconcileDesiredInstance method brings up an instance that is not running.
 func TestAgentReconcileDesiredInstanceStartsMissing(t *testing.T) {

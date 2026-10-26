@@ -585,7 +585,7 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(initHostDir, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — container user may not be root
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) //nolint:gosec // config files are bind-mounted :ro; 0755 allows scripts like cca-secret to be executable
 		args = append(args, "-v", hostPath+":"+containerPath+":ro")
 	}
 	defer func() { _ = os.RemoveAll(initHostDir) }()
