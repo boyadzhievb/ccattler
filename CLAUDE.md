@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M136 — Phase 136 HA Etcd Cluster Validation. M1–M136 complete. Gates A–I resolved.
+**Completed through:** M140 — Phase 140 Per-Service Termination Grace Period. M1–M140 complete (M141 future placeholder). Gates A–I resolved.
 
 ### Performance Optimization Principle
 
