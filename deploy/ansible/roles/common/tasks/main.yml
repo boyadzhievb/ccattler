@@ -170,7 +170,7 @@
 - name: Point resolv.conf at dnsmasq and private network gateway
   copy:
     dest: /etc/resolv.conf
-    content: "nameserver 127.0.0.1\nnameserver {{ ansible_host | regex_replace('\\.\\d+$', '.1') }}\n"
+    content: "search cca.local\nnameserver 127.0.0.1\nnameserver {{ ansible_host | regex_replace('\\.\\d+$', '.1') }}\n"
     mode: "0644"
   tags: [dns]
 
