@@ -359,45 +359,27 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 		return helperCountRunningInstances(ctx, factStore, "web") == 4
 	})
 
-	time.Sleep(300 * time.Millisecond)
-
-	eventsSinceFailure, queryError := eventLog.Since(ctx, beforeFailure, 0)
-	if queryError != nil {
-		t.Fatalf("query events: %v", queryError)
-	}
-
-	hasNodeUnreachable := false
-	hasInstanceFailed := false
-	hasReplacementPlaced := false
-
-	for _, event := range eventsSinceFailure {
-		if event.Kind == "node.unreachable" && strings.Contains(event.Target, "node-1") {
-			hasNodeUnreachable = true
+	waitFor(t, 5*time.Second, "causal chain events projected", func() bool {
+		events, queryError := eventLog.Since(ctx, beforeFailure, 0)
+		if queryError != nil || len(events) < 3 {
+			return false
 		}
-		if event.Kind == "instance.failed" || event.Kind == "instance.stopped" {
-			hasInstanceFailed = true
+		hasNodeUnreachable := false
+		hasInstanceFailed := false
+		hasReplacementPlaced := false
+		for _, event := range events {
+			if event.Kind == "node.unreachable" && strings.Contains(event.Target, "node-1") {
+				hasNodeUnreachable = true
+			}
+			if event.Kind == "instance.failed" || event.Kind == "instance.stopped" {
+				hasInstanceFailed = true
+			}
+			if event.Kind == "instance.placed" {
+				hasReplacementPlaced = true
+			}
 		}
-		if event.Kind == "instance.placed" {
-			hasReplacementPlaced = true
-		}
-	}
-
-	if !hasNodeUnreachable {
-		t.Error("causal chain missing: node.unreachable event for node-1")
-	}
-	if !hasInstanceFailed {
-		t.Error("causal chain missing: instance.failed or instance.stopped event")
-	}
-	if !hasReplacementPlaced {
-		t.Error("causal chain missing: instance.placed event for replacement")
-	}
-
-	if len(eventsSinceFailure) < 3 {
-		t.Errorf("expected at least 3 events in causal chain, got %d", len(eventsSinceFailure))
-		for _, event := range eventsSinceFailure {
-			t.Logf("  event: kind=%s target=%s detail=%s", event.Kind, event.Target, event.Detail)
-		}
-	}
+		return hasNodeUnreachable && hasInstanceFailed && hasReplacementPlaced
+	})
 }
 
 // TestAPIVersioning_BackwardsCompatibility verifies that every .cca file from

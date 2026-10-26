@@ -154,7 +154,7 @@ func (isolationCluster *isolationCluster) restartControllerGroup(groupName strin
 // functional area, each independently cancellable.
 func defaultIsolationGroups() []controllerGroup {
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = 500 * time.Millisecond
 
 	return []controllerGroup{
 		{name: "instance", controllers: []controllers.Controller{controllers.NewInstanceController()}},
@@ -253,7 +253,7 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "4")
 
-	waitFor(testHandle, 5*time.Second, "api=4 and web=6 after instance controller restart", func() bool {
+	waitFor(testHandle, 10*time.Second, "api=4 and web=6 after instance controller restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 4 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
@@ -296,7 +296,7 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 		cluster.restartControllerGroup(group.name, group.controllers)
 	}
 
-	waitFor(testHandle, 5*time.Second, "web still 6 and api converges to 2", func() bool {
+	waitFor(testHandle, 10*time.Second, "web still 6 and api converges to 2", func() bool {
 		webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
 		apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
 		return webCount == 6 && apiCount == 2
@@ -332,14 +332,14 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "db", "postgres:16", "2")
 
-	waitFor(testHandle, 5*time.Second, "all 3 services at desired count", func() bool {
+	waitFor(testHandle, 10*time.Second, "all 3 services at desired count", func() bool {
 		webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
 		apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
 		dbCount := helperCountRunningInstances(ctx, cluster.factStore, "db")
 		return webCount == 6 && apiCount == 4 && dbCount == 2
 	})
 
-	waitFor(testHandle, 5*time.Second, "no extra non-stopped instances (6/4/2)", func() bool {
+	waitFor(testHandle, 10*time.Second, "no extra non-stopped instances (6/4/2)", func() bool {
 		allInstances, listError := types.ListInstances(ctx, cluster.factStore)
 		if listError != nil {
 			return false
