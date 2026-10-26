@@ -1070,8 +1070,10 @@ func executeGetCommand(resourceType string, extraArgs []string) {
 		printConfigTableWithOptions(status.Config, outputOptions)
 	case "cloud-identities", "cloud-identity", "identities":
 		printCloudIdentitiesTableWithOptions(status.CloudIdentities, outputOptions)
+	case "endpoints", "ep":
+		printEndpointsTableWithOptions(status.Endpoints, outputOptions)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities)\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities, endpoints)\n", resourceType)
 		os.Exit(1)
 	}
 }
@@ -1098,6 +1100,8 @@ func printGetResourceJSON(resourceType string, status api.ClusterStatus, remaini
 		_ = encoder.Encode(status.Config)
 	case "cloud-identities", "cloud-identity", "identities":
 		_ = encoder.Encode(status.CloudIdentities)
+	case "endpoints", "ep":
+		_ = encoder.Encode(status.Endpoints)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown resource: %s\n", resourceType)
 		os.Exit(1)
@@ -1450,6 +1454,25 @@ func printCloudIdentitiesTableWithOptions(cloudIdentities []api.CloudIdentitySta
 			identity.Name,
 			identity.Provider,
 			services,
+		})
+	}
+	printAlignedTableFiltered(header, rows, options.noHeaders)
+}
+
+// printEndpointsTableWithOptions prints endpoint status entries as an aligned table.
+func printEndpointsTableWithOptions(endpoints []api.EndpointStatus, options getOutputOptions) {
+	if len(endpoints) == 0 {
+		fmt.Println("No endpoints found.")
+		return
+	}
+	header := []string{"SERVICE", "INSTANCE", "PORT", "ADDRESS"}
+	var rows [][]string
+	for _, endpoint := range endpoints {
+		rows = append(rows, []string{
+			endpoint.Service,
+			endpoint.InstanceID,
+			fmt.Sprintf("%d", endpoint.Port),
+			endpoint.Address,
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)

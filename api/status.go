@@ -27,6 +27,7 @@ type ClusterStatus struct {
 	Secrets         []SecretStatus        `json:"secrets,omitempty"`
 	Config          []ConfigStatus        `json:"config,omitempty"`
 	CloudIdentities []CloudIdentityStatus `json:"cloud_identities,omitempty"`
+	Endpoints       []EndpointStatus      `json:"endpoints,omitempty"`
 }
 
 // ServiceStatus represents one service in the cluster status.
@@ -143,6 +144,16 @@ type CloudIdentityStatus struct {
 	Services []string `json:"services,omitempty"`
 }
 
+// EndpointStatus represents one service endpoint mapping an instance port to
+// a network address. Endpoints are derived facts produced by the endpoint
+// controller and consumed by the data plane for VIP DNAT programming.
+type EndpointStatus struct {
+	Service    string `json:"service"`
+	InstanceID string `json:"instance_id"`
+	Port       int    `json:"port"`
+	Address    string `json:"address"`
+}
+
 // buildStatusFromStore collects the full cluster state from the fact store
 // and assembles it into a structured ClusterStatus by delegating to
 // per-section builder functions. When a non-nil principal is provided,
@@ -169,6 +180,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 		Secrets:         collectSecretStatusFromStore(ctx, factStore, sortedServiceNames),
 		Config:          collectConfigStatusFromStore(ctx, factStore, sortedServiceNames),
 		CloudIdentities: collectCloudIdentityStatusFromStore(ctx, factStore),
+		Endpoints:       collectEndpointStatusFromStore(ctx, factStore),
 	}
 }
 
@@ -500,6 +512,43 @@ func collectCloudIdentityStatusFromStore(ctx context.Context, factStore store.St
 		return cloudIdentityStatusList[i].Name < cloudIdentityStatusList[j].Name
 	})
 	return cloudIdentityStatusList
+}
+
+// collectEndpointStatusFromStore scans endpoint facts and assembles a sorted
+// list of endpoint status entries for display via `cca get endpoints`.
+func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateStore) []EndpointStatus {
+	endpointFacts, scanError := factStore.Scan(ctx, types.ScanEndpoints)
+	if scanError != nil {
+		return nil
+	}
+	var endpointStatusList []EndpointStatus
+	for _, endpointFact := range endpointFacts {
+		relativePath := strings.TrimPrefix(endpointFact.Key, types.ScanEndpoints)
+		pathParts := strings.SplitN(relativePath, "/", 3)
+		if len(pathParts) != 3 {
+			continue
+		}
+		portNumber := 0
+		if _, parseError := fmt.Sscanf(pathParts[2], "%d", &portNumber); parseError != nil {
+			continue
+		}
+		endpointStatusList = append(endpointStatusList, EndpointStatus{
+			Service:    pathParts[0],
+			InstanceID: pathParts[1],
+			Port:       portNumber,
+			Address:    string(endpointFact.Value),
+		})
+	}
+	sort.Slice(endpointStatusList, func(i, j int) bool {
+		if endpointStatusList[i].Service != endpointStatusList[j].Service {
+			return endpointStatusList[i].Service < endpointStatusList[j].Service
+		}
+		if endpointStatusList[i].InstanceID != endpointStatusList[j].InstanceID {
+			return endpointStatusList[i].InstanceID < endpointStatusList[j].InstanceID
+		}
+		return endpointStatusList[i].Port < endpointStatusList[j].Port
+	})
+	return endpointStatusList
 }
 
 func appendUniqueString(slice []string, value string) []string {

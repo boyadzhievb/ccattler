@@ -136,7 +136,7 @@ func main() {
 		executeDescribeCommand(os.Args[2], os.Args[3])
 	case "get":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking|secrets|config>")
+			fmt.Fprintln(os.Stderr, "usage: cca get <services|instances|nodes|volumes|networking|secrets|config|endpoints>")
 			os.Exit(1)
 		}
 		executeGetCommand(os.Args[2], os.Args[3:])
@@ -301,7 +301,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")
 	fmt.Fprintln(os.Stderr, "  describe <type> <name>       detailed view (service, node, instance)")
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
-	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config")
+	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config, endpoints")
 	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
 	fmt.Fprintln(os.Stderr, "  render [flags] <template>     render a template with values to stdout")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
