@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -235,8 +235,8 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 }
 
 // executeLogsCommand streams container stdout/stderr logs for a service or
-// specific instance. Uses nerdctl/docker logs on the local machine. With
-// --tag, resolves matching services and aggregates logs across all of them.
+// specific instance via the agent debug API. With --tag, resolves matching
+// services and aggregates logs across all of them.
 func executeLogsCommand(parsedConfig logsCommandConfig) {
 	if parsedConfig.serviceName == "" && parsedConfig.instanceID == "" && len(parsedConfig.tagFilters) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: cca logs <service|container-name> [-f] [--tail N] [--since TIME] [--timestamps] [--previous]")
@@ -390,63 +390,88 @@ func findInstanceIDsForService(facts []struct {
 	return instanceIDs
 }
 
-// findPreviousContainer lists exited containers and returns the name of the
-// most recent one matching the given service name prefix.
-func findPreviousContainer(containerTool string, serviceName string) string {
-	listOutput, listError := exec.Command(containerTool, "ps", "-a", "--filter", "status=exited", "--format", "{{.Names}}").Output()
-	if listError != nil || len(listOutput) == 0 {
-		return ""
+// findPreviousInstance queries observed facts for a terminated (stopped or
+// failed) instance of the given service. Returns the instance ID if found,
+// or an empty string if no previous instance exists.
+func findPreviousInstance(serviceName string) string {
+	observedFacts := fetchObservedInstanceFacts()
+
+	serviceInstances := make(map[string]bool)
+	stateMap := make(map[string]string)
+
+	for _, factEntry := range observedFacts {
+		if strings.HasSuffix(factEntry.Key, "/service") && factEntry.Value == serviceName {
+			instanceID := strings.TrimPrefix(factEntry.Key, "observed/instance/")
+			instanceID = strings.TrimSuffix(instanceID, "/service")
+			serviceInstances[instanceID] = true
+		}
+		if strings.HasSuffix(factEntry.Key, "/state") {
+			instanceID := strings.TrimPrefix(factEntry.Key, "observed/instance/")
+			instanceID = strings.TrimSuffix(instanceID, "/state")
+			stateMap[instanceID] = factEntry.Value
+		}
 	}
-	prefix := serviceName + "-"
-	for _, line := range strings.Split(strings.TrimSpace(string(listOutput)), "\n") {
-		name := strings.TrimSpace(line)
-		if strings.HasPrefix(name, prefix) {
-			return name
+
+	for instanceID := range serviceInstances {
+		instanceState := stateMap[instanceID]
+		if instanceState == string(types.InstanceFailed) || instanceState == string(types.InstanceStopped) {
+			return instanceID
 		}
 	}
 	return ""
 }
 
-// streamContainerLogs runs nerdctl logs for the given instance and streams
-// output to stdout. The container name is built from the service name and
-// instance ID. Flags like --tail, --since, --timestamps are passed through
-// to the container runtime.
+// streamContainerLogs fetches logs for a container instance through the agent
+// debug API. It discovers the instance's placement, connects to the node's
+// debug endpoint, and streams the response to stdout.
 func streamContainerLogs(serviceName string, instanceID string, logsConfig logsCommandConfig) {
-	containerTool := "nerdctl"
-
-	logsArgs := []string{"logs"}
-	if logsConfig.follow {
-		logsArgs = append(logsArgs, "--follow")
-	}
-	if logsConfig.tailLines != "" {
-		logsArgs = append(logsArgs, "--tail", logsConfig.tailLines)
-	}
-	if logsConfig.since != "" {
-		logsArgs = append(logsArgs, "--since", logsConfig.since)
-	}
-	if logsConfig.timestamps {
-		logsArgs = append(logsArgs, "--timestamps")
-	}
-	containerName := serviceName + "-" + instanceID
-	if serviceName == "" {
-		containerName = instanceID
-	}
 	if logsConfig.previous {
-		previousName := findPreviousContainer(containerTool, serviceName)
-		if previousName == "" {
-			fmt.Fprintf(os.Stderr, "no previous (exited) container found for service %q\n", serviceName)
+		previousID := findPreviousInstance(serviceName)
+		if previousID == "" {
+			fmt.Fprintf(os.Stderr, "no previous (terminated) instance found for service %q\n", serviceName)
 			return
 		}
-		containerName = previousName
+		instanceID = previousID
 	}
-	logsArgs = append(logsArgs, containerName)
 
-	logsCommand := exec.Command(containerTool, logsArgs...)
-	logsCommand.Stdout = os.Stdout
-	logsCommand.Stderr = os.Stderr
-	if runError := logsCommand.Run(); runError != nil {
-		fmt.Fprintf(os.Stderr, "logs for %s: %v\n", containerName, runError)
+	placementNodeID := discoverInstancePlacement(instanceID)
+	debugAddress := discoverNodeDebugAddress(placementNodeID)
+
+	endpointURL := "http://" + debugAddress + "/debug/logs"
+	if strings.HasPrefix(debugAddress, "http://") || strings.HasPrefix(debugAddress, "https://") {
+		endpointURL = debugAddress + "/debug/logs"
 	}
+
+	queryParams := url.Values{}
+	queryParams.Set("instance", instanceID)
+	if logsConfig.tailLines != "" {
+		queryParams.Set("tail", logsConfig.tailLines)
+	}
+	if logsConfig.since != "" {
+		queryParams.Set("since", logsConfig.since)
+	}
+	if logsConfig.timestamps {
+		queryParams.Set("timestamps", "true")
+	}
+	if logsConfig.follow {
+		queryParams.Set("follow", "true")
+	}
+
+	requestURL := endpointURL + "?" + queryParams.Encode()
+	httpResponse, requestError := http.Get(requestURL) //nolint:gosec // CLI connects to agent debug API on discovered node
+	if requestError != nil {
+		fmt.Fprintf(os.Stderr, "cannot connect to agent debug API at %s: %v\n", debugAddress, requestError)
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	if httpResponse.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(httpResponse.Body)
+		fmt.Fprintf(os.Stderr, "logs error: %s\n", string(responseBody))
+		return
+	}
+
+	_, _ = io.Copy(os.Stdout, httpResponse.Body)
 }
 
 // executeStatusCommand queries the status API of a running ccattler instance

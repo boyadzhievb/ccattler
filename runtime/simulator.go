@@ -278,7 +278,7 @@ func (simulator *SimulatorRuntime) Stats(_ context.Context, id string) (Resource
 }
 
 // Logs returns an empty reader for simulated workloads.
-func (simulator *SimulatorRuntime) Logs(_ context.Context, id string, follow bool) (io.ReadCloser, error) {
+func (simulator *SimulatorRuntime) Logs(_ context.Context, id string, _ LogsOptions) (io.ReadCloser, error) {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 

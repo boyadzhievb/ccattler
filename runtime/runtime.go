@@ -90,16 +90,23 @@ type Runtime interface {
 	// values for metrics that are unavailable (e.g. stopped workloads).
 	Stats(ctx context.Context, id string) (ResourceStats, error)
 
-	// Logs returns the stdout/stderr output of a workload. When follow is true,
-	// the returned reader streams new output as it is produced (blocking read).
-	// The caller must close the returned ReadCloser when done.
-	Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error)
+	// Logs returns the stdout/stderr output of a workload. The caller must
+	// close the returned ReadCloser when done.
+	Logs(ctx context.Context, id string, options LogsOptions) (io.ReadCloser, error)
 
 	// Resize updates the resource allocation of a running workload in place
 	// (e.g. cgroup v2 resource limits). Returns ErrResizeUnsupported if the
 	// runtime does not support live resize, in which case the caller should
 	// stop and restart the workload with the new resources.
 	Resize(ctx context.Context, id string, cpuMillicores int64, memoryBytes int64) error
+}
+
+// LogsOptions controls how container logs are retrieved.
+type LogsOptions struct {
+	Follow     bool
+	TailLines  string
+	Since      string
+	Timestamps bool
 }
 
 // ResourceStats describes the observed resource usage of a running workload.

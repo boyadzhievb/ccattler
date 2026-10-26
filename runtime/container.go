@@ -678,7 +678,7 @@ func (containerRuntime *ContainerRuntime) Resize(_ context.Context, _ string, _ 
 // Logs returns a reader that streams the stdout/stderr output of the
 // container identified by id. If follow is true, the reader blocks for
 // new output. The caller must close the returned ReadCloser when done.
-func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
+func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, options LogsOptions) (io.ReadCloser, error) {
 	containerRuntime.mutex.Lock()
 	tracked := containerRuntime.trackedContainers[id]
 	containerName := containerRuntime.resolveContainerName(id)
@@ -689,8 +689,17 @@ func (containerRuntime *ContainerRuntime) Logs(ctx context.Context, id string, f
 	}
 
 	logsArgs := []string{"logs"}
-	if follow {
+	if options.Follow {
 		logsArgs = append(logsArgs, "--follow")
+	}
+	if options.TailLines != "" {
+		logsArgs = append(logsArgs, "--tail", options.TailLines)
+	}
+	if options.Since != "" {
+		logsArgs = append(logsArgs, "--since", options.Since)
+	}
+	if options.Timestamps {
+		logsArgs = append(logsArgs, "--timestamps")
 	}
 	logsArgs = append(logsArgs, containerName)
 

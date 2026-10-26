@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"sort"
@@ -50,6 +51,7 @@ func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.
 	serveMux.HandleFunc("/debug/images", debugServer.handleDebugImages)
 	serveMux.HandleFunc("/debug/stats", debugServer.handleDebugStats)
 	serveMux.HandleFunc("/debug/exec", debugServer.handleDebugExec)
+	serveMux.HandleFunc("/debug/logs", debugServer.handleDebugLogs)
 	serveMux.HandleFunc("/debug/images/pull", debugServer.handleDebugImagePull)
 
 	debugServer.httpServer = &http.Server{
@@ -303,6 +305,54 @@ func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWrit
 		response.ExitCode = 1
 	}
 	writeJSONResponse(responseWriter, response)
+}
+
+// handleDebugLogs streams container logs for a single instance. Query
+// parameters: instance (required), tail, since, timestamps, follow.
+func (debugServer *DebugServer) handleDebugLogs(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeDebugJSONError(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	queryParams := request.URL.Query()
+	instanceID := queryParams.Get("instance")
+	if instanceID == "" {
+		writeDebugJSONError(responseWriter, "instance query parameter required", http.StatusBadRequest)
+		return
+	}
+
+	logsOptions := runtime.LogsOptions{
+		Follow:     queryParams.Get("follow") == "true",
+		TailLines:  queryParams.Get("tail"),
+		Since:      queryParams.Get("since"),
+		Timestamps: queryParams.Get("timestamps") == "true",
+	}
+
+	logsReader, logsError := debugServer.runtimeAdapter.Logs(request.Context(), instanceID, logsOptions)
+	if logsError != nil {
+		writeDebugJSONError(responseWriter, "logs: "+logsError.Error(), http.StatusNotFound)
+		return
+	}
+	defer func() { _ = logsReader.Close() }()
+
+	responseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	responseWriter.WriteHeader(http.StatusOK)
+	if flusher, canFlush := responseWriter.(http.Flusher); canFlush {
+		buffer := make([]byte, 4096)
+		for {
+			bytesRead, readError := logsReader.Read(buffer)
+			if bytesRead > 0 {
+				_, _ = responseWriter.Write(buffer[:bytesRead])
+				flusher.Flush()
+			}
+			if readError != nil {
+				return
+			}
+		}
+	} else {
+		_, _ = io.Copy(responseWriter, logsReader)
+	}
 }
 
 // DebugImagePullRequest is the JSON body for POST /debug/images/pull.
