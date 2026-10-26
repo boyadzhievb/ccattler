@@ -43,36 +43,36 @@ type QuotaDecl struct {
 
 // ServiceDecl represents a parsed "service" block in the DSL.
 type ServiceDecl struct {
-	Name            string                     // unique service identifier from the block header
-	Owner           string                     // owning tenant (empty = derived from hierarchical name)
-	Image           string                     // container image reference (e.g. "nginx:1.27")
-	Command         string                     // optional container command override (e.g. "airflow webserver")
-	Instances       int                        // desired number of running instances
-	Ports           []int                      // exposed port numbers declared via "expose"
-	ExternalPorts   []ExternalPortDecl         // ports exposed externally via cloud load balancer
-	Resources       *ResourcesDecl             // optional CPU/memory resource constraints
-	Health          *HealthDecl                // optional health check configuration
-	Scale           *ScaleDecl                 // optional autoscaling policy
-	Placement       *PlacementDecl             // optional placement constraints
-	Update          *UpdateDecl                // optional rolling update strategy
-	Config          *ConfigDecl                // optional config block (env vars, config files)
-	Secrets         []SecretDecl               // optional secret mount declarations
-	Connections     []ConnectionRef            // optional connection mount references
-	VolumeMounts    []VolumeMountDecl          // optional volume mount bindings
-	CloudIdentities []CloudIdentityBindingDecl // optional cloud identity bindings
-	InitSteps       []InitStepDecl             // optional ordered initialization steps
-	Startup         *ProbeDecl                 // optional startup probe (gates liveness/readiness)
-	Liveness        *ProbeDecl                 // optional liveness probe (triggers restart on failure)
-	Readiness       *ProbeDecl                 // optional readiness probe (controls endpoint membership)
-	Disruption      *DisruptionDecl            // optional disruption budget for drain/rollout safety
-	Tags            []TagDecl                  // optional user-defined key-value tags for grouping and filtering
-	PullPolicy      string                     // image pull policy: "always", "if_not_present", or "never"
-	ImagePullSecret string                     // name of secret containing registry credentials for private image pulls
-	Logging         *LoggingDecl               // optional log rotation configuration
-	Lifecycle               *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
-	TerminationGracePeriod  string                     // optional SIGTERM-to-SIGKILL grace period (e.g. "600s", "10m")
-	Stateful                bool                       // true if service uses ordinal instance IDs and ordered startup
-	Line            int                        // source line number for error reporting
+	Name                   string                     // unique service identifier from the block header
+	Owner                  string                     // owning tenant (empty = derived from hierarchical name)
+	Image                  string                     // container image reference (e.g. "nginx:1.27")
+	Command                string                     // optional container command override (e.g. "airflow webserver")
+	Instances              int                        // desired number of running instances
+	Ports                  []int                      // exposed port numbers declared via "expose"
+	ExternalPorts          []ExternalPortDecl         // ports exposed externally via cloud load balancer
+	Resources              *ResourcesDecl             // optional CPU/memory resource constraints
+	Health                 *HealthDecl                // optional health check configuration
+	Scale                  *ScaleDecl                 // optional autoscaling policy
+	Placement              *PlacementDecl             // optional placement constraints
+	Update                 *UpdateDecl                // optional rolling update strategy
+	Config                 *ConfigDecl                // optional config block (env vars, config files)
+	Secrets                []SecretDecl               // optional secret mount declarations
+	Connections            []ConnectionRef            // optional connection mount references
+	VolumeMounts           []VolumeMountDecl          // optional volume mount bindings
+	CloudIdentities        []CloudIdentityBindingDecl // optional cloud identity bindings
+	InitSteps              []InitStepDecl             // optional ordered initialization steps
+	Startup                *ProbeDecl                 // optional startup probe (gates liveness/readiness)
+	Liveness               *ProbeDecl                 // optional liveness probe (triggers restart on failure)
+	Readiness              *ProbeDecl                 // optional readiness probe (controls endpoint membership)
+	Disruption             *DisruptionDecl            // optional disruption budget for drain/rollout safety
+	Tags                   []TagDecl                  // optional user-defined key-value tags for grouping and filtering
+	PullPolicy             string                     // image pull policy: "always", "if_not_present", or "never"
+	ImagePullSecret        string                     // name of secret containing registry credentials for private image pulls
+	Logging                *LoggingDecl               // optional log rotation configuration
+	Lifecycle              *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
+	TerminationGracePeriod string                     // optional SIGTERM-to-SIGKILL grace period (e.g. "600s", "10m")
+	Stateful               bool                       // true if service uses ordinal instance IDs and ordered startup
+	Line                   int                        // source line number for error reporting
 }
 
 // TagDecl holds a single user-defined key-value tag on a service.
