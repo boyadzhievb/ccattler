@@ -344,8 +344,8 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		if initError := containerdRuntime.ensureCNIInitialized(); initError != nil {
 			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("CNI init: %v", initError)}
 		}
-		createdNetnsPath, netnsError := createNetworkNamespace(spec.ID)
-		if netnsError != nil {
+		createdNetnsPath, netnsError := createNetworkNamespace(spec.ID) //nolint:staticcheck // stub always errors on non-Linux
+		if netnsError != nil {                                          //nolint:staticcheck // stub always errors on non-Linux
 			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create netns: %v", netnsError)}
 		}
 		netnsPath = createdNetnsPath

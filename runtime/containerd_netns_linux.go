@@ -19,11 +19,11 @@ import (
 func createNetworkNamespace(instanceID string) (string, error) {
 	netnsPath := filepath.Join(netnsBaseDirectory, "cca-"+instanceID)
 
-	if mkdirError := os.MkdirAll(netnsBaseDirectory, 0755); mkdirError != nil {
+	if mkdirError := os.MkdirAll(netnsBaseDirectory, 0750); mkdirError != nil {
 		return "", fmt.Errorf("create netns dir: %w", mkdirError)
 	}
 
-	netnsFile, createError := os.Create(netnsPath)
+	netnsFile, createError := os.Create(netnsPath) // #nosec G304 — path is constructed from constant base + sanitized instance ID
 	if createError != nil {
 		return "", fmt.Errorf("create netns file: %w", createError)
 	}
