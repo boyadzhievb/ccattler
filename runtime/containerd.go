@@ -799,6 +799,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	ociOptions := []oci.SpecOpts{
 		oci.WithImageConfig(image),
 		oci.WithProcessArgs("bash", "-c", execSpec.Command),
+		oci.WithHostNamespace(specs.NetworkNamespace),
 	}
 	if len(envVars) > 0 {
 		ociOptions = append(ociOptions, oci.WithEnv(envVars))
