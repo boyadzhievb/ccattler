@@ -10,9 +10,12 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
+	cgroupstats "github.com/containerd/cgroups/v3/cgroup2/stats"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/typeurl/v2"
 )
 
 // containerdNamespace is the containerd namespace used for all CCattler workloads.
@@ -151,9 +154,104 @@ func (containerdRuntime *ContainerdRuntime) List(ctx context.Context) ([]Status,
 	return results, nil
 }
 
-// Stats returns the resource usage of the container identified by id.
-func (containerdRuntime *ContainerdRuntime) Stats(_ context.Context, _ string) (ResourceStats, error) {
-	return ResourceStats{}, ErrNotImplemented
+// cpuSampleInterval is the delay between two CPU usage samples used to
+// compute the instantaneous CPU rate in millicores.
+const cpuSampleInterval = 200 * time.Millisecond
+
+// Stats returns the resource usage of the container identified by id by
+// reading cgroup v2 metrics from containerd. CPU millicores are computed
+// from two usage samples taken cpuSampleInterval apart.
+func (containerdRuntime *ContainerdRuntime) Stats(ctx context.Context, instanceID string) (ResourceStats, error) {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+	containerName := containerdRuntime.resolveContainerName(instanceID)
+
+	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
+	if loadError != nil {
+		return ResourceStats{}, ErrNotFound
+	}
+
+	task, taskError := container.Task(namespacedCtx, nil)
+	if taskError != nil {
+		return ResourceStats{}, nil
+	}
+
+	firstSample, firstError := containerdRuntime.readCgroupMetrics(namespacedCtx, task)
+	if firstError != nil {
+		return ResourceStats{}, nil
+	}
+
+	select {
+	case <-time.After(cpuSampleInterval):
+	case <-ctx.Done():
+		return ResourceStats{}, ctx.Err()
+	}
+
+	secondSample, secondError := containerdRuntime.readCgroupMetrics(namespacedCtx, task)
+	if secondError != nil {
+		return ResourceStats{
+			MemoryBytes: firstSample.memoryUsageBytes,
+		}, nil
+	}
+
+	cpuDeltaUsec := secondSample.cpuUsageUsec - firstSample.cpuUsageUsec
+	intervalUsec := uint64(cpuSampleInterval / time.Microsecond)
+	cpuMillicores := int64(0)
+	if intervalUsec > 0 {
+		cpuMillicores = safeUint64ToInt64(cpuDeltaUsec * 1000 / intervalUsec)
+	}
+
+	return ResourceStats{
+		CPUMillicores: cpuMillicores,
+		MemoryBytes:   secondSample.memoryUsageBytes,
+	}, nil
+}
+
+// cgroupSample holds the raw cgroup metrics extracted from a single reading.
+type cgroupSample struct {
+	cpuUsageUsec     uint64 // cpuUsageUsec is the cumulative CPU time in microseconds.
+	memoryUsageBytes int64  // memoryUsageBytes is the current memory usage in bytes.
+}
+
+// readCgroupMetrics extracts CPU and memory values from a containerd task's
+// cgroup v2 metrics, following the same typeurl pattern as ctr metrics.
+func (containerdRuntime *ContainerdRuntime) readCgroupMetrics(ctx context.Context, task containerd.Task) (cgroupSample, error) {
+	metric, metricsError := task.Metrics(ctx)
+	if metricsError != nil {
+		return cgroupSample{}, metricsError
+	}
+
+	if metric.Data == nil {
+		return cgroupSample{}, errors.New("no metric data returned")
+	}
+
+	if !typeurl.Is(metric.Data, (*cgroupstats.Metrics)(nil)) {
+		return cgroupSample{}, fmt.Errorf("unsupported metric type: %s", metric.Data.GetTypeUrl())
+	}
+
+	var cgroupMetrics cgroupstats.Metrics
+	if unmarshalError := typeurl.UnmarshalTo(metric.Data, &cgroupMetrics); unmarshalError != nil {
+		return cgroupSample{}, unmarshalError
+	}
+
+	sample := cgroupSample{}
+	if cgroupMetrics.CPU != nil {
+		sample.cpuUsageUsec = cgroupMetrics.CPU.UsageUsec
+	}
+	if cgroupMetrics.Memory != nil {
+		sample.memoryUsageBytes = safeUint64ToInt64(cgroupMetrics.Memory.Usage)
+	}
+
+	return sample, nil
+}
+
+// safeUint64ToInt64 converts a uint64 to int64, capping at math.MaxInt64 to
+// prevent overflow on values larger than 2^63-1.
+func safeUint64ToInt64(value uint64) int64 {
+	const maxInt64 = uint64(1<<63 - 1)
+	if value > maxInt64 {
+		return int64(maxInt64)
+	}
+	return int64(value) // #nosec G115 — overflow prevented by the check above.
 }
 
 // --- Runtime interface: Phase D (lifecycle) ---
@@ -279,9 +377,40 @@ func (containerdRuntime *ContainerdRuntime) DiscoverAllContainers(ctx context.Co
 	return results, nil
 }
 
-// DiscoverAllContainerStats returns resource usage for all running containers.
-func (containerdRuntime *ContainerdRuntime) DiscoverAllContainerStats(_ context.Context) ([]ContainerResourceUsage, error) {
-	return nil, ErrNotImplemented
+// DiscoverAllContainerStats returns resource usage for all running containers
+// by querying cgroup v2 metrics from each task in the CCattler namespace.
+func (containerdRuntime *ContainerdRuntime) DiscoverAllContainerStats(ctx context.Context) ([]ContainerResourceUsage, error) {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+
+	containers, listError := containerdRuntime.client.Containers(namespacedCtx,
+		fmt.Sprintf("labels.%q", containerLabelInstanceID))
+	if listError != nil {
+		return nil, fmt.Errorf("list containers: %w", listError)
+	}
+
+	var results []ContainerResourceUsage
+	for _, container := range containers {
+		labels, _ := container.Labels(namespacedCtx)
+		instanceID := labels[containerLabelInstanceID]
+		serviceName := labels[containerLabelServiceName]
+		containerName := serviceName + "-" + instanceID
+
+		task, taskError := container.Task(namespacedCtx, nil)
+		if taskError != nil {
+			continue
+		}
+
+		sample, sampleError := containerdRuntime.readCgroupMetrics(namespacedCtx, task)
+		if sampleError != nil {
+			continue
+		}
+
+		results = append(results, ContainerResourceUsage{
+			Name:        containerName,
+			MemoryBytes: sample.memoryUsageBytes,
+		})
+	}
+	return results, nil
 }
 
 // HostPortsForInstance returns the host port mappings for the given instance.
