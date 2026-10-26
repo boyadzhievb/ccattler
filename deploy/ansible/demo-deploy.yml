@@ -58,56 +58,41 @@
   roles:
     - worker
 
-- name: Generate Airflow self-signed TLS certificate
+- name: Deploy Airflow application
   hosts: controlplane
   become: true
   tags: [testapp]
   tasks:
-    - name: Create Airflow cert directory
-      file:
-        path: /tmp/airflow-certs
-        state: directory
-        mode: "0755"
-
-    - name: Generate self-signed certificate for Airflow webserver
-      shell: >
-        openssl req -x509 -newkey rsa:2048 -nodes
-        -keyout /tmp/airflow-certs/tls.key
-        -out /tmp/airflow-certs/tls.crt
-        -days 365
-        -subj "/CN=airflow.home.arpa/O=CCattler"
-      args:
-        creates: /tmp/airflow-certs/tls.crt
-
-    - name: Generate Fernet key for Airflow
-      shell: openssl rand -base64 32 > /tmp/airflow-certs/fernet-key
-      args:
-        creates: /tmp/airflow-certs/fernet-key
-
-- name: Deploy Airflow application
-  hosts: controlplane
-  become: false
-  tags: [testapp]
-  tasks:
-    - name: Copy Airflow deployment config to control plane
-      become: true
-      copy:
-        src: "{{ playbook_dir }}/airflow-test-app.cca"
-        dest: /tmp/airflow-test-app.cca
-        mode: "0644"
-
     - name: Wait for CCattler server to be ready
       wait_for:
         port: 9770
         host: "{{ ansible_host }}"
         timeout: 30
 
+    - name: Create Airflow secrets
+      command: /usr/local/bin/cca secret create {{ item.name }} --value "{{ item.value }}"
+      loop:
+        - { name: "airflow.db-password", value: "airflow" }
+        - { name: "airflow.admin-password", value: "airflow" }
+        - { name: "airflow.webserver-secret-key", value: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') }}" }
+        - { name: "airflow.fernet-key", value: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode }}" }
+      register: secret_result
+      failed_when: secret_result.rc != 0 and 'already exists' not in secret_result.stderr
+
+    - name: Copy Airflow deployment config to control plane
+      copy:
+        src: "{{ playbook_dir }}/../../test/e2e/workloads/airflow.cca"
+        dest: /tmp/airflow.cca
+        mode: "0644"
+
     - name: Apply Airflow deployment
-      command: /usr/local/bin/cca apply /tmp/airflow-test-app.cca
+      command: >
+        /usr/local/bin/cca apply /tmp/airflow.cca
+        --set registry={{ insecure_registry | default('docker.io') }}
 
     - name: Wait for Airflow containers to start
       pause:
-        seconds: 45
+        seconds: 60
 
     - name: Verify Airflow instances are running
       command: >
@@ -129,14 +114,14 @@
           ============================================
           CCattler demo cluster is running!
 
-          Control plane: 192.168.56.10:9770
-          Airflow UI:    https://192.168.56.20:443
-                         (self-signed cert, user: airflow / airflow)
+          Control plane: {{ ansible_host }}:9770
+          Airflow UI:    http://{{ ansible_host }}:8080
+                         (user: airflow / airflow)
 
           Services:
             metadata-db  1 x postgres:16
             redis        1 x redis:7
-            webserver    1 x apache/airflow:2.10.5 (HTTPS :443)
+            webserver    1 x apache/airflow:2.10.5 (:8080)
             scheduler    1 x apache/airflow:2.10.5
             worker       2 x apache/airflow:2.10.5
 

@@ -399,19 +399,29 @@
       until: node_registered.rc == 0
       changed_when: false
 
-- name: Deploy Airflow test app
+- name: Deploy Airflow application
   hosts: all
   become: true
   tags: [testapp]
   tasks:
-    - name: Copy Airflow test app config
+    - name: Create Airflow secrets
+      command: /usr/local/bin/cca secret create {{ item.name }} --value "{{ item.value }}"
+      loop:
+        - { name: "airflow.db-password", value: "airflow" }
+        - { name: "airflow.admin-password", value: "airflow" }
+        - { name: "airflow.webserver-secret-key", value: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') }}" }
+        - { name: "airflow.fernet-key", value: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') | b64encode }}" }
+      register: secret_result
+      failed_when: secret_result.rc != 0 and 'already exists' not in secret_result.stderr
+
+    - name: Copy Airflow deployment config
       copy:
-        src: "{{ playbook_dir }}/../ansible/airflow-test-app.cca"
-        dest: /tmp/airflow-test-app.cca
+        src: "{{ playbook_dir }}/../../test/e2e/workloads/airflow.cca"
+        dest: /tmp/airflow.cca
         mode: "0644"
 
-    - name: Apply Airflow test app
-      command: /usr/local/bin/cca apply /tmp/airflow-test-app.cca
+    - name: Apply Airflow deployment
+      command: /usr/local/bin/cca apply /tmp/airflow.cca
 
     - name: Wait for containers to start
       pause:
