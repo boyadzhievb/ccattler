@@ -66,8 +66,8 @@ func (slowRuntime *slowStartRuntime) Stats(ctx context.Context, id string) (runt
 }
 
 // Logs delegates to the wrapped runtime.
-func (slowRuntime *slowStartRuntime) Logs(ctx context.Context, id string, follow bool) (io.ReadCloser, error) {
-	return slowRuntime.delegate.Logs(ctx, id, follow)
+func (slowRuntime *slowStartRuntime) Logs(ctx context.Context, id string, options runtime.LogsOptions) (io.ReadCloser, error) {
+	return slowRuntime.delegate.Logs(ctx, id, options)
 }
 
 // Resize delegates to the wrapped runtime.

@@ -79,8 +79,8 @@ func (delayed *delayedStartRuntime) Stats(ctx context.Context, instanceID string
 	return delayed.inner.Stats(ctx, instanceID)
 }
 
-func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
-	return delayed.inner.Logs(ctx, instanceID, follow)
+func (delayed *delayedStartRuntime) Logs(ctx context.Context, instanceID string, options runtime.LogsOptions) (io.ReadCloser, error) {
+	return delayed.inner.Logs(ctx, instanceID, options)
 }
 
 func (delayed *delayedStartRuntime) Resize(ctx context.Context, instanceID string, cpuMillicores int64, memoryBytes int64) error {
@@ -1441,8 +1441,8 @@ func (noResize *noResizeRuntime) Stats(ctx context.Context, instanceID string) (
 	return noResize.inner.Stats(ctx, instanceID)
 }
 
-func (noResize *noResizeRuntime) Logs(ctx context.Context, instanceID string, follow bool) (io.ReadCloser, error) {
-	return noResize.inner.Logs(ctx, instanceID, follow)
+func (noResize *noResizeRuntime) Logs(ctx context.Context, instanceID string, options runtime.LogsOptions) (io.ReadCloser, error) {
+	return noResize.inner.Logs(ctx, instanceID, options)
 }
 
 // Resize always returns ErrResizeUnsupported to simulate process/container runtimes.

@@ -274,7 +274,7 @@ func testLogsReturnsErrNotFoundForUnknown(t *testing.T, factory runtimeFactory) 
 	runtimeInstance := factory()
 	testCtx := context.Background()
 
-	_, err := runtimeInstance.Logs(testCtx, "nonexistent-workload", false)
+	_, err := runtimeInstance.Logs(testCtx, "nonexistent-workload", LogsOptions{})
 	if err == nil {
 		t.Fatal("Logs on unknown workload should return error")
 	}
@@ -286,7 +286,7 @@ func testLogsReturnsReaderForRunning(t *testing.T, factory runtimeFactory) {
 
 	runtimeInstance.Start(testCtx, testSpec("workload-1"))
 
-	reader, err := runtimeInstance.Logs(testCtx, "workload-1", false)
+	reader, err := runtimeInstance.Logs(testCtx, "workload-1", LogsOptions{})
 	if err != nil {
 		t.Fatalf("Logs failed: %v", err)
 	}
@@ -481,7 +481,7 @@ func testLogsFollowReturnsReader(t *testing.T, factory runtimeFactory) {
 
 	runtimeInstance.Start(testCtx, testSpec("workload-1"))
 
-	reader, err := runtimeInstance.Logs(testCtx, "workload-1", true)
+	reader, err := runtimeInstance.Logs(testCtx, "workload-1", LogsOptions{Follow: true})
 	if err != nil {
 		t.Fatalf("Logs(follow=true) failed: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestProcessRuntimeLogsClose(t *testing.T) {
 	processRuntime.Start(testCtx, testSpec("workload-1"))
 	time.Sleep(50 * time.Millisecond)
 
-	reader, err := processRuntime.Logs(testCtx, "workload-1", false)
+	reader, err := processRuntime.Logs(testCtx, "workload-1", LogsOptions{})
 	if err != nil {
 		t.Fatalf("Logs failed: %v", err)
 	}

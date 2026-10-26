@@ -165,6 +165,33 @@ func (probeScheduler *ProbeScheduler) executeProbesForInstance(ctx context.Conte
 		}
 		probeScheduler.executeReadinessProbe(ctx, instanceInfo, instanceIP, readinessConfig, probeState.readiness, now)
 	}
+
+	probeScheduler.updateSummaryHealthFromProbes(ctx, instanceInfo.id, startupComplete)
+}
+
+// updateSummaryHealthFromProbes derives the legacy health fact from probe
+// results so that status displays show a meaningful health value when probes
+// are configured instead of the legacy health check.
+func (probeScheduler *ProbeScheduler) updateSummaryHealthFromProbes(ctx context.Context, instanceID string, startupComplete bool) {
+	if !startupComplete {
+		return
+	}
+
+	livenessState := probeScheduler.readProbeState(ctx, instanceID, types.ProbeLiveness)
+	if livenessState == string(types.LivenessProbeUnhealthy) {
+		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthUnhealthy)))
+		return
+	}
+
+	readinessState := probeScheduler.readProbeState(ctx, instanceID, types.ProbeReadiness)
+	if readinessState == string(types.ReadinessProbeNotReady) {
+		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthUnhealthy)))
+		return
+	}
+
+	if livenessState == string(types.LivenessProbeHealthy) || readinessState == string(types.ReadinessProbeReady) {
+		_, _ = probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceHealth(instanceID), []byte(string(types.HealthHealthy)))
+	}
 }
 
 // executeStartupProbe runs a startup probe check if the interval has elapsed.
