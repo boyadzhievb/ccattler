@@ -17,6 +17,7 @@ import (
 
 	cgroupstats "github.com/containerd/cgroups/v3/cgroup2/stats"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/typeurl/v2"
@@ -549,9 +550,46 @@ func (containerdRuntime *ContainerdRuntime) ListImages(ctx context.Context) ([]I
 	return results, nil
 }
 
-// PullImage pulls a container image into the containerd store.
-func (containerdRuntime *ContainerdRuntime) PullImage(_ context.Context, _ string, _ string) error {
-	return ErrNotImplemented
+// PullImage pulls a container image into the containerd content store and
+// unpacks it for use. The credentials parameter uses "user:password" format;
+// pass an empty string for public images.
+func (containerdRuntime *ContainerdRuntime) PullImage(ctx context.Context, imageReference string, credentials string) error {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+
+	pullOptions := []containerd.RemoteOpt{
+		containerd.WithPullUnpack,
+	}
+
+	if credentials != "" {
+		username, password := parseCredentials(credentials)
+		authorizer := docker.NewDockerAuthorizer(
+			docker.WithAuthCreds(func(_ string) (string, string, error) {
+				return username, password, nil
+			}),
+		)
+		registryHosts := docker.ConfigureDefaultRegistries(
+			docker.WithAuthorizer(authorizer),
+		)
+		resolver := docker.NewResolver(docker.ResolverOptions{
+			Hosts: registryHosts,
+		})
+		pullOptions = append(pullOptions, containerd.WithResolver(resolver))
+	}
+
+	_, pullError := containerdRuntime.client.Pull(namespacedCtx, imageReference, pullOptions...)
+	if pullError != nil {
+		return fmt.Errorf("pull image %s: %w", imageReference, pullError)
+	}
+	return nil
+}
+
+// parseCredentials splits a "user:password" string into username and password.
+func parseCredentials(credentials string) (string, string) {
+	separatorIndex := strings.IndexByte(credentials, ':')
+	if separatorIndex < 0 {
+		return credentials, ""
+	}
+	return credentials[:separatorIndex], credentials[separatorIndex+1:]
 }
 
 // IsImageCached returns true if the image exists in the containerd store.
