@@ -561,19 +561,7 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 	if !validImageReferencePattern.MatchString(image) {
 		return fmt.Errorf("invalid image reference: %q", image)
 	}
-	args := []string{"run", "--rm"}
-	if containerRuntime.networkName != "" {
-		if initNetworkError := containerRuntime.ensureNetworkExists(ctx); initNetworkError != nil {
-			return fmt.Errorf("init network setup: %w", initNetworkError)
-		}
-		args = append(args, "--network", containerRuntime.networkName)
-	}
-	if containerRuntime.dnsAddress != "" {
-		args = append(args, "--dns", containerRuntime.dnsAddress)
-	}
-	if containerRuntime.dnsSearchDomain != "" {
-		args = append(args, "--dns-search", containerRuntime.dnsSearchDomain)
-	}
+	args := []string{"run", "--rm", "--network", "host"}
 	for envKey, envValue := range execSpec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue
