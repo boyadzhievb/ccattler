@@ -369,3 +369,59 @@ func TestLintConnectionPortRange(t *testing.T) {
 		t.Error("expected port range error for connection")
 	}
 }
+
+// TestLintTCPHealthWithoutExpose warns when a service has a TCP health check
+// but no exposed ports.
+func TestLintTCPHealthWithoutExpose(t *testing.T) {
+	parsedFile := &File{
+		Services: []ServiceDecl{
+			{
+				Name:  "scheduler",
+				Image: "airflow:2.10.5",
+				Health: &HealthDecl{
+					Method:   "tcp",
+					Interval: "30s",
+				},
+				Ports: nil,
+				Line:  1,
+			},
+		},
+	}
+
+	diagnostics := Lint(parsedFile)
+	foundWarning := false
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Severity == "warning" && strings.Contains(diagnostic.Message, "TCP health check but no exposed ports") {
+			foundWarning = true
+		}
+	}
+	if !foundWarning {
+		t.Error("expected warning for TCP health check without exposed ports")
+	}
+}
+
+// TestLintTCPHealthWithExposeNoWarning ensures no warning when TCP health has
+// an exposed port.
+func TestLintTCPHealthWithExposeNoWarning(t *testing.T) {
+	parsedFile := &File{
+		Services: []ServiceDecl{
+			{
+				Name:  "redis",
+				Image: "redis:7",
+				Health: &HealthDecl{
+					Method:   "tcp",
+					Interval: "10s",
+				},
+				Ports: []int{6379},
+				Line:  1,
+			},
+		},
+	}
+
+	diagnostics := Lint(parsedFile)
+	for _, diagnostic := range diagnostics {
+		if strings.Contains(diagnostic.Message, "TCP health check but no exposed ports") {
+			t.Error("should not warn when service has exposed ports")
+		}
+	}
+}

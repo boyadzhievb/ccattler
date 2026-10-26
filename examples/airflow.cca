@@ -159,9 +159,18 @@ service scheduler {
         timeout 120s
         retry 20
     }
-    health {
-        tcp
-        every 30s
+    startup {
+        exec "airflow jobs check --job-type SchedulerJob --local"
+        every 10s
+        timeout 20s
+        failure_threshold 6
+    }
+    liveness {
+        exec "airflow jobs check --job-type SchedulerJob --local"
+        every 60s
+        timeout 20s
+        failure_threshold 5
+        initial_delay 10s
     }
 }
 
@@ -193,9 +202,19 @@ service worker {
         timeout 120s
         retry 20
     }
-    health {
-        tcp
-        every 15s
+    startup {
+        exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
+        every 10s
+        timeout 10s
+        failure_threshold 18
+        initial_delay 30s
+    }
+    liveness {
+        exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
+        every 60s
+        timeout 20s
+        failure_threshold 5
+        initial_delay 30s
     }
     scale {
         horizontal {

@@ -27,6 +27,7 @@ func Lint(file *File) []LintDiagnostic {
 	diagnostics = append(diagnostics, lintMissingRequiredFields(file)...)
 	diagnostics = append(diagnostics, lintPortRanges(file)...)
 	diagnostics = append(diagnostics, lintUndefinedReferences(file)...)
+	diagnostics = append(diagnostics, lintTCPHealthWithoutExpose(file)...)
 	return diagnostics
 }
 
@@ -186,6 +187,22 @@ func lintPortRanges(file *File) []LintDiagnostic {
 		}
 	}
 
+	return diagnostics
+}
+
+// lintTCPHealthWithoutExpose warns when a service has a TCP health check but
+// no exposed ports, which means the probe silently does nothing at runtime.
+func lintTCPHealthWithoutExpose(file *File) []LintDiagnostic {
+	var diagnostics []LintDiagnostic
+	for _, serviceDecl := range file.Services {
+		if serviceDecl.Health != nil && serviceDecl.Health.Method == "tcp" && len(serviceDecl.Ports) == 0 {
+			diagnostics = append(diagnostics, LintDiagnostic{
+				Severity: "warning",
+				Message:  fmt.Sprintf("service %q has TCP health check but no exposed ports — probe will have no target", serviceDecl.Name),
+				Line:     serviceDecl.Line,
+			})
+		}
+	}
 	return diagnostics
 }
 

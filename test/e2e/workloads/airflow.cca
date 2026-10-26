@@ -129,6 +129,14 @@ service scheduler {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
     }
+    init {
+        connection airflow-db
+    }
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 20
+    }
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     connection airflow-db "/run/connections/airflow-db"
     connection airflow-celery-backend "/run/connections/airflow-celery-backend"
@@ -139,9 +147,19 @@ service worker {
     command "celery worker"
     instances 2
     expose 8793
-    health {
-        tcp
-        every 15s
+    startup {
+        exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
+        every 10s
+        timeout 10s
+        failure_threshold 18
+        initial_delay 30s
+    }
+    liveness {
+        exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
+        every 60s
+        timeout 20s
+        failure_threshold 5
+        initial_delay 30s
     }
     resources {
         cpu 1000m
@@ -154,6 +172,14 @@ service worker {
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
+    }
+    init {
+        connection airflow-db
+    }
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 20
     }
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     connection airflow-db "/run/connections/airflow-db"
