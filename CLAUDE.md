@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M140 — Phase 140 Per-Service Termination Grace Period. M1–M140 complete (M141 future placeholder). Gates A–I resolved.
+**Completed through:** M145 — Phase 145 Agent IP Publishing Fix. M1–M145 complete (M141 future placeholder). Gates A–I resolved.
 
 ### Performance Optimization Principle
 

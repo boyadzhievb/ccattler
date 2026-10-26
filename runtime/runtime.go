@@ -52,7 +52,7 @@ type Status struct {
 	PID      int    // PID is the OS process ID (only meaningful for ProcessRuntime).
 	ExitCode int    // ExitCode is the exit code of the workload after it has stopped.
 	Error    string // Error holds a human-readable description of any failure that occurred.
-	IP       string // IP is the container's bridge IP reported by the runtime. Only populated for ContainerRuntime; empty for ProcessRuntime and SimulatorRuntime.
+	IP       string // IP is the container's bridge IP reported by the runtime. Populated for ContainerRuntime and ContainerdRuntime; empty for ProcessRuntime and SimulatorRuntime.
 }
 
 // Runtime is the pluggable interface for running workloads.
@@ -107,6 +107,13 @@ type Runtime interface {
 // implement this are used when a service has termination_grace_period set.
 type GracefulStopper interface {
 	StopWithGracePeriod(ctx context.Context, instanceID string, gracePeriod time.Duration) error
+}
+
+// HostPortProvider is an optional interface for runtimes that expose
+// container-to-host port mappings. Both ContainerRuntime and ContainerdRuntime
+// implement this.
+type HostPortProvider interface {
+	HostPortsForInstance(instanceID string) map[int]int
 }
 
 // LogsOptions controls how container logs are retrieved.

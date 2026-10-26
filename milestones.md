@@ -1528,6 +1528,46 @@ Future placeholder: additional Airflow services for full Helm chart parity.
 - [ ] StatsD metrics exporter sidecar
 - [ ] Log groomer via existing logging DSL keyword
 
+### Phase 142 — go-cni Dependency + CNI Conflist Generation (M142)
+
+Add `github.com/containerd/go-cni` dependency and programmatic CNI conflist builder.
+
+- [x] `go get github.com/containerd/go-cni` — wraps libcni, containerd-maintained
+- [x] Constants: `cniPluginDirectory`, `cniBridgeName` ("cca0"), `cniConfVersion`
+- [x] `buildCNIConflist(networkName, subnetCIDR)` — bridge + host-local IPAM + portmap
+- [x] `ensureCNIInitialized()` — lazy init with retry on transient failures
+- [x] `containerNetworkState` type tracks per-container netns path and IP
+
+### Phase 143 — CNI Lifecycle in Start/Stop/Status (M143)
+
+Wire network namespace creation, CNI Setup/Remove, and IP tracking into ContainerdRuntime.
+
+- [x] `createNetworkNamespace()` — Linux-only, unshare + bind-mount at /var/run/netns/cca-{id}
+- [x] `deleteNetworkNamespace()` — unmount + remove
+- [x] `Start()` creates netns, adds `oci.WithLinuxNamespace`, calls CNI Setup, stores IP
+- [x] `Status()` and `List()` populate Status.IP from containerCNIStates
+- [x] `Stop()` and `StopWithGracePeriod()` call CNI Remove before container deletion
+- [x] `cleanupCNIState()` — atomic read-and-delete prevents double teardown
+- [x] Platform split: `containerd_netns_linux.go` / `containerd_netns_stub.go`
+
+### Phase 144 — DNS Configuration (M144)
+
+Inject resolv.conf with configured nameserver and search domain into containers.
+
+- [x] `generateResolvConf(dnsAddress, searchDomain)` — builds resolv.conf content
+- [x] `buildOCISpecOptions()` writes resolv.conf and bind-mounts at /etc/resolv.conf
+- [x] `ExecInit()` also injects resolv.conf for init containers (host networking)
+- [x] Webserver startup/readiness probes increased for slow DB migrations
+
+### Phase 145 — Agent IP Publishing Fix (M145)
+
+Fix type assertions so ContainerdRuntime IPs reach the fact store.
+
+- [x] `HostPortProvider` interface in `runtime/runtime.go`
+- [x] `startInstanceAndPublishState()` uses interface check instead of `*ContainerRuntime`
+- [x] `republishHostPortIfNeeded()` uses interface check instead of `*ContainerRuntime`
+- [x] `Status()` is already on Runtime interface — just check IP non-empty
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)
@@ -1671,6 +1711,10 @@ Future placeholder: additional Airflow services for full Helm chart parity.
 | M139 — Airflow Persistence & Security | 139 | Persistent volumes for metadata-db and redis, FERNET_KEY secret across all Airflow services |
 | M140 — Per-Service Termination Grace Period | 140 | termination_grace_period DSL keyword, parsed/compiled/applied to ProcessRuntime, ContainerRuntime, ContainerdRuntime. 600s for Airflow worker |
 | M141 — Airflow Triggerer & Observability | 141 | Placeholder: triggerer service, StatsD exporter, log groomer |
+| M142 — go-cni Dependency + Conflist Generation | 142 | Add go-cni dep, CNI bridge conflist builder, lazy init from SetNetwork fields |
+| M143 — CNI Lifecycle in Start/Stop/Status | 143 | Named netns per container, CNI Setup in Start, Remove in Stop, IP in Status |
+| M144 — DNS Configuration | 144 | resolv.conf injection with configured nameserver/search domain, webserver probe tuning |
+| M145 — Agent IP Publishing Fix | 145 | HostPortProvider interface, fix type assertions so containerd IPs reach fact store |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |

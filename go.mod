@@ -12,8 +12,13 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/kms v1.61.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.1
 	github.com/cilium/ebpf v0.22.0
+	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/containerd/v2 v2.4.2
+	github.com/containerd/go-cni v1.1.14
+	github.com/containerd/typeurl/v2 v2.3.0
+	github.com/opencontainers/runtime-spec v1.3.0
 	go.etcd.io/etcd/client/v3 v3.7.2
+	golang.org/x/sys v0.48.0
 	google.golang.org/api v0.300.0
 	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
@@ -40,7 +45,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.43.1 // indirect
 	github.com/aws/smithy-go v1.28.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/containerd/cgroups/v3 v3.1.3 // indirect
 	github.com/containerd/containerd/api v1.12.0 // indirect
 	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
@@ -51,7 +55,7 @@ require (
 	github.com/containerd/platforms v1.0.0-rc.5 // indirect
 	github.com/containerd/plugin v1.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.9 // indirect
-	github.com/containerd/typeurl/v2 v2.3.0 // indirect
+	github.com/containernetworking/cni v1.3.1 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/distribution/reference v0.6.0 // indirect
@@ -72,8 +76,9 @@ require (
 	github.com/moby/sys/userns v0.2.1 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
-	github.com/opencontainers/runtime-spec v1.3.0 // indirect
+	github.com/petermattis/goid v0.0.0-20240813172612-4fcff4a6cae7 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/sasha-s/go-deadlock v0.3.5 // indirect
 	github.com/sirupsen/logrus v1.10.2 // indirect
 	go.etcd.io/etcd/api/v3 v3.7.2 // indirect
 	go.etcd.io/etcd/client/pkg/v3 v3.7.2 // indirect
@@ -90,7 +95,6 @@ require (
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect

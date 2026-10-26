@@ -6,6 +6,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
+	gocni "github.com/containerd/go-cni"
 	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -45,22 +47,42 @@ const containerLabelLogPath = "ccattler.log.path"
 // containerdLogBaseDir is the base directory for CCattler container log files.
 const containerdLogBaseDir = "/var/lib/ccattler/logs"
 
+// cniPluginDirectory is the path where CNI plugin binaries are installed.
+const cniPluginDirectory = "/opt/cni/bin"
+
+// cniBridgeName is the Linux bridge device created by the CNI bridge plugin.
+const cniBridgeName = "cca0"
+
+// cniConfVersion is the CNI specification version used in generated conflists.
+const cniConfVersion = "1.0.0"
+
+// netnsBaseDirectory is the directory for named network namespaces.
+const netnsBaseDirectory = "/var/run/netns"
+
 // ErrNotImplemented is returned by stub methods that have not yet been
 // migrated from the nerdctl-based ContainerRuntime.
 var ErrNotImplemented = errors.New("not implemented in containerd runtime")
+
+// containerNetworkState tracks the CNI-assigned network state for a container.
+type containerNetworkState struct {
+	netnsPath string // netnsPath is the path to the named network namespace.
+	ipAddress string // ipAddress is the CNI-assigned IP address.
+}
 
 // ContainerdRuntime runs workloads as OCI containers via the containerd gRPC
 // API, bypassing the nerdctl CLI entirely. It implements the same Runtime
 // interface as ContainerRuntime but communicates with containerd directly.
 type ContainerdRuntime struct {
-	mutex             sync.Mutex             // mutex guards concurrent access to state maps.
-	client            *containerd.Client     // client is the containerd gRPC client.
-	trackedContainers map[string]bool        // trackedContainers maps workload IDs to their running state.
-	instanceHostPorts map[string]map[int]int // instanceHostPorts maps workload IDs to containerPort→hostPort mappings.
-	networkName       string                 // networkName is the CNI network for container IP assignment.
-	networkCIDR       string                 // networkCIDR is the subnet CIDR for the container network.
-	dnsAddress        string                 // dnsAddress is the DNS server address for containers.
-	dnsSearchDomain   string                 // dnsSearchDomain is the search domain for containers.
+	mutex              sync.Mutex                        // mutex guards concurrent access to state maps.
+	client             *containerd.Client                // client is the containerd gRPC client.
+	trackedContainers  map[string]bool                   // trackedContainers maps workload IDs to their running state.
+	instanceHostPorts  map[string]map[int]int            // instanceHostPorts maps workload IDs to containerPort→hostPort mappings.
+	containerCNIStates map[string]*containerNetworkState // containerCNIStates tracks per-container CNI network state.
+	networkName        string                            // networkName is the CNI network for container IP assignment.
+	networkCIDR        string                            // networkCIDR is the subnet CIDR for the container network.
+	dnsAddress         string                            // dnsAddress is the DNS server address for containers.
+	dnsSearchDomain    string                            // dnsSearchDomain is the search domain for containers.
+	cniNetwork         gocni.CNI                         // cniNetwork is the lazily-initialized go-cni instance.
 }
 
 // NewContainerdRuntime creates a ContainerdRuntime connected to the containerd
@@ -76,10 +98,11 @@ func NewContainerdRuntime(socketPath string) (*ContainerdRuntime, error) {
 	}
 
 	return &ContainerdRuntime{
-		client:            containerdClient,
-		trackedContainers: make(map[string]bool),
-		instanceHostPorts: make(map[string]map[int]int),
-		dnsSearchDomain:   defaultDNSSearchDomain,
+		client:             containerdClient,
+		trackedContainers:  make(map[string]bool),
+		instanceHostPorts:  make(map[string]map[int]int),
+		containerCNIStates: make(map[string]*containerNetworkState),
+		dnsSearchDomain:    defaultDNSSearchDomain,
 	}, nil
 }
 
@@ -127,12 +150,20 @@ func (containerdRuntime *ContainerdRuntime) Status(ctx context.Context, id strin
 		return Status{ID: id, Running: false}, nil
 	}
 
-	return Status{
+	status := Status{
 		ID:       id,
 		Running:  taskStatus.Status == containerd.Running,
 		PID:      int(task.Pid()),
 		ExitCode: int(taskStatus.ExitStatus),
-	}, nil
+	}
+
+	containerdRuntime.mutex.Lock()
+	if cniState, hasCNI := containerdRuntime.containerCNIStates[id]; hasCNI {
+		status.IP = cniState.ipAddress
+	}
+	containerdRuntime.mutex.Unlock()
+
+	return status, nil
 }
 
 // List returns the status of all containers managed by CCattler in the
@@ -164,6 +195,11 @@ func (containerdRuntime *ContainerdRuntime) List(ctx context.Context) ([]Status,
 				status.ExitCode = int(taskStatus.ExitStatus)
 			}
 		}
+		containerdRuntime.mutex.Lock()
+		if cniState, hasCNI := containerdRuntime.containerCNIStates[instanceID]; hasCNI {
+			status.IP = cniState.ipAddress
+		}
+		containerdRuntime.mutex.Unlock()
 		results = append(results, status)
 	}
 	return results, nil
@@ -273,7 +309,8 @@ func safeUint64ToInt64(value uint64) int64 {
 
 // Start creates and starts a container from the given spec via the containerd
 // gRPC API. Creates the OCI spec, containerd container, snapshot, log file,
-// and task. Idempotent — returns nil if the container is already running.
+// and task. Sets up CNI networking with an isolated network namespace when
+// networkCIDR is configured. Idempotent — returns nil if already running.
 func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec) error {
 	containerdRuntime.mutex.Lock()
 	if containerdRuntime.trackedContainers[spec.ID] {
@@ -282,6 +319,7 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		if currentStatus.Running {
 			return nil
 		}
+		containerdRuntime.cleanupCNIState(ctx, spec.ID)
 		containerdRuntime.removeContainerResources(ctx, spec.ID)
 	} else {
 		containerdRuntime.mutex.Unlock()
@@ -301,7 +339,19 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create log dir: %v", mkdirError)}
 	}
 
-	ociSpecOptions := containerdRuntime.buildOCISpecOptions(spec, image)
+	netnsPath := ""
+	if containerdRuntime.networkCIDR != "" {
+		if initError := containerdRuntime.ensureCNIInitialized(); initError != nil {
+			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("CNI init: %v", initError)}
+		}
+		createdNetnsPath, netnsError := createNetworkNamespace(spec.ID)
+		if netnsError != nil {
+			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create netns: %v", netnsError)}
+		}
+		netnsPath = createdNetnsPath
+	}
+
+	ociSpecOptions := containerdRuntime.buildOCISpecOptions(spec, image, netnsPath)
 
 	newContainer, createError := containerdRuntime.client.NewContainer(
 		namespacedCtx,
@@ -316,24 +366,47 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		}),
 	)
 	if createError != nil {
+		if netnsPath != "" {
+			deleteNetworkNamespace(spec.ID)
+		}
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create container: %v", createError)}
+	}
+
+	assignedIP := ""
+	if netnsPath != "" {
+		cniResult, setupError := containerdRuntime.cniNetwork.Setup(ctx, spec.ID, netnsPath)
+		if setupError != nil {
+			_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+			containerdRuntime.teardownCNINetwork(ctx, spec.ID, netnsPath)
+			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("CNI setup: %v", setupError)}
+		}
+		assignedIP = extractIPFromCNIResult(cniResult)
 	}
 
 	task, taskError := newContainer.NewTask(namespacedCtx,
 		cio.LogFile(logFilePath))
 	if taskError != nil {
+		containerdRuntime.teardownCNINetwork(ctx, spec.ID, netnsPath)
 		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create task: %v", taskError)}
 	}
 
 	if startError := task.Start(namespacedCtx); startError != nil {
 		_, _ = task.Delete(namespacedCtx)
+		containerdRuntime.teardownCNINetwork(ctx, spec.ID, netnsPath)
 		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("start task: %v", startError)}
 	}
 
 	containerdRuntime.mutex.Lock()
 	containerdRuntime.trackedContainers[spec.ID] = true
+
+	if netnsPath != "" {
+		containerdRuntime.containerCNIStates[spec.ID] = &containerNetworkState{
+			netnsPath: netnsPath,
+			ipAddress: assignedIP,
+		}
+	}
 
 	portMappings := make(map[int]int, len(spec.Ports))
 	for _, containerPort := range spec.Ports {
@@ -348,8 +421,9 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 }
 
 // buildOCISpecOptions constructs the OCI spec options from a workload Spec,
-// configuring image defaults, env vars, hostname, resource limits, and mounts.
-func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image containerd.Image) []oci.SpecOpts {
+// configuring image defaults, env vars, hostname, resource limits, mounts,
+// network namespace, and DNS. Pass empty netnsPath to skip networking.
+func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image containerd.Image, netnsPath string) []oci.SpecOpts {
 	ociOptions := []oci.SpecOpts{
 		oci.WithImageConfig(image),
 	}
@@ -379,23 +453,132 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 		ociOptions = append(ociOptions, oci.WithCPUCFS(cpuQuota, 100000))
 	}
 
-	if len(spec.ConfigFiles) > 0 {
-		var mounts []specs.Mount
-		for containerPath, fileContent := range spec.ConfigFiles {
-			hostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
-			_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-			_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — config files are not secrets
-			mounts = append(mounts, specs.Mount{
-				Destination: containerPath,
-				Type:        "bind",
-				Source:      hostPath,
-				Options:     []string{"rbind", "ro"},
-			})
-		}
-		ociOptions = append(ociOptions, oci.WithMounts(mounts))
+	if netnsPath != "" {
+		ociOptions = append(ociOptions, oci.WithLinuxNamespace(specs.LinuxNamespace{
+			Type: specs.NetworkNamespace,
+			Path: netnsPath,
+		}))
+	}
+
+	var bindMounts []specs.Mount
+
+	if containerdRuntime.dnsAddress != "" {
+		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
+		resolvHostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", "resolv.conf")
+		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
+		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: "/etc/resolv.conf",
+			Type:        "bind",
+			Source:      resolvHostPath,
+			Options:     []string{"rbind", "ro"},
+		})
+	}
+
+	for containerPath, fileContent := range spec.ConfigFiles {
+		hostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
+		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — config files are not secrets
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: containerPath,
+			Type:        "bind",
+			Source:      hostPath,
+			Options:     []string{"rbind", "ro"},
+		})
+	}
+
+	if len(bindMounts) > 0 {
+		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}
 
 	return ociOptions
+}
+
+// ensureCNIInitialized lazily creates the go-cni instance from the configured
+// network name and CIDR. Retries on transient failures (e.g., missing plugin
+// dir during early boot). Thread-safe via mutex.
+func (containerdRuntime *ContainerdRuntime) ensureCNIInitialized() error {
+	containerdRuntime.mutex.Lock()
+	defer containerdRuntime.mutex.Unlock()
+
+	if containerdRuntime.cniNetwork != nil {
+		return nil
+	}
+	if containerdRuntime.networkCIDR == "" {
+		return errors.New("networkCIDR not configured: call SetNetwork before Start")
+	}
+	conflistJSON := buildCNIConflist(containerdRuntime.networkName, containerdRuntime.networkCIDR)
+	cniInstance, initError := gocni.New(
+		gocni.WithMinNetworkCount(1),
+		gocni.WithPluginDir([]string{cniPluginDirectory}),
+		gocni.WithConfListBytes(conflistJSON),
+	)
+	if initError != nil {
+		return fmt.Errorf("initialize CNI: %w", initError)
+	}
+	containerdRuntime.cniNetwork = cniInstance
+	return nil
+}
+
+// buildCNIConflist generates a CNI conflist JSON with bridge + host-local IPAM
+// and portmap plugins for the given network name and subnet CIDR.
+func buildCNIConflist(networkName string, subnetCIDR string) []byte {
+	conflist := map[string]interface{}{
+		"cniVersion": cniConfVersion,
+		"name":       networkName,
+		"plugins": []map[string]interface{}{
+			{
+				"type":      "bridge",
+				"bridge":    cniBridgeName,
+				"isGateway": true,
+				"ipMasq":    true,
+				"ipam": map[string]interface{}{
+					"type":   "host-local",
+					"subnet": subnetCIDR,
+					"routes": []map[string]string{
+						{"dst": "0.0.0.0/0"},
+					},
+				},
+			},
+			{
+				"type":         "portmap",
+				"capabilities": map[string]bool{"portMappings": true},
+			},
+		},
+	}
+	conflistJSON, _ := json.Marshal(conflist)
+	return conflistJSON
+}
+
+// extractIPFromCNIResult extracts the first IP address from a CNI setup result.
+func extractIPFromCNIResult(result *gocni.Result) string {
+	if result == nil {
+		return ""
+	}
+	for _, interfaceConfig := range result.Interfaces {
+		if len(interfaceConfig.IPConfigs) > 0 {
+			return interfaceConfig.IPConfigs[0].IP.String()
+		}
+	}
+	return ""
+}
+
+// teardownCNINetwork calls CNI Remove and deletes the network namespace.
+func (containerdRuntime *ContainerdRuntime) teardownCNINetwork(ctx context.Context, instanceID string, netnsPath string) {
+	if netnsPath == "" || containerdRuntime.cniNetwork == nil {
+		return
+	}
+	_ = containerdRuntime.cniNetwork.Remove(ctx, instanceID, netnsPath)
+	deleteNetworkNamespace(instanceID)
+}
+
+// generateResolvConf builds resolv.conf content from DNS config.
+func generateResolvConf(dnsAddress string, searchDomain string) string {
+	content := "nameserver " + dnsAddress + "\n"
+	if searchDomain != "" {
+		content += "search " + searchDomain + "\n"
+	}
+	return content
 }
 
 // buildContainerName generates the containerd container name from service and instance ID.
@@ -407,14 +590,15 @@ func (containerdRuntime *ContainerdRuntime) buildContainerName(serviceName strin
 }
 
 // Stop terminates and removes the container identified by id via the containerd
-// gRPC API. Kills the task, deletes it, then removes the container and snapshot.
-// Idempotent — returns nil if the container does not exist.
+// gRPC API. Tears down CNI networking, kills the task, deletes it, then removes
+// the container and snapshot. Idempotent — returns nil if container doesn't exist.
 func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID string) error {
 	namespacedCtx := containerdRuntime.containerdContext(ctx)
 	containerName := containerdRuntime.resolveContainerName(instanceID)
 
 	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
 	if loadError != nil {
+		containerdRuntime.cleanupCNIState(ctx, instanceID)
 		containerdRuntime.mutex.Lock()
 		containerdRuntime.trackedContainers[instanceID] = false
 		containerdRuntime.mutex.Unlock()
@@ -434,6 +618,7 @@ func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID
 		_, _ = task.Delete(namespacedCtx)
 	}
 
+	containerdRuntime.cleanupCNIState(ctx, instanceID)
 	_ = container.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
 
 	containerdRuntime.removeContainerResources(ctx, instanceID)
@@ -441,13 +626,15 @@ func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID
 }
 
 // StopWithGracePeriod stops a containerd container by sending SIGTERM first,
-// waiting up to gracePeriod, then escalating to SIGKILL.
+// waiting up to gracePeriod, then escalating to SIGKILL. Tears down CNI after
+// the task exits.
 func (containerdRuntime *ContainerdRuntime) StopWithGracePeriod(ctx context.Context, instanceID string, gracePeriod time.Duration) error {
 	namespacedCtx := containerdRuntime.containerdContext(ctx)
 	containerName := containerdRuntime.resolveContainerName(instanceID)
 
 	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
 	if loadError != nil {
+		containerdRuntime.cleanupCNIState(ctx, instanceID)
 		containerdRuntime.mutex.Lock()
 		containerdRuntime.trackedContainers[instanceID] = false
 		containerdRuntime.mutex.Unlock()
@@ -472,10 +659,26 @@ func (containerdRuntime *ContainerdRuntime) StopWithGracePeriod(ctx context.Cont
 		_, _ = task.Delete(namespacedCtx)
 	}
 
+	containerdRuntime.cleanupCNIState(ctx, instanceID)
 	_ = container.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
 
 	containerdRuntime.removeContainerResources(ctx, instanceID)
 	return nil
+}
+
+// cleanupCNIState tears down the CNI network and deletes the network namespace
+// for a container. Atomically removes state to prevent double teardown. Safe
+// to call when no CNI state exists.
+func (containerdRuntime *ContainerdRuntime) cleanupCNIState(ctx context.Context, instanceID string) {
+	containerdRuntime.mutex.Lock()
+	cniState := containerdRuntime.containerCNIStates[instanceID]
+	delete(containerdRuntime.containerCNIStates, instanceID)
+	containerdRuntime.mutex.Unlock()
+
+	if cniState == nil {
+		return
+	}
+	containerdRuntime.teardownCNINetwork(ctx, instanceID, cniState.netnsPath)
 }
 
 // removeContainerResources cleans up tracking state and log files for a container.
@@ -485,6 +688,7 @@ func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.C
 
 	delete(containerdRuntime.trackedContainers, instanceID)
 	delete(containerdRuntime.instanceHostPorts, instanceID)
+	delete(containerdRuntime.containerCNIStates, instanceID)
 
 	logDirectory := filepath.Join(containerdLogBaseDir, instanceID)
 	_ = os.RemoveAll(logDirectory)
@@ -601,6 +805,18 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	}
 	if containerdRuntime.dnsSearchDomain != "" {
 		ociOptions = append(ociOptions, oci.WithHostname(initContainerName))
+	}
+	if containerdRuntime.dnsAddress != "" {
+		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
+		resolvHostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", "resolv.conf")
+		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
+		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
+		ociOptions = append(ociOptions, oci.WithMounts([]specs.Mount{{
+			Destination: "/etc/resolv.conf",
+			Type:        "bind",
+			Source:      resolvHostPath,
+			Options:     []string{"rbind", "ro"},
+		}}))
 	}
 
 	initContainer, createError := containerdRuntime.client.NewContainer(

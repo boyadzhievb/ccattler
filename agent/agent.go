@@ -884,12 +884,12 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	nodeAgent.executeLifecycleHook(ctx, instanceInfo.id, instanceInfo.service, "post_start")
 
 	runtimeIP := ""
-	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
-		portMappings := containerRuntime.HostPortsForInstance(instanceInfo.id)
+	if hostPortRuntime, hasHostPorts := nodeAgent.runtime.(runtime.HostPortProvider); hasHostPorts {
+		portMappings := hostPortRuntime.HostPortsForInstance(instanceInfo.id)
 		publishInstanceHostPorts(ctx, nodeAgent.store, instanceInfo.id, portMappings)
-		if runtimeStatus, statusErr := containerRuntime.Status(ctx, instanceInfo.id); statusErr == nil {
-			runtimeIP = runtimeStatus.IP
-		}
+	}
+	if runtimeStatus, statusErr := nodeAgent.runtime.Status(ctx, instanceInfo.id); statusErr == nil && runtimeStatus.IP != "" {
+		runtimeIP = runtimeStatus.IP
 	}
 
 	observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
@@ -911,8 +911,8 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 // this fact to create endpoints with host-reachable addresses, and the
 // data plane reconciler on remote nodes needs it for cross-node DNAT rules.
 func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceID string) {
-	if containerRuntime, isContainer := nodeAgent.runtime.(*runtime.ContainerRuntime); isContainer {
-		portMappings := containerRuntime.HostPortsForInstance(instanceID)
+	if hostPortRuntime, hasHostPorts := nodeAgent.runtime.(runtime.HostPortProvider); hasHostPorts {
+		portMappings := hostPortRuntime.HostPortsForInstance(instanceID)
 		publishInstanceHostPorts(ctx, nodeAgent.store, instanceID, portMappings)
 	}
 }

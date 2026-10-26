@@ -72,8 +72,8 @@ service webserver {
         port 8080
         every 10s
         timeout 20s
-        failure_threshold 18
-        initial_delay 30s
+        failure_threshold 30
+        initial_delay 60s
     }
     liveness {
         http /health
@@ -88,8 +88,8 @@ service webserver {
         port 8080
         every 10s
         timeout 5s
-        failure_threshold 5
-        initial_delay 15s
+        failure_threshold 10
+        initial_delay 30s
     }
     resources {
         cpu 500m
