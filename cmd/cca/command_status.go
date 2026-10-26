@@ -157,7 +157,31 @@ type logsCommandConfig struct {
 	serviceName string
 	instanceID  string
 	follow      bool
+	tailLines   string
+	since       string
+	timestamps  bool
+	previous    bool
 	tagFilters  map[string]string
+}
+
+// parseContainerName checks if a string is a container name in the format
+// <serviceName>-<instanceID> where instanceID is a 10-char hex string.
+// Returns the service name, instance ID, and true if it matches.
+func parseContainerName(name string) (string, string, bool) {
+	lastDash := strings.LastIndex(name, "-")
+	if lastDash < 1 || lastDash == len(name)-1 {
+		return "", "", false
+	}
+	candidateID := name[lastDash+1:]
+	if len(candidateID) != 10 {
+		return "", "", false
+	}
+	for _, character := range candidateID {
+		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+			return "", "", false
+		}
+	}
+	return name[:lastDash], candidateID, true
 }
 
 // parseLogsCommandArgs extracts flags from the arguments following "logs".
@@ -173,6 +197,20 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 				argIndex++
 				parsedConfig.instanceID = args[argIndex]
 			}
+		case "--tail":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.tailLines = args[argIndex]
+			}
+		case "--since":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.since = args[argIndex]
+			}
+		case "--timestamps":
+			parsedConfig.timestamps = true
+		case "--previous", "-p":
+			parsedConfig.previous = true
 		case "--tag":
 			if argIndex+1 < len(args) {
 				argIndex++
@@ -184,7 +222,12 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 			}
 		default:
 			if !strings.HasPrefix(currentArg, "-") && parsedConfig.serviceName == "" {
-				parsedConfig.serviceName = currentArg
+				if serviceName, instanceID, isContainer := parseContainerName(currentArg); isContainer {
+					parsedConfig.serviceName = serviceName
+					parsedConfig.instanceID = instanceID
+				} else {
+					parsedConfig.serviceName = currentArg
+				}
 			}
 		}
 	}
@@ -196,12 +239,12 @@ func parseLogsCommandArgs(args []string) logsCommandConfig {
 // --tag, resolves matching services and aggregates logs across all of them.
 func executeLogsCommand(parsedConfig logsCommandConfig) {
 	if parsedConfig.serviceName == "" && parsedConfig.instanceID == "" && len(parsedConfig.tagFilters) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: cca logs <service> [--follow] [--instance <id>] [--tag key=value]")
+		fmt.Fprintln(os.Stderr, "usage: cca logs <service|container-name> [-f] [--tail N] [--since TIME] [--timestamps] [--previous]")
 		os.Exit(1)
 	}
 
 	if parsedConfig.instanceID != "" {
-		streamContainerLogs(parsedConfig.serviceName, parsedConfig.instanceID, parsedConfig.follow)
+		streamContainerLogs(parsedConfig.serviceName, parsedConfig.instanceID, parsedConfig)
 		return
 	}
 
@@ -233,13 +276,15 @@ func executeLogsCommand(parsedConfig logsCommandConfig) {
 	}
 
 	if parsedConfig.follow {
-		streamContainerLogs(allInstanceIDs[0].serviceName, allInstanceIDs[0].instanceID, true)
+		streamContainerLogs(allInstanceIDs[0].serviceName, allInstanceIDs[0].instanceID, parsedConfig)
 		return
 	}
 
+	nonFollowConfig := parsedConfig
+	nonFollowConfig.follow = false
 	for _, entry := range allInstanceIDs {
-		fmt.Printf("==> %s/%s <==\n", entry.serviceName, entry.instanceID)
-		streamContainerLogs(entry.serviceName, entry.instanceID, false)
+		fmt.Printf("==> %s-%s <==\n", entry.serviceName, entry.instanceID)
+		streamContainerLogs(entry.serviceName, entry.instanceID, nonFollowConfig)
 		fmt.Println()
 	}
 }
@@ -345,19 +390,54 @@ func findInstanceIDsForService(facts []struct {
 	return instanceIDs
 }
 
+// findPreviousContainer lists exited containers and returns the name of the
+// most recent one matching the given service name prefix.
+func findPreviousContainer(containerTool string, serviceName string) string {
+	listOutput, listError := exec.Command(containerTool, "ps", "-a", "--filter", "status=exited", "--format", "{{.Names}}").Output()
+	if listError != nil || len(listOutput) == 0 {
+		return ""
+	}
+	prefix := serviceName + "-"
+	for _, line := range strings.Split(strings.TrimSpace(string(listOutput)), "\n") {
+		name := strings.TrimSpace(line)
+		if strings.HasPrefix(name, prefix) {
+			return name
+		}
+	}
+	return ""
+}
+
 // streamContainerLogs runs nerdctl logs for the given instance and streams
 // output to stdout. The container name is built from the service name and
-// instance ID. Requires nerdctl to be installed on the node.
-func streamContainerLogs(serviceName string, instanceID string, follow bool) {
+// instance ID. Flags like --tail, --since, --timestamps are passed through
+// to the container runtime.
+func streamContainerLogs(serviceName string, instanceID string, logsConfig logsCommandConfig) {
 	containerTool := "nerdctl"
 
 	logsArgs := []string{"logs"}
-	if follow {
+	if logsConfig.follow {
 		logsArgs = append(logsArgs, "--follow")
+	}
+	if logsConfig.tailLines != "" {
+		logsArgs = append(logsArgs, "--tail", logsConfig.tailLines)
+	}
+	if logsConfig.since != "" {
+		logsArgs = append(logsArgs, "--since", logsConfig.since)
+	}
+	if logsConfig.timestamps {
+		logsArgs = append(logsArgs, "--timestamps")
 	}
 	containerName := serviceName + "-" + instanceID
 	if serviceName == "" {
-		containerName = "cca-" + instanceID
+		containerName = instanceID
+	}
+	if logsConfig.previous {
+		previousName := findPreviousContainer(containerTool, serviceName)
+		if previousName == "" {
+			fmt.Fprintf(os.Stderr, "no previous (exited) container found for service %q\n", serviceName)
+			return
+		}
+		containerName = previousName
 	}
 	logsArgs = append(logsArgs, containerName)
 
@@ -365,7 +445,7 @@ func streamContainerLogs(serviceName string, instanceID string, follow bool) {
 	logsCommand.Stdout = os.Stdout
 	logsCommand.Stderr = os.Stderr
 	if runError := logsCommand.Run(); runError != nil {
-		fmt.Fprintf(os.Stderr, "logs for %s: %v\n", instanceID, runError)
+		fmt.Fprintf(os.Stderr, "logs for %s: %v\n", containerName, runError)
 	}
 }
 
@@ -392,7 +472,7 @@ func executeStatusCommand() {
 // via the status API. The metric is stored in the fact store at observed/metric/service/{service}/{metric}.
 func executeMetricSetCommand(serviceName, metricName, metricValue string) {
 	requestURL := fmt.Sprintf("%s/api/metric?service=%s&metric=%s&value=%s",
-		statusAPIListenAddress, serviceName, metricName, metricValue)
+		statusAPIBaseURL(), serviceName, metricName, metricValue)
 	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "", nil) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -509,7 +589,7 @@ func executeDescribeCommand(resourceType, resourceName string) {
 	}
 
 	apiURL := fmt.Sprintf("%s/api/describe?type=%s&name=%s",
-		statusAPIListenAddress, normalizedType, resourceName)
+		statusAPIBaseURL(), normalizedType, resourceName)
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -832,15 +912,16 @@ func printNodeDescribe(nodeDetail api.NodeDescribe) {
 	if len(nodeDetail.Instances) > 0 {
 		fmt.Println()
 		fmt.Println("Instances:")
-		fmt.Printf("  %-20s  %-14s  %-10s  %-16s  %-10s  %s\n",
-			"ID", "SERVICE", "STATE", "IP", "HEALTH", "RESTARTS")
+		fmt.Printf("  %-28s  %-10s  %-16s  %-10s  %s\n",
+			"CONTAINER", "STATE", "IP", "HEALTH", "RESTARTS")
 		for _, instanceSummary := range nodeDetail.Instances {
 			restartDisplay := instanceSummary.Restarts
 			if restartDisplay == "" {
 				restartDisplay = "0"
 			}
-			fmt.Printf("  %-20s  %-14s  %-10s  %-16s  %-10s  %s\n",
-				instanceSummary.ID, instanceSummary.Service, instanceSummary.State,
+			containerName := instanceSummary.Service + "-" + instanceSummary.ID
+			fmt.Printf("  %-28s  %-10s  %-16s  %-10s  %s\n",
+				containerName, instanceSummary.State,
 				instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
 		}
 	}
@@ -923,6 +1004,8 @@ func printDescribeEvents(events []api.DescribeEvent) {
 // executeGetCommand queries the API for a specific resource type and prints
 // the result as formatted JSON.
 func executeGetCommand(resourceType string, extraArgs []string) {
+	outputOptions, remainingArgs := parseGetOutputOptions(extraArgs)
+
 	apiBaseURL := statusAPIBaseURL() + "/api/status"
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
@@ -938,27 +1021,60 @@ func executeGetCommand(resourceType string, extraArgs []string) {
 		os.Exit(1)
 	}
 
+	if outputOptions.outputFormat == "json" {
+		printGetResourceJSON(resourceType, status, remainingArgs)
+		return
+	}
+
 	switch resourceType {
 	case "services", "svc":
-		tagFilters := parseTagFilterArgs(extraArgs)
+		tagFilters := parseTagFilterArgs(remainingArgs)
 		filteredServices := filterServicesByTags(status.Services, tagFilters)
-		printServicesTable(filteredServices)
+		printServicesTableWithOptions(filteredServices, outputOptions)
 	case "instances", "inst":
-		printInstancesTable(status.Instances)
+		printInstancesTableWithOptions(status.Instances, outputOptions)
 	case "nodes":
-		printNodesTable(status.Nodes)
+		printNodesTableWithOptions(status.Nodes, outputOptions)
 	case "volumes", "vol":
-		printVolumesTable(status.Volumes)
+		printVolumesTableWithOptions(status.Volumes, outputOptions)
 	case "networking", "net":
-		printNetworkingTable(status.Networking)
+		printNetworkingTableWithOptions(status.Networking, outputOptions)
 	case "secrets", "secret":
-		printSecretsTable(status.Secrets)
+		printSecretsTableWithOptions(status.Secrets, outputOptions)
 	case "config", "cfg":
-		printConfigTable(status.Config)
+		printConfigTableWithOptions(status.Config, outputOptions)
 	case "cloud-identities", "cloud-identity", "identities":
-		printCloudIdentitiesTable(status.CloudIdentities)
+		printCloudIdentitiesTableWithOptions(status.CloudIdentities, outputOptions)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities)\n", resourceType)
+		os.Exit(1)
+	}
+}
+
+// printGetResourceJSON outputs the requested resource slice as JSON.
+func printGetResourceJSON(resourceType string, status api.ClusterStatus, remainingArgs []string) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	switch resourceType {
+	case "services", "svc":
+		tagFilters := parseTagFilterArgs(remainingArgs)
+		_ = encoder.Encode(filterServicesByTags(status.Services, tagFilters))
+	case "instances", "inst":
+		_ = encoder.Encode(status.Instances)
+	case "nodes":
+		_ = encoder.Encode(status.Nodes)
+	case "volumes", "vol":
+		_ = encoder.Encode(status.Volumes)
+	case "networking", "net":
+		_ = encoder.Encode(status.Networking)
+	case "secrets", "secret":
+		_ = encoder.Encode(status.Secrets)
+	case "config", "cfg":
+		_ = encoder.Encode(status.Config)
+	case "cloud-identities", "cloud-identity", "identities":
+		_ = encoder.Encode(status.CloudIdentities)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown resource: %s\n", resourceType)
 		os.Exit(1)
 	}
 }
@@ -1027,9 +1143,42 @@ func serviceMatchesAllTags(serviceTags map[string]string, tagFilters map[string]
 	return true
 }
 
+// getOutputOptions holds parsed output formatting flags for get commands.
+type getOutputOptions struct {
+	outputFormat string
+	noHeaders    bool
+}
+
+// parseGetOutputOptions extracts -o and --no-headers flags from arguments,
+// returning the options and the remaining arguments.
+func parseGetOutputOptions(args []string) (getOutputOptions, []string) {
+	var options getOutputOptions
+	var remaining []string
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		switch args[argIndex] {
+		case "-o", "--output":
+			if argIndex+1 < len(args) {
+				argIndex++
+				options.outputFormat = args[argIndex]
+			}
+		case "--no-headers":
+			options.noHeaders = true
+		default:
+			remaining = append(remaining, args[argIndex])
+		}
+	}
+	return options, remaining
+}
+
 // printAlignedTable renders rows as an aligned table with a header row. Column
 // widths are computed from the maximum cell width in each column.
 func printAlignedTable(header []string, rows [][]string) {
+	printAlignedTableFiltered(header, rows, false)
+}
+
+// printAlignedTableFiltered renders rows as an aligned table, optionally
+// suppressing the header row when skipHeader is true.
+func printAlignedTableFiltered(header []string, rows [][]string, skipHeader bool) {
 	columnWidths := make([]int, len(header))
 	for columnIndex, columnHeader := range header {
 		columnWidths[columnIndex] = len(columnHeader)
@@ -1057,7 +1206,9 @@ func printAlignedTable(header []string, rows [][]string) {
 		return builder.String()
 	}
 
-	fmt.Println(formatLine(header))
+	if !skipHeader {
+		fmt.Println(formatLine(header))
+	}
 	for _, row := range rows {
 		fmt.Println(formatLine(row))
 	}
@@ -1075,6 +1226,10 @@ func truncateValue(value string, maxLength int) string {
 }
 
 func printServicesTable(services []api.ServiceStatus) {
+	printServicesTableWithOptions(services, getOutputOptions{})
+}
+
+func printServicesTableWithOptions(services []api.ServiceStatus, options getOutputOptions) {
 	anyServiceHasTags := false
 	for _, service := range services {
 		if len(service.Tags) > 0 {
@@ -1110,7 +1265,7 @@ func printServicesTable(services []api.ServiceStatus) {
 		}
 		rows = append(rows, row)
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 // formatServiceTags renders a service's tags as a compact "key=value,..." string
@@ -1132,7 +1287,11 @@ func formatServiceTags(tags map[string]string) string {
 }
 
 func printInstancesTable(instances []api.InstanceStatus) {
-	header := []string{"ID", "SERVICE", "STATE", "NODE", "IP", "HEALTH"}
+	printInstancesTableWithOptions(instances, getOutputOptions{})
+}
+
+func printInstancesTableWithOptions(instances []api.InstanceStatus, options getOutputOptions) {
+	header := []string{"CONTAINER", "STATE", "NODE", "IP", "HEALTH"}
 	var rows [][]string
 	for _, instance := range instances {
 		healthDisplay := instance.HealthState
@@ -1143,19 +1302,23 @@ func printInstancesTable(instances []api.InstanceStatus) {
 		if ipDisplay == "" {
 			ipDisplay = "-"
 		}
+		containerName := instance.ServiceName + "-" + instance.ID
 		rows = append(rows, []string{
-			truncateValue(instance.ID, instanceIDDisplayWidth),
-			instance.ServiceName,
+			containerName,
 			instance.State,
 			instance.NodeID,
 			ipDisplay,
 			healthDisplay,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printNodesTable(nodes []api.NodeStatus) {
+	printNodesTableWithOptions(nodes, getOutputOptions{})
+}
+
+func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions) {
 	header := []string{"ID", "STATE", "INSTANCES", "CPU (avail/total)", "MEMORY (avail/total)"}
 	var rows [][]string
 	for _, node := range nodes {
@@ -1169,10 +1332,14 @@ func printNodesTable(nodes []api.NodeStatus) {
 			memoryDisplay,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printVolumesTable(volumes []api.VolumeStatus) {
+	printVolumesTableWithOptions(volumes, getOutputOptions{})
+}
+
+func printVolumesTableWithOptions(volumes []api.VolumeStatus, options getOutputOptions) {
 	if len(volumes) == 0 {
 		fmt.Println("No volumes found.")
 		return
@@ -1201,10 +1368,14 @@ func printVolumesTable(volumes []api.VolumeStatus) {
 			mountDisplay,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printNetworkingTable(networking []api.NetworkStatus) {
+	printNetworkingTableWithOptions(networking, getOutputOptions{})
+}
+
+func printNetworkingTableWithOptions(networking []api.NetworkStatus, options getOutputOptions) {
 	if len(networking) == 0 {
 		fmt.Println("No networking entries found.")
 		return
@@ -1223,10 +1394,14 @@ func printNetworkingTable(networking []api.NetworkStatus) {
 			dnsDisplay,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printSecretsTable(secrets []api.SecretStatus) {
+	printSecretsTableWithOptions(secrets, getOutputOptions{})
+}
+
+func printSecretsTableWithOptions(secrets []api.SecretStatus, options getOutputOptions) {
 	if len(secrets) == 0 {
 		fmt.Println("No secrets found.")
 		return
@@ -1243,10 +1418,14 @@ func printSecretsTable(secrets []api.SecretStatus) {
 			grantedDisplay,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printConfigTable(configEntries []api.ConfigStatus) {
+	printConfigTableWithOptions(configEntries, getOutputOptions{})
+}
+
+func printConfigTableWithOptions(configEntries []api.ConfigStatus, options getOutputOptions) {
 	if len(configEntries) == 0 {
 		fmt.Println("No config entries found.")
 		return
@@ -1261,10 +1440,14 @@ func printConfigTable(configEntries []api.ConfigStatus) {
 			truncateValue(entry.Value, configValueDisplayWidth),
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 func printCloudIdentitiesTable(cloudIdentities []api.CloudIdentityStatus) {
+	printCloudIdentitiesTableWithOptions(cloudIdentities, getOutputOptions{})
+}
+
+func printCloudIdentitiesTableWithOptions(cloudIdentities []api.CloudIdentityStatus, options getOutputOptions) {
 	if len(cloudIdentities) == 0 {
 		fmt.Println("No cloud identities found.")
 		return
@@ -1282,7 +1465,7 @@ func printCloudIdentitiesTable(cloudIdentities []api.CloudIdentityStatus) {
 			services,
 		})
 	}
-	printAlignedTable(header, rows)
+	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
 // executeScaleCommand sends a scale request to the API to change a service's

@@ -1362,8 +1362,9 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 	textBuilder.WriteByte('\n')
 	fmt.Fprintf(&textBuilder, "INSTANCES (%d active)\n", len(statusData.Instances))
 	for _, instance := range statusData.Instances {
-		fmt.Fprintf(&textBuilder, "  %-12s  service=%-8s  state=%-8s  node=%-8s  ip=%-16s  health=%-8s\n",
-			instance.ID, instance.ServiceName, instance.State, instance.NodeID, instance.IPAddress, instance.HealthState)
+		containerName := instance.ServiceName + "-" + instance.ID
+		fmt.Fprintf(&textBuilder, "  %-28s  state=%-8s  node=%-8s  ip=%-16s  health=%-8s\n",
+			containerName, instance.State, instance.NodeID, instance.IPAddress, instance.HealthState)
 	}
 
 	// Render nodes section.

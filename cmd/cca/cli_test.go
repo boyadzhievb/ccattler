@@ -640,8 +640,8 @@ func TestCLIServerDependentCommands(testContext *testing.T) {
 		stdoutContent, stderrContent, exitCode := runCCA(subtestContext, "get", "instances")
 		requireExitCode(subtestContext, 0, exitCode, stderrContent)
 		// The demo creates instances for the "web" service.
-		requireStdoutContains(subtestContext, stdoutContent, "SERVICE")
-		requireStdoutContains(subtestContext, stdoutContent, "web")
+		requireStdoutContains(subtestContext, stdoutContent, "CONTAINER")
+		requireStdoutContains(subtestContext, stdoutContent, "web-")
 	})
 
 	testContext.Run("scale", func(subtestContext *testing.T) {

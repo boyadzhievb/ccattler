@@ -100,12 +100,17 @@ func discoverInstancePlacement(instanceID string) string {
 }
 
 // parseExecArgs splits arguments into instanceID and command parts,
-// separated by "--". Returns the instance ID and everything after "--".
+// separated by "--". Accepts both bare instance IDs and container names
+// in <service>-<instanceID> format. Returns the instance ID and everything
+// after "--".
 func parseExecArgs(args []string) (string, []string) {
 	if len(args) == 0 {
 		return "", nil
 	}
 	instanceID := args[0]
+	if _, parsedID, isContainerName := parseContainerName(instanceID); isContainerName {
+		instanceID = parsedID
+	}
 	for index, argument := range args[1:] {
 		if argument == "--" {
 			return instanceID, args[index+2:]

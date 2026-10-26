@@ -201,7 +201,7 @@ func main() {
 	case "exec":
 		instanceID, commandParts := parseExecArgs(os.Args[2:])
 		if instanceID == "" || len(commandParts) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: cca exec <instance-id> -- <command>")
+			fmt.Fprintln(os.Stderr, "usage: cca exec <container-name|instance-id> -- <command>")
 			os.Exit(1)
 		}
 		executeExecCommand(instanceID, commandParts)
