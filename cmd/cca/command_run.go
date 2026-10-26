@@ -55,6 +55,8 @@ type runCommandConfig struct {
 	etcdEndpoints string
 	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
 	storeKeyPrefix string
+	// runtimeBackend selects the container runtime: "container" (nerdctl) or "containerd" (direct gRPC).
+	runtimeBackend string
 }
 
 // parseRunCommandArgs extracts the config file path, --watch flag, and store
@@ -66,6 +68,7 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 		storeBackend:   defaults.storeBackend,
 		etcdEndpoints:  defaults.etcdEndpoints,
 		storeKeyPrefix: defaults.storeKeyPrefix,
+		runtimeBackend: "container",
 	}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -89,6 +92,11 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 				argIndex++
 				parsedConfig.storeKeyPrefix = args[argIndex]
 			}
+		case "--runtime":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.runtimeBackend = args[argIndex]
+			}
 		default:
 			if parsedConfig.configFilePath == "" {
 				parsedConfig.configFilePath = currentArg
@@ -98,6 +106,12 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
 		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
+		os.Exit(1)
+	}
+
+	knownRuntimeBackends := map[string]bool{"container": true, "containerd": true}
+	if !knownRuntimeBackends[parsedConfig.runtimeBackend] {
+		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"container\" or \"containerd\")\n", parsedConfig.runtimeBackend)
 		os.Exit(1)
 	}
 
@@ -210,12 +224,10 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		controllers.NewNetworkPolicyController())
 	eventLog := startControllerRunner(ctx, factStore, controllerList)
 
-	// Start node agent with container runtime for real nerdctl container execution.
-	containerRuntime := runtime.NewContainerRuntime()
-	containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+	runtimeAdapter := createRunContainerRuntime(parsedRunConfig.runtimeBackend)
 
 	simulatorNetworkProvider := network.NewSimulatorNetworkProvider()
-	nodeAgent := agent.New(localNodeID, factStore, containerRuntime)
+	nodeAgent := agent.New(localNodeID, factStore, runtimeAdapter)
 	nodeAgent.SetNetworkProvider(simulatorNetworkProvider)
 	go func() {
 		if runError := nodeAgent.Run(ctx); runError != nil {
@@ -226,7 +238,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 	statusAPIServer := launchStatusAPIServer(factStore, nil, statusAPIListenAddress, nil, false)
 	statusAPIServer.SetEventLog(eventLog)
 
-	fmt.Printf("Applying %s (container mode)...\n", parsedRunConfig.configFilePath)
+	fmt.Printf("Applying %s (runtime: %s)...\n", parsedRunConfig.configFilePath, parsedRunConfig.runtimeBackend)
 	containerConfigBaseDir := filepath.Dir(parsedRunConfig.configFilePath)
 	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), containerConfigBaseDir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
@@ -235,7 +247,37 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 
 	fmt.Printf("Running. Status API on %s. Press Ctrl+C to stop.\n\n", statusAPIListenAddress)
 	runSingleNodeStatusLoop(ctx, factStore, parsedRunConfig.watchModeEnabled, "Shutting down containers...",
-		func() { containerRuntime.StopAll(context.Background()) })
+		func() { shutdownRunContainerRuntime(runtimeAdapter) })
+}
+
+// createRunContainerRuntime creates the appropriate container runtime for the
+// run-container command based on the configured backend.
+func createRunContainerRuntime(runtimeBackend string) runtime.Runtime {
+	switch runtimeBackend {
+	case "containerd":
+		containerdRuntime, connectError := runtime.NewContainerdRuntime("")
+		if connectError != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot connect to containerd: %v\n", connectError)
+			os.Exit(1)
+		}
+		containerdRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+		return containerdRuntime
+	default:
+		containerRuntime := runtime.NewContainerRuntime()
+		containerRuntime.SetNetwork("cca-net", network.DefaultClusterCIDR)
+		return containerRuntime
+	}
+}
+
+// shutdownRunContainerRuntime stops all workloads and closes the runtime connection.
+func shutdownRunContainerRuntime(runtimeAdapter runtime.Runtime) {
+	if containerRuntime, isContainerRuntime := runtimeAdapter.(*runtime.ContainerRuntime); isContainerRuntime {
+		containerRuntime.StopAll(context.Background())
+	}
+	if containerdRuntime, isContainerdRuntime := runtimeAdapter.(*runtime.ContainerdRuntime); isContainerdRuntime {
+		containerdRuntime.StopAll(context.Background())
+		_ = containerdRuntime.Close()
+	}
 }
 
 // runSingleNodeStatusLoop prints the initial status after reconciliation settles,

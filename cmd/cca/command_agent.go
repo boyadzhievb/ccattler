@@ -192,8 +192,9 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		os.Exit(1)
 	}
 
-	if parsedConfig.runtimeBackend != "process" && parsedConfig.runtimeBackend != "container" {
-		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\" or \"container\")\n", parsedConfig.runtimeBackend)
+	knownRuntimeBackends := map[string]bool{"process": true, "container": true, "containerd": true}
+	if !knownRuntimeBackends[parsedConfig.runtimeBackend] {
+		fmt.Fprintf(os.Stderr, "error: unknown runtime %q (must be \"process\", \"container\", or \"containerd\")\n", parsedConfig.runtimeBackend)
 		os.Exit(1)
 	}
 
@@ -360,29 +361,45 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 }
 
 // createAgentRuntimeAdapter creates the appropriate runtime adapter based on
-// the configured backend. For "container" it creates a ContainerRuntime with
-// the cluster network configured and DNS pointed at the node's advertise
-// address (where dnsmasq forwards to the CCattler DNS server). For "process"
-// it creates a ProcessRuntime. When clusterCIDR is empty the default overlay
-// CIDR is used.
+// the configured backend. For "container" it creates a ContainerRuntime (nerdctl)
+// with the cluster network configured. For "containerd" it creates a
+// ContainerdRuntime that talks to containerd directly via gRPC, bypassing nerdctl.
+// For "process" it creates a ProcessRuntime. When clusterCIDR is empty the
+// default overlay CIDR is used.
 func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string, clusterCIDR string) runtime.Runtime {
-	if runtimeBackend == "container" {
+	overlayNetworkCIDR := network.DefaultClusterCIDR
+	if clusterCIDR != "" {
+		overlayNetworkCIDR = clusterCIDR
+	}
+
+	switch runtimeBackend {
+	case "containerd":
+		containerdRuntime, connectError := runtime.NewContainerdRuntime("")
+		if connectError != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot connect to containerd: %v\n", connectError)
+			os.Exit(1)
+		}
+		containerdRuntime.SetNetwork("cca-net", overlayNetworkCIDR)
+		if advertiseAddress != "" {
+			containerdRuntime.SetDNS(advertiseAddress)
+		}
+		return containerdRuntime
+
+	case "container":
 		if _, lookupError := exec.LookPath("nerdctl"); lookupError != nil {
 			fmt.Fprintln(os.Stderr, "error: nerdctl is not installed or not in PATH")
 			os.Exit(1)
 		}
 		containerRuntime := runtime.NewContainerRuntime()
-		overlayNetworkCIDR := network.DefaultClusterCIDR
-		if clusterCIDR != "" {
-			overlayNetworkCIDR = clusterCIDR
-		}
 		containerRuntime.SetNetwork("cca-net", overlayNetworkCIDR)
 		if advertiseAddress != "" {
 			containerRuntime.SetDNS(advertiseAddress)
 		}
 		return containerRuntime
+
+	default:
+		return runtime.NewProcessRuntime()
 	}
-	return runtime.NewProcessRuntime()
 }
 
 // createDataPlaneProvider selects the data plane implementation based on
@@ -448,6 +465,10 @@ func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.
 	}
 	if containerRuntime, isContainerRuntime := runtimeAdapter.(*runtime.ContainerRuntime); isContainerRuntime {
 		containerRuntime.StopAll(context.Background())
+	}
+	if containerdRuntime, isContainerdRuntime := runtimeAdapter.(*runtime.ContainerdRuntime); isContainerdRuntime {
+		containerdRuntime.StopAll(context.Background())
+		_ = containerdRuntime.Close()
 	}
 }
 
