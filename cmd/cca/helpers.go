@@ -44,9 +44,19 @@ var statusAPIListenAddress = resolveStatusAPIListenAddress()
 // statusAPIScheme is "https" when a CA cert is found, "http" otherwise.
 var statusAPIScheme = resolveStatusAPIScheme()
 
+// serverAddressConfigPath is the file where "cca join" persists the control
+// plane API address so that CLI commands on agent nodes can reach it.
+const serverAddressConfigPath = "/etc/ccattler/server-address"
+
 func resolveStatusAPIListenAddress() string {
 	if envAddress := os.Getenv("CCA_API"); envAddress != "" {
 		return envAddress
+	}
+	if fileContent, readError := os.ReadFile(serverAddressConfigPath); readError == nil {
+		trimmed := strings.TrimSpace(string(fileContent))
+		if trimmed != "" {
+			return trimmed
+		}
 	}
 	return "127.0.0.1:" + defaultStatusAPIPort
 }

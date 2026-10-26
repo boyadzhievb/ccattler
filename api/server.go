@@ -934,8 +934,8 @@ func (apiServer *Server) handleRolloutRestart(responseWriter http.ResponseWriter
 	}
 
 	_ = json.NewEncoder(responseWriter).Encode(map[string]any{
-		"ok":       true,
-		"service":  body.Service,
+		"ok":        true,
+		"service":   body.Service,
 		"restarted": restartedCount,
 	})
 }

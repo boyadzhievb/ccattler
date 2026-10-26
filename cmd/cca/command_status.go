@@ -177,7 +177,7 @@ func parseContainerName(name string) (string, string, bool) {
 		return "", "", false
 	}
 	for _, character := range candidateID {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return "", "", false
 		}
 	}
@@ -1195,12 +1195,6 @@ func parseGetOutputOptions(args []string) (getOutputOptions, []string) {
 	return options, remaining
 }
 
-// printAlignedTable renders rows as an aligned table with a header row. Column
-// widths are computed from the maximum cell width in each column.
-func printAlignedTable(header []string, rows [][]string) {
-	printAlignedTableFiltered(header, rows, false)
-}
-
 // printAlignedTableFiltered renders rows as an aligned table, optionally
 // suppressing the header row when skipHeader is true.
 func printAlignedTableFiltered(header []string, rows [][]string, skipHeader bool) {
@@ -1248,10 +1242,6 @@ func truncateValue(value string, maxLength int) string {
 		return value[:maxLength]
 	}
 	return value[:maxLength-3] + "..."
-}
-
-func printServicesTable(services []api.ServiceStatus) {
-	printServicesTableWithOptions(services, getOutputOptions{})
 }
 
 func printServicesTableWithOptions(services []api.ServiceStatus, options getOutputOptions) {
@@ -1311,10 +1301,6 @@ func formatServiceTags(tags map[string]string) string {
 	return strings.Join(tagPairs, ",")
 }
 
-func printInstancesTable(instances []api.InstanceStatus) {
-	printInstancesTableWithOptions(instances, getOutputOptions{})
-}
-
 func printInstancesTableWithOptions(instances []api.InstanceStatus, options getOutputOptions) {
 	header := []string{"CONTAINER", "STATE", "NODE", "IP", "HEALTH"}
 	var rows [][]string
@@ -1339,10 +1325,6 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
-func printNodesTable(nodes []api.NodeStatus) {
-	printNodesTableWithOptions(nodes, getOutputOptions{})
-}
-
 func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions) {
 	header := []string{"ID", "STATE", "INSTANCES", "CPU (avail/total)", "MEMORY (avail/total)"}
 	var rows [][]string
@@ -1358,10 +1340,6 @@ func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
-}
-
-func printVolumesTable(volumes []api.VolumeStatus) {
-	printVolumesTableWithOptions(volumes, getOutputOptions{})
 }
 
 func printVolumesTableWithOptions(volumes []api.VolumeStatus, options getOutputOptions) {
@@ -1396,10 +1374,6 @@ func printVolumesTableWithOptions(volumes []api.VolumeStatus, options getOutputO
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
-func printNetworkingTable(networking []api.NetworkStatus) {
-	printNetworkingTableWithOptions(networking, getOutputOptions{})
-}
-
 func printNetworkingTableWithOptions(networking []api.NetworkStatus, options getOutputOptions) {
 	if len(networking) == 0 {
 		fmt.Println("No networking entries found.")
@@ -1422,10 +1396,6 @@ func printNetworkingTableWithOptions(networking []api.NetworkStatus, options get
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
-func printSecretsTable(secrets []api.SecretStatus) {
-	printSecretsTableWithOptions(secrets, getOutputOptions{})
-}
-
 func printSecretsTableWithOptions(secrets []api.SecretStatus, options getOutputOptions) {
 	if len(secrets) == 0 {
 		fmt.Println("No secrets found.")
@@ -1446,10 +1416,6 @@ func printSecretsTableWithOptions(secrets []api.SecretStatus, options getOutputO
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
-func printConfigTable(configEntries []api.ConfigStatus) {
-	printConfigTableWithOptions(configEntries, getOutputOptions{})
-}
-
 func printConfigTableWithOptions(configEntries []api.ConfigStatus, options getOutputOptions) {
 	if len(configEntries) == 0 {
 		fmt.Println("No config entries found.")
@@ -1466,10 +1432,6 @@ func printConfigTableWithOptions(configEntries []api.ConfigStatus, options getOu
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
-}
-
-func printCloudIdentitiesTable(cloudIdentities []api.CloudIdentityStatus) {
-	printCloudIdentitiesTableWithOptions(cloudIdentities, getOutputOptions{})
 }
 
 func printCloudIdentitiesTableWithOptions(cloudIdentities []api.CloudIdentityStatus, options getOutputOptions) {

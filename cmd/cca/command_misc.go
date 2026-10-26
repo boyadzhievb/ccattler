@@ -563,6 +563,7 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 
 	saveSecretMasterKey(enrollmentResponse.SecretMasterKey)
 	saveEtcdEndpointsConfig(parsedConfig.serverAddress)
+	saveServerAddressConfig(parsedConfig.serverAddress)
 
 	fmt.Printf("Enrolled as %s\n", enrollmentResponse.Principal)
 	fmt.Println()
@@ -695,6 +696,17 @@ func saveEtcdEndpointsConfig(serverAddress string) {
 		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", endpointsConfigPath, writeError)
 	} else {
 		fmt.Printf("  Endpoints:   %s → %s\n", etcdEndpoints, endpointsConfigPath)
+	}
+}
+
+// saveServerAddressConfig persists the control plane API address to
+// /etc/ccattler/server-address so CLI commands on agent nodes can discover it.
+func saveServerAddressConfig(serverAddress string) {
+	hostPort := strings.TrimPrefix(strings.TrimPrefix(serverAddress, "https://"), "http://")
+	if writeError := os.WriteFile(serverAddressConfigPath, []byte(hostPort+"\n"), 0644); writeError != nil { //nolint:gosec // world-readable config, not a secret
+		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", serverAddressConfigPath, writeError)
+	} else {
+		fmt.Printf("  API server:  %s → %s\n", hostPort, serverAddressConfigPath)
 	}
 }
 
