@@ -221,6 +221,33 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 		}
 	}
 
+	if strings.HasPrefix(factKey, observedInstancePrefix) && strings.Contains(factKey, "/probe/") {
+		rest := strings.TrimPrefix(factKey, observedInstancePrefix)
+		parts := strings.SplitN(rest, "/probe/", 2)
+		if len(parts) == 2 {
+			instanceID := parts[0]
+			probeType := parts[1]
+			switch factValue {
+			case string(types.StartupProbeFailed):
+				return "probe.failed", "instance/" + instanceID, fmt.Sprintf("startup probe failed for instance %s (threshold exceeded)", instanceID)
+			case string(types.StartupProbeSucceeded):
+				return "probe.succeeded", "instance/" + instanceID, fmt.Sprintf("startup probe succeeded for instance %s", instanceID)
+			case string(types.LivenessProbeUnhealthy):
+				return "probe.unhealthy", "instance/" + instanceID, fmt.Sprintf("liveness probe unhealthy for instance %s", instanceID)
+			case string(types.ReadinessProbeNotReady):
+				return "probe.not_ready", "instance/" + instanceID, fmt.Sprintf("readiness probe not ready for instance %s", instanceID)
+			case string(types.LivenessProbeHealthy):
+				if previousValue == string(types.LivenessProbeUnhealthy) {
+					return "probe.recovered", "instance/" + instanceID, fmt.Sprintf("%s probe recovered for instance %s", probeType, instanceID)
+				}
+			case string(types.ReadinessProbeReady):
+				if previousValue == string(types.ReadinessProbeNotReady) {
+					return "probe.recovered", "instance/" + instanceID, fmt.Sprintf("%s probe recovered for instance %s", probeType, instanceID)
+				}
+			}
+		}
+	}
+
 	derivedInstancePrefix := types.PrefixDerived + "/instance/"
 	if strings.HasPrefix(factKey, derivedInstancePrefix) {
 		rest := strings.TrimPrefix(factKey, derivedInstancePrefix)

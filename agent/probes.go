@@ -232,11 +232,20 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		logging.Default().Warn("startup probe check failed",
+			"agent", probeScheduler.nodeID,
+			"instance", instanceInfo.id,
+			"service", instanceInfo.service,
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbeFailed))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
 			}
-			logging.Default().Warn("startup probe failed", "agent", probeScheduler.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
+			logging.Default().Error("startup probe threshold exceeded, instance will be replaced",
+				"agent", probeScheduler.nodeID,
+				"instance", instanceInfo.id,
+				"service", instanceInfo.service,
+				"threshold", fmt.Sprintf("%d", config.failureThreshold))
 			return false
 		}
 	}
@@ -276,11 +285,20 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		logging.Default().Warn("liveness probe check failed",
+			"agent", probeScheduler.nodeID,
+			"instance", instanceInfo.id,
+			"service", instanceInfo.service,
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeLiveness), []byte(string(types.LivenessProbeUnhealthy))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
 			}
-			logging.Default().Warn("liveness probe unhealthy", "agent", probeScheduler.nodeID, "instance", instanceInfo.id, "threshold", fmt.Sprintf("%d", config.failureThreshold))
+			logging.Default().Error("liveness probe threshold exceeded, instance will be drained",
+				"agent", probeScheduler.nodeID,
+				"instance", instanceInfo.id,
+				"service", instanceInfo.service,
+				"threshold", fmt.Sprintf("%d", config.failureThreshold))
 		}
 	}
 }
@@ -312,10 +330,20 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		logging.Default().Warn("readiness probe check failed",
+			"agent", probeScheduler.nodeID,
+			"instance", instanceInfo.id,
+			"service", instanceInfo.service,
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness), []byte(string(types.ReadinessProbeNotReady))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
 			}
+			logging.Default().Warn("readiness probe threshold exceeded, instance removed from endpoints",
+				"agent", probeScheduler.nodeID,
+				"instance", instanceInfo.id,
+				"service", instanceInfo.service,
+				"threshold", fmt.Sprintf("%d", config.failureThreshold))
 		}
 	}
 }

@@ -241,7 +241,7 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 		}
 		counters.replacements++
 		counters.replacedServices[serviceName]++
-		logging.Default().Info("replacing instance with failed startup probe",
+		logging.Default().Warn("replacing instance with failed startup probe",
 			"instance", instanceID, "service", serviceName, "reason", "startup_probe_failed")
 		return failureController.stopAndReplace(instanceID, serviceName)
 	}
