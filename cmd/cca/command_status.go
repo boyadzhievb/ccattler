@@ -1488,6 +1488,56 @@ func executeScaleCommand(serviceName, countStr string) {
 	fmt.Printf("scaled %s to %s instances\n", serviceName, countStr)
 }
 
+// executeRestartCommand restarts a single container instance by setting its
+// state to stopped. The instance controller will create a replacement.
+func executeRestartCommand(target string) {
+	instanceID := target
+	if _, parsedID, isContainerName := parseContainerName(target); isContainerName {
+		instanceID = parsedID
+	}
+
+	requestBody := fmt.Sprintf(`{"instance_id":%q}`, instanceID)
+	apiURL := statusAPIBaseURL() + "/api/restart"
+	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "restart failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+	fmt.Printf("restarting instance %s\n", target)
+}
+
+// executeRolloutRestartCommand triggers a rolling restart of all instances
+// belonging to a service.
+func executeRolloutRestartCommand(serviceName string) {
+	requestBody := fmt.Sprintf(`{"service":%q}`, serviceName)
+	apiURL := statusAPIBaseURL() + "/api/rollout/restart"
+	httpResponse, err := buildAuthenticatedHTTPClient().Post(apiURL, "application/json", strings.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	responseBody, _ := io.ReadAll(httpResponse.Body)
+	if httpResponse.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "rollout restart failed: %s\n", string(responseBody))
+		os.Exit(1)
+	}
+
+	var result struct {
+		Restarted int `json:"restarted"`
+	}
+	_ = json.Unmarshal(responseBody, &result)
+	fmt.Printf("rolling restart of %s: %d instances restarting\n", serviceName, result.Restarted)
+}
+
 // defaultCLIDrainGracePeriodSeconds is the default grace period for the drain
 // CLI command when --grace-period is not specified.
 const defaultCLIDrainGracePeriodSeconds = 30

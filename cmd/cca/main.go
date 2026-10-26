@@ -140,6 +140,18 @@ func main() {
 			os.Exit(1)
 		}
 		executeGetCommand(os.Args[2], os.Args[3:])
+	case "restart":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: cca restart <container-name|instance-id>")
+			os.Exit(1)
+		}
+		executeRestartCommand(os.Args[2])
+	case "rollout":
+		if len(os.Args) < 4 || os.Args[2] != "restart" {
+			fmt.Fprintln(os.Stderr, "usage: cca rollout restart <service>")
+			os.Exit(1)
+		}
+		executeRolloutRestartCommand(os.Args[3])
 	case "scale":
 		if len(os.Args) < 4 {
 			fmt.Fprintln(os.Stderr, "usage: cca scale <service> <count>")
@@ -293,12 +305,14 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  diff [flags] <file>           dry-run apply showing fact changes (add/modify)")
 	fmt.Fprintln(os.Stderr, "  render [flags] <template>     render a template with values to stdout")
 	fmt.Fprintln(os.Stderr, "  events [flags]               event stream (--follow for live, --service to filter)")
-	fmt.Fprintln(os.Stderr, "  logs <service> [--follow] [--instance <id>] [--tag k=v]  container stdout/stderr")
+	fmt.Fprintln(os.Stderr, "  logs <container-name|service> [-f] [--tail N]  container stdout/stderr")
+	fmt.Fprintln(os.Stderr, "  restart <container-name>     restart a single instance")
+	fmt.Fprintln(os.Stderr, "  rollout restart <service>    rolling restart all instances of a service")
 	fmt.Fprintln(os.Stderr, "  scale <svc> <n>              scale a service to n instances")
 	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
 	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
-	fmt.Fprintln(os.Stderr, "  exec <instance-id> -- <cmd>  exec into a running container via agent relay")
+	fmt.Fprintln(os.Stderr, "  exec <container-name> -- <cmd>  exec into a running container via agent relay")
 	fmt.Fprintln(os.Stderr, "  images list [--node <id>]    list cached images on nodes")
 	fmt.Fprintln(os.Stderr, "  images pull <img> [--node]   pull image on one or all nodes")
 	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")

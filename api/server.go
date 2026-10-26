@@ -342,6 +342,8 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/apply", apiServer.instrumentedHandler("apply", apiServer.handleApply))
 	apiServer.mux.HandleFunc("/api/watch", apiServer.handleWatch)
 	apiServer.mux.HandleFunc("/api/scale", apiServer.instrumentedHandler("scale", apiServer.handleScale))
+	apiServer.mux.HandleFunc("/api/restart", apiServer.instrumentedHandler("restart", apiServer.handleRestart))
+	apiServer.mux.HandleFunc("/api/rollout/restart", apiServer.instrumentedHandler("rollout-restart", apiServer.handleRolloutRestart))
 	apiServer.mux.HandleFunc("/api/status", apiServer.instrumentedHandler("status", apiServer.handleStatus))
 	apiServer.mux.HandleFunc("/api/logs", apiServer.instrumentedHandler("logs", apiServer.handleLogs))
 	apiServer.mux.HandleFunc("/api/describe", apiServer.instrumentedHandler("describe", apiServer.handleDescribe))
@@ -812,6 +814,129 @@ func (apiServer *Server) handleScale(responseWriter http.ResponseWriter, request
 		"ok":        true,
 		"service":   body.Service,
 		"instances": body.Instances,
+	})
+}
+
+// restartInstanceRequest is the JSON body for POST /api/restart.
+type restartInstanceRequest struct {
+	InstanceID string `json:"instance_id"`
+}
+
+// handleRestart stops a single instance by setting its observed state to
+// "stopped". The instance controller will detect the deficit and create a
+// replacement to meet the desired count.
+func (apiServer *Server) handleRestart(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
+		return
+	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
+	requestContext := request.Context()
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	var body restartInstanceRequest
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		writeJSONError(responseWriter, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.InstanceID == "" {
+		writeJSONError(responseWriter, "instance_id required", http.StatusBadRequest)
+		return
+	}
+
+	stateKey := types.KeyObservedInstanceState(body.InstanceID)
+	currentState, getError := apiServer.factStore.Get(requestContext, stateKey)
+	if getError != nil || currentState.Value == nil {
+		writeJSONError(responseWriter, fmt.Sprintf("instance %q not found", body.InstanceID), http.StatusNotFound)
+		return
+	}
+
+	if _, putError := apiServer.factStore.Put(requestContext, stateKey, []byte(string(types.InstanceStopped))); putError != nil {
+		writeJSONError(responseWriter, "failed to stop instance", http.StatusInternalServerError)
+		return
+	}
+
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{
+		"ok":         true,
+		"instance":   body.InstanceID,
+		"restarting": true,
+	})
+}
+
+// rolloutRestartRequest is the JSON body for POST /api/rollout/restart.
+type rolloutRestartRequest struct {
+	Service string `json:"service"`
+}
+
+// handleRolloutRestart triggers a rolling restart of all instances belonging
+// to a service. It sets each running instance's state to "stopped" so the
+// instance controller recreates them to meet the desired count.
+func (apiServer *Server) handleRolloutRestart(responseWriter http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadUpdate, security.ScopeCluster) {
+		return
+	}
+	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
+	requestContext := request.Context()
+	responseWriter.Header().Set("Content-Type", "application/json")
+
+	var body rolloutRestartRequest
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		writeJSONError(responseWriter, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if body.Service == "" {
+		writeJSONError(responseWriter, "service required", http.StatusBadRequest)
+		return
+	}
+
+	instanceFacts, scanError := apiServer.factStore.Scan(requestContext, types.ScanObservedInstances)
+	if scanError != nil {
+		writeJSONError(responseWriter, "failed to scan instances", http.StatusInternalServerError)
+		return
+	}
+
+	serviceInstances := make(map[string]bool)
+	instanceStates := make(map[string]string)
+	for _, fact := range instanceFacts {
+		factKey := string(fact.Key)
+		if strings.HasSuffix(factKey, "/service") && string(fact.Value) == body.Service {
+			instanceID := strings.TrimPrefix(factKey, types.ScanObservedInstances)
+			instanceID = strings.TrimSuffix(instanceID, "/service")
+			serviceInstances[instanceID] = true
+		}
+		if strings.HasSuffix(factKey, "/state") {
+			instanceID := strings.TrimPrefix(factKey, types.ScanObservedInstances)
+			instanceID = strings.TrimSuffix(instanceID, "/state")
+			instanceStates[instanceID] = string(fact.Value)
+		}
+	}
+
+	var restartedCount int
+	for instanceID := range serviceInstances {
+		if instanceStates[instanceID] == string(types.InstanceRunning) || instanceStates[instanceID] == string(types.InstanceStarting) {
+			stateKey := types.KeyObservedInstanceState(instanceID)
+			if _, putError := apiServer.factStore.Put(requestContext, stateKey, []byte(string(types.InstanceStopped))); putError == nil {
+				restartedCount++
+			}
+		}
+	}
+
+	if restartedCount == 0 {
+		writeJSONError(responseWriter, fmt.Sprintf("no running instances found for service %q", body.Service), http.StatusNotFound)
+		return
+	}
+
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{
+		"ok":       true,
+		"service":  body.Service,
+		"restarted": restartedCount,
 	})
 }
 

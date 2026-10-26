@@ -847,7 +847,7 @@ _cca_completions() {
     local current_word="${COMP_WORDS[COMP_CWORD]}"
     local previous_word="${COMP_WORDS[COMP_CWORD-1]}"
 
-    local commands="apply run run-container server agent token join demo demo-distributed demo-network demo-storage chaos top status describe get diff events logs scale watch metric completion version"
+    local commands="apply run run-container server agent token join demo demo-distributed demo-network demo-storage chaos top status describe get diff events logs restart rollout scale watch metric completion version"
 
     if [ "$COMP_CWORD" -eq 1 ]; then
         COMPREPLY=($(compgen -W "$commands" -- "$current_word"))
@@ -982,7 +982,9 @@ func buildZshCompletionScript() string {
 		{"get", "list resources"},
 		{"diff", "dry-run apply showing fact changes"},
 		{"events", "event stream"},
-		{"logs", "cluster event log"},
+		{"logs", "container stdout/stderr"},
+		{"restart", "restart a single instance"},
+		{"rollout", "rolling restart a service"},
 		{"scale", "scale a service"},
 		{"watch", "stream fact store changes"},
 		{"metric", "inject simulated metric"},
