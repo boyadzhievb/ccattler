@@ -110,6 +110,7 @@ type Agent struct {
 	dataPlaneReconciler      *DataPlaneReconciler                 // dataPlaneReconciler programs VIP DNAT rules via the data plane provider.
 	secretAPIServer          *SecretAPIServer                     // secretAPIServer serves per-instance secret retrieval over HTTP; nil means secrets use file materialization.
 	vxlanReconciler          *VXLANReconciler                     // vxlanReconciler manages VXLAN tunnel mesh between nodes; nil means overlay networking is disabled.
+	dnsForwarder             *network.DNSForwarder                // dnsForwarder is the per-node caching DNS forwarder; nil means DNS forwarding is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
 	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
@@ -205,6 +206,12 @@ func (nodeAgent *Agent) VXLANReconciler() *VXLANReconciler {
 	return nodeAgent.vxlanReconciler
 }
 
+// SetDNSForwarder configures the per-node caching DNS forwarder. When set,
+// the forwarder is started in Run() and connection probes use it for resolution.
+func (nodeAgent *Agent) SetDNSForwarder(dnsForwarder *network.DNSForwarder) {
+	nodeAgent.dnsForwarder = dnsForwarder
+}
+
 // SetNodeSubnet configures the pod CIDR allocated to this node (e.g.
 // "10.100.1.0/24"). Used by data plane providers that need node subnet
 // information for registration (e.g. eBPF node entries).
@@ -286,6 +293,14 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	}
 
 	nodeAgent.initializeDataPlaneIfSupported(ctx)
+
+	if nodeAgent.dnsForwarder != nil {
+		go func() {
+			if dnsError := nodeAgent.dnsForwarder.Start(ctx); dnsError != nil && ctx.Err() == nil {
+				logging.Default().Error("DNS forwarder error", "agent", nodeAgent.nodeID, "error", dnsError.Error())
+			}
+		}()
+	}
 
 	// Initial reconcile.
 	if err := nodeAgent.executeReconciliationCycle(ctx); err != nil {

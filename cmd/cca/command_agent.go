@@ -47,6 +47,7 @@ type agentCommandConfig struct {
 	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", or "iptables" (default "auto").
 	clusterCIDR            string // clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
 	networkMode            string // networkMode selects overlay networking: "local" (bridge only) or "vxlan" (cross-node tunnels).
+	dnsUpstream            string // dnsUpstream is the control plane DNS address for cca.local queries (e.g. "10.0.0.5:15353").
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -180,6 +181,11 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.networkMode = args[argIndex]
 			}
+		case "--dns-upstream":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.dnsUpstream = args[argIndex]
+			}
 		}
 	}
 
@@ -291,6 +297,18 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		nodeAgent.SetDataPlaneProvider(dataPlaneProvider)
 		fmt.Printf("Agent %s: data plane enabled (advertise-address: %s)\n",
 			parsedConfig.nodeID, parsedConfig.advertiseAddress)
+	}
+
+	if parsedConfig.advertiseAddress != "" && parsedConfig.dnsUpstream != "" {
+		systemUpstream := network.ParseSystemResolvers("/etc/resolv.conf", parsedConfig.advertiseAddress)
+		dnsForwarder := network.NewDNSForwarder(
+			net.JoinHostPort(parsedConfig.advertiseAddress, "53"),
+			parsedConfig.dnsUpstream,
+			systemUpstream,
+		)
+		nodeAgent.SetDNSForwarder(dnsForwarder)
+		fmt.Printf("Agent %s: DNS forwarder enabled (cca upstream: %s, system upstream: %s)\n",
+			parsedConfig.nodeID, parsedConfig.dnsUpstream, systemUpstream)
 	}
 
 	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)

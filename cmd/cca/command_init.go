@@ -416,6 +416,7 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	if clusterCIDR != "" {
 		fmt.Fprintf(&scriptBuilder, "  --cluster-cidr %s \\\n", clusterCIDR)
 	}
+	fmt.Fprintf(&scriptBuilder, "  --dns-upstream %s:15353 \\\n", advertiseAddress)
 	scriptBuilder.WriteString("  --etcd-ca /etc/ccattler/pki/ca.pem\n")
 	scriptBuilder.WriteString("Restart=on-failure\n")
 	scriptBuilder.WriteString("RestartSec=5\n")

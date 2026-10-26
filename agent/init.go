@@ -25,6 +25,11 @@ const initStepBackoffBaseDelay = 1 * time.Second
 // retries because the target service may still be starting.
 const connectionProbeDefaultRetry = 30
 
+// initStepMaxBackoffDelay is the maximum backoff delay between init step retry
+// attempts. Connection probes retry faster than crash loops (30s vs 5m) because
+// the target service may become reachable at any moment.
+const initStepMaxBackoffDelay = 30 * time.Second
+
 // initStepDefinition holds the parsed configuration for a single init step
 // read from the desired-state section of the fact store. Exactly one of exec
 // or connection is set — exec runs a command, connection probes a named
@@ -119,6 +124,9 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 		if attemptIndex < maxAttempts-1 {
 			backoffDuration := initStepBackoffBaseDelay * time.Duration(1<<uint(attemptIndex))
+			if backoffDuration > initStepMaxBackoffDelay {
+				backoffDuration = initStepMaxBackoffDelay
+			}
 			select {
 			case <-ctx.Done():
 				if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {
@@ -292,7 +300,7 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 // DNS server on the advertise address. Falls back to system resolver if no
 // advertise address is configured.
 func (nodeAgent *Agent) buildCCattlerResolver() *net.Resolver {
-	if nodeAgent.advertiseAddress == "" {
+	if nodeAgent.advertiseAddress == "" || nodeAgent.dnsForwarder == nil {
 		return net.DefaultResolver
 	}
 	return &net.Resolver{

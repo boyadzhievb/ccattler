@@ -19,7 +19,8 @@ ExecStart=/usr/local/bin/cca agent \
   --etcd-key {{ cca_cert_dir }}/node-key.pem \
   --etcd-ca {{ cca_cert_dir }}/ca.pem \
   --network-mode {{ network_mode | default('local') }} \
-  --dataplane {{ dataplane_backend | default('auto') }}
+  --dataplane {{ dataplane_backend | default('auto') }} \
+  --dns-upstream {{ hostvars[groups['controlplane'][0]].ansible_host }}:15353
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

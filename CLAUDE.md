@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M145 — Phase 145 Agent IP Publishing Fix. M1–M145 complete (M141 future placeholder). Gates A–I resolved.
+**Completed through:** M146 — Phase 146 Per-Node DNS Forwarder. M1–M146 complete (M141 future placeholder). Gates A–I resolved.
 
 ### Performance Optimization Principle
 
