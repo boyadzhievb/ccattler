@@ -582,6 +582,20 @@ func generateResolvConf(dnsAddress string, searchDomain string) string {
 	return content
 }
 
+// extractContainerEnvVars reads the OCI spec from a container and returns its
+// configured environment variables. Containerd exec processes do not inherit
+// the container's env automatically (unlike Docker exec), so probes and other
+// exec calls must explicitly carry them.
+func extractContainerEnvVars(ctx context.Context, container containerd.Container) []string {
+	containerSpec, specError := container.Spec(ctx)
+	if specError != nil || containerSpec == nil || containerSpec.Process == nil {
+		return nil
+	}
+	result := make([]string, len(containerSpec.Process.Env))
+	copy(result, containerSpec.Process.Env)
+	return result
+}
+
 // buildContainerName generates the containerd container name from service and instance ID.
 func (containerdRuntime *ContainerdRuntime) buildContainerName(serviceName string, instanceID string) string {
 	if serviceName != "" {
@@ -727,14 +741,14 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 
 	execID := fmt.Sprintf("cca-exec-%s-%d", instanceID[:minInt(8, len(instanceID))], time.Now().UnixNano())
 
-	envVars := make([]string, 0, len(execSpec.Env))
+	containerEnvVars := extractContainerEnvVars(namespacedCtx, container)
 	for envKey, envValue := range execSpec.Env {
-		envVars = append(envVars, envKey+"="+envValue)
+		containerEnvVars = append(containerEnvVars, envKey+"="+envValue)
 	}
 
 	processSpec := &specs.Process{
 		Args: []string{"sh", "-c", execSpec.Command},
-		Env:  envVars,
+		Env:  containerEnvVars,
 		Cwd:  "/",
 	}
 
