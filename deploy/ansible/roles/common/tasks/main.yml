@@ -147,6 +147,8 @@
   copy:
     dest: /etc/dnsmasq.d/upstream.conf
     content: |
+      listen-address=127.0.0.1
+      bind-interfaces
       server={{ ansible_host | regex_replace('\.\d+$', '.1') }}
       cache-size=1000
     mode: "0644"
