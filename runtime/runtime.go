@@ -161,6 +161,21 @@ type ImagePuller interface {
 	IsImageCached(ctx context.Context, imageReference string) bool
 }
 
+// containerHostnameIDLength is the number of instance ID characters appended
+// to the service name to form a unique container hostname.
+const containerHostnameIDLength = 10
+
+// buildUniqueContainerHostname creates a per-instance hostname from the service
+// name and a prefix of the instance ID. Applications like Celery register
+// workers as celery@$(hostname), so duplicate hostnames cause broker conflicts.
+func buildUniqueContainerHostname(serviceName string, instanceID string) string {
+	idSuffix := instanceID
+	if len(idSuffix) > containerHostnameIDLength {
+		idSuffix = idSuffix[:containerHostnameIDLength]
+	}
+	return serviceName + "-" + idSuffix
+}
+
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
 	Command     string            // Command is the shell command to execute.

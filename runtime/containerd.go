@@ -441,7 +441,8 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 	}
 
 	if spec.ServiceName != "" {
-		ociOptions = append(ociOptions, oci.WithHostname(spec.ServiceName))
+		containerHostname := buildUniqueContainerHostname(spec.ServiceName, spec.ID)
+		ociOptions = append(ociOptions, oci.WithHostname(containerHostname))
 	}
 
 	if spec.MemoryB > 0 {
