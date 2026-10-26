@@ -846,6 +846,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	}
 	defer func() {
 		_ = initContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+		_ = os.RemoveAll(filepath.Join(containerdLogBaseDir, initContainerName))
 	}()
 
 	task, taskError := initContainer.NewTask(namespacedCtx, cio.NullIO)
