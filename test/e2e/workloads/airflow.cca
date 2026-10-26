@@ -104,9 +104,18 @@ service scheduler {
     image "{{ default "docker.io" .registry }}/airflow:2.10.5"
     command scheduler
     instances 1
-    health {
-        tcp
-        every 30s
+    startup {
+        exec "airflow jobs check --job-type SchedulerJob --local"
+        every 10s
+        timeout 20s
+        failure_threshold 6
+    }
+    liveness {
+        exec "airflow jobs check --job-type SchedulerJob --local"
+        every 60s
+        timeout 20s
+        failure_threshold 5
+        initial_delay 10s
     }
     resources {
         cpu 500m
