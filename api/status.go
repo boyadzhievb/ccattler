@@ -145,13 +145,16 @@ type CloudIdentityStatus struct {
 }
 
 // EndpointStatus represents one service endpoint mapping an instance port to
-// a network address. Endpoints are derived facts produced by the endpoint
+// network addresses. Endpoints are derived facts produced by the endpoint
 // controller and consumed by the data plane for VIP DNAT programming.
 type EndpointStatus struct {
-	Service    string `json:"service"`
-	InstanceID string `json:"instance_id"`
-	Port       int    `json:"port"`
-	Address    string `json:"address"`
+	Service         string `json:"service"`
+	InstanceID      string `json:"instance_id"`
+	Port            int    `json:"port"`
+	Address         string `json:"address"`
+	Hostname        string `json:"hostname,omitempty"`
+	InternalAddress string `json:"internal_address,omitempty"`
+	ExternalAddress string `json:"external_address,omitempty"`
 }
 
 // buildStatusFromStore collects the full cluster state from the fact store
@@ -521,6 +524,10 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 	if scanError != nil {
 		return nil
 	}
+	instanceOverlayIPs := collectInstanceOverlayIPs(ctx, factStore)
+	nodeAddresses := collectNodeAdvertiseAddresses(ctx, factStore)
+	instanceNodes := collectInstanceNodePlacements(ctx, factStore)
+
 	var endpointStatusList []EndpointStatus
 	for _, endpointFact := range endpointFacts {
 		relativePath := strings.TrimPrefix(endpointFact.Key, types.ScanEndpoints)
@@ -532,11 +539,22 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 		if _, parseError := fmt.Sscanf(pathParts[2], "%d", &portNumber); parseError != nil {
 			continue
 		}
+		serviceName := pathParts[0]
+		instanceID := pathParts[1]
+		endpointAddress := string(endpointFact.Value)
+
+		hostname := serviceName + "." + network.DefaultDNSDomain
+		internalAddress := buildInternalAddress(instanceOverlayIPs[instanceID], portNumber)
+		externalAddress := buildExternalAddress(instanceID, portNumber, instanceNodes, nodeAddresses, instanceOverlayIPs, endpointAddress)
+
 		endpointStatusList = append(endpointStatusList, EndpointStatus{
-			Service:    pathParts[0],
-			InstanceID: pathParts[1],
-			Port:       portNumber,
-			Address:    string(endpointFact.Value),
+			Service:         serviceName,
+			InstanceID:      instanceID,
+			Port:            portNumber,
+			Address:         endpointAddress,
+			Hostname:        hostname,
+			InternalAddress: internalAddress,
+			ExternalAddress: externalAddress,
 		})
 	}
 	sort.Slice(endpointStatusList, func(i, j int) bool {
@@ -549,6 +567,87 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 		return endpointStatusList[i].Port < endpointStatusList[j].Port
 	})
 	return endpointStatusList
+}
+
+// collectInstanceOverlayIPs returns a map of instanceID → overlay IP by scanning
+// observed instance IP facts.
+func collectInstanceOverlayIPs(ctx context.Context, factStore store.StateStore) map[string]string {
+	overlayIPs := make(map[string]string)
+	ipFacts, scanError := factStore.Scan(ctx, types.PrefixObserved+"/instance/")
+	if scanError != nil {
+		return overlayIPs
+	}
+	for _, ipFact := range ipFacts {
+		if !strings.HasSuffix(ipFact.Key, "/ip") {
+			continue
+		}
+		trimmed := strings.TrimPrefix(ipFact.Key, types.PrefixObserved+"/instance/")
+		instanceID := strings.TrimSuffix(trimmed, "/ip")
+		if instanceID != "" {
+			overlayIPs[instanceID] = string(ipFact.Value)
+		}
+	}
+	return overlayIPs
+}
+
+// collectNodeAdvertiseAddresses returns a map of nodeID → advertise address.
+func collectNodeAdvertiseAddresses(ctx context.Context, factStore store.StateStore) map[string]string {
+	nodeAddresses := make(map[string]string)
+	addressFacts, scanError := factStore.Scan(ctx, types.PrefixObserved+"/node/")
+	if scanError != nil {
+		return nodeAddresses
+	}
+	for _, addressFact := range addressFacts {
+		if !strings.HasSuffix(addressFact.Key, "/address") {
+			continue
+		}
+		trimmed := strings.TrimPrefix(addressFact.Key, types.PrefixObserved+"/node/")
+		nodeID := strings.TrimSuffix(trimmed, "/address")
+		if nodeID != "" {
+			nodeAddresses[nodeID] = string(addressFact.Value)
+		}
+	}
+	return nodeAddresses
+}
+
+// collectInstanceNodePlacements returns a map of instanceID → nodeID.
+func collectInstanceNodePlacements(ctx context.Context, factStore store.StateStore) map[string]string {
+	placements := make(map[string]string)
+	placementFacts, scanError := factStore.Scan(ctx, types.ScanPlacements)
+	if scanError != nil {
+		return placements
+	}
+	for _, placementFact := range placementFacts {
+		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
+		if instanceID != "" {
+			placements[instanceID] = string(placementFact.Value)
+		}
+	}
+	return placements
+}
+
+// buildInternalAddress formats the overlay IP:port string for an instance.
+func buildInternalAddress(overlayIP string, port int) string {
+	if overlayIP == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d", overlayIP, port)
+}
+
+// buildExternalAddress determines the external (node IP:host-port) address for
+// an endpoint. Returns empty when the endpoint already uses the overlay IP
+// (no host port mapping) or when node address lookup fails.
+func buildExternalAddress(instanceID string, port int, instanceNodes map[string]string, nodeAddresses map[string]string, overlayIPs map[string]string, endpointAddress string) string {
+	overlayIP := overlayIPs[instanceID]
+	if overlayIP != "" && strings.HasPrefix(endpointAddress, overlayIP+":") {
+		return ""
+	}
+	nodeID := instanceNodes[instanceID]
+	nodeAddress := nodeAddresses[nodeID]
+	if nodeAddress != "" && strings.HasPrefix(endpointAddress, nodeAddress+":") {
+		return endpointAddress
+	}
+	return ""
 }
 
 func appendUniqueString(slice []string, value string) []string {

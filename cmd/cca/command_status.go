@@ -1465,14 +1465,24 @@ func printEndpointsTableWithOptions(endpoints []api.EndpointStatus, options getO
 		fmt.Println("No endpoints found.")
 		return
 	}
-	header := []string{"SERVICE", "INSTANCE", "PORT", "ADDRESS"}
+	header := []string{"SERVICE", "INSTANCE", "PORT", "HOSTNAME", "INTERNAL", "EXTERNAL"}
 	var rows [][]string
 	for _, endpoint := range endpoints {
+		externalDisplay := endpoint.ExternalAddress
+		if externalDisplay == "" {
+			externalDisplay = "-"
+		}
+		internalDisplay := endpoint.InternalAddress
+		if internalDisplay == "" {
+			internalDisplay = "-"
+		}
 		rows = append(rows, []string{
 			endpoint.Service,
 			endpoint.InstanceID,
 			fmt.Sprintf("%d", endpoint.Port),
-			endpoint.Address,
+			endpoint.Hostname,
+			internalDisplay,
+			externalDisplay,
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
