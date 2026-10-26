@@ -20,6 +20,11 @@ import (
 // init step retry attempts. Each subsequent attempt doubles this value.
 const initStepBackoffBaseDelay = 1 * time.Second
 
+// connectionProbeDefaultRetry is the default number of retries for connection
+// init steps when no explicit retry is configured. Connection probes often need
+// retries because the target service may still be starting.
+const connectionProbeDefaultRetry = 30
+
 // initStepDefinition holds the parsed configuration for a single init step
 // read from the desired-state section of the fact store. Exactly one of exec
 // or connection is set — exec runs a command, connection probes a named
@@ -210,6 +215,10 @@ func (nodeAgent *Agent) loadInitStepDefinitions(ctx context.Context, serviceName
 				stepDefinitions[stepIndex].retry = parsedRetry
 			}
 		}
+
+		if stepDefinitions[stepIndex].connection != "" && stepDefinitions[stepIndex].retry == 0 {
+			stepDefinitions[stepIndex].retry = connectionProbeDefaultRetry
+		}
 	}
 
 	return stepDefinitions
@@ -263,7 +272,9 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 		dialAddress = net.JoinHostPort(connectionDef.host, "0")
 	}
 
-	dialer := &net.Dialer{}
+	dialer := &net.Dialer{
+		Resolver: nodeAgent.buildCCattlerResolver(),
+	}
 	tcpConnection, dialError := dialer.DialContext(probeCtx, "tcp", dialAddress)
 	if dialError != nil {
 		return fmt.Errorf("connection %q: TCP dial to %s failed: %w", stepDefinition.connection, dialAddress, dialError)
@@ -275,6 +286,22 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 		"connection", stepDefinition.connection,
 		"address", dialAddress)
 	return nil
+}
+
+// buildCCattlerResolver returns a DNS resolver that queries CCattler's embedded
+// DNS server on the advertise address. Falls back to system resolver if no
+// advertise address is configured.
+func (nodeAgent *Agent) buildCCattlerResolver() *net.Resolver {
+	if nodeAgent.advertiseAddress == "" {
+		return net.DefaultResolver
+	}
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			resolverDialer := net.Dialer{}
+			return resolverDialer.DialContext(ctx, "udp", net.JoinHostPort(nodeAgent.advertiseAddress, "53"))
+		},
+	}
 }
 
 // hasInitSteps returns true if the named service has any desired init steps.
