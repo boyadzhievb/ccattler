@@ -585,7 +585,7 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(initHostDir, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0600) // #nosec G306
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — container user may not be root
 		args = append(args, "-v", hostPath+":"+containerPath+":ro")
 	}
 	defer func() { _ = os.RemoveAll(initHostDir) }()

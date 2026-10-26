@@ -421,7 +421,9 @@
         mode: "0644"
 
     - name: Apply Airflow deployment
-      command: /usr/local/bin/cca apply /tmp/airflow.cca
+      command: >
+        /usr/local/bin/cca apply /tmp/airflow.cca
+        --set registry={{ insecure_registry | default('docker.io') }}
 
     - name: Wait for containers to start
       pause:

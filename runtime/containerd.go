@@ -822,7 +822,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
-		_ = os.WriteFile(hostPath, []byte(fileContent), 0600) // #nosec G306
+		_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — container user may not be root
 		bindMounts = append(bindMounts, specs.Mount{
 			Destination: containerPath,
 			Type:        "bind",
@@ -833,6 +833,9 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	if len(bindMounts) > 0 {
 		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}
+
+	initHostDir := filepath.Join(containerdLogBaseDir, initContainerName)
+	defer func() { _ = os.RemoveAll(initHostDir) }()
 
 	initContainer, createError := containerdRuntime.client.NewContainer(
 		namespacedCtx,
@@ -846,7 +849,6 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	}
 	defer func() {
 		_ = initContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
-		_ = os.RemoveAll(filepath.Join(containerdLogBaseDir, initContainerName))
 	}()
 
 	task, taskError := initContainer.NewTask(namespacedCtx, cio.NullIO)
