@@ -15,11 +15,14 @@ import (
 	"sync"
 	"time"
 
+	"syscall"
+
 	cgroupstats "github.com/containerd/cgroups/v3/cgroup2/stats"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -268,14 +271,185 @@ func safeUint64ToInt64(value uint64) int64 {
 
 // --- Runtime interface: Phase D (lifecycle) ---
 
-// Start creates and starts a container from the given spec.
-func (containerdRuntime *ContainerdRuntime) Start(_ context.Context, _ Spec) error {
-	return ErrNotImplemented
+// Start creates and starts a container from the given spec via the containerd
+// gRPC API. Creates the OCI spec, containerd container, snapshot, log file,
+// and task. Idempotent — returns nil if the container is already running.
+func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec) error {
+	containerdRuntime.mutex.Lock()
+	if containerdRuntime.trackedContainers[spec.ID] {
+		containerdRuntime.mutex.Unlock()
+		currentStatus, _ := containerdRuntime.Status(ctx, spec.ID)
+		if currentStatus.Running {
+			return nil
+		}
+		containerdRuntime.removeContainerResources(ctx, spec.ID)
+	} else {
+		containerdRuntime.mutex.Unlock()
+	}
+
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+
+	image, getImageError := containerdRuntime.client.GetImage(namespacedCtx, spec.Image)
+	if getImageError != nil {
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("image not found: %s", spec.Image)}
+	}
+
+	containerName := containerdRuntime.buildContainerName(spec.ServiceName, spec.ID)
+	logFilePath := filepath.Join(containerdLogBaseDir, spec.ID, spec.ID+"-json.log")
+
+	if mkdirError := os.MkdirAll(filepath.Dir(logFilePath), 0750); mkdirError != nil {
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create log dir: %v", mkdirError)}
+	}
+
+	ociSpecOptions := containerdRuntime.buildOCISpecOptions(spec, image)
+
+	newContainer, createError := containerdRuntime.client.NewContainer(
+		namespacedCtx,
+		containerName,
+		containerd.WithImage(image),
+		containerd.WithNewSnapshot(containerName+"-snap", image),
+		containerd.WithNewSpec(ociSpecOptions...),
+		containerd.WithContainerLabels(map[string]string{
+			containerLabelInstanceID:  spec.ID,
+			containerLabelServiceName: spec.ServiceName,
+			containerLabelLogPath:     logFilePath,
+		}),
+	)
+	if createError != nil {
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create container: %v", createError)}
+	}
+
+	task, taskError := newContainer.NewTask(namespacedCtx,
+		cio.LogFile(logFilePath))
+	if taskError != nil {
+		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create task: %v", taskError)}
+	}
+
+	if startError := task.Start(namespacedCtx); startError != nil {
+		_, _ = task.Delete(namespacedCtx)
+		_ = newContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("start task: %v", startError)}
+	}
+
+	containerdRuntime.mutex.Lock()
+	containerdRuntime.trackedContainers[spec.ID] = true
+
+	portMappings := make(map[int]int, len(spec.Ports))
+	for _, containerPort := range spec.Ports {
+		portMappings[containerPort] = containerPort
+	}
+	if len(portMappings) > 0 {
+		containerdRuntime.instanceHostPorts[spec.ID] = portMappings
+	}
+	containerdRuntime.mutex.Unlock()
+
+	return nil
 }
 
-// Stop terminates the container identified by id.
-func (containerdRuntime *ContainerdRuntime) Stop(_ context.Context, _ string) error {
-	return ErrNotImplemented
+// buildOCISpecOptions constructs the OCI spec options from a workload Spec,
+// configuring image defaults, env vars, hostname, resource limits, and mounts.
+func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image containerd.Image) []oci.SpecOpts {
+	ociOptions := []oci.SpecOpts{
+		oci.WithImageConfig(image),
+	}
+
+	if len(spec.Command) > 0 {
+		ociOptions = append(ociOptions, oci.WithProcessArgs(spec.Command...))
+	}
+
+	if len(spec.Env) > 0 {
+		envVars := make([]string, 0, len(spec.Env))
+		for envKey, envValue := range spec.Env {
+			envVars = append(envVars, envKey+"="+envValue)
+		}
+		ociOptions = append(ociOptions, oci.WithEnv(envVars))
+	}
+
+	if spec.ServiceName != "" {
+		ociOptions = append(ociOptions, oci.WithHostname(spec.ServiceName))
+	}
+
+	if spec.MemoryB > 0 {
+		ociOptions = append(ociOptions, oci.WithMemoryLimit(uint64(spec.MemoryB)))
+	}
+
+	if spec.CPUm > 0 {
+		cpuQuota := int64(spec.CPUm) * 100
+		ociOptions = append(ociOptions, oci.WithCPUCFS(cpuQuota, 100000))
+	}
+
+	if len(spec.ConfigFiles) > 0 {
+		var mounts []specs.Mount
+		for containerPath, fileContent := range spec.ConfigFiles {
+			hostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
+			_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
+			_ = os.WriteFile(hostPath, []byte(fileContent), 0644) // #nosec G306 — config files are not secrets
+			mounts = append(mounts, specs.Mount{
+				Destination: containerPath,
+				Type:        "bind",
+				Source:      hostPath,
+				Options:     []string{"rbind", "ro"},
+			})
+		}
+		ociOptions = append(ociOptions, oci.WithMounts(mounts))
+	}
+
+	return ociOptions
+}
+
+// buildContainerName generates the containerd container name from service and instance ID.
+func (containerdRuntime *ContainerdRuntime) buildContainerName(serviceName string, instanceID string) string {
+	if serviceName != "" {
+		return serviceName + "-" + instanceID
+	}
+	return "cca-" + instanceID
+}
+
+// Stop terminates and removes the container identified by id via the containerd
+// gRPC API. Kills the task, deletes it, then removes the container and snapshot.
+// Idempotent — returns nil if the container does not exist.
+func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID string) error {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+	containerName := containerdRuntime.resolveContainerName(instanceID)
+
+	container, loadError := containerdRuntime.client.LoadContainer(namespacedCtx, containerName)
+	if loadError != nil {
+		containerdRuntime.mutex.Lock()
+		containerdRuntime.trackedContainers[instanceID] = false
+		containerdRuntime.mutex.Unlock()
+		return nil
+	}
+
+	task, taskError := container.Task(namespacedCtx, nil)
+	if taskError == nil {
+		exitChannel, waitError := task.Wait(namespacedCtx)
+		if waitError == nil {
+			_ = task.Kill(namespacedCtx, syscall.SIGKILL)
+			select {
+			case <-exitChannel:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		_, _ = task.Delete(namespacedCtx)
+	}
+
+	_ = container.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+
+	containerdRuntime.removeContainerResources(ctx, instanceID)
+	return nil
+}
+
+// removeContainerResources cleans up tracking state and log files for a container.
+func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.Context, instanceID string) {
+	containerdRuntime.mutex.Lock()
+	defer containerdRuntime.mutex.Unlock()
+
+	delete(containerdRuntime.trackedContainers, instanceID)
+	delete(containerdRuntime.instanceHostPorts, instanceID)
+
+	logDirectory := filepath.Join(containerdLogBaseDir, instanceID)
+	_ = os.RemoveAll(logDirectory)
 }
 
 // --- Runtime interface: Phase E (exec & logs) ---
@@ -363,10 +537,74 @@ func minInt(first, second int) int {
 	return second
 }
 
-// ExecInit runs an initialization command in a temporary container. Not yet
-// implemented for the containerd runtime — requires container creation (Phase D).
-func (containerdRuntime *ContainerdRuntime) ExecInit(_ context.Context, _ string, _ ExecSpec) error {
-	return ErrNotImplemented
+// ExecInit runs an initialization command by creating a temporary container
+// from the given image, executing the command, and removing the container.
+func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageRef string, execSpec ExecSpec) error {
+	namespacedCtx := containerdRuntime.containerdContext(ctx)
+
+	image, getImageError := containerdRuntime.client.GetImage(namespacedCtx, imageRef)
+	if getImageError != nil {
+		return fmt.Errorf("init image not found: %s: %w", imageRef, getImageError)
+	}
+
+	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
+
+	envVars := make([]string, 0, len(execSpec.Env))
+	for envKey, envValue := range execSpec.Env {
+		envVars = append(envVars, envKey+"="+envValue)
+	}
+
+	ociOptions := []oci.SpecOpts{
+		oci.WithImageConfig(image),
+		oci.WithProcessArgs("bash", "-c", execSpec.Command),
+	}
+	if len(envVars) > 0 {
+		ociOptions = append(ociOptions, oci.WithEnv(envVars))
+	}
+	if containerdRuntime.dnsSearchDomain != "" {
+		ociOptions = append(ociOptions, oci.WithHostname(initContainerName))
+	}
+
+	initContainer, createError := containerdRuntime.client.NewContainer(
+		namespacedCtx,
+		initContainerName,
+		containerd.WithImage(image),
+		containerd.WithNewSnapshot(initContainerName+"-snap", image),
+		containerd.WithNewSpec(ociOptions...),
+	)
+	if createError != nil {
+		return fmt.Errorf("create init container: %w", createError)
+	}
+	defer func() {
+		_ = initContainer.Delete(namespacedCtx, containerd.WithSnapshotCleanup)
+	}()
+
+	task, taskError := initContainer.NewTask(namespacedCtx, cio.NullIO)
+	if taskError != nil {
+		return fmt.Errorf("create init task: %w", taskError)
+	}
+	defer func() {
+		_, _ = task.Delete(namespacedCtx)
+	}()
+
+	exitChannel, waitError := task.Wait(namespacedCtx)
+	if waitError != nil {
+		return fmt.Errorf("wait init task: %w", waitError)
+	}
+
+	if startError := task.Start(namespacedCtx); startError != nil {
+		return fmt.Errorf("start init task: %w", startError)
+	}
+
+	exitStatus := <-exitChannel
+	exitCode, exitError := exitStatus.ExitCode(), exitStatus.Error()
+	if exitError != nil {
+		return fmt.Errorf("init container exited with error: %w", exitError)
+	}
+	if exitCode != 0 {
+		return fmt.Errorf("init container exited with code %d", exitCode)
+	}
+	return nil
 }
 
 // Logs returns a reader that streams the stdout/stderr log output of a
