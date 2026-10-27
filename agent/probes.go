@@ -82,6 +82,7 @@ type probeTracker struct {
 	consecutiveSuccesses int       // current streak of consecutive successes
 	started              bool      // true after the initial delay has passed
 	startTime            time.Time // when the instance was first observed for this probe
+	lastError            string    // human-readable reason for the most recent probe failure
 }
 
 // instanceProbeState holds the probe tracking state for all three probe types
@@ -218,12 +219,13 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 		return false
 	}
 
-	passed := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
+	passed, probeError := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
+		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbeSucceeded))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -234,11 +236,13 @@ func (probeScheduler *ProbeScheduler) executeStartupProbe(ctx context.Context, i
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		tracker.lastError = probeError
 		logging.Default().Warn("startup probe check failed",
 			"agent", probeScheduler.nodeID,
 			"instance", instanceInfo.id,
 			"service", instanceInfo.service,
-			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
+			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeStartup), []byte(string(types.StartupProbeFailed))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -273,12 +277,13 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 		return
 	}
 
-	passed := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
+	passed, probeError := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
+		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeLiveness), []byte(string(types.LivenessProbeHealthy))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -287,11 +292,13 @@ func (probeScheduler *ProbeScheduler) executeLivenessProbe(ctx context.Context, 
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		tracker.lastError = probeError
 		logging.Default().Warn("liveness probe check failed",
 			"agent", probeScheduler.nodeID,
 			"instance", instanceInfo.id,
 			"service", instanceInfo.service,
-			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
+			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeLiveness), []byte(string(types.LivenessProbeUnhealthy))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -318,12 +325,13 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 		return
 	}
 
-	passed := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
+	passed, probeError := probeScheduler.runProbeCheck(ctx, config, instanceInfo.id, instanceIP)
 	tracker.lastCheckTime = now
 
 	if passed {
 		tracker.consecutiveSuccesses++
 		tracker.consecutiveFailures = 0
+		tracker.lastError = ""
 		if tracker.consecutiveSuccesses >= config.successThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness), []byte(string(types.ReadinessProbeReady))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -332,11 +340,13 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 	} else {
 		tracker.consecutiveFailures++
 		tracker.consecutiveSuccesses = 0
+		tracker.lastError = probeError
 		logging.Default().Warn("readiness probe check failed",
 			"agent", probeScheduler.nodeID,
 			"instance", instanceInfo.id,
 			"service", instanceInfo.service,
-			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold))
+			"failures", fmt.Sprintf("%d/%d", tracker.consecutiveFailures, config.failureThreshold),
+			"reason", probeError)
 		if tracker.consecutiveFailures >= config.failureThreshold {
 			if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeState(instanceInfo.id, types.ProbeReadiness), []byte(string(types.ReadinessProbeNotReady))); putError != nil {
 				logging.Default().Error("failed to write probe state", "instance", instanceInfo.id, "error", putError.Error())
@@ -353,30 +363,41 @@ func (probeScheduler *ProbeScheduler) executeReadinessProbe(ctx context.Context,
 // runProbeCheck executes a single probe against the target and returns true
 // if the check passed. Reuses the existing CheckHealth infrastructure for
 // HTTP and TCP probes, and runtime.Exec for exec probes.
-func (probeScheduler *ProbeScheduler) runProbeCheck(ctx context.Context, config *probeConfig, instanceID string, instanceIP string) bool {
+func (probeScheduler *ProbeScheduler) runProbeCheck(ctx context.Context, config *probeConfig, instanceID string, instanceIP string) (bool, string) {
 	switch config.method {
 	case "http":
-		return CheckHealth(ctx, HealthProbe{
+		passed := CheckHealth(ctx, HealthProbe{
 			Type:    ProbeHTTP,
 			Path:    config.path,
 			Port:    config.port,
 			Timeout: config.timeout,
 		}, instanceIP)
+		if !passed {
+			return false, fmt.Sprintf("HTTP GET %s:%d%s failed", instanceIP, config.port, config.path)
+		}
+		return true, ""
 	case "tcp":
-		return CheckHealth(ctx, HealthProbe{
+		passed := CheckHealth(ctx, HealthProbe{
 			Type:    ProbeTCP,
 			Port:    config.port,
 			Timeout: config.timeout,
 		}, instanceIP)
+		if !passed {
+			return false, fmt.Sprintf("TCP %s:%d connection failed", instanceIP, config.port)
+		}
+		return true, ""
 	case "exec":
 		execCtx, cancelExec := context.WithTimeout(ctx, config.timeout)
 		defer cancelExec()
 		execErr := probeScheduler.runtimeAdapter.Exec(execCtx, instanceID, runtime.ExecSpec{
 			Command: config.path,
 		})
-		return execErr == nil
+		if execErr != nil {
+			return false, execErr.Error()
+		}
+		return true, ""
 	default:
-		return false
+		return false, "unknown probe method"
 	}
 }
 
@@ -588,16 +609,19 @@ func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, 
 	if startupConfig != nil && probeState.startup != nil && probeState.startup.consecutiveFailures > 0 {
 		progress.StartupFailures = probeState.startup.consecutiveFailures
 		progress.StartupThreshold = startupConfig.failureThreshold
+		progress.StartupError = probeState.startup.lastError
 		hasProgress = true
 	}
 	if livenessConfig != nil && probeState.liveness != nil && probeState.liveness.consecutiveFailures > 0 {
 		progress.LivenessFailures = probeState.liveness.consecutiveFailures
 		progress.LivenessThreshold = livenessConfig.failureThreshold
+		progress.LivenessError = probeState.liveness.lastError
 		hasProgress = true
 	}
 	if readinessConfig != nil && probeState.readiness != nil && probeState.readiness.consecutiveFailures > 0 {
 		progress.ReadinessFailures = probeState.readiness.consecutiveFailures
 		progress.ReadinessThreshold = readinessConfig.failureThreshold
+		progress.ReadinessError = probeState.readiness.lastError
 		hasProgress = true
 	}
 

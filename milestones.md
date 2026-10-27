@@ -1592,6 +1592,65 @@ Init containers receive the same secret/connection file mounts as the main workl
 - [x] `runtime/container.go` — `ExecInit` mounts `ConfigFiles` via `-v` flags
 - [x] `runtime/simulator.go` — `ExecInitCall` records `ConfigFiles` for test verification
 
+### Phase 148 — Endpoint Hostname & Address Columns (M148)
+
+Enrich `cca get endpoints` with human-readable HOSTNAME, INTERNAL, and EXTERNAL columns so operators can see how traffic reaches each backend without inspecting raw facts.
+
+- [x] `api/status.go` — `EndpointStatus` gains `Hostname`, `InternalAddress`, `ExternalAddress` fields resolved from observed instance IPs, node addresses, and placement facts
+- [x] `cmd/cca/command_status.go` — `cca get endpoints` renders HOSTNAME (`service.cca.local`), INTERNAL (overlay IP:port), EXTERNAL (node IP:host-port) columns
+- [x] Integration tests for endpoint address resolution
+
+### Phase 149 — Default Runtime Switch to Containerd (M149)
+
+Switch agent default runtime from nerdctl (`container`) to the containerd direct API (`containerd`). All fixes already landed in containerd runtime: host-networking init containers, exec env var inheritance, CNI lifecycle, resolv.conf injection.
+
+- [x] `cmd/cca/command_agent.go` — default runtime flag value changed from `container` to `containerd`
+- [x] Ansible deploy roles updated to drop nerdctl install requirement
+- [x] `runtime/container.go` — kept for backward compatibility and test usage, no longer default path
+
+### Phase 150 — Deployment Convergence Observability (M150)
+
+End-to-end visibility into why a deployment isn't converging, without SSH or log parsing. Discovered during Airflow CeleryExecutor deployment where 6 services across 3 nodes cycled for 30+ minutes with no CLI-visible explanation.
+
+**Agent convergence facts:**
+- [x] `agent/agent.go` — `publishStatusReason` helper writes human-readable `status-reason/{instanceID}` fact at every lifecycle stage
+- [x] `agent/init.go` — `publishInitProgress` writes `init-progress/{instanceID}` JSON fact (step, attempt, maxRetries, lastError, stepLabel)
+- [x] `agent/init.go` — init progress published before first attempt so pending instances always show what they're doing
+- [x] `agent/probes.go` — `publishProbeProgress` writes `probe-progress/{instanceID}` JSON fact (per-probe-type failure count, threshold, error)
+- [x] `agent/probes.go` — `runProbeCheck` returns `(bool, string)` with human-readable error reason (HTTP status, TCP refused, exec error)
+- [x] `agent/probes.go` — `probeTracker.lastError` field captures most recent failure reason for each probe type
+
+**Types:**
+- [x] `types/state.go` — `InitProgress` struct with `Step`, `TotalSteps`, `Attempt`, `MaxRetries`, `StepLabel`, `LastError`
+- [x] `types/state.go` — `ProbeProgress` struct with per-probe-type `Failures`, `Threshold`, `Error` fields
+
+**API:**
+- [x] `api/status.go` — reads `status-reason`, `init-progress`, `probe-progress` facts from store
+- [x] `api/describe.go` — `cca describe service/instance` shows inline init progress, probe progress, and status reason
+
+**CLI:**
+- [x] `cmd/cca/command_status.go` — `cca get instances` REASON column shows compact convergence status
+- [x] `cmd/cca/command_status.go` — `formatProbeProgressCompact` includes probe error reason (e.g., `startup:7/60 HTTP GET 10.93.219.4:8080/health failed`)
+
+**Workload tuning:**
+- [x] `test/e2e/workloads/airflow.cca` — startup probe `failure_threshold` bumped 30→60 for webserver, scheduler, worker
+
+**Inspecting agent logs on nodes:**
+
+Agent logs are structured JSON written to journald. To inspect probe and init progress:
+```bash
+# From testbed host, parse agent logs with jq:
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' | jq -r 'select(.msg == "probe check failed") | "\(.fields.instance) \(.fields.reason)"'
+
+# Filter init step failures:
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' | jq -r 'select(.msg == "init step failed") | "\(.fields.instance) step \(.fields.step): \(.fields.error)"'
+
+# General agent log viewing (ts is Unix epoch seconds):
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 50 -o cat' | jq '{msg, ts: (.ts | todate), fields}'
+```
+
+Note: pipe to `jq` locally (after the `--`), not inside the SSH command. Single-quote the journalctl part to prevent shell expansion.
+
 ### Backlog
 
 - [x] Load test: 200 nodes, 5000 workloads synthetic benchmark — covered by M125 (Scale Benchmark Refresh)

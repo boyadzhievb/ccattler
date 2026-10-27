@@ -244,12 +244,15 @@ type InitProgress struct {
 // ProbeProgress is the JSON-serializable probe progress published to the store
 // so CLI and API can show convergence status without parsing agent logs.
 type ProbeProgress struct {
-	StartupFailures    int `json:"startup_failures,omitempty"`
-	StartupThreshold   int `json:"startup_threshold,omitempty"`
-	LivenessFailures   int `json:"liveness_failures,omitempty"`
-	LivenessThreshold  int `json:"liveness_threshold,omitempty"`
-	ReadinessFailures  int `json:"readiness_failures,omitempty"`
-	ReadinessThreshold int `json:"readiness_threshold,omitempty"`
+	StartupFailures    int    `json:"startup_failures,omitempty"`
+	StartupThreshold   int    `json:"startup_threshold,omitempty"`
+	StartupError       string `json:"startup_error,omitempty"`
+	LivenessFailures   int    `json:"liveness_failures,omitempty"`
+	LivenessThreshold  int    `json:"liveness_threshold,omitempty"`
+	LivenessError      string `json:"liveness_error,omitempty"`
+	ReadinessFailures  int    `json:"readiness_failures,omitempty"`
+	ReadinessThreshold int    `json:"readiness_threshold,omitempty"`
+	ReadinessError     string `json:"readiness_error,omitempty"`
 }
 
 // CapacityRequestState represents the lifecycle of a durable capacity request

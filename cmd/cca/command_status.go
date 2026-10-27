@@ -1393,13 +1393,25 @@ func formatProbeProgressCompact(probeProgressJSON string) string {
 	}
 	var parts []string
 	if progress.StartupFailures > 0 {
-		parts = append(parts, fmt.Sprintf("startup:%d/%d", progress.StartupFailures, progress.StartupThreshold))
+		entry := fmt.Sprintf("startup:%d/%d", progress.StartupFailures, progress.StartupThreshold)
+		if progress.StartupError != "" {
+			entry += " " + progress.StartupError
+		}
+		parts = append(parts, entry)
 	}
 	if progress.LivenessFailures > 0 {
-		parts = append(parts, fmt.Sprintf("liveness:%d/%d", progress.LivenessFailures, progress.LivenessThreshold))
+		entry := fmt.Sprintf("liveness:%d/%d", progress.LivenessFailures, progress.LivenessThreshold)
+		if progress.LivenessError != "" {
+			entry += " " + progress.LivenessError
+		}
+		parts = append(parts, entry)
 	}
 	if progress.ReadinessFailures > 0 {
-		parts = append(parts, fmt.Sprintf("readiness:%d/%d", progress.ReadinessFailures, progress.ReadinessThreshold))
+		entry := fmt.Sprintf("readiness:%d/%d", progress.ReadinessFailures, progress.ReadinessThreshold)
+		if progress.ReadinessError != "" {
+			entry += " " + progress.ReadinessError
+		}
+		parts = append(parts, entry)
 	}
 	if len(parts) == 0 {
 		return "-"

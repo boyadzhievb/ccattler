@@ -4,6 +4,8 @@
 
 **Completed through:** M148 — Phase 148 Endpoint Address Columns. M1–M148 complete (M141 future placeholder). Gates A–I resolved.
 
+**Next milestone:** M150 — Deployment Convergence Observability. End-to-end visibility into why a deployment isn't converging, without SSH or log parsing. See milestones.md for full scope.
+
 ### Performance Optimization Principle
 
 Optimize the architecture first, the algorithms second, Go code third, and assembly only for demonstrated hot paths. Establish benchmarks (`cca benchmark`) before optimizing.
