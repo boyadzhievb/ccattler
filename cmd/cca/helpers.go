@@ -136,9 +136,6 @@ func configureLogger(logLevel string, logFormat string) {
 	format := logging.FormatHuman
 	if logFormat == "json" {
 		format = logging.FormatJSON
-	} else if logFormat == "" && !isTerminal(os.Stderr) {
-		// Under systemd (journald), default to JSON for structured log capture.
-		format = logging.FormatJSON
 	}
 	logging.SetDefault(logging.New(os.Stderr, level, format))
 }

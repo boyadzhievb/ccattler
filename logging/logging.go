@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -186,7 +187,12 @@ func (logger *Logger) writeHuman(timestamp time.Time, level Level, message strin
 	}
 
 	for fieldIndex := 0; fieldIndex+1 < len(keyValues); fieldIndex += 2 {
-		line += fmt.Sprintf(" %s=%s", keyValues[fieldIndex], keyValues[fieldIndex+1])
+		value := keyValues[fieldIndex+1]
+		if strings.ContainsAny(value, " \t\"") {
+			line += fmt.Sprintf(" %s=%q", keyValues[fieldIndex], value)
+		} else {
+			line += fmt.Sprintf(" %s=%s", keyValues[fieldIndex], value)
+		}
 	}
 
 	line += "\n"

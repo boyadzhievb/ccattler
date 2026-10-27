@@ -1637,19 +1637,23 @@ End-to-end visibility into why a deployment isn't converging, without SSH or log
 
 **Inspecting agent logs on nodes:**
 
-Agent logs are structured JSON written to journald. To inspect probe and init progress:
+Agent logs use human-readable `key=value` format by default (same under systemd). Use `--log-format json` for structured JSON when feeding into log aggregation pipelines.
 ```bash
-# From testbed host, parse agent logs with jq:
+# View recent agent logs (human-readable by default):
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 50'
+
+# Filter for probe failures:
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100' | grep "probe.*failed"
+
+# Filter for init step failures:
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100' | grep "init step failed"
+
+# Follow live:
+vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent -f'
+
+# If running with --log-format json, parse with jq:
 vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' | jq -r 'select(.msg == "probe check failed") | "\(.fields.instance) \(.fields.reason)"'
-
-# Filter init step failures:
-vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' | jq -r 'select(.msg == "init step failed") | "\(.fields.instance) step \(.fields.step): \(.fields.error)"'
-
-# General agent log viewing (ts is Unix epoch seconds):
-vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 50 -o cat' | jq '{msg, ts: (.ts | todate), fields}'
 ```
-
-Note: pipe to `jq` locally (after the `--`), not inside the SSH command. Single-quote the journalctl part to prevent shell expansion.
 
 ### Backlog
 

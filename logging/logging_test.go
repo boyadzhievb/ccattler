@@ -188,3 +188,18 @@ func TestHumanFormatNoComponent(t *testing.T) {
 		t.Errorf("expected no component brackets, got: %s", output)
 	}
 }
+
+func TestHumanFormatQuotesValuesWithSpaces(t *testing.T) {
+	buffer := &bytes.Buffer{}
+	logger := New(buffer, LevelInfo, FormatHuman)
+
+	logger.Warn("probe failed", "reason", "HTTP GET 10.0.0.1:8080/health failed", "count", "3")
+	output := buffer.String()
+
+	if !strings.Contains(output, `reason="HTTP GET 10.0.0.1:8080/health failed"`) {
+		t.Errorf("expected quoted value with spaces, got: %s", output)
+	}
+	if !strings.Contains(output, "count=3") {
+		t.Errorf("expected unquoted value without spaces, got: %s", output)
+	}
+}
