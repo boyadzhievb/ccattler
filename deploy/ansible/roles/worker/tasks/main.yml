@@ -39,6 +39,14 @@
   args:
     creates: /etc/ccattler/secret-master.key
 
+- name: Remove stale cca0 interface from previous deployment
+  shell: |
+    if ip link show cca0 &>/dev/null && ! ip -d link show cca0 | grep -q 'bridge'; then
+      ip link del cca0
+    fi
+  changed_when: false
+  failed_when: false
+
 - name: Install cca-agent systemd unit
   template:
     src: cca-agent.service.j2
