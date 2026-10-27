@@ -38,15 +38,14 @@
 
     - name: Stop and remove all CCattler containers
       shell: |
-        if command -v nerdctl &>/dev/null; then
-          nerdctl ps -a --format '{{ '{{' }}.ID{{ '}}' }}' | xargs -r nerdctl rm -f 2>/dev/null || true
-        fi
-      changed_when: false
-
-    - name: Remove nerdctl cca-net network
-      shell: |
-        if command -v nerdctl &>/dev/null; then
-          nerdctl network rm cca-net 2>/dev/null || true
+        if command -v ctr &>/dev/null; then
+          for task in $(ctr -n cca tasks list -q 2>/dev/null); do
+            ctr -n cca tasks kill "$task" 2>/dev/null || true
+            ctr -n cca tasks delete "$task" 2>/dev/null || true
+          done
+          for ctn in $(ctr -n cca containers list -q 2>/dev/null); do
+            ctr -n cca containers delete "$ctn" 2>/dev/null || true
+          done
         fi
       changed_when: false
 
@@ -123,7 +122,7 @@
         echo "Services: $(systemctl is-active cca-agent cca-server etcd 2>/dev/null | tr '\n' ' ')"
         echo "PKI: $(ls /etc/ccattler/pki/ 2>/dev/null || echo 'gone')"
         echo "VXLAN: $(ip link show cca-vxlan0 2>/dev/null || echo 'gone')"
-        echo "Containers: $(nerdctl ps -a --format '{{ '{{' }}.Names{{ '}}' }}' 2>/dev/null | wc -l) remaining"
+        echo "Containers: $(ctr -n cca containers list -q 2>/dev/null | wc -l) remaining"
       changed_when: false
       register: clean_state
 

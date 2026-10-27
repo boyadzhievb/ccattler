@@ -205,24 +205,6 @@
   when: insecure_registry | default('') | length > 0
   notify: Restart containerd
 
-- name: Check if nerdctl is already installed
-  stat:
-    path: /usr/local/bin/nerdctl
-  register: nerdctl_binary
-
-- name: Download nerdctl
-  command:
-    cmd: "curl -sSL -o /tmp/nerdctl.tar.gz https://github.com/containerd/nerdctl/releases/download/v{{ nerdctl_version }}/nerdctl-{{ nerdctl_version }}-linux-{{ go_arch }}.tar.gz"
-    creates: /tmp/nerdctl.tar.gz
-  when: not nerdctl_binary.stat.exists
-
-- name: Extract nerdctl
-  unarchive:
-    src: /tmp/nerdctl.tar.gz
-    dest: /usr/local/bin
-    remote_src: true
-  when: not nerdctl_binary.stat.exists
-
 - name: Check if CNI plugins are already installed
   stat:
     path: /opt/cni/bin/bridge

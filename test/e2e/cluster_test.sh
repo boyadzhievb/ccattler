@@ -317,7 +317,7 @@ ssh_vm() {
 
 count_containers() {
     local vm_name="$1"
-    ssh_vm "$vm_name" "sudo nerdctl ps -q 2>/dev/null | wc -l" | tr -d ' '
+    ssh_vm "$vm_name" "sudo ctr -n cca containers list -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
 # Copy a local file to a node via scp.
@@ -335,7 +335,7 @@ scp_to_vm() {
 # ---- Clear workloads mode ----
 # Wipes desired state from etcd and lets agents reconcile (stop orphaned containers).
 # Faster and more principled than brute-force container removal: the agents handle
-# cleanup through their normal reconciliation loop. Falls back to nerdctl rm if
+# cleanup through their normal reconciliation loop. Falls back to ctr rm if
 # containers don't drain within the timeout.
 if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     log "Clearing all workloads from cluster (${CLUSTER_ENV})..."
@@ -357,14 +357,14 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     if [[ "$total_containers" -gt 0 ]]; then
         log "WARNING: $total_containers containers still running after 60s, force-removing..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done" &
         done
         wait
     fi
     if [[ "$KEEP_DATA" == "false" ]]; then
-        log "Pruning container volumes for blank-slate redeploy..."
+        log "Pruning container snapshots for blank-slate redeploy..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo nerdctl volume prune -f 2>/dev/null || true" &
+            ssh_vm "$vm" "sudo ctr -n cca snapshots rm --all 2>/dev/null || true" &
         done
         wait
     else
@@ -453,13 +453,13 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo nerdctl rm -f \$(sudo nerdctl ps -aq) 2>/dev/null || true; sudo nerdctl container prune -f 2>/dev/null || true; sudo nerdctl volume prune -f 2>/dev/null || true" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done; sudo ctr -n cca snapshots rm --all 2>/dev/null || true" &
         done
         wait
     else
-        log "Keeping existing data (--keep-data) — stopping containers only..."
+        log "Keeping existing data (--keep-data) — stopping tasks only..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo nerdctl stop \$(sudo nerdctl ps -aq) 2>/dev/null || true" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done" &
         done
         wait
     fi
@@ -860,7 +860,7 @@ for vm in "${VM_NAMES[@]}"; do
         ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
     fi
     log "  bridge/route info on $vm:"
-    ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|10\\.4|172\\.17|nerdctl'" || true
+    ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" || true
 done
 
 NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)

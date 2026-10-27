@@ -81,18 +81,18 @@ for idx in "${!VMS[@]}"; do
         scp_vm "$vm" "$dagfile" "/tmp/airflow-dags/$dagname" 2>/dev/null
     done
 
-    containers=$(ssh_vm "$vm" "sudo nerdctl ps --format '{{.Names}}' | grep -E '^(scheduler|webserver|worker)-' || true" 2>/dev/null)
+    instances=$(ssh_vm "$vm" "sudo cca get instances -o json 2>/dev/null | jq -r '.[] | select(.node == \"$vm\") | select(.service | test(\"scheduler|webserver|worker\")) | .id' || true" 2>/dev/null)
 
-    if [ -z "$containers" ]; then
-        echo "    No Airflow containers on this node"
+    if [ -z "$instances" ]; then
+        echo "    No Airflow instances on this node"
         continue
     fi
 
-    for container in $containers; do
+    for instance in $instances; do
         for dagfile in "$DAG_DIR"/*.py; do
             dagname="$(basename "$dagfile")"
-            echo "    Deploying $dagname -> $container"
-            ssh_vm "$vm" "cat /tmp/airflow-dags/$dagname | sudo nerdctl exec -i $container tee /opt/airflow/dags/$dagname > /dev/null" 2>/dev/null
+            echo "    Deploying $dagname -> $instance"
+            ssh_vm "$vm" "cat /tmp/airflow-dags/$dagname | sudo cca exec $instance -- tee /opt/airflow/dags/$dagname > /dev/null" 2>/dev/null
             total_copied=$((total_copied + 1))
         done
     done

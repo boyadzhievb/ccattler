@@ -1,11 +1,8 @@
-nerdctl_version: "2.0.3"
 cni_plugins_version: "1.9.1"
 
 go_arch: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
 
 cca_cert_dir: /etc/ccattler/pki
-
-cca_runtime: "containerd"
 
 # Network CIDRs — randomized on every deployment to prove nothing is hardcoded.
 # cluster_cidr: overlay network for container IPs (each node gets a /24 subnet).
