@@ -1,25 +1,31 @@
+images:
+  ubuntu:resolute: https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
+
 vms:
   - name: cca-deploy-ctrl
-    image: debian:trixie
+    image: ubuntu:resolute
     cpus: 2
     memory: 6144
     disk: 20G
+    console_log: true
     network:
       ip: 192.168.124.10
 
   - name: cca-deploy-worker-1
-    image: debian:trixie
+    image: ubuntu:resolute
     cpus: 2
     memory: 6144
     disk: 20G
+    console_log: true
     network:
       ip: 192.168.124.20
 
   - name: cca-deploy-worker-2
-    image: debian:trixie
+    image: ubuntu:resolute
     cpus: 2
     memory: 6144
     disk: 20G
+    console_log: true
     network:
       ip: 192.168.124.30
 
