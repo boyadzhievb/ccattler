@@ -361,6 +361,11 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
         done
         wait
     fi
+    log "Cleaning up network interfaces..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo ip link delete cca0 2>/dev/null; sudo ip link delete cca-vxlan0 2>/dev/null; sudo ip link delete cca-vip0 2>/dev/null; sudo rm -rf /var/run/netns/cca-* 2>/dev/null" &
+    done
+    wait
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Pruning container snapshots for blank-slate redeploy..."
         for vm in "${VM_NAMES[@]}"; do
@@ -450,6 +455,11 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     wait
     ssh_vm "$CTRL_NODE" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"
     ssh_vm "$CTRL_NODE" "sudo bash -c 'systemctl stop etcd 2>/dev/null; rm -rf /var/lib/etcd; systemctl daemon-reload' 2>/dev/null || true"
+    log "Cleaning up network interfaces..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo ip link delete cca0 2>/dev/null; sudo ip link delete cca-vxlan0 2>/dev/null; sudo ip link delete cca-vip0 2>/dev/null; sudo rm -rf /var/run/netns/cca-* 2>/dev/null" &
+    done
+    wait
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
