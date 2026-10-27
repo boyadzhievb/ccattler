@@ -45,12 +45,13 @@ func NewDataPlaneReconciler(nodeID string, factStore store.StateStore, dataPlane
 }
 
 // Reconcile reads VIP and endpoint facts from the store, resolves
-// each endpoint to a host-accessible backend address, and calls the data
-// plane provider to program iptables DNAT rules. Also reads route facts
-// and programs route-specific forwarding (sticky sessions). For instances
-// running on this node, the backend is the container IP:port (reachable
-// via Docker bridge). For instances on other nodes, the backend is the
-// remote node's advertise address + host port (reachable via LAN).
+// each endpoint to a routable backend address, and calls the data plane
+// provider to program nftables DNAT rules. Also reads route facts and
+// programs route-specific forwarding (sticky sessions). For local
+// instances, the backend is the container IP:port (reachable via bridge).
+// For remote instances with VXLAN overlay, the backend is the container's
+// overlay IP:port (routable cross-node via VXLAN tunnel). Falls back to
+// node advertise address + host port when overlay IPs are unavailable.
 func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 	if dataPlaneReconciler.dataPlaneProvider == nil {
 		return
@@ -358,10 +359,11 @@ func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store
 }
 
 // resolveServiceBackends reads endpoint facts for a service and resolves
-// each endpoint to a host-accessible backend address. Local instances use
-// the container IP:port; remote instances use the node's advertise address
-// and host port. Backends on nodes with stale heartbeats are excluded so
-// traffic shifts to healthy nodes within seconds of a node failure.
+// each endpoint to a routable backend address. Local instances use the
+// container IP:port via the bridge. Remote instances prefer the overlay
+// IP:port (routed via VXLAN), falling back to node address + host port.
+// Backends on nodes with stale heartbeats are excluded so traffic shifts
+// to healthy nodes within seconds of a node failure.
 func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx context.Context, serviceName string, staleNodeSet map[string]bool) ([]network.DataPlaneBackend, error) {
 	endpointPrefix := fmt.Sprintf("%s/service/%s/", types.PrefixEndpoint, serviceName)
 	endpointFacts, err := dataPlaneReconciler.factStore.Scan(ctx, endpointPrefix)
@@ -462,13 +464,20 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveLocalBackend(ctx context.
 	}
 }
 
-// resolveRemoteBackend determines the host-accessible address for an
-// instance running on a different node. It looks up the remote node's
-// advertise address and the instance's host port mapping. Returns an
-// empty backend (zero port) if the remote address cannot be resolved —
-// container-bridge IPs (172.x) are not routable cross-node, so falling
-// back to them would create broken DNAT rules.
+// resolveRemoteBackend determines the routable address for an instance running
+// on a different node. When VXLAN overlay is active, the instance's container
+// IP is directly routable cross-node via the tunnel — use that with the
+// container port. Falls back to node advertise address + host port for
+// non-overlay deployments where container IPs are not routable.
 func (dataPlaneReconciler *DataPlaneReconciler) resolveRemoteBackend(ctx context.Context, instanceID string, remoteNodeID string, containerPort int) network.DataPlaneBackend {
+	containerIPFact, overlayError := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedInstanceIP(instanceID))
+	if overlayError == nil && len(containerIPFact.Value) > 0 && containerPort > 0 {
+		return network.DataPlaneBackend{
+			Address: string(containerIPFact.Value),
+			Port:    containerPort,
+		}
+	}
+
 	nodeAddressFact, err := dataPlaneReconciler.factStore.Get(ctx, types.KeyObservedNodeAddress(remoteNodeID))
 	if err != nil {
 		logging.Default().Debug("remote backend: no advertise address for node", "node", remoteNodeID, "instance", instanceID)

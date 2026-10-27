@@ -282,7 +282,13 @@ Agent startup → vxlanReconciler.ensureVXLANInterfaceExists
 ├── ip link set cca-vxlan0 mtu 1450
 │   └── 1500 - 50 bytes VXLAN encapsulation overhead
 │
-└── ip link set cca-vxlan0 up
+├── ip link set cca-vxlan0 up
+│
+└── sysctl -w net.ipv4.conf.cca-vxlan0.proxy_arp=1
+    └── Required for cross-node L2 resolution: when a remote node
+        ARPs for a container IP on this node's bridge (cca0), proxy
+        ARP lets the kernel respond on cca-vxlan0 on behalf of the
+        container, completing the ARP → FDB → VXLAN tunnel chain.
 ```
 
 **Constants (agent/vxlan.go):**
@@ -344,8 +350,16 @@ Container-A (10.100.1.2) on node-1
 │   │  10.100.3.0/24 dev cca-vxlan0
 │   └── matches → forward to cca-vxlan0
 │
-├── [3] cca-vxlan0 looks up FDB for destination:
-│   │  00:00:00:00:00:00 dev cca-vxlan0 dst 192.168.124.30
+├── [3] ARP resolution on cca-vxlan0:
+│   │  node-1 kernel ARPs for 10.100.3.4 on cca-vxlan0
+│   │  ARP request VXLAN-encapsulated to all peers (FDB 00:00:00:00:00:00 entries)
+│   │  node-2 receives ARP on cca-vxlan0, has route 10.100.3.0/24 dev cca0
+│   │  proxy_arp=1 on cca-vxlan0 → kernel responds with cca-vxlan0 MAC
+│   │  node-1 caches ARP: 10.100.3.4 → node-2's cca-vxlan0 MAC
+│   └── Subsequent packets skip ARP, go direct via cached entry
+│
+├── [4] cca-vxlan0 looks up FDB for destination MAC:
+│   │  {node-2-vxlan-MAC} dev cca-vxlan0 dst 192.168.124.30
 │   └── VXLAN encapsulation:
 │       ┌─────────────────────────────────────────────────┐
 │       │ Outer Ethernet: node-1 MAC → next-hop MAC       │
@@ -356,16 +370,16 @@ Container-A (10.100.1.2) on node-1
 │       │ Inner IP:       10.100.1.2 → 10.100.3.4          │
 │       └─────────────────────────────────────────────────┘
 │
-├── [4] Physical network: node-1 eth0 → switch → node-2 eth0
+├── [5] Physical network: node-1 eth0 → switch → node-2 eth0
 │
-├── [5] node-2 receives UDP 4789, decapsulates VXLAN header
+├── [6] node-2 receives UDP 4789, decapsulates VXLAN header
 │   └── inner frame delivered to cca-vxlan0
 │
-├── [6] Linux routing table on node-2:
+├── [7] Linux routing table on node-2:
 │   │  10.100.3.0/24 dev cca0 (local bridge)
 │   └── matches → forward to cca0 bridge
 │
-└── [7] cca0 bridge delivers to vethYYYY → Container-B eth0
+└── [8] cca0 bridge delivers to vethYYYY → Container-B eth0
 ```
 
 ### Diagram
@@ -498,10 +512,16 @@ DataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
 │   │
 │   └── IF instanceNodeID != myNodeID:
 │       └── resolveRemoteBackend
-│           ├── Read observed/node/{remoteNodeID}/address → nodeIP
-│           ├── Read observed/instance/{id}/host_port/{port} → hostPort
-│           └── Backend = {nodeIP}:{hostPort}
-│           (via LAN to remote node's host port mapping)
+│           ├── [PREFERRED] Read observed/instance/{id}/ip → overlayIP
+│           │   └── IF overlayIP available AND containerPort > 0:
+│           │       └── Backend = {overlayIP}:{containerPort}
+│           │       (routable cross-node via VXLAN tunnel + proxy ARP)
+│           │
+│           └── [FALLBACK] No overlay IP available:
+│               ├── Read observed/node/{remoteNodeID}/address → nodeIP
+│               ├── Read observed/instance/{id}/host_port/{port} → hostPort
+│               └── Backend = {nodeIP}:{hostPort}
+│               (via LAN to remote node's host port mapping)
 ```
 
 ---

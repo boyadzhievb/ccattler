@@ -78,6 +78,45 @@ func TestDataPlaneReconcilesBuildVIPConfigsFromStore(t *testing.T) {
 	}
 }
 
+func TestDataPlaneRemoteBackendPrefersOverlayIP(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+	ctx := context.Background()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "database", VIP: "10.200.0.5", Port: 5432,
+	})
+
+	factStore.Put(ctx, types.KeyEndpoint("database", "instance-ccc", 5432), []byte("10.100.2.10:5432"))
+	factStore.Put(ctx, types.KeyObservedInstanceNode("instance-ccc"), []byte("node-2"))
+	factStore.Put(ctx, types.KeyObservedNodeAddress("node-2"), []byte("192.168.100.215"))
+	factStore.Put(ctx, types.KeyObservedInstanceHostPort("instance-ccc"), []byte("5432"))
+	factStore.Put(ctx, types.KeyObservedInstanceIP("instance-ccc"), []byte("10.100.2.10"))
+
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+
+	lastReconciled := simulatorDataPlane.LastReconciled()
+	if len(lastReconciled) != 1 {
+		t.Fatalf("expected 1 VIP config, got %d", len(lastReconciled))
+	}
+	if len(lastReconciled[0].Backends) != 1 {
+		t.Fatalf("expected 1 backend, got %d", len(lastReconciled[0].Backends))
+	}
+
+	backend := lastReconciled[0].Backends[0]
+	if backend.Address != "10.100.2.10" {
+		t.Errorf("remote backend address = %q, want overlay IP %q (not node address)", backend.Address, "10.100.2.10")
+	}
+	if backend.Port != 5432 {
+		t.Errorf("remote backend port = %d, want %d", backend.Port, 5432)
+	}
+}
+
 func TestDataPlaneNoProviderIsNoop(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()

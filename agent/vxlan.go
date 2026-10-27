@@ -180,6 +180,11 @@ func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.C
 		return fmt.Errorf("setting VXLAN MTU: %w", mtuError)
 	}
 
+	if proxyARPError := enableProxyARP(ctx, vxlanInterfaceName); proxyARPError != nil {
+		logging.Default().Warn("vxlan: failed to enable proxy ARP — cross-node container traffic may fail",
+			"node", vxlanReconciler.nodeID, "error", proxyARPError.Error())
+	}
+
 	// No IP assigned to the VXLAN device — it acts as a pure tunnel backend.
 	// The container bridge (cca-net) owns the node's /24 subnet and serves
 	// as the gateway (.1). Cross-node routes use "dev cca-vxlan0" and FDB
@@ -548,6 +553,20 @@ func executeIPRouteDelete(ctx context.Context, destinationSubnet string) error {
 	deleteCommand := exec.CommandContext(ctx, "ip", "route", "del", //nolint:gosec // ip commands with validated arguments
 		destinationSubnet, "dev", vxlanInterfaceName)
 	if output, runError := deleteCommand.CombinedOutput(); runError != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+	}
+	return nil
+}
+
+// enableProxyARP enables proxy ARP on a network interface so the kernel
+// responds to ARP requests for IPs routable through other interfaces. Required
+// on the VXLAN device: when a remote node ARPs for a container IP that lives
+// on the local bridge (cca0), proxy ARP lets the kernel answer on behalf of
+// the container, completing cross-node L2 resolution.
+func enableProxyARP(ctx context.Context, interfaceName string) error {
+	sysctlCommand := exec.CommandContext(ctx, "sysctl", "-w", //nolint:gosec // sysctl with validated interface name
+		fmt.Sprintf("net.ipv4.conf.%s.proxy_arp=1", interfaceName))
+	if output, runError := sysctlCommand.CombinedOutput(); runError != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
 	}
 	return nil
