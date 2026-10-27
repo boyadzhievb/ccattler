@@ -7,6 +7,6 @@ service debug {
         memory 128Mi
     }
     placement {
-        spread node
+        zone spread
     }
 }

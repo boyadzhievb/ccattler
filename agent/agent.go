@@ -601,7 +601,11 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 
 	// Clean up init-step backoff state for instances no longer placed on this node.
 	for backoffKey := range nodeAgent.initStepBackoffs {
-		instanceID := backoffKey[:strings.Index(backoffKey, "/")]
+		separatorIndex := strings.Index(backoffKey, "/")
+		if separatorIndex < 0 {
+			continue
+		}
+		instanceID := backoffKey[:separatorIndex]
 		if !desiredByID[instanceID] {
 			delete(nodeAgent.initStepBackoffs, backoffKey)
 		}

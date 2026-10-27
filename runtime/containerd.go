@@ -76,7 +76,7 @@ type containerNetworkState struct {
 type ContainerdRuntime struct {
 	mutex              sync.Mutex                        // mutex guards concurrent access to state maps.
 	client             *containerd.Client                // client is the containerd gRPC client.
-	trackedContainers  map[string]string                  // trackedContainers maps instance IDs to their containerd container name.
+	trackedContainers  map[string]string                 // trackedContainers maps instance IDs to their containerd container name.
 	instanceHostPorts  map[string]map[int]int            // instanceHostPorts maps workload IDs to containerPort→hostPort mappings.
 	containerCNIStates map[string]*containerNetworkState // containerCNIStates tracks per-container CNI network state.
 	networkName        string                            // networkName is the CNI network for container IP assignment.

@@ -1368,13 +1368,14 @@ func formatInstanceReason(instance api.InstanceStatus, wideOutput bool) string {
 		return "-"
 	}
 	var reason string
-	if instance.InitProgress != "" {
+	switch {
+	case instance.InitProgress != "":
 		reason = formatInitProgressCompact(instance.InitProgress)
-	} else if instance.ProbeProgress != "" {
+	case instance.ProbeProgress != "":
 		reason = formatProbeProgressCompact(instance.ProbeProgress, wideOutput)
-	} else if instance.StatusReason != "" && instance.StatusReason != "running" {
+	case instance.StatusReason != "" && instance.StatusReason != "running":
 		reason = instance.StatusReason
-	} else {
+	default:
 		return "-"
 	}
 	if !wideOutput {

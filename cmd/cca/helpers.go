@@ -140,15 +140,6 @@ func configureLogger(logLevel string, logFormat string) {
 	logging.SetDefault(logging.New(os.Stderr, level, format))
 }
 
-// isTerminal reports whether the given file is connected to an interactive terminal.
-func isTerminal(file *os.File) bool {
-	fileInfo, statError := file.Stat()
-	if statError != nil {
-		return false
-	}
-	return (fileInfo.Mode() & os.ModeCharDevice) != 0
-}
-
 // createStateStoreFromServerConfig builds the appropriate StateStore for
 // the server or agent command configuration. When etcdCertPath, etcdKeyPath,
 // and etcdCACertPath are all provided, a TLS config is built for the etcd
