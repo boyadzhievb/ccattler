@@ -127,8 +127,10 @@ type LogsOptions struct {
 // ResourceStats describes the observed resource usage of a running workload.
 // A zero value for any field indicates the metric is unavailable.
 type ResourceStats struct {
-	CPUMillicores int64 // CPUMillicores is the current CPU usage in millicores (1000 = 1 core).
-	MemoryBytes   int64 // MemoryBytes is the current resident memory usage in bytes.
+	CPUMillicores    int64  // CPUMillicores is the current CPU usage in millicores (1000 = 1 core).
+	MemoryBytes      int64  // MemoryBytes is the current resident memory usage in bytes.
+	MemoryLimitBytes int64  // MemoryLimitBytes is the container's cgroup memory limit (0 if unlimited).
+	OOMKillCount     uint64 // OOMKillCount is the cumulative number of OOM kills in this container's cgroup.
 }
 
 // ImageInfo describes a container image available on the local node.

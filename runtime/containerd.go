@@ -252,8 +252,10 @@ func (containerdRuntime *ContainerdRuntime) Stats(ctx context.Context, instanceI
 	}
 
 	return ResourceStats{
-		CPUMillicores: cpuMillicores,
-		MemoryBytes:   secondSample.memoryUsageBytes,
+		CPUMillicores:    cpuMillicores,
+		MemoryBytes:      secondSample.memoryUsageBytes,
+		MemoryLimitBytes: secondSample.memoryLimitBytes,
+		OOMKillCount:     secondSample.oomKillCount,
 	}, nil
 }
 
@@ -261,6 +263,8 @@ func (containerdRuntime *ContainerdRuntime) Stats(ctx context.Context, instanceI
 type cgroupSample struct {
 	cpuUsageUsec     uint64 // cpuUsageUsec is the cumulative CPU time in microseconds.
 	memoryUsageBytes int64  // memoryUsageBytes is the current memory usage in bytes.
+	memoryLimitBytes int64  // memoryLimitBytes is the cgroup memory limit (0 if unlimited).
+	oomKillCount     uint64 // oomKillCount is the cumulative number of OOM kills in this cgroup.
 }
 
 // readCgroupMetrics extracts CPU and memory values from a containerd task's
@@ -290,9 +294,38 @@ func (containerdRuntime *ContainerdRuntime) readCgroupMetrics(ctx context.Contex
 	}
 	if cgroupMetrics.Memory != nil {
 		sample.memoryUsageBytes = safeUint64ToInt64(cgroupMetrics.Memory.Usage)
+		sample.memoryLimitBytes = safeUint64ToInt64(cgroupMetrics.Memory.UsageLimit)
+	}
+	if cgroupMetrics.MemoryEvents != nil {
+		sample.oomKillCount = cgroupMetrics.MemoryEvents.OomKill
 	}
 
 	return sample, nil
+}
+
+// detectOOMKill checks the container's cgroup memory events for OOM kills.
+// Returns a human-readable suffix like " (OOM killed: memory limit 2048Mi)"
+// if an OOM kill is detected, or empty string otherwise.
+func (containerdRuntime *ContainerdRuntime) detectOOMKill(ctx context.Context, task containerd.Task) string {
+	metric, metricsError := task.Metrics(ctx)
+	if metricsError != nil || metric.Data == nil {
+		return ""
+	}
+	if !typeurl.Is(metric.Data, (*cgroupstats.Metrics)(nil)) {
+		return ""
+	}
+	var cgroupMetrics cgroupstats.Metrics
+	if unmarshalError := typeurl.UnmarshalTo(metric.Data, &cgroupMetrics); unmarshalError != nil {
+		return ""
+	}
+	if cgroupMetrics.MemoryEvents != nil && cgroupMetrics.MemoryEvents.OomKill > 0 {
+		if cgroupMetrics.Memory != nil && cgroupMetrics.Memory.UsageLimit > 0 {
+			limitMiB := cgroupMetrics.Memory.UsageLimit / (1024 * 1024)
+			return fmt.Sprintf(" (OOM killed: memory limit %dMi)", limitMiB)
+		}
+		return " (OOM killed)"
+	}
+	return ""
 }
 
 // safeUint64ToInt64 converts a uint64 to int64, capping at math.MaxInt64 to
@@ -778,7 +811,12 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 	exitStatus := <-exitStatusChannel
 	exitCode, exitError := exitStatus.ExitCode(), exitStatus.Error()
 	if exitError != nil {
-		return outputBuffer.Bytes(), fmt.Errorf("exec in %s: %w", instanceID, exitError)
+		oomSuffix := containerdRuntime.detectOOMKill(namespacedCtx, task)
+		return outputBuffer.Bytes(), fmt.Errorf("exec in %s: %w%s", instanceID, exitError, oomSuffix)
+	}
+	if exitCode == 137 {
+		oomSuffix := containerdRuntime.detectOOMKill(namespacedCtx, task)
+		return outputBuffer.Bytes(), fmt.Errorf("exec in %s exited with code 137 (SIGKILL)%s", instanceID, oomSuffix)
 	}
 	if exitCode != 0 {
 		return outputBuffer.Bytes(), fmt.Errorf("exec in %s exited with code %d", instanceID, exitCode)

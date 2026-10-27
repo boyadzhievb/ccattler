@@ -162,6 +162,20 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 			[]byte(fmt.Sprintf("%d", resourceStats.MemoryBytes))); putError != nil {
 			logging.Default().Error("failed to write instance memory telemetry", "instance", workloadStatus.ID, "error", putError.Error())
 		}
+
+		if resourceStats.OOMKillCount > 0 {
+			if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceOOMKills(workloadStatus.ID),
+				[]byte(fmt.Sprintf("%d", resourceStats.OOMKillCount))); putError != nil {
+				logging.Default().Error("failed to write OOM kill telemetry", "instance", workloadStatus.ID, "error", putError.Error())
+			}
+			memoryLimitMiB := resourceStats.MemoryLimitBytes / (1024 * 1024)
+			memoryUsageMiB := resourceStats.MemoryBytes / (1024 * 1024)
+			logging.Default().Warn("container OOM kill detected",
+				"instance", workloadStatus.ID,
+				"oom_kills", strconv.FormatUint(resourceStats.OOMKillCount, 10),
+				"memory_usage", fmt.Sprintf("%dMi", memoryUsageMiB),
+				"memory_limit", fmt.Sprintf("%dMi", memoryLimitMiB))
+		}
 	}
 }
 

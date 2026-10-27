@@ -898,6 +898,13 @@ func KeyObservedInstanceMemory(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/memory", PrefixObservedTelemetry, instanceID)
 }
 
+// KeyObservedInstanceOOMKills returns the store path for an instance's cumulative
+// OOM kill count from cgroup memory events.
+// Path: observed/telemetry/instance/{instanceID}/oom-kills
+func KeyObservedInstanceOOMKills(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/oom-kills", PrefixObservedTelemetry, instanceID)
+}
+
 // KeyObservedInstanceRestarts returns the store path for an instance's restart count.
 // Path: observed/instance/{instanceID}/restarts
 func KeyObservedInstanceRestarts(instanceID string) string {
