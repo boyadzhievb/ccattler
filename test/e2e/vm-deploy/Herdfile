@@ -1,6 +1,6 @@
 vms:
   - name: cca-deploy-ctrl
-    image: ubuntu:noble
+    image: debian:trixie
     cpus: 2
     memory: 6144
     disk: 20G
@@ -8,7 +8,7 @@ vms:
       ip: 192.168.124.10
 
   - name: cca-deploy-worker-1
-    image: ubuntu:noble
+    image: debian:trixie
     cpus: 2
     memory: 6144
     disk: 20G
@@ -16,7 +16,7 @@ vms:
       ip: 192.168.124.20
 
   - name: cca-deploy-worker-2
-    image: ubuntu:noble
+    image: debian:trixie
     cpus: 2
     memory: 6144
     disk: 20G
