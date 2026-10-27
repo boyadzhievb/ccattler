@@ -554,16 +554,17 @@ func runCommandStrict(name string, arguments ...string) error {
 }
 
 // runCommandIdempotent executes a system command and ignores "File exists"
-// errors (EEXIST), which indicate the resource already exists. All other
-// errors are returned. Used for idempotent "create" operations (ip link add,
-// ip addr add) where "already exists" is expected on repeat calls.
+// and "already assigned" errors, which indicate the resource already exists.
+// All other errors are returned. Used for idempotent "create" operations
+// (ip link add, ip addr add) where the resource may survive process restarts.
 func runCommandIdempotent(name string, arguments ...string) error {
 	output, err := exec.Command(name, arguments...).CombinedOutput() //nolint:gosec // system commands with validated arguments
 	if err != nil {
-		if strings.Contains(string(output), "File exists") {
+		outputString := string(output)
+		if strings.Contains(outputString, "File exists") || strings.Contains(outputString, "already assigned") {
 			return nil
 		}
-		return fmt.Errorf("%s %s: %s: %w", name, strings.Join(arguments, " "), string(output), err)
+		return fmt.Errorf("%s %s: %s: %w", name, strings.Join(arguments, " "), outputString, err)
 	}
 	return nil
 }

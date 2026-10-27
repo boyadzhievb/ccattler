@@ -101,11 +101,22 @@ func executeEventsCommand(parsedConfig eventsCommandConfig) {
 		return
 	}
 
-	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
+	fmt.Printf("%-24s  %-22s  %-30s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
 	for _, event := range events {
 		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
-		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+		displayTarget := stripEventTargetPrefix(event.Target)
+		fmt.Printf("%-24s  %-22s  %-30s  %s\n", formattedTimestamp, event.Kind, displayTarget, event.Detail)
 	}
+}
+
+// stripEventTargetPrefix removes the resource type prefix (instance/, node/,
+// service/) from an event target for CLI display. The Kind column already
+// conveys the resource type, so repeating it in the target is redundant.
+func stripEventTargetPrefix(eventTarget string) string {
+	if slashIndex := strings.Index(eventTarget, "/"); slashIndex >= 0 {
+		return eventTarget[slashIndex+1:]
+	}
+	return eventTarget
 }
 
 // executeEventsFollowMode connects to the SSE event stream and prints new
@@ -129,7 +140,7 @@ func executeEventsFollowMode(serviceFilter string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("%-24s  %-22s  %-20s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
+	fmt.Printf("%-24s  %-22s  %-30s  %s\n", "TIMESTAMP", "KIND", "TARGET", "DETAIL")
 
 	scanner := bufio.NewScanner(httpResponse.Body)
 	for scanner.Scan() {
@@ -148,7 +159,8 @@ func executeEventsFollowMode(serviceFilter string) {
 			continue
 		}
 		formattedTimestamp := event.Timestamp.Format("2006-01-02 15:04:05.000")
-		fmt.Printf("%-24s  %-22s  %-20s  %s\n", formattedTimestamp, event.Kind, event.Target, event.Detail)
+		displayTarget := stripEventTargetPrefix(event.Target)
+		fmt.Printf("%-24s  %-22s  %-30s  %s\n", formattedTimestamp, event.Kind, displayTarget, event.Detail)
 	}
 	if scanError := scanner.Err(); scanError != nil {
 		fmt.Fprintf(os.Stderr, "event stream error: %v\n", scanError)

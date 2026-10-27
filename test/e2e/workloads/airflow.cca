@@ -64,9 +64,14 @@ service redis {
 
 service webserver {
     image "{{ default "docker.io" .registry }}/airflow:2.10.5"
-    command webserver
+    command "airflow webserver"
     instances 1
     expose 8080
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 30
+    }
     startup {
         http /health
         port 8080
@@ -116,7 +121,7 @@ service webserver {
 
 service scheduler {
     image "{{ default "docker.io" .registry }}/airflow:2.10.5"
-    command scheduler
+    command "airflow scheduler"
     instances 1
     startup {
         exec "airflow jobs check --job-type SchedulerJob --local"
@@ -166,6 +171,11 @@ service worker {
     instances 2
     expose 8793
     termination_grace_period 600s
+    init {
+        exec "airflow db check"
+        timeout 120s
+        retry 30
+    }
     startup {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 10s
@@ -193,14 +203,6 @@ service worker {
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
         env _AIRFLOW_DB_MIGRATE true
-    }
-    init {
-        connection airflow-db
-    }
-    init {
-        exec "airflow db check"
-        timeout 120s
-        retry 20
     }
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     secret airflow.fernet-key "/run/secrets/fernet-key"

@@ -360,3 +360,55 @@ func TestEventProjectorResyncOnCompaction(t *testing.T) {
 	cancelContext()
 	<-projectorDone
 }
+
+// TestEventProjectorEnrichesInstanceEventsWithServiceName verifies that when
+// a service name fact exists for an instance, the event target and detail
+// include the service name alongside the instance ID.
+func TestEventProjectorEnrichesInstanceEventsWithServiceName(t *testing.T) {
+	ctx, cancelContext := context.WithCancel(context.Background())
+	defer cancelContext()
+
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+
+	eventLog := types.NewEventLog(memoryStore, 100)
+	eventProjector := NewEventProjector(memoryStore, eventLog)
+
+	projectorDone := make(chan error, 1)
+	go func() {
+		projectorDone <- eventProjector.Run(ctx)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	memoryStore.Put(ctx, types.PrefixObserved+"/instance/abc123def0/service", []byte("webserver"))
+	memoryStore.Put(ctx, types.PrefixObserved+"/instance/abc123def0/state", []byte(string(types.InstanceRunning)))
+
+	time.Sleep(100 * time.Millisecond)
+
+	events, queryError := eventLog.Query(ctx, "instance.running", 10)
+	if queryError != nil {
+		t.Fatal(queryError)
+	}
+
+	found := false
+	for _, systemEvent := range events {
+		if systemEvent.Target == "instance/webserver-abc123def0" {
+			found = true
+			if systemEvent.Detail != "is now running" {
+				t.Errorf("detail: got %q, want %q", systemEvent.Detail, "is now running")
+			}
+			break
+		}
+	}
+	if !found {
+		var targets []string
+		for _, systemEvent := range events {
+			targets = append(targets, systemEvent.Target)
+		}
+		t.Errorf("expected event with target instance/webserver-abc123def0, got targets: %v", targets)
+	}
+
+	cancelContext()
+	<-projectorDone
+}

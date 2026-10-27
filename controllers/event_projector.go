@@ -177,9 +177,37 @@ func (eventProjector *EventProjector) projectEvent(ctx context.Context, watchEve
 	if eventKind == "" {
 		return
 	}
+	eventTarget, eventDetail = eventProjector.enrichInstanceEventWithServiceName(ctx, eventTarget, eventDetail)
 	if _, emitError := eventProjector.eventLog.Emit(ctx, eventKind, eventTarget, eventDetail, "event-projector"); emitError != nil {
 		logging.Default().Error("failed to emit event", "error", emitError.Error())
 	}
+}
+
+// enrichInstanceEventWithServiceName looks up the service name for instance
+// events and replaces the bare instance ID with serviceName-instanceID in
+// both target and detail. Non-instance events pass through unchanged.
+func (eventProjector *EventProjector) enrichInstanceEventWithServiceName(
+	ctx context.Context, eventTarget, eventDetail string,
+) (string, string) {
+	if !strings.HasPrefix(eventTarget, "instance/") {
+		return eventTarget, eventDetail
+	}
+	targetPath := strings.TrimPrefix(eventTarget, "instance/")
+	instanceID := strings.SplitN(targetPath, "/", 2)[0]
+
+	serviceKey := types.PrefixObserved + "/instance/" + instanceID + "/service"
+	serviceFact, lookupError := eventProjector.factStore.Get(ctx, serviceKey)
+	if lookupError != nil || serviceFact == nil {
+		return eventTarget, eventDetail
+	}
+	serviceName := string(serviceFact.Value)
+	if serviceName == "" {
+		return eventTarget, eventDetail
+	}
+
+	containerName := serviceName + "-" + instanceID
+	enrichedTarget := strings.Replace(eventTarget, "instance/"+instanceID, "instance/"+containerName, 1)
+	return enrichedTarget, eventDetail
 }
 
 // classifyWatchEventAsSemanticEvent examines a committed store watch event and
@@ -206,18 +234,18 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 
 		switch factValue {
 		case string(types.InstanceRunning):
-			return "instance.running", "instance/" + instanceID, fmt.Sprintf("instance %s is now running", instanceID)
+			return "instance.running", "instance/" + instanceID, "is now running"
 		case string(types.InstanceFailed):
-			return "instance.failed", "instance/" + instanceID, fmt.Sprintf("instance %s has failed", instanceID)
+			return "instance.failed", "instance/" + instanceID, "has failed"
 		case string(types.InstancePending):
 			if previousValue == "" {
-				return "instance.created", "instance/" + instanceID, fmt.Sprintf("instance %s created (pending)", instanceID)
+				return "instance.created", "instance/" + instanceID, "created (pending)"
 			}
-			return "instance.pending", "instance/" + instanceID, fmt.Sprintf("instance %s is now pending", instanceID)
+			return "instance.pending", "instance/" + instanceID, "is now pending"
 		case string(types.InstanceStarting):
-			return "instance.starting", "instance/" + instanceID, fmt.Sprintf("instance %s is starting", instanceID)
+			return "instance.starting", "instance/" + instanceID, "is starting"
 		case string(types.InstanceStopped):
-			return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped", instanceID)
+			return "instance.stopped", "instance/" + instanceID, "stopped"
 		}
 	}
 
@@ -229,20 +257,20 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 			probeType := parts[1]
 			switch factValue {
 			case string(types.StartupProbeFailed):
-				return "probe.failed", "instance/" + instanceID, fmt.Sprintf("startup probe failed for instance %s (threshold exceeded)", instanceID)
+				return "probe.failed", "instance/" + instanceID, "startup probe failed (threshold exceeded)"
 			case string(types.StartupProbeSucceeded):
-				return "probe.succeeded", "instance/" + instanceID, fmt.Sprintf("startup probe succeeded for instance %s", instanceID)
+				return "probe.succeeded", "instance/" + instanceID, "startup probe succeeded"
 			case string(types.LivenessProbeUnhealthy):
-				return "probe.unhealthy", "instance/" + instanceID, fmt.Sprintf("liveness probe unhealthy for instance %s", instanceID)
+				return "probe.unhealthy", "instance/" + instanceID, "liveness probe unhealthy"
 			case string(types.ReadinessProbeNotReady):
-				return "probe.not_ready", "instance/" + instanceID, fmt.Sprintf("readiness probe not ready for instance %s", instanceID)
+				return "probe.not_ready", "instance/" + instanceID, "readiness probe not ready"
 			case string(types.LivenessProbeHealthy):
 				if previousValue == string(types.LivenessProbeUnhealthy) {
-					return "probe.recovered", "instance/" + instanceID, fmt.Sprintf("%s probe recovered for instance %s", probeType, instanceID)
+					return "probe.recovered", "instance/" + instanceID, probeType + " probe recovered"
 				}
 			case string(types.ReadinessProbeReady):
 				if previousValue == string(types.ReadinessProbeNotReady) {
-					return "probe.recovered", "instance/" + instanceID, fmt.Sprintf("%s probe recovered for instance %s", probeType, instanceID)
+					return "probe.recovered", "instance/" + instanceID, probeType + " probe recovered"
 				}
 			}
 		}
@@ -256,9 +284,9 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 			instanceID := parts[0]
 			switch parts[1] {
 			case "node_failure":
-				return "instance.failed", "instance/" + instanceID, fmt.Sprintf("instance %s marked failed (node unreachable)", instanceID)
+				return "instance.failed", "instance/" + instanceID, "marked failed (node unreachable)"
 			case "controller_stopped":
-				return "instance.stopped", "instance/" + instanceID, fmt.Sprintf("instance %s stopped by controller", instanceID)
+				return "instance.stopped", "instance/" + instanceID, "stopped by controller"
 			}
 		}
 	}
@@ -266,7 +294,7 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 	placementPrefix := types.PrefixPlacement + "/instance/"
 	if strings.HasPrefix(factKey, placementPrefix) && watchEvent.Type == store.EventPut {
 		instanceID := strings.TrimPrefix(factKey, placementPrefix)
-		return "instance.placed", "instance/" + instanceID, fmt.Sprintf("instance %s placed on node %s", instanceID, factValue)
+		return "instance.placed", "instance/" + instanceID, fmt.Sprintf("placed on %s", factValue)
 	}
 
 	observedNodePrefix := types.PrefixObserved + "/node/"
