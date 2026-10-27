@@ -82,6 +82,14 @@ func (vxlanReconciler *VXLANReconciler) Reconcile(ctx context.Context) {
 		vxlanReconciler.initialized = true
 	}
 
+	// Re-apply rp_filter=0 on every pass because systemd-sysctl's wildcard
+	// rule (net.ipv4.conf.*.rp_filter=2 in 50-default.conf) can override
+	// the value we set during interface creation.
+	if rpFilterError := disableReversePathFilter(ctx, vxlanInterfaceName); rpFilterError != nil {
+		logging.Default().Warn("vxlan: failed to disable rp_filter",
+			"node", vxlanReconciler.nodeID, "error", rpFilterError.Error())
+	}
+
 	peerNodes, discoverError := vxlanReconciler.discoverPeerNodes(ctx)
 	if discoverError != nil {
 		logging.Default().Error("vxlan: failed to discover peer nodes",
@@ -180,15 +188,15 @@ func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.C
 		return fmt.Errorf("setting VXLAN MTU: %w", mtuError)
 	}
 
-	if proxyARPError := enableProxyARP(ctx, vxlanInterfaceName); proxyARPError != nil {
-		logging.Default().Warn("vxlan: failed to enable proxy ARP — cross-node container traffic may fail",
-			"node", vxlanReconciler.nodeID, "error", proxyARPError.Error())
+	if rpFilterError := disableReversePathFilter(ctx, vxlanInterfaceName); rpFilterError != nil {
+		logging.Default().Warn("vxlan: failed to disable rp_filter — cross-node traffic from hosts may be dropped",
+			"node", vxlanReconciler.nodeID, "error", rpFilterError.Error())
 	}
 
 	// No IP assigned to the VXLAN device — it acts as a pure tunnel backend.
-	// The container bridge (cca-net) owns the node's /24 subnet and serves
-	// as the gateway (.1). Cross-node routes use "dev cca-vxlan0" and FDB
-	// entries handle underlay encapsulation (Flannel model).
+	// The container bridge (cca0) owns the node's /24 subnet and serves as
+	// the gateway (.1). Cross-node routes use onlink gateways with static
+	// neighbors (Flannel model), eliminating runtime ARP resolution.
 
 	logging.Default().Info("vxlan: interface created",
 		"node", vxlanReconciler.nodeID, "interface", vxlanInterfaceName,
@@ -266,12 +274,16 @@ func buildNodeSubnetMap(subnetFacts []store.Fact) map[string]string {
 	return nodeSubnetMap
 }
 
-// programPeerRoutes programs a route and FDB entry for each remote node so
-// traffic destined for the remote node's container subnet is sent through
-// the VXLAN tunnel.
+// programPeerRoutes programs routes, static neighbors, and FDB entries for
+// each remote node using the Flannel model: an onlink route via the subnet's
+// base address as gateway, a permanent neighbor mapping that gateway to the
+// peer's deterministic VXLAN MAC, and FDB entries for both BUM flooding and
+// unicast encapsulation. This eliminates reliance on proxy ARP for cross-node
+// L2 resolution.
 func (vxlanReconciler *VXLANReconciler) programPeerRoutes(ctx context.Context, peerNodes []peerNodeInfo) {
 	for _, peer := range peerNodes {
-		if _, _, cidrError := net.ParseCIDR(peer.subnetCIDR); cidrError != nil {
+		_, parsedSubnet, cidrError := net.ParseCIDR(peer.subnetCIDR)
+		if cidrError != nil {
 			logging.Default().Error("vxlan: invalid peer subnet CIDR, skipping",
 				"peer", peer.nodeID, "subnet", peer.subnetCIDR)
 			continue
@@ -281,23 +293,39 @@ func (vxlanReconciler *VXLANReconciler) programPeerRoutes(ctx context.Context, p
 				"peer", peer.nodeID, "address", peer.advertiseAddress)
 			continue
 		}
-		if routeError := executeIPRouteReplace(ctx, peer.subnetCIDR); routeError != nil {
+
+		peerVXLANMAC := deriveVXLANMACAddress(peer.nodeID)
+		gatewayAddress := parsedSubnet.IP.String()
+
+		if neighError := executeIPNeighReplace(ctx, gatewayAddress, peerVXLANMAC); neighError != nil {
+			logging.Default().Error("vxlan: failed to program neighbor",
+				"node", vxlanReconciler.nodeID, "peer", peer.nodeID,
+				"gateway", gatewayAddress, "mac", peerVXLANMAC,
+				"error", neighError.Error())
+		}
+		if routeError := executeIPRouteReplaceOnlink(ctx, peer.subnetCIDR, gatewayAddress); routeError != nil {
 			logging.Default().Error("vxlan: failed to program route",
 				"node", vxlanReconciler.nodeID, "peer", peer.nodeID,
 				"subnet", peer.subnetCIDR, "error", routeError.Error())
 		}
 		if fdbError := executeBridgeFDBAppend(ctx, peer.advertiseAddress); fdbError != nil {
-			logging.Default().Error("vxlan: failed to program FDB entry",
+			logging.Default().Error("vxlan: failed to program FDB flood entry",
 				"node", vxlanReconciler.nodeID, "peer", peer.nodeID,
 				"dst", peer.advertiseAddress, "error", fdbError.Error())
+		}
+		if unicastFDBError := executeBridgeFDBReplaceUnicast(ctx, peerVXLANMAC, peer.advertiseAddress); unicastFDBError != nil {
+			logging.Default().Error("vxlan: failed to program unicast FDB entry",
+				"node", vxlanReconciler.nodeID, "peer", peer.nodeID,
+				"mac", peerVXLANMAC, "dst", peer.advertiseAddress,
+				"error", unicastFDBError.Error())
 		}
 	}
 }
 
-// removeStaleRoutes removes routes for remote subnets that no longer correspond
-// to any active peer node. It reads the current route table for the VXLAN
-// interface and deletes entries whose destination subnet is not in the active
-// peer set.
+// removeStaleRoutes removes routes and associated neighbor entries for remote
+// subnets that no longer correspond to any active peer node. It reads the
+// current route table for the VXLAN interface and deletes entries whose
+// destination subnet is not in the active peer set.
 func (vxlanReconciler *VXLANReconciler) removeStaleRoutes(ctx context.Context, activePeerNodes []peerNodeInfo) {
 	activeSubnets := make(map[string]bool, len(activePeerNodes))
 	for _, peer := range activePeerNodes {
@@ -320,6 +348,14 @@ func (vxlanReconciler *VXLANReconciler) removeStaleRoutes(ctx context.Context, a
 			} else {
 				logging.Default().Info("vxlan: removed stale route",
 					"node", vxlanReconciler.nodeID, "subnet", installedSubnet)
+			}
+			gatewayAddress := subnetBaseAddress(installedSubnet)
+			if gatewayAddress != "" {
+				if neighError := executeIPNeighDelete(ctx, gatewayAddress); neighError != nil {
+					logging.Default().Warn("vxlan: failed to remove stale neighbor",
+						"node", vxlanReconciler.nodeID, "gateway", gatewayAddress,
+						"error", neighError.Error())
+				}
 			}
 		}
 	}
@@ -535,16 +571,52 @@ func executeIPLinkDelete(ctx context.Context, interfaceName string) error {
 	return nil
 }
 
-// executeIPRouteReplace runs the ip command to add or replace a route for a
-// remote subnet through the VXLAN interface. Traffic destined for the remote
-// subnet is sent to the VXLAN device; FDB entries handle underlay encapsulation.
-func executeIPRouteReplace(ctx context.Context, destinationSubnet string) error {
+// executeIPRouteReplaceOnlink adds or replaces a route for a remote subnet
+// using the onlink gateway model. The gateway is the subnet's base address
+// (e.g. 10.86.128.0) resolved via a permanent neighbor entry to the peer's
+// VXLAN MAC. The onlink flag tells the kernel the gateway is reachable on
+// the VXLAN link without needing it to be in a connected subnet.
+func executeIPRouteReplaceOnlink(ctx context.Context, destinationSubnet string, gatewayAddress string) error {
 	routeCommand := exec.CommandContext(ctx, "ip", "route", "replace", //nolint:gosec // ip commands with validated arguments
-		destinationSubnet, "dev", vxlanInterfaceName)
+		destinationSubnet, "via", gatewayAddress, "dev", vxlanInterfaceName, "onlink")
 	if output, runError := routeCommand.CombinedOutput(); runError != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
 	}
 	return nil
+}
+
+// executeIPNeighReplace programs a permanent static neighbor (ARP) entry on
+// the VXLAN interface, mapping a gateway IP to the peer node's deterministic
+// VXLAN MAC address. This eliminates runtime ARP resolution for cross-node
+// traffic.
+func executeIPNeighReplace(ctx context.Context, ipAddress string, macAddress string) error {
+	neighCommand := exec.CommandContext(ctx, "ip", "neigh", "replace", //nolint:gosec // ip commands with validated arguments
+		ipAddress, "dev", vxlanInterfaceName, "lladdr", macAddress, "nud", "permanent")
+	if output, runError := neighCommand.CombinedOutput(); runError != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+	}
+	return nil
+}
+
+// executeIPNeighDelete removes a neighbor entry from the VXLAN interface.
+func executeIPNeighDelete(ctx context.Context, ipAddress string) error {
+	neighCommand := exec.CommandContext(ctx, "ip", "neigh", "del", //nolint:gosec // ip commands with validated arguments
+		ipAddress, "dev", vxlanInterfaceName)
+	if output, runError := neighCommand.CombinedOutput(); runError != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+	}
+	return nil
+}
+
+// subnetBaseAddress extracts the network base address from a CIDR string.
+// For example, "10.86.128.0/24" returns "10.86.128.0". Returns an empty
+// string if the CIDR is invalid.
+func subnetBaseAddress(subnetCIDR string) string {
+	_, parsedNetwork, parseError := net.ParseCIDR(subnetCIDR)
+	if parseError != nil {
+		return ""
+	}
+	return parsedNetwork.IP.String()
 }
 
 // executeIPRouteDelete runs the ip command to remove a route for a subnet
@@ -558,16 +630,20 @@ func executeIPRouteDelete(ctx context.Context, destinationSubnet string) error {
 	return nil
 }
 
-// enableProxyARP enables proxy ARP on a network interface so the kernel
-// responds to ARP requests for IPs routable through other interfaces. Required
-// on the VXLAN device: when a remote node ARPs for a container IP that lives
-// on the local bridge (cca0), proxy ARP lets the kernel answer on behalf of
-// the container, completing cross-node L2 resolution.
-func enableProxyARP(ctx context.Context, interfaceName string) error {
-	sysctlCommand := exec.CommandContext(ctx, "sysctl", "-w", //nolint:gosec // sysctl with validated interface name
-		fmt.Sprintf("net.ipv4.conf.%s.proxy_arp=1", interfaceName))
-	if output, runError := sysctlCommand.CombinedOutput(); runError != nil {
-		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+// disableReversePathFilter sets rp_filter=0 on a network interface and on
+// the "all" pseudo-interface. Both must be zero because the effective
+// rp_filter value is max(all, interface). Required on the VXLAN device
+// because host-originated traffic to overlay IPs uses the underlay source
+// IP (e.g. 192.168.124.x), which rp_filter rejects even in loose mode
+// (rp_filter=2) when the packet arrives on cca-vxlan0 since the reverse
+// path for the underlay IP goes through enp2s0, not cca-vxlan0.
+func disableReversePathFilter(ctx context.Context, interfaceName string) error {
+	for _, target := range []string{interfaceName, "all"} {
+		sysctlCommand := exec.CommandContext(ctx, "sysctl", "-w", //nolint:gosec // sysctl with validated interface name
+			fmt.Sprintf("net.ipv4.conf.%s.rp_filter=0", target))
+		if output, runError := sysctlCommand.CombinedOutput(); runError != nil {
+			return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+		}
 	}
 	return nil
 }
@@ -582,6 +658,19 @@ func executeBridgeFDBAppend(ctx context.Context, destinationAddress string) erro
 	}
 	fdbCommand := exec.CommandContext(ctx, "bridge", "fdb", "append", //nolint:gosec // bridge commands with validated arguments
 		"00:00:00:00:00:00", "dev", vxlanInterfaceName, "dst", destinationAddress)
+	if output, runError := fdbCommand.CombinedOutput(); runError != nil {
+		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
+	}
+	return nil
+}
+
+// executeBridgeFDBReplaceUnicast programs a unicast FDB entry mapping a
+// specific peer VXLAN MAC to its VTEP underlay address. Unlike the all-zero
+// BUM flood entries, unicast entries ensure known-destination traffic is sent
+// directly to the correct VTEP without flooding.
+func executeBridgeFDBReplaceUnicast(ctx context.Context, macAddress string, destinationAddress string) error {
+	fdbCommand := exec.CommandContext(ctx, "bridge", "fdb", "replace", //nolint:gosec // bridge commands with validated arguments
+		macAddress, "dev", vxlanInterfaceName, "dst", destinationAddress)
 	if output, runError := fdbCommand.CombinedOutput(); runError != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(string(output)), runError)
 	}

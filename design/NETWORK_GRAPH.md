@@ -20,8 +20,8 @@ Every node running a CCattler agent has the following network interfaces:
 │  ┌────┴──────────────────────────────────────────────────────┐      │
 │  │                    Linux Routing Table                     │      │
 │  │  10.100.3.0/24 → dev cca0 (local containers)             │      │
-│  │  10.100.1.0/24 → dev cca-vxlan0 (peer node-1 subnet)     │      │
-│  │  10.100.2.0/24 → dev cca-vxlan0 (peer node-2 subnet)     │      │
+│  │  10.100.1.0/24 via 10.100.1.0 dev cca-vxlan0 onlink      │      │
+│  │  10.100.2.0/24 via 10.100.2.0 dev cca-vxlan0 onlink      │      │
 │  │  default → dev eth0                                       │      │
 │  └───────────────────────────────────────────────────────────┘      │
 │       │           │              │                                   │
@@ -312,16 +312,21 @@ vxlanReconciler.Reconcile (called every 1s from dataPlaneLoop)
 │   └── excludes self (local nodeID)
 │   └── returns []peerNodeInfo{nodeID, advertiseAddress, subnetCIDR}
 │
-├── programPeerRoutes (for each peer)
-│   ├── ip route replace {peerSubnet} dev cca-vxlan0
-│   │   └── e.g. "ip route replace 10.100.1.0/24 dev cca-vxlan0"
-│   └── bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst {peerAddress}
-│       └── e.g. "bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst 192.168.124.10"
-│       └── skips if entry already exists (checked via bridge fdb show)
+├── programPeerRoutes (for each peer — Flannel model)
+│   ├── deriveVXLANMACAddress(peer.nodeID) → deterministic MAC
+│   ├── ip neigh replace {subnetBase} dev cca-vxlan0 lladdr {peerMAC} nud permanent
+│   │   └── e.g. "ip neigh replace 10.100.1.0 dev cca-vxlan0 lladdr 02:0e:d2:21:7d:bc nud permanent"
+│   ├── ip route replace {peerSubnet} via {subnetBase} dev cca-vxlan0 onlink
+│   │   └── e.g. "ip route replace 10.100.1.0/24 via 10.100.1.0 dev cca-vxlan0 onlink"
+│   ├── bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst {peerAddress}
+│   │   └── BUM flood entry, skips if exists
+│   └── bridge fdb replace {peerMAC} dev cca-vxlan0 dst {peerAddress}
+│       └── unicast FDB: known-destination traffic goes direct to peer VTEP
 │
 └── removeStaleRoutes
     ├── ip route show dev cca-vxlan0 → installed subnets
-    └── ip route del {staleSubnet} dev cca-vxlan0
+    ├── ip route del {staleSubnet} dev cca-vxlan0
+    └── ip neigh del {staleGateway} dev cca-vxlan0
 ```
 
 ### Store keys for VXLAN
@@ -347,19 +352,16 @@ Container-A (10.100.1.2) on node-1
 │   └── packet exits bridge to routing table
 │
 ├── [2] Linux routing table on node-1:
-│   │  10.100.3.0/24 dev cca-vxlan0
-│   └── matches → forward to cca-vxlan0
+│   │  10.100.3.0/24 via 10.100.3.0 dev cca-vxlan0 onlink
+│   └── matches → forward via gateway 10.100.3.0 on cca-vxlan0
 │
-├── [3] ARP resolution on cca-vxlan0:
-│   │  node-1 kernel ARPs for 10.100.3.4 on cca-vxlan0
-│   │  ARP request VXLAN-encapsulated to all peers (FDB 00:00:00:00:00:00 entries)
-│   │  node-2 receives ARP on cca-vxlan0, has route 10.100.3.0/24 dev cca0
-│   │  proxy_arp=1 on cca-vxlan0 → kernel responds with cca-vxlan0 MAC
-│   │  node-1 caches ARP: 10.100.3.4 → node-2's cca-vxlan0 MAC
-│   └── Subsequent packets skip ARP, go direct via cached entry
+├── [3] L2 resolution via static neighbor (Flannel model — no ARP needed):
+│   │  kernel looks up next-hop 10.100.3.0 in neighbor table
+│   │  permanent entry: 10.100.3.0 → node-2's cca-vxlan0 MAC (derived from nodeID)
+│   └── no runtime ARP, no proxy ARP dependency
 │
 ├── [4] cca-vxlan0 looks up FDB for destination MAC:
-│   │  {node-2-vxlan-MAC} dev cca-vxlan0 dst 192.168.124.30
+│   │  unicast FDB: {node-2-vxlan-MAC} dev cca-vxlan0 dst 192.168.124.30
 │   └── VXLAN encapsulation:
 │       ┌─────────────────────────────────────────────────┐
 │       │ Outer Ethernet: node-1 MAC → next-hop MAC       │
