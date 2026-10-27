@@ -92,6 +92,8 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 		stepLabel = "connection:" + stepDefinition.connection
 	}
 
+	nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, 0, maxAttempts, stepLabel, "")
+
 	for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning))); putError != nil {
 			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
@@ -172,7 +174,12 @@ func (nodeAgent *Agent) publishInitProgress(ctx context.Context, instanceID stri
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitProgress(instanceID), progressJSON); putError != nil {
 		logging.Default().Error("failed to write init progress", "instance", instanceID, "error", putError.Error())
 	}
-	statusReason := fmt.Sprintf("init:%d %s attempt %d/%d: %s", stepIndex, stepLabel, attempt, maxAttempts, lastError)
+	var statusReason string
+	if lastError != "" {
+		statusReason = fmt.Sprintf("init:%d %s attempt %d/%d: %s", stepIndex, stepLabel, attempt, maxAttempts, lastError)
+	} else {
+		statusReason = fmt.Sprintf("init:%d/%d %s", stepIndex, totalSteps, stepLabel)
+	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceStatusReason(instanceID), []byte(statusReason)); putError != nil {
 		logging.Default().Error("failed to write status reason", "instance", instanceID, "error", putError.Error())
 	}

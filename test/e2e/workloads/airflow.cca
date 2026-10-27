@@ -72,7 +72,7 @@ service webserver {
         port 8080
         every 10s
         timeout 20s
-        failure_threshold 30
+        failure_threshold 60
         initial_delay 60s
     }
     liveness {
@@ -122,7 +122,7 @@ service scheduler {
         exec "airflow jobs check --job-type SchedulerJob --local"
         every 10s
         timeout 20s
-        failure_threshold 30
+        failure_threshold 60
         initial_delay 60s
     }
     liveness {
@@ -170,7 +170,7 @@ service worker {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 10s
         timeout 10s
-        failure_threshold 30
+        failure_threshold 60
         initial_delay 60s
     }
     liveness {
