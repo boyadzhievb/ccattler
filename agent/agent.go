@@ -113,6 +113,7 @@ type Agent struct {
 	dnsForwarder             *network.DNSForwarder                // dnsForwarder is the per-node caching DNS forwarder; nil means DNS forwarding is disabled.
 	nodeSubnet               string                               // nodeSubnet is the pod CIDR allocated to this node (e.g. "10.100.1.0/24"), used for data plane node registration.
 	imagePullBackoffs        map[string]*imagePullBackoffEntry    // imagePullBackoffs tracks per-instance image pull retry state.
+	initStepBackoffs         map[string]*initStepBackoffEntry     // initStepBackoffs tracks per-instance init step retry state across reconcile cycles so the reconcile loop never blocks on retries.
 	bridgeRetryAttempted     bool                                 // bridgeRetryAttempted is true after the first deferred bridge attachment attempt, preventing repeated retries on every container start.
 	testHookChannel          chan func()                          // testHookChannel lets tests inject closures that execute inside the agent goroutine, avoiding data races on agent-internal state.
 }
@@ -130,6 +131,7 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		heartbeatFrequency:       heartbeatInterval,
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
 		imagePullBackoffs:        make(map[string]*imagePullBackoffEntry),
+		initStepBackoffs:         make(map[string]*initStepBackoffEntry),
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
 		nodeReporter:             NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
 		dataPlaneReconciler:      NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
@@ -546,6 +548,20 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		desiredByID[instanceInfo.id] = true
 	}
 
+	// Sort instances: services without init steps first, so infrastructure
+	// services (databases, caches) start before dependent services that need
+	// init connection checks. Without this ordering, a dependent service can
+	// block the reconcile loop retrying init while the service it depends on
+	// has not been started yet.
+	sort.SliceStable(desired, func(leftIndex, rightIndex int) bool {
+		leftHasInit := nodeAgent.hasInitSteps(ctx, desired[leftIndex].service)
+		rightHasInit := nodeAgent.hasInitSteps(ctx, desired[rightIndex].service)
+		if leftHasInit != rightHasInit {
+			return !leftHasInit
+		}
+		return false
+	})
+
 	// Reconcile each desired instance: start missing, observe running, resize if needed.
 	for _, instanceInfo := range desired {
 		runtimeStatus, exists := runningByID[instanceInfo.id]
@@ -580,6 +596,14 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		if !desiredByID[backoffInstanceID] {
 			delete(nodeAgent.imagePullBackoffs, backoffInstanceID)
 			nodeAgent.clearPullStatusFromStore(ctx, backoffInstanceID)
+		}
+	}
+
+	// Clean up init-step backoff state for instances no longer placed on this node.
+	for backoffKey := range nodeAgent.initStepBackoffs {
+		instanceID := backoffKey[:strings.Index(backoffKey, "/")]
+		if !desiredByID[instanceID] {
+			delete(nodeAgent.initStepBackoffs, backoffKey)
 		}
 	}
 

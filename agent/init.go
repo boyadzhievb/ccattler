@@ -43,6 +43,14 @@ type initStepDefinition struct {
 	retry      int           // retry is the number of retry attempts on failure (0 = no retries).
 }
 
+// initStepBackoffEntry tracks retry state for a single init step across
+// reconcile cycles. Instead of blocking the reconcile loop with a retry
+// loop, each cycle attempts once and records when to retry next.
+type initStepBackoffEntry struct {
+	attemptCount int       // attemptCount is the number of attempts made so far.
+	nextRetryAt  time.Time // nextRetryAt is the earliest time the next attempt should be made.
+}
+
 // executeInitializationSteps runs all init steps for an instance sequentially.
 // Each step is executed via the runtime's ExecInit method against the service
 // image. Returns true if all steps succeeded, false if any step failed.
@@ -81,10 +89,10 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 	return true
 }
 
-// executeInitStep runs a single init step with retries and timeout. Reports step
-// state transitions (running → succeeded/failed) to the store. Publishes init
-// progress after each attempt so the CLI can show convergence status. Returns
-// true if the step eventually succeeded.
+// executeInitStep attempts a single init step once per reconcile cycle. Backoff
+// between attempts is tracked across cycles in nodeAgent.initStepBackoffs so
+// the reconcile loop never blocks on retries — it returns immediately and the
+// next reconcile cycle re-enters for the next attempt.
 func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string, totalSteps int) bool {
 	maxAttempts := 1 + stepDefinition.retry
 	stepLabel := stepDefinition.exec
@@ -92,67 +100,70 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 		stepLabel = "connection:" + stepDefinition.connection
 	}
 
-	nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, 0, maxAttempts, stepLabel, "")
+	backoffKey := instanceInfo.id + "/" + strconv.Itoa(stepDefinition.index)
+	backoffEntry, hasBackoffEntry := nodeAgent.initStepBackoffs[backoffKey]
+	if !hasBackoffEntry {
+		backoffEntry = &initStepBackoffEntry{}
+		nodeAgent.initStepBackoffs[backoffKey] = backoffEntry
+	}
 
-	for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
-		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning))); putError != nil {
+	if backoffEntry.attemptCount >= maxAttempts {
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {
 			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 		}
-
-		var stepError error
-		if stepDefinition.connection != "" {
-			stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
-		} else {
-			stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo.service, stepDefinition)
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), []byte("max retries exceeded")); putError != nil {
+			logging.Default().Error("failed to write init step reason", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 		}
+		return false
+	}
 
-		if stepError == nil {
-			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded))); putError != nil {
-				logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
-			}
-			logging.Default().Info("init step succeeded",
-				"agent", nodeAgent.nodeID,
-				"step", fmt.Sprintf("%d", stepDefinition.index),
-				"exec", stepLabel,
-				"instance", instanceInfo.id)
-			return true
+	if !backoffEntry.nextRetryAt.IsZero() && time.Now().Before(backoffEntry.nextRetryAt) {
+		return false
+	}
+
+	nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, backoffEntry.attemptCount, maxAttempts, stepLabel, "")
+
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning))); putError != nil {
+		logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
+	}
+
+	var stepError error
+	if stepDefinition.connection != "" {
+		stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
+	} else {
+		stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo.service, stepDefinition)
+	}
+
+	if stepError == nil {
+		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepSucceeded))); putError != nil {
+			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 		}
-
-		nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, attemptIndex+1, maxAttempts, stepLabel, stepError.Error())
-
-		logging.Default().Warn("init step failed",
+		logging.Default().Info("init step succeeded",
 			"agent", nodeAgent.nodeID,
 			"step", fmt.Sprintf("%d", stepDefinition.index),
 			"exec", stepLabel,
-			"instance", instanceInfo.id,
-			"attempt", fmt.Sprintf("%d/%d", attemptIndex+1, maxAttempts),
-			"error", stepError.Error())
-
-		if attemptIndex < maxAttempts-1 {
-			backoffDuration := initStepBackoffBaseDelay * time.Duration(1<<uint(attemptIndex))
-			if backoffDuration > initStepMaxBackoffDelay {
-				backoffDuration = initStepMaxBackoffDelay
-			}
-			select {
-			case <-ctx.Done():
-				if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {
-					logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
-				}
-				if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), []byte(ctx.Err().Error())); putError != nil {
-					logging.Default().Error("failed to write init step reason", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
-				}
-				return false
-			case <-time.After(backoffDuration):
-			}
-		}
+			"instance", instanceInfo.id)
+		delete(nodeAgent.initStepBackoffs, backoffKey)
+		return true
 	}
 
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {
-		logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
+	backoffEntry.attemptCount++
+	backoffDuration := initStepBackoffBaseDelay * time.Duration(1<<uint(backoffEntry.attemptCount-1))
+	if backoffDuration > initStepMaxBackoffDelay {
+		backoffDuration = initStepMaxBackoffDelay
 	}
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepReason(instanceInfo.id, stepDefinition.index), []byte("max retries exceeded")); putError != nil {
-		logging.Default().Error("failed to write init step reason", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
-	}
+	backoffEntry.nextRetryAt = time.Now().Add(backoffDuration)
+
+	nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, backoffEntry.attemptCount, maxAttempts, stepLabel, stepError.Error())
+
+	logging.Default().Warn("init step failed",
+		"agent", nodeAgent.nodeID,
+		"step", fmt.Sprintf("%d", stepDefinition.index),
+		"exec", stepLabel,
+		"instance", instanceInfo.id,
+		"attempt", fmt.Sprintf("%d/%d", backoffEntry.attemptCount, maxAttempts),
+		"error", stepError.Error())
+
 	return false
 }
 
