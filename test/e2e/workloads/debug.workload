@@ -1,0 +1,8 @@
+# Workload manifest for debug netshoot container.
+# Sourced by cluster_test.sh to discover deployment requirements.
+
+WORKLOAD_DESCRIPTION="Netshoot debug container (1 per node, dig/ping/curl/tcpdump)"
+WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/netshoot:latest")
+WORKLOAD_EXPECTED_CONTAINERS=3
+WORKLOAD_SECRETS=()
+WORKLOAD_EXPOSE=()

@@ -1,0 +1,12 @@
+service debug {
+    image "{{ default "docker.io" .registry }}/netshoot:latest"
+    instances 3
+    command "sleep infinity"
+    resources {
+        cpu 100m
+        memory 128Mi
+    }
+    placement {
+        spread node
+    }
+}
