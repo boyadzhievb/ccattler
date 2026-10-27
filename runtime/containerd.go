@@ -76,7 +76,7 @@ type containerNetworkState struct {
 type ContainerdRuntime struct {
 	mutex              sync.Mutex                        // mutex guards concurrent access to state maps.
 	client             *containerd.Client                // client is the containerd gRPC client.
-	trackedContainers  map[string]bool                   // trackedContainers maps workload IDs to their running state.
+	trackedContainers  map[string]string                  // trackedContainers maps instance IDs to their containerd container name.
 	instanceHostPorts  map[string]map[int]int            // instanceHostPorts maps workload IDs to containerPort→hostPort mappings.
 	containerCNIStates map[string]*containerNetworkState // containerCNIStates tracks per-container CNI network state.
 	networkName        string                            // networkName is the CNI network for container IP assignment.
@@ -100,7 +100,7 @@ func NewContainerdRuntime(socketPath string) (*ContainerdRuntime, error) {
 
 	return &ContainerdRuntime{
 		client:             containerdClient,
-		trackedContainers:  make(map[string]bool),
+		trackedContainers:  make(map[string]string),
 		instanceHostPorts:  make(map[string]map[int]int),
 		containerCNIStates: make(map[string]*containerNetworkState),
 		dnsSearchDomain:    defaultDNSSearchDomain,
@@ -197,6 +197,9 @@ func (containerdRuntime *ContainerdRuntime) List(ctx context.Context) ([]Status,
 			}
 		}
 		containerdRuntime.mutex.Lock()
+		if containerdRuntime.trackedContainers[instanceID] == "" {
+			containerdRuntime.trackedContainers[instanceID] = container.ID()
+		}
 		if cniState, hasCNI := containerdRuntime.containerCNIStates[instanceID]; hasCNI {
 			status.IP = cniState.ipAddress
 		}
@@ -347,7 +350,7 @@ func safeUint64ToInt64(value uint64) int64 {
 // networkCIDR is configured. Idempotent — returns nil if already running.
 func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec) error {
 	containerdRuntime.mutex.Lock()
-	if containerdRuntime.trackedContainers[spec.ID] {
+	if containerdRuntime.trackedContainers[spec.ID] != "" {
 		containerdRuntime.mutex.Unlock()
 		currentStatus, _ := containerdRuntime.Status(ctx, spec.ID)
 		if currentStatus.Running {
@@ -433,7 +436,7 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	}
 
 	containerdRuntime.mutex.Lock()
-	containerdRuntime.trackedContainers[spec.ID] = true
+	containerdRuntime.trackedContainers[spec.ID] = containerName
 
 	if netnsPath != "" {
 		containerdRuntime.containerCNIStates[spec.ID] = &containerNetworkState{
@@ -649,7 +652,7 @@ func (containerdRuntime *ContainerdRuntime) Stop(ctx context.Context, instanceID
 	if loadError != nil {
 		containerdRuntime.cleanupCNIState(ctx, instanceID)
 		containerdRuntime.mutex.Lock()
-		containerdRuntime.trackedContainers[instanceID] = false
+		containerdRuntime.trackedContainers[instanceID] = ""
 		containerdRuntime.mutex.Unlock()
 		return nil
 	}
@@ -685,7 +688,7 @@ func (containerdRuntime *ContainerdRuntime) StopWithGracePeriod(ctx context.Cont
 	if loadError != nil {
 		containerdRuntime.cleanupCNIState(ctx, instanceID)
 		containerdRuntime.mutex.Lock()
-		containerdRuntime.trackedContainers[instanceID] = false
+		containerdRuntime.trackedContainers[instanceID] = ""
 		containerdRuntime.mutex.Unlock()
 		return nil
 	}
@@ -1271,8 +1274,8 @@ func (containerdRuntime *ContainerdRuntime) StopAll(ctx context.Context) {
 func (containerdRuntime *ContainerdRuntime) resolveContainerName(instanceID string) string {
 	containerdRuntime.mutex.Lock()
 	defer containerdRuntime.mutex.Unlock()
-	for _, container := range containerdRuntime.trackedContainers {
-		_ = container
+	if containerName := containerdRuntime.trackedContainers[instanceID]; containerName != "" {
+		return containerName
 	}
 	return "cca-" + instanceID
 }
