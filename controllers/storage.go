@@ -201,7 +201,7 @@ func reconcileVolumeCreation(desiredVolumes map[string]desiredVolumeInfo, observ
 // a storage provider is configured, a pending resize operation fact is
 // emitted instead of calling the provider directly — the actual resize
 // executes post-commit via ExecutePostCommitOperations.
-func (storageController *StorageController) reconcileVolumeResize(ctx context.Context, desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
+func (storageController *StorageController) reconcileVolumeResize(_ context.Context, desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
 	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
 		observedInfo, exists := observedVolumes[volumeName]
@@ -270,7 +270,7 @@ func reconcileVolumeReplication(desiredVolumes map[string]desiredVolumeInfo, obs
 // instance, and mount-path bindings. When a storage provider is available, a
 // pending snapshot operation is emitted — the actual snapshot executes
 // post-commit via ExecutePostCommitOperations.
-func (storageController *StorageController) reconcileVolumeMigration(ctx context.Context, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
+func (storageController *StorageController) reconcileVolumeMigration(_ context.Context, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
 	var changes []Change
 	for volumeName, observedInfo := range observedVolumes {
 		if observedInfo.state != types.VolumeAttached || observedInfo.node == "" {

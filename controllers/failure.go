@@ -336,7 +336,7 @@ func (failureController *FailureController) beginDrain(instanceID string, now ti
 		Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedInstanceDrainSince(instanceID),
-			Value: []byte(fmt.Sprintf("%d", now.UnixMilli())),
+			Value: fmt.Appendf(nil, "%d", now.UnixMilli()),
 		},
 	)
 }

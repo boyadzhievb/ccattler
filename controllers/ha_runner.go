@@ -76,10 +76,14 @@ func NewHARunner(factStore store.StateStore, nodeID string, metrics *MetricsColl
 // When this node becomes leader, it starts all controllers. When it loses
 // leadership (or shuts down), controllers are stopped.
 func (haRunner *HARunner) Run(ctx context.Context) error {
-	haRunner.mutex.Lock()
-	haRunner.mutex.Unlock() //nolint:staticcheck // acquires lock to wait for ongoing operation to complete
-
+	haRunner.awaitPendingOperation()
 	return haRunner.election.Run(ctx)
+}
+
+// awaitPendingOperation blocks until any in-flight start/stop completes.
+func (haRunner *HARunner) awaitPendingOperation() {
+	haRunner.mutex.Lock()
+	defer haRunner.mutex.Unlock()
 }
 
 // IsLeader returns whether this node is the active leader.

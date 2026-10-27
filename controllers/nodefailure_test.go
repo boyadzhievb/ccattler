@@ -16,7 +16,7 @@ import (
 
 // millis converts a unix-second value to a millisecond string for lease timestamps.
 func millis(unixSeconds int64) []byte {
-	return []byte(fmt.Sprintf("%d", unixSeconds*1000))
+	return fmt.Appendf(nil, "%d", unixSeconds*1000)
 }
 
 func TestNodeFailureDetectsExpiredLease(t *testing.T) {
