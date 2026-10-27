@@ -21,6 +21,7 @@ import (
 	cgroupstats "github.com/containerd/cgroups/v3/cgroup2/stats"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/remotes/docker"
+	dockerconfig "github.com/containerd/containerd/v2/core/remotes/docker/config"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
@@ -1120,24 +1121,24 @@ func (containerdRuntime *ContainerdRuntime) ListImages(ctx context.Context) ([]I
 func (containerdRuntime *ContainerdRuntime) PullImage(ctx context.Context, imageReference string, credentials string) error {
 	namespacedCtx := containerdRuntime.containerdContext(ctx)
 
-	pullOptions := []containerd.RemoteOpt{
-		containerd.WithPullUnpack,
+	hostOptions := dockerconfig.HostOptions{
+		HostDir: dockerconfig.HostDirFromRoot("/etc/containerd/certs.d"),
 	}
-
 	if credentials != "" {
 		username, password := parseCredentials(credentials)
-		authorizer := docker.NewDockerAuthorizer(
-			docker.WithAuthCreds(func(_ string) (string, string, error) {
-				return username, password, nil
-			}),
-		)
-		registryHosts := docker.ConfigureDefaultRegistries(
-			docker.WithAuthorizer(authorizer),
-		)
-		resolver := docker.NewResolver(docker.ResolverOptions{
-			Hosts: registryHosts,
-		})
-		pullOptions = append(pullOptions, containerd.WithResolver(resolver))
+		hostOptions.Credentials = func(_ string) (string, string, error) {
+			return username, password, nil
+		}
+	}
+
+	registryHosts := dockerconfig.ConfigureHosts(namespacedCtx, hostOptions)
+	resolver := docker.NewResolver(docker.ResolverOptions{
+		Hosts: registryHosts,
+	})
+
+	pullOptions := []containerd.RemoteOpt{
+		containerd.WithPullUnpack,
+		containerd.WithResolver(resolver),
 	}
 
 	_, pullError := containerdRuntime.client.Pull(namespacedCtx, imageReference, pullOptions...)

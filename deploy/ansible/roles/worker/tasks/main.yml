@@ -11,14 +11,6 @@
       args:
         creates: /etc/containerd/config.toml
 
-    - name: Enable containerd certs.d registry config
-      lineinfile:
-        path: /etc/containerd/config.toml
-        regexp: 'config_path'
-        insertafter: '\[plugins."io.containerd.grpc.v1.cri".registry\]'
-        line: '      config_path = "/etc/containerd/certs.d"'
-      notify: Restart containerd
-
     - name: Enable and start containerd
       systemd:
         name: containerd
