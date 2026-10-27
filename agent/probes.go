@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -166,6 +167,7 @@ func (probeScheduler *ProbeScheduler) executeProbesForInstance(ctx context.Conte
 		probeScheduler.executeReadinessProbe(ctx, instanceInfo, instanceIP, readinessConfig, probeState.readiness, now)
 	}
 
+	probeScheduler.publishProbeProgress(ctx, instanceInfo.id, startupConfig, livenessConfig, readinessConfig, probeState)
 	probeScheduler.updateSummaryHealthFromProbes(ctx, instanceInfo.id, startupComplete)
 }
 
@@ -575,6 +577,42 @@ func (probeScheduler *ProbeScheduler) buildHealthProbeFromServiceConfig(ctx cont
 	}
 
 	return probe, true
+}
+
+// publishProbeProgress writes a JSON probe progress summary to the store so
+// the CLI and API can show probe convergence without parsing agent logs.
+func (probeScheduler *ProbeScheduler) publishProbeProgress(ctx context.Context, instanceID string, startupConfig *probeConfig, livenessConfig *probeConfig, readinessConfig *probeConfig, probeState *instanceProbeState) {
+	progress := types.ProbeProgress{}
+	hasProgress := false
+
+	if startupConfig != nil && probeState.startup != nil && probeState.startup.consecutiveFailures > 0 {
+		progress.StartupFailures = probeState.startup.consecutiveFailures
+		progress.StartupThreshold = startupConfig.failureThreshold
+		hasProgress = true
+	}
+	if livenessConfig != nil && probeState.liveness != nil && probeState.liveness.consecutiveFailures > 0 {
+		progress.LivenessFailures = probeState.liveness.consecutiveFailures
+		progress.LivenessThreshold = livenessConfig.failureThreshold
+		hasProgress = true
+	}
+	if readinessConfig != nil && probeState.readiness != nil && probeState.readiness.consecutiveFailures > 0 {
+		progress.ReadinessFailures = probeState.readiness.consecutiveFailures
+		progress.ReadinessThreshold = readinessConfig.failureThreshold
+		hasProgress = true
+	}
+
+	if !hasProgress {
+		_ = probeScheduler.factStore.Delete(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
+		return
+	}
+
+	progressJSON, marshalError := json.Marshal(progress)
+	if marshalError != nil {
+		return
+	}
+	if _, putError := probeScheduler.factStore.Put(ctx, types.KeyObservedInstanceProbeProgress(instanceID), progressJSON); putError != nil {
+		logging.Default().Error("failed to write probe progress", "instance", instanceID, "error", putError.Error())
+	}
 }
 
 // lookupExposedPorts reads all exposed port declarations for the given service

@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"strconv"
@@ -61,8 +62,6 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 		if existingState == string(types.InitStepSucceeded) {
 			continue
 		}
-		// A step left in "running" state from a previous agent incarnation is
-		// treated as failed — the agent crashed before recording the outcome.
 		if existingState == string(types.InitStepRunning) {
 			if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepFailed))); putError != nil {
 				logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
@@ -72,20 +71,27 @@ func (nodeAgent *Agent) executeInitializationSteps(ctx context.Context, instance
 			}
 		}
 
-		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image)
+		succeeded := nodeAgent.executeInitStep(ctx, instanceInfo, stepDefinition, image, len(stepDefinitions))
 		if !succeeded {
 			return false
 		}
 	}
 
+	nodeAgent.clearInitProgress(ctx, instanceInfo.id)
 	return true
 }
 
 // executeInitStep runs a single init step with retries and timeout. Reports step
-// state transitions (running → succeeded/failed) to the store. Returns true if
-// the step eventually succeeded.
-func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string) bool {
+// state transitions (running → succeeded/failed) to the store. Publishes init
+// progress after each attempt so the CLI can show convergence status. Returns
+// true if the step eventually succeeded.
+func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition, image string, totalSteps int) bool {
 	maxAttempts := 1 + stepDefinition.retry
+	stepLabel := stepDefinition.exec
+	if stepDefinition.connection != "" {
+		stepLabel = "connection:" + stepDefinition.connection
+	}
+
 	for attemptIndex := 0; attemptIndex < maxAttempts; attemptIndex++ {
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitStepState(instanceInfo.id, stepDefinition.index), []byte(string(types.InitStepRunning))); putError != nil {
 			logging.Default().Error("failed to write init step state", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
@@ -96,10 +102,6 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 			stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
 		} else {
 			stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo.service, stepDefinition)
-		}
-		stepLabel := stepDefinition.exec
-		if stepDefinition.connection != "" {
-			stepLabel = "connection:" + stepDefinition.connection
 		}
 
 		if stepError == nil {
@@ -113,6 +115,8 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 				"instance", instanceInfo.id)
 			return true
 		}
+
+		nodeAgent.publishInitProgress(ctx, instanceInfo.id, stepDefinition.index, totalSteps, attemptIndex+1, maxAttempts, stepLabel, stepError.Error())
 
 		logging.Default().Warn("init step failed",
 			"agent", nodeAgent.nodeID,
@@ -148,6 +152,35 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 		logging.Default().Error("failed to write init step reason", "instance", instanceInfo.id, "step", fmt.Sprintf("%d", stepDefinition.index), "error", putError.Error())
 	}
 	return false
+}
+
+// publishInitProgress writes the current init step progress to the store as a
+// JSON fact so the CLI and API can display convergence status.
+func (nodeAgent *Agent) publishInitProgress(ctx context.Context, instanceID string, stepIndex int, totalSteps int, attempt int, maxAttempts int, stepLabel string, lastError string) {
+	progress := types.InitProgress{
+		Step:       stepIndex,
+		TotalSteps: totalSteps,
+		Attempt:    attempt,
+		MaxRetries: maxAttempts,
+		StepLabel:  stepLabel,
+		LastError:  lastError,
+	}
+	progressJSON, marshalError := json.Marshal(progress)
+	if marshalError != nil {
+		return
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceInitProgress(instanceID), progressJSON); putError != nil {
+		logging.Default().Error("failed to write init progress", "instance", instanceID, "error", putError.Error())
+	}
+	statusReason := fmt.Sprintf("init:%d %s attempt %d/%d: %s", stepIndex, stepLabel, attempt, maxAttempts, lastError)
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceStatusReason(instanceID), []byte(statusReason)); putError != nil {
+		logging.Default().Error("failed to write status reason", "instance", instanceID, "error", putError.Error())
+	}
+}
+
+// clearInitProgress removes the init progress fact after all steps complete.
+func (nodeAgent *Agent) clearInitProgress(ctx context.Context, instanceID string) {
+	_ = nodeAgent.store.Delete(ctx, types.KeyObservedInstanceInitProgress(instanceID))
 }
 
 // runInitCommand executes the init step's command via the runtime's ExecInit

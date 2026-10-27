@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -2251,4 +2252,59 @@ func TestAgentPostStartHookExecutedAfterStart(t *testing.T) {
 	if !foundPostStart {
 		t.Errorf("expected post_start hook to be executed, got exec calls: %v", execCalls)
 	}
+}
+
+func TestInitProgressAndStatusReasonPublished(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.ExecInitFailures = map[string]int{"echo fail-step": 2}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "init-progress-svc"
+	instanceID := "init-prog-001"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("app:1.0"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStep(serviceName, 0), []byte(""))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepExec(serviceName, 0), []byte("echo fail-step"))
+	factStore.Put(ctx, types.KeyDesiredServiceInitStepRetry(serviceName, 0), []byte("3"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 3*time.Second, "init progress published", func() bool {
+		progressFact, progressErr := factStore.Get(ctx, types.KeyObservedInstanceInitProgress(instanceID))
+		if progressErr != nil {
+			return false
+		}
+		var progress types.InitProgress
+		if unmarshallError := json.Unmarshal(progressFact.Value, &progress); unmarshallError != nil {
+			return false
+		}
+		return progress.Step == 0 && progress.Attempt >= 1 && progress.TotalSteps == 1
+	})
+
+	waitFor(t, 3*time.Second, "status reason published", func() bool {
+		reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instanceID))
+		if reasonErr != nil {
+			return false
+		}
+		return strings.Contains(string(reasonFact.Value), "init:0")
+	})
+
+	waitFor(t, 5*time.Second, "instance running after init retries succeed", func() bool {
+		stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+		return stateErr == nil && string(stateFact.Value) == string(types.InstanceRunning)
+	})
+
+	waitFor(t, 2*time.Second, "status reason is running after start", func() bool {
+		reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instanceID))
+		return reasonErr == nil && string(reasonFact.Value) == "running"
+	})
 }

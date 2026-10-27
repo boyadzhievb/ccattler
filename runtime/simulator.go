@@ -27,10 +27,11 @@ var ErrResizeUnsupported = errors.New("live resize not supported")
 type SimulatorRuntime struct {
 	mutex           sync.Mutex                    // mutex guards concurrent access to the workloads map.
 	workloads       map[string]*simulatedWorkload // workloads maps workload IDs to their simulated state.
-	ExecFailures    map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
-	StartFailures   map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
-	ExecCalls       []ExecCall                    // ExecCalls records all Exec calls for test verification.
-	ExecInitCalls   []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
+	ExecFailures      map[string]bool               // ExecFailures is a set of workload IDs whose Exec calls should return an error.
+	ExecInitFailures  map[string]int                // ExecInitFailures maps command strings to the remaining failure count. Decremented on each call.
+	StartFailures     map[string]string             // StartFailures maps workload IDs to error reasons returned by Start.
+	ExecCalls         []ExecCall                    // ExecCalls records all Exec calls for test verification.
+	ExecInitCalls     []ExecInitCall                // ExecInitCalls records all ExecInit calls for test verification.
 	PulledImages    []string                      // PulledImages records image references passed to PullImage for test verification.
 	PullCredentials map[string]string             // PullCredentials maps image references to the credentials used during pull.
 	PullFailures    map[string]string             // PullFailures maps image references to error reasons returned by PullImage.
@@ -232,11 +233,16 @@ func (simulator *SimulatorRuntime) IsImageCached(_ context.Context, imageReferen
 }
 
 // ExecInit runs an initialization command against an image in the simulator.
-// The simulator records the call and succeeds.
+// The simulator records the call. If ExecInitFailures has a positive count for
+// the command, the call fails and the count is decremented.
 func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, execSpec ExecSpec) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command, Env: execSpec.Env, ConfigFiles: execSpec.ConfigFiles})
+	if remaining, shouldFail := simulator.ExecInitFailures[execSpec.Command]; shouldFail && remaining > 0 {
+		simulator.ExecInitFailures[execSpec.Command] = remaining - 1
+		return fmt.Errorf("simulated init failure for %q", execSpec.Command)
+	}
 	return nil
 }
 

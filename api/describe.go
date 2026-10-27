@@ -84,6 +84,9 @@ type InstanceDescribe struct {
 	StartupProbe   string            `json:"startup,omitempty"`
 	LivenessProbe  string            `json:"liveness,omitempty"`
 	ReadinessProbe string            `json:"readiness,omitempty"`
+	StatusReason   string            `json:"status_reason,omitempty"`
+	InitProgress   string            `json:"init_progress,omitempty"`
+	ProbeProgress  string            `json:"probe_progress,omitempty"`
 	Endpoint       string            `json:"endpoint,omitempty"`
 	Events         []DescribeEvent   `json:"events,omitempty"`
 }
@@ -172,13 +175,14 @@ type DescribeSecretGrant struct {
 
 // DescribeInstanceSummary is a compact instance view used in service and node describe.
 type DescribeInstanceSummary struct {
-	ID        string `json:"id"`
-	State     string `json:"state"`
-	NodeID    string `json:"node,omitempty"`
-	Service   string `json:"service,omitempty"`
-	IPAddress string `json:"ip,omitempty"`
-	Health    string `json:"health,omitempty"`
-	Restarts  string `json:"restarts,omitempty"`
+	ID           string `json:"id"`
+	State        string `json:"state"`
+	NodeID       string `json:"node,omitempty"`
+	Service      string `json:"service,omitempty"`
+	IPAddress    string `json:"ip,omitempty"`
+	Health       string `json:"health,omitempty"`
+	Restarts     string `json:"restarts,omitempty"`
+	StatusReason string `json:"status_reason,omitempty"`
 }
 
 // DescribeEvent is a compact event representation for describe output.
@@ -307,6 +311,15 @@ func buildInstanceDescribe(ctx context.Context, factStore store.StateStore, even
 	}
 	if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness)); readinessErr == nil {
 		describe.ReadinessProbe = string(readinessFact.Value)
+	}
+	if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instanceID)); reasonErr == nil {
+		describe.StatusReason = string(reasonFact.Value)
+	}
+	if initProgressFact, initProgressErr := factStore.Get(ctx, types.KeyObservedInstanceInitProgress(instanceID)); initProgressErr == nil {
+		describe.InitProgress = string(initProgressFact.Value)
+	}
+	if probeProgressFact, probeProgressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instanceID)); probeProgressErr == nil {
+		describe.ProbeProgress = string(probeProgressFact.Value)
 	}
 
 	endpointPrefix := fmt.Sprintf("%s/service/%s/%s/", types.PrefixEndpoint, instance.Service, instanceID)
@@ -616,13 +629,18 @@ func collectInstanceSummariesForService(ctx context.Context, factStore store.Sta
 		if ipDisplay == "" {
 			ipDisplay = "-"
 		}
+		statusReason := ""
+		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
+			statusReason = string(reasonFact.Value)
+		}
 		summaries = append(summaries, DescribeInstanceSummary{
-			ID:        instance.ID,
-			State:     string(instance.State),
-			NodeID:    placedNode,
-			IPAddress: ipDisplay,
-			Health:    healthDisplay,
-			Restarts:  restartCount,
+			ID:           instance.ID,
+			State:        string(instance.State),
+			NodeID:       placedNode,
+			IPAddress:    ipDisplay,
+			Health:       healthDisplay,
+			Restarts:     restartCount,
+			StatusReason: statusReason,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
@@ -660,13 +678,18 @@ func collectInstancesPlacedOnNode(ctx context.Context, factStore store.StateStor
 		if ipDisplay == "" {
 			ipDisplay = "-"
 		}
+		statusReason := ""
+		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
+			statusReason = string(reasonFact.Value)
+		}
 		summaries = append(summaries, DescribeInstanceSummary{
-			ID:        instance.ID,
-			State:     string(instance.State),
-			Service:   instance.Service,
-			IPAddress: ipDisplay,
-			Health:    healthDisplay,
-			Restarts:  restartCount,
+			ID:           instance.ID,
+			State:        string(instance.State),
+			Service:      instance.Service,
+			IPAddress:    ipDisplay,
+			Health:       healthDisplay,
+			Restarts:     restartCount,
+			StatusReason: statusReason,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {

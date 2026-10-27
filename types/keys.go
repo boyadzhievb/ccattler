@@ -904,6 +904,31 @@ func KeyObservedInstanceRestarts(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/restarts", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceStatusReason returns the store path for an instance's
+// human-readable status reason explaining why it is in its current state.
+// Value examples: "pulling image", "init:0 connection:airflow-db attempt 6/31: TCP dial failed",
+// "startup probe 5/30", "running".
+// Path: observed/instance/{instanceID}/status-reason
+func KeyObservedInstanceStatusReason(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/status-reason", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceInitProgress returns the store path for an instance's
+// init step progress summary. Value is JSON with current step, attempt, total
+// steps, and last error. Deleted when init completes.
+// Path: observed/instance/{instanceID}/init-progress
+func KeyObservedInstanceInitProgress(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/init-progress", PrefixObserved, instanceID)
+}
+
+// KeyObservedInstanceProbeProgress returns the store path for an instance's
+// probe progress summary. Value is JSON with per-probe-type failure counts
+// and thresholds. Updated on every probe execution.
+// Path: observed/instance/{instanceID}/probe-progress
+func KeyObservedInstanceProbeProgress(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/probe-progress", PrefixObserved, instanceID)
+}
+
 // Init step key functions. Init steps are ordered by index (0, 1, 2, ...) and
 // stored as desired facts per service. Observed init results are per-instance.
 

@@ -873,16 +873,20 @@ func printServiceDescribeInstances(serviceDetail api.ServiceDescribe) {
 	}
 	fmt.Println()
 	fmt.Println("Instances:")
-	fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
-		"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS")
+	fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %-10s  %s\n",
+		"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS", "REASON")
 	for _, instanceSummary := range serviceDetail.Instances {
 		restartDisplay := instanceSummary.Restarts
 		if restartDisplay == "" {
 			restartDisplay = "0"
 		}
-		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %s\n",
+		reasonDisplay := instanceSummary.StatusReason
+		if reasonDisplay == "" || reasonDisplay == "running" {
+			reasonDisplay = "-"
+		}
+		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %-10s  %s\n",
 			instanceSummary.ID, instanceSummary.State, instanceSummary.NodeID,
-			instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
+			instanceSummary.IPAddress, instanceSummary.Health, restartDisplay, reasonDisplay)
 	}
 }
 
@@ -977,6 +981,10 @@ func printInstanceDescribe(instanceDetail api.InstanceDescribe) {
 		fmt.Printf("Endpoint:   %s\n", instanceDetail.Endpoint)
 	}
 
+	if instanceDetail.StatusReason != "" && instanceDetail.StatusReason != "running" {
+		fmt.Printf("Reason:     %s\n", instanceDetail.StatusReason)
+	}
+
 	fmt.Println()
 	fmt.Println("Health:")
 	healthDisplay := instanceDetail.HealthState
@@ -987,6 +995,9 @@ func printInstanceDescribe(instanceDetail api.InstanceDescribe) {
 	if instanceDetail.InitPhase != "" {
 		fmt.Printf("  Init:       %s\n", instanceDetail.InitPhase)
 	}
+	if instanceDetail.InitProgress != "" {
+		fmt.Printf("  Init progress: %s\n", formatInitProgressCompact(instanceDetail.InitProgress))
+	}
 	if instanceDetail.StartupProbe != "" {
 		fmt.Printf("  Startup:    %s\n", instanceDetail.StartupProbe)
 	}
@@ -995,6 +1006,9 @@ func printInstanceDescribe(instanceDetail api.InstanceDescribe) {
 	}
 	if instanceDetail.ReadinessProbe != "" {
 		fmt.Printf("  Readiness:  %s\n", instanceDetail.ReadinessProbe)
+	}
+	if instanceDetail.ProbeProgress != "" {
+		fmt.Printf("  Probe progress: %s\n", formatProbeProgressCompact(instanceDetail.ProbeProgress))
 	}
 
 	restartDisplay := instanceDetail.Restarts
@@ -1310,7 +1324,7 @@ func formatServiceTags(tags map[string]string) string {
 }
 
 func printInstancesTableWithOptions(instances []api.InstanceStatus, options getOutputOptions) {
-	header := []string{"CONTAINER", "STATE", "NODE", "IP", "HEALTH"}
+	header := []string{"CONTAINER", "STATE", "NODE", "IP", "HEALTH", "REASON"}
 	var rows [][]string
 	for _, instance := range instances {
 		healthDisplay := instance.HealthState
@@ -1322,15 +1336,75 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 			ipDisplay = "-"
 		}
 		containerName := instance.ServiceName + "-" + instance.ID
+		reasonDisplay := formatInstanceReason(instance)
 		rows = append(rows, []string{
 			containerName,
 			instance.State,
 			instance.NodeID,
 			ipDisplay,
 			healthDisplay,
+			reasonDisplay,
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
+}
+
+// formatInstanceReason builds a compact human-readable reason string from the
+// instance's status reason, init progress, and probe progress facts.
+func formatInstanceReason(instance api.InstanceStatus) string {
+	if instance.State == "running" && instance.StatusReason == "running" {
+		return "-"
+	}
+	if instance.InitProgress != "" {
+		return formatInitProgressCompact(instance.InitProgress)
+	}
+	if instance.ProbeProgress != "" {
+		return formatProbeProgressCompact(instance.ProbeProgress)
+	}
+	if instance.StatusReason != "" && instance.StatusReason != "running" {
+		return instance.StatusReason
+	}
+	return "-"
+}
+
+// formatInitProgressCompact renders init progress JSON as a compact string
+// like "init:0 conn:airflow-db 6/31".
+func formatInitProgressCompact(initProgressJSON string) string {
+	var progress types.InitProgress
+	if err := json.Unmarshal([]byte(initProgressJSON), &progress); err != nil {
+		return initProgressJSON
+	}
+	label := progress.StepLabel
+	if len(label) > 30 {
+		label = label[:30] + "..."
+	}
+	return fmt.Sprintf("init:%d/%d %s %d/%d",
+		progress.Step, progress.TotalSteps,
+		label,
+		progress.Attempt, progress.MaxRetries)
+}
+
+// formatProbeProgressCompact renders probe progress JSON as a compact string
+// like "startup:5/30" or "liveness:2/5".
+func formatProbeProgressCompact(probeProgressJSON string) string {
+	var progress types.ProbeProgress
+	if err := json.Unmarshal([]byte(probeProgressJSON), &progress); err != nil {
+		return probeProgressJSON
+	}
+	var parts []string
+	if progress.StartupFailures > 0 {
+		parts = append(parts, fmt.Sprintf("startup:%d/%d", progress.StartupFailures, progress.StartupThreshold))
+	}
+	if progress.LivenessFailures > 0 {
+		parts = append(parts, fmt.Sprintf("liveness:%d/%d", progress.LivenessFailures, progress.LivenessThreshold))
+	}
+	if progress.ReadinessFailures > 0 {
+		parts = append(parts, fmt.Sprintf("readiness:%d/%d", progress.ReadinessFailures, progress.ReadinessThreshold))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
 }
 
 func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions) {

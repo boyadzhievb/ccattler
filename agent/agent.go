@@ -694,6 +694,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	}
 
 	if nodeAgent.storageProvider != nil {
+		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "waiting for volumes")
 		volumesReady, attachError := nodeAgent.ensureVolumesAttachedForInstance(ctx, instanceInfo)
 		if attachError != nil {
 			logging.Default().Error("volume error", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", attachError.Error())
@@ -706,6 +707,7 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 		}
 	}
 
+	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "starting")
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
 	nodeAgent.materializeSecretFiles(ctx, instanceInfo.service, &runtimeSpec)
 	nodeAgent.materializeConnectionFiles(ctx, instanceInfo.service, &runtimeSpec)
@@ -800,6 +802,16 @@ func (nodeAgent *Agent) recordImagePullFailure(ctx context.Context, instanceInfo
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstancePullStatus(instanceInfo.id), statusJSON); putError != nil {
 		logging.Default().Error("failed to write pull status", "instance", instanceInfo.id, "error", putError.Error())
 	}
+	statusReason := fmt.Sprintf("pulling image %s (attempt %d): %s", image, backoffEntry.attempts, errorMessage)
+	nodeAgent.publishStatusReason(ctx, instanceInfo.id, statusReason)
+}
+
+// publishStatusReason writes a human-readable status reason to the store so
+// the CLI and API can show why an instance is in its current state.
+func (nodeAgent *Agent) publishStatusReason(ctx context.Context, instanceID string, reason string) {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceStatusReason(instanceID), []byte(reason)); putError != nil {
+		logging.Default().Error("failed to write status reason", "instance", instanceID, "error", putError.Error())
+	}
 }
 
 // clearPullStatusFromStore removes the pull-status fact after a successful pull.
@@ -883,6 +895,7 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
 		}
 		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstanceFailed, "")
+		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "start failed: "+startError.Error())
 		if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 			logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 		}
@@ -910,6 +923,9 @@ func (nodeAgent *Agent) startInstanceAndPublishState(ctx context.Context, instan
 	observedState, exitReason := nodeAgent.observeInstanceState(ctx, instanceInfo.id)
 	nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, observedState, runtimeIP)
 	nodeAgent.publishExitReasonIfFailed(ctx, instanceInfo.id, observedState, exitReason)
+	if observedState == types.InstanceRunning {
+		nodeAgent.publishStatusReason(ctx, instanceInfo.id, "running")
+	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceImage(instanceInfo.id), []byte(image)); putError != nil {
 		logging.Default().Error("failed to write instance image", "instance", instanceInfo.id, "error", putError.Error())
 	}

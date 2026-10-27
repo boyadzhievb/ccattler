@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -514,5 +515,59 @@ func TestExecProbeFailure(t *testing.T) {
 	}
 	if string(stateFact.Value) != string(types.LivenessProbeUnhealthy) {
 		t.Errorf("expected liveness unhealthy after 2 failures, got %q", string(stateFact.Value))
+	}
+}
+
+func TestProbeProgressPublishedOnFailure(t *testing.T) {
+	factStore, _, nodeAgent := setupProbeTestAgent("test-node")
+	defer factStore.Close()
+
+	ctx := context.Background()
+	serviceName := "progress-svc"
+	instanceID := "progress-inst-001"
+
+	failingPort := getUnusedPort(t)
+	setupInstanceInStore(ctx, factStore, serviceName, instanceID, "test-node", "127.0.0.1")
+	writeHTTPProbeConfig(ctx, factStore, serviceName, types.ProbeStartup, failingPort, "/health", 0, 5, 1)
+	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeStartup), []byte("100ms"))
+
+	instanceInfo := placedInstanceInfo{id: instanceID, service: serviceName}
+	nodeAgent.probeScheduler.executeProbesForInstance(ctx, instanceInfo)
+
+	progressFact, progressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
+	if progressErr != nil {
+		t.Fatalf("expected probe progress to be written after failure, got error: %v", progressErr)
+	}
+
+	var progress types.ProbeProgress
+	if unmarshallError := json.Unmarshal(progressFact.Value, &progress); unmarshallError != nil {
+		t.Fatalf("failed to unmarshal probe progress: %v", unmarshallError)
+	}
+	if progress.StartupFailures != 1 {
+		t.Errorf("expected 1 startup failure, got %d", progress.StartupFailures)
+	}
+	if progress.StartupThreshold != 5 {
+		t.Errorf("expected threshold 5, got %d", progress.StartupThreshold)
+	}
+}
+
+func TestProbeProgressClearedWhenNoFailures(t *testing.T) {
+	factStore, _, nodeAgent := setupProbeTestAgent("test-node")
+	defer factStore.Close()
+
+	ctx := context.Background()
+	instanceID := "clearing-inst-001"
+
+	factStore.Put(ctx, types.KeyObservedInstanceProbeProgress(instanceID), []byte(`{"startup_failures":3,"startup_threshold":5}`))
+
+	probeState := &instanceProbeState{
+		startup: &probeTracker{consecutiveFailures: 0, consecutiveSuccesses: 1},
+	}
+	startupConfig := &probeConfig{failureThreshold: 5}
+	nodeAgent.probeScheduler.publishProbeProgress(ctx, instanceID, startupConfig, nil, nil, probeState)
+
+	_, progressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
+	if progressErr == nil {
+		t.Error("expected probe progress to be deleted when no failures, but fact still exists")
 	}
 }

@@ -42,19 +42,22 @@ type ServiceStatus struct {
 
 // InstanceStatus represents one instance in the cluster status.
 type InstanceStatus struct {
-	ID          string `json:"id"`
-	ServiceName string `json:"service"`
-	State       string `json:"state"`
-	NodeID      string `json:"node"`
-	IPAddress   string `json:"ip"`
-	HealthState string `json:"health"`
-	CPUMillis   string `json:"cpu,omitempty"`
-	MemoryBytes string `json:"memory,omitempty"`
-	InitPhase   string `json:"init_phase,omitempty"`
-	Restarts    string `json:"restarts,omitempty"`
-	Startup     string `json:"startup,omitempty"`
-	Liveness    string `json:"liveness,omitempty"`
-	Readiness   string `json:"readiness,omitempty"`
+	ID            string `json:"id"`
+	ServiceName   string `json:"service"`
+	State         string `json:"state"`
+	NodeID        string `json:"node"`
+	IPAddress     string `json:"ip"`
+	HealthState   string `json:"health"`
+	CPUMillis     string `json:"cpu,omitempty"`
+	MemoryBytes   string `json:"memory,omitempty"`
+	InitPhase     string `json:"init_phase,omitempty"`
+	Restarts      string `json:"restarts,omitempty"`
+	Startup       string `json:"startup,omitempty"`
+	Liveness      string `json:"liveness,omitempty"`
+	Readiness     string `json:"readiness,omitempty"`
+	StatusReason  string `json:"status_reason,omitempty"`
+	InitProgress  string `json:"init_progress,omitempty"`
+	ProbeProgress string `json:"probe_progress,omitempty"`
 }
 
 // NodeStatus represents one node in the cluster status.
@@ -313,12 +316,25 @@ func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateSt
 		if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, types.ProbeReadiness)); readinessErr == nil {
 			readinessProbe = string(readinessFact.Value)
 		}
+		statusReason := ""
+		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
+			statusReason = string(reasonFact.Value)
+		}
+		initProgressJSON := ""
+		if progressFact, progressErr := factStore.Get(ctx, types.KeyObservedInstanceInitProgress(instance.ID)); progressErr == nil {
+			initProgressJSON = string(progressFact.Value)
+		}
+		probeProgressJSON := ""
+		if probeProgressFact, probeProgressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instance.ID)); probeProgressErr == nil {
+			probeProgressJSON = string(probeProgressFact.Value)
+		}
 		instanceStatusList = append(instanceStatusList, InstanceStatus{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
 			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
 			CPUMillis: instanceCPU, MemoryBytes: instanceMemory,
 			InitPhase: initPhase, Restarts: restartCount,
 			Startup: startupProbe, Liveness: livenessProbe, Readiness: readinessProbe,
+			StatusReason: statusReason, InitProgress: initProgressJSON, ProbeProgress: probeProgressJSON,
 		})
 	}
 	return instanceStatusList
