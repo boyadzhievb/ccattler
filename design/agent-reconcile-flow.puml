@@ -182,20 +182,29 @@ execstep --> initcmd : if exec type
 rectangle "runConnectionProbe" {
   (assembleConnectionURL) as asmurl
   (parseConnectionJSON) as parseconn
-  (buildCCattlerResolver) as buildresolver
+  (resolveConnectionAddress) as resolveaddr
   (net.Dialer.DialContext) as tcpdial
 }
 
 connprobe --> asmurl
 connprobe --> parseconn
-connprobe --> buildresolver
-connprobe --> tcpdial : TCP dial host:port
+connprobe --> resolveaddr : resolve hostname first
+connprobe --> tcpdial : TCP dial resolved IP:port
 
-' === buildCCattlerResolver ===
-note right of buildresolver
-  Uses advertiseAddress:53
-  Falls back to net.DefaultResolver
-  when advertiseAddress is empty
+' === resolveConnectionAddress ===
+rectangle "resolveConnectionAddress" {
+  (buildCCattlerResolver) as buildresolver
+  (resolver.LookupHost) as lookuphost
+}
+
+resolveaddr --> buildresolver
+resolveaddr --> lookuphost : explicit DNS lookup
+
+note right of resolveaddr
+  Bypasses Go net.Dialer.Resolver
+  which CGo can override.
+  Resolves hostname → IP first,
+  then dials the IP directly.
 end note
 
 ' === buildRuntimeSpecForInstance ===
@@ -444,10 +453,10 @@ loop for each init step (sequential)
     note right
       assembleConnectionURL()
       parseConnectionJSON()
-      buildCCattlerResolver()
-        → uses advertiseAddress:53
-        → FALLBACK: net.DefaultResolver
-      net.Dialer.DialContext("tcp", host:port)
+      resolveConnectionAddress()
+        → buildCCattlerResolver()
+        → resolver.LookupHost(hostname) → IP
+      net.Dialer.DialContext("tcp", resolvedIP:port)
     end note
   else exec type
     init -> init : runInitCommand()

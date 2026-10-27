@@ -202,15 +202,189 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/node/{nodeID}/heartbeat` | WriteHeartbeat |
 | `observed/node/{nodeID}/state` | PublishAliveState |
 
-## Known Bug: DNS Resolver Fallback
+## Reverse Index (who calls this function?)
 
-`buildCCattlerResolver()` at agent/agent.go:355-366:
-- IF `advertiseAddress` is set AND `dnsForwarder` is not nil:
-  → resolver queries `advertiseAddress:53` (CCattler DNS)
-- ELSE:
-  → falls back to `net.DefaultResolver` (system DNS, typically 127.0.0.1:53)
-  → **This breaks init connection probes** because service names like
-    `metadata-db` are only resolvable via CCattler DNS, not system DNS.
+| Function | Called By |
+|---|---|
+| `findInstancesPlacedOnThisNode` | `executeReconciliationCycle` (agent) |
+| `isInstanceMarkedForSkip` | `findInstancesPlacedOnThisNode` |
+| `reconcileDesiredInstance` | `executeReconciliationCycle` (agent, if instance not running) |
+| `ensureImageAvailable` | `reconcileDesiredInstance` |
+| `executeInitializationSteps` | `reconcileDesiredInstance` (if hasInitSteps) |
+| `executeInitStep` | `executeInitializationSteps` (for each step, sequential) |
+| `runConnectionProbe` | `executeInitStep` (if connection type) |
+| `resolveConnectionAddress` | `runConnectionProbe` |
+| `buildCCattlerResolver` | `resolveConnectionAddress` |
+| `runInitCommand` | `executeInitStep` (if exec type) |
+| `buildRuntimeSpecForInstance` | `reconcileDesiredInstance` |
+| `startInstanceAndPublishState` | `reconcileDesiredInstance` |
+| `publishInstanceStateToStore` | `executeReconciliationCycle` (if running), `startInstanceAndPublishState` |
+| `publishExitReasonIfFailed` | `executeReconciliationCycle` (if running) |
+| `publishExitReasonFromStatus` | `executeReconciliationCycle` (if not running, exitCode != 0) |
+| `detectConfigChange` | `executeReconciliationCycle` (if running) |
+| `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
+| `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs) |
+| `materializeSecretFiles` | `reconcileDesiredInstance` |
+| `materializeConnectionFiles` | `reconcileDesiredInstance` |
+| `lookupServiceImageFromStore` | `reconcileDesiredInstance` |
+| `resolveImagePullCredentials` | `reconcileDesiredInstance` |
+| `hasInitSteps` | `reconcileDesiredInstance` |
+| `publishStatusReason` | `reconcileDesiredInstance` (multiple points) |
+| `ensureVolumesAttachedForInstance` | `reconcileDesiredInstance` (if storageProvider) |
+| `runSingleController` | `Runner.Run` (goroutine per controller) |
+| `runControllerLoop` | `runSingleController` |
+| `setupControllerWatches` | `runControllerLoop` |
+| `runReconcileSelectLoop` | `runControllerLoop` |
+| `executeReconciliationCycle` (server) | `runControllerLoop` (initial), `runReconcileSelectLoop` (on trigger) |
+| `attemptSingleReconciliation` | `executeReconciliationCycle` (server, up to 5 retries) |
 
-Root cause of deployment not converging: agents on worker nodes may have
-empty `advertiseAddress` or nil `dnsForwarder`, causing init probes to fail.
+## Store Key Data Flow (controller writes → agent reads)
+
+Shows which controller writes a key that the agent later reads. This is the
+implicit coupling between server-side controllers and node agents.
+
+| Key Pattern | Written By (Controller) | Read By (Agent) |
+|---|---|---|
+| `placement/node/{nodeID}/{id}` | **Scheduler**.Reconcile | `findInstancesPlacedOnThisNode` |
+| `placement/instance/{id}` | **Scheduler**.Reconcile | (not directly, but placement/node is the agent view) |
+| `observed/instance/{id}/state` | **InstanceController**.Reconcile (→ pending) | `findInstancesPlacedOnThisNode` (skip if stopped/failed) |
+| `observed/instance/{id}/service` | **InstanceController**.Reconcile | `findInstancesPlacedOnThisNode` (get service name) |
+| `derived/instance/{id}/node_failure` | **NodeFailureController**.Reconcile | `isInstanceMarkedForSkip` |
+| `derived/instance/{id}/controller_stopped` | **FailureController**.Reconcile | `isInstanceMarkedForSkip` |
+| `derived/node/{nodeID}/drain/evict/{id}` | **DrainController**.Reconcile | `findInstancesPlacedOnThisNode` (skip if drain) |
+| `derived/instance/{id}/init_phase` | **InitController**.Reconcile | `readCurrentInitPhase` |
+| `desired/service/{name}/*` | User via `cca apply` | multiple agent functions |
+| `desired/connection/{name}` | User via `cca apply` | `runConnectionProbe` |
+
+### Data flow chain (fresh deploy)
+```
+User (cca apply)
+  → desired/service/{name}/* written
+    → InstanceController reads desired/, writes observed/instance/{id}/state=pending
+      → Scheduler reads observed/instance/, writes placement/node/{nodeID}/{id}
+        → Agent reads placement/node/, starts reconcile
+          → Agent reads observed/instance/{id}/service to find service name
+          → Agent reads desired/service/{name}/init/* for init steps
+          → Agent reads desired/connection/{name} for connection probes
+          → Agent writes observed/instance/{id}/state=running when done
+```
+
+## Error Propagation Paths
+
+Shows how errors propagate through the agent call chain. Critical for debugging
+why deployment isn't converging: find where the error is generated, trace up to
+see what happens (BAIL = stops instance startup, BACKOFF = retries later,
+LOG = swallowed and continues).
+
+### reconcileDesiredInstance error paths
+```
+reconcileDesiredInstance
+├── lookupServiceImageFromStore → returns ""
+│   └── BAIL: silent return (no image yet, controller hasn't written it)
+│
+├── ensureImageAvailable → returns false
+│   ├── pull policy check → LOG error, return false
+│   ├── PullImage fails → recordImagePullFailure (BACKOFF 10s–5min), return false
+│   └── BAIL: skips this instance, next reconcile retries
+│
+├── executeInitializationSteps → returns false
+│   ├── executeInitStep fails:
+│   │   ├── runConnectionProbe → error
+│   │   │   ├── resolveConnectionAddress → DNS lookup failed
+│   │   │   │   └── BACKOFF: increment attempt, schedule retry (10s–5min)
+│   │   │   └── DialContext → TCP dial failed
+│   │   │       └── BACKOFF: increment attempt, schedule retry (10s–5min)
+│   │   ├── runInitCommand → error
+│   │   │   └── BACKOFF: increment attempt, schedule retry (10s–5min)
+│   │   └── max retries exceeded
+│   │       └── PERMANENT FAIL: writes InitStepFailed, returns false
+│   └── BAIL: revokes secret token, skips startup
+│
+├── ensureVolumesAttachedForInstance → returns false
+│   └── BAIL: revokes secret token, skips startup
+│
+└── startInstanceAndPublishState
+    └── runtime.Start → error
+        └── BAIL: publishes state=failed, returns
+```
+
+### executeReconciliationCycle error paths (running instances)
+```
+executeReconciliationCycle (for running instance)
+├── detectConfigChange → changed
+│   └── ACTION: stop instance, restart via reconcileDesiredInstance
+│
+├── reconcileResourceChanges → error
+│   └── LOG: continues (non-fatal)
+│
+├── observeInstanceState → exited
+│   ├── exitCode == 0 → publishInstanceStateToStore(stopped)
+│   └── exitCode != 0 → publishExitReasonIfFailed, publishInstanceStateToStore(failed)
+│       └── next reconcile: publishExitReasonFromStatus, then reconcileDesiredInstance (restart)
+│
+└── cleanupUndesiredInstance → error
+    └── LOG: continues (best-effort cleanup)
+```
+
+## Implicit Ordering Constraints
+
+These are ordering dependencies that are NOT enforced by explicit code, but
+are required for convergence. The agent sort (`no-init-step services first`)
+is the only enforcement mechanism.
+
+### 1. Infrastructure-before-dependents (sort order)
+```
+Agent sort: services WITHOUT init steps start FIRST
+  → metadata-db (no init steps) starts → gets IP → DNS registers it
+  → redis (no init steps) starts → gets IP → DNS registers it
+  → THEN worker (has init steps: connection:airflow-db) tries probe
+    → needs metadata-db to be running and DNS-resolvable
+```
+**Why it matters:** If the sort were reversed, workers would try connection
+probes before metadata-db exists, hitting backoff loops unnecessarily.
+
+**Where enforced:** `executeReconciliationCycle` sorts `desired` slice at
+agent/agent.go — `sort.SliceStable` with `hasInitSteps(a) && !hasInitSteps(b)`.
+
+### 2. DNS registration before connection probes
+```
+Container starts → runtime.Start returns IP
+  → publishInstanceStateToStore(running) writes observed/instance/{id}/ip
+  → StatefulDNSController reads observed/instance/{id}/ip
+  → StatefulDNSController writes derived/dns/{name} record
+  → DNS forwarder serves the record
+  → Connection probe on ANOTHER node can now resolve the hostname
+```
+**Latency:** This chain crosses two reconcile cycles (agent → controller → DNS).
+Connection probes may fail during this window even if the target service is
+running. The backoff retry handles this naturally.
+
+### 3. InstanceController before Scheduler before Agent
+```
+InstanceController must write observed/instance/{id}/state=pending
+  BEFORE Scheduler can see and place the instance
+    BEFORE Agent can see it in placement/node/{nodeID}/
+```
+**Where enforced:** Controller watch prefixes. Scheduler watches
+`observed/instance/`, Agent watches `placement/node/{nodeID}/`. Each reacts
+only to keys written by the previous stage.
+
+### 4. Image pull before init steps before start
+```
+ensureImageAvailable MUST succeed
+  BEFORE executeInitializationSteps can run
+    BEFORE startInstanceAndPublishState can run
+```
+**Where enforced:** Sequential returns in `reconcileDesiredInstance` —
+each step returns false/nil to BAIL before the next step runs.
+
+## Known Bug: DNS Resolver Fallback (FIXED in M150)
+
+`resolveConnectionAddress()` at agent/init.go now resolves hostnames
+explicitly via `LookupHost` using `buildCCattlerResolver()` before dialing,
+bypassing Go's `net.Dialer.Resolver` which CGo can silently override with
+system DNS (127.0.0.1:53).
+
+Previous behavior: `net.Dialer{Resolver: buildCCattlerResolver()}` passed
+the resolver to Go's dialer, but CGo-linked binaries ignore `PreferGo: true`
+and use the system resolver instead.
