@@ -1324,6 +1324,11 @@ func formatServiceTags(tags map[string]string) string {
 }
 
 func printInstancesTableWithOptions(instances []api.InstanceStatus, options getOutputOptions) {
+	sort.Slice(instances, func(first, second int) bool {
+		nameFirst := instances[first].ServiceName + "-" + instances[first].ID
+		nameSecond := instances[second].ServiceName + "-" + instances[second].ID
+		return nameFirst < nameSecond
+	})
 	wideOutput := options.outputFormat == "wide"
 	header := []string{"CONTAINER", "STATE", "RESTARTS", "NODE", "IP", "HEALTH", "REASON"}
 	var rows [][]string

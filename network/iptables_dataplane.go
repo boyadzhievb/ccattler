@@ -23,7 +23,7 @@ const iptablesServiceChainPrefix = "CCA_SVC_"
 
 // vipDummyInterface is the name of the dummy network interface used to
 // assign VIP addresses so the kernel accepts packets destined for them.
-const vipDummyInterface = "cca0"
+const vipDummyInterface = "cca-vip0"
 
 // maxJumpRuleRemovalAttempts is the maximum number of iterations when
 // removing all jump rules from CCA_SERVICES that target a given

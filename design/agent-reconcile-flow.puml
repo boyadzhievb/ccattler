@@ -473,3 +473,233 @@ rt --> startup : started
 startup -> etcd : publishInstanceStateToStore(running)
 
 @enduml
+
+@startuml dataplane-call-graph
+!theme plain
+title Data Plane — Function Call Graph
+
+' DataPlaneReconciler.Reconcile is called every 1s from dataPlaneLoop.
+' The provider dispatches to nftables, iptables, or eBPF.
+
+skinparam defaultTextAlignment left
+skinparam componentBackgroundColor #f8f8f8
+skinparam arrowColor #333333
+left to right direction
+
+() "dataPlaneLoop (1s)" as dploop
+
+rectangle "DataPlaneReconciler.Reconcile" {
+  (buildServiceVIPConfigs) as buildvip
+  (buildRouteDataPlaneConfigs) as buildroute
+  (DataPlaneProvider.ReconcileVIPDataPlane) as reconcvip
+  (DataPlaneProvider.ReconcileRouteDataPlane) as reconcroute
+}
+
+dploop --> buildvip
+dploop --> reconcvip
+dploop --> buildroute
+dploop --> reconcroute
+
+' === buildServiceVIPConfigs ===
+rectangle "buildServiceVIPConfigs" {
+  (store.Scan derived/vip/) as scanvip
+  (store.Scan desired/service/*/ports) as scanports
+  (resolveServiceBackends) as resvbackends
+}
+
+buildvip --> scanvip
+buildvip --> scanports
+buildvip --> resvbackends : for each service
+
+' === resolveServiceBackends ===
+rectangle "resolveServiceBackends" {
+  (identifyStaleNodes) as stalenodes
+  (resolveLocalBackend) as localbe
+  (resolveRemoteBackend) as remotebe
+}
+
+resvbackends --> stalenodes
+resvbackends --> localbe : if on this node
+resvbackends --> remotebe : if on another node
+
+' === NftablesDataPlane.ReconcileVIPDataPlane ===
+rectangle "NftablesDataPlane (nftables path)" {
+  (ensureDummyInterface) as nftdummy
+  (ensureVIPAddress) as nftvipaddr
+  (removeStaleVIPAddresses) as nftrmvip
+  (buildVIPRuleset) as nftbuild
+  (applyNftablesRuleset) as nftapply
+}
+
+reconcvip --> nftdummy : creates cca-vip0
+reconcvip --> nftvipaddr : for each VIP
+reconcvip --> nftrmvip
+reconcvip --> nftbuild
+reconcvip --> nftapply : nft -f (atomic)
+
+' === buildVIPRuleset internals ===
+rectangle "buildVIPRuleset" {
+  (writePostRoutingChain) as postrt
+  (writeVerdictMapWithElements) as vmap
+  (writeBackendDNATRules) as dnat
+}
+
+nftbuild --> postrt
+nftbuild --> vmap
+nftbuild --> dnat
+
+note bottom of nftdummy
+  Creates cca-vip0 (dummy interface)
+  for kernel to accept VIP packets.
+  CNI bridge is separate: cca0.
+end note
+
+@enduml
+
+@startuml vxlan-call-graph
+!theme plain
+title VXLAN Overlay — Function Call Graph
+
+skinparam defaultTextAlignment left
+skinparam componentBackgroundColor #f8f8f8
+skinparam arrowColor #333333
+left to right direction
+
+() "dataPlaneLoop (1s)" as dploop
+
+rectangle "VXLANReconciler.Reconcile" {
+  (EnsureSubnetPublished) as ensuresub
+  (ensureVXLANInterfaceExists) as ensurevxlan
+  (discoverPeerNodes) as discover
+  (programPeerRoutes) as progroutes
+  (removeStaleRoutes) as rmroutes
+}
+
+dploop --> ensuresub
+dploop --> ensurevxlan
+dploop --> discover
+dploop --> progroutes
+dploop --> rmroutes
+
+' === EnsureSubnetPublished ===
+rectangle "EnsureSubnetPublished" {
+  (allocateNextFreeSubnet) as allocsub
+  (store.Put observed/node/{nodeID}/subnet) as putsub
+}
+
+ensuresub --> allocsub : if not yet assigned
+ensuresub --> putsub
+
+' === allocateNextFreeSubnet ===
+rectangle "allocateNextFreeSubnet" {
+  (store.Scan observed/node/*/subnet) as scansub
+  (parseClusterCIDRBaseOctets) as parsecidr
+  (collectOccupiedThirdOctets) as occupied
+  (findNextFreeThirdOctetForNode) as nextoct
+  (hashNodeIDToOctetOffset) as hashoct
+}
+
+allocsub --> scansub
+allocsub --> parsecidr
+allocsub --> occupied
+allocsub --> nextoct
+nextoct --> hashoct
+
+' === ensureVXLANInterfaceExists ===
+rectangle "ensureVXLANInterfaceExists" {
+  (interfaceAlreadyExists) as ifexist
+  (detectPhysicalInterfaceForAddress) as detectphy
+  (deriveVXLANMACAddress) as derivemac
+  (executeVXLANCreate) as vxlancreate
+  (executeIPLinkSetUp) as linkup
+}
+
+ensurevxlan --> ifexist
+ensurevxlan --> detectphy
+ensurevxlan --> derivemac
+ensurevxlan --> vxlancreate : ip link add cca-vxlan0 type vxlan
+ensurevxlan --> linkup
+
+' === discoverPeerNodes ===
+rectangle "discoverPeerNodes" {
+  (store.Scan observed/node/*/address) as scanaddr
+  (store.Scan observed/node/*/subnet) as scanpeersub
+  (buildNodeAddressMap) as addrmap
+  (buildNodeSubnetMap) as submap
+}
+
+discover --> scanaddr
+discover --> scanpeersub
+discover --> addrmap
+discover --> submap
+
+' === programPeerRoutes ===
+rectangle "programPeerRoutes" {
+  (bridge fdb append) as fdbappend
+  (ip route replace) as routeadd
+}
+
+progroutes --> fdbappend : VTEP → peer address
+progroutes --> routeadd : peer subnet → vxlan0
+
+@enduml
+
+@startuml dns-call-graph
+!theme plain
+title DNS — Function Call Graph
+
+skinparam defaultTextAlignment left
+skinparam componentBackgroundColor #f8f8f8
+skinparam arrowColor #333333
+left to right direction
+
+' === Control plane DNS server ===
+() "DNSServer.Start (ctrl :15353)" as dnsstart
+
+rectangle "DNSServer" {
+  (handleDNSQuery) as handleq
+  (parseDNSQuestionName) as parsename
+  (StoreBackedResolver.ResolveEndpoints) as resolve
+  (buildDNSARecordResponse) as buildresp
+  (sendNXDomainResponse) as nxdomain
+}
+
+dnsstart --> handleq : for each UDP packet
+handleq --> parsename
+handleq --> resolve
+handleq --> buildresp : if found
+handleq --> nxdomain : if not found
+
+' === Agent DNS forwarder ===
+() "DNSForwarder.Start (agent :53)" as fwdstart
+
+rectangle "DNSForwarder" {
+  (handleForwardedQuery) as handlefwd
+  (dnsCache.get) as cacheget
+  (forwardToUpstream ccaUpstream) as fwdcca
+  (forwardToUpstream systemUpstream) as fwdsys
+  (dnsCache.put) as cacheput
+}
+
+fwdstart --> handlefwd : for each UDP packet
+handlefwd --> cacheget : return cached if hit
+handlefwd --> fwdcca : if *.cca.local
+handlefwd --> fwdsys : else (system DNS)
+handlefwd --> cacheput : cache response
+
+' === StoreBackedResolver ===
+rectangle "StoreBackedResolver" {
+  (store.Scan derived/endpoint/{svc}/) as scanep
+  (store.Get derived/vip/{svc}) as getvip
+}
+
+resolve --> scanep
+
+note bottom of fwdcca
+  Forwards .cca.local queries
+  to control plane :15353.
+  System queries go to /etc/resolv.conf
+  upstream (parsed at startup).
+end note
+
+@enduml

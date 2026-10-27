@@ -388,3 +388,227 @@ system DNS (127.0.0.1:53).
 Previous behavior: `net.Dialer{Resolver: buildCCattlerResolver()}` passed
 the resolver to Go's dialer, but CGo-linked binaries ignore `PreferGo: true`
 and use the system resolver instead.
+
+## Data Plane Side (agent/dataplane.go, network/*_dataplane.go)
+
+### DataPlaneReconciler.Reconcile → called every 1s from dataPlaneLoop
+```
+DataPlaneReconciler.Reconcile
+├── buildServiceVIPConfigs
+│   ├── store.Scan(derived/vip/)              [VIP allocations]
+│   ├── store.Scan(desired/service/*/ports)   [exposed ports]
+│   ├── store.Scan(desired/service/*/expose/)
+│   ├── resolveServiceBackends               [for each service]
+│   │   ├── identifyStaleNodes
+│   │   │   └── store.Scan(observed/node/*/heartbeat)
+│   │   ├── store.Scan(observed/instance/)    [find instances for service]
+│   │   ├── resolveLocalBackend              [if instance on this node]
+│   │   │   └── resolveHostPort
+│   │   │       └── store.Get(observed/instance/{id}/host_port/{port})
+│   │   └── resolveRemoteBackend             [if instance on another node]
+│   │       └── store.Get(observed/node/{nodeID}/address)
+│   └── → []ServiceVIPConfig
+│
+├── DataPlaneProvider.ReconcileVIPDataPlane(serviceConfigs)
+│   [dispatches to one of: nftables, iptables, eBPF, simulator]
+│
+├── buildRouteDataPlaneConfigs
+│   ├── store.Scan(desired/route/)
+│   ├── store.Scan(derived/route/)
+│   ├── parseRouteFactsForDataPlane
+│   ├── buildRouteConfigFromEntry
+│   │   └── parseBackendAddressList
+│   └── → []RouteDataPlaneConfig
+│
+└── DataPlaneProvider.ReconcileRouteDataPlane(routeConfigs)
+```
+
+### Agent startup: initializeDataPlaneIfSupported
+```
+initializeDataPlaneIfSupported
+├── DataPlaneInitializer.Initialize           [if provider supports it]
+│   ├── eBPF: loadEbpfPrograms, extractTCPrograms, ensurePinDirectory,
+│   │         extractAndPinMaps, attachCgroupPrograms, scanExistingServiceIDs
+│   └── iptables/nftables: no-op (don't implement DataPlaneInitializer)
+│
+└── DataPlaneNodeRegistrar.RegisterNode       [if provider supports it]
+    └── eBPF: program node map, attach TC to bridge
+```
+
+### NftablesDataPlane.ReconcileVIPDataPlane → the nftables path
+```
+NftablesDataPlane.ReconcileVIPDataPlane(serviceConfigs)
+├── ensureDummyInterface                      [creates cca-vip0 dummy]
+│   └── ip link add cca-vip0 type dummy
+│   └── ip link set cca-vip0 up
+│
+├── FOR EACH service VIP:
+│   ├── ensureVIPAddress(virtualIP)
+│   │   └── ip addr add {vip}/32 dev cca-vip0
+│   └── track active VIPs
+│
+├── removeStaleVIPAddresses(desiredAddresses)
+│   └── ip addr del {stale_vip}/32 dev cca-vip0
+│
+├── buildVIPRuleset(serviceConfigs)
+│   ├── writePostRoutingChain                 [masquerade for DNAT]
+│   ├── writeVerdictMapWithElements           [dispatch VIP:port → chain]
+│   └── writeBackendDNATRules                 [DNAT to backends]
+│
+└── applyNftablesRuleset(ruleset)
+    └── nft -f (atomic replace)
+```
+
+### IptablesDataPlane.ReconcileVIPDataPlane → the iptables path
+```
+IptablesDataPlane.ReconcileVIPDataPlane(serviceConfigs)
+├── ensureDummyInterface                      [creates cca-vip0 dummy]
+├── ensureGlobalChainAndJumpRules
+│   ├── ensureJumpToChain(PREROUTING, CCA_SERVICES)
+│   ├── ensureJumpToChain(OUTPUT, CCA_SERVICES)
+│   └── ensureMasqueradeForDNAT
+│
+├── FOR EACH service VIP:
+│   ├── ensureVIPAddress(virtualIP)
+│   ├── sanitizeChainName → CCA_SVC_{name}
+│   ├── reconcileServiceChain                 [DNAT rules per backend]
+│   └── ensureJumpFromMainToService           [CCA_SERVICES → chain]
+│
+├── removeStaleServiceChains(desiredChains)
+│   ├── removeJumpRuleFromMainChain
+│   └── flushAndDeleteChain
+│
+└── removeStaleVIPAddresses(desiredAddresses)
+    └── removeVIPAddressFromInterface
+```
+
+### EbpfDataPlane.ReconcileVIPDataPlane → the eBPF path
+```
+EbpfDataPlane.ReconcileVIPDataPlane(serviceConfigs)
+├── buildDesiredVIPState(serviceConfigs)
+│   ├── buildServiceEntries
+│   └── assignOrLookupServiceID
+│
+├── applyDesiredServiceEntries                [update BPF service map]
+├── applyDesiredBackendEntries                [update BPF backend map]
+├── removeStaleServiceEntries                 [delete old entries]
+└── removeStaleBackendEntries                 [delete old entries]
+```
+
+### Known Bug: VIP dummy interface name collision (FIXED in M150)
+
+`vipDummyInterface` was `"cca0"` in network/iptables_dataplane.go, same
+name as `cniBridgeName` in runtime/containerd.go. Data plane creates dummy
+first (agent startup), then CNI bridge plugin fails with:
+`"cca0" already exists but is not a bridge`.
+
+Fix: renamed to `"cca-vip0"`. CNI bridge stays `"cca0"`.
+
+## VXLAN Overlay Side (agent/vxlan.go)
+
+### VXLANReconciler.Reconcile → called every 1s from dataPlaneLoop
+```
+VXLANReconciler.Reconcile
+├── EnsureSubnetPublished (if not yet)
+│   ├── allocateNextFreeSubnet
+│   │   ├── store.Scan(observed/node/*/subnet)
+│   │   ├── parseClusterCIDRBaseOctets
+│   │   ├── collectOccupiedThirdOctets
+│   │   └── findNextFreeThirdOctetForNode
+│   │       └── hashNodeIDToOctetOffset        [consistent hashing]
+│   └── store.Put(observed/node/{nodeID}/subnet)
+│
+├── ensureVXLANInterfaceExists
+│   ├── interfaceAlreadyExists("cca-vxlan0")
+│   ├── detectPhysicalInterfaceForAddress
+│   ├── deriveVXLANMACAddress(nodeID)
+│   ├── executeVXLANCreate                    [ip link add cca-vxlan0 type vxlan]
+│   ├── executeIPLinkSetAddress               [set MAC]
+│   ├── executeIPLinkSetMTU(1450)
+│   └── executeIPLinkSetUp("cca-vxlan0")
+│
+├── discoverPeerNodes
+│   ├── store.Scan(observed/node/*/address)
+│   ├── store.Scan(observed/node/*/subnet)
+│   ├── buildNodeAddressMap
+│   └── buildNodeSubnetMap
+│
+├── programPeerRoutes                         [for each peer node]
+│   ├── bridge fdb append                     [VTEP → peer address]
+│   └── ip route replace                      [peer subnet → vxlan0]
+│
+└── removeStaleRoutes                         [for peers that disappeared]
+    ├── ip route delete
+    └── bridge fdb del
+```
+
+### VXLANReconciler.EnsureSubnetPublished → called once at agent startup
+```
+EnsureSubnetPublished
+├── AllocatedSubnet                           [check if already assigned]
+├── allocateNextFreeSubnet                    [if not yet]
+│   └── (see above)
+└── store.Put(observed/node/{nodeID}/subnet)
+```
+
+## DNS Side (network/dns.go, network/dns_forwarder.go)
+
+### DNSServer (control plane, port 15353)
+```
+DNSServer.Start(ctx)
+├── net.ListenPacket("udp", listenAddress)
+└── FOR EACH incoming packet:
+    └── handleDNSQuery
+        ├── parseDNSQuestionName              [extract queried hostname]
+        ├── StoreBackedResolver.ResolveEndpoints(serviceName)
+        │   └── store.Scan(derived/endpoint/{serviceName}/)
+        ├── IF found:
+        │   └── buildDNSARecordResponse → reply with first IP
+        └── ELSE:
+            └── sendNXDomainResponse
+```
+
+### DNSForwarder (agent side, per-node, port 53)
+```
+DNSForwarder.Start(ctx)
+├── net.ListenPacket("udp", listenAddress)
+└── FOR EACH incoming packet:
+    └── handleForwardedQuery
+        ├── parseDNSQuestionName
+        ├── dnsCache.get(queryName)           [return cached if hit]
+        ├── IF name ends in ".cca.local":
+        │   └── forwardToUpstream(ccaUpstream) [→ control plane :15353]
+        └── ELSE:
+            └── forwardToUpstream(systemUpstream) [→ /etc/resolv.conf]
+        └── dnsCache.put(queryName, response, ttl)
+```
+
+### ParseSystemResolvers — called at agent startup
+```
+ParseSystemResolvers(resolvConfPath, excludeAddress)
+└── reads /etc/resolv.conf, returns first nameserver != excludeAddress
+```
+
+## Network Provider Side (network/network.go)
+
+### NetworkProvider interface
+```
+NetworkProvider
+├── AllocateIP(ctx, nodeID, instanceID) → IP
+│   [called by buildRuntimeSpecForInstance]
+├── ReleaseIP(ctx, nodeID, instanceID)
+│   [called by cleanupUndesiredInstance]
+└── NodeSubnet(nodeID) → CIDR
+    [called by VXLANReconciler, DataPlaneReconciler]
+```
+
+### StoreBackedResolver (network/resolver.go)
+```
+StoreBackedResolver.ResolveEndpoints(ctx, serviceName)
+├── store.Scan(derived/endpoint/{serviceName}/)
+└── → []Endpoint{IP, Port, NodeID}
+
+StoreBackedResolver.ResolveVIP(ctx, serviceName)
+├── store.Get(derived/vip/{serviceName})
+└── → VIP string
+```
