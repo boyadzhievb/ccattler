@@ -1,0 +1,466 @@
+@startuml agent-call-graph
+!theme plain
+title Agent — Function Call Graph
+
+' Agent.Run is the entry point. Every arrow means "calls".
+' Goroutines are marked with (goroutine).
+
+skinparam defaultTextAlignment left
+skinparam componentBackgroundColor #f8f8f8
+skinparam arrowColor #333333
+left to right direction
+
+() "Agent.Run" as run
+
+' --- Startup sequence (sequential) ---
+rectangle "Startup" {
+  (RegisterNode) as regnode
+  (PublishAliveState) as alive
+  (WriteHeartbeat) as hb0
+  (PublishAdvertiseAddress) as advaddr
+  (EnsureSubnetPublished) as subnet
+  (initializeDataPlaneIfSupported) as initdp
+  (dnsForwarder.Start) as dnsfwd
+  (executeReconciliationCycle) as reconcile0
+}
+
+run --> regnode
+run --> alive
+run --> hb0
+run --> advaddr
+run --> subnet
+run --> initdp
+run --> dnsfwd : goroutine
+run --> reconcile0 : initial
+
+' --- Goroutines spawned after startup ---
+rectangle "Independent Goroutines" {
+  (probeScheduler.Run) as probes
+  (heartbeatLoop) as hbloop
+  (dataPlaneLoop) as dploop
+}
+
+run --> probes : goroutine
+run --> hbloop : goroutine
+run --> dploop : goroutine
+
+' --- Watch loop ---
+rectangle "Watch Loop" {
+  (runWatchLoop) as watchloop
+  (executeReconciliationCycle) as reconcile
+}
+
+run --> watchloop : retry loop
+watchloop --> reconcile : on ticker(1s) OR watch event
+
+' === executeReconciliationCycle — the core ===
+rectangle "executeReconciliationCycle" {
+  (findInstancesPlacedOnThisNode) as findplaced
+  (runtime.List) as rtlist
+  (sort: no-init-step first) as sortinit
+  (reconcileDesiredInstance) as recondesired
+  (reconcileResourceChanges) as reconres
+  (republishHostPortIfNeeded) as rehostport
+  (observeInstanceState) as observe
+  (publishInstanceStateToStore) as pubstate
+  (detectConfigChange) as detectcfg
+  (publishExitReasonFromStatus) as exitreason
+  (cleanupUndesiredInstance) as cleanup
+  (clearPullStatusFromStore) as clearpull
+}
+
+reconcile --> findplaced
+reconcile --> rtlist
+reconcile --> sortinit
+reconcile --> recondesired : if NOT running
+reconcile --> detectcfg : if running
+reconcile --> reconres : if no config change
+reconcile --> rehostport
+reconcile --> observe
+reconcile --> pubstate
+reconcile --> exitreason : if exitCode != 0
+reconcile --> cleanup : stale instances
+reconcile --> clearpull : unplaced backoffs
+
+' === findInstancesPlacedOnThisNode ===
+rectangle "findInstancesPlacedOnThisNode" {
+  (store.Scan placement/node/{nodeID}/) as scanplace
+  (isInstanceMarkedForSkip) as skipcheck
+  (store.Get observed/instance/{id}/state) as getstate
+  (store.Get derived/drain/evict) as getdrain
+  (store.Get observed/instance/{id}/service) as getsvc
+  (derive service from ID) as derivesvc
+}
+
+findplaced --> scanplace
+findplaced --> skipcheck
+findplaced --> getstate
+findplaced --> getdrain
+findplaced --> getsvc
+findplaced --> derivesvc : fallback for stateful IDs
+
+' === isInstanceMarkedForSkip ===
+rectangle "isInstanceMarkedForSkip" {
+  (store.Get derived/instance/{id}/node_failure) as nodefail
+  (store.Get derived/instance/{id}/controller_stopped) as ctrlstop
+}
+
+skipcheck --> nodefail
+skipcheck --> ctrlstop
+
+' === reconcileDesiredInstance — startup sequence ===
+rectangle "reconcileDesiredInstance" {
+  (lookupServiceImageFromStore) as lookupimg
+  (resolveImagePullCredentials) as pullcreds
+  (ensureImageAvailable) as ensureimg
+  (RegisterInstanceToken) as regtok
+  (hasInitSteps) as hasinit
+  (executeInitializationSteps) as execinit
+  (ensureVolumesAttachedForInstance) as volumes
+  (publishStatusReason) as pubreason
+  (buildRuntimeSpecForInstance) as buildspec
+  (materializeSecretFiles) as matsecret
+  (materializeConnectionFiles) as matconn
+  (injectSecretAPIIntoSpec) as injectsecret
+  (startInstanceAndPublishState) as startpub
+}
+
+recondesired --> lookupimg
+recondesired --> pullcreds
+recondesired --> ensureimg
+recondesired --> regtok : if secretAPI
+recondesired --> hasinit
+recondesired --> execinit : if has init steps
+recondesired --> volumes : if storageProvider
+recondesired --> pubreason : "starting"
+recondesired --> buildspec
+recondesired --> matsecret
+recondesired --> matconn
+recondesired --> injectsecret : if secretAPI
+recondesired --> startpub
+
+' === ensureImageAvailable ===
+rectangle "ensureImageAvailable" {
+  (lookupServicePullPolicyFromStore) as pullpol
+  (IsImageCached) as imgcache
+  (PullImage) as pullimg
+  (recordImagePullFailure) as pullbackoff
+}
+
+ensureimg --> pullpol
+ensureimg --> imgcache
+ensureimg --> pullimg : 5min timeout
+ensureimg --> pullbackoff : on failure (10s-5min backoff)
+
+' === executeInitializationSteps ===
+rectangle "executeInitializationSteps" {
+  (loadInitStepDefinitions) as loadinit
+  (readCurrentInitPhase) as readphase
+  (readInitStepState) as readstepst
+  (executeInitStep) as execstep
+  (clearInitProgress) as clearinit
+}
+
+execinit --> loadinit
+execinit --> readphase
+execinit --> readstepst
+execinit --> execstep : for each step, sequential
+execinit --> clearinit : all passed
+
+' === executeInitStep ===
+rectangle "executeInitStep" {
+  (publishInitProgress) as initprog
+  (runConnectionProbe) as connprobe
+  (runInitCommand) as initcmd
+}
+
+execstep --> initprog
+execstep --> connprobe : if connection type
+execstep --> initcmd : if exec type
+
+' === runConnectionProbe ===
+rectangle "runConnectionProbe" {
+  (assembleConnectionURL) as asmurl
+  (parseConnectionJSON) as parseconn
+  (buildCCattlerResolver) as buildresolver
+  (net.Dialer.DialContext) as tcpdial
+}
+
+connprobe --> asmurl
+connprobe --> parseconn
+connprobe --> buildresolver
+connprobe --> tcpdial : TCP dial host:port
+
+' === buildCCattlerResolver ===
+note right of buildresolver
+  Uses advertiseAddress:53
+  Falls back to net.DefaultResolver
+  when advertiseAddress is empty
+end note
+
+' === buildRuntimeSpecForInstance ===
+rectangle "buildRuntimeSpecForInstance" {
+  (resolveServiceConfigEnvVars) as resenv
+  (resolveServiceConfigFiles) as rescfg
+  (lookupServiceExposedPortsFromStore) as resports
+  (lookupServiceResourcesFromStore) as resresrc
+  (lookupServiceCommandFromStore) as rescmd
+  (networkProvider.AllocateIP) as allocip
+}
+
+buildspec --> resenv
+buildspec --> rescfg
+buildspec --> resports
+buildspec --> resresrc
+buildspec --> rescmd
+buildspec --> allocip
+
+' === startInstanceAndPublishState ===
+rectangle "startInstanceAndPublishState" {
+  (runtime.Start) as rtstart
+  (retryBridgeAttachmentIfNeeded) as retrybridge
+  (executeLifecycleHook) as lifecycle
+  (HostPortsForInstance) as hostports
+  (publishInstanceHostPorts) as pubhostports
+  (runtime.Status) as rtstatus
+  (publishInstanceStateToStore2) as pubstate2
+  (store.Put observed/instance/{id}/image) as putimage
+}
+
+startpub --> rtstart
+startpub --> retrybridge
+startpub --> lifecycle : post_start
+startpub --> hostports
+startpub --> pubhostports
+startpub --> rtstatus
+startpub --> pubstate2
+startpub --> putimage
+
+@enduml
+
+@startuml server-call-graph
+!theme plain
+title Server (Controller Runner) — Function Call Graph
+
+' Runner.Run is the entry point. Every arrow means "calls".
+
+skinparam defaultTextAlignment left
+skinparam componentBackgroundColor #f8f8f8
+skinparam arrowColor #333333
+left to right direction
+
+() "Runner.Run" as run
+
+' --- Startup ---
+rectangle "Runner.Run" {
+  (EventProjector.Run) as eventproj
+  (runSingleController) as runsingle
+}
+
+run --> eventproj : goroutine
+run --> runsingle : goroutine per controller
+
+' === runSingleController ===
+rectangle "runSingleController" {
+  (runControllerLoop) as runloop
+}
+
+runsingle --> runloop : retry with exp backoff
+
+' === runControllerLoop ===
+rectangle "runControllerLoop" {
+  (setupControllerWatches) as watches
+  (executeReconciliationCycle) as reconcile0
+  (runReconcileSelectLoop) as selectloop
+}
+
+runloop --> watches
+runloop --> reconcile0 : initial reconcile
+runloop --> selectloop
+
+' === setupControllerWatches ===
+rectangle "setupControllerWatches" {
+  (store.Watch per prefix) as storewatch
+  (forwardWatchEvents) as fwdevents
+}
+
+watches --> storewatch : for each controller.Watch() prefix
+watches --> fwdevents : goroutine per prefix
+
+' === runReconcileSelectLoop ===
+rectangle "runReconcileSelectLoop" {
+  (executeReconciliationCycle) as reconcile
+}
+
+note right of selectloop
+  select:
+    reconcileTrigger (watch event)
+    resyncTicker (30s)
+    watchLost → return error → restart
+  debounce: 50ms after trigger
+end note
+
+selectloop --> reconcile : on trigger or resync
+
+' === executeReconciliationCycle ===
+rectangle "executeReconciliationCycle" {
+  (attemptSingleReconciliation) as attempt
+}
+
+reconcile --> attempt : up to 5 retries on conflict
+
+' === attemptSingleReconciliation ===
+rectangle "attemptSingleReconciliation" {
+  (store.Scan) as scan
+  (controller.Reconcile) as recon
+  (controller.ReconcileDelta) as recondelta
+  (store.Transaction) as txn
+}
+
+attempt --> scan : read current facts
+attempt --> recon : facts → []change
+attempt --> recondelta : first attempt if delta
+attempt --> txn : CAS commit (compare+then+else)
+
+note right of txn
+  Compare: input key revisions
+  Then: put/delete changes
+  Else: nil (retry on conflict)
+end note
+
+' === Controllers (14 core + 5 HA-only) ===
+note bottom of run
+  Core controllers:
+    InstanceController, Scheduler,
+    EndpointController, FailureController,
+    AutoscaleController, IntentResolver,
+    RolloutController, InitController,
+    StatefulDNSController, StatefulVolumeController,
+    RouteController, EvictionController,
+    JobController, CronController
+
+  HA-only (leader election):
+    NodeFailureController, DrainController,
+    NetworkController, NetworkPolicyController,
+    WarmZeroController
+end note
+
+@enduml
+
+@startuml fresh-deploy-call-sequence
+!theme plain
+title Fresh Deploy — Function Call Sequence (who calls whom, in order)
+
+skinparam defaultTextAlignment left
+skinparam noteBackgroundColor #ffffcc
+
+participant "User" as user
+participant "cca apply" as apply
+participant "etcd" as etcd
+participant "InstanceController\n.Reconcile()" as ic
+participant "Scheduler\n.Reconcile()" as sched
+participant "Agent\n.executeReconciliationCycle()" as agent
+participant "Agent\n.reconcileDesiredInstance()" as startup
+participant "Agent\n.executeInitializationSteps()" as init
+participant "Container Runtime" as rt
+
+== Step 1: User applies workload ==
+user -> apply : cca apply airflow.cca
+apply -> etcd : write desired/service/{name}/*
+
+== Step 2: InstanceController creates instances ==
+etcd -> ic : watch: desired/service/ changed
+ic -> ic : Reconcile(facts) → changes[]
+ic -> etcd : put observed/instance/{id}/state=pending\nput observed/instance/{id}/service={name}
+
+== Step 3: Scheduler places instances on nodes ==
+etcd -> sched : watch: observed/instance/ changed
+sched -> sched : Reconcile(facts) → changes[]
+sched -> etcd : put placement/instance/{id}={nodeID}\nput placement/node/{nodeID}/{id}=""
+
+== Step 4: Agent reconcile loop picks up placement ==
+etcd -> agent : watch: placement/node/{nodeID}/ changed
+agent -> agent : findInstancesPlacedOnThisNode()
+note right
+  store.Scan(placement/node/{nodeID}/)
+  → isInstanceMarkedForSkip()
+  → store.Get(observed/instance/{id}/state)
+  → store.Get(observed/instance/{id}/service)
+end note
+agent -> agent : runtime.List() → runningByID
+agent -> agent : sort(no-init-step first)
+
+== Step 5a: Instance WITHOUT init steps (e.g. metadata-db) ==
+agent -> startup : reconcileDesiredInstance(metadata-db-0)
+startup -> startup : lookupServiceImageFromStore()
+startup -> startup : resolveImagePullCredentials()
+startup -> startup : ensureImageAvailable()
+note right
+  lookupServicePullPolicyFromStore()
+  → IsImageCached() → PullImage(5min timeout)
+  → recordImagePullFailure() on error
+end note
+startup -> startup : hasInitSteps() → false
+startup -> startup : buildRuntimeSpecForInstance()
+note right
+  resolveServiceConfigEnvVars()
+  resolveServiceConfigFiles()
+  lookupServiceExposedPortsFromStore()
+  lookupServiceResourcesFromStore()
+  lookupServiceCommandFromStore()
+  networkProvider.AllocateIP()
+end note
+startup -> startup : materializeSecretFiles()
+startup -> startup : materializeConnectionFiles()
+startup -> rt : startInstanceAndPublishState()\n→ runtime.Start(spec)
+rt --> startup : started, IP=10.x.y.z
+startup -> etcd : publishInstanceStateToStore(running)
+startup -> startup : retryBridgeAttachmentIfNeeded()
+startup -> startup : executeLifecycleHook(post_start)
+
+== Step 5b: Instance WITH init steps (e.g. worker) ==
+agent -> startup : reconcileDesiredInstance(worker)
+startup -> startup : lookupServiceImageFromStore()
+startup -> startup : ensureImageAvailable()
+startup -> startup : hasInitSteps() → true
+startup -> init : executeInitializationSteps()
+init -> init : loadInitStepDefinitions()
+note right
+  store.Scan(desired/service/{name}/init/)
+  Parse each step: exec, connection, timeout, retry
+end note
+init -> init : readCurrentInitPhase()
+
+loop for each init step (sequential)
+  init -> init : readInitStepState()
+  init -> init : executeInitStep()
+  note right
+    Check backoff (attemptCount, nextRetryAt)
+    publishInitProgress()
+  end note
+
+  alt connection type
+    init -> init : runConnectionProbe()
+    note right
+      assembleConnectionURL()
+      parseConnectionJSON()
+      buildCCattlerResolver()
+        → uses advertiseAddress:53
+        → FALLBACK: net.DefaultResolver
+      net.Dialer.DialContext("tcp", host:port)
+    end note
+  else exec type
+    init -> init : runInitCommand()
+    note right
+      runtime.ExecInit(image, initSpec)
+    end note
+  end
+end
+
+init --> startup : true (all steps passed)
+startup -> startup : buildRuntimeSpecForInstance()
+startup -> rt : startInstanceAndPublishState()
+rt --> startup : started
+startup -> etcd : publishInstanceStateToStore(running)
+
+@enduml

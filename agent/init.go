@@ -333,20 +333,53 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 		dialAddress = net.JoinHostPort(connectionDef.host, "0")
 	}
 
-	dialer := &net.Dialer{
-		Resolver: nodeAgent.buildCCattlerResolver(),
+	resolvedAddress, resolveError := nodeAgent.resolveConnectionAddress(probeCtx, connectionDef.host, dialAddress)
+	if resolveError != nil {
+		return fmt.Errorf("connection %q: %w", stepDefinition.connection, resolveError)
 	}
-	tcpConnection, dialError := dialer.DialContext(probeCtx, "tcp", dialAddress)
+
+	dialer := &net.Dialer{}
+	tcpConnection, dialError := dialer.DialContext(probeCtx, "tcp", resolvedAddress)
 	if dialError != nil {
-		return fmt.Errorf("connection %q: TCP dial to %s failed: %w", stepDefinition.connection, dialAddress, dialError)
+		return fmt.Errorf("connection %q: TCP dial to %s (resolved: %s) failed: %w", stepDefinition.connection, dialAddress, resolvedAddress, dialError)
 	}
 	_ = tcpConnection.Close()
 
 	logging.Default().Info("connection probe passed",
 		"agent", nodeAgent.nodeID,
 		"connection", stepDefinition.connection,
-		"address", dialAddress)
+		"address", dialAddress,
+		"resolved", resolvedAddress)
 	return nil
+}
+
+// resolveConnectionAddress resolves the hostname in a dial address using CCattler
+// DNS directly, bypassing Go's net.Dialer.Resolver which CGo can override.
+func (nodeAgent *Agent) resolveConnectionAddress(ctx context.Context, hostname string, originalAddress string) (string, error) {
+	if net.ParseIP(hostname) != nil {
+		return originalAddress, nil
+	}
+
+	resolver := nodeAgent.buildCCattlerResolver()
+	resolvedAddresses, lookupError := resolver.LookupHost(ctx, hostname)
+	if lookupError != nil {
+		return "", fmt.Errorf("DNS lookup for %q failed: %w", hostname, lookupError)
+	}
+	if len(resolvedAddresses) == 0 {
+		return "", fmt.Errorf("DNS lookup for %q returned no addresses", hostname)
+	}
+
+	_, port, splitError := net.SplitHostPort(originalAddress)
+	if splitError != nil {
+		return "", fmt.Errorf("invalid address %q: %w", originalAddress, splitError)
+	}
+
+	resolvedDialAddress := net.JoinHostPort(resolvedAddresses[0], port)
+	logging.Default().Info("resolved connection hostname via CCattler DNS",
+		"hostname", hostname,
+		"resolved", resolvedAddresses[0],
+		"dialAddress", resolvedDialAddress)
+	return resolvedDialAddress, nil
 }
 
 // buildCCattlerResolver returns a DNS resolver that queries CCattler's embedded
