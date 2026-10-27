@@ -364,7 +364,7 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Pruning container snapshots for blank-slate redeploy..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo ctr -n cca snapshots rm --all 2>/dev/null || true" &
+            ssh_vm "$vm" "for s in \$(sudo ctr -n cca snapshots list -q 2>/dev/null); do sudo ctr -n cca snapshots rm \$s 2>/dev/null; done" &
         done
         wait
     else
@@ -453,7 +453,7 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done; sudo ctr -n cca snapshots rm --all 2>/dev/null || true" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done; for s in \$(sudo ctr -n cca snapshots list -q 2>/dev/null); do sudo ctr -n cca snapshots rm \$s 2>/dev/null; done" &
         done
         wait
     else
