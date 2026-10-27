@@ -214,7 +214,7 @@ func TestWatchOverflowThenResyncConverges(t *testing.T) {
 
 	// Flood the watch channel to trigger overflow (buffer is 64).
 	for iteration := 0; iteration < 200; iteration++ {
-		memoryStore.Put(ctx, fmt.Sprintf("/data/key-%d", iteration), []byte(fmt.Sprintf("v%d", iteration)))
+		memoryStore.Put(ctx, fmt.Sprintf("/data/key-%d", iteration), fmt.Appendf(nil, "v%d", iteration))
 	}
 
 	// Drain whatever we got — expect some events and possibly an overflow.
@@ -310,7 +310,7 @@ func TestWatchFromRevisionMonotonicallyIncreasing(t *testing.T) {
 
 	// Write a sequence of updates.
 	for iteration := 0; iteration < 20; iteration++ {
-		memoryStore.Put(ctx, fmt.Sprintf("/seq/key-%02d", iteration), []byte(fmt.Sprintf("v%d", iteration)))
+		memoryStore.Put(ctx, fmt.Sprintf("/seq/key-%02d", iteration), fmt.Appendf(nil, "v%d", iteration))
 	}
 
 	// Watch from scan revision to get all updates.
@@ -504,7 +504,7 @@ func TestScanThenWatchNoGap(t *testing.T) {
 
 	// Create initial state.
 	for iteration := 0; iteration < 10; iteration++ {
-		memoryStore.Put(ctx, fmt.Sprintf("/state/key-%d", iteration), []byte(fmt.Sprintf("initial-%d", iteration)))
+		memoryStore.Put(ctx, fmt.Sprintf("/state/key-%d", iteration), fmt.Appendf(nil, "initial-%d", iteration))
 	}
 
 	// Step 1: Scan (the "reconciliation snapshot").

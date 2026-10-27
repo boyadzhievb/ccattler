@@ -696,7 +696,7 @@ func TestWatchEventOrdering(t *testing.T) {
 	go func() {
 		for iteration := range writeCount {
 			key := fmt.Sprintf("/ordered/key-%d", iteration)
-			memoryStore.Put(testContext, key, []byte(fmt.Sprintf("v%d", iteration)))
+			memoryStore.Put(testContext, key, fmt.Appendf(nil, "v%d", iteration))
 		}
 	}()
 

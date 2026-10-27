@@ -36,16 +36,16 @@ func writeHTTPProbeConfig(ctx context.Context, factStore *store.MemoryStore, ser
 		factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, probeType), []byte(path))
 	}
 	if port != 0 {
-		factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, probeType), []byte(fmt.Sprintf("%d", port)))
+		factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, probeType), fmt.Appendf(nil, "%d", port))
 	}
 	if interval > 0 {
 		factStore.Put(ctx, types.KeyDesiredServiceProbeInterval(serviceName, probeType), []byte(interval.String()))
 	}
 	if failureThreshold > 0 {
-		factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", failureThreshold)))
+		factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), fmt.Appendf(nil, "%d", failureThreshold))
 	}
 	if successThreshold > 0 {
-		factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", successThreshold)))
+		factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), fmt.Appendf(nil, "%d", successThreshold))
 	}
 	// Use zero initial delay for tests so probes fire immediately.
 	factStore.Put(ctx, types.KeyDesiredServiceProbeInitialDelay(serviceName, probeType), []byte("0s"))
@@ -87,10 +87,10 @@ func writeExecProbeConfig(ctx context.Context, factStore *store.MemoryStore, ser
 	factStore.Put(ctx, types.KeyDesiredServiceProbeMethod(serviceName, probeType), []byte("exec"))
 	factStore.Put(ctx, types.KeyDesiredServiceProbePath(serviceName, probeType), []byte(command))
 	if failureThreshold > 0 {
-		factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", failureThreshold)))
+		factStore.Put(ctx, types.KeyDesiredServiceProbeFailureThreshold(serviceName, probeType), fmt.Appendf(nil, "%d", failureThreshold))
 	}
 	if successThreshold > 0 {
-		factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), []byte(fmt.Sprintf("%d", successThreshold)))
+		factStore.Put(ctx, types.KeyDesiredServiceProbeSuccessThreshold(serviceName, probeType), fmt.Appendf(nil, "%d", successThreshold))
 	}
 	factStore.Put(ctx, types.KeyDesiredServiceProbeInitialDelay(serviceName, probeType), []byte("0s"))
 	factStore.Put(ctx, types.KeyDesiredServiceProbeInterval(serviceName, probeType), []byte("1ms"))
@@ -409,7 +409,7 @@ func TestReadinessProbeStateTransitions(t *testing.T) {
 	// Reconfigure probes to point at the failing port. We need to update
 	// the port fact in the store and also recreate the probe state tracker
 	// to clear the success counter.
-	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, types.ProbeReadiness), []byte(fmt.Sprintf("%d", failingPort)))
+	factStore.Put(ctx, types.KeyDesiredServiceProbePort(serviceName, types.ProbeReadiness), fmt.Appendf(nil, "%d", failingPort))
 	factStore.Put(ctx, types.KeyDesiredServiceProbeTimeout(serviceName, types.ProbeReadiness), []byte("100ms"))
 
 	// Reset the lastCheckTime and the consecutive success counter to allow

@@ -1008,7 +1008,7 @@ func printInstanceDescribe(instanceDetail api.InstanceDescribe) {
 		fmt.Printf("  Readiness:  %s\n", instanceDetail.ReadinessProbe)
 	}
 	if instanceDetail.ProbeProgress != "" {
-		fmt.Printf("  Probe progress: %s\n", formatProbeProgressCompact(instanceDetail.ProbeProgress))
+		fmt.Printf("  Probe progress: %s\n", formatProbeProgressCompact(instanceDetail.ProbeProgress, true))
 	}
 
 	restartDisplay := instanceDetail.Restarts
@@ -1192,8 +1192,8 @@ func serviceMatchesAllTags(serviceTags map[string]string, tagFilters map[string]
 
 // getOutputOptions holds parsed output formatting flags for get commands.
 type getOutputOptions struct {
-	outputFormat string
-	noHeaders    bool
+	outputFormat string // outputFormat is "json" or "wide" or empty (compact default).
+	noHeaders    bool   // noHeaders suppresses the table header row.
 }
 
 // parseGetOutputOptions extracts -o and --no-headers flags from arguments,
@@ -1324,7 +1324,8 @@ func formatServiceTags(tags map[string]string) string {
 }
 
 func printInstancesTableWithOptions(instances []api.InstanceStatus, options getOutputOptions) {
-	header := []string{"CONTAINER", "STATE", "NODE", "IP", "HEALTH", "REASON"}
+	wideOutput := options.outputFormat == "wide"
+	header := []string{"CONTAINER", "STATE", "RESTARTS", "NODE", "IP", "HEALTH", "REASON"}
 	var rows [][]string
 	for _, instance := range instances {
 		healthDisplay := instance.HealthState
@@ -1335,11 +1336,16 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 		if ipDisplay == "" {
 			ipDisplay = "-"
 		}
+		restartDisplay := instance.Restarts
+		if restartDisplay == "" {
+			restartDisplay = "0"
+		}
 		containerName := instance.ServiceName + "-" + instance.ID
-		reasonDisplay := formatInstanceReason(instance)
+		reasonDisplay := formatInstanceReason(instance, wideOutput)
 		rows = append(rows, []string{
 			containerName,
 			instance.State,
+			restartDisplay,
 			instance.NodeID,
 			ipDisplay,
 			healthDisplay,
@@ -1349,22 +1355,27 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
-// formatInstanceReason builds a compact human-readable reason string from the
+// formatInstanceReason builds a human-readable reason string from the
 // instance's status reason, init progress, and probe progress facts.
-func formatInstanceReason(instance api.InstanceStatus) string {
+// When wideOutput is false, long reasons are truncated to 80 characters.
+func formatInstanceReason(instance api.InstanceStatus, wideOutput bool) string {
 	if instance.State == "running" && instance.StatusReason == "running" {
 		return "-"
 	}
+	var reason string
 	if instance.InitProgress != "" {
-		return formatInitProgressCompact(instance.InitProgress)
+		reason = formatInitProgressCompact(instance.InitProgress)
+	} else if instance.ProbeProgress != "" {
+		reason = formatProbeProgressCompact(instance.ProbeProgress, wideOutput)
+	} else if instance.StatusReason != "" && instance.StatusReason != "running" {
+		reason = instance.StatusReason
+	} else {
+		return "-"
 	}
-	if instance.ProbeProgress != "" {
-		return formatProbeProgressCompact(instance.ProbeProgress)
+	if !wideOutput {
+		return truncateReason(reason, 80)
 	}
-	if instance.StatusReason != "" && instance.StatusReason != "running" {
-		return instance.StatusReason
-	}
-	return "-"
+	return reason
 }
 
 // formatInitProgressCompact renders init progress JSON as a compact string
@@ -1385,8 +1396,9 @@ func formatInitProgressCompact(initProgressJSON string) string {
 }
 
 // formatProbeProgressCompact renders probe progress JSON as a compact string
-// like "startup:5/30" or "liveness:2/5".
-func formatProbeProgressCompact(probeProgressJSON string) string {
+// like "startup:5/30" or "liveness:2/5". When wideOutput is true, the full
+// error message is included untruncated.
+func formatProbeProgressCompact(probeProgressJSON string, wideOutput bool) string {
 	var progress types.ProbeProgress
 	if err := json.Unmarshal([]byte(probeProgressJSON), &progress); err != nil {
 		return probeProgressJSON
@@ -1417,6 +1429,21 @@ func formatProbeProgressCompact(probeProgressJSON string) string {
 		return "-"
 	}
 	return strings.Join(parts, " ")
+}
+
+// truncateReason shortens a reason string to maxLength characters, appending
+// an ellipsis if truncated. Cuts at the last space before the limit to avoid
+// splitting words mid-token.
+func truncateReason(reason string, maxLength int) string {
+	if len(reason) <= maxLength {
+		return reason
+	}
+	truncated := reason[:maxLength]
+	lastSpace := strings.LastIndex(truncated, " ")
+	if lastSpace > maxLength/2 {
+		truncated = truncated[:lastSpace]
+	}
+	return truncated + "..."
 }
 
 func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions) {

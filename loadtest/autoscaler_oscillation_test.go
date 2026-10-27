@@ -51,8 +51,8 @@ func buildOscillationFacts(cpuMetricValue int) []store.Fact {
 		{Key: types.KeyDesiredServiceScaleHorizontalMin(serviceName), Value: []byte(strconv.Itoa(oscillationTestMinInstances))},
 		{Key: types.KeyDesiredServiceScaleHorizontalMax(serviceName), Value: []byte(strconv.Itoa(oscillationTestMaxInstances))},
 		{Key: types.KeyDesiredServiceScaleHorizontalTarget(serviceName, "cpu"), Value: []byte(strconv.Itoa(oscillationTestCPUTarget))},
-		{Key: types.KeyDesiredServiceScaleStabilizationUp(serviceName), Value: []byte(fmt.Sprintf("%ds", oscillationStabilizationUpSeconds))},
-		{Key: types.KeyDesiredServiceScaleStabilizationDown(serviceName), Value: []byte(fmt.Sprintf("%ds", oscillationStabilizationDownSeconds))},
+		{Key: types.KeyDesiredServiceScaleStabilizationUp(serviceName), Value: fmt.Appendf(nil, "%ds", oscillationStabilizationUpSeconds)},
+		{Key: types.KeyDesiredServiceScaleStabilizationDown(serviceName), Value: fmt.Appendf(nil, "%ds", oscillationStabilizationDownSeconds)},
 		{Key: types.KeyObservedMetric(serviceName, "cpu"), Value: []byte(strconv.Itoa(cpuMetricValue))},
 	}
 

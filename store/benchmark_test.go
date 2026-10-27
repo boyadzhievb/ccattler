@@ -62,7 +62,7 @@ func BenchmarkTransaction(b *testing.B) {
 	for iteration := 0; iteration < b.N; iteration++ {
 		memoryStore.Transaction(benchContext,
 			[]Compare{{Key: "/bench/txn/key", Revision: initialFact.Revision}},
-			[]Op{{Type: OpPut, Key: "/bench/txn/key", Value: []byte(fmt.Sprintf("v%d", iteration))}},
+			[]Op{{Type: OpPut, Key: "/bench/txn/key", Value: fmt.Appendf(nil, "v%d", iteration)}},
 			nil,
 		)
 		initialFact, _ = memoryStore.Get(benchContext, "/bench/txn/key")

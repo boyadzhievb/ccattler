@@ -190,7 +190,7 @@ func (simulator *SimulatorRuntime) ExecCapture(_ context.Context, instanceID str
 	if simulator.ExecFailures[instanceID] {
 		return nil, &StartError{ID: instanceID, Reason: "exec probe failed (injected)"}
 	}
-	return []byte(fmt.Sprintf("[simulated] exec %q in %s\n", execSpec.Command, instanceID)), nil
+	return fmt.Appendf(nil, "[simulated] exec %q in %s\n", execSpec.Command, instanceID), nil
 }
 
 // ClearPullFailure removes a previously injected pull failure so subsequent

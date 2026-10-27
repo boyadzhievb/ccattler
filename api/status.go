@@ -561,7 +561,7 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 
 		hostname := serviceName + "." + network.DefaultDNSDomain
 		internalAddress := buildInternalAddress(instanceOverlayIPs[instanceID], portNumber)
-		externalAddress := buildExternalAddress(instanceID, portNumber, instanceNodes, nodeAddresses, instanceOverlayIPs, endpointAddress)
+		externalAddress := buildExternalAddress(instanceID, instanceNodes, nodeAddresses, instanceOverlayIPs, endpointAddress)
 
 		endpointStatusList = append(endpointStatusList, EndpointStatus{
 			Service:         serviceName,
@@ -653,7 +653,7 @@ func buildInternalAddress(overlayIP string, port int) string {
 // buildExternalAddress determines the external (node IP:host-port) address for
 // an endpoint. Returns empty when the endpoint already uses the overlay IP
 // (no host port mapping) or when node address lookup fails.
-func buildExternalAddress(instanceID string, port int, instanceNodes map[string]string, nodeAddresses map[string]string, overlayIPs map[string]string, endpointAddress string) string {
+func buildExternalAddress(instanceID string, instanceNodes map[string]string, nodeAddresses map[string]string, overlayIPs map[string]string, endpointAddress string) string {
 	overlayIP := overlayIPs[instanceID]
 	if overlayIP != "" && strings.HasPrefix(endpointAddress, overlayIP+":") {
 		return ""

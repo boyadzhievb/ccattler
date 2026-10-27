@@ -155,17 +155,17 @@ func (nodeReporter *NodeReporter) reportWorkloadTelemetry(ctx context.Context, w
 		}
 
 		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceCPU(workloadStatus.ID),
-			[]byte(fmt.Sprintf("%d", resourceStats.CPUMillicores))); putError != nil {
+			fmt.Appendf(nil, "%d", resourceStats.CPUMillicores)); putError != nil {
 			logging.Default().Error("failed to write instance CPU telemetry", "instance", workloadStatus.ID, "error", putError.Error())
 		}
 		if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceMemory(workloadStatus.ID),
-			[]byte(fmt.Sprintf("%d", resourceStats.MemoryBytes))); putError != nil {
+			fmt.Appendf(nil, "%d", resourceStats.MemoryBytes)); putError != nil {
 			logging.Default().Error("failed to write instance memory telemetry", "instance", workloadStatus.ID, "error", putError.Error())
 		}
 
 		if resourceStats.OOMKillCount > 0 {
 			if _, putError := nodeReporter.factStore.Put(ctx, types.KeyObservedInstanceOOMKills(workloadStatus.ID),
-				[]byte(fmt.Sprintf("%d", resourceStats.OOMKillCount))); putError != nil {
+				fmt.Appendf(nil, "%d", resourceStats.OOMKillCount)); putError != nil {
 				logging.Default().Error("failed to write OOM kill telemetry", "instance", workloadStatus.ID, "error", putError.Error())
 			}
 			memoryLimitMiB := resourceStats.MemoryLimitBytes / (1024 * 1024)

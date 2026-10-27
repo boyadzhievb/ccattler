@@ -39,8 +39,8 @@ func buildClusterFacts(nodeCount int, serviceCount int, instancesPerService int)
 	for serviceIndex := 0; serviceIndex < serviceCount; serviceIndex++ {
 		serviceName := fmt.Sprintf("svc-%02d", serviceIndex)
 		facts = append(facts,
-			store.Fact{Key: types.KeyEffectiveServiceInstances(serviceName), Value: []byte(fmt.Sprintf("%d", instancesPerService))},
-			store.Fact{Key: types.KeyDesiredServiceImage(serviceName), Value: []byte(fmt.Sprintf("app:v%d", serviceIndex))},
+			store.Fact{Key: types.KeyEffectiveServiceInstances(serviceName), Value: fmt.Appendf(nil, "%d", instancesPerService)},
+			store.Fact{Key: types.KeyDesiredServiceImage(serviceName), Value: fmt.Appendf(nil, "app:v%d", serviceIndex)},
 		)
 
 		for instanceOffset := 0; instanceOffset < instancesPerService; instanceOffset++ {
@@ -51,7 +51,7 @@ func buildClusterFacts(nodeCount int, serviceCount int, instancesPerService int)
 				store.Fact{Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
 				store.Fact{Key: types.KeyObservedInstanceService(instanceID), Value: []byte(serviceName)},
 				store.Fact{Key: types.KeyObservedInstanceState(instanceID), Value: []byte("running")},
-				store.Fact{Key: types.KeyObservedInstanceImage(instanceID), Value: []byte(fmt.Sprintf("app:v%d", serviceIndex))},
+				store.Fact{Key: types.KeyObservedInstanceImage(instanceID), Value: fmt.Appendf(nil, "app:v%d", serviceIndex)},
 				store.Fact{Key: types.KeyPlacementInstance(instanceID), Value: []byte(nodeID)},
 			)
 			instanceIndex++
@@ -90,7 +90,7 @@ func buildPendingSchedulingFacts(nodeCount int, pendingCount int) []store.Fact {
 
 	facts = append(facts,
 		store.Fact{Key: types.KeyDesiredServiceImage("bench-svc"), Value: []byte("app:latest")},
-		store.Fact{Key: types.KeyEffectiveServiceInstances("bench-svc"), Value: []byte(fmt.Sprintf("%d", pendingCount))},
+		store.Fact{Key: types.KeyEffectiveServiceInstances("bench-svc"), Value: fmt.Appendf(nil, "%d", pendingCount)},
 	)
 
 	store.SortFacts(facts)

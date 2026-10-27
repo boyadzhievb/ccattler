@@ -68,7 +68,7 @@ func (lifecycle *TenantLifecycle) CreateTenant(ctx context.Context, tenantName s
 
 	if quota != nil {
 		if quota.CPU > 0 {
-			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaCPU(tenantName), []byte(fmt.Sprintf("%d", quota.CPU))); putError != nil {
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaCPU(tenantName), fmt.Appendf(nil, "%d", quota.CPU)); putError != nil {
 				return nil, fmt.Errorf("setting tenant CPU quota: %w", putError)
 			}
 		}
@@ -78,12 +78,12 @@ func (lifecycle *TenantLifecycle) CreateTenant(ctx context.Context, tenantName s
 			}
 		}
 		if quota.Instances > 0 {
-			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaInstances(tenantName), []byte(fmt.Sprintf("%d", quota.Instances))); putError != nil {
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaInstances(tenantName), fmt.Appendf(nil, "%d", quota.Instances)); putError != nil {
 				return nil, fmt.Errorf("setting tenant instances quota: %w", putError)
 			}
 		}
 		if quota.Volumes > 0 {
-			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName), []byte(fmt.Sprintf("%d", quota.Volumes))); putError != nil {
+			if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantQuotaVolumes(tenantName), fmt.Appendf(nil, "%d", quota.Volumes)); putError != nil {
 				return nil, fmt.Errorf("setting tenant volumes quota: %w", putError)
 			}
 		}
@@ -96,7 +96,7 @@ func (lifecycle *TenantLifecycle) CreateTenant(ctx context.Context, tenantName s
 	}
 
 	if weight > 0 {
-		if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantWeight(tenantName), []byte(fmt.Sprintf("%d", weight))); putError != nil {
+		if _, putError := lifecycle.factStore.Put(ctx, types.KeyDesiredTenantWeight(tenantName), fmt.Appendf(nil, "%d", weight)); putError != nil {
 			return nil, fmt.Errorf("setting tenant weight: %w", putError)
 		}
 	}

@@ -650,7 +650,7 @@ func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 	for instanceID, nodeID := range instanceNodes {
 		nodeAddressSuffix := nodeID[len(nodeID)-1:]
 		factStore.Put(ctx, types.KeyObservedNodeAddress(nodeID),
-			[]byte(fmt.Sprintf("192.168.1.%s", nodeAddressSuffix)))
+			fmt.Appendf(nil, "192.168.1.%s", nodeAddressSuffix))
 		factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, 80), []byte("30080"))
 		factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, 8080), []byte("38080"))
 	}

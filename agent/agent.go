@@ -661,15 +661,28 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 			continue
 		}
 
-		// Get the service name.
-		serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
-		if err != nil {
+		// Get the service name from observed state, or derive it from the
+		// instance ID (<service>-<hash>) when no observed fact exists yet.
+		// On fresh deployments the agent hasn't published any observed state,
+		// so relying solely on KeyObservedInstanceService would silently skip
+		// every newly placed instance.
+		var serviceName string
+		serviceFact, serviceError := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
+		if serviceError == nil {
+			serviceName = string(serviceFact.Value)
+		} else {
+			lastDash := strings.LastIndex(instanceID, "-")
+			if lastDash > 0 {
+				serviceName = instanceID[:lastDash]
+			}
+		}
+		if serviceName == "" {
 			continue
 		}
 
 		result = append(result, placedInstanceInfo{
 			id:      instanceID,
-			service: string(serviceFact.Value),
+			service: serviceName,
 		})
 	}
 	return result, nil

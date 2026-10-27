@@ -103,7 +103,7 @@ func buildSyntheticFactSlice(serviceName string, instanceCount uint8, nodeCount 
 	factEntries = append(factEntries,
 		store.Fact{Key: types.KeyDesiredService(serviceName), Value: []byte("")},
 		store.Fact{Key: types.KeyDesiredServiceImage(serviceName), Value: []byte("nginx:1.27")},
-		store.Fact{Key: types.KeyDesiredServiceInstances(serviceName), Value: []byte(fmt.Sprintf("%d", instanceCount))},
+		store.Fact{Key: types.KeyDesiredServiceInstances(serviceName), Value: fmt.Appendf(nil, "%d", instanceCount)},
 		store.Fact{Key: types.KeyDesiredServiceResourcesCPU(serviceName), Value: []byte("500")},
 		store.Fact{Key: types.KeyDesiredServiceResourcesMemory(serviceName), Value: []byte("512")},
 	)
