@@ -60,7 +60,7 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 		storeBackend:     defaults.storeBackend,
 		etcdEndpoints:    defaults.etcdEndpoints,
 		storeKeyPrefix:   defaults.storeKeyPrefix,
-		runtimeBackend:   "container",
+		runtimeBackend:   "containerd",
 		dataPlaneBackend: "auto",
 	}
 
