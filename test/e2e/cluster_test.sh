@@ -317,7 +317,7 @@ ssh_vm() {
 
 count_containers() {
     local vm_name="$1"
-    ssh_vm "$vm_name" "sudo ctr -n cca containers list -q 2>/dev/null | wc -l" | tr -d ' '
+    ssh_vm "$vm_name" "sudo ctr -n ccattler containers list -q 2>/dev/null | wc -l" | tr -d ' '
 }
 
 # Copy a local file to a node via scp.
@@ -357,14 +357,14 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     if [[ "$total_containers" -gt 0 ]]; then
         log "WARNING: $total_containers containers still running after 60s, force-removing..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n ccattler containers list -q 2>/dev/null); do sudo ctr -n ccattler containers delete \$c 2>/dev/null; done" &
         done
         wait
     fi
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Pruning container snapshots for blank-slate redeploy..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for s in \$(sudo ctr -n cca snapshots list -q 2>/dev/null); do sudo ctr -n cca snapshots rm \$s 2>/dev/null; done" &
+            ssh_vm "$vm" "for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s 2>/dev/null; done" &
         done
         wait
     else
@@ -453,13 +453,13 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers and volumes..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n cca containers list -q 2>/dev/null); do sudo ctr -n cca containers delete \$c 2>/dev/null; done; for s in \$(sudo ctr -n cca snapshots list -q 2>/dev/null); do sudo ctr -n cca snapshots rm \$s 2>/dev/null; done" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n ccattler containers list -q 2>/dev/null); do sudo ctr -n ccattler containers delete \$c 2>/dev/null; done; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s 2>/dev/null; done" &
         done
         wait
     else
         log "Keeping existing data (--keep-data) — stopping tasks only..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for t in \$(sudo ctr -n cca tasks list -q 2>/dev/null); do sudo ctr -n cca tasks kill \$t 2>/dev/null; sudo ctr -n cca tasks delete \$t 2>/dev/null; done" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done" &
         done
         wait
     fi
