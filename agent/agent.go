@@ -536,7 +536,7 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		runningByID[runtimeStatus.ID] = runtimeStatus
 	}
 
-	logging.Default().Info("reconcile cycle",
+	logging.Default().Debug("reconcile cycle",
 		"agent", nodeAgent.nodeID,
 		"desired", strconv.Itoa(len(desired)),
 		"running", strconv.Itoa(len(running)))
