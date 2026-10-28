@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M150 — Phase 150 Deployment Convergence Observability. M1–M150 complete (M141 future placeholder). Gates A–I resolved.
+**Completed through:** M152 — Phase 152 Container Lifecycle Hardening & Runtime Observability. M1–M152 complete. Gates A–I resolved.
 
 **In progress:** M152 — Container Lifecycle Hardening and Runtime Observability. Session 1 (GC fixes, StopAll, Airflow init ordering, tests) committed. Sessions 2–3 pending: debug API stats, `cca get instances --all`, `cca status` container summary, crash-loop circuit breaker. See milestones.md for full scope.
 

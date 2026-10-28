@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.60.1-beta <Badge type="tip" text="latest" /> {#v1-60-1-beta}
+## v1.61.0-beta <Badge type="tip" text="latest" /> {#v1-61-0-beta}
+
+**2026-10-28** — Container Lifecycle Hardening & Runtime Observability.
+
+- **Container Lifecycle Hardening & Runtime Observability** (M152) — Harden container GC, add runtime observability, and fix proxy routing for external hostnames. **Changes:** (1) Agent cleans stopped orphan containers, not just running ones; `StopAll()` fixed to remove stopped containers and their snapshots. (2) Debug API `/debug/stats` exposes stopped container count and log directory count. (3) `cca get instances --all` shows stopped/failed instances. (4) `cca status` shows per-node container summary (running/stopped/log dirs). (5) Health check container drift detection (Check 10). (6) Proxy route hostname resolution — external hostnames (e.g. airflow.home.arpa) resolved to internal service names via store route facts with 5s cache TTL. (7) Endpoint controller prefers overlay IP over host-mapped address, preventing proxy self-loop on co-located instances. (8) AGE column in `cca get instances` with store-level write rate limiter. (9) Container isolation docs, kubectl-style display, troubleshooting guide. (10) E2E image pull test uses local registry dynamically instead of hardcoded Docker Hub images.
+
+---
+
+## v1.60.1-beta {#v1-60-1-beta}
 
 **2026-10-25** — HA Etcd Cluster Validation.
 
