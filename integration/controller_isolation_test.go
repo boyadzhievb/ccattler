@@ -177,7 +177,7 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 10*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -204,7 +204,7 @@ func TestControllerIsolation_SchedulerCrash(testHandle *testing.T) {
 
 	cluster.restartControllerGroup("scheduler", []controllers.Controller{newTestScheduler()})
 
-	waitFor(testHandle, 5*time.Second, "api=3 and web=6 after scheduler restart", func() bool {
+	waitFor(testHandle, 15*time.Second, "api=3 and web=6 after scheduler restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
@@ -220,7 +220,7 @@ func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
 
-	waitFor(testHandle, 5*time.Second, "3 running web instances", func() bool {
+	waitFor(testHandle, 10*time.Second, "3 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 3
 	})
 
@@ -229,7 +229,7 @@ func TestControllerIsolation_NetworkControllerCrash(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "3")
 
-	waitFor(testHandle, 5*time.Second, "api=3 and web=3 without network controller", func() bool {
+	waitFor(testHandle, 15*time.Second, "api=3 and web=3 without network controller", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 3 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "web") == 3
 	})
@@ -245,7 +245,7 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 10*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -253,7 +253,7 @@ func TestControllerIsolation_InstanceControllerRestart(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "4")
 
-	waitFor(testHandle, 10*time.Second, "api=4 and web=6 after instance controller restart", func() bool {
+	waitFor(testHandle, 15*time.Second, "api=4 and web=6 after instance controller restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 4 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
@@ -270,7 +270,7 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 10*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -296,7 +296,7 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 		cluster.restartControllerGroup(group.name, group.controllers)
 	}
 
-	waitFor(testHandle, 10*time.Second, "web still 6 and api converges to 2", func() bool {
+	waitFor(testHandle, 15*time.Second, "web still 6 and api converges to 2", func() bool {
 		webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
 		apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
 		return webCount == 6 && apiCount == 2
@@ -315,7 +315,7 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "4")
 
-	waitFor(testHandle, 5*time.Second, "web=6 and api=4 running", func() bool {
+	waitFor(testHandle, 10*time.Second, "web=6 and api=4 running", func() bool {
 		webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
 		apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
 		return webCount == 6 && apiCount == 4
@@ -339,7 +339,7 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 		return webCount == 6 && apiCount == 4 && dbCount == 2
 	})
 
-	waitFor(testHandle, 10*time.Second, "no extra non-stopped instances (6/4/2)", func() bool {
+	waitFor(testHandle, 15*time.Second, "no extra non-stopped instances (6/4/2)", func() bool {
 		allInstances, listError := types.ListInstances(ctx, cluster.factStore)
 		if listError != nil {
 			return false

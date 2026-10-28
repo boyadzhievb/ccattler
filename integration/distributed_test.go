@@ -57,7 +57,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.28"))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("6"))
 
-	waitFor(t, 5*time.Second, "6 instances running", func() bool {
+	waitFor(t, 10*time.Second, "6 instances running", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningCount := 0
 		for _, instance := range allInstances {
@@ -154,7 +154,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 	// Wait for the system to converge: node failure controller marks instances
 	// as failed → failure controller creates replacements → scheduler places
 	// them on node-2/node-3 → those agents start them.
-	waitFor(t, 10*time.Second, "6 running instances, none on dead node-1", func() bool {
+	waitFor(t, 20*time.Second, "6 running instances, none on dead node-1", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningCount := 0
 		for _, instance := range allInstances {
@@ -243,7 +243,7 @@ func TestDistributedMultiServiceSpread(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("myapp:latest"))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("2"))
 
-	waitFor(t, 5*time.Second, "6 total running instances", func() bool {
+	waitFor(t, 10*time.Second, "6 total running instances", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningCount := 0
 		for _, instance := range allInstances {

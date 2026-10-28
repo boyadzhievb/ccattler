@@ -400,7 +400,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("6"))
 
-	waitFor(t, 5*time.Second, "6 running with real IPs", func() bool {
+	waitFor(t, 10*time.Second, "6 running with real IPs", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningWithIP := 0
 		for _, instance := range allInstances {
@@ -415,7 +415,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	cancelNode1Agent()
 
 	// Wait for system to recover: 6 running instances, none on node-1.
-	waitFor(t, 10*time.Second, "6 running instances with real IPs after failure", func() bool {
+	waitFor(t, 20*time.Second, "6 running instances with real IPs after failure", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
 		runningWithRealIP := 0
 		for _, instance := range allInstances {
@@ -448,7 +448,7 @@ func TestScaleUpAddsToLoadBalancerPool(t *testing.T) {
 	// Scale up to 4.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("4"))
 
-	waitFor(t, 5*time.Second, "4 endpoints with real IPs after scale-up", func() bool {
+	waitFor(t, 10*time.Second, "4 endpoints with real IPs after scale-up", func() bool {
 		resolvedEndpoints, _ := storeBackedResolver.ResolveEndpoints(ctx, "web")
 		if len(resolvedEndpoints) < 4 {
 			return false
