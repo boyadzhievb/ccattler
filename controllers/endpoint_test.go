@@ -312,16 +312,42 @@ func TestEndpointControllerNoReadinessProbe(t *testing.T) {
 	}
 }
 
-// TestEndpointCrossHostAddress verifies that when a node advertise address and
-// instance host port are available, the endpoint uses nodeAddress:hostPort
-// instead of the container-local IP.
+// TestEndpointCrossHostAddress verifies that when an overlay IP is available,
+// the endpoint uses the overlay address even if a host port and node address
+// are also present. Overlay addresses are preferred to avoid proxy self-loops.
 func TestEndpointCrossHostAddress(t *testing.T) {
 	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
-		kv(types.KeyObservedInstanceIP("aaa"), "127.0.0.1"),
+		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
+		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceHostPort("aaa"), "8080"),
+		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
+		kv(types.KeyDesiredServiceExpose("web", 8080), ""),
+	)
+
+	changes, err := endpointController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 endpoint, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "10.0.1.4:8080" {
+		t.Errorf("endpoint address: got %s, want 10.0.1.4:8080", changes[0].Value)
+	}
+}
+
+// TestEndpointHostPortFallbackWithoutOverlay verifies that when no overlay IP
+// is available, the endpoint uses nodeAddress:hostPort as a fallback.
+func TestEndpointHostPortFallbackWithoutOverlay(t *testing.T) {
+	endpointController := NewEndpointController()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
 		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
 		kv(types.KeyObservedInstanceHostPort("aaa"), "8080"),
 		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
@@ -367,19 +393,19 @@ func TestEndpointFallbackWithoutHostPort(t *testing.T) {
 }
 
 // TestEndpointMultiNodeCrossHost verifies that instances on different nodes
-// get their respective node addresses in the endpoint.
+// use their overlay IPs when available.
 func TestEndpointMultiNodeCrossHost(t *testing.T) {
 	endpointController := NewEndpointController()
 
 	facts := buildFacts(
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
-		kv(types.KeyObservedInstanceIP("aaa"), "127.0.0.1"),
+		kv(types.KeyObservedInstanceIP("aaa"), "10.0.1.4"),
 		kv(types.KeyObservedInstanceNode("aaa"), "node-1"),
 		kv(types.KeyObservedInstanceHostPort("aaa"), "8080"),
 		kv(types.KeyObservedInstanceService("bbb"), "web"),
 		kv(types.KeyObservedInstanceState("bbb"), "running"),
-		kv(types.KeyObservedInstanceIP("bbb"), "127.0.0.1"),
+		kv(types.KeyObservedInstanceIP("bbb"), "10.0.2.5"),
 		kv(types.KeyObservedInstanceNode("bbb"), "node-2"),
 		kv(types.KeyObservedInstanceHostPort("bbb"), "8081"),
 		kv(types.KeyObservedNodeAddress("node-1"), "192.168.1.10"),
@@ -396,11 +422,11 @@ func TestEndpointMultiNodeCrossHost(t *testing.T) {
 	}
 
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Key < changes[j].Key })
-	if string(changes[0].Value) != "192.168.1.10:8080" {
-		t.Errorf("first endpoint: got %s, want 192.168.1.10:8080", changes[0].Value)
+	if string(changes[0].Value) != "10.0.1.4:8080" {
+		t.Errorf("first endpoint: got %s, want 10.0.1.4:8080", changes[0].Value)
 	}
-	if string(changes[1].Value) != "192.168.1.20:8081" {
-		t.Errorf("second endpoint: got %s, want 192.168.1.20:8081", changes[1].Value)
+	if string(changes[1].Value) != "10.0.2.5:8080" {
+		t.Errorf("second endpoint: got %s, want 10.0.2.5:8080", changes[1].Value)
 	}
 }
 

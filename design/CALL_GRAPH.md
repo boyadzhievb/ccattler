@@ -633,11 +633,33 @@ NetworkProvider
     [called by VXLANReconciler, DataPlaneReconciler]
 ```
 
+### EndpointController (controllers/endpoint.go)
+```
+EndpointController.Reconcile(ctx, facts)
+├── parseInstanceFieldsFromFacts(facts)          [observed/instance/*]
+├── extractServiceExposedPorts(facts)             [desired/service/*/expose/*]
+├── detectServicesWithReadinessProbe(facts)        [desired/service/*/probe/readiness/method]
+├── parseNodeAdvertiseAddresses(facts)             [observed/node/*/address]
+├── parseExistingEndpoints(facts)                  [endpoint/service/*]
+│
+├── buildDesiredEndpoints(instanceFields, servicePorts, readiness, nodeAddresses)
+│   ├── FOR each running instance with exposed port:
+│   │   ├── skip if readiness probe exists and state != ready
+│   │   ├── skip if drain_readiness == not-ready
+│   │   ├── IF overlay IP exists → use containerIP:exposedPort     (preferred)
+│   │   └── ELSE IF hostPort + nodeAddress → use nodeAddress:hostPort (fallback)
+│   └── → map[endpointKey]address
+│
+└── computeEndpointDiffChanges(desired, existing)
+    ├── PUT endpoint/service/{svc}/{id}/{port} for new/changed
+    └── DELETE endpoint/service/{svc}/{id}/{port} for stale
+```
+
 ### StoreBackedResolver (network/resolver.go)
 ```
 StoreBackedResolver.ResolveEndpoints(ctx, serviceName)
-├── store.Scan(derived/endpoint/{serviceName}/)
-└── → []Endpoint{IP, Port, NodeID}
+├── store.Scan(endpoint/service/{serviceName}/)
+└── → []Endpoint{IP, Port, InstanceID}
 
 StoreBackedResolver.ResolveVIP(ctx, serviceName)
 ├── store.Get(derived/vip/{serviceName})

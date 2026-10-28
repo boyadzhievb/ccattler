@@ -151,14 +151,16 @@ func buildDesiredEndpoints(
 
 		for _, exposedPort := range exposedPorts {
 			endpointKey := fmt.Sprintf("%s/%s/%d", serviceName, instanceID, exposedPort)
-			perPortHostPort := fields[fmt.Sprintf("hostport/%d", exposedPort)]
-			if perPortHostPort == "" {
-				perPortHostPort = legacyHostPort
-			}
-			if perPortHostPort != "" && nodeAddress != "" {
-				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, perPortHostPort)
-			} else if hasOverlayAddress {
+			if hasOverlayAddress {
 				desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%d", instanceIP, exposedPort)
+			} else {
+				perPortHostPort := fields[fmt.Sprintf("hostport/%d", exposedPort)]
+				if perPortHostPort == "" {
+					perPortHostPort = legacyHostPort
+				}
+				if perPortHostPort != "" && nodeAddress != "" {
+					desiredEndpoints[endpointKey] = fmt.Sprintf("%s:%s", nodeAddress, perPortHostPort)
+				}
 			}
 		}
 	}
