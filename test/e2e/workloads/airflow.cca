@@ -114,6 +114,8 @@ service webserver {
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
+        env AIRFLOW__WEBSERVER__BASE_URL "https://airflow.home.arpa"
+        env AIRFLOW__WEBSERVER__ENABLE_PROXY_FIX true
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
     }
