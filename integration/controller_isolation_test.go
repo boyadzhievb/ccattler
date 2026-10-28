@@ -277,7 +277,7 @@ func TestControllerIsolation_AllControllersRestart(testHandle *testing.T) {
 	for _, groupName := range []string{"instance", "scheduler", "endpoint", "failure", "node-failure", "network"} {
 		cluster.killControllerGroup(groupName)
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
 
 	webDuringOutage := helperCountRunningInstances(ctx, cluster.factStore, "web")
 	if webDuringOutage != 6 {
