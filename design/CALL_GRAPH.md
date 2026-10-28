@@ -644,6 +644,70 @@ StoreBackedResolver.ResolveVIP(ctx, serviceName)
 └── → VIP string
 ```
 
+### UserSpaceProxy (network/userspace_proxy.go)
+```
+UserSpaceProxy.ServeHTTP(responseWriter, incomingRequest)
+├── extractServiceName(incomingRequest.Host)
+│   ├── strip port (":8080")
+│   └── strip ".cca.local" suffix
+│
+├── types.ValidateResourceName(serviceName)
+│   ├── IF valid → direct service name routing (e.g. "webserver.cca.local" → "webserver")
+│   └── IF invalid → resolveRouteHostname(ctx, serviceName)
+│       ├── check routeHostMap cache (5s TTL)
+│       ├── IF cache miss/expired → refreshRouteHostMap(ctx)
+│       │   ├── store.Scan(desired/route/)
+│       │   ├── build hostname→service map from route host + service facts
+│       │   │   (e.g. "airflow.home.arpa" → route "airflow" → service "webserver")
+│       │   └── cache with 5s TTL
+│       ├── IF hostname found → use resolved service name
+│       └── IF hostname not found → 400 "invalid service name in Host header"
+│
+├── resolver.ResolveEndpoints(ctx, serviceName)
+│   └── → []Endpoint (or error → 502)
+│
+├── IF no endpoints + warm-zero enabled → handleColdActivation
+│   ├── cap concurrent waiters at 100/service (DoS protection)
+│   ├── poll for endpoints every 500ms up to 30s
+│   └── timeout → 503
+│
+├── recordLastRequestTime(ctx, serviceName)
+│   └── store.Put(observed/service/{name}/last_request_time)
+│
+└── forwardToBackend(responseWriter, incomingRequest, serviceName, endpoints)
+    ├── loadBalancer.Select(endpoints) → least-connections pick
+    ├── circuitBreaker.Allow(backend) → check backend health
+    └── httputil.ReverseProxy.ServeHTTP → forward to backend
+```
+
+### caddy-sync (scripts/caddy-sync.sh)
+
+External process on the testbed host that reconciles Caddyfile from CCattler route facts.
+
+```
+caddy-sync loop (every ~40s)
+├── query_api /api/state?prefix=desired/route/
+│   └── extracts per-route: host, service, port, sticky, cookie
+│
+├── query_api /api/state?prefix=derived/route/
+│   └── extracts per-route: derived/route/{name}/backends
+│       (comma-separated host:port list, e.g. "192.168.124.20:8080")
+│
+├── build_caddyfile
+│   ├── FOR each route with host + service + backends:
+│   │   ├── {host} { tls internal { on_demand } }
+│   │   └── reverse_proxy {backend1} {backend2} ...
+│   └── skip routes with no backends resolved
+│
+├── IF Caddyfile changed:
+│   ├── write /etc/caddy/Caddyfile
+│   └── caddy reload --config /etc/caddy/Caddyfile
+│
+└── NOTE: backends are host-mapped addresses (VM IP:hostPort),
+    so traffic flows: Caddy → UserSpaceProxy → container
+    The proxy resolves external hostnames via route host facts.
+```
+
 ## CLI Side (cmd/cca/command_status.go)
 
 ### cca events → event stream display

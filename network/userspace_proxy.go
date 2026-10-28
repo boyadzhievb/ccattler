@@ -79,6 +79,14 @@ type UserSpaceProxy struct {
 	warmZeroCache map[string]warmZeroCacheEntry
 	// warmZeroCacheMutex protects warmZeroCache.
 	warmZeroCacheMutex sync.RWMutex
+	// routeHostMap caches the mapping from external hostnames (e.g.
+	// "airflow.home.arpa") to internal service names (e.g. "webserver").
+	// Built from desired/route/*/host and desired/route/*/service facts.
+	routeHostMap map[string]string
+	// routeHostMapMutex protects routeHostMap.
+	routeHostMapMutex sync.RWMutex
+	// routeHostMapExpiresAt tracks when the cached route host map expires.
+	routeHostMapExpiresAt time.Time
 	// circuitBreaker tracks per-backend health to avoid forwarding to failing backends.
 	circuitBreaker *CircuitBreaker
 	// loadBalancer selects backends using least-connections instead of round-robin.
@@ -95,6 +103,10 @@ type warmZeroCacheEntry struct {
 
 // warmZeroCacheTTL is how long warm-zero enabled status is cached per service.
 const warmZeroCacheTTL = 5 * time.Second
+
+// routeHostCacheTTL is how long the route hostname-to-service mapping is
+// cached. Kept short so new gate definitions take effect within seconds.
+const routeHostCacheTTL = 5 * time.Second
 
 // maxActivationWaiters is the maximum number of concurrent requests that can
 // wait for a single service's cold activation. Beyond this, requests get 503.
@@ -124,6 +136,7 @@ func NewUserSpaceProxy(resolver ServiceResolver, listenAddress string, factStore
 		lastRequestWriteTime: make(map[string]time.Time),
 		activationWaiters:    make(map[string]*atomic.Int64),
 		warmZeroCache:        make(map[string]warmZeroCacheEntry),
+		routeHostMap:         make(map[string]string),
 		circuitBreaker:       NewCircuitBreaker(),
 		loadBalancer:         NewLeastConnectionsBalancer(),
 		timeNow:              time.Now,
@@ -167,8 +180,12 @@ func (userSpaceProxy *UserSpaceProxy) ServeHTTP(responseWriter http.ResponseWrit
 		return
 	}
 	if types.ValidateResourceName(serviceName) != nil {
-		http.Error(responseWriter, "invalid service name in Host header", http.StatusBadRequest)
-		return
+		resolvedService := userSpaceProxy.resolveRouteHostname(incomingRequest.Context(), serviceName)
+		if resolvedService == "" {
+			http.Error(responseWriter, "invalid service name in Host header", http.StatusBadRequest)
+			return
+		}
+		serviceName = resolvedService
 	}
 
 	availableEndpoints, resolveError := userSpaceProxy.resolver.ResolveEndpoints(
@@ -506,6 +523,83 @@ func (capture *statusCapture) WriteHeader(code int) {
 	capture.statusCode = code
 	capture.wroteHeader = true
 	capture.ResponseWriter.WriteHeader(code)
+}
+
+// resolveRouteHostname checks whether the given hostname matches an external
+// route host (e.g. "airflow.home.arpa") and returns the target service name.
+// Returns empty string if no route matches or the store is unavailable.
+func (userSpaceProxy *UserSpaceProxy) resolveRouteHostname(ctx context.Context, hostname string) string {
+	if userSpaceProxy.factStore == nil {
+		return ""
+	}
+
+	currentTime := userSpaceProxy.timeNow()
+
+	userSpaceProxy.routeHostMapMutex.RLock()
+	serviceName, found := userSpaceProxy.routeHostMap[hostname]
+	expired := currentTime.After(userSpaceProxy.routeHostMapExpiresAt)
+	userSpaceProxy.routeHostMapMutex.RUnlock()
+
+	if found && !expired {
+		return serviceName
+	}
+
+	refreshedMap := userSpaceProxy.refreshRouteHostMap(ctx)
+	if refreshedMap == nil {
+		if found {
+			return serviceName
+		}
+		return ""
+	}
+
+	resolvedService, exists := refreshedMap[hostname]
+	if !exists {
+		return ""
+	}
+	return resolvedService
+}
+
+// refreshRouteHostMap scans route facts from the store and rebuilds the
+// hostname-to-service mapping cache. Returns the new map, or nil on error.
+func (userSpaceProxy *UserSpaceProxy) refreshRouteHostMap(ctx context.Context) map[string]string {
+	routeFacts, scanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDesiredRoutes)
+	if scanError != nil {
+		return nil
+	}
+
+	hostToRoute := make(map[string]string)
+	routeToService := make(map[string]string)
+
+	for _, fact := range routeFacts {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes)
+		pathParts := strings.SplitN(relativePath, "/", 2)
+		if len(pathParts) != 2 {
+			continue
+		}
+		routeName := pathParts[0]
+		factSuffix := pathParts[1]
+
+		switch factSuffix {
+		case "host":
+			hostToRoute[string(fact.Value)] = routeName
+		case "service":
+			routeToService[routeName] = string(fact.Value)
+		}
+	}
+
+	refreshedMap := make(map[string]string, len(hostToRoute))
+	for hostValue, routeName := range hostToRoute {
+		if targetService, hasService := routeToService[routeName]; hasService {
+			refreshedMap[hostValue] = targetService
+		}
+	}
+
+	userSpaceProxy.routeHostMapMutex.Lock()
+	userSpaceProxy.routeHostMap = refreshedMap
+	userSpaceProxy.routeHostMapExpiresAt = userSpaceProxy.timeNow().Add(routeHostCacheTTL)
+	userSpaceProxy.routeHostMapMutex.Unlock()
+
+	return refreshedMap
 }
 
 // extractServiceName derives the service name from the Host header value.

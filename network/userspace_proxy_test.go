@@ -202,6 +202,133 @@ func TestProxyRejectsPathTraversalHost(t *testing.T) {
 	}
 }
 
+func TestProxyRoutesExternalHostnameViaRouteMap(t *testing.T) {
+	backendServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusOK)
+		responseWriter.Write([]byte("airflow-response"))
+	}))
+	defer backendServer.Close()
+
+	backendHost, backendPort := parseHostPort(backendServer.URL)
+
+	resolver := &mockResolver{
+		endpoints: map[string][]types.Endpoint{
+			"webserver": {{Service: "webserver", InstanceID: "ws1", IP: backendHost, Port: backendPort}},
+		},
+	}
+
+	factStore := store.NewMemoryStore()
+	factStore.Put(context.Background(), types.KeyDesiredRouteHost("airflow"), []byte("airflow.home.arpa"))
+	factStore.Put(context.Background(), types.KeyDesiredRouteService("airflow"), []byte("webserver"))
+
+	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/health", nil)
+	request.Host = "airflow.home.arpa"
+
+	proxy.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Body.String() != "airflow-response" {
+		t.Errorf("body: got %q, want %q", recorder.Body.String(), "airflow-response")
+	}
+}
+
+func TestProxyRejectsUnknownExternalHostname(t *testing.T) {
+	resolver := &mockResolver{endpoints: map[string][]types.Endpoint{}}
+
+	factStore := store.NewMemoryStore()
+	factStore.Put(context.Background(), types.KeyDesiredRouteHost("airflow"), []byte("airflow.home.arpa"))
+	factStore.Put(context.Background(), types.KeyDesiredRouteService("airflow"), []byte("webserver"))
+
+	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Host = "unknown.home.arpa"
+
+	proxy.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for unknown external host, got %d", recorder.Code)
+	}
+}
+
+func TestProxyRouteHostMapCacheExpiry(t *testing.T) {
+	backendServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		responseWriter.WriteHeader(http.StatusOK)
+	}))
+	defer backendServer.Close()
+
+	backendHost, backendPort := parseHostPort(backendServer.URL)
+
+	resolver := &mockResolver{
+		endpoints: map[string][]types.Endpoint{
+			"webserver": {{Service: "webserver", InstanceID: "ws1", IP: backendHost, Port: backendPort}},
+			"grafana":   {{Service: "grafana", InstanceID: "gf1", IP: backendHost, Port: backendPort}},
+		},
+	}
+
+	factStore := store.NewMemoryStore()
+	factStore.Put(context.Background(), types.KeyDesiredRouteHost("airflow"), []byte("airflow.home.arpa"))
+	factStore.Put(context.Background(), types.KeyDesiredRouteService("airflow"), []byte("webserver"))
+
+	currentTime := time.Now()
+	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.timeNow = func() time.Time { return currentTime }
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest("GET", "/", nil)
+	request.Host = "airflow.home.arpa"
+	proxy.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d", recorder.Code)
+	}
+
+	factStore.Put(context.Background(), types.KeyDesiredRouteHost("grafana-route"), []byte("grafana.home.arpa"))
+	factStore.Put(context.Background(), types.KeyDesiredRouteService("grafana-route"), []byte("grafana"))
+
+	currentTime = currentTime.Add(routeHostCacheTTL + time.Second)
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest("GET", "/", nil)
+	request.Host = "grafana.home.arpa"
+	proxy.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("after cache expiry: expected 200 for new route, got %d: %s",
+			recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProxyStillRejectsPathTraversalWithRouteStore(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	resolver := &mockResolver{endpoints: map[string][]types.Endpoint{}}
+	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+
+	maliciousHosts := []string{
+		"../admin",
+		"../../desired/service/web",
+		"web/../../etc/passwd",
+	}
+
+	for _, hostValue := range maliciousHosts {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest("GET", "/", nil)
+		request.Host = hostValue
+
+		proxy.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("Host %q: got %d, want 400", hostValue, recorder.Code)
+		}
+	}
+}
+
 func TestProxyWarmZeroColdActivation(t *testing.T) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.WriteHeader(http.StatusOK)
