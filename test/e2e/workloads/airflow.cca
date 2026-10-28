@@ -68,9 +68,17 @@ service webserver {
     instances 1
     expose 8080
     init {
-        exec "airflow db check"
-        timeout 120s
-        retry 30
+        connection airflow-db
+    }
+    init {
+        exec "airflow db migrate"
+        timeout 300s
+        retry 3
+    }
+    init {
+        exec "airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@example.com --password $(cat /run/secrets/admin-password)"
+        timeout 60s
+        retry 3
     }
     startup {
         http /health
@@ -108,9 +116,6 @@ service webserver {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
-        env _AIRFLOW_DB_MIGRATE true
-        env _AIRFLOW_WWW_USER_CREATE true
-        env _AIRFLOW_WWW_USER_PASSWORD_CMD "cca-secret airflow.admin-password"
     }
     secret airflow.admin-password "/run/secrets/admin-password"
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
@@ -149,15 +154,14 @@ service scheduler {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
-        env _AIRFLOW_DB_MIGRATE true
     }
     init {
         connection airflow-db
     }
     init {
-        exec "airflow db check"
+        exec "airflow db check-migrations"
         timeout 120s
-        retry 20
+        retry 30
     }
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     secret airflow.fernet-key "/run/secrets/fernet-key"
@@ -172,7 +176,10 @@ service worker {
     expose 8793
     termination_grace_period 600s
     init {
-        exec "airflow db check"
+        connection airflow-db
+    }
+    init {
+        exec "airflow db check-migrations"
         timeout 120s
         retry 30
     }
@@ -202,7 +209,6 @@ service worker {
         env AIRFLOW__WEBSERVER__SECRET_KEY_CMD "cca-secret airflow.webserver-secret-key"
         env AIRFLOW__CORE__LOAD_EXAMPLES true
         env AIRFLOW__CORE__FERNET_KEY_CMD "cca-secret airflow.fernet-key"
-        env _AIRFLOW_DB_MIGRATE true
     }
     secret airflow.webserver-secret-key "/run/secrets/webserver-secret-key"
     secret airflow.fernet-key "/run/secrets/fernet-key"

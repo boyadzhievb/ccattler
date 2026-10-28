@@ -65,7 +65,7 @@ func TestSimList(t *testing.T) {
 	simulatorRuntime := NewSimulatorRuntime()
 	simulatorRuntime.Start(ctx, Spec{ID: "aaa", Image: "nginx"})
 	simulatorRuntime.Start(ctx, Spec{ID: "bbb", Image: "redis"})
-	simulatorRuntime.Stop(ctx, "bbb")
+	simulatorRuntime.KillWorkload("bbb", 1, "crashed")
 
 	list, err := simulatorRuntime.List(ctx)
 	if err != nil {
@@ -84,6 +84,24 @@ func TestSimList(t *testing.T) {
 	}
 	if byID["bbb"].Running {
 		t.Error("bbb should be stopped")
+	}
+}
+
+func TestSimStopRemovesFromList(t *testing.T) {
+	simulatorRuntime := NewSimulatorRuntime()
+	simulatorRuntime.Start(ctx, Spec{ID: "aaa", Image: "nginx"})
+	simulatorRuntime.Start(ctx, Spec{ID: "bbb", Image: "redis"})
+	simulatorRuntime.Stop(ctx, "bbb")
+
+	list, err := simulatorRuntime.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 workload after Stop, got %d", len(list))
+	}
+	if list[0].ID != "aaa" {
+		t.Errorf("expected remaining workload aaa, got %s", list[0].ID)
 	}
 }
 
@@ -115,11 +133,11 @@ func TestSimStatsRunningWorkload(t *testing.T) {
 }
 
 // TestSimStatsStoppedWorkload verifies that Stats returns zero values for a
-// stopped workload.
+// crashed (stopped but present) workload.
 func TestSimStatsStoppedWorkload(t *testing.T) {
 	simulatorRuntime := NewSimulatorRuntime()
 	simulatorRuntime.Start(ctx, Spec{ID: "stats-bbb", Image: "app:1.0", CPUm: 1000, MemoryB: 1024})
-	simulatorRuntime.Stop(ctx, "stats-bbb")
+	simulatorRuntime.KillWorkload("stats-bbb", 1, "crash")
 
 	resourceStats, statsError := simulatorRuntime.Stats(ctx, "stats-bbb")
 	if statsError != nil {

@@ -752,16 +752,14 @@ func (commandReader *commandReadCloser) Close() error {
 	return commandReader.command.Wait()
 }
 
-// StopAll terminates and removes every tracked container that is currently
-// marked as running, cleans up all config file temp directories, then removes
-// the nerdctl network if one was created. Typically called during shutdown.
+// StopAll terminates and removes every tracked container (running or stopped),
+// cleans up all config file temp directories, then removes the nerdctl network
+// if one was created. Typically called during shutdown.
 func (containerRuntime *ContainerRuntime) StopAll(ctx context.Context) {
 	containerRuntime.mutex.Lock()
 	ids := make([]string, 0, len(containerRuntime.trackedContainers))
-	for id, running := range containerRuntime.trackedContainers {
-		if running {
-			ids = append(ids, id)
-		}
+	for id := range containerRuntime.trackedContainers {
+		ids = append(ids, id)
 	}
 	containerRuntime.mutex.Unlock()
 

@@ -584,10 +584,15 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		delete(runningByID, instanceInfo.id)
 	}
 
-	// Clean up stale instances no longer placed on this node.
+	// Clean up stale instances no longer placed on this node. Both running
+	// and stopped containers must be removed — a stopped container whose
+	// instance ID was replaced by the scheduler will never be restarted and
+	// would leak containerd resources (tasks, snapshots, log directories).
 	for instanceID, runtimeStatus := range runningByID {
 		if runtimeStatus.Running {
 			nodeAgent.cleanupUndesiredInstance(ctx, instanceID)
+		} else {
+			nodeAgent.cleanupStoppedStaleInstance(ctx, instanceID)
 		}
 	}
 
@@ -986,6 +991,37 @@ func (nodeAgent *Agent) republishHostPortIfNeeded(ctx context.Context, instanceI
 	if hostPortRuntime, hasHostPorts := nodeAgent.runtime.(runtime.HostPortProvider); hasHostPorts {
 		portMappings := hostPortRuntime.HostPortsForInstance(instanceID)
 		publishInstanceHostPorts(ctx, nodeAgent.store, instanceID, portMappings)
+	}
+}
+
+// cleanupStoppedStaleInstance removes a container that has already exited and
+// whose instance ID is no longer in the desired set. Unlike cleanupUndesiredInstance,
+// it skips lifecycle hooks and graceful stop since the process is already dead.
+func (nodeAgent *Agent) cleanupStoppedStaleInstance(ctx context.Context, instanceID string) {
+	logging.Default().Info("cleaning up stopped stale container", "agent", nodeAgent.nodeID, "instance", instanceID)
+	delete(nodeAgent.appliedInstanceResources, instanceID)
+	delete(nodeAgent.imagePullBackoffs, instanceID)
+	nodeAgent.clearPullStatusFromStore(ctx, instanceID)
+	if nodeAgent.secretAPIServer != nil {
+		nodeAgent.secretAPIServer.RevokeInstanceToken(instanceID)
+	}
+	if nodeAgent.storageProvider != nil {
+		nodeAgent.detachVolumesForInstance(ctx, instanceID)
+	}
+	if stopError := nodeAgent.runtime.Stop(ctx, instanceID); stopError != nil {
+		logging.Default().Error("failed to remove stopped container", "instance", instanceID, "error", stopError.Error())
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(string(types.InstanceStopped))); putError != nil {
+		logging.Default().Error("failed to publish stopped state for stale instance", "instance", instanceID, "error", putError.Error())
+	}
+	nodeAgent.probeScheduler.CleanupInstance(instanceID)
+	if nodeAgent.networkProvider != nil {
+		if releaseError := nodeAgent.networkProvider.ReleaseIP(ctx, nodeAgent.nodeID, instanceID); releaseError != nil {
+			logging.Default().Error("failed to release IP for stale instance", "instance", instanceID, "error", releaseError.Error())
+		}
+		if deleteError := types.DeleteNetworkAllocation(ctx, nodeAgent.store, instanceID); deleteError != nil {
+			logging.Default().Error("failed to delete network allocation for stale instance", "instance", instanceID, "error", deleteError.Error())
+		}
 	}
 }
 

@@ -1257,16 +1257,16 @@ func (containerdRuntime *ContainerdRuntime) HostPortsForInstance(instanceID stri
 	return containerdRuntime.instanceHostPorts[instanceID]
 }
 
-// StopAll terminates every container managed by this runtime.
+// StopAll terminates and removes every container managed by this runtime,
+// including stopped containers. Stop() is idempotent and handles both
+// running and exited tasks correctly.
 func (containerdRuntime *ContainerdRuntime) StopAll(ctx context.Context) {
 	statuses, listError := containerdRuntime.List(ctx)
 	if listError != nil {
 		return
 	}
 	for _, status := range statuses {
-		if status.Running {
-			_ = containerdRuntime.Stop(ctx, status.ID)
-		}
+		_ = containerdRuntime.Stop(ctx, status.ID)
 	}
 }
 

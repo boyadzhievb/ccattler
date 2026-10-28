@@ -227,10 +227,10 @@ func TestAgentStopsRemovedInstance(t *testing.T) {
 	// Remove the placement.
 	types.DeletePlacement(ctx, factStore, "node-1", "ccc")
 
-	// Agent should stop the process.
-	waitFor(t, 2*time.Second, "instance stopped in runtime", func() bool {
-		st, err := simulatorRuntime.Status(ctx, "ccc")
-		return err == nil && !st.Running
+	// Agent should stop the process — Stop() fully removes it from the runtime.
+	waitFor(t, 2*time.Second, "instance removed from runtime", func() bool {
+		_, err := simulatorRuntime.Status(ctx, "ccc")
+		return err != nil
 	})
 }
 
@@ -1326,9 +1326,58 @@ func TestAgentCleanupUndesiredInstanceStopsStale(t *testing.T) {
 	// Remove the placement — the instance should no longer be desired on node-1.
 	types.DeletePlacement(ctx, factStore, "node-1", instanceID)
 
-	waitFor(t, 2*time.Second, "instance stopped after placement removed", func() bool {
+	waitFor(t, 2*time.Second, "instance removed from runtime after placement removed", func() bool {
+		_, statusError := simulatorRuntime.Status(ctx, instanceID)
+		return statusError != nil
+	})
+}
+
+// TestAgentCleanupStoppedStaleInstanceRemovesAndPublishes verifies that a
+// container that has crashed (stopped but still present in the runtime) gets
+// cleaned up when its placement is removed, and that InstanceStopped is
+// published to the fact store.
+func TestAgentCleanupStoppedStaleInstanceRemovesAndPublishes(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serviceName := "stopped-cleanup-svc"
+	instanceID := "stopped-cleanup-aaa"
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage(serviceName), []byte("nginx:1.27"))
+	types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: serviceName, State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running before kill", func() bool {
 		runtimeStatus, statusError := simulatorRuntime.Status(ctx, instanceID)
-		return statusError == nil && !runtimeStatus.Running
+		return statusError == nil && runtimeStatus.Running
+	})
+
+	// Simulate a crash — the container stops but remains in the runtime.
+	simulatorRuntime.KillWorkload(instanceID, 1, "crash")
+
+	// Remove the placement so the agent treats this as an undesired stopped container.
+	types.DeletePlacement(ctx, factStore, "node-1", instanceID)
+
+	// The agent should invoke cleanupStoppedStaleInstance which calls runtime.Stop
+	// and publishes InstanceStopped to the store.
+	waitFor(t, 2*time.Second, "stopped container removed from runtime", func() bool {
+		_, statusError := simulatorRuntime.Status(ctx, instanceID)
+		return statusError != nil
+	})
+
+	waitFor(t, 2*time.Second, "InstanceStopped published to store", func() bool {
+		stateKey := types.KeyObservedInstanceState(instanceID)
+		fact, getError := factStore.Get(ctx, stateKey)
+		return getError == nil && string(fact.Value) == string(types.InstanceStopped)
 	})
 }
 

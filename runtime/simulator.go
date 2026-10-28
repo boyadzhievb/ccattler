@@ -88,12 +88,7 @@ func (simulator *SimulatorRuntime) Stop(_ context.Context, id string) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
 
-	if workload, ok := simulator.workloads[id]; ok {
-		workload.isRunning = false
-		workload.exitCode = 0
-		workload.errorMessage = ""
-		return nil
-	}
+	delete(simulator.workloads, id)
 	return nil
 }
 

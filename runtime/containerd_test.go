@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/user"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -120,6 +121,7 @@ func TestContainerdRuntimeConformance(t *testing.T) {
 	t.Run("ExecRunsCommand", testContainerdExecRunsCommand)
 	t.Run("ExecCaptureReturnsOutput", testContainerdExecCaptureOutput)
 	t.Run("PullAndIsImageCached", testContainerdPullAndCache)
+	t.Run("StopCleansResources", testContainerdStopCleansResources)
 }
 
 func newTestContainerdRuntime(t *testing.T) *ContainerdRuntime {
@@ -374,6 +376,56 @@ func testContainerdPullAndCache(t *testing.T) {
 	}
 	if !found {
 		t.Error("busybox should appear in ListImages after pull")
+	}
+}
+
+// testContainerdStopCleansResources verifies that Stop() fully removes a
+// container's resources: the container disappears from List(), the log
+// directory is deleted, and Status() returns ErrNotFound.
+func testContainerdStopCleansResources(t *testing.T) {
+	skipIfNoContainerd(t)
+	containerdRuntime := newTestContainerdRuntime(t)
+	defer containerdRuntime.Close()
+	testCtx := context.Background()
+
+	instanceID := "ctest-cleanup-1"
+	containerdRuntime.Start(testCtx, containerdTestSpec(instanceID))
+
+	logDirectory := filepath.Join(containerdLogBaseDir, instanceID)
+	if _, statError := os.Stat(logDirectory); os.IsNotExist(statError) {
+		t.Fatalf("log directory %s should exist after Start", logDirectory)
+	}
+
+	workloadStatus, statusError := containerdRuntime.Status(testCtx, instanceID)
+	if statusError != nil {
+		t.Fatalf("Status failed after Start: %v", statusError)
+	}
+	if !workloadStatus.Running {
+		t.Fatal("container should be running after Start")
+	}
+
+	stopError := containerdRuntime.Stop(testCtx, instanceID)
+	if stopError != nil {
+		t.Fatalf("Stop failed: %v", stopError)
+	}
+
+	if _, statError := os.Stat(logDirectory); !os.IsNotExist(statError) {
+		t.Errorf("log directory %s should be removed after Stop", logDirectory)
+	}
+
+	statusList, listError := containerdRuntime.List(testCtx)
+	if listError != nil {
+		t.Fatalf("List failed after Stop: %v", listError)
+	}
+	for _, entry := range statusList {
+		if entry.ID == instanceID {
+			t.Errorf("container %s should not appear in List after Stop", instanceID)
+		}
+	}
+
+	_, statusError = containerdRuntime.Status(testCtx, instanceID)
+	if statusError != ErrNotFound {
+		t.Errorf("Status after Stop should return ErrNotFound, got %v", statusError)
 	}
 }
 
