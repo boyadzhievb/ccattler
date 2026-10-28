@@ -356,7 +356,7 @@ if [[ -n "$STATUS_JSON" ]]; then
         fi
         log_threshold=$((workload_count + 5))
         if [[ "$log_dir_count" -gt "$log_threshold" ]]; then
-            warn "$vm: log dirs ($log_dir_count) exceed container count + 5 ($log_threshold)"
+            log "  INFO: $vm: log dirs ($log_dir_count) exceed container count + 5 ($log_threshold)"
         fi
     done
 else
