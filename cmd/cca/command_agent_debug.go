@@ -11,25 +11,44 @@ import (
 	"github.com/boyadzhievb/ccattler/runtime"
 )
 
+// runtimeInspector defines the methods needed by agent debug to discover
+// containers, stats, and images from a local container runtime.
+type runtimeInspector interface {
+	DiscoverAllContainers(ctx context.Context) ([]runtime.DiscoveredContainer, error)
+	DiscoverAllContainerStats(ctx context.Context) ([]runtime.ContainerResourceUsage, error)
+	ListImages(ctx context.Context) ([]runtime.ImageInfo, error)
+}
+
 // executeAgentDebugCommand inspects the local container runtime directly,
-// bypassing the control plane and agent. It shells out to nerdctl/docker to
-// show ground-truth container state, resource usage, and cached images.
+// bypassing the control plane and agent. Tries the containerd client API
+// first (for nodes with containerd only), then falls back to nerdctl/docker.
 func executeAgentDebugCommand() {
-	containerRuntime := runtime.NewContainerRuntime()
 	ctx := context.Background()
 
-	fmt.Printf("CCattler Agent Debug — local runtime inspection\n")
-	fmt.Printf("Container CLI: %s\n\n", containerRuntime.DetectedCommand())
+	var inspector runtimeInspector
+	runtimeLabel := "containerd"
 
-	displayDiscoveredContainers(ctx, containerRuntime)
-	displayDiscoveredStats(ctx, containerRuntime)
-	displayDiscoveredImages(ctx, containerRuntime)
+	containerdRuntime, connectError := runtime.NewContainerdRuntime("")
+	if connectError == nil {
+		inspector = containerdRuntime
+	} else {
+		containerRuntime := runtime.NewContainerRuntime()
+		inspector = containerRuntime
+		runtimeLabel = containerRuntime.DetectedCommand()
+	}
+
+	fmt.Printf("CCattler Agent Debug — local runtime inspection\n")
+	fmt.Printf("Container runtime: %s\n\n", runtimeLabel)
+
+	displayDiscoveredContainers(ctx, inspector)
+	displayDiscoveredStats(ctx, inspector)
+	displayDiscoveredImages(ctx, inspector)
 }
 
 // displayDiscoveredContainers lists all containers found by the local
-// container runtime (nerdctl/docker ps -a).
-func displayDiscoveredContainers(ctx context.Context, containerRuntime *runtime.ContainerRuntime) {
-	containers, discoverError := containerRuntime.DiscoverAllContainers(ctx)
+// container runtime.
+func displayDiscoveredContainers(ctx context.Context, inspector runtimeInspector) {
+	containers, discoverError := inspector.DiscoverAllContainers(ctx)
 	if discoverError != nil {
 		fmt.Fprintf(os.Stderr, "error discovering containers: %v\n", discoverError)
 		return
@@ -63,9 +82,9 @@ func displayDiscoveredContainers(ctx context.Context, containerRuntime *runtime.
 }
 
 // displayDiscoveredStats shows resource usage for all running containers
-// as reported by nerdctl/docker stats.
-func displayDiscoveredStats(ctx context.Context, containerRuntime *runtime.ContainerRuntime) {
-	usages, statsError := containerRuntime.DiscoverAllContainerStats(ctx)
+// as reported by the container runtime.
+func displayDiscoveredStats(ctx context.Context, inspector runtimeInspector) {
+	usages, statsError := inspector.DiscoverAllContainerStats(ctx)
 	if statsError != nil {
 		fmt.Fprintf(os.Stderr, "error querying stats: %v\n", statsError)
 		return
@@ -93,9 +112,9 @@ func displayDiscoveredStats(ctx context.Context, containerRuntime *runtime.Conta
 }
 
 // displayDiscoveredImages lists locally cached container images from the
-// container runtime (nerdctl/docker images).
-func displayDiscoveredImages(ctx context.Context, containerRuntime *runtime.ContainerRuntime) {
-	images, listError := containerRuntime.ListImages(ctx)
+// container runtime.
+func displayDiscoveredImages(ctx context.Context, inspector runtimeInspector) {
+	images, listError := inspector.ListImages(ctx)
 	if listError != nil {
 		fmt.Fprintf(os.Stderr, "error listing images: %v\n", listError)
 		return

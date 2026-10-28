@@ -373,7 +373,7 @@ if [[ "$CLEAR_WORKLOADS_ONLY" == "true" ]]; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Pruning container images and snapshots for blank-slate redeploy..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "sudo ctr -n ccattler images list -q 2>/dev/null | xargs -r sudo ctr -n ccattler images rm 2>/dev/null; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s 2>/dev/null; done" &
+            ssh_vm "$vm" "sudo ctr -n ccattler images list -q 2>/dev/null | xargs -r sudo ctr -n ccattler images rm >/dev/null 2>&1; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s >/dev/null 2>&1; done" &
         done
         wait
     else
@@ -467,7 +467,7 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers, images, and snapshots..."
         for vm in "${VM_NAMES[@]}"; do
-            ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n ccattler containers list -q 2>/dev/null); do sudo ctr -n ccattler containers delete \$c 2>/dev/null; done; sudo ctr -n ccattler images list -q 2>/dev/null | xargs -r sudo ctr -n ccattler images rm 2>/dev/null; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s 2>/dev/null; done" &
+            ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n ccattler containers list -q 2>/dev/null); do sudo ctr -n ccattler containers delete \$c 2>/dev/null; done; sudo ctr -n ccattler images list -q 2>/dev/null | xargs -r sudo ctr -n ccattler images rm >/dev/null 2>&1; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s >/dev/null 2>&1; done" &
         done
         wait
     else

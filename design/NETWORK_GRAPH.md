@@ -47,7 +47,8 @@ Every node running a CCattler agent has the following network interfaces:
 │  └───────────────────────────────────────────┘                      │
 │                                                                     │
 │  DNS Forwarder: 192.168.124.20:53 (agent's advertise address)       │
-│  nftables table: ip cca { prerouting, output, postrouting, ... }    │
+│  nftables table: ip cca { prerouting, output, postrouting,         │
+│      container_isolation (blocks cca0→etcd 2379/2380), ... }        │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -456,6 +457,11 @@ table ip cca {
     chain postrouting {
         type nat hook postrouting priority srcnat; policy accept;
         masquerade
+    }
+    chain container_isolation {
+        type filter hook input priority 0; policy accept;
+        iifname "cca0" tcp dport { 2379, 2380 } limit rate 1/minute log prefix "cca:etcd-blocked: "
+        iifname "cca0" tcp dport { 2379, 2380 } counter drop
     }
 
     map vip_dispatch {

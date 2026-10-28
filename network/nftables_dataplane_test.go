@@ -351,6 +351,37 @@ func TestNftablesEffectiveProtocolExplicit(t *testing.T) {
 	}
 }
 
+func TestNftablesContainerIsolationChainPresent(t *testing.T) {
+	nftablesDataPlane := NewNftablesDataPlane()
+	serviceConfigs := []ServiceVIPConfig{
+		{ServiceName: "web", VirtualIP: "10.200.0.1", Port: 80,
+			Backends: []DataPlaneBackend{{Address: "10.0.0.1", Port: 80}}},
+	}
+
+	desiredServiceChains := make(map[string]bool)
+	desiredVIPAddresses := make(map[string]bool)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs, desiredServiceChains, desiredVIPAddresses, nil)
+
+	if !strings.Contains(ruleset, "chain container_isolation") {
+		t.Error("ruleset should contain container_isolation filter chain")
+	}
+	if !strings.Contains(ruleset, "type filter hook input priority 0") {
+		t.Error("container_isolation chain should be an input filter chain")
+	}
+	if !strings.Contains(ruleset, `iifname "cca0" tcp dport { 2379, 2380 }`) {
+		t.Error("container_isolation should block etcd ports from the container bridge")
+	}
+	if !strings.Contains(ruleset, "counter drop") {
+		t.Error("container_isolation should drop and count blocked packets")
+	}
+	if !strings.Contains(ruleset, `log prefix "cca:etcd-blocked: "`) {
+		t.Error("container_isolation should log blocked packets with prefix")
+	}
+	if !strings.Contains(ruleset, "limit rate 1/minute") {
+		t.Error("container_isolation should rate-limit logging to avoid journal flooding")
+	}
+}
+
 func TestSanitizeNftablesChainNameReplacesHyphens(t *testing.T) {
 	testCases := []struct {
 		input    string

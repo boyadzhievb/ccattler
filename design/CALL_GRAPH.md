@@ -452,6 +452,10 @@ NftablesDataPlane.ReconcileVIPDataPlane(serviceConfigs)
 │
 ├── buildVIPRuleset(serviceConfigs)
 │   ├── writePostRoutingChain                 [masquerade for DNAT]
+│   ├── writeContainerIsolationChain          [blocks cca0→etcd 2379/2380]
+│   │   ├── filter hook input priority 0
+│   │   ├── rate-limited log (1/min)          [journal: "cca:etcd-blocked:"]
+│   │   └── counter drop                     [visible via nft list table ip cca]
 │   ├── writeVerdictMapWithElements           [dispatch VIP:port → chain]
 │   └── writeBackendDNATRules                 [DNAT to backends]
 │
@@ -466,7 +470,10 @@ IptablesDataPlane.ReconcileVIPDataPlane(serviceConfigs)
 ├── ensureGlobalChainAndJumpRules
 │   ├── ensureJumpToChain(PREROUTING, CCA_SERVICES)
 │   ├── ensureJumpToChain(OUTPUT, CCA_SERVICES)
-│   └── ensureMasqueradeForDNAT
+│   ├── ensureMasqueradeForDNAT
+│   └── ensureContainerIsolationRules          [blocks cca0→etcd 2379/2380]
+│       ├── INPUT: LOG --limit 1/min           [journal: "cca:etcd-blocked:"]
+│       └── INPUT: DROP                        [unconditional]
 │
 ├── FOR EACH service VIP:
 │   ├── ensureVIPAddress(virtualIP)
@@ -663,4 +670,27 @@ streamContainerLogs(serviceName, instanceID, config)
 │   ├── lookupInstanceState(instanceID) → check if in init/pulling
 │   └── print hint with current instance state
 └── stream response body to stdout
+```
+
+### cca agent debug → local runtime inspection
+```
+executeAgentDebugCommand()
+├── TRY: runtime.NewContainerdRuntime("")       [connect to containerd socket]
+│   └── IF success → use containerd client API (no nerdctl needed)
+├── FALLBACK: runtime.NewContainerRuntime()     [shells out to nerdctl/docker]
+│
+├── displayDiscoveredContainers(inspector)
+│   └── inspector.DiscoverAllContainers(ctx)
+│       ├── containerd: client.Containers() + task.Status()
+│       └── nerdctl: "nerdctl ps -a --format ..."
+│
+├── displayDiscoveredStats(inspector)
+│   └── inspector.DiscoverAllContainerStats(ctx)
+│       ├── containerd: cgroup v2 metrics per task
+│       └── nerdctl: "nerdctl stats --no-stream --format ..."
+│
+└── displayDiscoveredImages(inspector)
+    └── inspector.ListImages(ctx)
+        ├── containerd: client.ListImages()
+        └── nerdctl: "nerdctl images --format ..."
 ```

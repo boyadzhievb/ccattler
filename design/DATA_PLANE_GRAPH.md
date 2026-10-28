@@ -100,6 +100,12 @@ table ip cca {
         ct status dnat masquerade                              ← SNAT for DNAT'd packets
     }
 
+    chain container_isolation {                                ← SECURITY: blocks container→etcd
+        type filter hook input priority 0; policy accept;
+        iifname "cca0" tcp dport { 2379, 2380 } limit rate 1/minute log prefix "cca:etcd-blocked: "
+        iifname "cca0" tcp dport { 2379, 2380 } counter drop
+    }
+
     chain svc_web {
         meta l4proto tcp dnat to numgen inc mod 3 map {        ← round-robin
             0 : 10.100.1.2 . 8080,

@@ -312,7 +312,41 @@ func (iptablesDataPlane *IptablesDataPlane) ensureGlobalChainAndJumpRules() erro
 		return err
 	}
 
+	if err := iptablesDataPlane.ensureContainerIsolationRules(); err != nil {
+		logging.Default().Error("failed to add container isolation rules", "error", err.Error())
+	}
+
 	iptablesDataPlane.initialized = true
+	return nil
+}
+
+// ensureContainerIsolationRules adds iptables INPUT rules to block container
+// bridge traffic from reaching etcd ports. Prevents rogue containers from
+// flooding or manipulating cluster state. Rate-limited LOG + unconditional DROP.
+func (iptablesDataPlane *IptablesDataPlane) ensureContainerIsolationRules() error {
+	dropArgs := []string{"-i", containerBridgeInterface, "-p", "tcp",
+		"-m", "multiport", "--dports", fmt.Sprintf("%d,%d", etcdClientPort, etcdPeerPort),
+		"-j", "DROP"}
+	if err := runIptablesFilter("-C", "INPUT", dropArgs); err != nil {
+		logArgs := []string{"-i", containerBridgeInterface, "-p", "tcp",
+			"-m", "multiport", "--dports", fmt.Sprintf("%d,%d", etcdClientPort, etcdPeerPort),
+			"-m", "limit", "--limit", "1/min",
+			"-j", "LOG", "--log-prefix", "cca:etcd-blocked: "}
+		_ = runIptablesFilter("-I", "INPUT", logArgs)
+		if insertErr := runIptablesFilter("-A", "INPUT", dropArgs); insertErr != nil {
+			return fmt.Errorf("adding etcd isolation drop rule: %w", insertErr)
+		}
+	}
+	return nil
+}
+
+// runIptablesFilter runs an iptables command in the filter table.
+func runIptablesFilter(action string, chain string, ruleArgs []string) error {
+	fullArgs := append([]string{action, chain}, ruleArgs...)
+	output, err := exec.Command("iptables", fullArgs...).CombinedOutput() //nolint:gosec // iptables commands with validated arguments
+	if err != nil {
+		return fmt.Errorf("iptables %s %s: %w (output: %s)", action, chain, err, string(output))
+	}
 	return nil
 }
 

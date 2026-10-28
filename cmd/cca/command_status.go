@@ -907,28 +907,32 @@ func printServiceDescribeNetworkingAndConfig(serviceDetail api.ServiceDescribe) 
 	}
 }
 
-// printServiceDescribeInstances prints the instance table showing ID, state,
-// node, IP, health, and restart count for each instance of the service.
+// printServiceDescribeInstances prints the instance table showing ID, ready,
+// status, node, IP, and restart count for each instance of the service.
 func printServiceDescribeInstances(serviceDetail api.ServiceDescribe) {
 	if len(serviceDetail.Instances) == 0 {
 		return
 	}
 	fmt.Println()
 	fmt.Println("Instances:")
-	fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %-10s  %s\n",
-		"ID", "STATE", "NODE", "IP", "HEALTH", "RESTARTS", "REASON")
+	fmt.Printf("  %-20s  %-6s  %-10s  %-14s  %-16s  %-10s  %s\n",
+		"ID", "READY", "STATUS", "NODE", "IP", "RESTARTS", "REASON")
 	for _, instanceSummary := range serviceDetail.Instances {
 		restartDisplay := instanceSummary.Restarts
 		if restartDisplay == "" {
 			restartDisplay = "0"
 		}
+		readyDisplay := "0/1"
+		if instanceSummary.State == "running" && instanceSummary.Health != "unhealthy" {
+			readyDisplay = "1/1"
+		}
 		reasonDisplay := instanceSummary.StatusReason
 		if reasonDisplay == "" || reasonDisplay == "running" {
 			reasonDisplay = "-"
 		}
-		fmt.Printf("  %-20s  %-10s  %-14s  %-16s  %-10s  %-10s  %s\n",
-			instanceSummary.ID, instanceSummary.State, instanceSummary.NodeID,
-			instanceSummary.IPAddress, instanceSummary.Health, restartDisplay, reasonDisplay)
+		fmt.Printf("  %-20s  %-6s  %-10s  %-14s  %-16s  %-10s  %s\n",
+			instanceSummary.ID, readyDisplay, instanceSummary.State, instanceSummary.NodeID,
+			instanceSummary.IPAddress, restartDisplay, reasonDisplay)
 	}
 }
 
@@ -987,17 +991,21 @@ func printNodeDescribe(nodeDetail api.NodeDescribe) {
 	if len(nodeDetail.Instances) > 0 {
 		fmt.Println()
 		fmt.Println("Instances:")
-		fmt.Printf("  %-28s  %-10s  %-16s  %-10s  %s\n",
-			"CONTAINER", "STATE", "IP", "HEALTH", "RESTARTS")
+		fmt.Printf("  %-28s  %-6s  %-10s  %-16s  %s\n",
+			"CONTAINER", "READY", "STATUS", "IP", "RESTARTS")
 		for _, instanceSummary := range nodeDetail.Instances {
 			restartDisplay := instanceSummary.Restarts
 			if restartDisplay == "" {
 				restartDisplay = "0"
 			}
+			readyDisplay := "0/1"
+			if instanceSummary.State == "running" && instanceSummary.Health != "unhealthy" {
+				readyDisplay = "1/1"
+			}
 			containerName := instanceSummary.Service + "-" + instanceSummary.ID
-			fmt.Printf("  %-28s  %-10s  %-16s  %-10s  %s\n",
-				containerName, instanceSummary.State,
-				instanceSummary.IPAddress, instanceSummary.Health, restartDisplay)
+			fmt.Printf("  %-28s  %-6s  %-10s  %-16s  %s\n",
+				containerName, readyDisplay, instanceSummary.State,
+				instanceSummary.IPAddress, restartDisplay)
 		}
 	}
 
@@ -1378,13 +1386,10 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 		return nameFirst < nameSecond
 	})
 	wideOutput := options.outputFormat == "wide"
-	header := []string{"CONTAINER", "STATE", "RESTARTS", "NODE", "IP", "HEALTH", "REASON"}
+	header := []string{"CONTAINER", "READY", "STATUS", "RESTARTS", "NODE", "IP", "REASON"}
 	var rows [][]string
 	for _, instance := range instances {
-		healthDisplay := instance.HealthState
-		if healthDisplay == "" {
-			healthDisplay = "-"
-		}
+		readyDisplay := formatReadyColumn(instance)
 		ipDisplay := instance.IPAddress
 		if ipDisplay == "" {
 			ipDisplay = "-"
@@ -1397,15 +1402,27 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 		reasonDisplay := formatInstanceReason(instance, wideOutput)
 		rows = append(rows, []string{
 			containerName,
+			readyDisplay,
 			instance.State,
 			restartDisplay,
 			instance.NodeID,
 			ipDisplay,
-			healthDisplay,
 			reasonDisplay,
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
+}
+
+// formatReadyColumn returns "1/1" when the instance is running and healthy
+// (or has no probes configured), "0/1" otherwise. Mirrors kubectl READY.
+func formatReadyColumn(instance api.InstanceStatus) string {
+	if instance.State != "running" {
+		return "0/1"
+	}
+	if instance.HealthState == "unhealthy" {
+		return "0/1"
+	}
+	return "1/1"
 }
 
 // formatInstanceReason builds a human-readable reason string from the

@@ -30,6 +30,17 @@ const nftablesServiceChainPrefix = "svc_"
 // to form per-route chain names (e.g. "rt_web_public").
 const nftablesRouteChainPrefix = "rt_"
 
+// containerBridgeInterface is the Linux bridge that containers attach to
+// via veth pairs. Traffic from this interface to control plane ports is
+// blocked by the container isolation chain.
+const containerBridgeInterface = "cca0"
+
+// etcdClientPort is the etcd client API port, blocked from containers.
+const etcdClientPort = 2379
+
+// etcdPeerPort is the etcd peer communication port, blocked from containers.
+const etcdPeerPort = 2380
+
 // NftablesDataPlane programs nftables nat-table rules for VIP-based load
 // balancing using hash set lookups. This replaces the iptables provider's
 // linear chain walk with O(1) verdict map dispatching. Full kernel
@@ -247,6 +258,7 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 	rulesetBuilder.WriteString("    }\n\n")
 
 	writePostRoutingChain(&rulesetBuilder)
+	writeContainerIsolationChain(&rulesetBuilder)
 
 	var dispatchEntries []string
 
@@ -284,6 +296,22 @@ func (nftablesDataPlane *NftablesDataPlane) buildVIPRuleset(
 
 	rulesetBuilder.WriteString("}\n")
 	return rulesetBuilder.String()
+}
+
+// writeContainerIsolationChain writes an input filter chain that blocks
+// container-originated traffic from reaching etcd ports. Logs drops at
+// rate 1/minute to avoid journal flooding, and unconditionally drops with
+// a counter so `nft list table ip cca` shows blocked packet counts.
+func writeContainerIsolationChain(rulesetBuilder *strings.Builder) {
+	rulesetBuilder.WriteString("    chain container_isolation {\n")
+	rulesetBuilder.WriteString("        type filter hook input priority 0; policy accept;\n")
+	fmt.Fprintf(rulesetBuilder,
+		"        iifname \"%s\" tcp dport { %d, %d } limit rate 1/minute log prefix \"cca:etcd-blocked: \"\n",
+		containerBridgeInterface, etcdClientPort, etcdPeerPort)
+	fmt.Fprintf(rulesetBuilder,
+		"        iifname \"%s\" tcp dport { %d, %d } counter drop\n",
+		containerBridgeInterface, etcdClientPort, etcdPeerPort)
+	rulesetBuilder.WriteString("    }\n\n")
 }
 
 // writePostRoutingChain writes the postrouting masquerade chain.
