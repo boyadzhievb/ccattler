@@ -653,6 +653,12 @@ func executeDescribeCommand(resourceType, resourceName string) {
 		os.Exit(1)
 	}
 
+	if normalizedType == "instance" {
+		if _, instanceID, isContainer := parseContainerName(resourceName); isContainer {
+			resourceName = instanceID
+		}
+	}
+
 	apiURL := fmt.Sprintf("%s/api/describe?type=%s&name=%s",
 		statusAPIBaseURL(), normalizedType, resourceName)
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server

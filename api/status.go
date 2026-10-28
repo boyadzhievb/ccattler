@@ -219,10 +219,26 @@ func discoverSortedServiceNamesFromStore(ctx context.Context, factStore store.St
 			continue
 		}
 		serviceName := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		if isServiceSubResourceKey(serviceName) {
+			continue
+		}
 		serviceNames = append(serviceNames, serviceName)
 	}
 	sort.Strings(serviceNames)
 	return serviceNames
+}
+
+// isServiceSubResourceKey returns true if the name contains a sub-resource
+// path segment (init, expose, probe, lifecycle, logging) that indicates it is
+// a child key of a service definition, not a service itself.
+func isServiceSubResourceKey(serviceName string) bool {
+	subResourceSegments := []string{"/init/", "/expose/", "/probe/", "/lifecycle/", "/logging/"}
+	for _, segment := range subResourceSegments {
+		if strings.Contains(serviceName, segment) {
+			return true
+		}
+	}
+	return false
 }
 
 // collectServiceStatusFromStore reads each service definition and counts
