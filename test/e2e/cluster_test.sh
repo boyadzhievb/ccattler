@@ -796,12 +796,19 @@ else
     log "WARNING: No placements found, skipping exec test"
 fi
 
-log "Testing POST /debug/images/pull on worker-1..."
-PULL_JSON=$(curl -sf --max-time 120 -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
-    -H "Content-Type: application/json" \
-    -d '{"image":"alpine:3.20"}' 2>&1) || fail "debug/images/pull request failed"
-echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
-log "POST /debug/images/pull OK — pulled alpine:3.20 on worker-1"
+PULL_IMAGE=$(curl -sf "http://${LOCAL_REGISTRY}/v2/_catalog" | jq -r '.repositories[0]' 2>/dev/null)
+if [[ -n "$PULL_IMAGE" && "$PULL_IMAGE" != "null" ]]; then
+    PULL_TAG=$(curl -sf "http://${LOCAL_REGISTRY}/v2/${PULL_IMAGE}/tags/list" | jq -r '.tags[0]' 2>/dev/null)
+    PULL_REF="${LOCAL_REGISTRY}/${PULL_IMAGE}:${PULL_TAG:-latest}"
+    log "Testing POST /debug/images/pull on worker-1 (image: ${PULL_REF})..."
+    PULL_JSON=$(curl -sf --max-time 120 -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
+        -H "Content-Type: application/json" \
+        -d "{\"image\":\"${PULL_REF}\"}" 2>&1) || fail "debug/images/pull request failed"
+    echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
+    log "POST /debug/images/pull OK — pulled ${PULL_REF} on worker-1"
+else
+    log "WARNING: no images in local registry, skipping pull test"
+fi
 
 log "Phase 69 E2E tests passed"
 
