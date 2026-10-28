@@ -437,6 +437,24 @@ func findPreviousInstance(serviceName string) string {
 	return ""
 }
 
+// lookupInstanceState queries the API for the current state of an instance.
+func lookupInstanceState(instanceID string) string {
+	stateURL := statusAPIBaseURL() + "/api/state?prefix=observed/instance/" + instanceID + "/state"
+	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(stateURL) //nolint:gosec // CLI connects to user-configured API server
+	if requestError != nil {
+		return ""
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+	var facts []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&facts); decodeError != nil || len(facts) == 0 {
+		return ""
+	}
+	return facts[0].Value
+}
+
 // streamContainerLogs fetches logs for a container instance through the agent
 // debug API. It discovers the instance's placement, connects to the node's
 // debug endpoint, and streams the response to stdout.
@@ -484,6 +502,12 @@ func streamContainerLogs(serviceName string, instanceID string, logsConfig logsC
 	if httpResponse.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(httpResponse.Body)
 		fmt.Fprintf(os.Stderr, "logs error: %s\n", string(responseBody))
+		if strings.Contains(string(responseBody), "not found") {
+			instanceState := lookupInstanceState(instanceID)
+			if instanceState != "" && instanceState != string(types.InstanceRunning) {
+				fmt.Fprintf(os.Stderr, "hint: instance %s is in %q state — no workload container exists yet\n", instanceID, instanceState)
+			}
+		}
 		return
 	}
 

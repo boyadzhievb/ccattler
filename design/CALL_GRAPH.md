@@ -612,3 +612,55 @@ StoreBackedResolver.ResolveVIP(ctx, serviceName)
 ├── store.Get(derived/vip/{serviceName})
 └── → VIP string
 ```
+
+## CLI Side (cmd/cca/command_status.go)
+
+### cca events → event stream display
+```
+executeEventsCommand / executeEventsFollowMode
+├── fetch /api/events or SSE /api/events/stream
+├── stripEventTargetPrefix(event.Target)
+│   └── remove "instance/", "node/", "service/" prefix
+│       → bare target for display (e.g. "scheduler-eb7509a28e")
+└── Printf("%-24s  %-22s  %-30s  %s", timestamp, kind, target, detail)
+```
+
+Event target assembly (server side):
+```
+classifyWatchEventAsSemanticEvent(watchEvent)
+├── parse fact key → instanceID + subPath via splitInstanceSubPath
+│   e.g. "eb7509a28e/init/step/1" → id="eb7509a28e", sub="init/step/1"
+├── build target: "instance/" + instanceID (bare ID only)
+├── build detail: state message + " (subPath)" if sub-resource
+└── enrichInstanceEventWithServiceName
+    ├── lookup observed/instance/{id}/service
+    └── prepend serviceName to instanceID in target
+        → "instance/scheduler-eb7509a28e"
+```
+
+### cca logs → container log streaming
+```
+executeLogsCommand(config)
+├── parseContainerName(arg) → serviceName, instanceID
+│   e.g. "worker-43a2115efd" → service="worker", id="43a2115efd"
+├── IF instanceID set:
+│   └── streamContainerLogs(serviceName, instanceID, config)
+├── ELSE:
+│   ├── resolveServiceNamesForLogs (by name or --tag)
+│   ├── fetchObservedInstanceFacts
+│   ├── findInstanceIDsForService (running instances only)
+│   └── streamContainerLogs for each instance
+│
+streamContainerLogs(serviceName, instanceID, config)
+├── discoverInstancePlacement(instanceID)
+│   └── GET /api/state?prefix=placement/instance/{id}
+│       → nodeID
+├── discoverNodeDebugAddress(nodeID)
+│   └── GET /api/state?prefix=observed/node/{nodeID}/debug_address
+│       → host:port
+├── GET http://{debugAddress}/debug/logs?instance={id}&tail=...&follow=...
+├── IF 404 (workload not found):
+│   ├── lookupInstanceState(instanceID) → check if in init/pulling
+│   └── print hint with current instance state
+└── stream response body to stdout
+```

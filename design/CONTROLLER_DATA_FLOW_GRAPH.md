@@ -834,11 +834,15 @@ EventProjector.Run
 │   derived/service/
 │
 ├── On each watch event:
-│   ├── classifyEvent (state change, placement, endpoint, etc.)
-│   ├── buildEventDescription (human-readable message)
-│   └── eventLog.Record(event)
+│   ├── classifyWatchEventAsSemanticEvent
+│   │   ├── parse fact key → instanceID + subPath (splitInstanceSubPath)
+│   │   ├── target = "instance/" + bareInstanceID (no sub-resource path)
+│   │   └── detail = state message + " (subPath)" for init/step events
+│   ├── enrichInstanceEventWithServiceName
+│   │   └── "instance/eb7509a28e" → "instance/scheduler-eb7509a28e"
+│   └── eventLog.Emit(kind, target, detail)
 │
-└── Events available via: cca events, API /events
+└── Events available via: cca events, cca events -f, API /events, /events/stream (SSE)
 ```
 
 ## Cross-Cutting: What the Agent Reads

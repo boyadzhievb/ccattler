@@ -210,6 +210,15 @@ func (eventProjector *EventProjector) enrichInstanceEventWithServiceName(
 	return enrichedTarget, eventDetail
 }
 
+// splitInstanceSubPath separates a path like "eb7509a28e/init/step/1" into
+// the bare instance ID ("eb7509a28e") and sub-resource path ("init/step/1").
+func splitInstanceSubPath(fullPath string) (string, string) {
+	if slashIndex := strings.Index(fullPath, "/"); slashIndex >= 0 {
+		return fullPath[:slashIndex], fullPath[slashIndex+1:]
+	}
+	return fullPath, ""
+}
+
 // classifyWatchEventAsSemanticEvent examines a committed store watch event and
 // returns the event kind, target, and detail if it represents a noteworthy
 // state transition. Uses the Prev field to detect actual transitions rather
@@ -229,23 +238,29 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 
 	observedInstancePrefix := types.PrefixObserved + "/instance/"
 	if strings.HasPrefix(factKey, observedInstancePrefix) && strings.HasSuffix(factKey, "/state") {
-		instanceID := strings.TrimPrefix(factKey, observedInstancePrefix)
-		instanceID = strings.TrimSuffix(instanceID, "/state")
+		fullPath := strings.TrimPrefix(factKey, observedInstancePrefix)
+		fullPath = strings.TrimSuffix(fullPath, "/state")
+		instanceID, subPath := splitInstanceSubPath(fullPath)
+
+		detailSuffix := ""
+		if subPath != "" {
+			detailSuffix = " (" + subPath + ")"
+		}
 
 		switch factValue {
 		case string(types.InstanceRunning):
-			return "instance.running", "instance/" + instanceID, "is now running"
+			return "instance.running", "instance/" + instanceID, "is now running" + detailSuffix
 		case string(types.InstanceFailed):
-			return "instance.failed", "instance/" + instanceID, "has failed"
+			return "instance.failed", "instance/" + instanceID, "has failed" + detailSuffix
 		case string(types.InstancePending):
 			if previousValue == "" {
-				return "instance.created", "instance/" + instanceID, "created (pending)"
+				return "instance.created", "instance/" + instanceID, "created (pending)" + detailSuffix
 			}
-			return "instance.pending", "instance/" + instanceID, "is now pending"
+			return "instance.pending", "instance/" + instanceID, "is now pending" + detailSuffix
 		case string(types.InstanceStarting):
-			return "instance.starting", "instance/" + instanceID, "is starting"
+			return "instance.starting", "instance/" + instanceID, "is starting" + detailSuffix
 		case string(types.InstanceStopped):
-			return "instance.stopped", "instance/" + instanceID, "stopped"
+			return "instance.stopped", "instance/" + instanceID, "stopped" + detailSuffix
 		}
 	}
 
