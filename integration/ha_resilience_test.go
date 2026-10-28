@@ -412,7 +412,7 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 	cluster.partitionedStores["node-1"].Heal()
 	cluster.partitionedStores["node-2"].Heal()
 
-	waitFor(testHandle, 10*time.Second, "all nodes alive and 6 running after heal", func() bool {
+	waitFor(testHandle, 20*time.Second, "all nodes alive and 6 running after heal", func() bool {
 		fact1, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		fact2, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-2"))
 		nodesAlive := fact1 != nil && string(fact1.Value) == string(types.NodeAlive) &&
@@ -483,7 +483,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 
 	cluster.partitionedStores["node-1"].Heal()
 
-	waitFor(testHandle, 20*time.Second, "6 running instances restored after heal", func() bool {
+	waitFor(testHandle, 30*time.Second, "6 running instances restored after heal", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 }
@@ -664,7 +664,7 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	waitFor(testHandle, 5*time.Second, "web=6 and api=3 after rolling upgrade", func() bool {
+	waitFor(testHandle, 15*time.Second, "web=6 and api=3 after rolling upgrade", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
 	})

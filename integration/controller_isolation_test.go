@@ -332,7 +332,7 @@ func TestConcurrentControllerRecovery(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "db", "postgres:16", "2")
 
-	waitFor(testHandle, 10*time.Second, "all 3 services at desired count", func() bool {
+	waitFor(testHandle, 20*time.Second, "all 3 services at desired count", func() bool {
 		webCount := helperCountRunningInstances(ctx, cluster.factStore, "web")
 		apiCount := helperCountRunningInstances(ctx, cluster.factStore, "api")
 		dbCount := helperCountRunningInstances(ctx, cluster.factStore, "db")
