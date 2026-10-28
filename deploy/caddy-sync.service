@@ -16,6 +16,7 @@ Environment=CCA_CERT=/etc/ccattler/pki/node.pem
 Environment=CCA_KEY=/etc/ccattler/pki/node-key.pem
 Environment=CADDY_FILE=/etc/caddy/Caddyfile
 Environment=SYNC_INTERVAL=30
+Environment=REQUEST_DELAY=2
 
 [Install]
 WantedBy=multi-user.target

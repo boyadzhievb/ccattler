@@ -249,9 +249,13 @@ if [[ "$BAREMETAL" != "true" ]]; then
     VMHERD_BIN="${VMHERD_BIN:-vmherd}"
 fi
 
-# Maximum seconds to wait for convergence checks.
+# Convergence timeouts. Instead of a fixed wall-clock timeout, we use two
+# thresholds: STALE_PROGRESS_TIMEOUT fails if container count doesn't change
+# for this many seconds (cluster is stuck). MAX_CONVERGENCE_WAIT is an absolute
+# safety ceiling. CONVERGE_TIMEOUT is used for non-container waits (node join).
 CONVERGE_TIMEOUT=120
-CONTAINER_TIMEOUT=180
+STALE_PROGRESS_TIMEOUT=120
+MAX_CONVERGENCE_WAIT=600
 
 collect_vm_logs() {
     log "Collecting VM logs before teardown..."
@@ -654,22 +658,35 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     scp_to_vm "$CTRL_NODE" "$WORKLOADS_DIR/${workload_name}.cca" "/tmp/${workload_name}.cca"
     ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/${workload_name}.cca"
 
-    # Wait for containers to converge.
+    # Wait for containers to converge using dynamic progress detection.
+    # Instead of a fixed timeout, we track whether the container count is still
+    # changing. If it stalls for STALE_PROGRESS_TIMEOUT seconds, the cluster is
+    # stuck. MAX_CONVERGENCE_WAIT is a safety ceiling.
     CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS + WORKLOAD_EXPECTED_CONTAINERS))
     log "Waiting for $workload_name containers ($WORKLOAD_EXPECTED_CONTAINERS new, $CUMULATIVE_EXPECTED_CONTAINERS total)..."
-    deadline=$((SECONDS + CONTAINER_TIMEOUT))
+    absolute_deadline=$((SECONDS + MAX_CONVERGENCE_WAIT))
+    last_change_at=$SECONDS
+    last_container_count=-1
     total_containers=0
-    while [[ $SECONDS -lt $deadline ]]; do
+    while [[ $SECONDS -lt $absolute_deadline ]]; do
         sleep 5
         total_containers=0
         for vm in "${VM_NAMES[@]}"; do
             c=$(count_containers "$vm")
             total_containers=$((total_containers + c))
         done
-        log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed)"
+        if [[ "$total_containers" -ne "$last_container_count" ]]; then
+            last_change_at=$SECONDS
+            last_container_count=$total_containers
+        fi
+        stale_elapsed=$(( SECONDS - last_change_at ))
+        log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed, stale ${stale_elapsed}s)"
         if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
+        if [[ "$stale_elapsed" -ge "$STALE_PROGRESS_TIMEOUT" ]]; then
+            fail "No convergence progress for ${STALE_PROGRESS_TIMEOUT}s — stuck at $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS (failed at $workload_name)"
+        fi
     done
-    [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers after ${CONTAINER_TIMEOUT}s (failed at $workload_name)"
+    [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers after ${MAX_CONVERGENCE_WAIT}s (failed at $workload_name)"
     log "$workload_name deployed: $total_containers containers across ${#VM_NAMES[@]} nodes"
 done
 

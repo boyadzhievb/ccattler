@@ -25,15 +25,24 @@ CCA_CERT="${CCA_CERT:-/etc/ccattler/pki/node.pem}"
 CCA_KEY="${CCA_KEY:-/etc/ccattler/pki/node-key.pem}"
 CADDY_FILE="${CADDY_FILE:-/etc/caddy/Caddyfile}"
 SYNC_INTERVAL="${SYNC_INTERVAL:-30}"
+REQUEST_DELAY="${REQUEST_DELAY:-2}"
 
 CURL_TLS="--cacert $CCA_CA --cert $CCA_CERT --key $CCA_KEY"
 
 log() { echo "[$(date '+%H:%M:%S')] caddy-sync: $*" >&2; }
 
 # query_api fetches a CCattler API endpoint and returns the JSON body.
+# Sleeps REQUEST_DELAY seconds after each call to avoid burst-loading the API.
 query_api() {
     local endpoint="$1"
-    curl -sf $CURL_TLS "${CCA_API}${endpoint}" 2>/dev/null
+    local result
+    result=$(curl -sf $CURL_TLS "${CCA_API}${endpoint}" 2>/dev/null)
+    local exit_code=$?
+    sleep "$REQUEST_DELAY"
+    if [[ $exit_code -ne 0 ]]; then
+        return $exit_code
+    fi
+    echo "$result"
 }
 
 # build_caddyfile reads route facts and resolved backends from the CCattler API,
@@ -178,7 +187,7 @@ if [[ "${1:-}" == "--once" ]]; then
     exit $?
 fi
 
-log "starting reconciliation loop (interval: ${SYNC_INTERVAL}s)"
+log "starting reconciliation loop (interval: ${SYNC_INTERVAL}s, request delay: ${REQUEST_DELAY}s)"
 log "API: ${CCA_API}"
 
 while true; do
