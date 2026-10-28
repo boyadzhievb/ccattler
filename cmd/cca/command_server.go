@@ -1377,6 +1377,26 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 			node.AvailableMemory, node.CapacityMemory)
 	}
 
+	// Render runtime health summary counting all instances including stopped.
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	var runningTotal, pendingTotal, failedTotal, stoppedTotal int
+	for _, instance := range allInstances {
+		switch instance.State {
+		case types.InstanceRunning:
+			runningTotal++
+		case types.InstancePending:
+			pendingTotal++
+		case types.InstanceFailed:
+			failedTotal++
+		case types.InstanceStopped:
+			stoppedTotal++
+		}
+	}
+	textBuilder.WriteByte('\n')
+	textBuilder.WriteString("RUNTIME HEALTH\n")
+	fmt.Fprintf(&textBuilder, "  Containers:  %d running, %d pending, %d failed, %d stopped\n",
+		runningTotal, pendingTotal, failedTotal, stoppedTotal)
+
 	// Render networking section if VIPs exist.
 	if len(statusData.Networking) > 0 {
 		textBuilder.WriteByte('\n')

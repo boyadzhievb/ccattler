@@ -114,7 +114,8 @@ func displayNodeStats(debugAddress string) {
 	}
 
 	fmt.Println("RESOURCE USAGE")
-	fmt.Printf("  Workloads:  %d total, %d running\n", statsResponse.WorkloadCount, statsResponse.RunningCount)
+	fmt.Printf("  Workloads:  %d total, %d running, %d stopped\n", statsResponse.WorkloadCount, statsResponse.RunningCount, statsResponse.StoppedCount)
+	fmt.Printf("  Log dirs:   %d\n", statsResponse.LogDirCount)
 	fmt.Printf("  CPU:        %dm\n", statsResponse.TotalCPUMillicores)
 	fmt.Printf("  Memory:     %s\n", formatBytesHuman(statsResponse.TotalMemoryBytes))
 	fmt.Println()

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 
@@ -35,15 +36,17 @@ const defaultHTTPShutdownTimeout = 5 * time.Second
 type DebugServer struct {
 	nodeID         string          // nodeID identifies this node in response payloads.
 	runtimeAdapter runtime.Runtime // runtimeAdapter is the runtime to query for containers and stats.
+	logBaseDir     string          // logBaseDir is the directory where container log subdirectories are stored.
 	httpServer     *http.Server    // httpServer is the underlying HTTP server.
 }
 
 // NewDebugServer creates a DebugServer bound to the given listen address.
 // The server is not started until Start is called.
-func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.Runtime) *DebugServer {
+func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.Runtime, logBaseDir string) *DebugServer {
 	debugServer := &DebugServer{
 		nodeID:         nodeID,
 		runtimeAdapter: runtimeAdapter,
+		logBaseDir:     logBaseDir,
 	}
 
 	serveMux := http.NewServeMux()
@@ -209,6 +212,8 @@ type DebugStatsResponse struct {
 	NodeID             string `json:"node_id"`
 	WorkloadCount      int    `json:"workload_count"`
 	RunningCount       int    `json:"running_count"`
+	StoppedCount       int    `json:"stopped_count"`
+	LogDirCount        int    `json:"log_dir_count"`
 	TotalCPUMillicores int64  `json:"total_cpu_millicores"`
 	TotalMemoryBytes   int64  `json:"total_memory_bytes"`
 }
@@ -229,11 +234,13 @@ func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWri
 	}
 
 	var runningCount int
+	var stoppedCount int
 	var totalCPUMillicores int64
 	var totalMemoryBytes int64
 
 	for _, workloadStatus := range workloads {
 		if !workloadStatus.Running {
+			stoppedCount++
 			continue
 		}
 		runningCount++
@@ -244,10 +251,14 @@ func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWri
 		}
 	}
 
+	logDirCount := countLogDirectories(debugServer.logBaseDir)
+
 	writeJSONResponse(responseWriter, DebugStatsResponse{
 		NodeID:             debugServer.nodeID,
 		WorkloadCount:      len(workloads),
 		RunningCount:       runningCount,
+		StoppedCount:       stoppedCount,
+		LogDirCount:        logDirCount,
 		TotalCPUMillicores: totalCPUMillicores,
 		TotalMemoryBytes:   totalMemoryBytes,
 	})
@@ -419,4 +430,24 @@ func writeJSONResponse(responseWriter http.ResponseWriter, payload interface{}) 
 	if encodeError := json.NewEncoder(responseWriter).Encode(payload); encodeError != nil {
 		writeDebugJSONError(responseWriter, encodeError.Error(), http.StatusInternalServerError)
 	}
+}
+
+// countLogDirectories counts the number of immediate subdirectories under the
+// log base dir. Each container gets its own subdirectory, so the count reflects
+// how many containers have (or had) log storage on this node.
+func countLogDirectories(logBaseDir string) int {
+	if logBaseDir == "" {
+		return 0
+	}
+	entries, readError := os.ReadDir(logBaseDir)
+	if readError != nil {
+		return 0
+	}
+	dirCount := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirCount++
+		}
+	}
+	return dirCount
 }

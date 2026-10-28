@@ -331,7 +331,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}()
 
 	if parsedConfig.debugListenAddress != "" {
-		debugServer := agent.NewDebugServer(parsedConfig.nodeID, parsedConfig.debugListenAddress, runtimeAdapter)
+		debugServer := agent.NewDebugServer(parsedConfig.nodeID, parsedConfig.debugListenAddress, runtimeAdapter, runtime.ContainerdLogBaseDir)
 		go func() {
 			if debugError := debugServer.Start(ctx); debugError != nil {
 				logging.Default().Error("debug API server error", "node", parsedConfig.nodeID, "error", debugError.Error())

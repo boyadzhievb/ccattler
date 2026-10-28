@@ -36,7 +36,7 @@ func startTestDebugServer(testContext *testing.T, runtimeAdapter runtime.Runtime
 	baseURL := fmt.Sprintf("http://%s", listenAddress)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	debugServer := NewDebugServer("test-node", listenAddress, runtimeAdapter)
+	debugServer := NewDebugServer("test-node", listenAddress, runtimeAdapter, "")
 
 	go func() {
 		_ = debugServer.Start(ctx)

@@ -87,6 +87,11 @@ const ccaSecretHelperScript = "#!/bin/sh\ncat \"/run/cca-secrets/$1\"\n" //nolin
 // materialized as individual files named by their secret key.
 const ccaSecretMountPrefix = "/run/cca-secrets/" //nolint:gosec // G101: not a credential, this is a filesystem path
 
+// stoppedContainerWarningThreshold is the number of non-running containers in
+// the runtime that triggers a warning log during reconciliation. A high count
+// suggests crash loops or a GC problem.
+const stoppedContainerWarningThreshold = 10
+
 // Agent is the node agent. It runs on each machine and bridges store <-> runtime.
 //
 // Delegates to four independent goroutines plus the main reconciliation loop:
@@ -614,6 +619,20 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		if !desiredByID[instanceID] {
 			delete(nodeAgent.initStepBackoffs, backoffKey)
 		}
+	}
+
+	// Warn if many non-running containers remain in the runtime after cleanup.
+	var stoppedContainerCount int
+	for _, runtimeStatus := range running {
+		if !runtimeStatus.Running {
+			stoppedContainerCount++
+		}
+	}
+	if stoppedContainerCount > stoppedContainerWarningThreshold {
+		logging.Default().Warn("high number of stopped containers in runtime",
+			"agent", nodeAgent.nodeID,
+			"stopped_count", strconv.Itoa(stoppedContainerCount),
+			"threshold", strconv.Itoa(stoppedContainerWarningThreshold))
 	}
 
 	return nil

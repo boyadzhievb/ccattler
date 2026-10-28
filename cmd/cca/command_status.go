@@ -1062,6 +1062,9 @@ func executeGetCommand(resourceType string, extraArgs []string) {
 	outputOptions, remainingArgs := parseGetOutputOptions(extraArgs)
 
 	apiBaseURL := statusAPIBaseURL() + "/api/status"
+	if outputOptions.includeAll {
+		apiBaseURL += "?all=true"
+	}
 	httpResponse, err := buildAuthenticatedHTTPClient().Get(apiBaseURL) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
@@ -1206,6 +1209,7 @@ func serviceMatchesAllTags(serviceTags map[string]string, tagFilters map[string]
 type getOutputOptions struct {
 	outputFormat string // outputFormat is "json" or "wide" or empty (compact default).
 	noHeaders    bool   // noHeaders suppresses the table header row.
+	includeAll   bool   // includeAll shows stopped/terminated resources when true.
 }
 
 // parseGetOutputOptions extracts -o and --no-headers flags from arguments,
@@ -1222,6 +1226,8 @@ func parseGetOutputOptions(args []string) (getOutputOptions, []string) {
 			}
 		case "--no-headers":
 			options.noHeaders = true
+		case "--all", "-a":
+			options.includeAll = true
 		default:
 			remaining = append(remaining, args[argIndex])
 		}

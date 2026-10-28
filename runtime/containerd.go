@@ -45,8 +45,8 @@ const containerLabelServiceName = "ccattler.service.name"
 // containerLabelLogPath is the containerd label key for the container's json-file log path.
 const containerLabelLogPath = "ccattler.log.path"
 
-// containerdLogBaseDir is the base directory for CCattler container log files.
-const containerdLogBaseDir = "/var/lib/ccattler/logs"
+// ContainerdLogBaseDir is the base directory for CCattler container log files.
+const ContainerdLogBaseDir = "/var/lib/ccattler/logs"
 
 // cniPluginDirectory is the path where CNI plugin binaries are installed.
 const cniPluginDirectory = "/opt/cni/bin"
@@ -370,7 +370,7 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 	}
 
 	containerName := containerdRuntime.buildContainerName(spec.ServiceName, spec.ID)
-	logFilePath := filepath.Join(containerdLogBaseDir, spec.ID, spec.ID+"-json.log")
+	logFilePath := filepath.Join(ContainerdLogBaseDir, spec.ID, spec.ID+"-json.log")
 
 	if mkdirError := os.MkdirAll(filepath.Dir(logFilePath), 0750); mkdirError != nil {
 		return &StartError{ID: spec.ID, Reason: fmt.Sprintf("create log dir: %v", mkdirError)}
@@ -502,7 +502,7 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 
 	if containerdRuntime.dnsAddress != "" {
 		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
-		resolvHostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", "resolv.conf")
+		resolvHostPath := filepath.Join(ContainerdLogBaseDir, spec.ID, "config", "resolv.conf")
 		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
 		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
 		bindMounts = append(bindMounts, specs.Mount{
@@ -514,7 +514,7 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 	}
 
 	for containerPath, fileContent := range spec.ConfigFiles {
-		hostPath := filepath.Join(containerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
+		hostPath := filepath.Join(ContainerdLogBaseDir, spec.ID, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
 		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
 		bindMounts = append(bindMounts, specs.Mount{
@@ -742,7 +742,7 @@ func (containerdRuntime *ContainerdRuntime) removeContainerResources(_ context.C
 	delete(containerdRuntime.instanceHostPorts, instanceID)
 	delete(containerdRuntime.containerCNIStates, instanceID)
 
-	logDirectory := filepath.Join(containerdLogBaseDir, instanceID)
+	logDirectory := filepath.Join(ContainerdLogBaseDir, instanceID)
 	_ = os.RemoveAll(logDirectory)
 }
 
@@ -867,7 +867,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 	var bindMounts []specs.Mount
 	if containerdRuntime.dnsAddress != "" {
 		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
-		resolvHostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", "resolv.conf")
+		resolvHostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", "resolv.conf")
 		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
 		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
 		bindMounts = append(bindMounts, specs.Mount{
@@ -878,7 +878,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 		})
 	}
 	for containerPath, fileContent := range execSpec.ConfigFiles {
-		hostPath := filepath.Join(containerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
+		hostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
 		_ = os.WriteFile(hostPath, []byte(fileContent), 0755) // #nosec G306 — 0755 so scripts like cca-secret are executable; bind-mounted :ro
 		bindMounts = append(bindMounts, specs.Mount{
@@ -892,7 +892,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}
 
-	initHostDir := filepath.Join(containerdLogBaseDir, initContainerName)
+	initHostDir := filepath.Join(ContainerdLogBaseDir, initContainerName)
 	defer func() { _ = os.RemoveAll(initHostDir) }()
 
 	initContainer, createError := containerdRuntime.client.NewContainer(
@@ -967,7 +967,7 @@ func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID
 
 // defaultLogPath returns the conventional log file path for a container.
 func (containerdRuntime *ContainerdRuntime) defaultLogPath(instanceID string) string {
-	return filepath.Join(containerdLogBaseDir, instanceID, instanceID+"-json.log")
+	return filepath.Join(ContainerdLogBaseDir, instanceID, instanceID+"-json.log")
 }
 
 // newStaticLogReader opens a log file and returns lines matching the filter

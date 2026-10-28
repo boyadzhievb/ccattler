@@ -83,7 +83,7 @@ func TestDebugImagePullEndpoint(testContext *testing.T) {
 	listener.Close()
 
 	listenAddress := fmt.Sprintf("127.0.0.1:%d", port)
-	debugServer := agent.NewDebugServer("test-node", listenAddress, simulatorRuntime)
+	debugServer := agent.NewDebugServer("test-node", listenAddress, simulatorRuntime, "")
 
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()
@@ -145,7 +145,7 @@ func TestDebugImagePullEndpointMethodNotAllowed(testContext *testing.T) {
 	listener.Close()
 
 	listenAddress := fmt.Sprintf("127.0.0.1:%d", port)
-	debugServer := agent.NewDebugServer("test-node", listenAddress, simulatorRuntime)
+	debugServer := agent.NewDebugServer("test-node", listenAddress, simulatorRuntime, "")
 
 	serverCtx, serverCancel := context.WithCancel(context.Background())
 	defer serverCancel()

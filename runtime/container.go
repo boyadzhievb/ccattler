@@ -569,7 +569,7 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
 	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
-	initHostDir := filepath.Join(containerdLogBaseDir, initContainerName)
+	initHostDir := filepath.Join(ContainerdLogBaseDir, initContainerName)
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(initHostDir, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)

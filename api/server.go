@@ -369,7 +369,7 @@ func (apiServer *Server) registerRoutes() {
 // instance/service/node counts without a separate status query.
 func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, request *http.Request) {
 	ctx := request.Context()
-	status := buildStatusFromStore(ctx, apiServer.factStore, nil)
+	status := buildStatusFromStore(ctx, apiServer.factStore, nil, false)
 
 	instancesByState.Set(0, string(types.InstancePending))
 	instancesByState.Set(0, string(types.InstanceRunning))
@@ -1107,8 +1107,9 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 	requestPrincipal := security.PrincipalStructFromContext(requestContext)
 	hasPrincipal := requestPrincipal.Name != ""
 
+	includeAllInstances := request.URL.Query().Get("all") == "true"
 	isPlatform := !hasPrincipal || tenant.IsPlatformPrincipal(requestPrincipal)
-	if isPlatform {
+	if isPlatform && !includeAllInstances {
 		if cached := apiServer.statusCache.Get("status"); cached != nil {
 			_, _ = responseWriter.Write(cached)
 			return
@@ -1119,7 +1120,7 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 	if hasPrincipal {
 		principalPointer = &requestPrincipal
 	}
-	status := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer)
+	status := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer, includeAllInstances)
 	encoded, encodeError := json.Marshal(status)
 	if encodeError != nil {
 		_ = json.NewEncoder(responseWriter).Encode(status)

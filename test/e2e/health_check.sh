@@ -254,6 +254,50 @@ else
     log "  Skipped (no status JSON)"
 fi
 
+# ---- Check 10: Container drift (debug API) ----
+log "Check 10: Container drift"
+if [[ -n "$STATUS_JSON" ]]; then
+    for vm in "${ALL_VM_NAMES[@]}"; do
+        debug_address=$(echo "$STATUS_JSON" | jq -r --arg node "$vm" '.nodes[] | select(.id == $node) | .debug_address // empty' 2>/dev/null)
+        if [[ -z "$debug_address" ]]; then
+            # Try reading from the store directly via the observed fact.
+            debug_address=$(ssh_vm "$CTRL_NAME" \
+                "sudo curl -sf $CCA_TLS_FLAGS https://localhost:9770/api/state?prefix=observed/node/${vm}/debug_address" 2>/dev/null \
+                | jq -r '.[0].value // empty' 2>/dev/null)
+        fi
+        if [[ -z "$debug_address" ]]; then
+            log "  $vm: no debug address — skipping"
+            continue
+        fi
+        stats_json=$(ssh_vm "$vm" "curl -sf http://${debug_address}/debug/stats" 2>/dev/null || echo "")
+        if [[ -z "$stats_json" ]]; then
+            log "  $vm: debug API unreachable at $debug_address — skipping"
+            continue
+        fi
+        workload_count=$(echo "$stats_json" | jq '.workload_count // 0')
+        running_count=$(echo "$stats_json" | jq '.running_count // 0')
+        stopped_count=$(echo "$stats_json" | jq '.stopped_count // 0')
+        log_dir_count=$(echo "$stats_json" | jq '.log_dir_count // 0')
+
+        expected_running=$(count_running_instances "$vm")
+        log "  $vm: containers=$workload_count (running=$running_count stopped=$stopped_count) log_dirs=$log_dir_count expected_running=$expected_running"
+
+        if [[ "$stopped_count" -gt 5 ]]; then
+            warn "$vm: $stopped_count stopped containers (threshold: 5)"
+        fi
+        total_double=$((expected_running * 2))
+        if [[ "$expected_running" -gt 0 && "$workload_count" -gt "$total_double" ]]; then
+            warn "$vm: total containers ($workload_count) exceeds 2x expected ($expected_running)"
+        fi
+        log_threshold=$((workload_count + 5))
+        if [[ "$log_dir_count" -gt "$log_threshold" ]]; then
+            warn "$vm: log dirs ($log_dir_count) exceed container count + 5 ($log_threshold)"
+        fi
+    done
+else
+    log "  Skipped (no status JSON)"
+fi
+
 # ---- Result ----
 echo ""
 if [[ "$HEALTHY" == "true" ]]; then

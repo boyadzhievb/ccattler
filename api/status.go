@@ -165,7 +165,7 @@ type EndpointStatus struct {
 // per-section builder functions. When a non-nil principal is provided,
 // results are filtered to resources visible to that principal's tenant.
 // Platform principals and nil principals see everything.
-func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal) ClusterStatus {
+func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal, includeAllInstances bool) ClusterStatus {
 	allInstances, _ := types.ListInstances(ctx, factStore)
 	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
 
@@ -179,7 +179,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 
 	return ClusterStatus{
 		Services:        collectServiceStatusFromStore(ctx, factStore, sortedServiceNames, allInstances),
-		Instances:       collectInstanceStatusFromStore(ctx, factStore, allInstances),
+		Instances:       collectInstanceStatusFromStore(ctx, factStore, allInstances, includeAllInstances),
 		Nodes:           collectNodeStatusFromStore(ctx, factStore, allInstances),
 		Networking:      collectNetworkingStatusFromStore(ctx, factStore),
 		Volumes:         collectVolumeStatusFromStore(ctx, factStore),
@@ -267,13 +267,14 @@ func collectServiceTagsFromStore(ctx context.Context, factStore store.StateStore
 	return tags
 }
 
-// collectInstanceStatusFromStore builds an InstanceStatus for every non-stopped
-// instance, enriching it with placement, health, resource usage, init phase,
-// restart count, and probe states read from the fact store.
-func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateStore, allInstances []types.Instance) []InstanceStatus {
+// collectInstanceStatusFromStore builds an InstanceStatus for every instance,
+// enriching it with placement, health, resource usage, init phase, restart
+// count, and probe states read from the fact store. When includeAll is false,
+// stopped instances are excluded from the result.
+func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateStore, allInstances []types.Instance, includeAll bool) []InstanceStatus {
 	var instanceStatusList []InstanceStatus
 	for _, instance := range allInstances {
-		if instance.State == types.InstanceStopped {
+		if !includeAll && instance.State == types.InstanceStopped {
 			continue
 		}
 		placedNodeID := ""

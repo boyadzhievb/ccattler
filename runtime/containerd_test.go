@@ -391,7 +391,7 @@ func testContainerdStopCleansResources(t *testing.T) {
 	instanceID := "ctest-cleanup-1"
 	containerdRuntime.Start(testCtx, containerdTestSpec(instanceID))
 
-	logDirectory := filepath.Join(containerdLogBaseDir, instanceID)
+	logDirectory := filepath.Join(ContainerdLogBaseDir, instanceID)
 	if _, statError := os.Stat(logDirectory); os.IsNotExist(statError) {
 		t.Fatalf("log directory %s should exist after Start", logDirectory)
 	}
