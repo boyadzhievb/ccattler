@@ -1767,6 +1767,13 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 		logging.Default().Error("failed to publish instance state", "instance", instanceID, "error", putError.Error())
 	}
 
+	createdAtKey := types.KeyObservedInstanceCreatedAt(instanceID)
+	createdTimestamp := time.Now().UTC().Format(time.RFC3339)
+	nodeAgent.store.Transaction(ctx,
+		[]store.Compare{{Key: createdAtKey, Revision: 0}},
+		[]store.Op{{Type: store.OpPut, Key: createdAtKey, Value: []byte(createdTimestamp)}},
+		nil)
+
 	publishedContainerIP := ""
 	if nodeAgent.networkProvider != nil {
 		allocatedIP, allocateError := nodeAgent.networkProvider.AllocateIP(ctx, nodeAgent.nodeID, instanceID)

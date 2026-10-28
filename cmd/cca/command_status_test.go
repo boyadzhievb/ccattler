@@ -5,6 +5,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/api"
 )
@@ -125,5 +126,51 @@ func TestFormatServiceTagsEmpty(testContext *testing.T) {
 	formatted := formatServiceTags(nil)
 	if formatted != "-" {
 		testContext.Errorf("got %q, want %q", formatted, "-")
+	}
+}
+
+func TestFormatRelativeAgeSeconds(testContext *testing.T) {
+	timestamp := time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339)
+	result := formatRelativeAge(timestamp)
+	if result != "30s" && result != "29s" && result != "31s" {
+		testContext.Errorf("expected ~30s, got %q", result)
+	}
+}
+
+func TestFormatRelativeAgeMinutes(testContext *testing.T) {
+	timestamp := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	result := formatRelativeAge(timestamp)
+	if result != "5m" && result != "4m" {
+		testContext.Errorf("expected ~5m, got %q", result)
+	}
+}
+
+func TestFormatRelativeAgeHours(testContext *testing.T) {
+	timestamp := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	result := formatRelativeAge(timestamp)
+	if result != "3h" && result != "2h" {
+		testContext.Errorf("expected ~3h, got %q", result)
+	}
+}
+
+func TestFormatRelativeAgeDays(testContext *testing.T) {
+	timestamp := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	result := formatRelativeAge(timestamp)
+	if result != "2d" && result != "1d" {
+		testContext.Errorf("expected ~2d, got %q", result)
+	}
+}
+
+func TestFormatRelativeAgeEmpty(testContext *testing.T) {
+	result := formatRelativeAge("")
+	if result != "<unknown>" {
+		testContext.Errorf("expected <unknown>, got %q", result)
+	}
+}
+
+func TestFormatRelativeAgeInvalid(testContext *testing.T) {
+	result := formatRelativeAge("not-a-timestamp")
+	if result != "<unknown>" {
+		testContext.Errorf("expected <unknown>, got %q", result)
 	}
 }

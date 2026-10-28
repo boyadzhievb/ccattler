@@ -114,9 +114,10 @@ A compromised node agent can write to `observed/` but never to `desired/`.
 Instances get short random IDs (e.g., `a8f31`), not sequential numbers. They are internal bookkeeping, not user-facing objects.
 
 ```
-/ccattler/observed/instance/a8f31/service  → "web"
-/ccattler/observed/instance/a8f31/node     → "node-2"
-/ccattler/observed/instance/a8f31/state    → "running"
+/ccattler/observed/instance/a8f31/service     → "web"
+/ccattler/observed/instance/a8f31/node        → "node-2"
+/ccattler/observed/instance/a8f31/state       → "running"
+/ccattler/observed/instance/a8f31/created-at  → "2026-10-28T13:00:00Z"  (write-once, RFC3339)
 ```
 
 ### 3. Flat Facts, Not Nested Objects

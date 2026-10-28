@@ -41,6 +41,8 @@ type EtcdStore struct {
 	isClosed bool
 	// closeMutex guards the isClosed flag for concurrent access.
 	closeMutex sync.RWMutex
+	// writeLimiter enforces a global write rate to protect etcd from flood attacks.
+	writeLimiter *writeRateLimiter
 }
 
 // EtcdStoreConfig holds the configuration required to create a new EtcdStore connection.
@@ -88,8 +90,9 @@ func NewEtcdStore(config EtcdStoreConfig) (*EtcdStore, error) {
 	}
 
 	return &EtcdStore{
-		etcdClient: etcdClient,
-		keyPrefix:  config.KeyPrefix,
+		etcdClient:   etcdClient,
+		keyPrefix:    config.KeyPrefix,
+		writeLimiter: newWriteRateLimiter(),
 	}, nil
 }
 
@@ -97,8 +100,9 @@ func NewEtcdStore(config EtcdStoreConfig) (*EtcdStore, error) {
 // This is primarily useful for testing with embedded etcd servers.
 func NewEtcdStoreFromClient(etcdClient *clientv3.Client, keyPrefix string) *EtcdStore {
 	return &EtcdStore{
-		etcdClient: etcdClient,
-		keyPrefix:  keyPrefix,
+		etcdClient:   etcdClient,
+		keyPrefix:    keyPrefix,
+		writeLimiter: newWriteRateLimiter(),
 	}
 }
 
@@ -161,6 +165,9 @@ func (etcdStore *EtcdStore) Put(ctx context.Context, key string, value []byte) (
 	if closedError := etcdStore.checkClosed(); closedError != nil {
 		return 0, closedError
 	}
+	if !etcdStore.writeLimiter.allowWrite() {
+		return 0, ErrWriteRateLimited
+	}
 
 	prefixedKey := etcdStore.prefixedKey(key)
 
@@ -186,6 +193,9 @@ func (etcdStore *EtcdStore) Put(ctx context.Context, key string, value []byte) (
 func (etcdStore *EtcdStore) Delete(ctx context.Context, key string) error {
 	if closedError := etcdStore.checkClosed(); closedError != nil {
 		return closedError
+	}
+	if !etcdStore.writeLimiter.allowWrite() {
+		return ErrWriteRateLimited
 	}
 
 	deleteResponse, deleteError := etcdStore.etcdClient.Delete(ctx, etcdStore.prefixedKey(key))
@@ -376,6 +386,9 @@ func (etcdStore *EtcdStore) Transaction(ctx context.Context, compares []Compare,
 	if closedError := etcdStore.checkClosed(); closedError != nil {
 		return false, closedError
 	}
+	if !etcdStore.writeLimiter.allowWrite() {
+		return false, ErrWriteRateLimited
+	}
 
 	etcdCompares := make([]clientv3.Cmp, 0, len(compares))
 	for _, comparison := range compares {
@@ -466,6 +479,9 @@ func (etcdStore *EtcdStore) GrantLease(ctx context.Context, ttlSeconds int64) (i
 func (etcdStore *EtcdStore) PutWithLease(ctx context.Context, key string, value []byte, leaseID int64) (int64, error) {
 	if closedError := etcdStore.checkClosed(); closedError != nil {
 		return 0, closedError
+	}
+	if !etcdStore.writeLimiter.allowWrite() {
+		return 0, ErrWriteRateLimited
 	}
 	putResponse, putError := etcdStore.etcdClient.Put(ctx,
 		etcdStore.prefixedKey(key), string(value),

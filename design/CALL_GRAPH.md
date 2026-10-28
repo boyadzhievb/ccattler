@@ -192,6 +192,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `observed/instance/{id}/service` | publishInstanceStateToStore |
 | `observed/instance/{id}/ip` | publishInstanceStateToStore |
 | `observed/instance/{id}/node` | publishInstanceStateToStore |
+| `observed/instance/{id}/created-at` | publishInstanceStateToStore (write-once) |
 | `observed/instance/{id}/image` | startInstanceAndPublishState |
 | `observed/instance/{id}/exit_reason` | publishExitReasonIfFailed |
 | `observed/instance/{id}/status_reason` | publishStatusReason |
@@ -268,6 +269,29 @@ User (cca apply)
           → Agent reads desired/connection/{name} for connection probes
           → Agent writes observed/instance/{id}/state=running when done
 ```
+
+## Store Write Rate Limiter (store/write_rate_limiter.go)
+
+Defense-in-depth: global token-bucket rate limiter on `EtcdStore.Put()`,
+`Delete()`, `PutWithLease()`, and `Transaction()`. Protects etcd from
+write floods caused by controller bugs, runaway reconciliation, or
+compromised agents.
+
+```
+EtcdStore.Put / Delete / PutWithLease / Transaction
+├── checkClosed
+├── writeLimiter.allowWrite()        ← token bucket check
+│   ├── refill tokens (elapsed × ratePerSecond, capped at burstSize)
+│   ├── if tokens < 1 → ErrWriteRateLimited, log periodically
+│   └── consume 1 token → proceed
+└── (actual etcd operation)
+```
+
+| Parameter | Default | Rationale |
+|---|---|---|
+| `defaultWriteRatePerSecond` | 500 | Sustained write budget, well above normal (~50-100 writes/s) |
+| `defaultWriteBurstSize` | 1000 | Absorbs reconciliation bursts without throttling normal operation |
+| `writeRateLimitLogInterval` | 10s | Avoids journal flooding when limiter is actively dropping |
 
 ## Error Propagation Paths
 

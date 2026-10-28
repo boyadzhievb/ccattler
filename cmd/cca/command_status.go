@@ -915,8 +915,8 @@ func printServiceDescribeInstances(serviceDetail api.ServiceDescribe) {
 	}
 	fmt.Println()
 	fmt.Println("Instances:")
-	fmt.Printf("  %-20s  %-6s  %-10s  %-14s  %-16s  %-10s  %s\n",
-		"ID", "READY", "STATUS", "NODE", "IP", "RESTARTS", "REASON")
+	fmt.Printf("  %-20s  %-6s  %-10s  %-10s  %-8s  %-14s  %-16s  %s\n",
+		"ID", "READY", "STATUS", "RESTARTS", "AGE", "NODE", "IP", "REASON")
 	for _, instanceSummary := range serviceDetail.Instances {
 		restartDisplay := instanceSummary.Restarts
 		if restartDisplay == "" {
@@ -930,9 +930,11 @@ func printServiceDescribeInstances(serviceDetail api.ServiceDescribe) {
 		if reasonDisplay == "" || reasonDisplay == "running" {
 			reasonDisplay = "-"
 		}
-		fmt.Printf("  %-20s  %-6s  %-10s  %-14s  %-16s  %-10s  %s\n",
-			instanceSummary.ID, readyDisplay, instanceSummary.State, instanceSummary.NodeID,
-			instanceSummary.IPAddress, restartDisplay, reasonDisplay)
+		ageDisplay := formatRelativeAge(instanceSummary.CreatedAt)
+		fmt.Printf("  %-20s  %-6s  %-10s  %-10s  %-8s  %-14s  %-16s  %s\n",
+			instanceSummary.ID, readyDisplay, instanceSummary.State,
+			restartDisplay, ageDisplay, instanceSummary.NodeID,
+			instanceSummary.IPAddress, reasonDisplay)
 	}
 }
 
@@ -991,8 +993,8 @@ func printNodeDescribe(nodeDetail api.NodeDescribe) {
 	if len(nodeDetail.Instances) > 0 {
 		fmt.Println()
 		fmt.Println("Instances:")
-		fmt.Printf("  %-28s  %-6s  %-10s  %-16s  %s\n",
-			"CONTAINER", "READY", "STATUS", "IP", "RESTARTS")
+		fmt.Printf("  %-28s  %-6s  %-10s  %-10s  %-8s  %-16s  %s\n",
+			"CONTAINER", "READY", "STATUS", "RESTARTS", "AGE", "IP", "REASON")
 		for _, instanceSummary := range nodeDetail.Instances {
 			restartDisplay := instanceSummary.Restarts
 			if restartDisplay == "" {
@@ -1003,9 +1005,14 @@ func printNodeDescribe(nodeDetail api.NodeDescribe) {
 				readyDisplay = "1/1"
 			}
 			containerName := instanceSummary.Service + "-" + instanceSummary.ID
-			fmt.Printf("  %-28s  %-6s  %-10s  %-16s  %s\n",
+			ageDisplay := formatRelativeAge(instanceSummary.CreatedAt)
+			reasonDisplay := instanceSummary.StatusReason
+			if reasonDisplay == "" || reasonDisplay == "running" {
+				reasonDisplay = "-"
+			}
+			fmt.Printf("  %-28s  %-6s  %-10s  %-10s  %-8s  %-16s  %s\n",
 				containerName, readyDisplay, instanceSummary.State,
-				instanceSummary.IPAddress, restartDisplay)
+				restartDisplay, ageDisplay, instanceSummary.IPAddress, reasonDisplay)
 		}
 	}
 
@@ -1386,7 +1393,7 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 		return nameFirst < nameSecond
 	})
 	wideOutput := options.outputFormat == "wide"
-	header := []string{"CONTAINER", "READY", "STATUS", "RESTARTS", "NODE", "IP", "REASON"}
+	header := []string{"CONTAINER", "READY", "STATUS", "RESTARTS", "AGE", "NODE", "IP", "REASON"}
 	var rows [][]string
 	for _, instance := range instances {
 		readyDisplay := formatReadyColumn(instance)
@@ -1400,11 +1407,13 @@ func printInstancesTableWithOptions(instances []api.InstanceStatus, options getO
 		}
 		containerName := instance.ServiceName + "-" + instance.ID
 		reasonDisplay := formatInstanceReason(instance, wideOutput)
+		ageDisplay := formatRelativeAge(instance.CreatedAt)
 		rows = append(rows, []string{
 			containerName,
 			readyDisplay,
 			instance.State,
 			restartDisplay,
+			ageDisplay,
 			instance.NodeID,
 			ipDisplay,
 			reasonDisplay,
@@ -1423,6 +1432,33 @@ func formatReadyColumn(instance api.InstanceStatus) string {
 		return "0/1"
 	}
 	return "1/1"
+}
+
+// formatRelativeAge converts an RFC3339 timestamp to a kubectl-style relative
+// age string like "5m", "2h", "3d". Returns "<unknown>" if the timestamp is
+// empty or unparseable.
+func formatRelativeAge(createdAt string) string {
+	if createdAt == "" {
+		return "<unknown>"
+	}
+	parsedTime, parseError := time.Parse(time.RFC3339, createdAt)
+	if parseError != nil {
+		return "<unknown>"
+	}
+	elapsed := time.Since(parsedTime)
+	if elapsed < 0 {
+		return "0s"
+	}
+	switch {
+	case elapsed < time.Minute:
+		return fmt.Sprintf("%ds", int(elapsed.Seconds()))
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(elapsed.Hours()/24))
+	}
 }
 
 // formatInstanceReason builds a human-readable reason string from the

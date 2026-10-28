@@ -320,6 +320,13 @@ func KeyObservedInstanceState(instanceID string) string {
 	return fmt.Sprintf("%s/instance/%s/state", PrefixObserved, instanceID)
 }
 
+// KeyObservedInstanceCreatedAt returns the store path for when an instance was
+// first observed. Value is an RFC3339 timestamp written once at first state publish.
+// Path: observed/instance/{instanceID}/created-at
+func KeyObservedInstanceCreatedAt(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/created-at", PrefixObserved, instanceID)
+}
+
 // KeyObservedInstanceImage returns the store path for the container image an instance is running.
 // Path: observed/instance/{instanceID}/image
 func KeyObservedInstanceImage(instanceID string) string {

@@ -58,6 +58,7 @@ type InstanceStatus struct {
 	StatusReason  string `json:"status_reason,omitempty"`
 	InitProgress  string `json:"init_progress,omitempty"`
 	ProbeProgress string `json:"probe_progress,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 // NodeStatus represents one node in the cluster status.
@@ -345,6 +346,10 @@ func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateSt
 		if probeProgressFact, probeProgressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instance.ID)); probeProgressErr == nil {
 			probeProgressJSON = string(probeProgressFact.Value)
 		}
+		createdAtTimestamp := ""
+		if createdAtFact, createdAtErr := factStore.Get(ctx, types.KeyObservedInstanceCreatedAt(instance.ID)); createdAtErr == nil {
+			createdAtTimestamp = string(createdAtFact.Value)
+		}
 		instanceStatusList = append(instanceStatusList, InstanceStatus{
 			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
 			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
@@ -352,6 +357,7 @@ func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateSt
 			InitPhase: initPhase, Restarts: restartCount,
 			Startup: startupProbe, Liveness: livenessProbe, Readiness: readinessProbe,
 			StatusReason: statusReason, InitProgress: initProgressJSON, ProbeProgress: probeProgressJSON,
+			CreatedAt: createdAtTimestamp,
 		})
 	}
 	return instanceStatusList

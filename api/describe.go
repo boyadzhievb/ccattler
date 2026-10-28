@@ -183,6 +183,7 @@ type DescribeInstanceSummary struct {
 	Health       string `json:"health,omitempty"`
 	Restarts     string `json:"restarts,omitempty"`
 	StatusReason string `json:"status_reason,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
 }
 
 // DescribeEvent is a compact event representation for describe output.
@@ -633,6 +634,10 @@ func collectInstanceSummariesForService(ctx context.Context, factStore store.Sta
 		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
 			statusReason = string(reasonFact.Value)
 		}
+		createdAtTimestamp := ""
+		if createdAtFact, createdAtErr := factStore.Get(ctx, types.KeyObservedInstanceCreatedAt(instance.ID)); createdAtErr == nil {
+			createdAtTimestamp = string(createdAtFact.Value)
+		}
 		summaries = append(summaries, DescribeInstanceSummary{
 			ID:           instance.ID,
 			State:        string(instance.State),
@@ -641,6 +646,7 @@ func collectInstanceSummariesForService(ctx context.Context, factStore store.Sta
 			Health:       healthDisplay,
 			Restarts:     restartCount,
 			StatusReason: statusReason,
+			CreatedAt:    createdAtTimestamp,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
@@ -682,6 +688,10 @@ func collectInstancesPlacedOnNode(ctx context.Context, factStore store.StateStor
 		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
 			statusReason = string(reasonFact.Value)
 		}
+		createdAtTimestamp := ""
+		if createdAtFact, createdAtErr := factStore.Get(ctx, types.KeyObservedInstanceCreatedAt(instance.ID)); createdAtErr == nil {
+			createdAtTimestamp = string(createdAtFact.Value)
+		}
 		summaries = append(summaries, DescribeInstanceSummary{
 			ID:           instance.ID,
 			State:        string(instance.State),
@@ -690,6 +700,7 @@ func collectInstancesPlacedOnNode(ctx context.Context, factStore store.StateStor
 			Health:       healthDisplay,
 			Restarts:     restartCount,
 			StatusReason: statusReason,
+			CreatedAt:    createdAtTimestamp,
 		})
 	}
 	sort.Slice(summaries, func(i, j int) bool {
