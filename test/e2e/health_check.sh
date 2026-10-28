@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # health_check.sh — Check health of a running CCattler deploy cluster
 #
-# Verifies: etcd health, API reachability, node count, service convergence,
-# container count, systemd services, HTTP endpoint reachability.
-# Designed for periodic cron execution against a long-running deploy cluster.
+# Verifies: VM reachability, API health, node count, service convergence,
+# instance health, container count, systemd services, endpoint reachability,
+# container drift.
+#
+# All cluster topology and configuration is discovered dynamically from
+# vmherd and the running cluster — no hardcoded VM names, ports, or paths.
 #
 # Exit codes: 0 = healthy, 1 = unhealthy
 #
@@ -15,7 +18,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-ANSIBLE_DIR="$REPO_DIR/deploy/ansible"
 VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
 
 VMHERD_BIN=$(command -v vmherd 2>/dev/null || echo "")
@@ -24,7 +26,7 @@ if [[ -z "$VMHERD_BIN" ]]; then
     exit 1
 fi
 
-# Discover VM names and IPs from vmherd status.
+# ---- Discover VMs from vmherd ----
 ALL_VM_NAMES=()
 ALL_VM_IPS=()
 declare -A VM_IP_MAP
@@ -39,10 +41,6 @@ if [[ ${#ALL_VM_NAMES[@]} -eq 0 ]]; then
     echo "ERROR: no VMs found in $VMHERD_DIR — is the Herdfile present?" >&2
     exit 1
 fi
-
-# First VM is the control plane node.
-CTRL_NAME="${ALL_VM_NAMES[0]}"
-CTRL_IP="${VM_IP_MAP[$CTRL_NAME]}"
 
 HEALTHY=true
 WARNINGS=0
@@ -71,27 +69,95 @@ count_running_instances() {
 
 # ---- Check 1: VM reachability ----
 log "Check 1: VM reachability"
-REACHABLE_COUNT=0
+REACHABLE_VMS=()
 for vm in "${ALL_VM_NAMES[@]}"; do
     if ssh_vm "$vm" "true" 2>/dev/null; then
         log "  $vm: reachable"
-        REACHABLE_COUNT=$((REACHABLE_COUNT + 1))
+        REACHABLE_VMS+=("$vm")
     else
         warn "$vm: UNREACHABLE"
     fi
 done
 
 EXPECTED_NODES=${#ALL_VM_NAMES[@]}
-if [[ "$REACHABLE_COUNT" -lt "$EXPECTED_NODES" ]]; then
-    log "Only $REACHABLE_COUNT/$EXPECTED_NODES VMs reachable — remaining checks may fail"
+if [[ ${#REACHABLE_VMS[@]} -lt "$EXPECTED_NODES" ]]; then
+    log "Only ${#REACHABLE_VMS[@]}/$EXPECTED_NODES VMs reachable — remaining checks may fail"
 fi
+
+# ---- Auto-detect control plane node ----
+# The control plane runs cca-server. Find it dynamically instead of assuming
+# the first VM. Fall back to first reachable VM if detection fails.
+CTRL_NAME=""
+for vm in "${REACHABLE_VMS[@]}"; do
+    if ssh_vm "$vm" "systemctl is-active cca-server" >/dev/null 2>&1; then
+        CTRL_NAME="$vm"
+        break
+    fi
+done
+if [[ -z "$CTRL_NAME" ]]; then
+    CTRL_NAME="${REACHABLE_VMS[0]:-${ALL_VM_NAMES[0]}}"
+    log "  Could not detect control plane — falling back to $CTRL_NAME"
+fi
+log "  Control plane: $CTRL_NAME"
+
+# ---- Auto-detect API connection settings ----
+# Discover the API port and TLS configuration from the running cca-server process.
+CCA_API_PORT=""
+CCA_TLS_FLAGS=""
+CCA_API_SCHEME="https"
+
+SERVER_CMDLINE=$(ssh_vm "$CTRL_NAME" "tr '\\0' ' ' < /proc/\$(pgrep -f 'cca server' | head -1)/cmdline 2>/dev/null || true" 2>/dev/null || true)
+
+PORT_PATTERN='--api-port[= ]([0-9]+)'
+CA_PATTERN='--tls-ca-file[= ]([^ ]+)'
+CERT_PATTERN='--tls-cert-file[= ]([^ ]+)'
+KEY_PATTERN='--tls-key-file[= ]([^ ]+)'
+
+if [[ -n "$SERVER_CMDLINE" ]]; then
+    if [[ "$SERVER_CMDLINE" =~ $PORT_PATTERN ]]; then
+        CCA_API_PORT="${BASH_REMATCH[1]}"
+    fi
+fi
+CCA_API_PORT="${CCA_API_PORT:-9770}"
+
+CCA_TLS_CA=""
+CCA_TLS_CERT=""
+CCA_TLS_KEY=""
+
+if [[ -n "$SERVER_CMDLINE" ]]; then
+    if [[ "$SERVER_CMDLINE" =~ $CA_PATTERN ]]; then
+        CCA_TLS_CA="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$SERVER_CMDLINE" =~ $CERT_PATTERN ]]; then
+        CCA_TLS_CERT="${BASH_REMATCH[1]}"
+    fi
+    if [[ "$SERVER_CMDLINE" =~ $KEY_PATTERN ]]; then
+        CCA_TLS_KEY="${BASH_REMATCH[1]}"
+    fi
+fi
+
+# Fall back to standard PKI paths.
+CCA_TLS_CA="${CCA_TLS_CA:-/etc/ccattler/pki/ca.pem}"
+CCA_TLS_CERT="${CCA_TLS_CERT:-/etc/ccattler/pki/node.pem}"
+CCA_TLS_KEY="${CCA_TLS_KEY:-/etc/ccattler/pki/node-key.pem}"
+
+# Check if TLS certs actually exist on the control plane.
+if ssh_vm "$CTRL_NAME" "test -f $CCA_TLS_CA" 2>/dev/null; then
+    CCA_TLS_FLAGS="--cacert $CCA_TLS_CA --cert $CCA_TLS_CERT --key $CCA_TLS_KEY"
+else
+    CCA_API_SCHEME="http"
+    CCA_TLS_FLAGS=""
+fi
+
+CCA_API_URL="${CCA_API_SCHEME}://localhost:${CCA_API_PORT}"
+log "  API: $CCA_API_URL (TLS: $([ -n "$CCA_TLS_FLAGS" ] && echo "yes" || echo "no"))"
 
 # ---- Check 2: control plane health (via cca status) ----
 log "Check 2: control plane health"
 HEALTHZ_OK=false
 HEALTHZ_MAX_RETRIES=3
 for healthz_attempt in $(seq 1 "$HEALTHZ_MAX_RETRIES"); do
-    if ssh_vm $CTRL_NAME "sudo cca status" >/dev/null 2>&1; then
+    if ssh_vm "$CTRL_NAME" "sudo cca status" >/dev/null 2>&1; then
         HEALTHZ_OK=true
         break
     fi
@@ -108,8 +174,7 @@ fi
 # ---- Check 3: cca server API (JSON via curl on node) ----
 log "Check 3: cca server API"
 STATUS_JSON=""
-CCA_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
-if STATUS_JSON=$(ssh_vm "$CTRL_NAME" "sudo curl -sf $CCA_TLS_FLAGS https://localhost:9770/api/status" 2>/dev/null); then
+if STATUS_JSON=$(ssh_vm "$CTRL_NAME" "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/status" 2>/dev/null); then
     log "  API /status: reachable"
 else
     warn "API /status: UNREACHABLE"
@@ -136,15 +201,13 @@ if [[ -n "$STATUS_JSON" ]]; then
     if [[ "$service_count" -eq 0 ]]; then
         warn "no services deployed"
     else
-        converged=true
-        echo "$STATUS_JSON" | jq -r '.services[] | "\(.name) \(.desired) \(.running)"' | while read -r svc_name svc_desired svc_running; do
+        while read -r svc_name svc_desired svc_running; do
             if [[ "$svc_desired" -ne "$svc_running" ]]; then
                 log "  $svc_name: desired=$svc_desired running=$svc_running — NOT CONVERGED"
-                converged=false
             else
                 log "  $svc_name: desired=$svc_desired running=$svc_running — ok"
             fi
-        done
+        done < <(echo "$STATUS_JSON" | jq -r '.services[] | "\(.name) \(.desired) \(.running)"')
 
         not_converged=$(echo "$STATUS_JSON" | jq '[.services[] | select(.desired != .running)] | length')
         if [[ "$not_converged" -gt 0 ]]; then
@@ -169,7 +232,6 @@ if [[ -n "$STATUS_JSON" ]]; then
         echo "$STATUS_JSON" | jq -r '.instances[] | select(.state == "failed") | "    \(.id) (\(.service)) on \(.node)"'
     fi
 
-    # health="-" means no probe configured yet — not unhealthy, just unprobed
     unhealthy_filter='[.instances[] | select(.health != null and .health != "" and .health != "healthy" and .health != "-")] | length'
     unhealthy_instances=$(echo "$STATUS_JSON" | jq "$unhealthy_filter")
     if [[ "$unhealthy_instances" -gt 0 ]]; then
@@ -209,10 +271,10 @@ fi
 # ---- Check 8: systemd services ----
 log "Check 8: systemd services"
 for vm in "${ALL_VM_NAMES[@]}"; do
-    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r')
-    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r')
-    log "  $vm: server=$server_active agent=$agent_active"
-    if [[ "$agent_active" != "active" ]]; then
+    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r' || true)
+    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r' || true)
+    log "  $vm: server=${server_active:-unknown} agent=${agent_active:-unknown}"
+    if [[ "${agent_active:-inactive}" != "active" ]]; then
         warn "$vm cca-agent not running"
     fi
 done
@@ -220,33 +282,37 @@ done
 # ---- Check 9: Endpoint reachability ----
 log "Check 9: Endpoint reachability"
 if [[ -n "$STATUS_JSON" ]]; then
-    networking_count=$(echo "$STATUS_JSON" | jq '.networking | length')
+    networking_count=$(echo "$STATUS_JSON" | jq '.networking | length // 0' 2>/dev/null || echo 0)
     if [[ "$networking_count" -gt 0 ]]; then
-        echo "$STATUS_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' | while read -r svc_name svc_vip svc_port; do
+        endpoint_failures=0
+        while read -r svc_name svc_vip svc_port; do
             if [[ -z "$svc_vip" ]] || [[ "$svc_vip" == "null" ]]; then
                 log "  $svc_name: no VIP assigned, skipping"
                 continue
             fi
             http_status=$(ssh_vm "$CTRL_NAME" \
                 "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/" \
-                2>/dev/null | tr -d "'\n\r")
+                2>/dev/null | tr -d "'\n\r" || true)
             http_status="${http_status:-000}"
             if [[ "$http_status" =~ ^[23] ]]; then
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status — ok"
             elif [[ "$http_status" == "000" ]]; then
-                # HTTP failed — try TCP connectivity as fallback (for non-HTTP services like databases)
                 tcp_ok=$(ssh_vm "$CTRL_NAME" \
                     "timeout 5 bash -c 'echo > /dev/tcp/${svc_vip}/${svc_port}' 2>/dev/null && echo yes || echo no" \
-                    2>/dev/null | tr -d '\n\r')
+                    2>/dev/null | tr -d '\n\r' || true)
                 if [[ "$tcp_ok" == "yes" ]]; then
                     log "  $svc_name (${svc_vip}:${svc_port}): TCP open (non-HTTP service)"
                 else
                     log "  $svc_name (${svc_vip}:${svc_port}): unreachable"
+                    endpoint_failures=$((endpoint_failures + 1))
                 fi
             else
                 log "  $svc_name (${svc_vip}:${svc_port}): HTTP $http_status"
             fi
-        done
+        done < <(echo "$STATUS_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null)
+        if [[ "$endpoint_failures" -gt 0 ]]; then
+            warn "$endpoint_failures endpoint(s) unreachable"
+        fi
     else
         log "  No networking entries in status"
     fi
@@ -258,12 +324,11 @@ fi
 log "Check 10: Container drift"
 if [[ -n "$STATUS_JSON" ]]; then
     for vm in "${ALL_VM_NAMES[@]}"; do
-        debug_address=$(echo "$STATUS_JSON" | jq -r --arg node "$vm" '.nodes[] | select(.id == $node) | .debug_address // empty' 2>/dev/null)
+        debug_address=$(echo "$STATUS_JSON" | jq -r --arg node "$vm" '.nodes[] | select(.id == $node) | .debug_address // empty' 2>/dev/null || true)
         if [[ -z "$debug_address" ]]; then
-            # Try reading from the store directly via the observed fact.
             debug_address=$(ssh_vm "$CTRL_NAME" \
-                "sudo curl -sf $CCA_TLS_FLAGS https://localhost:9770/api/state?prefix=observed/node/${vm}/debug_address" 2>/dev/null \
-                | jq -r '.[0].value // empty' 2>/dev/null)
+                "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/state?prefix=observed/node/${vm}/debug_address" 2>/dev/null \
+                | jq -r '.[0].value // empty' 2>/dev/null || true)
         fi
         if [[ -z "$debug_address" ]]; then
             log "  $vm: no debug address — skipping"
@@ -274,10 +339,10 @@ if [[ -n "$STATUS_JSON" ]]; then
             log "  $vm: debug API unreachable at $debug_address — skipping"
             continue
         fi
-        workload_count=$(echo "$stats_json" | jq '.workload_count // 0')
-        running_count=$(echo "$stats_json" | jq '.running_count // 0')
-        stopped_count=$(echo "$stats_json" | jq '.stopped_count // 0')
-        log_dir_count=$(echo "$stats_json" | jq '.log_dir_count // 0')
+        workload_count=$(echo "$stats_json" | jq '.workload_count // 0' 2>/dev/null || echo 0)
+        running_count=$(echo "$stats_json" | jq '.running_count // 0' 2>/dev/null || echo 0)
+        stopped_count=$(echo "$stats_json" | jq '.stopped_count // 0' 2>/dev/null || echo 0)
+        log_dir_count=$(echo "$stats_json" | jq '.log_dir_count // 0' 2>/dev/null || echo 0)
 
         expected_running=$(count_running_instances "$vm")
         log "  $vm: containers=$workload_count (running=$running_count stopped=$stopped_count) log_dirs=$log_dir_count expected_running=$expected_running"
