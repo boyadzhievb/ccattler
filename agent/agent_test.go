@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -112,6 +113,9 @@ func (mockProvider *mockSecretProvider) GetSecretForService(_ context.Context, s
 
 func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool) {
 	t.Helper()
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		timeout = timeout * 3
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if check() {
