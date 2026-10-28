@@ -1769,10 +1769,12 @@ func (nodeAgent *Agent) publishInstanceStateToStore(ctx context.Context, instanc
 
 	createdAtKey := types.KeyObservedInstanceCreatedAt(instanceID)
 	createdTimestamp := time.Now().UTC().Format(time.RFC3339)
-	nodeAgent.store.Transaction(ctx,
+	if _, txnError := nodeAgent.store.Transaction(ctx,
 		[]store.Compare{{Key: createdAtKey, Revision: 0}},
 		[]store.Op{{Type: store.OpPut, Key: createdAtKey, Value: []byte(createdTimestamp)}},
-		nil)
+		nil); txnError != nil {
+		logging.Default().Error("failed to set created_at", "instance", instanceID, "error", txnError.Error())
+	}
 
 	publishedContainerIP := ""
 	if nodeAgent.networkProvider != nil {

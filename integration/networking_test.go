@@ -22,6 +22,47 @@ import (
 // networking enabled. Returns the store, context, network provider, and
 // resolver. Cleanup (cancel, runner wait, store close) is handled via
 // t.Cleanup — callers should not defer cancel() or factStore.Close().
+// helperSetupHostPortCluster creates a 3-node test cluster without overlay
+// networking. Agents run SimulatorRuntime but no NetworkProvider, so instances
+// get no overlay IPs. This isolates host-port endpoint behavior.
+func helperSetupHostPortCluster(t *testing.T) (store.StateStore, context.Context) {
+	t.Helper()
+
+	factStore := store.NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
+		types.WriteNode(ctx, factStore, types.Node{
+			ID: nodeID, State: types.NodeAlive,
+			CapacityCPU: 4000, CapacityMemory: 8192,
+			AvailableCPU: 4000, AvailableMemory: 8192,
+		})
+	}
+
+	instanceController := controllers.NewInstanceController()
+	schedulerController := newTestScheduler()
+	endpointController := controllers.NewEndpointController()
+	failureController := controllers.NewFailureController()
+	nodeFailureController := controllers.NewNodeFailureController()
+	nodeFailureController.LeaseTimeout = 500 * time.Millisecond
+	networkController := controllers.NewNetworkController()
+
+	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
+		endpointController, failureController, nodeFailureController, networkController)
+	controllerRunner.SetDebounce(10 * time.Millisecond)
+	startRunner(t, factStore, ctx, cancel, controllerRunner)
+
+	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
+		simulatorRuntime := runtime.NewSimulatorRuntime()
+		nodeAgent := agent.New(nodeID, factStore, simulatorRuntime)
+		nodeAgent.SetInterval(50 * time.Millisecond)
+		nodeAgent.SetHeartbeatInterval(100 * time.Millisecond)
+		go nodeAgent.Run(ctx)
+	}
+
+	return factStore, ctx
+}
+
 func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Context, *network.SimulatorNetworkProvider, *network.StoreBackedResolver) {
 	t.Helper()
 
@@ -587,13 +628,20 @@ func TestInstanceIPReleasedOnStop(t *testing.T) {
 }
 
 // TestMultiPortServiceEndpointsCrossNode verifies that a service exposing two
-// ports gets per-port endpoints across nodes. It deploys instances first, then
-// publishes per-port host-port facts (simulating container runtime reporting),
-// and verifies the endpoint controller updates endpoints from overlay IPs to
-// host-port addresses — exercising the value-update path.
+// ports gets per-port endpoints across nodes. When overlay IPs are present they
+// are used (overlay-first policy). When only host-port mappings exist, those are
+// used as fallback. Uses the host-port cluster (no overlay) to test per-port
+// host-port behavior.
 func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 	t.Parallel()
-	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
+	factStore, ctx := helperSetupHostPortCluster(t)
+
+	// Publish node addresses so host-port endpoints can form.
+	for _, nodeID := range []string{"node-1", "node-2", "node-3"} {
+		nodeAddressSuffix := nodeID[len(nodeID)-1:]
+		factStore.Put(ctx, types.KeyObservedNodeAddress(nodeID),
+			fmt.Appendf(nil, "192.168.1.%s", nodeAddressSuffix))
+	}
 
 	// Deploy a service with two exposed ports and 3 instances (spread across nodes).
 	factStore.Put(ctx, types.KeyDesiredServiceImage("multiport"), []byte("nginx:1.28"))
@@ -601,26 +649,16 @@ func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("multiport", 8080), []byte(""))
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("multiport"), []byte("3"))
 
-	// Wait for 3 running instances with overlay-IP endpoints (6 total).
-	waitFor(t, 5*time.Second, "3 running instances with overlay endpoints", func() bool {
+	// Wait for 3 running instances.
+	waitFor(t, 5*time.Second, "3 running multiport instances", func() bool {
 		allInstances, _ := types.ListInstances(ctx, factStore)
-		runningWithIP := 0
+		runningCount := 0
 		for _, instance := range allInstances {
-			if instance.Service == "multiport" && instance.State == types.InstanceRunning && instance.IP != "" {
-				runningWithIP++
+			if instance.Service == "multiport" && instance.State == types.InstanceRunning {
+				runningCount++
 			}
 		}
-		if runningWithIP < 3 {
-			return false
-		}
-		endpointFacts, _ := factStore.Scan(ctx, types.ScanEndpoints)
-		multiportEndpoints := 0
-		for _, endpointFact := range endpointFacts {
-			if strings.Contains(endpointFact.Key, "multiport/") {
-				multiportEndpoints++
-			}
-		}
-		return multiportEndpoints >= 6
+		return runningCount >= 3
 	})
 
 	// Collect instance IDs and their nodes.
@@ -644,19 +682,14 @@ func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 		t.Fatalf("expected instances on at least 2 nodes, got %d", len(nodeSet))
 	}
 
-	// Simulate what the container runtime agent does: publish node advertise
-	// addresses and per-port host-port facts. The endpoint controller should
-	// update the existing overlay-IP endpoints to use host-port addresses.
-	for instanceID, nodeID := range instanceNodes {
-		nodeAddressSuffix := nodeID[len(nodeID)-1:]
-		factStore.Put(ctx, types.KeyObservedNodeAddress(nodeID),
-			fmt.Appendf(nil, "192.168.1.%s", nodeAddressSuffix))
+	// Publish per-port host-port facts for each instance.
+	for instanceID := range instanceNodes {
 		factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, 80), []byte("30080"))
 		factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, 8080), []byte("38080"))
 	}
 
-	// Wait for the endpoint controller to update endpoints with host-port values.
-	waitFor(t, 5*time.Second, "endpoints updated to per-port host-ports", func() bool {
+	// Wait for per-port host-port endpoints to appear.
+	waitFor(t, 5*time.Second, "endpoints with per-port host-ports", func() bool {
 		endpointFacts, _ := factStore.Scan(ctx, types.ScanEndpoints)
 		port80WithHostPort := 0
 		port8080WithHostPort := 0
@@ -717,10 +750,14 @@ func TestMultiPortServiceEndpointsCrossNode(t *testing.T) {
 
 // TestMultiPortPerPortHostPortIsolation verifies that per-port host-port facts
 // for different container ports are independent — updating port 80's host-port
-// does not affect port 8080's endpoint resolution.
+// does not affect port 443's endpoint resolution. Uses the host-port cluster
+// (no overlay networking) to test the host-port fallback path.
 func TestMultiPortPerPortHostPortIsolation(t *testing.T) {
 	t.Parallel()
-	factStore, ctx, _, _ := helperSetupNetworkingCluster(t)
+	factStore, ctx := helperSetupHostPortCluster(t)
+
+	// Publish node addresses so host-port endpoints can form.
+	factStore.Put(ctx, types.KeyObservedNodeAddress("node-1"), []byte("192.168.1.10"))
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("isolated"), []byte("app:v1"))
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("isolated", 80), []byte(""))
@@ -740,14 +777,7 @@ func TestMultiPortPerPortHostPortIsolation(t *testing.T) {
 		return false
 	})
 
-	// Publish node address and host-port only for port 80 — port 443 should not be affected.
-	instanceInfo, _ := types.ListInstances(ctx, factStore)
-	for _, inst := range instanceInfo {
-		if inst.ID == instanceID {
-			factStore.Put(ctx, types.KeyObservedNodeAddress(inst.Node), []byte("192.168.1.10"))
-			break
-		}
-	}
+	// Publish host-port only for port 80 — port 443 should have no endpoint.
 	factStore.Put(ctx, types.KeyObservedInstanceHostPortForPort(instanceID, 80), []byte("30080"))
 
 	// Wait for port 80 endpoint to reflect the host-port.
@@ -763,16 +793,13 @@ func TestMultiPortPerPortHostPortIsolation(t *testing.T) {
 		return false
 	})
 
-	// Verify port 443 endpoint uses the overlay IP (not port 30080).
+	// Verify port 443 has no endpoint (no overlay IP and no host-port assigned).
 	endpointFacts, _ := factStore.Scan(ctx, types.ScanEndpoints)
 	for _, endpointFact := range endpointFacts {
-		if !strings.Contains(endpointFact.Key, "isolated/") {
-			continue
-		}
-		endpointValue := string(endpointFact.Value)
-		if strings.HasSuffix(endpointFact.Key, "/443") && strings.Contains(endpointValue, "30080") {
-			t.Errorf("port 443 endpoint incorrectly uses port 80's host-port: %s = %s",
-				endpointFact.Key, endpointValue)
+		if strings.Contains(endpointFact.Key, "isolated/") &&
+			strings.HasSuffix(endpointFact.Key, "/443") {
+			t.Errorf("port 443 should have no endpoint without overlay IP or host-port, got %s = %s",
+				endpointFact.Key, string(endpointFact.Value))
 		}
 	}
 

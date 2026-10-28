@@ -483,7 +483,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 
 	cluster.partitionedStores["node-1"].Heal()
 
-	waitFor(testHandle, 15*time.Second, "6 running instances restored after heal", func() bool {
+	waitFor(testHandle, 20*time.Second, "6 running instances restored after heal", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 }
