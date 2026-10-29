@@ -41,7 +41,7 @@ Node registration: publishes `node(id)`, `capacity_cpu`, `capacity_memory`, `ava
 
 Lease: maintains a TTL lease in etcd. If the agent disappears, lease expires → control plane derives `node_state(node, unreachable)`.
 
-Container runtime interface (pluggable — containerd, CRI-O, Podman, systemd-nspawn):
+Container runtime interface (pluggable — SimulatorRuntime, ProcessRuntime, ContainerRuntime/nerdctl, ContainerdRuntime):
 ```
 ensure_container(id, image, resources, environment, mounts, network, desired_state)
 ```

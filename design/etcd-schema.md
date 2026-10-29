@@ -41,14 +41,27 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── node/{node-id}/available/memory
 │   ├── node/{node-id}/architecture
 │   ├── node/{node-id}/zone
-│   ├── instance/{instance-id}                # instance existence
+│   ├── instance/{instance-id}                # instance existence (root marker)
 │   ├── instance/{instance-id}/service        # which service this belongs to
 │   ├── instance/{instance-id}/node           # which node it runs on
-│   ├── instance/{instance-id}/state          # pending | running | failed | stopped
+│   ├── instance/{instance-id}/state          # pending | starting | pulling | image-pull-backoff | running | failed | stopped
 │   ├── instance/{instance-id}/image          # actual image running
-│   ├── instance/{instance-id}/ip             # assigned IP
+│   ├── instance/{instance-id}/ip             # assigned overlay IP
 │   ├── instance/{instance-id}/health         # healthy | unhealthy | unknown
-│   ├── instance/{instance-id}/started_at
+│   ├── instance/{instance-id}/created-at     # RFC3339 timestamp (write-once)
+│   ├── instance/{instance-id}/hostport       # legacy single host port
+│   ├── instance/{instance-id}/hostport/{port}  # per-container-port host port mapping
+│   ├── instance/{instance-id}/exit-reason    # "OOMKilled" or "exit(N)"
+│   ├── instance/{instance-id}/restarts       # restart count (integer)
+│   ├── instance/{instance-id}/config-hash    # SHA256 of config inputs
+│   ├── instance/{instance-id}/pull-status    # JSON: {error, attempts, retryAfter, image}
+│   ├── instance/{instance-id}/status-reason  # human-readable reason string
+│   ├── instance/{instance-id}/init-progress  # JSON init step progress
+│   ├── instance/{instance-id}/probe-progress # JSON probe failure counts
+│   ├── instance/{instance-id}/ordinal        # stateful instance ordinal index
+│   ├── instance/{instance-id}/init/step/{index}/state   # per-step init result
+│   ├── instance/{instance-id}/init/step/{index}/reason  # per-step failure reason
+│   ├── instance/{instance-id}/probe/{probeType}         # per-probe result (startup/liveness/readiness)
 │   ├── volume/{name}/attached_node
 │   └── volume/{name}/state                   # attached | detached | error
 │
@@ -57,6 +70,14 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── service/{name}/rollout/previous_image # rollback image
 │   ├── instance/{instance-id}/init/phase     # pending | running | complete | failed
 │   ├── instance/{instance-id}/drain_since    # Unix millis when drain began
+│   ├── instance/{instance-id}/drain_readiness  # readiness override during drain
+│   ├── instance/{instance-id}/node_failure   # "true" when node is unreachable
+│   ├── instance/{instance-id}/controller_stopped  # "true" when replaced by failure controller
+│   ├── crash-loop/{serviceName}              # JSON: {count, since} — crash-loop backoff + circuit breaker
+│   ├── node/{nodeID}/drain/started           # Unix millis when node drain began
+│   ├── node/{nodeID}/drain/initiator         # who initiated the drain
+│   ├── node/{nodeID}/drain/complete          # drain completion marker
+│   ├── node/{nodeID}/pressure                # node pressure state
 │   └── credential/{instance-id}/{identity}/  # broker credential lifecycle
 │
 ├── placement/                      # scheduling decisions (written by scheduler)
@@ -170,13 +191,16 @@ Each controller watches only the prefixes it cares about:
 
 | Controller | Watches |
 |------------|---------|
-| Instance controller | `desired/service/*/instances`, `observed/instance/` |
-| Scheduler | `placement/`, `observed/node/`, `observed/instance/*/state` |
-| Network controller | `observed/instance/*/state`, `observed/instance/*/ip` |
+| Instance controller | `desired/service/`, `effective/service/`, `observed/instance/`, `derived/instance/`, `placement/` |
+| Scheduler | `placement/`, `observed/node/`, `observed/instance/`, `desired/service/` |
+| Network controller | `observed/instance/`, `placement/`, `desired/service/` |
 | Storage controller | `desired/volume/`, `observed/volume/`, `placement/` |
-| Autoscaler | `observed/instance/*/health`, `desired/service/*/autoscale/` |
-| Failure controller | `observed/node/*/state`, `lease/node/` |
-| Intent resolver | `intent/*/service/` |
+| Autoscaler | `observed/telemetry/`, `desired/service/`, `effective/service/` |
+| Failure controller | `observed/instance/`, `derived/instance/`, `derived/crash-loop/` |
+| Node-failure controller | `lease/node/`, `observed/node/`, `observed/instance/`, `derived/instance/`, `placement/` |
+| Intent resolver | `intent/`, `desired/service/` |
+| Init controller | `observed/instance/`, `desired/service/`, `derived/instance/` |
+| Rollout controller | `desired/service/`, `observed/instance/`, `derived/service/` |
 
 ### 7. Intent Layer Resolution
 
@@ -254,12 +278,12 @@ Node-1 sees `/ccattler/placement/instance/a8f31 → "node-1"`, pulls nginx:1.28,
 Reports back:
 
 ```
-PUT /ccattler/observed/instance/a8f31/node       → "node-1"
-PUT /ccattler/observed/instance/a8f31/state      → "running"
-PUT /ccattler/observed/instance/a8f31/image      → "nginx:1.28"
-PUT /ccattler/observed/instance/a8f31/ip         → "10.1.0.5"
-PUT /ccattler/observed/instance/a8f31/health     → "healthy"
-PUT /ccattler/observed/instance/a8f31/started_at → "2026-09-06T18:42:00Z"
+PUT /ccattler/observed/instance/a8f31/node        → "node-1"
+PUT /ccattler/observed/instance/a8f31/state       → "running"
+PUT /ccattler/observed/instance/a8f31/image       → "nginx:1.28"
+PUT /ccattler/observed/instance/a8f31/ip          → "10.100.1.5"
+PUT /ccattler/observed/instance/a8f31/health      → "healthy"
+PUT /ccattler/observed/instance/a8f31/created-at  → "2026-09-06T18:42:00Z"
 ```
 
 ### 6. Network controller derives endpoints

@@ -183,7 +183,7 @@ A single IP (`--advertise-address`) propagates to:
 
 ---
 
-## 8. Node Enrollment (CSR-Based)
+## 11. Node Enrollment (CSR-Based)
 
 **Chain:** `cmd/cca/command_misc.go:executeJoinCommand` → HTTP POST `/api/enroll` → `security/enrollment.go:EnrollNode` → `security/ca.go:SignCSR`
 
@@ -201,7 +201,7 @@ Enrollment is the trust bootstrap between a new node and the cluster. The node g
 - CSR accepted without signature verification
 - Enrollment without `--ca-cert` or CA fingerprint (unless `--insecure` explicitly set)
 
-## 9. etcd mTLS
+## 12. etcd mTLS
 
 **Chain:** `deploy/ansible/roles/etcd/templates/etcd.service.j2` → etcd `--client-cert-auth` → `store/etcd.go:NewEtcdStore` → `--etcd-cert/--etcd-key/--etcd-ca` CLI flags
 
@@ -214,7 +214,7 @@ etcd must require mTLS for all client connections. The cluster CA signs etcd ser
 - etcdctl in E2E tests passes `--cacert/--cert/--key`
 - etcd cert SANs include `127.0.0.1` (for local health checks)
 
-## 8. Node Failure Recovery — Two-Phase Traffic Continuity
+## 13. Node Failure Recovery — Two-Phase Traffic Continuity
 
 **Chain:** `agent/dataplane.go:identifyStaleNodes` → `controllers/nodefailure.go` → `controllers/endpoint.go` → `controllers/network.go` → `network/nftables_dataplane.go`
 
@@ -278,7 +278,7 @@ This cascade defeats the fast-path eviction because the control plane's scheduli
 
 ---
 
-## 11. Image Pull Lifecycle
+## 14. Image Pull Lifecycle
 
 **Chain:** `agent/agent.go:reconcileInstance` → `runtime.ImagePuller.PullImage` → `runtime/container.go:Start` (with `--pull=never`)
 
@@ -363,7 +363,7 @@ The pull-status fact is queryable: `cca watch pull-status/` shows all active pul
 
 ---
 
-## 12. Crash Loop Backoff
+## 15. Crash Loop Backoff
 
 **Chain:** `controllers/failure.go:processInstanceForRecovery` → crash-loop counter → delayed replacement
 
@@ -433,7 +433,7 @@ The crash-loop counter is queryable: `cca watch derived/crash-loop/` shows all s
 
 ---
 
-## 13. Config/Secret Reload
+## 16. Config/Secret Reload
 
 **Chain:** `agent/agent.go:reconcileDesiredInstance` → config hash → `observed/instance/{id}/config-hash` → steady-state comparison → restart
 
@@ -470,7 +470,7 @@ Steady-state path (else branch):
 
 ---
 
-## 14. OOM Kill Detection
+## 17. OOM Kill Detection
 
 **Chain:** `nerdctl inspect` → `runtime/container.go:Status()` → `agent/agent.go:observeInstanceState()` → exit-reason fact
 
@@ -502,7 +502,7 @@ Resource limits (`--cpus`, `--memory`) are already passed to `nerdctl run` via `
 
 ---
 
-## 15. Rolling Update MaxSurge (max_extra)
+## 18. Rolling Update MaxSurge (max_extra)
 
 **Chain:** DSL `update { max_extra N }` → `desired/service/{name}/update/max_extra` → RolloutController emits surge allowance → InstanceController creates extra instances → RolloutController stops old instances → surge cleared on completion
 
@@ -535,7 +535,7 @@ The existing rollout controller implements `max_unavailable` but ignores `max_ex
 
 ---
 
-## 16. Node-Pressure Eviction
+## 19. Node-Pressure Eviction
 
 **Chain:** Agent reports `observed/node/{id}/available/memory` → EvictionController reads available vs capacity → compares against thresholds → evicts lowest-QoS instances first → FailureController replaces on healthy nodes
 
@@ -573,7 +573,7 @@ Node-pressure eviction protects the cluster from out-of-memory cascades. When a 
 
 ---
 
-## 17. Secret Key Rotation
+## 20. Secret Key Rotation
 
 **Chain:** `cca secret rotate` CLI → POST `/api/secret/rotate` → `SecretStore.RotateKeyProvider()` re-wraps DEKs → new master key distributed to agents via enrollment refresh
 
@@ -603,7 +603,7 @@ Secret rotation re-wraps all stored secrets' data encryption keys (DEKs) under a
 
 ---
 
-## 18. Job/Batch Workloads
+## 21. Job/Batch Workloads
 
 **Chain:** DSL `job "name" { ... }` → `desired/job/{name}/image`, `desired/job/{name}/completions`, `desired/job/{name}/parallelism` → JobController creates instances → Agent runs to completion → JobController tracks completions → marks job complete/failed
 
@@ -646,7 +646,7 @@ Jobs are run-to-completion workloads, unlike services which are long-running. A 
 
 ---
 
-## 19. Image Pull Secrets
+## 22. Image Pull Secrets
 
 **Chain:** DSL `image_pull_secret "secret-name"` on service/job → `desired/service/{name}/image_pull_secret` → Agent reads secret name at pull time → resolves credentials via secret API → passes `--creds user:pass` to `nerdctl pull`
 
@@ -686,7 +686,7 @@ Image pull secrets let services and jobs authenticate against private container 
 
 ---
 
-## 20. CronJobs (Scheduled Recurring Jobs)
+## 23. CronJobs (Scheduled Recurring Jobs)
 
 **Chain:** DSL `cronjob "name" { schedule "*/5 * * * *" image "img" command "cmd" }` → `desired/cronjob/{name}/schedule`, `/image`, `/command` → CronController checks schedule each resync → creates `desired/job/{name}-{timestamp}/...` → JobController takes over run-to-completion
 

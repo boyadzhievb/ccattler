@@ -2,7 +2,7 @@
 
 Five layers: Identity → Authentication → Authorization → Isolation → Audit.
 
-**Zero-trust by default** — being inside the cluster grants nothing. Every component authenticates and is authorized independently.
+**Zero-trust by default** — being inside the cluster grants nothing. Every component authenticates and is authorized independently. Note: zero-trust requires `--tls` mode; without it, `cca run` uses a demo admin authenticator for local development.
 
 ## Transport: mTLS Everywhere
 
@@ -29,8 +29,8 @@ No unauthenticated cluster communication.
 API-1  API-2
 ```
 
-- Root CA is offline (never on a running control-plane machine)
-- Short-lived certificates (1hr) with automatic rotation
+- Root CA is offline (never on a running control-plane machine) — *planned; current implementation uses a single CA*
+- Short-lived certificates (1hr) with automatic rotation — *planned; current certs are long-lived from enrollment*
 - SPIFFE-style workload identities: `spiffe://cluster/node/node-1`, `spiffe://cluster/controller/scheduler`
 
 ## Node Enrollment
@@ -51,41 +51,91 @@ Developer → Identity Provider → OIDC token → CCattler API
 
 Token establishes: `subject=alice, groups=[developers, payments]`
 
-## Authorization: RBAC + ABAC
+**Current status:** `OIDCAuthenticator` validates JWTs with pre-shared keys
+(`security/oidc.go`). OIDC discovery and browser login flow are not yet
+implemented — `cca login` is a stub. JWT and local token authentication work
+end-to-end with `--tls` mode.
 
-**RBAC** for broad authority — permissions over fact prefixes:
+## Authorization: Two-Layer Model
+
+Authorization uses two layers. The store layer enforces prefix-based access
+internally (controllers and agents), while the API layer enforces capability-based
+access for users. Both are deny-by-default, fail-closed.
+
+### Layer 1: Store-Layer Prefix RBAC (internal)
+
+Every controller and agent has a `Principal` with read/write/delete/watch
+permissions scoped to fact key prefixes. A compromised controller can only
+touch its own write domain.
 
 ```
-role developer {
-    allow service.read
-    allow service.update
-}
+Store-layer permissions: read, write, delete, watch
+Scoped to key prefixes: observed/instance/, derived/crash-loop/, etc.
 
-role operator {
-    allow read *
-    allow modify service/*
-    allow modify node/*
-}
-
-grant developer to group developers
+Example (from security/rbac.go):
+  scheduler:   READ  desired/, observed/   WRITE  derived/placement/
+  failure:     READ  observed/instance/    WRITE  derived/instance/, derived/crash-loop/
+  node-agent:  READ  desired/node/X/       WRITE  observed/node/X/
 ```
 
-**ABAC** for context — attribute-based conditions:
+Implementation: `security/authorized_store.go` wraps the raw store. Every
+`Put`/`Delete`/`Scan` checks `RBACAuthorizer.Authorize(principal, permission, key)`
+against prefix rules before reaching etcd.
+
+### Layer 2: API-Layer Capability Auth (users)
+
+Users authenticate via mTLS or JWT/OIDC and receive capability grants at
+hierarchical scopes. Capabilities are NOT K8s-style API verbs — they describe
+what the user can do, not which API endpoint they call.
+
+```
+Capabilities (from security/capability.go):
+  workload.read      workload.create     workload.update     workload.delete
+  secret.metadata.read  secret.read      secret.use          secret.write
+  node.read          node.manage
+  placement.read     placement.write
+  scaling.read       scaling.write
+  cluster.admin      (grants all capabilities at all scopes)
+
+Scopes: hierarchical paths
+  cluster             — whole cluster
+  team/payments       — payment team's resources
+  node/node01         — single node
+```
+
+Example grants (via auth DSL):
+```
+auth {
+    grant workload.read, workload.update to group developers scope team/web
+    grant cluster.admin to user ops-lead scope cluster
+    grant secret.use to group backend scope team/api
+}
+```
+
+Implementation: `security/api_authorizer.go` evaluates
+`AuthorizeAPI(principal, capability, scope, resourceContext) → ALLOW | DENY`.
+
+### ABAC: Attribute-Based Conditions
+
+ABAC adds context-sensitive rules on top of capability grants:
 
 ```
 policy team-isolation {
-    allow service.update
+    capability workload.update
     when subject.team == resource.team
 }
 
 policy production-gate {
-    allow service.deploy
+    capability workload.create
     when subject.environment != "production"
-    OR subject.role == "production-deployer"
+    OR subject.groups contains "production-deployers"
 }
 ```
 
-Every API operation evaluates: `authorize(principal, action, resource, context) → ALLOW | DENY`
+Implementation: `security/abac.go` + `security/condition.go`. Conditions are
+parsed and evaluated, but not yet wired to the admission pipeline in production.
+
+Every API operation evaluates: `authorize(principal, capability, scope, context) → ALLOW | DENY`
 
 ## Per-Controller Least Privilege
 
@@ -141,13 +191,18 @@ Every security-sensitive operation produces an immutable record:
 ```
 principal:   alice
 auth:        OIDC
-action:      service.update
+action:      workload.update
 target:      service/web
 change:      image nginx:1.27 → nginx:1.28
 decision:    ALLOW
 policy:      production-deployer
 request_id:  8f31...
 ```
+
+**Current status:** `InMemoryAuditLog` only — audit entries are lost on restart.
+No persistent audit sink, no `cca audit` CLI command, no external audit webhook.
+Per-resource audit verbosity (K8s None/Metadata/Request/RequestResponse) is not
+implemented.
 
 ## Bootstrap Problem
 
@@ -166,8 +221,13 @@ Users    Nodes   Controllers
   └────────┼────────┘
            ▼
      Authorization
-      RBAC + ABAC
-           │
+  ┌────────┴────────┐
+  ▼                 ▼
+Store-layer      API-layer
+prefix RBAC    capability auth
+(internal)      (users) + ABAC
+  │                 │
+  └────────┬────────┘
            ▼
       State changes
            │

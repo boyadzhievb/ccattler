@@ -21,8 +21,34 @@ RULE expose_running(service):
 ## Failure Controller
 ```
 RULE replace_failed_instance(instance):
-    if instance.state = failed:
-        create replacement
+    effective_state = controller_stopped > node_failure > observed_state
+    if effective_state = failed:
+        if crash_loop_count >= circuit_breaker_threshold (10):
+            if now < last_replacement + cooldown (10m): SKIP  (circuit open)
+            else: allow one probe replacement                 (half-open)
+        else if crash_loop_backoff not elapsed: SKIP          (backoff: 10s→5m)
+        PUT derived/instance/{id}/controller_stopped = "true"
+        create replacement instance (pending)
+        increment derived/crash-loop/{service} counter
+
+    if liveness = unhealthy AND running:
+        begin drain (readiness=not-ready + drain_since)
+        after grace period: stop and replace
+
+    if startup = failed AND running:
+        immediate stop and replace
+```
+
+## Node-Failure Controller
+```
+RULE detect_node_failure(node):
+    if lease/node/{id} expired:
+        PUT observed/node/{id}/state = "unreachable"
+        for each instance on node:
+            PUT derived/instance/{id}/node_failure = "true"
+    if node recovers (fresh heartbeat):
+        PUT observed/node/{id}/state = "alive"
+        DELETE derived/instance/{id}/node_failure
 ```
 
 ## Init Controller
@@ -112,6 +138,101 @@ Metrics/Events → Scaling Engine (policies, prediction, stabilization)
 ```
 
 The instance controller doesn't care *why* desired changed — it just sees `desired=5, actual=3` and creates two more.
+
+## Rollout Controller
+```
+RULE rolling_update(service):
+    if observed_image != desired_image:
+        replace instances in batches (max_unavailable, max_extra)
+        track rollout state: rolling → complete
+        record previous_image for rollback
+```
+
+## Route Controller
+```
+RULE derive_routes(gate):
+    compile gate DSL → route facts with backend services
+    resolve external hostnames → internal service names (cached 5s TTL)
+```
+
+## Network Policy Controller
+```
+RULE compile_network_policy(policy):
+    compile identity-based firewall DSL → derived/network/rule/ facts
+    rules consumed by nftables/eBPF data plane
+```
+
+## Drain Controller
+```
+RULE drain_node(node):
+    when drain initiated: evict instances respecting termination grace period
+    track drain progress via derived/node/{id}/drain/* facts
+```
+
+## Job Controller
+```
+RULE manage_job(job):
+    create job instances, track completions
+    respect backoff_limit on failure, parallelism constraints
+```
+
+## CronJob Controller
+```
+RULE schedule_cronjob(cronjob):
+    on 30s resync: check if cron schedule matches current minute
+    create job instance if match, prevent double-fire via last_scheduled
+```
+
+## Auth Controller
+```
+RULE reconcile_auth(policy):
+    compile auth DSL (roles, grants, ABAC conditions) → auth/ fact tree
+    evaluate capability checks against compiled policy
+```
+
+## Storage Controller
+```
+RULE manage_volumes(volume):
+    track volume attach/detach state per node
+    coordinate with scheduler for volume-aware placement
+```
+
+## Stateful DNS / Stateful Volume Controllers
+```
+RULE stateful_identity(instance):
+    assign stable DNS names and ordinal indices to stateful instances
+    bind persistent volumes to ordinal slots
+```
+
+## Cloud Controllers (cloud_loadbalancer, cloud_node_lifecycle, cloud_routes)
+```
+RULE cloud_reconciliation:
+    cloud_loadbalancer: sync service VIPs to cloud LB (per-port granularity)
+    cloud_node_lifecycle: provision/terminate nodes via InfrastructureProvider
+    cloud_routes: sync overlay subnet routes to cloud VPC route tables
+```
+
+## Credential Broker Controller
+```
+RULE broker_credentials(instance):
+    issue short-lived cloud credentials per SPIFFE identity
+    track credential lifecycle via derived/credential/ facts
+```
+
+## Cluster Scale Controller
+```
+RULE cluster_autoscale:
+    watch unplaced-demand from scheduler
+    emit scale-up/scale-down intent to InfrastructureProvider
+    durable-intent pattern (no direct provider calls in reconcile)
+```
+
+## Metrics Controller
+```
+RULE collect_metrics:
+    read observed/telemetry/ facts (CPU, memory, OOM kills)
+    expose via /metrics endpoint for Prometheus scraping
+```
 
 ## Controller Interface
 ```go

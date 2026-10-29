@@ -12,7 +12,7 @@ Each controller may only write keys under its declared output prefixes. The runn
 | InstanceController | `instance` | `observed/instance/` |
 | Scheduler | `scheduler` | `placement/` |
 | EndpointController | `endpoint` | `endpoint/` |
-| FailureController | `failure` | `observed/instance/`, `derived/instance/` |
+| FailureController | `failure` | `observed/instance/`, `derived/instance/`, `derived/crash-loop/` |
 | NodeFailureController | `node-failure` | `observed/node/`, `observed/instance/` |
 | NetworkController | `network` | `network/vip/`, `network/dns/` |
 | AutoscaleController | `autoscale` | `intent/autoscaler/` |
@@ -53,7 +53,8 @@ Some prefixes have multiple writers. These are intentional and documented:
 | `observed/instance/` | InstanceController, FailureController, NodeFailureController, RolloutController, Node Agent | Instance lifecycle has multiple authorities: creation (instance), failure replacement (failure), node failure (node-failure), rollout stopping (rollout), runtime observation (agent) |
 | `observed/node/` | NodeFailureController, NodeLifecycleController, Node Agent | Node state has three writers: agent publishes capacity/address, node-failure marks unreachable, cloud-lifecycle marks cordoned |
 | `derived/service/` | WarmZeroController, RolloutController | Disjoint sub-prefixes: warm-zero writes `activation/`, rollout writes `rollout/` |
-| `derived/instance/` | FailureController, InitController | Disjoint sub-prefixes: failure writes `drain_since`, init writes `init/phase` |
+| `derived/instance/` | FailureController, InitController | Disjoint sub-prefixes: failure writes `controller_stopped`, `drain_since`, `drain_readiness`, `node_failure`; init writes `init/phase` |
+| `derived/crash-loop/` | FailureController | Sole writer — per-service crash-loop backoff and circuit breaker counters |
 | `desired/service/` | DSL compiler, RolloutController, API server | Rollout writes only `desired/service/{svc}/image` during rollback — this is an intentional cross-layer write |
 
 ## Key Prefix Taxonomy

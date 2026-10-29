@@ -164,7 +164,7 @@ Subnets are allocated as facts in the store and consumed by agents.
 When a node registers, the server-side network controller writes a subnet assignment:
 
 ```
-PUT desired/network/subnet/{node-id} → "10.100.X.0/24"
+PUT network/node/{node-id}/subnet → "10.100.X.0/24"
 ```
 
 The controller tracks allocated subnets to prevent overlap. Allocation uses the next free third-octet value (1-254). Subnet assignments are permanent -- a node keeps its subnet even after restart or temporary disconnect.
@@ -174,7 +174,7 @@ The controller tracks allocated subnets to prevent overlap. Allocation uses the 
 The agent reads its subnet fact at startup and on every reconciliation cycle:
 
 ```
-GET desired/network/subnet/{node-id} → "10.100.3.0/24"
+GET network/node/{node-id}/subnet → "10.100.3.0/24"
 ```
 
 The subnet determines:
@@ -260,7 +260,7 @@ If the physical network supports jumbo frames (MTU 9000), the bridge MTU can be 
 Additions for M122 are marked with `[M122]`.
 
 ```
-desired/network/subnet/{node-id}           [M122] → "10.100.X.0/24"  (subnet allocation)
+network/node/{node-id}/subnet           [M122] → "10.100.X.0/24"  (subnet allocation)
 observed/node/{node-id}/advertise_address          → "192.168.1.10"   (physical IP)
 observed/instance/{id}/ip                          → "10.100.1.2"     (container IP)
 network/vip/{service}                              → "10.200.0.1"     (service VIP)
@@ -311,7 +311,7 @@ CCattler's VXLAN reconciler is a sub-reconciler inside the existing agent. One d
 
 Flannel stores subnet allocations in its own etcd prefix (`/coreos.com/network/subnets/`). Calico stores IP pools in its own CRDs or etcd prefix. Both require synchronization with CCattler's fact store. Any desync (network partition, restart ordering) causes split-brain networking.
 
-CCattler stores subnet allocations as facts (`desired/network/subnet/{node-id}`). The VXLAN reconciler reads these facts directly. Single source of truth.
+CCattler stores subnet allocations as facts (`network/node/{node-id}/subnet`). The VXLAN reconciler reads these facts directly. Single source of truth.
 
 ### Fits the fact-based model
 

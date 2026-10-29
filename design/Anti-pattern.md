@@ -1,31 +1,81 @@
-Anti-pattern?
-In software, an anti-pattern is a common but bad way to solve a problem. It might seem like a good idea at first, but it usually leads to poor design, hard-to-maintain code, or hidden bugs. Anti-patterns are misleading solutions that look simple or helpful but cause problems in the long run.
+# CCattler Anti-Pattern Rules
 
-The six anti-patterns I’ll cover in this article are: Spaghetti Code, Golden Hammer, Boat Anchor, Dead Code, Proliferation of Code, and the God Object.
+Enforced from Phase 50. Violations are caught in code review and CI linting.
 
-Spaghetti Code
-Spaghetti Code is one of the most well-known anti-patterns. It refers to code that has little or no structure, making it messy and hard to follow — like a bowl of tangled spaghetti. This usually happens due to poor planning, unclear goals, or lack of experience. The result is code that’s difficult to read, understand, and maintain.
+## No Dead Code
 
-Golden Hammer
-The Golden Hammer is when a team uses the same tool or method to solve every problem, just because they’re used to it. This can lead to poor solutions and stop them from finding better options.
+Every exported type, function, and constant must have a production caller. Test-only helpers live in `_test.go` files. Unreferenced code is deleted, not commented out.
 
-Boat Anchor
-A Boat Anchor is when code or a part of a system is kept even though it’s no longer useful. People keep it just in case they need it later — but they almost never do.
+## No Magic Numbers
 
-God Object
-If one object is used everywhere in your code, it might be a God Object. This anti-pattern happens when a single class does too much — it handles many tasks, controls other objects, and becomes the center of everything in the app.
+Timeouts, thresholds, intervals, and retry counts must be package-level named constants. Raw numeric literals in logic are forbidden.
 
-Dead Code
-Have you ever seen code written by someone who no longer works at your company? There might be a function that doesn’t seem to do anything, but it’s called everywhere. When you ask others, no one really knows what it does…
+```go
+// BAD
+if elapsed > 30*time.Second {
 
-God Object / God Class: A single class or object that handles too many responsibilities, violating the Single Responsibility Principle and making code hard to test and maintain.
+// GOOD
+const nodeLeaseTimeout = 30 * time.Second
+if elapsed > nodeLeaseTimeout {
+```
 
-Magic Numbers and Strings: Hardcoding raw numbers or text directly into logic instead of using named constants, making the code confusing to update.
+## Function Length Limit: 80 Lines
 
-Copy-Paste (Code Duplication): Repeating identical or very similar logic across multiple places instead of creating a reusable function or module.
+Break long functions into sub-functions with descriptive names. Test functions are exempt.
 
-Prop Drilling: Passing data down through multiple nested layers of components that do not need the data themselves, commonly seen in UI frameworks like React.
+## No Copy-Paste Duplication
 
-Premature Optimization: Over-engineering or complicating code for performance gains or future needs that are not actually required yet.
+Same pattern appearing 3+ places must become a shared helper. Near-duplicate blocks longer than 10 lines must be refactored.
 
-Lava Flow: Leaving dead code, experimental blocks, or obsolete structures in place because nobody is sure what breaks if it is removed.
+## Typed Enums Over Raw Strings
+
+Instance states, node states, probe types, rollout phases — all use typed string constants, never raw string literals.
+
+```go
+// BAD
+if state == "running" {
+
+// GOOD
+if state == InstanceStateRunning {
+```
+
+## Every Exported Type Must Be Wired
+
+Show where each exported type is instantiated in production. Orphan types that exist "for future use" are deleted.
+
+## Integration Test Assertions Must Be Inside `waitFor`
+
+Never assert async facts bare after a `waitFor` that checked a different fact. Every assertion on asynchronous state belongs inside its own `waitFor` block.
+
+```go
+// BAD — fact B may not exist yet when fact A settles
+waitFor(func() bool { return store.Get("factA") == "ready" })
+assert(store.Get("factB") == "done")
+
+// GOOD
+waitFor(func() bool { return store.Get("factB") == "done" })
+```
+
+## Fact-Based Architecture Anti-Patterns
+
+These patterns violate CCattler's core architectural rules:
+
+### No Imperative Commands in the Store
+
+Store facts, not commands. `desired(instance, running)` not `start(instance)`. A fact describes what the world should look like. A command describes what to do — and commands are not idempotent.
+
+### No Cross-Component Assumptions
+
+No component may assume another performed an action. React to state only. If the scheduler hasn't placed an instance yet, the agent waits — it doesn't call the scheduler.
+
+### No Mixed Desired/Observed Writes
+
+Controllers that read `desired/` must never write to `desired/` (except rollout controller's documented image rollback). Desired state comes from users and policy; observed state comes from agents; derived state comes from controllers.
+
+### No Lock-and-Hold Concurrency
+
+Use optimistic concurrency via CAS transactions. Never hold a lock across a reconciliation cycle.
+
+### No Non-Deterministic Reconciliation
+
+Controllers must produce the same output for the same input. Sort map keys before processing. Use deterministic tie-breaking in placement decisions.

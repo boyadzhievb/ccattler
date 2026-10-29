@@ -42,7 +42,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 
 ### T1: etcd Compromise (CRITICAL)
 
-**Attack surface:** etcd listens on port 2379 without TLS or authentication. Any host on the network can read/write all cluster state.
+**Attack surface (historical — FIXED via Phase 45/110):** etcd originally listened on port 2379 without TLS or authentication. Now secured with mTLS (Phase 45 added TLS client connections, Phase 110 configured etcd deployment with mutual TLS). Without mTLS, any host on the network could read/write all cluster state.
 
 **Impact:** Full cluster takeover — attacker can:
 - Read all secrets (encrypted, but can delete or corrupt them)
