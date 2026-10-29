@@ -51,15 +51,70 @@ Developer → Identity Provider → OIDC token → CCattler API
 
 Token establishes: `subject=alice, groups=[developers, payments]`
 
-**Current status (M153):**
+### Authenticator Chain
+
+The API server evaluates authenticators in order. The first one that returns
+a result wins; if it returns nil/nil, the next authenticator tries.
+
+```
+mTLS → Webhook → ExternalOIDC → InternalJWT → LocalToken
+```
+
+### OIDC Browser Login (M153)
+
 - `OIDCAuthenticator` validates JWTs with ES256 (`security/oidc.go`)
 - `OIDCDiscoveryClient` fetches JWKS from external IdPs (`security/oidc_discovery.go`)
 - `cca login <server>` runs OAuth2 PKCE browser flow (`security/oidc_browser_flow.go`)
 - Localhost callback server on ephemeral port, CSRF state validation
-- Token exchange, refresh token storage in `~/.ccattler/credentials.json`
 - Auto-refresh when access token < 5min from expiry
 - Works with Google, GitHub, and generic OIDC providers
 - Server advertises external OIDC config at `/api/auth/oidc-config`
+
+### Credential Storage & Contexts (M154)
+
+Named server contexts in `~/.ccattler/config.json`. Each context stores server
+address, auth method, tokens, TLS paths. Auto-migrates from legacy `credentials.json`.
+
+```bash
+cca context list              # show all contexts
+cca context use prod          # switch active context
+cca context current           # show active context
+cca context delete staging    # remove a context
+cca login https://prod.example.com   # creates/updates context from server name
+```
+
+Token resolution priority: `CCA_TOKEN` env → active context → legacy credentials → local-token file.
+
+### Webhook Token Authentication (M155)
+
+External webhook validates bearer tokens by receiving a POST with the token and
+returning the principal identity, groups, and attributes. Fail-closed: any error
+from the webhook rejects the request. Responses are cached (default 2 min TTL).
+
+```bash
+# Enable webhook authentication on the server:
+cca server --authn-webhook-url https://auth.internal/validate \
+           --tls --cert server.pem --key server-key.pem --ca ca.pem
+
+# The webhook receives:
+POST /validate
+Content-Type: application/json
+{"token": "bearer-token-value"}
+
+# The webhook responds:
+{
+  "authenticated": true,
+  "principal": "user:alice@example.com",
+  "groups": ["developers", "team-platform"],
+  "attributes": {"team": "platform", "role": "admin"}
+}
+
+# On failure (or authenticated: false), the request is rejected.
+# The webhook is placed BEFORE OIDC in the authenticator chain,
+# so it gets first crack at non-JWT bearer tokens.
+```
+
+Implementation: `security/authn_webhook.go` (`WebhookAuthenticator`)
 
 ## Authorization: Two-Layer Model
 
