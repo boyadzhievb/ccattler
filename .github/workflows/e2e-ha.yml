@@ -37,7 +37,6 @@ env:
   ANSIBLE_DIR: deploy/ansible
   INVENTORY: baremetal-e2e-inventory.ini
   PLAYBOOK: ha-deploy.yml
-  SSH_KEY: ~/.ssh/id_rsa_dell_bozhan
   SSH_USER: bozhan
   NODE_IPS: "192.168.100.215 192.168.100.30 192.168.100.31 192.168.100.51"
 
@@ -63,7 +62,8 @@ jobs:
         if: ${{ inputs.skip_deploy != true }}
         run: |
           cd "$ANSIBLE_DIR"
-          ansible-playbook -i "$INVENTORY" "$PLAYBOOK" -v
+          ansible-playbook -i "$INVENTORY" "$PLAYBOOK" -v \
+            -e "ansible_ssh_private_key_file=~/.ssh/id_rsa"
         env:
           ANSIBLE_HOST_KEY_CHECKING: "false"
           ANSIBLE_SSH_ARGS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
@@ -78,11 +78,13 @@ jobs:
             FAILOVER_FLAG="--skip-failover"
           fi
           ./test/e2e/baremetal_ha_test.sh $FAILOVER_FLAG
+        env:
+          SSH_KEY: ~/.ssh/id_rsa
 
       - name: Collect logs on failure
         if: failure()
         run: |
-          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i $SSH_KEY"
+          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
           for node_entry in "node-1:192.168.100.215" "node-2:192.168.100.30" "node-3:192.168.100.31" "node-4:192.168.100.51"; do
             node_name="${node_entry%%:*}"
             node_ip="${node_entry##*:}"

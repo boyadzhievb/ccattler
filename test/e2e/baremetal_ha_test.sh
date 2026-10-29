@@ -31,8 +31,8 @@ ALL_NAMES=("node-1" "node-2" "node-3" "node-4")
 
 ETCD_ENDPOINTS="https://${CTRL1_IP}:2379,https://${CTRL2_IP}:2379,https://${CTRL3_IP}:2379"
 
-SSH_USER="bozhan"
-SSH_KEY="$HOME/.ssh/id_rsa_dell_bozhan"
+SSH_USER="${SSH_USER:-bozhan}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa_dell_bozhan}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10"
 
 SKIP_FAILOVER=false
