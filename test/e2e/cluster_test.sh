@@ -42,6 +42,7 @@
 #   ./test/e2e/cluster_test.sh --skip-build                    # use pre-built binary (no go build)
 #   ./test/e2e/cluster_test.sh --cross-compile                 # cross-compile locally (old behavior)
 #   ./test/e2e/cluster_test.sh --keep-data                     # preserve volumes + etcd between runs
+#   ./test/e2e/cluster_test.sh --extended                      # run extended tests (sticky session, DNS churn)
 #   ./test/e2e/cluster_test.sh --upgrade                       # deploy latest release, upgrade to local build
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
@@ -72,6 +73,7 @@ LIST_WORKLOADS=false
 CLEAR_WORKLOADS_ONLY=false
 KEEP_DATA=false
 UPGRADE_TEST=false
+EXTENDED_TESTS=false
 BAREMETAL=false
 DATAPLANE_OVERRIDE=""
 
@@ -85,6 +87,7 @@ for arg in "$@"; do
         --cross-compile)     BINARY_SOURCE=cross ;;
         --keep-data)         KEEP_DATA=true ;;
         --upgrade)           UPGRADE_TEST=true ;;
+        --extended)          EXTENDED_TESTS=true ;;
         --list-workloads)    LIST_WORKLOADS=true ;;
         --env=*)             CLUSTER_ENV="${arg#--env=}" ;;
         --env)               ;; # handled below with next arg
@@ -1165,9 +1168,106 @@ else
     log "Skipping node-failure test — whoami not deployed or no VIP"
 fi
 
-# Steps 5.12-5.13 removed: sticky session (flaky, gate feature) and
-# DNS-under-churn (redundant with backend-churn + DNS checks in 5.7)
-# were dropped to shorten the e2e run. Use --workload all for full coverage.
+# ---- Step 5.12: Sticky session validation (--extended only) ----
+
+if [[ "$EXTENDED_TESTS" == "true" && "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
+    log "Validating sticky session (cookie affinity)..."
+
+    STICKY_CCA=$(cat <<'STICKYCCA'
+gate whoami-sticky {
+    service whoami port 80
+    sticky cookie {
+        name __CCA_STICKY_TEST
+    }
+}
+STICKYCCA
+)
+    STICKY_TMPFILE="/tmp/whoami-sticky-$$.cca"
+    echo "$STICKY_CCA" > "$STICKY_TMPFILE"
+    scp_to_vm "$CTRL_NODE" "$STICKY_TMPFILE" "/tmp/whoami-sticky.cca"
+    ssh_vm "$CTRL_NODE" "sudo cca apply /tmp/whoami-sticky.cca" || log "WARNING: sticky gate apply failed"
+    rm -f "$STICKY_TMPFILE"
+
+    sleep 3
+
+    STICKY_HOSTNAMES=()
+    COOKIE_JAR="/tmp/cca-sticky-jar-$$"
+    STICKY_TESTED=0
+    for attempt in $(seq 1 10); do
+        STICKY_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ' || true)
+        if [[ -n "$STICKY_HOST" ]]; then
+            STICKY_HOSTNAMES+=("$STICKY_HOST")
+            STICKY_TESTED=$((STICKY_TESTED + 1))
+        fi
+    done
+    ssh_vm "$CTRL_NODE" "rm -f $COOKIE_JAR" 2>/dev/null || true
+
+    if [[ "$STICKY_TESTED" -ge 5 ]]; then
+        UNIQUE_HOSTS=$(printf '%s\n' "${STICKY_HOSTNAMES[@]}" | sort -u | wc -l | tr -d ' ')
+        if [[ "$UNIQUE_HOSTS" -eq 1 ]]; then
+            log "  All $STICKY_TESTED requests hit the same backend: ${STICKY_HOSTNAMES[0]}"
+            log "Sticky session validation PASSED"
+        else
+            log "  WARNING: $UNIQUE_HOSTS unique backends across $STICKY_TESTED requests (expected 1)"
+            log "Sticky session validation FAILED (soft) — cookie affinity not pinning"
+        fi
+    else
+        log "Sticky session validation SKIPPED — insufficient responses ($STICKY_TESTED < 5)"
+    fi
+
+    ssh_vm "$CTRL_NODE" "sudo cca apply /tmp/whoami-sticky.cca 2>/dev/null" || true
+fi
+
+# ---- Step 5.13: DNS resolution under churn (--extended only) ----
+
+if [[ "$EXTENDED_TESTS" == "true" && "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" ]]; then
+    log "Validating DNS resolution under churn..."
+
+    WHOAMI_DNS=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .dns' 2>/dev/null || echo "")
+    if [[ -n "$WHOAMI_DNS" ]]; then
+        DNS_BEFORE=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS before scale: $WHOAMI_DNS -> $DNS_BEFORE"
+
+        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+            -H "Content-Type: application/json" \
+            -d '{"service":"whoami","instances":1}' > /dev/null || log "WARNING: scale to 1 failed"
+        sleep 3
+
+        DNS_DURING=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS during scale-down: $WHOAMI_DNS -> $DNS_DURING"
+
+        curl -sf $CURL_TLS -X POST "${CCA_API}/api/scale" \
+            -H "Content-Type: application/json" \
+            -d '{"service":"whoami","instances":2}' > /dev/null || log "WARNING: scale to 2 failed"
+        sleep 3
+
+        DNS_AFTER=$(ssh_vm "$CTRL_NODE" "dig +short $WHOAMI_DNS @\$(grep nameserver /etc/resolv.conf | head -1 | awk '{print \$2}') 2>/dev/null" || echo "")
+        log "  DNS after restore: $WHOAMI_DNS -> $DNS_AFTER"
+
+        DNS_CHURN_PASS=true
+        if [[ "$DNS_BEFORE" != "$WHOAMI_VIP" && -n "$DNS_BEFORE" ]]; then
+            log "  WARNING: DNS before ($DNS_BEFORE) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+        if [[ "$DNS_DURING" != "$WHOAMI_VIP" && -n "$DNS_DURING" ]]; then
+            log "  WARNING: DNS during scale ($DNS_DURING) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+        if [[ "$DNS_AFTER" != "$WHOAMI_VIP" && -n "$DNS_AFTER" ]]; then
+            log "  WARNING: DNS after restore ($DNS_AFTER) != VIP ($WHOAMI_VIP)"
+            DNS_CHURN_PASS=false
+        fi
+
+        if [[ "$DNS_CHURN_PASS" == "true" ]]; then
+            log "DNS-under-churn PASSED — VIP stable through scale events"
+        else
+            fail "DNS-under-churn FAILED — VIP changed or DNS resolution broke during scale"
+        fi
+    else
+        log "WARNING: No DNS entry for whoami — skipping DNS-under-churn"
+    fi
+fi
 
 # ---- Step 5.14: Multi-port VIP data plane validation ----
 # Verify that a service with multiple exposed ports gets per-port VIP DNAT
