@@ -24,9 +24,10 @@ coreControllers():
   12. eviction         (controllers/eviction.go)
   13. job              (controllers/job.go)
   14. cron             (controllers/cronjob.go)
+  15. instance-gc      (controllers/instance_gc.go)
 
 startControllersWithLeaderElection() adds:
-  15. node-failure     (controllers/nodefailure.go)
+  16. node-failure     (controllers/nodefailure.go)
   16. drain            (controllers/drain.go)
   17. network          (controllers/network.go)
   18. network-policy   (controllers/network_policy.go)
@@ -402,6 +403,27 @@ Writes:
   (none — side effect is rebuilding in-memory RBACAuthorizer)
 ```
 
+### instance-gc
+```
+Watches:
+  observed/instance/                ← instance state, service, created-at
+  derived/instance/                 ← controller_stopped, node_failure marks
+  effective/service/                ← desired instance counts
+  placement/instance/               ← placement facts to clean up
+
+Writes:
+  DELETE observed/instance/{id}/*                 ← remove stopped instance facts
+  DELETE derived/instance/{id}/*                  ← remove derived markers
+  DELETE placement/instance/{id}                  ← remove placement
+  DELETE placement/node/{nodeID}/{id}             ← remove node-placement index
+
+GC criteria:
+  instance effective state is stopped or failed
+  AND owning service has running >= desired count
+  AND instance created-at > retention period (default 10m)
+  Budget: 4 instance trees per cycle (~60 deletes)
+```
+
 ### cloud-node-lifecycle (if cloud provider enabled)
 ```
 Watches:
@@ -479,6 +501,7 @@ job             writes: observed/instance/, derived/job/
 cron            writes: desired/job/, derived/cronjob/
 stateful-dns    writes: network/dns/instance/
 stateful-volume writes: desired/volume/
+instance-gc     writes: DELETE observed/instance/, derived/instance/, placement/
 ```
 
 These controllers participate in the dependency graph implicitly through

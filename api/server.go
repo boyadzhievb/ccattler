@@ -378,6 +378,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))
 	apiServer.mux.HandleFunc("/api/role", apiServer.instrumentedHandler("role", apiServer.handleRole))
 	apiServer.mux.HandleFunc("/api/role/check", apiServer.instrumentedHandler("role-check", apiServer.handleRoleCheck))
+	apiServer.mux.HandleFunc("/api/gc", apiServer.instrumentedHandler("gc", apiServer.handleGC))
 	apiServer.mux.HandleFunc("/api/auth/whoami", apiServer.instrumentedHandler("whoami", apiServer.handleAuthWhoami))
 	apiServer.mux.HandleFunc("/api/auth/oidc-config", apiServer.instrumentedHandler("oidc-config", apiServer.handleAuthOIDCConfig))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)

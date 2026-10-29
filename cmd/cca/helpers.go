@@ -299,6 +299,7 @@ func coreControllers() []controllers.Controller {
 		controllers.NewEvictionController(),
 		controllers.NewJobController(),
 		controllers.NewCronController(),
+		controllers.NewInstanceGCController(),
 	}
 }
 

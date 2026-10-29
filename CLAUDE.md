@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M156 — Runtime Role Management CLI. M1–M156 complete. Gates A–I resolved.
+**Completed through:** M157 — Instance Fact Garbage Collection. M1–M157 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
@@ -112,6 +112,7 @@ cca role grant <principal> [flags] # grant role or capability (--role, --capabil
 cca role revoke <principal> [flags] # revoke role or capability
 cca role list [principal]        # list all grants
 cca role check <principal> [flags] # check if principal has capability
+cca gc instances                 # garbage-collect stopped instance facts
 cca fmt [--check] <file>
 cca lint <file>
 ```

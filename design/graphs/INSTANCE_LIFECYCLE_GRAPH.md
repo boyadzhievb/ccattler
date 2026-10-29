@@ -471,6 +471,26 @@ FailureController.Reconcile
     PUT derived/crash-loop/{serviceName} = {"count":N,"since":now}
 ```
 
+### Stopped Instance → Fact GC (InstanceGCController)
+
+```
+derived/instance/{id}/controller_stopped = "true"
+AND service running >= desired count
+AND now - created-at > retention (10m default)
+        │
+        ▼
+InstanceGCController.Reconcile
+├── DELETE observed/instance/{id}/*          (all sub-keys)
+├── DELETE derived/instance/{id}/*           (controller_stopped, etc.)
+├── DELETE placement/instance/{id}
+└── DELETE placement/node/{nodeID}/{id}
+
+Budget: 4 instance trees per cycle (~60 deletes)
+Remaining instances converge in subsequent cycles.
+```
+
+Manual GC: `cca gc instances` → POST /api/gc (no retention check, immediate)
+
 ### Crash-Loop Backoff (controllers/failure.go:24-28, 365-373)
 
 | Parameter | Value |
