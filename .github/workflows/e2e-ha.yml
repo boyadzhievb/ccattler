@@ -1,0 +1,121 @@
+name: E2E HA Cluster Test
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "controllers/**"
+      - "store/**"
+      - "deploy/ansible/**"
+      - "cmd/cca/**"
+      - "agent/**"
+      - "test/e2e/**"
+      - ".github/workflows/e2e-ha.yml"
+  workflow_dispatch:
+    inputs:
+      skip_failover:
+        description: "Skip destructive failover tests"
+        required: false
+        default: false
+        type: boolean
+      skip_build:
+        description: "Use existing binary on nodes (skip build + deploy)"
+        required: false
+        default: false
+        type: boolean
+      skip_deploy:
+        description: "Skip Ansible deploy (cluster already running)"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: baremetal-ha
+  cancel-in-progress: false
+
+env:
+  ANSIBLE_DIR: deploy/ansible
+  INVENTORY: baremetal-e2e-inventory.ini
+  PLAYBOOK: ha-deploy.yml
+  SSH_KEY: ~/.ssh/id_rsa_dell_bozhan
+  SSH_USER: bozhan
+  NODE_IPS: "192.168.100.215 192.168.100.30 192.168.100.31 192.168.100.51"
+
+jobs:
+  ha-e2e:
+    runs-on: [self-hosted, e2e]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build cca binary
+        if: ${{ inputs.skip_build != true }}
+        run: |
+          GOOS=linux GOARCH=amd64 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/
+          ls -lh "$ANSIBLE_DIR/cca-linux-amd64"
+
+      - name: Deploy HA cluster
+        if: ${{ inputs.skip_deploy != true }}
+        run: |
+          cd "$ANSIBLE_DIR"
+          ansible-playbook -i "$INVENTORY" "$PLAYBOOK" -v
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "false"
+          ANSIBLE_SSH_ARGS: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+      - name: Wait for cluster to stabilize
+        run: sleep 15
+
+      - name: Run HA tests
+        run: |
+          FAILOVER_FLAG=""
+          if [[ "${{ inputs.skip_failover }}" == "true" ]]; then
+            FAILOVER_FLAG="--skip-failover"
+          fi
+          ./test/e2e/baremetal_ha_test.sh $FAILOVER_FLAG
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          SSH_ARGS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i $SSH_KEY"
+          for node_entry in "node-1:192.168.100.215" "node-2:192.168.100.30" "node-3:192.168.100.31" "node-4:192.168.100.51"; do
+            node_name="${node_entry%%:*}"
+            node_ip="${node_entry##*:}"
+            echo ""
+            echo "=============================="
+            echo "=== $node_name ($node_ip) ==="
+            echo "=============================="
+
+            echo "--- systemd units ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "systemctl list-units 'cca-*' 'etcd*' --no-pager 2>/dev/null || true" || true
+
+            echo "--- cca-server journal ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
+
+            echo "--- cca-agent journal ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
+
+            echo "--- etcd journal ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "sudo journalctl -u etcd --no-pager -n 200 2>/dev/null || true" || true
+
+            echo "--- etcd member list ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "ETCDCTL_API=3 etcdctl --endpoints https://${node_ip}:2379 \
+                --cacert /etc/ccattler/pki/ca.pem \
+                --cert /etc/ccattler/pki/node.pem \
+                --key /etc/ccattler/pki/node-key.pem \
+                member list 2>/dev/null || true" || true
+
+            echo "--- containers ---"
+            ssh $SSH_ARGS "$SSH_USER@$node_ip" \
+              "sudo ctr -n ccattler c ls 2>/dev/null || true" || true
+          done
