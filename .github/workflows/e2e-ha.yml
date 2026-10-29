@@ -1,16 +1,6 @@
 name: E2E HA Cluster Test
 
 on:
-  push:
-    branches: [master]
-    paths:
-      - "controllers/**"
-      - "store/**"
-      - "deploy/ansible/**"
-      - "cmd/cca/**"
-      - "agent/**"
-      - "test/e2e/**"
-      - ".github/workflows/e2e-ha.yml"
   workflow_dispatch:
     inputs:
       skip_failover:
