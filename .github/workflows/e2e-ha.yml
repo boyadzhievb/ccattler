@@ -30,7 +30,7 @@ on:
         type: boolean
 
 concurrency:
-  group: baremetal-ha
+  group: baremetal-e2e
   cancel-in-progress: false
 
 env:
