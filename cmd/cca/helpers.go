@@ -463,6 +463,7 @@ func resolveAuthenticationToken() string {
 	if envToken := os.Getenv("CCA_TOKEN"); envToken != "" {
 		return envToken
 	}
+	refreshCredentialIfExpiring()
 	credential, loadError := loadCredentialFile()
 	if loadError == nil && credential.Token != "" {
 		return credential.Token

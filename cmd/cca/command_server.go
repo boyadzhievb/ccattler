@@ -596,6 +596,10 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)
 	statusAPIServer.SetUserTokenIssuer(userTokenIssuer)
 
+	if parsedConfig.oidcIssuerURL != "" && parsedConfig.oidcClientID != "" {
+		statusAPIServer.SetExternalOIDCConfig(parsedConfig.oidcIssuerURL, parsedConfig.oidcClientID)
+	}
+
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
 	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)

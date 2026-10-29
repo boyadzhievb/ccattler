@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M152 — Phase 152 Container Lifecycle Hardening & Runtime Observability. M1–M152 complete. Gates A–I resolved.
+**Completed through:** M153 — OIDC Browser Login Flow. M1–M153 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

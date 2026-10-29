@@ -113,7 +113,15 @@ type Server struct {
 	rateLimiter                *RateLimiter
 	statusCache                *ResponseCache
 	listener                   net.Listener
-	activeWatchConnectionCount atomic.Int64 // activeWatchConnectionCount tracks concurrent SSE connections.
+	activeWatchConnectionCount atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
+	externalOIDCConfig         *ExternalOIDCLoginConfig // externalOIDCConfig holds external IdP parameters for browser login.
+}
+
+// ExternalOIDCLoginConfig holds the external identity provider parameters that
+// the CLI needs to initiate an OIDC browser login flow.
+type ExternalOIDCLoginConfig struct {
+	IssuerURL string // IdP issuer URL for OIDC discovery
+	ClientID  string // OAuth2 client ID for PKCE flow
 }
 
 // SetEventLog attaches an event log to the server, enabling the /api/logs endpoint.
@@ -172,6 +180,16 @@ func (apiServer *Server) SetServerMode(mode ServerMode) {
 // each opening their own, reducing etcd load as API replicas scale.
 func (apiServer *Server) SetWatchMultiplexer(multiplexer *WatchMultiplexer) {
 	apiServer.watchMultiplexer = multiplexer
+}
+
+// SetExternalOIDCConfig stores the external identity provider parameters so
+// the /api/auth/oidc-config endpoint can advertise them to the CLI for
+// browser-based login.
+func (apiServer *Server) SetExternalOIDCConfig(issuerURL string, clientID string) {
+	apiServer.externalOIDCConfig = &ExternalOIDCLoginConfig{
+		IssuerURL: issuerURL,
+		ClientID:  clientID,
+	}
 }
 
 // SetRequirePrincipal enables principal enforcement. When enabled, API requests
@@ -2028,6 +2046,10 @@ func (apiServer *Server) handleAuthOIDCConfig(responseWriter http.ResponseWriter
 	}
 	if apiServer.workloadTokenIssuer != nil {
 		result["issuer"] = apiServer.workloadTokenIssuer.IssuerURL()
+	}
+	if apiServer.externalOIDCConfig != nil {
+		result["external_oidc_issuer"] = apiServer.externalOIDCConfig.IssuerURL
+		result["external_oidc_client_id"] = apiServer.externalOIDCConfig.ClientID
 	}
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(result)

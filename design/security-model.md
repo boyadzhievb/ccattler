@@ -51,10 +51,15 @@ Developer → Identity Provider → OIDC token → CCattler API
 
 Token establishes: `subject=alice, groups=[developers, payments]`
 
-**Current status:** `OIDCAuthenticator` validates JWTs with pre-shared keys
-(`security/oidc.go`). OIDC discovery and browser login flow are not yet
-implemented — `cca login` is a stub. JWT and local token authentication work
-end-to-end with `--tls` mode.
+**Current status (M153):**
+- `OIDCAuthenticator` validates JWTs with ES256 (`security/oidc.go`)
+- `OIDCDiscoveryClient` fetches JWKS from external IdPs (`security/oidc_discovery.go`)
+- `cca login <server>` runs OAuth2 PKCE browser flow (`security/oidc_browser_flow.go`)
+- Localhost callback server on ephemeral port, CSRF state validation
+- Token exchange, refresh token storage in `~/.ccattler/credentials.json`
+- Auto-refresh when access token < 5min from expiry
+- Works with Google, GitHub, and generic OIDC providers
+- Server advertises external OIDC config at `/api/auth/oidc-config`
 
 ## Authorization: Two-Layer Model
 
