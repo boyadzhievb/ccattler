@@ -1,4 +1,4 @@
 # Values for VM-based deployments (--env deploy, --env vagrant).
-# Registry runs on 192.168.100.43 (testbed host), reachable from VMs.
+# Registry runs on 192.168.100.49 (testbed host), reachable from VMs.
 
-registry: 192.168.100.43:5000
+registry: 192.168.100.49:5000

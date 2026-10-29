@@ -47,7 +47,7 @@
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
 # Caddy reverse proxy: after deployment, Caddy on the testbed host
-# (192.168.100.43) is configured to proxy traffic to deployed services.
+# (192.168.100.49) is configured to proxy traffic to deployed services.
 # Each workload manifest declares WORKLOAD_EXPOSE entries mapping
 # external_port → service VIP:internal_port.
 
@@ -506,17 +506,21 @@ done
 ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "cca server unreachable (etcd may be unhealthy)"
 
 log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
-if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
-    fail "etcd accepted unauthenticated connection — mTLS not enforced (T1 CRITICAL)"
-fi
-log "etcd correctly rejects connections without client certificate"
+if ssh_vm "$CTRL_NODE" "command -v etcdctl >/dev/null 2>&1" ; then
+    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
+        fail "etcd accepted unauthenticated connection — mTLS not enforced (T1 CRITICAL)"
+    fi
+    log "etcd correctly rejects connections without client certificate"
 
-log "Verifying etcd rejects plain HTTP access..."
-ETCD_HTTP_ENDPOINT="http://${CTRL_IP}:2379"
-if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
-    fail "etcd accepted plain HTTP connection — TLS not enforced (T1 CRITICAL)"
+    log "Verifying etcd rejects plain HTTP access..."
+    ETCD_HTTP_ENDPOINT="http://${CTRL_IP}:2379"
+    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
+        fail "etcd accepted plain HTTP connection — TLS not enforced (T1 CRITICAL)"
+    fi
+    log "etcd correctly rejects plain HTTP — all access requires mTLS"
+else
+    log "SKIP: etcdctl not installed on $CTRL_NODE — cannot verify mTLS enforcement"
 fi
-log "etcd correctly rejects plain HTTP — all access requires mTLS"
 
 log "Fetching cluster TLS certificates for API verification..."
 CA_CERT_LOCAL="/tmp/cca-e2e-ca.pem"
@@ -604,7 +608,7 @@ done
 log "DNS resolution OK"
 
 # ---- Step 3.6: Image pull skipped — cca agent pulls from local registry ----
-# Images are served by the Docker registry at 192.168.100.43:5000.
+# Images are served by the Docker registry at 192.168.100.49:5000.
 # Containerd on each node is configured via hosts.toml to use HTTP for that registry.
 # The cca agent pulls images on demand during instance reconciliation.
 declare -A UNIQUE_IMAGES
@@ -667,6 +671,19 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         fi
         stale_elapsed=$(( SECONDS - last_change_at ))
         log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed, stale ${stale_elapsed}s)"
+        if [[ "$total_containers" -lt "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then
+            instance_summary=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get instances --no-headers 2>/dev/null" | awk '
+                { state[\$3]++; node[\$6]++; total++ }
+                END {
+                    if (total == 0) { print "    no instances yet"; next }
+                    printf "    %d instances:", total
+                    for (s in state) printf " %d×%s", state[s], s
+                    printf " |"
+                    for (n in node) printf " %s:%d", n, node[n]
+                    printf "\n"
+                }')
+            [[ -n "$instance_summary" ]] && log "$instance_summary"
+        fi
         if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
         if [[ "$stale_elapsed" -ge "$STALE_PROGRESS_TIMEOUT" ]]; then
             fail "No convergence progress for ${STALE_PROGRESS_TIMEOUT}s — stuck at $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS (failed at $workload_name)"

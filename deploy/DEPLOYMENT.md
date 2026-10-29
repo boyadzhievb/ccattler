@@ -10,18 +10,18 @@ CCattler supports three deployment environments, all managed by `test/e2e/cluste
 | `--env vagrant` | 3 libvirt VMs on 192.168.122.x | NAT bridge | Ephemeral (destroyed after test) |
 | `--env deploy` | 3 libvirt VMs on 192.168.124.x | Isolated bridge | Long-lived (stopped, not destroyed) |
 
-The `deploy` environment is the standard development cluster. VMs are managed by [vmherd](https://github.com/boyadzhievb/vmherd) on the testbed host (192.168.100.43).
+The `deploy` environment is the standard development cluster. VMs are managed by [vmherd](https://github.com/boyadzhievb/vmherd) on the testbed host (192.168.100.49).
 
 ## Prerequisites
 
-- SSH access to the testbed host (192.168.100.43)
+- SSH access to the testbed host (192.168.100.49)
 - Go toolchain (cross-compiles the `cca` binary for linux/amd64)
 - Ansible (on the machine running the playbook)
 - For VM environments: libvirt/KVM and vmherd on the testbed host
 
 ## Quick Start (Deploy Environment)
 
-From the testbed host (192.168.100.43):
+From the testbed host (192.168.100.49):
 
 ```bash
 cd /path/to/ccattler
@@ -82,20 +82,20 @@ ansible-playbook -i deploy-inventory.ini baremetal-deploy.yml \
 
 ### 4. Push Images to Local Registry
 
-When using an insecure registry (e.g., `192.168.100.43:5000`), push workload images first:
+When using an insecure registry (e.g., `192.168.100.49:5000`), push workload images first:
 
 ```bash
 # On a machine with Docker and internet access
 docker pull nicolaka/netshoot:latest
-docker tag nicolaka/netshoot:latest 192.168.100.43:5000/netshoot:latest
-docker push 192.168.100.43:5000/netshoot:latest
+docker tag nicolaka/netshoot:latest 192.168.100.49:5000/netshoot:latest
+docker push 192.168.100.49:5000/netshoot:latest
 ```
 
 Pass the registry to Ansible:
 ```bash
 ansible-playbook -i deploy-inventory.ini baremetal-deploy.yml \
   -e vmherd_ssh_key=$(vmherd info ssh-key) \
-  -e insecure_registry=192.168.100.43:5000
+  -e insecure_registry=192.168.100.49:5000
 ```
 
 This configures containerd on each node with `/etc/containerd/certs.d/<registry>/hosts.toml` to allow HTTP pulls.
@@ -215,8 +215,8 @@ vmherd destroy
 ## Troubleshooting
 
 ### Image Pull Failures
-- Verify the local registry is running: `curl http://192.168.100.43:5000/v2/_catalog`
-- Check containerd registry config: `cat /etc/containerd/certs.d/192.168.100.43:5000/hosts.toml`
+- Verify the local registry is running: `curl http://192.168.100.49:5000/v2/_catalog`
+- Check containerd registry config: `cat /etc/containerd/certs.d/192.168.100.49:5000/hosts.toml`
 - The `cca` binary reads `hosts.toml` via `ConfigureHosts` — containerd's CRI `config_path` alone is not enough
 
 ### CNI Bridge Conflicts
