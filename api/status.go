@@ -5,6 +5,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -32,12 +33,14 @@ type ClusterStatus struct {
 
 // ServiceStatus represents one service in the cluster status.
 type ServiceStatus struct {
-	Name         string            `json:"name"`
-	Image        string            `json:"image"`
-	DesiredCount int               `json:"desired"`
-	RunningCount int               `json:"running"`
-	ExposedPorts []int             `json:"ports,omitempty"`
-	Tags         map[string]string `json:"tags,omitempty"`
+	Name           string            `json:"name"`
+	Image          string            `json:"image"`
+	DesiredCount   int               `json:"desired"`
+	RunningCount   int               `json:"running"`
+	ExposedPorts   []int             `json:"ports,omitempty"`
+	Tags           map[string]string `json:"tags,omitempty"`
+	CrashLoopCount int               `json:"crash_loop_count,omitempty"`
+	CircuitBroken  bool              `json:"circuit_broken,omitempty"`
 }
 
 // InstanceStatus represents one instance in the cluster status.
@@ -245,6 +248,7 @@ func isServiceSubResourceKey(serviceName string) bool {
 // collectServiceStatusFromStore reads each service definition and counts
 // running instances to produce the service status list.
 func collectServiceStatusFromStore(ctx context.Context, factStore store.StateStore, sortedServiceNames []string, allInstances []types.Instance) []ServiceStatus {
+	crashLoopCounters := readCrashLoopCounters(ctx, factStore)
 	var serviceStatusList []ServiceStatus
 	for _, serviceName := range sortedServiceNames {
 		service, err := types.ReadService(ctx, factStore, serviceName)
@@ -258,12 +262,44 @@ func collectServiceStatusFromStore(ctx context.Context, factStore store.StateSto
 			}
 		}
 		serviceTags := collectServiceTagsFromStore(ctx, factStore, serviceName)
-		serviceStatusList = append(serviceStatusList, ServiceStatus{
+		serviceStatus := ServiceStatus{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
 			RunningCount: runningInstanceCount, ExposedPorts: service.Ports, Tags: serviceTags,
-		})
+		}
+		if counter, hasCounter := crashLoopCounters[serviceName]; hasCounter {
+			serviceStatus.CrashLoopCount = counter.count
+			serviceStatus.CircuitBroken = counter.count >= defaultCircuitBreakerDisplayThreshold
+		}
+		serviceStatusList = append(serviceStatusList, serviceStatus)
 	}
 	return serviceStatusList
+}
+
+// defaultCircuitBreakerDisplayThreshold matches the controller's default
+// CircuitBreakerThreshold for display purposes.
+const defaultCircuitBreakerDisplayThreshold = 10
+
+type crashLoopInfo struct {
+	count int
+}
+
+// readCrashLoopCounters scans all crash-loop counter facts from the store.
+func readCrashLoopCounters(ctx context.Context, factStore store.StateStore) map[string]*crashLoopInfo {
+	counters := make(map[string]*crashLoopInfo)
+	facts, scanError := factStore.Scan(ctx, types.ScanDerivedCrashLoops)
+	if scanError != nil {
+		return counters
+	}
+	for _, fact := range facts {
+		serviceName := strings.TrimPrefix(fact.Key, types.ScanDerivedCrashLoops)
+		var parsed struct {
+			Count int `json:"count"`
+		}
+		if json.Unmarshal(fact.Value, &parsed) == nil {
+			counters[serviceName] = &crashLoopInfo{count: parsed.Count}
+		}
+	}
+	return counters
 }
 
 // collectServiceTagsFromStore reads all tag facts for a service and returns

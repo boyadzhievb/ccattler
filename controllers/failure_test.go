@@ -680,6 +680,175 @@ func TestFailureCrashLoopCounterResetsOnRecovery(t *testing.T) {
 	}
 }
 
+// TestFailureCircuitBreakerBlocksAfterThreshold verifies that once the
+// crash-loop counter reaches the circuit breaker threshold, replacements
+// are blocked for the full cooldown duration instead of the normal backoff.
+func TestFailureCircuitBreakerBlocksAfterThreshold(t *testing.T) {
+	tripTime := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.CircuitBreakerThreshold = 5
+	failureController.CircuitBreakerCooldown = 10 * time.Minute
+	// Set clock to 6 minutes after the last replacement — past the normal
+	// 5-minute backoff cap, but within the 10-minute circuit breaker cooldown.
+	failureController.NowFunc = func() time.Time { return tripTime.Add(6 * time.Minute) }
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 5, Since: tripTime.UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected 0 changes (circuit breaker open, cooldown not elapsed), got %d", len(changes))
+	}
+}
+
+// TestFailureCircuitBreakerAllowsProbeAfterCooldown verifies that once the
+// circuit breaker cooldown elapses, one probe replacement is allowed (half-open).
+func TestFailureCircuitBreakerAllowsProbeAfterCooldown(t *testing.T) {
+	tripTime := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.CircuitBreakerThreshold = 5
+	failureController.CircuitBreakerCooldown = 10 * time.Minute
+	// Set clock past the cooldown.
+	failureController.NowFunc = func() time.Time { return tripTime.Add(11 * time.Minute) }
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 5, Since: tripTime.UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 5 {
+		t.Fatalf("expected 5 changes (probe replacement + counter update), got %d", len(changes))
+	}
+	// Counter should be incremented to 6.
+	var updatedCounter crashLoopCounter
+	if jsonErr := json.Unmarshal(changes[4].Value, &updatedCounter); jsonErr != nil {
+		t.Fatalf("failed to parse counter: %v", jsonErr)
+	}
+	if updatedCounter.Count != 6 {
+		t.Errorf("expected counter count=6, got %d", updatedCounter.Count)
+	}
+}
+
+// TestFailureCircuitBreakerTripsOnThresholdCrossing verifies that the circuit
+// breaker logs a trip when the crash-loop counter crosses the threshold.
+// We verify this indirectly by checking that after the threshold is crossed,
+// the next reconciliation with insufficient cooldown blocks the replacement.
+func TestFailureCircuitBreakerTripsOnThresholdCrossing(t *testing.T) {
+	baseTime := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	failureController := NewFailureController()
+	failureController.NewID = seqIDGen()
+	failureController.CircuitBreakerThreshold = 3
+	failureController.CircuitBreakerCooldown = 10 * time.Minute
+	failureController.NowFunc = func() time.Time { return baseTime }
+
+	// Counter at 2 (one below threshold), backoff expired.
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 2, Since: baseTime.Add(-6 * time.Minute).UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Should replace: 4 replacement changes + 1 counter update = 5.
+	if len(changes) != 5 {
+		t.Fatalf("expected 5 changes, got %d", len(changes))
+	}
+	// New counter should be 3, crossing the threshold.
+	var updatedCounter crashLoopCounter
+	if jsonErr := json.Unmarshal(changes[4].Value, &updatedCounter); jsonErr != nil {
+		t.Fatalf("failed to parse counter: %v", jsonErr)
+	}
+	if updatedCounter.Count != 3 {
+		t.Errorf("expected counter count=3 (threshold crossing), got %d", updatedCounter.Count)
+	}
+
+	// Now feed the updated counter back — replacement should be blocked
+	// because circuit is open and cooldown hasn't elapsed.
+	failureController2 := NewFailureController()
+	failureController2.NewID = seqIDGen()
+	failureController2.CircuitBreakerThreshold = 3
+	failureController2.CircuitBreakerCooldown = 10 * time.Minute
+	failureController2.NowFunc = func() time.Time { return baseTime.Add(1 * time.Minute) }
+
+	newCounterJSON, _ := json.Marshal(crashLoopCounter{Count: 3, Since: baseTime.UnixMilli()})
+	facts2 := buildFacts(
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "failed"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(newCounterJSON)),
+	)
+
+	changes2, err := failureController2.Reconcile(context.Background(), facts2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes2) != 0 {
+		t.Fatalf("expected 0 changes (circuit breaker tripped, cooldown active), got %d", len(changes2))
+	}
+}
+
+// TestFailureCircuitBreakerDefaultThreshold verifies the default values.
+func TestFailureCircuitBreakerDefaultThreshold(t *testing.T) {
+	failureController := NewFailureController()
+	if failureController.CircuitBreakerThreshold != defaultCircuitBreakerThreshold {
+		t.Errorf("expected threshold %d, got %d", defaultCircuitBreakerThreshold, failureController.CircuitBreakerThreshold)
+	}
+	if failureController.CircuitBreakerCooldown != defaultCircuitBreakerCooldown {
+		t.Errorf("expected cooldown %v, got %v", defaultCircuitBreakerCooldown, failureController.CircuitBreakerCooldown)
+	}
+}
+
+// TestFailureCircuitBreakerResetsOnServiceRecovery verifies that a service
+// recovering (all instances running) deletes the crash-loop counter even
+// when the counter is above the circuit breaker threshold.
+func TestFailureCircuitBreakerResetsOnServiceRecovery(t *testing.T) {
+	failureController := NewFailureController()
+	failureController.CircuitBreakerThreshold = 5
+
+	counterJSON, _ := json.Marshal(crashLoopCounter{Count: 8, Since: time.Now().UnixMilli()})
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyDerivedCrashLoopCounter("web"), string(counterJSON)),
+	)
+
+	changes, err := failureController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change (delete counter), got %d", len(changes))
+	}
+	if changes[0].Type != store.OpDelete {
+		t.Errorf("expected delete, got type %d", changes[0].Type)
+	}
+	if changes[0].Key != types.KeyDerivedCrashLoopCounter("web") {
+		t.Errorf("expected crash-loop counter key, got %s", changes[0].Key)
+	}
+}
+
 // TestFailureCrashLoopBackoffCalculation verifies the exponential backoff
 // formula with cap at 5 minutes.
 func TestFailureCrashLoopBackoffCalculation(t *testing.T) {

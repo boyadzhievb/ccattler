@@ -124,7 +124,7 @@ Writes:
 Watches:
   observed/instance/                ← state, health, liveness
   derived/instance/                 ← drain-readiness, drain-since
-  derived/crash-loop/               ← crash loop counters
+  derived/crash-loop/               ← crash loop counters + circuit breaker state
 
 Writes:
   derived/instance/{id}/controller_stopped      ← mark instance for stop
@@ -135,6 +135,12 @@ Writes:
   observed/instance/{replacementID}/service     ← replacement service
   observed/instance/{replacementID}/state       ← "pending" for replacement
   observed/instance/{id}/state                  ← "stopped" for old instance
+
+Circuit breaker:
+  count < threshold (10)            → exponential backoff (10s→5m)
+  count >= threshold                → circuit open, cooldown 10m
+  cooldown elapsed                  → half-open, one probe replacement
+  service recovers                  → counter deleted, circuit closed
 ```
 
 ### node-failure

@@ -1338,7 +1338,7 @@ func printServicesTableWithOptions(services []api.ServiceStatus, options getOutp
 		}
 	}
 
-	header := []string{"NAME", "IMAGE", "DESIRED", "RUNNING", "PORTS"}
+	header := []string{"NAME", "IMAGE", "DESIRED", "RUNNING", "PORTS", "STATUS"}
 	if anyServiceHasTags {
 		header = append(header, "TAGS")
 	}
@@ -1359,6 +1359,7 @@ func printServicesTableWithOptions(services []api.ServiceStatus, options getOutp
 			fmt.Sprintf("%d", service.DesiredCount),
 			fmt.Sprintf("%d", service.RunningCount),
 			portsDisplay,
+			formatServiceCrashLoopStatus(service),
 		}
 		if anyServiceHasTags {
 			row = append(row, formatServiceTags(service.Tags))
@@ -1366,6 +1367,19 @@ func printServicesTableWithOptions(services []api.ServiceStatus, options getOutp
 		rows = append(rows, row)
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)
+}
+
+// formatServiceCrashLoopStatus returns a compact status string for a service's
+// crash-loop state: "OK" when healthy, "CrashLoop(N)" during backoff, or
+// "CircuitBroken(N)" when the circuit breaker has tripped.
+func formatServiceCrashLoopStatus(service api.ServiceStatus) string {
+	if service.CrashLoopCount == 0 {
+		return "OK"
+	}
+	if service.CircuitBroken {
+		return fmt.Sprintf("CircuitBroken(%d)", service.CrashLoopCount)
+	}
+	return fmt.Sprintf("CrashLoop(%d)", service.CrashLoopCount)
 }
 
 // formatServiceTags renders a service's tags as a compact "key=value,..." string

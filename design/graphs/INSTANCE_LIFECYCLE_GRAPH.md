@@ -480,6 +480,40 @@ FailureController.Reconcile
 | Formula | `10s * 2^(count-1)`, capped at 5m |
 | Delays | 10s, 20s, 40s, 80s, 160s, 300s, 300s... |
 
+### Circuit Breaker (controllers/failure.go)
+
+When crash-loop count reaches the threshold, the circuit breaker trips open.
+Replacements are blocked for the full cooldown instead of normal backoff.
+After cooldown, one probe replacement is allowed (half-open). If the probe
+succeeds (service recovers), the counter is deleted (circuit closes). If it
+fails, the circuit re-opens for another cooldown period.
+
+| Parameter | Default | Constant |
+|---|---|---|
+| Threshold | 10 failures | `defaultCircuitBreakerThreshold` |
+| Cooldown | 10m | `defaultCircuitBreakerCooldown` |
+
+```
+derived/crash-loop/{service} = {"count":N,"since":ms}
+        │
+        ├── count < threshold (normal backoff)
+        │   └── delay = 10s * 2^(count-1), cap 5m
+        │
+        └── count >= threshold (circuit breaker)
+            ├── now < since + cooldown
+            │   → BLOCKED (circuit open, no replacement)
+            │
+            └── now >= since + cooldown
+                → HALF-OPEN: allow one probe replacement
+                  ├── probe succeeds → counter deleted (circuit closed)
+                  └── probe fails → count++, since=now (circuit re-opens)
+```
+
+**CLI visibility:** `cca status` services table shows STATUS column:
+- `OK` — no crash-loop
+- `CrashLoop(N)` — backoff active, N failures so far
+- `CircuitBroken(N)` — circuit tripped after N failures
+
 ### Startup Probe Failed → Replacement
 
 ```

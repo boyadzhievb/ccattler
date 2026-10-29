@@ -14,7 +14,7 @@ Identified 2026-10-23. Feature gaps between CCattler and Kubernetes that affect 
 ### 2. Crash Loop Backoff — DONE
 
 **K8s**: CrashLoopBackOff with exponential backoff (10s→5min), restart count tracking.
-**CCattler**: Failure controller tracks per-service crash-loop counters (`derived/crash-loop/{service}`). Exponential backoff (10s→5min) delays replacement when the same service fails repeatedly. Counter resets when the service recovers to running state.
+**CCattler**: Failure controller tracks per-service crash-loop counters (`derived/crash-loop/{service}`). Exponential backoff (10s→5min) delays replacement when the same service fails repeatedly. Circuit breaker trips after 10 consecutive failures — blocks replacements for 10m cooldown, then allows one probe replacement (half-open). Counter resets when the service recovers to running state. `cca status` shows CrashLoop(N)/CircuitBroken(N) per service.
 **Files**: `controllers/failure.go`, `controllers/topological_sort.go`, `types/keys.go`.
 
 ## Important

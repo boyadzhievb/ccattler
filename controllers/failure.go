@@ -27,6 +27,16 @@ const crashLoopBaseDelay = 10 * time.Second
 // crashLoopMaxDelay is the maximum backoff between crash-loop replacement retries.
 const crashLoopMaxDelay = 5 * time.Minute
 
+// defaultCircuitBreakerThreshold is the number of consecutive crash-loop
+// failures after which the circuit breaker trips open, blocking further
+// replacements until the cooldown elapses.
+const defaultCircuitBreakerThreshold = 10
+
+// defaultCircuitBreakerCooldown is how long the circuit stays open after
+// tripping. After this period, one probe replacement is allowed. If the
+// probe fails, the circuit re-opens for another cooldown period.
+const defaultCircuitBreakerCooldown = 10 * time.Minute
+
 // crashLoopCounter is the JSON-serialized per-service crash-loop backoff state.
 type crashLoopCounter struct {
 	Count int   `json:"count"` // Count is the number of consecutive rapid failures.
@@ -101,6 +111,16 @@ type FailureController struct {
 	// emitted per cycle. Each recovery deletes drain_readiness + drain_since
 	// (2 ops). Prevents transaction overflow during mass recovery events.
 	MaxRecoveriesPerCycle int
+
+	// CircuitBreakerThreshold is the crash-loop failure count at which the
+	// circuit breaker trips open. Once open, replacements are blocked for
+	// CircuitBreakerCooldown instead of the normal exponential backoff.
+	CircuitBreakerThreshold int
+
+	// CircuitBreakerCooldown is the duration the circuit stays open after
+	// tripping. After this period, one probe replacement is allowed to test
+	// whether the underlying issue has been resolved.
+	CircuitBreakerCooldown time.Duration
 }
 
 // NewFailureController returns a FailureController wired to the default
@@ -113,6 +133,8 @@ func NewFailureController() *FailureController {
 		MaxReplacementsPerCycle: defaultMaxReplacementsPerCycle,
 		MaxDrainsPerCycle:       defaultMaxDrainsPerCycle,
 		MaxRecoveriesPerCycle:   defaultMaxRecoveriesPerCycle,
+		CircuitBreakerThreshold: defaultCircuitBreakerThreshold,
+		CircuitBreakerCooldown:  defaultCircuitBreakerCooldown,
 	}
 }
 
@@ -166,8 +188,9 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 		if existing, hasCounter := crashLoopCounters[serviceName]; hasCounter {
 			existingCount = existing.Count
 		}
+		newCount := existingCount + replacementCount
 		counterJSON, _ := json.Marshal(crashLoopCounter{
-			Count: existingCount + replacementCount,
+			Count: newCount,
 			Since: now.UnixMilli(),
 		})
 		changes = append(changes, Change{
@@ -175,6 +198,12 @@ func (failureController *FailureController) Reconcile(_ context.Context, facts [
 			Key:   types.KeyDerivedCrashLoopCounter(serviceName),
 			Value: counterJSON,
 		})
+		if existingCount < failureController.CircuitBreakerThreshold && newCount >= failureController.CircuitBreakerThreshold {
+			logging.Default().Warn("circuit-breaker tripped open",
+				"service", serviceName,
+				"failures", strconv.Itoa(newCount),
+				"cooldown", failureController.CircuitBreakerCooldown.String())
+		}
 	}
 	// Reset crash-loop counters for services that have no failed instances.
 	for serviceName := range crashLoopCounters {
@@ -213,14 +242,33 @@ func (failureController *FailureController) processInstanceForRecovery(instanceI
 		}
 
 		if counter, hasCrashLoop := crashLoopCounters[serviceName]; hasCrashLoop {
-			backoffDelay := calculateCrashLoopBackoff(counter.Count)
-			retryAfter := time.UnixMilli(counter.Since).Add(backoffDelay)
+			circuitOpen := counter.Count >= failureController.CircuitBreakerThreshold
+			var retryDelay time.Duration
+			if circuitOpen {
+				retryDelay = failureController.CircuitBreakerCooldown
+			} else {
+				retryDelay = calculateCrashLoopBackoff(counter.Count)
+			}
+			retryAfter := time.UnixMilli(counter.Since).Add(retryDelay)
 			if now.Before(retryAfter) {
-				logging.Default().Info("crash-loop-backoff, delaying replacement",
-					"instance", instanceID, "service", serviceName,
-					"attempt", strconv.Itoa(counter.Count),
-					"retry_after", retryAfter.Format(time.RFC3339))
+				if circuitOpen {
+					logging.Default().Warn("circuit-breaker open, blocking replacement",
+						"instance", instanceID, "service", serviceName,
+						"failures", strconv.Itoa(counter.Count),
+						"cooldown", failureController.CircuitBreakerCooldown.String(),
+						"retry_after", retryAfter.Format(time.RFC3339))
+				} else {
+					logging.Default().Info("crash-loop-backoff, delaying replacement",
+						"instance", instanceID, "service", serviceName,
+						"attempt", strconv.Itoa(counter.Count),
+						"retry_after", retryAfter.Format(time.RFC3339))
+				}
 				return nil
+			}
+			if circuitOpen {
+				logging.Default().Warn("circuit-breaker half-open, allowing probe replacement",
+					"instance", instanceID, "service", serviceName,
+					"failures", strconv.Itoa(counter.Count))
 			}
 		}
 
