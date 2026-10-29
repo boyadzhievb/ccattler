@@ -149,10 +149,10 @@ func TestStatefulScaleDownRemovesHighestOrdinal(t *testing.T) {
 		t.Fatalf("expected 2 changes (stop ordinals 2 and 1), got %d", len(changes))
 	}
 	// Highest ordinal stopped first
-	assertChangeKey(t, changes[0], types.KeyObservedInstanceState("postgres-2"))
-	assertChangeValue(t, changes[0], "stopped")
-	assertChangeKey(t, changes[1], types.KeyObservedInstanceState("postgres-1"))
-	assertChangeValue(t, changes[1], "stopped")
+	assertChangeKey(t, changes[0], types.KeyDerivedInstanceControllerStopped("postgres-2"))
+	assertChangeValue(t, changes[0], "true")
+	assertChangeKey(t, changes[1], types.KeyDerivedInstanceControllerStopped("postgres-1"))
+	assertChangeValue(t, changes[1], "true")
 }
 
 // TestStatefulScaleToZero verifies that scaling a stateful service to 0
@@ -180,7 +180,7 @@ func TestStatefulScaleToZero(t *testing.T) {
 		t.Fatalf("expected 2 changes (stop all ordinals), got %d", len(changes))
 	}
 	for _, change := range changes {
-		assertChangeValue(t, change, "stopped")
+		assertChangeValue(t, change, "true")
 	}
 }
 

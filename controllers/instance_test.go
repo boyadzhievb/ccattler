@@ -144,10 +144,10 @@ func TestScaleDown(t *testing.T) {
 
 	for _, ch := range changes {
 		if ch.Type != store.OpPut {
-			t.Errorf("expected OpPut (state update), got %d", ch.Type)
+			t.Errorf("expected OpPut (controller_stopped marker), got %d", ch.Type)
 		}
-		if string(ch.Value) != "stopped" {
-			t.Errorf("expected stopped, got %s", ch.Value)
+		if string(ch.Value) != "true" {
+			t.Errorf("expected true (controller_stopped), got %s", ch.Value)
 		}
 	}
 }
@@ -179,13 +179,13 @@ func TestScaleDownPrefersPending(t *testing.T) {
 	for _, ch := range changes {
 		stoppedKeys[ch.Key] = true
 	}
-	if stoppedKeys[types.KeyObservedInstanceState("aaa")] {
+	if stoppedKeys[types.KeyDerivedInstanceControllerStopped("aaa")] {
 		t.Error("should not stop running instance aaa when pending instances exist")
 	}
-	if !stoppedKeys[types.KeyObservedInstanceState("bbb")] {
+	if !stoppedKeys[types.KeyDerivedInstanceControllerStopped("bbb")] {
 		t.Error("should stop pending instance bbb")
 	}
-	if !stoppedKeys[types.KeyObservedInstanceState("ccc")] {
+	if !stoppedKeys[types.KeyDerivedInstanceControllerStopped("ccc")] {
 		t.Error("should stop pending instance ccc")
 	}
 }
@@ -268,8 +268,8 @@ func TestDesiredZeroScalesDownAll(t *testing.T) {
 		t.Fatalf("expected 2 changes (stop all), got %d", len(changes))
 	}
 	for _, ch := range changes {
-		if string(ch.Value) != "stopped" {
-			t.Errorf("expected stopped, got %s", ch.Value)
+		if string(ch.Value) != "true" {
+			t.Errorf("expected true (controller_stopped), got %s", ch.Value)
 		}
 	}
 }

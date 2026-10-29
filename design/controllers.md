@@ -6,10 +6,13 @@ Controllers watch fact prefixes, compare desired vs actual state, and write new 
 ```
 RULE maintain_instances(service):
     desired = service.instances
-    actual  = count(instances where instance.service = service)
+    actual  = count(instances where instance.service = service AND effective_state != stopped)
     if actual < desired: create(desired - actual)
-    if actual > desired: remove(actual - desired)
+    if actual > desired: PUT derived/instance/{id}/controller_stopped = "true"
 ```
+Scale-down writes to `derived/instance/{id}/controller_stopped` (not `observed/.../state`),
+because the node agent continuously publishes observed runtime state — writing "stopped"
+directly races with the agent writing "running".
 
 ## Endpoint Controller
 ```

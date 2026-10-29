@@ -86,7 +86,7 @@ func topologicalSort(controllerNames []string, dependencyEdges map[string][]stri
 func controllerOutputPrefixes() map[string][]string {
 	return map[string][]string{
 		"intent-resolver":      {"effective/service/"},
-		"instance":             {"observed/instance/"},
+		"instance":             {"observed/instance/", "derived/instance/"},
 		"scheduler":            {"placement/", "derived/scheduler/unplaced/"},
 		"endpoint":             {"endpoint/"},
 		"failure":              {"observed/instance/", "derived/instance/", "derived/crash-loop/"},

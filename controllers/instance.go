@@ -448,17 +448,17 @@ func createNextStatefulInstance(
 	return nil
 }
 
-// stopHighestOrdinalInstances marks the highest-ordinal instances as stopped,
-// removing them in reverse ordinal order for clean scale-down of stateful
-// services.
+// stopHighestOrdinalInstances marks the highest-ordinal instances via the
+// derived controller_stopped key, removing them in reverse ordinal order for
+// clean scale-down of stateful services.
 func stopHighestOrdinalInstances(serviceName string, existingOrdinals []int, count int) []Change {
 	var changes []Change
 	for removeIndex := len(existingOrdinals) - 1; removeIndex >= 0 && len(changes) < count; removeIndex-- {
 		instanceID := fmt.Sprintf("%s-%d", serviceName, existingOrdinals[removeIndex])
 		changes = append(changes, Change{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceState(instanceID),
-			Value: []byte(string(types.InstanceStopped)),
+			Key:   types.KeyDerivedInstanceControllerStopped(instanceID),
+			Value: []byte("true"),
 		})
 	}
 	return changes
@@ -481,9 +481,12 @@ func (instanceController *InstanceController) createPendingInstances(service str
 	return changes
 }
 
-// markExcessStatelessInstancesAsStopped produces Change entries that set the
-// state of excess instances to "stopped". It prefers stopping pending instances
-// over running ones to minimize disruption.
+// markExcessStatelessInstancesAsStopped produces Change entries that mark
+// excess instances via the derived controller_stopped key. It prefers stopping
+// pending instances over running ones to minimize disruption. Uses the derived
+// marker instead of writing observed state directly, because the node agent
+// continuously publishes the container's actual runtime state to the same
+// observed key — writing "stopped" there races with the agent writing "running".
 func markExcessStatelessInstancesAsStopped(ids []string, states map[string]types.InstanceState, count int) []Change {
 	var pendingIDs, runningIDs []string
 	for _, instanceID := range ids {
@@ -500,8 +503,8 @@ func markExcessStatelessInstancesAsStopped(ids []string, states map[string]types
 	for _, instanceID := range instancesToRemove {
 		changes = append(changes, Change{
 			Type:  store.OpPut,
-			Key:   types.KeyObservedInstanceState(instanceID),
-			Value: []byte(string(types.InstanceStopped)),
+			Key:   types.KeyDerivedInstanceControllerStopped(instanceID),
+			Value: []byte("true"),
 		})
 	}
 	return changes

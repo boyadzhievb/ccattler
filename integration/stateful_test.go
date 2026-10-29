@@ -155,20 +155,20 @@ func TestStatefulServiceScaleDown(t *testing.T) {
 	// Scale down to 1.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("postgres"), []byte("1"))
 
-	// Wait for ordinals 2 and 1 to be stopped.
+	// Wait for ordinals 2 and 1 to be marked for stop via controller_stopped.
 	waitFor(t, 5*time.Second, "ordinal 2 stopped", func() bool {
-		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-2"))
-		return fact != nil && string(fact.Value) == string(types.InstanceStopped)
+		fact, _ := factStore.Get(ctx, types.KeyDerivedInstanceControllerStopped("postgres-2"))
+		return fact != nil && string(fact.Value) == "true"
 	})
 	waitFor(t, 5*time.Second, "ordinal 1 stopped", func() bool {
-		fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-1"))
-		return fact != nil && string(fact.Value) == string(types.InstanceStopped)
+		fact, _ := factStore.Get(ctx, types.KeyDerivedInstanceControllerStopped("postgres-1"))
+		return fact != nil && string(fact.Value) == "true"
 	})
 
-	// Verify ordinal 0 is still running.
-	state0Fact, _ := factStore.Get(ctx, types.KeyObservedInstanceState("postgres-0"))
-	if state0Fact == nil || string(state0Fact.Value) != string(types.InstanceRunning) {
-		t.Errorf("postgres-0 should still be running, got %v", state0Fact)
+	// Verify ordinal 0 is not marked for stop.
+	stoppedFact0, _ := factStore.Get(ctx, types.KeyDerivedInstanceControllerStopped("postgres-0"))
+	if stoppedFact0 != nil {
+		t.Errorf("postgres-0 should not have controller_stopped marker, got %v", stoppedFact0)
 	}
 }
 
