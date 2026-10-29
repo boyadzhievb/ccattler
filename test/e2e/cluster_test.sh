@@ -657,6 +657,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     absolute_deadline=$((SECONDS + MAX_CONVERGENCE_WAIT))
     last_change_at=$SECONDS
     last_container_count=-1
+    last_running_count=-1
     total_containers=0
     while [[ $SECONDS -lt $absolute_deadline ]]; do
         sleep 5
@@ -671,9 +672,16 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         fi
         stale_elapsed=$(( SECONDS - last_change_at ))
         log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed, stale ${stale_elapsed}s)"
-        if [[ "$total_containers" -lt "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then
-            instance_summary=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get instances --no-headers 2>/dev/null" | awk '
-                { state[$3]++; node[$6]++; total++ }
+        instance_summary=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get instances --no-headers 2>/dev/null")
+        running_count=$(echo "$instance_summary" | awk '$3 == "running" { count++ } END { print count+0 }')
+        not_running_count=$(echo "$instance_summary" | awk '$3 != "running" && NF > 0 { count++ } END { print count+0 }')
+        if [[ "$running_count" -ne "$last_running_count" ]]; then
+            last_change_at=$SECONDS
+            last_running_count=$running_count
+        fi
+        if [[ "$not_running_count" -gt 0 || "$total_containers" -lt "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then
+            summary_line=$(echo "$instance_summary" | awk '
+                NF > 0 { state[$3]++; node[$6]++; total++ }
                 END {
                     if (total == 0) { print "    no instances yet"; exit }
                     printf "    %d instances:", total
@@ -682,15 +690,16 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
                     for (n in node) printf " %s:%d", n, node[n]
                     printf "\n"
                 }')
-            [[ -n "$instance_summary" ]] && log "$instance_summary"
+            [[ -n "$summary_line" ]] && log "$summary_line"
         fi
-        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
+        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" && "$not_running_count" -eq 0 ]]; then break; fi
         if [[ "$stale_elapsed" -ge "$STALE_PROGRESS_TIMEOUT" ]]; then
             fail "No convergence progress for ${STALE_PROGRESS_TIMEOUT}s — stuck at $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS (failed at $workload_name)"
         fi
     done
     [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers after ${MAX_CONVERGENCE_WAIT}s (failed at $workload_name)"
-    log "$workload_name deployed: $total_containers containers across ${#VM_NAMES[@]} nodes"
+    [[ "$not_running_count" -eq 0 ]] || fail "Expected all instances running, $not_running_count still not ready after ${MAX_CONVERGENCE_WAIT}s (failed at $workload_name)"
+    log "$workload_name deployed: $running_count running containers across ${#VM_NAMES[@]} nodes"
 done
 
 log "All ${#WORKLOAD_NAMES[@]} workloads deployed: $CUMULATIVE_EXPECTED_CONTAINERS containers"
