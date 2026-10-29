@@ -673,9 +673,9 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         log "  $workload_name: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers (${SECONDS}s elapsed, stale ${stale_elapsed}s)"
         if [[ "$total_containers" -lt "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then
             instance_summary=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get instances --no-headers 2>/dev/null" | awk '
-                { state[\$3]++; node[\$6]++; total++ }
+                { state[$3]++; node[$6]++; total++ }
                 END {
-                    if (total == 0) { print "    no instances yet"; next }
+                    if (total == 0) { print "    no instances yet"; exit }
                     printf "    %d instances:", total
                     for (s in state) printf " %d×%s", state[s], s
                     printf " |"
