@@ -1,0 +1,79 @@
+name: Security Tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'security/**'
+      - 'tenant/**'
+      - 'controllers/auth*.go'
+      - 'controllers/network_policy*.go'
+      - 'agent/credentials*.go'
+      - 'agent/kms_secrets*.go'
+      - 'agent/secret_api*.go'
+      - 'integration/abac_policy_test.go'
+      - 'integration/security_evidence_test.go'
+      - 'integration/network_policy_test.go'
+      - 'lang/compiler*.go'
+      - '.github/workflows/security-test.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'security/**'
+      - 'tenant/**'
+      - 'controllers/auth*.go'
+      - 'controllers/network_policy*.go'
+      - 'agent/credentials*.go'
+      - 'agent/kms_secrets*.go'
+      - 'agent/secret_api*.go'
+      - 'integration/abac_policy_test.go'
+      - 'integration/security_evidence_test.go'
+      - 'integration/network_policy_test.go'
+      - 'lang/compiler*.go'
+      - '.github/workflows/security-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security-unit:
+    name: Security Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: RBAC, ABAC, and capability tests
+        run: go test -race -count=1 -timeout=3m -v ./security/...
+
+      - name: Tenant isolation and policy tests
+        run: go test -race -count=1 -timeout=3m -v ./tenant/...
+
+      - name: Auth controller tests
+        run: go test -race -count=1 -timeout=3m -v -run "TestAuth|TestNetworkPolicy" ./controllers/...
+
+      - name: Agent credential and secret API tests
+        run: go test -race -count=1 -timeout=3m -v -run "TestCredential|TestKMS|TestSecretAPI" ./agent/...
+
+  security-integration:
+    name: Security Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: ABAC policy integration
+        run: go test -race -count=1 -timeout=5m -v -run "TestABAC" ./integration/...
+
+      - name: Security evidence integration
+        run: go test -race -count=1 -timeout=5m -v -run "TestSecurity" ./integration/...
+
+      - name: Network policy integration
+        run: go test -race -count=1 -timeout=5m -v -run "TestNetworkPolicy" ./integration/...

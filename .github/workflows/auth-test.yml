@@ -1,0 +1,113 @@
+name: Authentication Tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'security/**'
+      - 'api/server*.go'
+      - 'api/rate_limiter*.go'
+      - 'cmd/cca/command_token*.go'
+      - 'cmd/cca/command_login*.go'
+      - 'cmd/cca/command_join*.go'
+      - 'cmd/cca/command_init*.go'
+      - 'integration/auth_dsl_test.go'
+      - 'integration/tenant_authorization_test.go'
+      - 'integration/tenant_visibility_test.go'
+      - '.github/workflows/auth-test.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'security/**'
+      - 'api/server*.go'
+      - 'api/rate_limiter*.go'
+      - 'cmd/cca/command_token*.go'
+      - 'cmd/cca/command_login*.go'
+      - 'cmd/cca/command_join*.go'
+      - 'cmd/cca/command_init*.go'
+      - 'integration/auth_dsl_test.go'
+      - 'integration/tenant_authorization_test.go'
+      - 'integration/tenant_visibility_test.go'
+      - '.github/workflows/auth-test.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  auth-chain:
+    name: Authentication Chain Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Local token authentication
+        run: go test -race -count=1 -timeout=3m -v -run "TestLocalToken" ./security/...
+
+      - name: JWT and user token authentication
+        run: go test -race -count=1 -timeout=3m -v -run "TestUserToken|TestJWT" ./security/...
+
+      - name: OIDC discovery and validation
+        run: go test -race -count=1 -timeout=3m -v -run "TestOIDC" ./security/...
+
+      - name: API server auth middleware
+        run: go test -race -count=1 -timeout=3m -v -run "TestAuth|TestRateLimit" ./api/...
+
+  auth-integration:
+    name: Auth DSL & Tenant Authorization
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Auth DSL end-to-end pipeline
+        run: go test -race -count=1 -timeout=5m -v -run "TestAuthDSL" ./integration/...
+
+      - name: Tenant authorization (cross-tenant denial)
+        run: go test -race -count=1 -timeout=5m -v -run "TestTenantAuth" ./integration/...
+
+      - name: Tenant visibility isolation
+        run: go test -race -count=1 -timeout=5m -v -run "TestTenantVisibility" ./integration/...
+
+  auth-gaps:
+    name: Auth Coverage Gaps Report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+
+      - name: Measure auth package coverage
+        run: |
+          go test -coverprofile=security-coverage.out -count=1 -timeout=3m ./security/...
+          go tool cover -func=security-coverage.out | tail -1
+          echo "## Security Package Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=security-coverage.out | grep -E "total:|0\.0%" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Measure tenant package coverage
+        run: |
+          go test -coverprofile=tenant-coverage.out -count=1 -timeout=3m ./tenant/...
+          go tool cover -func=tenant-coverage.out | tail -1
+          echo "## Tenant Package Coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=tenant-coverage.out | grep -E "total:|0\.0%" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Flag untested auth functions
+        run: |
+          echo "## Uncovered Security Functions" >> "$GITHUB_STEP_SUMMARY"
+          echo "Functions with 0% coverage:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=security-coverage.out | grep "0\.0%" >> "$GITHUB_STEP_SUMMARY" || echo "None — full coverage" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
