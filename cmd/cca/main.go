@@ -238,6 +238,8 @@ func main() {
 		executeLogoutCommand()
 	case "whoami":
 		executeWhoamiCommand()
+	case "context":
+		executeContextCommand(os.Args[2:])
 	case "fmt":
 		executeFmtCommand(os.Args[2:])
 	case "lint":
@@ -283,9 +285,13 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  user token <name> [--ttl]    mint a JWT for the user")
 	fmt.Fprintln(os.Stderr, "  user list                    list all user accounts")
 	fmt.Fprintln(os.Stderr, "  user delete <name>           remove a user account")
-	fmt.Fprintln(os.Stderr, "  login <server> --token <jwt> store credentials for API access")
+	fmt.Fprintln(os.Stderr, "  login <server>               OIDC browser login (or --token <jwt>)")
 	fmt.Fprintln(os.Stderr, "  logout                       remove stored credentials")
 	fmt.Fprintln(os.Stderr, "  whoami                       show current identity and token expiry")
+	fmt.Fprintln(os.Stderr, "  context list                 list all configured server contexts")
+	fmt.Fprintln(os.Stderr, "  context use <name>           switch to a named context")
+	fmt.Fprintln(os.Stderr, "  context current              show active context details")
+	fmt.Fprintln(os.Stderr, "  context delete <name>        remove a named context")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "demos:")
 	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")

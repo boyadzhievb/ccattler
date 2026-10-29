@@ -207,6 +207,7 @@ func validateAndStoreCredential(serverAddress string, tokenValue string, refresh
 	}
 
 	writeCredentialFile(credential)
+	updateContextFromLogin(serverAddress, credential)
 	fmt.Printf("Logged in as %s", whoamiResponse.Principal)
 	if whoamiResponse.Team != "" {
 		fmt.Printf(" (team: %s)", whoamiResponse.Team)
@@ -368,6 +369,7 @@ func refreshCredentialIfExpiring() {
 	}
 
 	writeCredentialFile(*credential)
+	updateContextCredentials(credential.Token, credential.RefreshToken, credential.Expires)
 }
 
 // openBrowserURL opens the given URL in the user's default browser.

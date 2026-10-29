@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M153 — OIDC Browser Login Flow. M1–M153 complete. Gates A–I resolved.
+**Completed through:** M154 — Credential Storage & Server Contexts. M1–M154 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

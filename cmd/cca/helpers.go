@@ -52,6 +52,10 @@ func resolveStatusAPIListenAddress() string {
 	if envAddress := os.Getenv("CCA_API"); envAddress != "" {
 		return envAddress
 	}
+	contextEntry := resolveCurrentContext()
+	if contextEntry != nil && contextEntry.Server != "" {
+		return contextEntry.Server
+	}
 	if fileContent, readError := os.ReadFile(serverAddressConfigPath); readError == nil {
 		trimmed := strings.TrimSpace(string(fileContent))
 		if trimmed != "" {
@@ -62,6 +66,10 @@ func resolveStatusAPIListenAddress() string {
 }
 
 func resolveStatusAPIScheme() string {
+	contextEntry := resolveCurrentContext()
+	if contextEntry != nil && contextEntry.CACertPath != "" {
+		return "https"
+	}
 	for _, candidatePath := range caCertSearchPaths {
 		if fileExists(candidatePath) {
 			return "https"
@@ -459,11 +467,16 @@ func buildAuthenticatedHTTPClient() *http.Client {
 
 // resolveAuthenticationToken checks each credential source in priority order
 // and returns the first available token, or empty string if none found.
+// Priority: CCA_TOKEN env → context config → legacy credentials.json → local-token file.
 func resolveAuthenticationToken() string {
 	if envToken := os.Getenv("CCA_TOKEN"); envToken != "" {
 		return envToken
 	}
 	refreshCredentialIfExpiring()
+	contextEntry := resolveCurrentContext()
+	if contextEntry != nil && contextEntry.Token != "" {
+		return contextEntry.Token
+	}
 	credential, loadError := loadCredentialFile()
 	if loadError == nil && credential.Token != "" {
 		return credential.Token
