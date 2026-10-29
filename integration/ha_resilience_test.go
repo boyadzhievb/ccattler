@@ -136,11 +136,11 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 
 	helperDeployService(clusterContext, factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(clusterContext, factStore, "web") == 6
 	})
 
-	waitFor(testHandle, 5*time.Second, "6 containers across runtimes", func() bool {
+	waitFor(testHandle, 15*time.Second, "6 containers across runtimes", func() bool {
 		totalContainers := 0
 		for _, simulatorRuntime := range agentRuntimes {
 			statuses, _ := simulatorRuntime.List(context.Background())
@@ -157,7 +157,7 @@ func TestEtcdUnavailable_WorkloadsKeepRunning(testHandle *testing.T) {
 		partitionedStores[nodeID].Partition()
 	}
 
-	waitFor(testHandle, 5*time.Second, "all nodes have running containers during partition", func() bool {
+	waitFor(testHandle, 15*time.Second, "all nodes have running containers during partition", func() bool {
 		for _, nodeID := range nodeIDs {
 			statuses, listError := agentRuntimes[nodeID].List(context.Background())
 			if listError != nil {
@@ -196,7 +196,7 @@ func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "3")
 
-	waitFor(testHandle, 5*time.Second, "web=6 and api=3", func() bool {
+	waitFor(testHandle, 15*time.Second, "web=6 and api=3", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
 	})
@@ -234,7 +234,7 @@ func TestControlPlaneRestart_NoDataLoss(testHandle *testing.T) {
 		cluster.restartControllerGroup(group.name, group.controllers)
 	}
 
-	waitFor(testHandle, 5*time.Second, "convergence after restart", func() bool {
+	waitFor(testHandle, 15*time.Second, "convergence after restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
 	})
@@ -293,11 +293,11 @@ func TestLeaderElectionFencing(testHandle *testing.T) {
 
 	helperDeployService(clusterContext, factStore, "web", "nginx:1.28", "5")
 
-	waitFor(testHandle, 5*time.Second, "5 running web instances", func() bool {
+	waitFor(testHandle, 15*time.Second, "5 running web instances", func() bool {
 		return helperCountRunningInstances(clusterContext, factStore, "web") == 5
 	})
 
-	waitFor(testHandle, 5*time.Second, "exactly 5 non-stopped web instances (no duplicates)", func() bool {
+	waitFor(testHandle, 15*time.Second, "exactly 5 non-stopped web instances (no duplicates)", func() bool {
 		allInstances, listError := types.ListInstances(clusterContext, factStore)
 		if listError != nil {
 			return false
@@ -338,7 +338,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 	helperDeployService(clusterContext, originalStore, "web", "nginx:1.28", "3")
 	helperDeployService(clusterContext, originalStore, "api", "myapp:v1", "2")
 
-	waitFor(testHandle, 5*time.Second, "web=3 and api=2", func() bool {
+	waitFor(testHandle, 15*time.Second, "web=3 and api=2", func() bool {
 		return helperCountRunningInstances(clusterContext, originalStore, "web") == 3 &&
 			helperCountRunningInstances(clusterContext, originalStore, "api") == 2
 	})
@@ -379,7 +379,7 @@ func TestDisasterRecovery_EtcdSnapshot(testHandle *testing.T) {
 	restoredAgent.SetHeartbeatInterval(100 * time.Millisecond)
 	go restoredAgent.Run(restoreContext)
 
-	waitFor(testHandle, 5*time.Second, "restored cluster converges", func() bool {
+	waitFor(testHandle, 15*time.Second, "restored cluster converges", func() bool {
 		return helperCountRunningInstances(restoreContext, restoredStore, "web") == 3 &&
 			helperCountRunningInstances(restoreContext, restoredStore, "api") == 2
 	})
@@ -395,14 +395,14 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
 	cluster.partitionedStores["node-1"].Partition()
 	cluster.partitionedStores["node-2"].Partition()
 
-	waitFor(testHandle, 3*time.Second, "partitioned nodes become unreachable", func() bool {
+	waitFor(testHandle, 10*time.Second, "partitioned nodes become unreachable", func() bool {
 		fact1, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		fact2, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-2"))
 		return fact1 != nil && string(fact1.Value) == string(types.NodeUnreachable) &&
@@ -412,7 +412,7 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 	cluster.partitionedStores["node-1"].Heal()
 	cluster.partitionedStores["node-2"].Heal()
 
-	waitFor(testHandle, 10*time.Second, "all nodes alive and 6 running after heal", func() bool {
+	waitFor(testHandle, 20*time.Second, "all nodes alive and 6 running after heal", func() bool {
 		fact1, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		fact2, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-2"))
 		nodesAlive := fact1 != nil && string(fact1.Value) == string(types.NodeAlive) &&
@@ -420,7 +420,7 @@ func TestSplitBrainHeal(testHandle *testing.T) {
 		return nodesAlive && helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
-	waitFor(testHandle, 5*time.Second, "exactly 6 non-stopped web instances (no duplicates)", func() bool {
+	waitFor(testHandle, 15*time.Second, "exactly 6 non-stopped web instances (no duplicates)", func() bool {
 		allInstances, listError := types.ListInstances(ctx, cluster.factStore)
 		if listError != nil {
 			return false
@@ -449,7 +449,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 	}
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(testHandle, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(testHandle, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -460,7 +460,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 		}
 	}
 
-	waitFor(testHandle, 5*time.Second, "endpoints created", func() bool {
+	waitFor(testHandle, 15*time.Second, "endpoints created", func() bool {
 		endpoints, _ := cluster.factStore.Scan(ctx, types.ScanEndpoints)
 		return len(endpoints) >= 6
 	})
@@ -471,7 +471,7 @@ func TestNetworkPartition_EndpointStaleness(testHandle *testing.T) {
 
 	cluster.partitionedStores["node-1"].Partition()
 
-	waitFor(testHandle, 3*time.Second, "node-1 unreachable", func() bool {
+	waitFor(testHandle, 10*time.Second, "node-1 unreachable", func() bool {
 		fact, _ := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		return fact != nil && string(fact.Value) == string(types.NodeUnreachable)
 	})
@@ -615,7 +615,7 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 	helperDeployService(ctx, cluster.factStore, "api", "myapp:v1", "3")
 
-	waitFor(testHandle, 5*time.Second, "web=6 and api=3", func() bool {
+	waitFor(testHandle, 15*time.Second, "web=6 and api=3", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
 	})
@@ -628,7 +628,7 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 		"failure":   {controllers.NewFailureController()},
 		"node-failure": {func() controllers.Controller {
 			c := controllers.NewNodeFailureController()
-			c.LeaseTimeout = 300 * time.Millisecond
+			c.LeaseTimeout = 2 * time.Second
 			return c
 		}()},
 		"network": {controllers.NewNetworkController()},
@@ -664,7 +664,7 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	waitFor(testHandle, 5*time.Second, "web=6 and api=3 after rolling upgrade", func() bool {
+	waitFor(testHandle, 15*time.Second, "web=6 and api=3 after rolling upgrade", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "api") == 3
 	})

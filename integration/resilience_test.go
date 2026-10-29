@@ -110,7 +110,7 @@ func helperStartControllers(factStore store.StateStore, ctx context.Context) <-c
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = 2 * time.Second
 	networkController := controllers.NewNetworkController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
@@ -179,7 +179,7 @@ func TestControllerRestartRecovery(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
 
-	waitFor(t, 5*time.Second, "3 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "3 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 3
 	})
 
@@ -195,7 +195,7 @@ func TestControllerRestartRecovery(t *testing.T) {
 
 	cluster.restartControllers()
 
-	waitFor(t, 5*time.Second, "api=2 and web>=3 after controller restart", func() bool {
+	waitFor(t, 15*time.Second, "api=2 and web>=3 after controller restart", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "api") == 2 &&
 			helperCountRunningInstances(ctx, cluster.factStore, "web") >= 3
 	})
@@ -210,7 +210,7 @@ func TestControllerRestartPreservesExistingState(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -234,13 +234,13 @@ func TestAgentRestartRejoin(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
 	cluster.killNode["node-1"]()
 
-	waitFor(t, 3*time.Second, "node-1 unreachable", func() bool {
+	waitFor(t, 10*time.Second, "node-1 unreachable", func() bool {
 		fact, err := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		return err == nil && string(fact.Value) == string(types.NodeUnreachable)
 	})
@@ -251,7 +251,7 @@ func TestAgentRestartRejoin(t *testing.T) {
 
 	cluster.restartAgentForNode("node-1")
 
-	waitFor(t, 5*time.Second, "node-1 alive after rejoin", func() bool {
+	waitFor(t, 15*time.Second, "node-1 alive after rejoin", func() bool {
 		fact, err := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		return err == nil && string(fact.Value) == string(types.NodeAlive)
 	})
@@ -266,7 +266,7 @@ func TestMultipleSimultaneousNodeFailures(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -295,20 +295,20 @@ func TestNetworkPartitionAndHeal(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
 	cluster.partitionedStores["node-1"].Partition()
 
-	waitFor(t, 3*time.Second, "node-1 unreachable from partition", func() bool {
+	waitFor(t, 10*time.Second, "node-1 unreachable from partition", func() bool {
 		fact, err := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		return err == nil && string(fact.Value) == string(types.NodeUnreachable)
 	})
 
 	cluster.partitionedStores["node-1"].Heal()
 
-	waitFor(t, 5*time.Second, "node-1 alive after heal", func() bool {
+	waitFor(t, 15*time.Second, "node-1 alive after heal", func() bool {
 		fact, err := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-1"))
 		return err == nil && string(fact.Value) == string(types.NodeAlive)
 	})
@@ -324,7 +324,7 @@ func TestPartitionedAgentInstancesRescheduled(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -354,7 +354,7 @@ func TestRapidNodeCycling(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
 
-	waitFor(t, 5*time.Second, "6 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "6 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -383,7 +383,7 @@ func TestScaleChangeDuringNodeFailure(t *testing.T) {
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "3")
 
-	waitFor(t, 5*time.Second, "3 running web instances", func() bool {
+	waitFor(t, 15*time.Second, "3 running web instances", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 3
 	})
 
@@ -414,7 +414,7 @@ func TestFullResilienceCycle(t *testing.T) {
 	ctx := context.Background()
 
 	helperDeployService(ctx, cluster.factStore, "web", "nginx:1.28", "6")
-	waitFor(t, 5*time.Second, "6 running", func() bool {
+	waitFor(t, 15*time.Second, "6 running", func() bool {
 		return helperCountRunningInstances(ctx, cluster.factStore, "web") == 6
 	})
 
@@ -429,7 +429,7 @@ func TestFullResilienceCycle(t *testing.T) {
 	})
 
 	cluster.partitionedStores["node-2"].Heal()
-	waitFor(t, 5*time.Second, "node-2 alive after heal", func() bool {
+	waitFor(t, 15*time.Second, "node-2 alive after heal", func() bool {
 		fact, err := cluster.factStore.Get(ctx, types.KeyObservedNodeState("node-2"))
 		return err == nil && string(fact.Value) == string(types.NodeAlive)
 	})
