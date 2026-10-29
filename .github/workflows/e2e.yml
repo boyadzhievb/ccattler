@@ -8,14 +8,12 @@ on:
       workload:
         description: "Workloads to deploy (comma-separated or 'all')"
         required: false
-        default: "whoami,whoami-multiport"
+        default: "whoami"
         type: choice
         options:
-          - "whoami,whoami-multiport"
           - "whoami"
+          - "whoami,whoami-multiport"
           - "all"
-          - "zabbix"
-          - "zabbix,whoami"
       clear_first:
         description: "Clear existing workloads before deploying"
         required: false
@@ -52,7 +50,7 @@ jobs:
 
       - name: Run e2e cluster test
         run: |
-          WORKLOAD="${{ inputs.workload || 'whoami,whoami-multiport' }}"
+          WORKLOAD="${{ inputs.workload || 'whoami' }}"
           BINARY_FLAG=""
           if [[ "${{ inputs.binary_source }}" == "release" ]]; then
             BINARY_FLAG="--from-release"

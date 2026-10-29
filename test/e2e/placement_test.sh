@@ -51,9 +51,8 @@ cleanup_exit() {
     echo ""
     log "Results: $PASSED passed, $FAILED failed out of $TOTAL scenarios"
     if [[ "$DESTROY_ON_EXIT" == "true" && "$PROVISION" == "true" ]]; then
-        log "Tearing down VMs..."
-        cd "$ANSIBLE_DIR"
-        VAGRANT_VAGRANTFILE=deploy-Vagrantfile vagrant destroy -f 2>/dev/null || true
+        log "Stopping VMs..."
+        (cd "$SCRIPT_DIR/vm-deploy" && vmherd down 2>/dev/null) || true
     fi
     if [[ $FAILED -gt 0 ]]; then exit 1; fi
     exit $exit_code
@@ -185,9 +184,9 @@ if [[ "$PROVISION" == "true" ]]; then
     (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
 
     log "Provisioning deploy cluster..."
+    (cd "$SCRIPT_DIR/vm-deploy" && vmherd up -q)
     cd "$ANSIBLE_DIR"
-    VAGRANT_VAGRANTFILE=deploy-Vagrantfile vagrant up --no-provision
-    ansible-playbook -i deploy-inventory.ini deploy-deploy.yml
+    ansible-playbook -i deploy-inventory.ini baremetal-deploy.yml --skip-tags testapp,cleanup
 fi
 
 # ── Verify cluster is up ─────────────────────────────────────────
