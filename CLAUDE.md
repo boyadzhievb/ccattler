@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M155 — Webhook Token Authentication. M1–M155 complete. Gates A–I resolved.
+**Completed through:** M156 — Runtime Role Management CLI. M1–M156 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
@@ -108,6 +108,10 @@ cca exec <id> -- <command>
 cca images list/pull
 cca top [nodes|workloads]
 cca metric set <svc> <m> <v>
+cca role grant <principal> [flags] # grant role or capability (--role, --capability, --scope)
+cca role revoke <principal> [flags] # revoke role or capability
+cca role list [principal]        # list all grants
+cca role check <principal> [flags] # check if principal has capability
 cca fmt [--check] <file>
 cca lint <file>
 ```

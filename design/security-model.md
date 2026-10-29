@@ -175,6 +175,29 @@ auth {
 Implementation: `security/api_authorizer.go` evaluates
 `AuthorizeAPI(principal, capability, scope, resourceContext) → ALLOW | DENY`.
 
+### Runtime Role Management CLI (M156)
+
+Roles and capabilities can be managed at runtime via `cca role`:
+
+```bash
+cca role grant user:alice --role api-reader
+cca role grant user:bob --capability workload.read --scope team/payments
+cca role revoke user:alice --role api-reader
+cca role list
+cca role list user:bob
+cca role check user:bob --capability workload.read --scope team/payments
+```
+
+Grants are persisted as `auth/grant/` and `auth/role/` facts in the store.
+The auth controller watches these keys and rebuilds the in-memory authorizer
+on each reconciliation cycle — no server restart required.
+
+The built-in `cluster-admin` role is auto-bootstrapped to `user:local-admin`
+and the server's own mTLS principal at startup, persisted to the store so
+grants survive restarts.
+
+Implementation: `api/handler_role.go` (API), `cmd/cca/command_role.go` (CLI)
+
 ### ABAC: Attribute-Based Conditions
 
 ABAC adds context-sensitive rules on top of capability grants:

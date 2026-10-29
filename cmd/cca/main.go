@@ -238,6 +238,8 @@ func main() {
 		executeLogoutCommand()
 	case "whoami":
 		executeWhoamiCommand()
+	case "role":
+		executeRoleCommand(os.Args[2:])
 	case "context":
 		executeContextCommand(os.Args[2:])
 	case "fmt":
@@ -292,6 +294,10 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  context use <name>           switch to a named context")
 	fmt.Fprintln(os.Stderr, "  context current              show active context details")
 	fmt.Fprintln(os.Stderr, "  context delete <name>        remove a named context")
+	fmt.Fprintln(os.Stderr, "  role grant <principal> [flags] grant a role or capability (--role, --capability, --scope)")
+	fmt.Fprintln(os.Stderr, "  role revoke <principal> [flags] revoke a role or capability")
+	fmt.Fprintln(os.Stderr, "  role list [principal]         list all grants (optionally filter by principal)")
+	fmt.Fprintln(os.Stderr, "  role check <principal> [flags] check if principal has capability (--capability, --scope)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "demos:")
 	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")

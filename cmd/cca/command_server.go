@@ -604,6 +604,8 @@ func configureAndStartAPIServer(
 		apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
 	}
 
+	bootstrapAdminGrants(factStore, serverPrincipal)
+
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 	statusAPIServer.SetEventLog(eventLog)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
@@ -896,6 +898,22 @@ func preflightCheckEtcdCertPaths(parsedConfig serverCommandConfig) {
 	preflightRequireReadableFile(parsedConfig.etcdKeyPath, "etcd client private key (--etcd-key)")
 	preflightRequireReadableFile(parsedConfig.etcdCACertPath, "etcd CA certificate (--etcd-ca)")
 	preflightRequireSecureKeyPermissions(parsedConfig.etcdKeyPath, "etcd client private key")
+}
+
+// bootstrapAdminGrants persists the cluster-admin role definition and grants
+// to the store so they survive server restarts. The auth controller watches
+// these keys and rebuilds the in-memory authorizer on the next cycle.
+func bootstrapAdminGrants(factStore store.StateStore, serverPrincipal string) {
+	ctx := context.Background()
+	_, _ = factStore.Put(ctx, types.KeyAuthRoleCapability("cluster-admin", "cluster.admin"), []byte("true"))
+	_, _ = factStore.Put(ctx, types.KeyAuthRoleScope("cluster-admin", "cluster"), []byte("true"))
+	_, _ = factStore.Put(ctx, types.KeyAuthGrant("user", "local-admin", "cluster-admin"), []byte("true"))
+	if serverPrincipal != "" {
+		principalParts := strings.SplitN(serverPrincipal, ":", 2)
+		if len(principalParts) == 2 {
+			_, _ = factStore.Put(ctx, types.KeyAuthGrant(principalParts[0], principalParts[1], "cluster-admin"), []byte("true"))
+		}
+	}
 }
 
 // preflightCheckDefaultPKIExists warns when TLS is requested but no explicit
