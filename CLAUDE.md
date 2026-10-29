@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M154 — Credential Storage & Server Contexts. M1–M154 complete. Gates A–I resolved.
+**Completed through:** M155 — Webhook Token Authentication. M1–M155 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

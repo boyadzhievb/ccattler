@@ -107,6 +107,9 @@ type serverCommandConfig struct {
 	// oidcClaimTeam is the JWT claim name used to extract team membership from
 	// external OIDC tokens (default: "team").
 	oidcClaimTeam string
+	// authnWebhookURL is the HTTPS endpoint to POST bearer tokens to for
+	// external webhook-based authentication.
+	authnWebhookURL string
 	// clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
 	clusterCIDR string
 	// vipCIDR overrides the default service virtual IP CIDR (e.g. "10.200.0.0/24").
@@ -240,6 +243,11 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.oidcClaimTeam = args[argIndex]
+			}
+		case "--authn-webhook-url":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.authnWebhookURL = args[argIndex]
 			}
 		case "--cluster-cidr":
 			if argIndex+1 < len(args) {
@@ -501,6 +509,13 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 // --oidc-issuer is configured. Internal JWT is always added when a workload
 // token issuer is available, so admin-issued user tokens are validated.
 func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) []security.Authenticator {
+	if parsedConfig.authnWebhookURL != "" {
+		webhookAuthenticator := security.NewWebhookAuthenticator(security.WebhookAuthenticatorConfig{
+			EndpointURL: parsedConfig.authnWebhookURL,
+		})
+		chainAuthenticators = append(chainAuthenticators, webhookAuthenticator)
+		fmt.Printf("Webhook authentication enabled (endpoint: %s)\n", parsedConfig.authnWebhookURL)
+	}
 	if parsedConfig.oidcIssuerURL != "" {
 		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
 		if externalOIDCAuthenticator != nil {
