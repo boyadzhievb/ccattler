@@ -18,7 +18,9 @@ func TestWriteRateLimiterAllowsBurst(test *testing.T) {
 }
 
 func TestWriteRateLimiterRejectsAfterBurstExhausted(test *testing.T) {
+	frozenTime := time.Now()
 	limiter := newWriteRateLimiter()
+	limiter.timeNow = func() time.Time { return frozenTime }
 	for iteration := 0; iteration < defaultWriteBurstSize; iteration++ {
 		limiter.allowWrite()
 	}
