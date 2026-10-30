@@ -32,11 +32,21 @@ func startRunner(t *testing.T, factStore store.StateStore, ctx context.Context, 
 	})
 }
 
+// scaleDuration adjusts a duration for the current execution environment.
+// Race detector adds ~5x overhead; CI runners add ~2x on top.
+func scaleDuration(duration time.Duration) time.Duration {
+	if raceDetectorEnabled {
+		duration *= 5
+	}
+	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
+		duration *= 2
+	}
+	return duration
+}
+
 func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool) {
 	t.Helper()
-	if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") != "" {
-		timeout *= 5
-	}
+	timeout = scaleDuration(timeout)
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if check() {

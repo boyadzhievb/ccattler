@@ -51,7 +51,7 @@ func helperSetupStorageCluster(t *testing.T) *storageCluster {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(300 * time.Millisecond)
 	storageController := controllers.NewStorageController(factStore)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,

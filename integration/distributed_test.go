@@ -38,7 +38,7 @@ func TestDistributedSpreadAcrossNodes(t *testing.T) {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 2 * time.Second
+	nodeFailureController.LeaseTimeout = scaleDuration(500 * time.Millisecond)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)
@@ -105,7 +105,7 @@ func TestDistributedNodeFailureReschedules(t *testing.T) {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(300 * time.Millisecond)
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController, endpointController, failureController, nodeFailureController)
 	controllerRunner.SetDebounce(10 * time.Millisecond)

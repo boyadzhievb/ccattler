@@ -315,7 +315,7 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 	schedulerController := newTestScheduler()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(300 * time.Millisecond)
 	endpointController := controllers.NewEndpointController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController,

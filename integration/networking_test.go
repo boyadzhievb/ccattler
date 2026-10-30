@@ -44,7 +44,7 @@ func helperSetupHostPortCluster(t *testing.T) (store.StateStore, context.Context
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 500 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(500 * time.Millisecond)
 	networkController := controllers.NewNetworkController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
@@ -87,7 +87,7 @@ func helperSetupNetworkingCluster(t *testing.T) (store.StateStore, context.Conte
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 500 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(500 * time.Millisecond)
 	networkController := controllers.NewNetworkController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
@@ -296,7 +296,7 @@ func TestNodeFailurePreservesVIPAddress(t *testing.T) {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(300 * time.Millisecond)
 	networkController := controllers.NewNetworkController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
@@ -337,7 +337,7 @@ func TestNodeFailurePreservesVIPAddress(t *testing.T) {
 		return getError == nil && string(nodeStateFact.Value) == string(types.NodeUnreachable)
 	})
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(scaleDuration(500 * time.Millisecond))
 
 	currentVIPFact, getError := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
 	if getError != nil {
@@ -372,7 +372,7 @@ func TestNodeFailureUpdatesNetworking(t *testing.T) {
 	endpointController := controllers.NewEndpointController()
 	failureController := controllers.NewFailureController()
 	nodeFailureController := controllers.NewNodeFailureController()
-	nodeFailureController.LeaseTimeout = 300 * time.Millisecond
+	nodeFailureController.LeaseTimeout = scaleDuration(300 * time.Millisecond)
 	networkController := controllers.NewNetworkController()
 
 	controllerRunner := controllers.NewRunner(factStore, instanceController, schedulerController,
@@ -619,7 +619,7 @@ func TestInstanceIPReleasedOnStop(t *testing.T) {
 	})
 
 	// The number of active allocations should have decreased.
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(scaleDuration(200 * time.Millisecond))
 	allocationsAfter, _ := factStore.Scan(ctx, types.ScanNetworkAllocations)
 	if len(allocationsAfter) >= initialAllocationCount {
 		t.Errorf("allocations should decrease after scale-down: before=%d, after=%d",

@@ -144,7 +144,7 @@ service beta {
 	factStore.Put(ctx, types.KeyDesiredServiceResourcesCPU("beta"), []byte("1000"))
 	factStore.Put(ctx, types.KeyDesiredServiceResourcesMemory("beta"), []byte("2048"))
 
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(scaleDuration(500 * time.Millisecond))
 
 	waitFor(t, 2*time.Second, "no alpha instances preempted (equal priority)", func() bool {
 		return countPlacementsForService(ctx, factStore, "alpha") == 2
