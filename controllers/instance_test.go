@@ -602,3 +602,114 @@ func TestInstanceControllerNoSurgeWhenAllowanceAbsent(t *testing.T) {
 		t.Errorf("expected no changes when count matches desired without surge, got %d changes", len(proposedChanges))
 	}
 }
+
+func TestIntentResolverPerNodePlacement(t *testing.T) {
+	intentResolver := NewIntentResolverController()
+	facts := buildFacts(
+		kv("observed/node/node-1/state", "alive"),
+		kv("observed/node/node-2/state", "alive"),
+		kv("observed/node/node-3/state", "alive"),
+		kv("desired/service/agent/placement/mode", "per-node"),
+		kv(types.KeyIntentUserServiceInstances("agent"), "1"),
+	)
+	changes, err := intentResolver.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changeMap := make(map[string]string)
+	for _, change := range changes {
+		changeMap[change.Key] = string(change.Value)
+	}
+
+	effectiveCount := changeMap[types.KeyEffectiveServiceInstances("agent")]
+	if effectiveCount != "3" {
+		t.Errorf("effective instances: got %q, want %q", effectiveCount, "3")
+	}
+	effectiveMode := changeMap[types.KeyEffectiveServicePlacementMode("agent")]
+	if effectiveMode != "per-node" {
+		t.Errorf("effective placement_mode: got %q, want %q", effectiveMode, "per-node")
+	}
+}
+
+func TestIntentResolverPerNodeNodeLeave(t *testing.T) {
+	intentResolver := NewIntentResolverController()
+	facts := buildFacts(
+		kv("observed/node/node-1/state", "alive"),
+		kv("observed/node/node-2/state", "alive"),
+		kv("desired/service/agent/placement/mode", "per-node"),
+		kv(types.KeyIntentUserServiceInstances("agent"), "1"),
+		kv(types.KeyEffectiveServiceInstances("agent"), "3"),
+	)
+	changes, err := intentResolver.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changeMap := make(map[string]string)
+	for _, change := range changes {
+		changeMap[change.Key] = string(change.Value)
+	}
+
+	effectiveCount := changeMap[types.KeyEffectiveServiceInstances("agent")]
+	if effectiveCount != "2" {
+		t.Errorf("effective instances after node leave: got %q, want %q", effectiveCount, "2")
+	}
+}
+
+func TestIntentResolverPerNodePolicyMaxCap(t *testing.T) {
+	intentResolver := NewIntentResolverController()
+	facts := buildFacts(
+		kv("observed/node/node-1/state", "alive"),
+		kv("observed/node/node-2/state", "alive"),
+		kv("observed/node/node-3/state", "alive"),
+		kv("observed/node/node-4/state", "alive"),
+		kv("observed/node/node-5/state", "alive"),
+		kv("desired/service/agent/placement/mode", "per-node"),
+		kv("desired/service/agent/scale/horizontal/max", "3"),
+		kv(types.KeyIntentUserServiceInstances("agent"), "1"),
+	)
+	changes, err := intentResolver.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	changeMap := make(map[string]string)
+	for _, change := range changes {
+		changeMap[change.Key] = string(change.Value)
+	}
+
+	effectiveCount := changeMap[types.KeyEffectiveServiceInstances("agent")]
+	if effectiveCount != "3" {
+		t.Errorf("effective instances with policy_max cap: got %q, want %q", effectiveCount, "3")
+	}
+}
+
+func TestInstanceControllerPerNodeScaleDown(t *testing.T) {
+	instanceController := NewInstanceController()
+
+	facts := buildFacts(
+		kv(types.KeyEffectiveServiceInstances("agent"), "2"),
+		kv(types.KeyEffectiveServicePlacementMode("agent"), "per-node"),
+		kv(types.KeyObservedInstanceService("aaa"), "agent"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyObservedInstanceService("bbb"), "agent"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyObservedInstanceService("ccc"), "agent"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyDerivedInstanceNodeFailure("ccc"), "true"),
+	)
+
+	changes, err := instanceController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 change (stop node-failure instance), got %d", len(changes))
+	}
+
+	if changes[0].Key != types.KeyDerivedInstanceControllerStopped("ccc") {
+		t.Errorf("expected ccc to be stopped (node_failure), got key %s", changes[0].Key)
+	}
+}

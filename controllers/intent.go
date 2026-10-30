@@ -42,6 +42,7 @@ func (intentResolverController *IntentResolverController) Watch() []string {
 		types.ScanIntentAutoscalerServices,
 		types.ScanDesiredServices,
 		types.ScanEffectiveServices,
+		types.ScanObservedNodes,
 	}
 }
 
@@ -58,11 +59,20 @@ func (intentResolverController *IntentResolverController) Reconcile(_ context.Co
 	autoscalerResourceIntents := extractAutoscalerResourceIntents(facts)
 	currentEffectiveResources := extractEffectiveResources(facts)
 	userResources := extractUserResources(facts)
+	placementModes := extractDesiredPlacementModes(facts)
+	currentEffectiveModes := extractEffectivePlacementModes(facts)
+	aliveNodeCount := countAliveNodesFromFacts(facts)
 
 	var changes []Change
 
+	changes = append(changes, resolvePerNodePlacementChanges(
+		placementModes, currentEffective, currentEffectiveModes,
+		policyBounds, aliveNodeCount,
+	)...)
+
 	changes = append(changes, resolveEffectiveInstanceCountChanges(
 		userIntents, autoscalerIntents, policyBounds, currentEffective, quotaCeilings,
+		placementModes,
 	)...)
 
 	changes = append(changes, resolveEffectiveResourceChanges(
@@ -82,10 +92,14 @@ func resolveEffectiveInstanceCountChanges(
 	policyBounds map[string]scalePolicyBounds,
 	currentEffective map[string]int,
 	quotaCeilings map[string]int,
+	placementModes map[string]string,
 ) []Change {
 	var changes []Change
 
 	for serviceName, userCount := range userIntents {
+		if placementModes[serviceName] == "per-node" {
+			continue
+		}
 		effectiveCount := userCount
 
 		if autoscalerCount, hasAutoscaler := autoscalerIntents[serviceName]; hasAutoscaler {
@@ -279,6 +293,90 @@ func extractEffectiveResources(facts []store.Fact) map[string]string {
 		}
 	}
 	return resources
+}
+
+// extractDesiredPlacementModes scans desired service facts for placement mode
+// declarations (e.g. "per-node").
+func extractDesiredPlacementModes(facts []store.Fact) map[string]string {
+	modes := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanDesiredServices)
+		if !hasSuffix || suffix != "placement/mode" {
+			continue
+		}
+		modes[serviceName] = string(fact.Value)
+	}
+	return modes
+}
+
+// extractEffectivePlacementModes scans effective service facts for the current
+// placement mode.
+func extractEffectivePlacementModes(facts []store.Fact) map[string]string {
+	modes := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
+		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanEffectiveServices)
+		if !hasSuffix || suffix != "placement_mode" {
+			continue
+		}
+		modes[serviceName] = string(fact.Value)
+	}
+	return modes
+}
+
+// countAliveNodesFromFacts counts the number of nodes with state "alive" from
+// observed node facts.
+func countAliveNodesFromFacts(facts []store.Fact) int {
+	aliveCount := 0
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
+		_, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanObservedNodes)
+		if hasSuffix && suffix == "state" && string(fact.Value) == string(types.NodeAlive) {
+			aliveCount++
+		}
+	}
+	return aliveCount
+}
+
+// resolvePerNodePlacementChanges computes effective instance counts for
+// per-node services. The effective count equals the number of alive nodes,
+// clamped to policy_max if set. Also propagates the placement mode to
+// effective state.
+func resolvePerNodePlacementChanges(
+	placementModes map[string]string,
+	currentEffective map[string]int,
+	currentEffectiveModes map[string]string,
+	policyBounds map[string]scalePolicyBounds,
+	aliveNodeCount int,
+) []Change {
+	var changes []Change
+
+	for serviceName, mode := range placementModes {
+		if mode != "per-node" {
+			continue
+		}
+
+		effectiveCount := aliveNodeCount
+		if bounds, hasBounds := policyBounds[serviceName]; hasBounds && bounds.max > 0 && effectiveCount > bounds.max {
+			effectiveCount = bounds.max
+		}
+
+		if existingCount, exists := currentEffective[serviceName]; !exists || existingCount != effectiveCount {
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyEffectiveServiceInstances(serviceName),
+				Value: []byte(strconv.Itoa(effectiveCount)),
+			})
+		}
+
+		if currentEffectiveModes[serviceName] != "per-node" {
+			changes = append(changes, Change{
+				Type:  store.OpPut,
+				Key:   types.KeyEffectiveServicePlacementMode(serviceName),
+				Value: []byte("per-node"),
+			})
+		}
+	}
+
+	return changes
 }
 
 // extractUserResources scans desired service facts for user-declared resources.

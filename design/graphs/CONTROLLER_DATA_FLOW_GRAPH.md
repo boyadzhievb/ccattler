@@ -63,13 +63,15 @@ Max CAS retries:         5
 Watches:
   intent/user/service/              ← user-set instance counts
   intent/autoscaler/service/        ← autoscaler-computed counts
-  desired/service/                  ← scale policy bounds, quota
+  desired/service/                  ← scale policy bounds, quota, placement mode
   effective/service/                ← current effective counts (self)
+  observed/node/                    ← alive node count (for per-node placement)
 
 Writes:
   effective/service/{name}/instances            ← resolved instance count
   effective/service/{name}/resources/cpu        ← resolved CPU
   effective/service/{name}/resources/memory     ← resolved memory
+  effective/service/{name}/placement_mode       ← propagated placement mode (per-node)
 ```
 
 ### instance
@@ -470,7 +472,7 @@ From `controllerOutputPrefixes()` in topological_sort.go. This is used by
 `buildControllerDependencyGraph()` to determine controller ordering.
 
 ```
-intent-resolver      → effective/service/
+intent-resolver      → effective/service/ (includes placement_mode for per-node)
 instance             → observed/instance/
 scheduler            → placement/, derived/scheduler/unplaced/
 endpoint             → endpoint/
@@ -517,6 +519,8 @@ prefix that controller A is declared to output, then B depends on A.
 
 ```
 intent-resolver      → autoscale (watches intent/autoscaler/)
+                     → node-failure (watches observed/node/)
+                     → cloud-node-lifecycle (watches observed/node/)
 instance             → intent-resolver (watches effective/service/)
                      → failure (watches derived/instance/)
                      → node-failure (watches derived/instance/)
@@ -811,7 +815,7 @@ Tier 1 (depends on desired/* only):
   autoscale
 
 Tier 2:
-  intent-resolver  (depends on: autoscale)
+  intent-resolver  (depends on: autoscale, node-failure, cloud-node-lifecycle)
 
 Tier 3:
   instance         (depends on: intent-resolver, failure, node-failure, init, rollout)

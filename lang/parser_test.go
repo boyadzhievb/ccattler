@@ -1977,3 +1977,41 @@ func TestParseServiceWithoutTerminationGracePeriod(t *testing.T) {
 		t.Errorf("termination_grace_period should be empty, got %q", serviceDecl.TerminationGracePeriod)
 	}
 }
+
+func TestParsePlacementModePerNode(t *testing.T) {
+	input := `service node-agent {
+    image agent:1.0
+    instances 1
+    placement {
+        mode per-node
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceDecl := file.Services[0]
+	if serviceDecl.Placement == nil {
+		t.Fatal("expected placement block, got nil")
+	}
+	if serviceDecl.Placement.Mode != "per-node" {
+		t.Errorf("placement mode: got %q, want %q", serviceDecl.Placement.Mode, "per-node")
+	}
+}
+
+func TestParsePlacementModeInvalid(t *testing.T) {
+	input := `service broken {
+    image x:1
+    instances 1
+    placement {
+        mode invalid-mode
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected parse error for invalid placement mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported placement mode") {
+		t.Errorf("error should mention unsupported placement mode, got: %s", err.Error())
+	}
+}

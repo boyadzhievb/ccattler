@@ -47,7 +47,7 @@ func (statefulDNSController *StatefulDNSController) Watch() []string {
 // Reconcile examines stateful services and their running instances, then emits
 // changes to create missing per-instance DNS entries and delete stale ones.
 func (statefulDNSController *StatefulDNSController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	_, statefulServices := parseEffectiveServiceFacts(facts)
+	_, statefulServices, _ := parseEffectiveServiceFacts(facts)
 	instanceFields := parseInstanceFieldsFromFacts(facts)
 	existingInstanceDNS := parseExistingInstanceDNSEntries(facts)
 

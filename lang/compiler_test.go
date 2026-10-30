@@ -1645,3 +1645,22 @@ func TestCompileServiceWithoutTerminationGracePeriod(t *testing.T) {
 		t.Errorf("termination_grace_period fact should be absent, got %q", graceValue)
 	}
 }
+
+func TestCompilePlacementModePerNode(t *testing.T) {
+	file, _ := Parse(`service node-agent {
+    image agent:1.0
+    instances 1
+    placement {
+        mode per-node
+    }
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	modeValue := compiledFactMap[types.KeyDesiredServicePlacementMode("node-agent")]
+	if modeValue != "per-node" {
+		t.Errorf("placement mode: got %q, want %q", modeValue, "per-node")
+	}
+}

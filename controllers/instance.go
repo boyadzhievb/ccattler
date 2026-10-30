@@ -75,7 +75,7 @@ func (instanceController *InstanceController) Watch() []string {
 // create or stop instances until the counts match. Stateful services use
 // ordinal IDs and ordered startup; stateless services use random IDs.
 func (instanceController *InstanceController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	desiredCounts, statefulServices := parseEffectiveServiceFacts(facts)
+	desiredCounts, statefulServices, perNodeServices := parseEffectiveServiceFacts(facts)
 	surgeAllowances := extractSurgeAllowances(facts)
 	for serviceName, surgeCount := range surgeAllowances {
 		desiredCounts[serviceName] += surgeCount
@@ -90,6 +90,7 @@ func (instanceController *InstanceController) Reconcile(_ context.Context, facts
 
 	scaleDownChanges := instanceController.reconcileScaleDowns(
 		sortedServiceNames, desiredCounts, activeInstanceIDs, stateByInstanceID, statefulServices,
+		perNodeServices, fieldsByInstanceID,
 	)
 	changes = append(changes, scaleDownChanges...)
 
@@ -133,6 +134,8 @@ func (instanceController *InstanceController) reconcileScaleDowns(
 	activeInstanceIDs map[string][]string,
 	stateByInstanceID map[string]types.InstanceState,
 	statefulServices map[string]bool,
+	perNodeServices map[string]bool,
+	fieldsByInstanceID map[string]map[string]string,
 ) []Change {
 	var changes []Change
 	for _, serviceName := range sortedServiceNames {
@@ -146,11 +149,16 @@ func (instanceController *InstanceController) reconcileScaleDowns(
 				"have", strconv.Itoa(haveCount),
 				"want", strconv.Itoa(wantCount),
 				"stopping", strconv.Itoa(excessCount))
-			if statefulServices[serviceName] {
+			switch {
+			case perNodeServices[serviceName]:
+				changes = append(changes, markPerNodeExcessInstancesAsStopped(
+					activeIDs, fieldsByInstanceID, excessCount,
+				)...)
+			case statefulServices[serviceName]:
 				changes = append(changes, stopHighestOrdinalInstances(
 					serviceName, parseExistingOrdinals(serviceName, activeIDs), excessCount,
 				)...)
-			} else {
+			default:
 				changes = append(changes, markExcessStatelessInstancesAsStopped(
 					activeIDs, stateByInstanceID, excessCount,
 				)...)
@@ -297,11 +305,12 @@ func buildActiveIDsFromFields(
 	return activeIDs
 }
 
-// parseEffectiveServiceFacts extracts desired instance counts and stateful
-// flags from effective service facts.
-func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]bool) {
+// parseEffectiveServiceFacts extracts desired instance counts, stateful flags,
+// and per-node placement modes from effective service facts.
+func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]bool, map[string]bool) {
 	desiredCounts := make(map[string]int)
 	statefulServices := make(map[string]bool)
+	perNodeServices := make(map[string]bool)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanEffectiveServices) {
 		serviceName, suffix, hasSuffix := splitFactKeyIntoEntityAndSuffix(fact.Key, types.ScanEffectiveServices)
@@ -318,10 +327,12 @@ func parseEffectiveServiceFacts(facts []store.Fact) (map[string]int, map[string]
 			desiredCounts[serviceName] = parsedCount
 		case "stateful":
 			statefulServices[serviceName] = string(fact.Value) == "true"
+		case "placement_mode":
+			perNodeServices[serviceName] = string(fact.Value) == "per-node"
 		}
 	}
 
-	return desiredCounts, statefulServices
+	return desiredCounts, statefulServices, perNodeServices
 }
 
 // extractSurgeAllowances reads rollout surge allowance facts emitted by the
@@ -501,6 +512,49 @@ func markExcessStatelessInstancesAsStopped(ids []string, states map[string]types
 
 	var changes []Change
 	for _, instanceID := range instancesToRemove {
+		changes = append(changes, Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedInstanceControllerStopped(instanceID),
+			Value: []byte("true"),
+		})
+	}
+	return changes
+}
+
+// markPerNodeExcessInstancesAsStopped produces Change entries for per-node
+// services being scaled down. Instances on failed nodes (node_failure marker)
+// are stopped first, then pending, then running — this ensures per-node
+// scale-down removes the right instances when nodes leave the cluster.
+func markPerNodeExcessInstancesAsStopped(
+	activeIDs []string,
+	fieldsByInstanceID map[string]map[string]string,
+	count int,
+) []Change {
+	var failedNodeIDs, pendingIDs, runningIDs []string
+	for _, instanceID := range activeIDs {
+		fields := fieldsByInstanceID[instanceID]
+		switch {
+		case fields["node_failure"] == "true":
+			failedNodeIDs = append(failedNodeIDs, instanceID)
+		case fields["state"] == string(types.InstancePending):
+			pendingIDs = append(pendingIDs, instanceID)
+		default:
+			runningIDs = append(runningIDs, instanceID)
+		}
+	}
+
+	var instancesToStop []string
+	for _, bucket := range [][]string{failedNodeIDs, pendingIDs, runningIDs} {
+		for _, instanceID := range bucket {
+			if len(instancesToStop) >= count {
+				break
+			}
+			instancesToStop = append(instancesToStop, instanceID)
+		}
+	}
+
+	var changes []Change
+	for _, instanceID := range instancesToStop {
 		changes = append(changes, Change{
 			Type:  store.OpPut,
 			Key:   types.KeyDerivedInstanceControllerStopped(instanceID),

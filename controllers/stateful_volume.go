@@ -44,7 +44,7 @@ func (statefulVolumeController *StatefulVolumeController) Watch() []string {
 // Reconcile examines stateful service volume mounts and effective instance
 // counts, then emits changes to create per-ordinal volume declarations.
 func (statefulVolumeController *StatefulVolumeController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	desiredCounts, statefulServices := parseEffectiveServiceFacts(facts)
+	desiredCounts, statefulServices, _ := parseEffectiveServiceFacts(facts)
 	serviceVolumeMounts := parseServiceVolumeMountsWithPaths(facts)
 	volumeTemplates := parseVolumeTemplates(facts)
 	existingDesiredVolumes := parseExistingDesiredVolumeNames(facts)

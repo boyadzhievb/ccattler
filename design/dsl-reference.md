@@ -48,6 +48,7 @@ service web {
     }
 
     placement {
+        mode per-node
         architecture amd64
         zone spread
         require gpu = true

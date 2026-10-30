@@ -859,6 +859,14 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 				return nil, err
 			}
 			placementDecl.Accept = append(placementDecl.Accept, acceptLabel)
+		case "mode":
+			placementDecl.Mode, err = parser.expectIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			if placementDecl.Mode != "per-node" {
+				return nil, parser.parserErrorf("unsupported placement mode %q (supported: per-node)", placementDecl.Mode)
+			}
 		default:
 			return nil, parser.parserErrorf("unknown placement field %q", key)
 		}

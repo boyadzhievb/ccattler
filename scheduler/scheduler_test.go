@@ -1514,3 +1514,95 @@ func TestRebalanceMoveTargetsLeastLoaded(t *testing.T) {
 		t.Error("should never move instances to the overloaded source node")
 	}
 }
+
+func TestPerNodePlacement(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "agent"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyObservedInstanceService("bbb"), "agent"),
+		kv(types.KeyObservedInstanceState("bbb"), "pending"),
+		kv(types.KeyObservedInstanceService("ccc"), "agent"),
+		kv(types.KeyObservedInstanceState("ccc"), "pending"),
+		kv(types.KeyDesiredServicePlacementMode("agent"), "per-node"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placements := filterPlacementChanges(changes)
+
+	nodeSet := make(map[string]bool)
+	for _, change := range placements {
+		if strings.HasPrefix(change.Key, "placement/instance/") {
+			nodeSet[string(change.Value)] = true
+		}
+	}
+	if len(nodeSet) != 3 {
+		t.Errorf("expected instances on 3 distinct nodes, got %d: %v", len(nodeSet), nodeSet)
+	}
+}
+
+func TestPerNodeSkipsOccupiedNode(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// Existing instance already placed on node-1
+		kv(types.KeyObservedInstanceService("existing"), "agent"),
+		kv(types.KeyObservedInstanceState("existing"), "running"),
+		kv(types.KeyPlacementInstance("existing"), "node-1"),
+		// New pending instance
+		kv(types.KeyObservedInstanceService("new-one"), "agent"),
+		kv(types.KeyObservedInstanceState("new-one"), "pending"),
+		kv(types.KeyDesiredServicePlacementMode("agent"), "per-node"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placements := filterPlacementChanges(changes)
+
+	for _, change := range placements {
+		if change.Key == types.KeyPlacementInstance("new-one") {
+			if string(change.Value) == "node-1" {
+				t.Error("per-node placement should not place on node-1 (already occupied)")
+			}
+			return
+		}
+	}
+	t.Error("expected placement for new-one, got none")
+}
+
+func TestPerNodeSkipsRebalance(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 3 per-node instances, all on node-1 (extreme imbalance)
+		kv(types.KeyObservedInstanceService("aaa"), "agent"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "agent"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "agent"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyDesiredServicePlacementMode("agent"), "per-node"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "rebalance/") {
+			t.Error("per-node services should not be rebalanced")
+		}
+	}
+}

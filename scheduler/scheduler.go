@@ -214,7 +214,7 @@ func executeRebalanceMoves(
 		if moveCount >= maxRebalanceMovesPerCycle {
 			break
 		}
-		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle)
+		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle, placementConstraints)
 		for _, instanceID := range movable {
 			if moveCount >= maxRebalanceMovesPerCycle {
 				break
@@ -324,6 +324,7 @@ func findMovableInstances(
 	instances map[string]*schedulerInstanceInfo,
 	serviceToGroup map[string]string,
 	placedInThisCycle map[string]bool,
+	placementConstraints map[string]*servicePlacementConstraint,
 ) []string {
 	var movable []string
 	for instanceID, nodeID := range placements {
@@ -338,6 +339,9 @@ func findMovableInstances(
 			continue
 		}
 		if _, inGroup := serviceToGroup[instanceInfo.service]; inGroup {
+			continue
+		}
+		if constraint := placementConstraints[instanceInfo.service]; constraint != nil && constraint.mode == "per-node" {
 			continue
 		}
 		movable = append(movable, instanceID)
@@ -719,6 +723,11 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 
 	candidates := filterByConstraints(state.alive, serviceName, state.placementConstraints)
 	constraint := state.placementConstraints[serviceName]
+
+	if constraint != nil && constraint.mode == "per-node" {
+		candidates = filterOutNodesAlreadyHostingService(candidates, serviceName, state.placements, state.instances)
+	}
+
 	if constraint != nil && len(constraint.prefer) > 0 {
 		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
 	}
@@ -746,6 +755,9 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 
 		state.loadPerNode[bestNode]++
 		cache.RecordPlacement(bestNode, reqCPU, reqMemory)
+		if constraint != nil && constraint.mode == "per-node" {
+			cache.RemoveNode(bestNode)
+		}
 		updateNodeResourcesAfterPlacement(state.alive, bestNode, reqCPU, reqMemory, serviceName, state.serviceZoneCounts, state.nodeIndexMap)
 
 		groupID := "placement/" + instanceID
@@ -1114,6 +1126,8 @@ func extractPlacementsFromFacts(facts []store.Fact) map[string]string {
 
 // servicePlacementConstraint holds parsed placement constraints for a service.
 type servicePlacementConstraint struct {
+	// mode is the placement mode: "" (default) or "per-node" (one instance per alive node).
+	mode string
 	// architecture is the required CPU architecture (empty means any).
 	architecture string
 	// zonePolicy is "spread" for zone-aware distribution, or a specific zone name.
@@ -1143,6 +1157,8 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 		}
 		constraint := constraints[serviceName]
 		switch {
+		case suffix == "placement/mode":
+			constraint.mode = string(fact.Value)
 		case suffix == "placement/architecture":
 			constraint.architecture = string(fact.Value)
 		case suffix == "placement/zone":
@@ -1168,6 +1184,31 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 		}
 	}
 	return constraints
+}
+
+// filterOutNodesAlreadyHostingService removes candidate nodes that already
+// have a placed instance of the given service. Used by per-node placement to
+// enforce the one-instance-per-node invariant.
+func filterOutNodesAlreadyHostingService(
+	candidates []candidateNode,
+	serviceName string,
+	placements map[string]string,
+	instances map[string]*schedulerInstanceInfo,
+) []candidateNode {
+	occupiedNodes := make(map[string]bool)
+	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo != nil && instanceInfo.service == serviceName {
+			occupiedNodes[nodeID] = true
+		}
+	}
+	var filtered []candidateNode
+	for _, candidate := range candidates {
+		if !occupiedNodes[candidate.id] {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 // filterByConstraints returns only the candidate nodes that satisfy the

@@ -282,12 +282,18 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		}
 	}
 
+	isPerNode := serviceDecl.Placement != nil && serviceDecl.Placement.Mode == "per-node"
+
 	facts := []Fact{
 		{Key: types.KeyDesiredService(serviceDecl.Name), Value: ""},
 		{Key: types.KeyDesiredServiceImage(serviceDecl.Name), Value: serviceDecl.Image},
 		{Key: types.KeyDesiredServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
 		{Key: types.KeyIntentUserServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
-		{Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances)},
+	}
+	if !isPerNode {
+		facts = append(facts, Fact{
+			Key: types.KeyEffectiveServiceInstances(serviceDecl.Name), Value: strconv.Itoa(serviceDecl.Instances),
+		})
 	}
 
 	if serviceDecl.Command != "" {
@@ -598,6 +604,11 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 		return nil
 	}
 	var placementFacts []Fact
+	if placementDecl.Mode != "" {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementMode(serviceName), Value: placementDecl.Mode,
+		})
+	}
 	if placementDecl.Architecture != "" {
 		placementFacts = append(placementFacts, Fact{
 			Key: types.KeyDesiredServicePlacementArchitecture(serviceName), Value: placementDecl.Architecture,

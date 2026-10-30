@@ -752,6 +752,21 @@ func KeyDesiredServicePlacementAccept(name, label string) string {
 	return fmt.Sprintf("%s/service/%s/placement/accept/%s", PrefixDesired, name, label)
 }
 
+// KeyDesiredServicePlacementMode returns the store path for a service's
+// placement mode (e.g. "per-node" for one instance per alive node).
+// Path: desired/service/{name}/placement/mode
+func KeyDesiredServicePlacementMode(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement/mode", PrefixDesired, name)
+}
+
+// KeyEffectiveServicePlacementMode returns the store path for the resolved
+// placement mode. Written by the IntentResolverController so downstream
+// controllers (InstanceController, Scheduler) know the service mode.
+// Path: effective/service/{name}/placement_mode
+func KeyEffectiveServicePlacementMode(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement_mode", PrefixEffective, name)
+}
+
 // KeyDesiredServiceUpdateMaxUnavailable returns the store path for the maximum number
 // of instances that can be unavailable during a rolling update.
 func KeyDesiredServiceUpdateMaxUnavailable(name string) string {

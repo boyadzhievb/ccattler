@@ -171,6 +171,7 @@ type VerticalScaleDecl struct {
 
 // PlacementDecl holds placement constraints for a service.
 type PlacementDecl struct {
+	Mode         string               // placement mode: "" (default) or "per-node" (one instance per alive node)
 	Architecture string               // required CPU architecture (e.g. "amd64")
 	ZonePolicy   string               // "spread" for zone-aware spreading or a specific zone name
 	Require      []PlacementMatchDecl // hard node label requirements

@@ -87,6 +87,17 @@ func (cache *NodeCapacityCache) RecordPlacement(nodeID string, cpuCost int64, me
 	}
 }
 
+// RemoveNode forcibly removes a node from the cache regardless of remaining
+// capacity. Used by per-node placement to prevent a second instance landing
+// on the same node within the same batch.
+func (cache *NodeCapacityCache) RemoveNode(nodeID string) {
+	entry, exists := cache.lookupMap[nodeID]
+	if !exists || entry.heapIndex < 0 {
+		return
+	}
+	heap.Remove(&cache.heapData, entry.heapIndex)
+}
+
 // Len returns the number of candidate nodes still in the cache.
 func (cache *NodeCapacityCache) Len() int {
 	return cache.heapData.Len()

@@ -74,7 +74,7 @@ func (instanceGCController *InstanceGCController) Watch() []string {
 func (instanceGCController *InstanceGCController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
 	fieldsByInstanceID := parseInstanceFieldsFromFacts(facts)
 	stateByInstanceID, serviceByInstanceID := buildInstanceMapsFromFields(fieldsByInstanceID)
-	desiredCounts, _ := parseEffectiveServiceFacts(facts)
+	desiredCounts, _, _ := parseEffectiveServiceFacts(facts)
 
 	runningCountByService := countRunningInstancesByService(serviceByInstanceID, stateByInstanceID)
 	placementByInstanceID := parsePlacementFacts(facts)
