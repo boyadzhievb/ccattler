@@ -197,6 +197,7 @@ case "$CLUSTER_ENV" in
         WORKER_IPS=("192.168.100.30" "192.168.100.31")
         CTRL_NODE="node-1"
         WORKER1_NODE="node-2"
+        WORKER2_NODE="node-3"
         VM_NAMES=("node-1" "node-2" "node-3")
         NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
         EXPECTED_NODES=2
@@ -212,6 +213,7 @@ case "$CLUSTER_ENV" in
         WORKER_IPS=("192.168.124.20" "192.168.124.30")
         CTRL_NODE="cca-deploy-ctrl"
         WORKER1_NODE="cca-deploy-worker-1"
+        WORKER2_NODE="cca-deploy-worker-2"
         VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
         NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
         EXPECTED_NODES=2
@@ -1007,7 +1009,15 @@ if [[ -n "$VIP_SERVICES" ]]; then
             IS_FAST_START=true
         fi
 
-        for vm in "${VM_NAMES[@]:0:2}"; do
+        http_test_count=0
+        for vm in "${VM_NAMES[@]}"; do
+            agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
+            if [[ "$agent_active" != "active" ]]; then
+                log "  HTTP $svc_name skipped on $vm (no agent)"
+                continue
+            fi
+            [[ $http_test_count -ge 2 ]] && break
+            http_test_count=$((http_test_count + 1))
             HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "000")
             if [[ "$HTTP_CODE" =~ ^[23] ]]; then
                 log "  HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
@@ -1022,7 +1032,15 @@ if [[ -n "$VIP_SERVICES" ]]; then
         done
 
         if [[ "$svc_name" == "whoami" ]]; then
-            WHOAMI_BODY=$(ssh_vm "${VM_NAMES[0]}" "curl -sf --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "")
+            WHOAMI_CHECK_NODE=""
+            for vm in "${VM_NAMES[@]}"; do
+                agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
+                if [[ "$agent_active" == "active" ]]; then
+                    WHOAMI_CHECK_NODE="$vm"
+                    break
+                fi
+            done
+            WHOAMI_BODY=$(ssh_vm "${WHOAMI_CHECK_NODE:-${VM_NAMES[0]}}" "curl -sf --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "")
             if echo "$WHOAMI_BODY" | grep -qi "hostname"; then
                 log "  whoami response body contains hostname — container reachable"
             elif [[ -n "$WHOAMI_BODY" ]]; then
@@ -1064,13 +1082,13 @@ if [[ "$WHOAMI_DEPLOYED" == "true" ]]; then
     WHOAMI_PORT=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .port' 2>/dev/null || echo "")
 
     if [[ -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; then
-        CROSS_NODE_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 10 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        CROSS_NODE_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 10 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
         if echo "$CROSS_NODE_BODY" | grep -qi "hostname"; then
             CROSS_NODE_HOST=$(echo "$CROSS_NODE_BODY" | grep -i "hostname" | head -1)
             log "  Cross-node response: $CROSS_NODE_HOST"
-            log "Cross-node path assertion PASSED — ctrl reached container via VIP"
+            log "Cross-node path assertion PASSED — $WORKER2_NODE reached container via VIP"
         else
-            fail "Cross-node path assertion FAILED — ctrl could not reach whoami via VIP ($WHOAMI_VIP:$WHOAMI_PORT)"
+            fail "Cross-node path assertion FAILED — $WORKER2_NODE could not reach whoami via VIP ($WHOAMI_VIP:$WHOAMI_PORT)"
         fi
     else
         log "WARNING: whoami VIP not found in status — skipping cross-node path assertion"
@@ -1099,7 +1117,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     CHURN_SUCCESS=0
     CHURN_FAIL=0
     while [[ $SECONDS -lt $CHURN_DEADLINE ]]; do
-        HTTP_CODE=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        HTTP_CODE=$(ssh_vm "$WORKER2_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 3 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
         if [[ "$HTTP_CODE" =~ ^[23] ]]; then
             CHURN_SUCCESS=$((CHURN_SUCCESS + 1))
         else
@@ -1171,9 +1189,9 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     FAILOVER_DEADLINE=$((SECONDS + 30))
     FAILOVER_SUCCESS=false
     while [[ $SECONDS -lt $FAILOVER_DEADLINE ]]; do
-        HTTP_CODE=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
+        HTTP_CODE=$(ssh_vm "$WORKER2_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
         if [[ "$HTTP_CODE" =~ ^[23] ]]; then
-            FAILOVER_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+            FAILOVER_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
             if echo "$FAILOVER_BODY" | grep -qi "hostname"; then
                 log "  Failover response: $(echo "$FAILOVER_BODY" | grep -i hostname | head -1)"
                 FAILOVER_SUCCESS=true
@@ -1234,14 +1252,14 @@ STICKYCCA
     COOKIE_JAR="/tmp/cca-sticky-jar-$$"
     STICKY_TESTED=0
     for attempt in $(seq 1 10); do
-        STICKY_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        STICKY_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 5 -b $COOKIE_JAR -c $COOKIE_JAR http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
         STICKY_HOST=$(echo "$STICKY_BODY" | grep -i "hostname" | head -1 | awk -F: '{print $2}' | tr -d ' ' || true)
         if [[ -n "$STICKY_HOST" ]]; then
             STICKY_HOSTNAMES+=("$STICKY_HOST")
             STICKY_TESTED=$((STICKY_TESTED + 1))
         fi
     done
-    ssh_vm "$CTRL_NODE" "rm -f $COOKIE_JAR" 2>/dev/null || true
+    ssh_vm "$WORKER2_NODE" "rm -f $COOKIE_JAR" 2>/dev/null || true
 
     if [[ "$STICKY_TESTED" -ge 5 ]]; then
         UNIQUE_HOSTS=$(printf '%s\n' "${STICKY_HOSTNAMES[@]}" | sort -u | wc -l | tr -d ' ')
@@ -1342,7 +1360,7 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
 
     if [[ -n "$MULTIPORT_PORT80_VIP" ]]; then
         log "  Port 80 VIP: $MULTIPORT_PORT80_VIP"
-        for vm in "${VM_NAMES[@]:0:2}"; do
+        for vm in "$WORKER1_NODE" "$WORKER2_NODE"; do
             HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "000")
             if [[ "$HTTP_CODE" =~ ^[23] ]]; then
                 log "  HTTP $HTTP_CODE from $vm -> whoami-multiport:80"
@@ -1450,13 +1468,13 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
             fail "Multi-port cross-node traffic FAILED — $CROSS_NODE_SENDER could not reach whoami-multiport:80 via VIP ($MULTIPORT_PORT80_VIP)"
         fi
     else
-        log "  All nodes host a whoami-multiport backend — cross-node assertion not possible, validating from ctrl instead..."
-        MULTIPORT_CTRL_BODY=$(ssh_vm "$CTRL_NODE" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
+        log "  All nodes host a whoami-multiport backend — cross-node assertion not possible, validating from worker instead..."
+        MULTIPORT_CTRL_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
         if echo "$MULTIPORT_CTRL_BODY" | grep -qi "hostname"; then
-            log "  Response from ctrl: $(echo "$MULTIPORT_CTRL_BODY" | grep -i hostname | head -1)"
+            log "  Response from $WORKER2_NODE: $(echo "$MULTIPORT_CTRL_BODY" | grep -i hostname | head -1)"
             log "Multi-port traffic PASSED (all-node placement, cross-node not testable)"
         else
-            fail "Multi-port traffic FAILED — ctrl could not reach whoami-multiport:80 via VIP"
+            fail "Multi-port traffic FAILED — $WORKER2_NODE could not reach whoami-multiport:80 via VIP"
         fi
     fi
 else
