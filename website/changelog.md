@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.61.0-beta <Badge type="tip" text="latest" /> {#v1-61-0-beta}
+## v1.65.0-beta <Badge type="tip" text="latest" /> {#v1-65-0-beta}
+
+**2026-10-30** — Colocate & Separate Placement Hints.
+
+- **Colocate & Separate Placement Hints** (M162) — `placement { colocate "redis" }` / `placement { separate "redis" }`. Soft hints via rankByPreferences scoring. Name services directly — no label selectors or match expressions.
+
+---
+
+## v1.61.0-beta {#v1-61-0-beta}
 
 **2026-10-28** — Container Lifecycle Hardening & Runtime Observability.
 

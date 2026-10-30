@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M161 — Service Priority & Preemption. M1–M161 complete. Gates A–I resolved.
+**Completed through:** M162 — Phase 162 Colocate & Separate Placement Hints. M1–M162 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
