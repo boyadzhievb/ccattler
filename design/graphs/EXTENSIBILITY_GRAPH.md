@@ -1,518 +1,684 @@
-# CCattler Extensibility Graph Reference
+# CCattler Extensibility Call Graph Reference
 
-Machine-readable reference for all pluggable extension points. Purpose: understand
-every interface boundary, its implementations, and how providers are selected —
-without reading source files.
+Machine-readable function call index for all pluggable extension points:
+Runtime, CloudProvider, DataPlaneProvider, StateStore, Controller interfaces,
+registration patterns, and the controller SDK. Load this file instead of
+reading source.
 
-## Extension Points Overview
+## Runtime Interface (runtime/runtime.go)
 
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                        CCattler Extension Architecture                          │
-│                                                                                 │
-│  ┌────────────────────────────────────────────────────────────────────────┐     │
-│  │                           CONTROL PLANE                                │     │
-│  │                                                                        │     │
-│  │  ┌──────────────────┐    ┌──────────────────────────────────────────┐  │     │
-│  │  │  StateStore       │    │  Controller Interface                    │  │     │
-│  │  │  (store/store.go) │    │  (controllers/controller.go)            │  │     │
-│  │  │                   │    │                                          │  │     │
-│  │  │  • MemoryStore    │    │  • Controller (Name/Watch/Reconcile)     │  │     │
-│  │  │  • EtcdStore      │    │  • DeltaController (incremental)        │  │     │
-│  │  └──────────────────┘    │  • PostCommitController (side effects)   │  │     │
-│  │                           │  • CustomController (SDK)                │  │     │
-│  │                           └──────────────────────────────────────────┘  │     │
-│  │                                                                        │     │
-│  │  ┌──────────────────────────────────────────────────────────────────┐  │     │
-│  │  │  CloudProvider                                                   │  │     │
-│  │  │  (cloud/cloud.go)                                                │  │     │
-│  │  │                                                                  │  │     │
-│  │  │  • AWS   (EC2 + NLB + VPC routes)      [build tag: cloudprovider]│  │     │
-│  │  │  • GCP   (GCE + forwarding rules + VPC routes)  [cloudprovider] │  │     │
-│  │  │  • Azure (stub — not yet implemented)                            │  │     │
-│  │  │  • Simulator (in-memory, for tests)                              │  │     │
-│  │  └──────────────────────────────────────────────────────────────────┘  │     │
-│  └────────────────────────────────────────────────────────────────────────┘     │
-│                                                                                 │
-│  ┌────────────────────────────────────────────────────────────────────────┐     │
-│  │                              NODE AGENT                                │     │
-│  │                                                                        │     │
-│  │  ┌──────────────────┐    ┌──────────────────────────────────────────┐  │     │
-│  │  │  Runtime          │    │  DataPlaneProvider                       │  │     │
-│  │  │  (runtime/        │    │  (network/dataplane.go)                  │  │     │
-│  │  │   runtime.go)     │    │                                          │  │     │
-│  │  │                   │    │  • NftablesDataPlane (default)           │  │     │
-│  │  │  • Containerd     │    │  • IptablesDataPlane                    │  │     │
-│  │  │  • Container      │    │  • EbpfDataPlane     [build tag: ebpf]  │  │     │
-│  │  │  • Process        │    │  • ShadowDataPlane   (canary/compare)   │  │     │
-│  │  │  • Simulator      │    │  • SimulatorDataPlane (tests)           │  │     │
-│  │  └──────────────────┘    └──────────────────────────────────────────┘  │     │
-│  └────────────────────────────────────────────────────────────────────────┘     │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
+### Interface methods (runtime/runtime.go:61–103)
 
----
-
-## 1. Runtime Interface
-
-### Interface Definition (runtime/runtime.go:61)
-
-```
-Runtime interface {
-    Start(ctx, spec Spec) error
-    Stop(ctx, id string) error
-    Status(ctx, id string) (Status, error)
-    List(ctx) ([]Status, error)
-    Exec(ctx, id string, execSpec ExecSpec) error
-    ExecInit(ctx, image string, execSpec ExecSpec) error
-    Stats(ctx, id string) (ResourceStats, error)
-    Logs(ctx, id string, options LogsOptions) (io.ReadCloser, error)
-    Resize(ctx, id string, cpuMillicores int64, memoryBytes int64) error
-}
-```
-
-### Optional Interfaces
-
-| Interface | Methods | Implementors |
+| Method | Signature | Line |
 |---|---|---|
-| `GracefulStopper` (runtime/runtime.go:108) | `StopWithGracePeriod(ctx, id, duration)` | ContainerRuntime, ContainerdRuntime, ProcessRuntime |
-| `HostPortProvider` (runtime/runtime.go:115) | `HostPortsForInstance(id) map[int]int` | ContainerRuntime, ContainerdRuntime |
-| `ImageLister` (runtime/runtime.go:147) | `ListImages(ctx) ([]ImageInfo, error)` | ContainerRuntime, ContainerdRuntime |
-| `ImagePuller` (runtime/runtime.go:161) | `PullImage(ctx, ref, creds) error` / `IsImageCached(ctx, ref) bool` | ContainerRuntime, ContainerdRuntime |
-| `ExecCapturer` (runtime/runtime.go:154) | `ExecCapture(ctx, id, execSpec) ([]byte, error)` | ContainerRuntime, ContainerdRuntime |
+| `Start` | `(ctx, spec Spec) error` | `:64` |
+| `Stop` | `(ctx, id string) error` | `:68` |
+| `Status` | `(ctx, id string) (Status, error)` | `:72` |
+| `List` | `(ctx) ([]Status, error)` | `:75` |
+| `Exec` | `(ctx, id string, execSpec ExecSpec) error` | `:81` |
+| `ExecInit` | `(ctx, image string, execSpec ExecSpec) error` | `:87` |
+| `Stats` | `(ctx, id string) (ResourceStats, error)` | `:92` |
+| `Logs` | `(ctx, id string, options LogsOptions) (io.ReadCloser, error)` | `:96` |
+| `Resize` | `(ctx, id string, cpuMillicores int64, memoryBytes int64) error` | `:102` |
+
+### Optional interfaces
+
+| Interface | Methods | File:Line | Implementors |
+|---|---|---|---|
+| `GracefulStopper` | `StopWithGracePeriod(ctx, id, duration) error` | `:108` | Containerd, Container, Process |
+| `HostPortProvider` | `HostPortsForInstance(id) map[int]int` | `:115` | Containerd, Container |
+| `ImageLister` | `ListImages(ctx) ([]ImageInfo, error)` | `:147` | Containerd, Container |
+| `ImagePuller` | `PullImage(ctx, ref, creds) error` / `IsImageCached(ctx, ref) bool` | `:161` | Containerd, Container |
+| `ExecCapturer` | `ExecCapture(ctx, id, ExecSpec) ([]byte, error)` | `:154` | Containerd, Container |
 
 ### Implementations
 
-| Runtime | File | Selection Flag | Backend | Networking |
-|---|---|---|---|---|
-| ContainerdRuntime | runtime/containerd.go:76 | `--runtime containerd` (default) | containerd gRPC API | cca-net overlay, DNS via advertise addr |
-| ContainerRuntime | runtime/container.go:43 | `--runtime container` | nerdctl/lima CLI | cca-net bridge, DNS via advertise addr |
-| ProcessRuntime | runtime/process.go:28 | `--runtime process` | OS exec | Host network (no overlay) |
-| SimulatorRuntime | (in-memory, tests only) | `cca run` / `cca run-container` | Simulated | Simulated |
+| Runtime | File | Flag | Backend |
+|---|---|---|---|
+| `ContainerdRuntime` | `runtime/containerd.go:76` | `--runtime containerd` (default) | containerd gRPC |
+| `ContainerRuntime` | `runtime/container.go:43` | `--runtime container` | nerdctl/lima CLI |
+| `ProcessRuntime` | `runtime/process.go:28` | `--runtime process` | OS exec |
+| `SimulatorRuntime` | (in-memory, tests) | `cca run` / `cca run-container` | Simulated |
 
-### Runtime Selection (cmd/cca/command_agent.go:387)
-
+### Runtime selection → createAgentRuntimeAdapter
 ```
-createAgentRuntimeAdapter(runtimeBackend, advertiseAddress, clusterCIDR):
-    switch runtimeBackend:
-        "containerd" → NewContainerdRuntime("") + SetNetwork + SetDNS
-        "container"  → NewContainerRuntime()    + SetNetwork + SetDNS
-        "process"    → NewProcessRuntime()
+createAgentRuntimeAdapter(runtimeBackend, advertiseAddr, clusterCIDR)
+                                               (cmd/cca/command_agent.go:387)
+├── "containerd":
+│   ├── NewContainerdRuntime("")                (runtime/containerd.go:76)
+│   ├── .SetNetwork("cca-net")
+│   └── .SetDNS(advertiseAddress)
+├── "container":
+│   ├── NewContainerRuntime()                   (runtime/container.go:43)
+│   ├── .SetNetwork("cca-net")
+│   └── .SetDNS(advertiseAddress)
+└── "process":
+    └── NewProcessRuntime()                     (runtime/process.go:28)
 ```
 
-CLI flag: `cca agent --runtime <containerd|container|process>`
+### Agent → Runtime call paths
+```
+Agent.executeReconciliationCycle
+├── runtime.List() → runningByID map
+│
+├── FOR EACH desired instance (not running):
+│   └── reconcileDesiredInstance
+│       ├── ensureImageAvailable
+│       │   ├── ImagePuller.IsImageCached(ctx, ref)     [if implements]
+│       │   └── ImagePuller.PullImage(ctx, ref, creds)  [5min timeout]
+│       ├── runtime.ExecInit(image, initSpec)            [init steps]
+│       └── startInstanceAndPublishState
+│           ├── runtime.Start(spec)                      [main start]
+│           └── runtime.Status(ctx, id) → get IP
+│
+├── FOR EACH running instance:
+│   ├── detectConfigChange → runtime.Stop + restart
+│   ├── reconcileResourceChanges
+│   │   └── runtime.Resize(ctx, id, cpu, mem)
+│   │       └── IF ErrResizeUnsupported → stop+restart
+│   └── observeInstanceState
+│       └── runtime.Status(ctx, id)
+│
+├── cleanupUndesiredInstance
+│   └── runtime.Stop(ctx, id)
+│   └── GracefulStopper.StopWithGracePeriod      [if configured]
+│
+└── telemetry (1s tick):
+    └── CollectAndReportTelemetry
+        ├── runtime.List(ctx)
+        └── runtime.Stats(ctx, id) → ResourceStats
+```
 
-### Key Types
+### Key types (runtime/runtime.go)
 
-| Type | File | Purpose |
+| Type | Line | Purpose |
 |---|---|---|
-| `Spec` | runtime/runtime.go:33 | Workload spec: ID, Image, Env, ConfigFiles, Ports, CPU/Memory, IP |
-| `Status` | runtime/runtime.go:49 | Observed state: Running, PID, ExitCode, IP, Error |
-| `ResourceStats` | runtime/runtime.go:129 | CPU/Memory usage, OOM kill count |
-| `ExecSpec` | runtime/runtime.go:182 | Exec command + env + config files |
-| `LogsOptions` | runtime/runtime.go:120 | Follow, TailLines, Since, Timestamps |
-| `ImageInfo` | runtime/runtime.go:137 | Repository, Tag, ImageID, SizeBytes |
-| `StartError` | runtime/process.go:356 | ID + Reason for launch failures |
+| `Spec` | `:33` | ID, ServiceName, Image, Command, Env, ConfigFiles, Ports, CPUm, MemoryB, IP, LogMaxSize |
+| `Status` | `:49` | ID, Running, PID, ExitCode, Error, IP |
+| `ResourceStats` | `:129` | CPUMillicores, MemoryBytes, MemoryLimitBytes, OOMKillCount |
+| `ExecSpec` | `:182` | Command, Env, ConfigFiles |
+| `LogsOptions` | `:120` | Follow, TailLines, Since, Timestamps |
+| `ImageInfo` | `:137` | Repository, Tag, ImageID, SizeBytes |
 
-### Sentinel Errors
+### Sentinel errors
 
-| Error | File | Meaning |
-|---|---|---|
-| `ErrNotFound` | (each runtime) | Workload never started by this runtime |
-| `ErrResizeUnsupported` | (each runtime) | Runtime cannot resize in place (stop + restart needed) |
+| Error | Meaning |
+|---|---|
+| `ErrNotFound` | Workload never started by this runtime |
+| `ErrResizeUnsupported` | Runtime cannot resize in place → stop+restart |
 
 ---
 
-## 2. Cloud Provider Interface
+## Cloud Provider Interface (cloud/cloud.go)
 
-### Interface Definition (cloud/cloud.go:15)
+### Interface methods (cloud/cloud.go:15–56)
 
-```
-CloudProvider interface {
-    ProviderName() string
+| Method | Signature | Line |
+|---|---|---|
+| `ProviderName` | `() string` | `:17` |
+| `ListInstances` | `(ctx) ([]CloudInstance, error)` | `:22` |
+| `CreateInstance` | `(ctx, InstanceConfig) (string, error)` | `:26` |
+| `TerminateInstance` | `(ctx, providerInstanceID string) error` | `:30` |
+| `EnsureLoadBalancer` | `(ctx, LoadBalancerConfig) (string, error)` | `:37` |
+| `DeleteLoadBalancer` | `(ctx, serviceName string) error` | `:40` |
+| `ListLoadBalancers` | `(ctx) ([]LoadBalancerStatus, error)` | `:43` |
+| `EnsureRoute` | `(ctx, RouteConfig) error` | `:49` |
+| `DeleteRoute` | `(ctx, destinationCIDR string) error` | `:52` |
+| `ListRoutes` | `(ctx) ([]RouteEntry, error)` | `:55` |
 
-    // Node Lifecycle
-    ListInstances(ctx) ([]CloudInstance, error)
-    CreateInstance(ctx, InstanceConfig) (string, error)
-    TerminateInstance(ctx, providerInstanceID string) error
-
-    // Load Balancer
-    EnsureLoadBalancer(ctx, LoadBalancerConfig) (string, error)
-    DeleteLoadBalancer(ctx, serviceName string) error
-    ListLoadBalancers(ctx) ([]LoadBalancerStatus, error)
-
-    // Routes
-    EnsureRoute(ctx, RouteConfig) error
-    DeleteRoute(ctx, destinationCIDR string) error
-    ListRoutes(ctx) ([]RouteEntry, error)
-}
-```
-
-### Registration Pattern (cloud/registry.go)
-
+### Registry pattern (cloud/registry.go)
 ```
 CloudProviderFactory = func(ctx, projectID, region string) (CloudProvider, error)
+                                                    (cloud/registry.go:12)
 
-cloudProviderFactories = map[string]CloudProviderFactory{}     // package-level
+cloudProviderFactories = map[string]CloudProviderFactory{}  (:16)
 
-RegisterCloudProviderFactory(name, factory)   // called from init() in build-tagged files
-LookupCloudProviderFactory(name)              // called at startup
-```
+RegisterCloudProviderFactory(name, factory)         (:20)  [called from init()]
+└── panic on duplicate name
 
-Build tag `cloudprovider` gates AWS and GCP — they are excluded from default builds.
-
-### Implementations
-
-| Provider | File | Build Tag | Status | Cloud Resources |
-|---|---|---|---|---|
-| AWS | cloud/aws.go:50 | `cloudprovider` | Production | EC2 instances, NLB + target groups, VPC route table |
-| GCP | cloud/gcp.go:45 | `cloudprovider` | Production | GCE instances, forwarding rules + target pools, VPC routes |
-| Azure | cloud/azure.go:15 | (none) | **Stub** | All methods return "not yet implemented" |
-| Simulator | cloud/simulator.go:16 | (none) | Test only | In-memory maps, call recording |
-
-### AWS Implementation Details (cloud/aws.go)
-
-```
-AWSCloudProvider:
-    ec2Client        → EC2 API (RunInstances, TerminateInstances, DescribeInstances)
-    elbv2Client      → ELBv2 API (NLBs, target groups, listeners)
-    vpcRouteTableID  → VPC route table (CreateRoute, ReplaceRoute, DeleteRoute)
-
-    Tag scheme:
-        ccattler:managed = "true"        (filter for managed resources)
-        ccattler:service = <serviceName> (on LBs)
-        ccattler:node-id = <nodeID>      (on instances)
-
-    Resource name format: "cca-<sanitized-name>" (max 32 chars)
-
-    Credentials: default AWS credential chain (env, shared, IAM role)
-```
-
-### GCP Implementation Details (cloud/gcp.go)
-
-```
-GCPCloudProvider:
-    instancesClient       → GCE instances (Insert, Delete, AggregatedList)
-    forwardingRulesClient → forwarding rules (LB entry point)
-    targetPoolsClient     → target pools (LB backend set)
-    routesClient          → VPC routes (Insert, Delete, List)
-
-    Label scheme:
-        ccattler-managed = "true"
-        ccattler-service = <serviceName>
-        ccattler-node-id = <nodeID>
-
-    Resource name format: "cca-<sanitized-name>" (max 63 chars)
-
-    Credentials: Application Default Credentials
-```
-
-### Key Types
-
-| Type | File | Purpose |
-|---|---|---|
-| `CloudInstance` | cloud/cloud.go:59 | ProviderInstanceID, NodeID, State, Region, InstanceType |
-| `InstanceState` | cloud/cloud.go:75 | running, pending, terminated, stopped |
-| `InstanceConfig` | cloud/cloud.go:87 | InstanceType, Region, Zone, ImageID, Labels |
-| `LoadBalancerConfig` | cloud/cloud.go:100 | ServiceName, Port, TargetPort, Protocol, Backends |
-| `LoadBalancerStatus` | cloud/cloud.go:124 | ServiceName, ExternalAddress, State |
-| `LoadBalancerState` | cloud/cloud.go:136 | active, provisioning, deleting |
-| `RouteConfig` | cloud/cloud.go:146 | DestinationCIDR, TargetNodeID, TargetInstanceID |
-| `RouteEntry` | cloud/cloud.go:156 | DestinationCIDR, TargetNodeID, TargetInstanceID |
-
----
-
-## 3. Cloud Controllers
-
-Three controllers are conditionally registered when `--cloud-provider` is set
-(cmd/cca/command_server.go:384):
-
-```
-if parsedConfig.cloudProviderName != "" {
-    controllerList = append(controllerList,
-        NewNodeLifecycleController(cloudProviderInstance),
-        NewCloudLoadBalancerController(cloudProviderInstance, factStore),
-        NewCloudRouteController(cloudProviderInstance, factStore),
-    )
-}
-```
-
-| Controller | File | Purpose |
-|---|---|---|
-| `NodeLifecycleController` | controllers/cloud_node_lifecycle.go | Detects terminated cloud instances → marks nodes dead |
-| `CloudLoadBalancerController` | controllers/cloud_loadbalancer.go | Reconciles cloud LBs from route/service facts |
-| `CloudRouteController` | controllers/cloud_routes.go | Programs VPC routes for node overlay CIDRs |
-
----
-
-## 4. State Store Interface
-
-### Interface Definition (store/store.go:117)
-
-```
-StateStore interface {
-    Get(ctx, key string) (*Fact, error)
-    Put(ctx, key string, value []byte) (int64, error)
-    Delete(ctx, key string) error
-
-    Scan(ctx, prefix string) ([]Fact, error)
-    ScanWithRevision(ctx, prefix string) (*ScanResult, error)
-    Watch(ctx, key string, opts WatchOption) (<-chan Event, error)
-
-    GrantLease(ctx, ttlSeconds int64) (int64, error)
-    PutWithLease(ctx, key string, value []byte, leaseID int64) (int64, error)
-    RenewLease(ctx, leaseID int64) (int64, error)
-    RevokeLease(ctx, leaseID int64) error
-
-    Transaction(ctx, compares []Compare, onSuccess []Op, onFailure []Op) (bool, error)
-
-    Revision(ctx) (int64, error)
-    Close() error
-}
+LookupCloudProviderFactory(name) → factory          (:29)  [called at startup]
 ```
 
 ### Implementations
 
-| Store | File | Use Case | Watch Mechanism | Lease Support |
-|---|---|---|---|---|
-| `MemoryStore` | store/memory.go:131 | Tests, `cca run` local mode | In-memory broadcast, ring buffer (4096 events) | Synthetic (no TTL enforcement) |
-| `EtcdStore` | store/etcd.go | Production clusters | etcd watch API, revision-based replay | Real etcd leases with TTL |
+| Provider | File | Build Tag | Status |
+|---|---|---|---|
+| `AWSCloudProvider` | `cloud/aws.go:50` | `cloudprovider` | Production |
+| `GCPCloudProvider` | `cloud/gcp.go:45` | `cloudprovider` | Production |
+| `AzureCloudProvider` | `cloud/azure.go:15` | (none) | Stub |
+| `SimulatorCloudProvider` | `cloud/simulator.go:16` | (none) | Test |
 
-### Key Abstractions
+### AWS implementation (cloud/aws.go)
+```
+AWSCloudProvider
+├── ec2Client        → EC2 API
+│   ├── RunInstances       [CreateInstance]
+│   ├── TerminateInstances [TerminateInstance]
+│   └── DescribeInstances  [ListInstances]
+├── elbv2Client      → ELBv2 API
+│   ├── CreateLoadBalancer + CreateTargetGroup + CreateListener  [EnsureLoadBalancer]
+│   ├── DeleteLoadBalancer + DeleteTargetGroup                   [DeleteLoadBalancer]
+│   └── DescribeLoadBalancers                                    [ListLoadBalancers]
+└── vpcRouteTableID  → VPC route table
+    ├── CreateRoute / ReplaceRoute  [EnsureRoute]
+    ├── DeleteRoute                  [DeleteRoute]
+    └── DescribeRouteTables          [ListRoutes]
 
-| Type | File | Purpose |
+Tag scheme:
+    ccattler:managed = "true"
+    ccattler:service = <serviceName>
+    ccattler:node-id = <nodeID>
+Resource name: "cca-<sanitized>" (max 32 chars)
+Credentials: default AWS credential chain
+```
+
+### GCP implementation (cloud/gcp.go)
+```
+GCPCloudProvider
+├── instancesClient       → GCE instances
+│   ├── Insert                [CreateInstance]
+│   ├── Delete                [TerminateInstance]
+│   └── AggregatedList        [ListInstances]
+├── forwardingRulesClient → forwarding rules (LB entry)
+├── targetPoolsClient     → target pools (LB backends)
+│   ├── Insert/Get/RemoveInstance  [EnsureLoadBalancer, DeleteLoadBalancer]
+│   └── List                       [ListLoadBalancers]
+└── routesClient          → VPC routes
+    ├── Insert  [EnsureRoute]
+    ├── Delete  [DeleteRoute]
+    └── List    [ListRoutes]
+
+Label scheme:
+    ccattler-managed = "true"
+    ccattler-service = <serviceName>
+    ccattler-node-id = <nodeID>
+Resource name: "cca-<sanitized>" (max 63 chars)
+Credentials: Application Default Credentials
+```
+
+### Cloud controllers → CloudProvider call paths
+```
+cmd/cca/command_server.go (:384):
+IF parsedConfig.cloudProviderName != "":
+  ├── LookupCloudProviderFactory(name)
+  ├── factory(ctx, projectID, region) → cloudProviderInstance
+  └── controllerList = append(controllerList,
+      ├── NewNodeLifecycleController(cloudProvider)
+      ├── NewCloudLoadBalancerController(cloudProvider, factStore)
+      └── NewCloudRouteController(cloudProvider, factStore)
+      )
+```
+
+### NodeLifecycleController.Reconcile
+```
+NodeLifecycleController.Reconcile(ctx, facts)
+                                (controllers/cloud_node_lifecycle.go)
+├── cloudProvider.ListInstances(ctx)
+├── build nodeID→providerID map from facts
+├── FOR EACH cloud instance:
+│   └── IF terminated AND node still alive:
+│       └── PUT observed/node/{id}/state = "unreachable"
+└── changes[]
+```
+
+### CloudLoadBalancerController.Reconcile
+```
+CloudLoadBalancerController.Reconcile(ctx, facts)
+                                (controllers/cloud_loadbalancer.go)
+├── scan desired/route/ for services needing external LBs
+├── cloudProvider.ListLoadBalancers(ctx)
+├── FOR EACH desired LB:
+│   ├── resolve backends from endpoints
+│   └── cloudProvider.EnsureLoadBalancer(ctx, config) → externalAddr
+│       └── PUT derived/loadbalancer/{svc}/address = externalAddr
+├── FOR EACH stale LB:
+│   └── cloudProvider.DeleteLoadBalancer(ctx, serviceName)
+└── changes[]
+```
+
+### CloudRouteController.Reconcile
+```
+CloudRouteController.Reconcile(ctx, facts)
+                                (controllers/cloud_routes.go)
+├── scan observed/node/ for node CIDRs
+├── cloudProvider.ListRoutes(ctx)
+├── FOR EACH node CIDR:
+│   └── IF no matching route:
+│       └── cloudProvider.EnsureRoute(ctx, RouteConfig{CIDR, nodeID, instanceID})
+├── FOR EACH stale route:
+│   └── cloudProvider.DeleteRoute(ctx, destinationCIDR)
+└── changes[]
+```
+
+### Key types (cloud/cloud.go)
+
+| Type | Line | Purpose |
 |---|---|---|
-| `Fact` | store/store.go:11 | Key, Value, Revision, CreateRevision, LeaseID |
-| `Event` | store/store.go:27 | Type (Put/Delete/Overflow/Compacted), Fact, Prev |
-| `Compare` | store/store.go:58 | Precondition for CAS transactions |
-| `Op` | store/store.go:66 | Put or Delete operation in a transaction |
-| `ScanResult` | store/store.go:105 | Facts + snapshot Revision |
-| `WatchOption` | store/store.go:86 | Prefix matching, StartRevision for gap-free replay |
-
-### Constants
-
-| Constant | Value | Location |
-|---|---|---|
-| `defaultEventHistoryCapacity` | 4096 | store/memory.go:57 |
-| `defaultWatchChannelBufferSize` | 256 | store/memory.go:157 |
-| `memoryStoreTransactionOperationLimit` | 128 | store/memory.go:35 |
+| `CloudInstance` | `:59` | ProviderInstanceID, NodeID, State, Region, InstanceType |
+| `InstanceState` | `:73` | running, pending, terminated, stopped |
+| `InstanceConfig` | `:87` | InstanceType, Region, Zone, ImageID, Labels |
+| `LoadBalancerConfig` | `:101` | ServiceName, Port, TargetPort, Protocol, Backends |
+| `LoadBalancerBackend` | `:114` | NodeID, Address, Port |
+| `LoadBalancerStatus` | `:124` | ServiceName, ExternalAddress, State |
+| `LoadBalancerState` | `:135` | active, provisioning, deleting |
+| `RouteConfig` | `:147` | DestinationCIDR, TargetNodeID, TargetInstanceID |
+| `RouteEntry` | `:157` | DestinationCIDR, TargetNodeID, TargetInstanceID |
 
 ---
 
-## 5. Data Plane Provider Interface
+## Data Plane Provider Interface (network/dataplane.go)
 
-### Interface Definition (network/dataplane.go:20)
+### Interface methods (network/dataplane.go:20–36)
 
-```
-DataPlaneProvider interface {
-    ReconcileVIPDataPlane(ctx, serviceConfigs []ServiceVIPConfig) error
-    ReconcileRouteDataPlane(ctx, routeConfigs []RouteDataPlaneConfig) error
-    Cleanup(ctx) error
-}
-```
-
-### Optional Data Plane Interfaces
-
-| Interface | File | Purpose |
+| Method | Signature | Line |
 |---|---|---|
-| `DataPlaneInitializer` | network/dataplane.go:100 | One-time init before first reconciliation |
-| `DataPlaneNodeRegistrar` | network/dataplane.go:106 | Register node metadata on agent startup |
-| `DataPlaneBridgeRetrier` | network/dataplane.go:112 | Defer bridge attachment until CNI creates bridge |
-| `EndpointIdentityRegistrar` | network/dataplane.go:118 | Register container IP→identity mappings |
-| `DataPlanePolicyReconciler` | network/dataplane.go:125 | Translate network policy rules to native format |
+| `ReconcileVIPDataPlane` | `(ctx, serviceConfigs []ServiceVIPConfig) error` | `:25` |
+| `ReconcileRouteDataPlane` | `(ctx, routeConfigs []RouteDataPlaneConfig) error` | `:30` |
+| `Cleanup` | `(ctx) error` | `:35` |
 
-### Registration Pattern (network/dataplane_registry.go)
+### Optional interfaces (network/dataplane.go:100–127)
 
+| Interface | Methods | Line | Purpose |
+|---|---|---|---|
+| `DataPlaneInitializer` | `Initialize(ctx) error` | `:100` | One-time init before first reconcile |
+| `DataPlaneNodeRegistrar` | `RegisterNode(ctx, nodeIP, podCIDR) error` | `:106` | Register node metadata on startup |
+| `DataPlaneBridgeRetrier` | `RetryBridgeAttachment(ctx, podCIDR) error` | `:112` | Defer bridge attach until CNI creates it |
+| `EndpointIdentityRegistrar` | `RegisterEndpointIdentity(ctx, containerIP, hostIP, svcName, port) error` | `:118` | IP→identity for policy enforcement |
+| `DataPlanePolicyReconciler` | `ReconcilePolicies(ctx) error` | `:125` | Translate network policy rules |
+
+### Registry pattern (network/dataplane_registry.go)
 ```
 DataPlaneFactory = func(factStore StateStore, clusterName, nodeID string) DataPlaneProvider
+                                                    (network/dataplane_registry.go:11)
 
-dataPlaneFactories = map[string]DataPlaneFactory{}
+dataPlaneFactories = map[string]DataPlaneFactory{}   (:15)
 
-RegisterDataPlaneFactory(name, factory)   // called from init()
-LookupDataPlaneFactory(name)              // called at agent startup
+RegisterDataPlaneFactory(name, factory)              (:19)  [called from init()]
+└── panic on duplicate name
+
+LookupDataPlaneFactory(name) → factory               (:28)  [called at agent startup]
 ```
 
 ### Implementations
 
-| Data Plane | File | Build Tag | Mechanism | LB Strategy |
-|---|---|---|---|---|
-| `NftablesDataPlane` | network/nftables_dataplane.go:60 | (none) | `nft -f` atomic ruleset load | Verdict map dispatch + numgen round-robin |
-| `IptablesDataPlane` | network/iptables_dataplane.go:49 | (none) | iptables nat-table chains | `-m statistic --mode nth` round-robin |
-| `EbpfDataPlane` | network/ebpf_dataplane.go:83 | `ebpf` | XDP/TC BPF programs + BPF maps | BPF map lookup + hash |
-| `ShadowDataPlane` | network/shadow_dataplane.go | (none) | Dual-write: primary + shadow, compare | Logs divergences between two providers |
-| `SimulatorDataPlane` | network/simulator_dataplane.go | (none) | In-memory recording | No actual forwarding |
+| Data Plane | File | Build Tag | Mechanism |
+|---|---|---|---|
+| `NftablesDataPlane` | `network/nftables_dataplane.go:60` | (none) | `nft -f` atomic ruleset |
+| `IptablesDataPlane` | `network/iptables_dataplane.go:49` | (none) | iptables nat chains |
+| `EbpfDataPlane` | `network/ebpf_dataplane.go:83` | `ebpf` | XDP/TC BPF programs |
+| `ShadowDataPlane` | `network/shadow_dataplane.go` | (none) | Dual-write canary compare |
+| `SimulatorDataPlane` | `network/simulator_dataplane.go` | (none) | In-memory recording |
 
-### Data Plane Selection
+### Agent → DataPlaneProvider call paths
+```
+Agent.Run(ctx)                                       (agent/agent.go:291)
+├── initializeDataPlaneIfSupported(ctx)              (:397)
+│   ├── DataPlaneInitializer.Initialize(ctx)         [if supported]
+│   │   └── eBPF: loadEbpfPrograms, extractTCPrograms,
+│   │            ensurePinDirectory, extractAndPinMaps,
+│   │            attachCgroupPrograms, scanExistingServiceIDs
+│   └── DataPlaneNodeRegistrar.RegisterNode(ctx, nodeIP, podCIDR) [if supported]
+│       └── eBPF: program node map, attach TC to bridge
+│
+└── go dataPlaneLoop(ctx)                            (:504) [goroutine, 1s]
+    └── DataPlaneReconciler.Reconcile(ctx)
+        ├── buildServiceVIPConfigs                   [from store facts]
+        │   └── → []ServiceVIPConfig
+        ├── DataPlaneProvider.ReconcileVIPDataPlane(serviceConfigs)
+        ├── buildRouteDataPlaneConfigs               [from store facts]
+        │   └── → []RouteDataPlaneConfig
+        └── DataPlaneProvider.ReconcileRouteDataPlane(routeConfigs)
+```
 
-Default: `NftablesDataPlane`. Agent selects based on `--dataplane` flag or auto-detection.
+### Key types (network/dataplane.go)
 
-`ShadowDataPlane` enables canary deployment of a new data plane by running it alongside
-the production one and logging divergences.
-
-### Key Types
-
-| Type | File | Purpose |
+| Type | Line | Purpose |
 |---|---|---|
-| `ServiceVIPConfig` | network/dataplane.go:41 | VIP address + port + backends for one service |
-| `DataPlaneBackend` | network/dataplane.go:67 | Address + Port of a real backend endpoint |
-| `RouteDataPlaneConfig` | network/dataplane.go:80 | Route-level config with sticky session support |
-| `RouteCookieConfig` | network/dataplane.go:130 | Cookie name, Secure, HttpOnly, SameSite |
+| `ServiceVIPConfig` | `:41` | ServiceName, VirtualIP, Port, Protocol, Backends |
+| `DataPlaneBackend` | `:67` | Address, Port |
+| `RouteDataPlaneConfig` | `:80` | RouteName, ServiceName, VirtualIP, Port, Backends, StickyMethod, CookieConfig |
+| `RouteCookieConfig` | `:130` | Name, Secure, HTTPOnly, SameSite |
 
-### nftables Constants
+### nftables constants (network/nftables_dataplane.go)
 
-| Constant | Value | Location |
+| Constant | Value | Line |
 |---|---|---|
-| `nftablesTableName` | `"cca"` | network/nftables_dataplane.go:19 |
-| `nftablesVIPDispatchMap` | `"vip_dispatch"` | network/nftables_dataplane.go:23 |
-| `nftablesServiceChainPrefix` | `"svc_"` | network/nftables_dataplane.go:27 |
-| `nftablesRouteChainPrefix` | `"rt_"` | network/nftables_dataplane.go:31 |
-| `containerBridgeInterface` | `"cca0"` | network/nftables_dataplane.go:35 |
-| `etcdClientPort` | `2379` | network/nftables_dataplane.go:40 |
+| `nftablesTableName` | `"cca"` | `:19` |
+| `nftablesVIPDispatchMap` | `"vip_dispatch"` | `:23` |
+| `nftablesServiceChainPrefix` | `"svc_"` | `:27` |
+| `nftablesRouteChainPrefix` | `"rt_"` | `:31` |
+| `containerBridgeInterface` | `"cca0"` | `:35` |
+| `etcdClientPort` | `2379` | `:40` |
 
-### iptables Constants
+### iptables constants (network/iptables_dataplane.go)
 
-| Constant | Value | Location |
+| Constant | Value | Line |
 |---|---|---|
-| `iptablesMainChain` | `"CCA_SERVICES"` | network/iptables_dataplane.go:18 |
-| `iptablesServiceChainPrefix` | `"CCA_SVC_"` | network/iptables_dataplane.go:22 |
-| `iptablesRouteChainPrefix` | `"CCA_RT_"` | network/iptables_dataplane.go:37 |
-| `vipDummyInterface` | `"cca-vip0"` | network/iptables_dataplane.go:26 |
-| `maxJumpRuleRemovalAttempts` | `20` | network/iptables_dataplane.go:33 |
+| `iptablesMainChain` | `"CCA_SERVICES"` | `:18` |
+| `iptablesServiceChainPrefix` | `"CCA_SVC_"` | `:22` |
+| `iptablesRouteChainPrefix` | `"CCA_RT_"` | `:37` |
+| `vipDummyInterface` | `"cca-vip0"` | `:26` |
+| `maxJumpRuleRemovalAttempts` | `20` | `:33` |
 
 ---
 
-## 6. Controller Interface
+## State Store Interface (store/store.go)
 
-### Interface Definition (controllers/controller.go:50)
+### Interface methods (store/store.go:117–165)
 
-```
-Controller interface {
-    Name() string                                              // Human-readable identifier
-    Watch() []string                                           // Fact prefix subscriptions
-    Reconcile(ctx, facts []store.Fact) ([]Change, error)       // Produce desired state changes
-}
-```
-
-### Extended Controller Interfaces
-
-| Interface | File | Purpose |
+| Method | Signature | Line |
 |---|---|---|
-| `DeltaController` | controllers/controller.go:70 | Incremental reconciliation from watch events |
-| `PostCommitController` | controllers/controller.go:88 | Execute side effects after successful CAS commit |
-| `CustomController` | controllers/sdk.go:102 | SDK helper: controller from a `ReconcileFunc` closure |
+| `Get` | `(ctx, key string) (*Fact, error)` | `:120` |
+| `Put` | `(ctx, key string, value []byte) (int64, error)` | `:123` |
+| `Delete` | `(ctx, key string) error` | `:126` |
+| `Scan` | `(ctx, prefix string) ([]Fact, error)` | `:129` |
+| `ScanWithRevision` | `(ctx, prefix string) (*ScanResult, error)` | `:134` |
+| `Watch` | `(ctx, key string, opts WatchOption) (<-chan Event, error)` | `:140` |
+| `GrantLease` | `(ctx, ttlSeconds int64) (int64, error)` | `:145` |
+| `PutWithLease` | `(ctx, key string, value []byte, leaseID int64) (int64, error)` | `:148` |
+| `RenewLease` | `(ctx, leaseID int64) (int64, error)` | `:151` |
+| `RevokeLease` | `(ctx, leaseID int64) error` | `:153` |
+| `Transaction` | `(ctx, []Compare, []Op, []Op) (bool, error)` | `:158` |
+| `Revision` | `(ctx) (int64, error)` | `:161` |
+| `Close` | `() error` | `:164` |
 
-### Controller Registration (cmd/cca/helpers.go:286)
+### Implementations
 
-#### Core Controllers (all nodes, always registered)
+| Store | File | Use Case | Watch | Leases |
+|---|---|---|---|---|
+| `MemoryStore` | `store/memory.go:131` | Tests, `cca run` | Ring buffer (4096 events) | Synthetic |
+| `EtcdStore` | `store/etcd.go` | Production clusters | etcd watch API | Real TTL |
 
+### Key abstractions (store/store.go)
+
+| Type | Line | Purpose |
+|---|---|---|
+| `Fact` | `:11` | Key, Value, Revision, CreateRevision, LeaseID |
+| `Event` | `:27` | Type (Put/Delete/Overflow/Compacted), Fact, Prev |
+| `EventType` | `:37` | EventPut=0, EventDelete=1, EventOverflow=2, EventCompacted=3 |
+| `Compare` | `:58` | Key, Revision (0 = must not exist) |
+| `Op` | `:66` | Type (OpPut/OpDelete), Key, Value |
+| `ScanResult` | `:105` | Facts, Revision |
+| `WatchOption` | `:86` | Prefix, StartRevision |
+
+### MemoryStore constants
+
+| Constant | Value | File:Line |
+|---|---|---|
+| `defaultEventHistoryCapacity` | `4096` | `store/memory.go:57` |
+| `defaultWatchChannelBufferSize` | `256` | `store/memory.go:157` |
+| `memoryStoreTransactionOperationLimit` | `128` | `store/memory.go:35` |
+
+---
+
+## Controller Interface (controllers/controller.go)
+
+### Core interface (controllers/controller.go:50–63)
+
+| Method | Signature | Line |
+|---|---|---|
+| `Name` | `() string` | `:52` |
+| `Watch` | `() []string` | `:57` |
+| `Reconcile` | `(ctx, facts []store.Fact) ([]Change, error)` | `:62` |
+
+### Extended interfaces
+
+| Interface | Extra Method | Line | Purpose |
+|---|---|---|---|
+| `DeltaController` | `ReconcileDelta(ctx, allFacts, changedEvents) ([]Change, error)` | `:70` | Incremental reconciliation |
+| `PostCommitController` | `ExecutePostCommitOperations(ctx) error` | `:88` | Side effects after CAS commit |
+
+### Change type (controllers/controller.go:25–36)
+
+| Field | Type | Purpose |
+|---|---|---|
+| `Type` | `store.OpType` | Put or Delete |
+| `Key` | `string` | Fact store key |
+| `Value` | `[]byte` | New value (puts only) |
+| `Group` | `string` | Atomic group (non-empty = must not split) |
+
+---
+
+## Controller SDK (controllers/sdk.go)
+
+### CustomController → user-provided reconciliation function
+```
+NewCustomController(name, prefixes, reconcileFn)     (controllers/sdk.go:121)
+├── controllerName = name
+├── watchPrefixes = prefixes
+├── reconcileFunc = reconcileFn
+└── primaryPrefix = prefixes[0]
+
+CustomController.Reconcile(ctx, facts)               (:152)
+├── NewFactMap(facts, primaryPrefix)                  (:27)
+│   └── FOR EACH fact with prefix:
+│       └── split key → entityName + fieldName
+│           → entities[entityName][fieldName] = value
+└── reconcileFunc(ctx, factMap) → []Change
+```
+
+### FactMap API (controllers/sdk.go:16–94)
+
+| Method | Signature | Line | Purpose |
+|---|---|---|---|
+| `NewFactMap` | `(facts, prefix) *FactMap` | `:27` | Organize flat facts into entities |
+| `Entities` | `() []string` | `:53` | List all entity names |
+| `GetField` | `(entity, field) string` | `:63` | Get entity field value |
+| `HasEntity` | `(entity) bool` | `:72` | Check entity existence |
+| `EntityFields` | `(entity) map[string]string` | `:79` | Get all fields for entity |
+| `Raw` | `() []store.Fact` | `:92` | Get original fact list |
+
+### Convenience constructors (controllers/sdk.go:158–165)
+
+| Function | Line | Purpose |
+|---|---|---|
+| `PutChange(key, value)` | `:158` | Create a put Change |
+| `DeleteChange(key)` | `:163` | Create a delete Change |
+
+---
+
+## Controller Runner (controllers/runner.go)
+
+### Runner.Run → start controllers
+```
+Runner.Run(ctx)                                      (controllers/runner.go:196)
+├── EventProjector.Run(ctx)                          [goroutine, if eventLog set]
+└── FOR EACH controller:
+    └── go runSingleController(ctx, controller)      (:238) [goroutine]
+        └── retry loop with backoff [100ms → 500ms → 1s → 2s → 5s → 30s]
+            └── runControllerLoop(ctx, controller)   (:274)
+                ├── setupControllerWatches           (:300)
+                │   └── FOR EACH prefix in Watch():
+                │       ├── store.Watch(prefix, {Prefix: true})
+                │       └── go forwardWatchEvents    (:313) [goroutine]
+                ├── executeReconciliationCycle        [initial]
+                └── runReconcileSelectLoop            (:352)
+                    └── select:
+                        ├── reconcileTrigger → debounce(50ms) → executeReconciliationCycle
+                        ├── resyncTicker(30s) → executeReconciliationCycle
+                        └── watchLost → return error → restart controller
+```
+
+### executeReconciliationCycle → single reconcile pass
+```
+executeReconciliationCycle(ctx, controller, deltaEvents)
+                                                     (controllers/runner.go:409)
+└── FOR attempt 0..maxAttempts:
+    └── attemptSingleReconciliation                  (:469)
+        ├── scanFactsForController(ctx, controller)  (:582)
+        │   └── FOR EACH prefix: store.Scan(prefix) → merge all facts
+        ├── computeReconciliationChanges             (:518)
+        │   ├── IF deltaEvents AND controller is DeltaController:
+        │   │   └── controller.ReconcileDelta(ctx, allFacts, deltaEvents)
+        │   │       └── IF ErrDeltaFallback → fall through
+        │   └── controller.Reconcile(ctx, allFacts) → changes[]
+        ├── validateAndCapChanges(name, changes)     (:537)
+        │   └── cap to maxTransactionChanges (60)
+        ├── buildReconciliationTransaction           (:599)
+        │   ├── Compare: input key revisions [guard]
+        │   ├── Then: put/delete change keys
+        │   └── appendInputKeyGuards                 (:637)
+        ├── store.Transaction(ctx, compares, onSuccess, nil)
+        │   └── IF false → conflictDetected, retry
+        ├── metricsCollector.RecordReconciliation(...)
+        ├── reconciliationDuration.ObserveSince(...)
+        ├── reconciliationTotal.Inc(controller, "success"/"error")
+        └── executePendingPostCommitOperations       (:568)
+            └── IF controller is PostCommitController:
+                └── controller.ExecutePostCommitOperations(ctx)
+```
+
+### HARunner → leader-election wrapper
+```
+HARunner.Run(ctx)                                    (controllers/ha_runner.go:78)
+└── haRunner.election.Run(ctx)
+    ├── OnAcquired → startControllers               (:101)
+    │   └── NewRunner(factStore, controllers...)
+    │       └── runner.Run(ctx)                      [goroutine]
+    └── OnLost → stopControllers                     (:140)
+        └── cancelRunner() → wait for runner done
+```
+
+### Runner constants (controllers/runner.go:23–56)
+
+| Constant | Value | Line |
+|---|---|---|
+| `defaultControllerDebounceInterval` | `50ms` | `:26` |
+| `defaultControllerResyncInterval` | `30s` | `:30` |
+| `reconcileRetryBaseDelayMs` | `10` | `:34` |
+| `reconcileRetryMaxDelayMs` | `500` | `:38` |
+| `etcdTransactionOperationLimit` | `128` | `:42` |
+| `maxTransactionChanges` | `60` | `:55` |
+
+---
+
+## Controller Registration (cmd/cca/helpers.go, cmd/cca/command_server.go)
+
+### Core controllers — always registered (cmd/cca/helpers.go:286)
 ```
 coreControllers():
-  1.  instance           controllers/instance.go
-  2.  scheduler          scheduler/scheduler.go
-  3.  endpoint           controllers/endpoint.go
-  4.  failure            controllers/failure.go
-  5.  autoscale          controllers/autoscale.go
-  6.  intent-resolver    controllers/intent.go
-  7.  rollout            controllers/rollout.go
-  8.  init               controllers/init.go
-  9.  stateful-dns       controllers/stateful_dns.go
-  10. stateful-volume    controllers/stateful_volume.go
-  11. route              controllers/route.go
-  12. eviction           controllers/eviction.go
-  13. job                controllers/job.go
-  14. cron               controllers/cronjob.go
-  15. instance-gc        controllers/instance_gc.go
-  16. audit-log-gc       controllers/audit_gc.go
+  1.  instance              controllers/instance.go
+  2.  scheduler             scheduler/scheduler.go
+  3.  endpoint              controllers/endpoint.go
+  4.  failure               controllers/failure.go
+  5.  autoscale             controllers/autoscale.go
+  6.  intent-resolver        controllers/intent.go
+  7.  rollout               controllers/rollout.go
+  8.  init                   controllers/init.go
+  9.  stateful-dns           controllers/stateful_dns.go
+  10. stateful-volume        controllers/stateful_volume.go
+  11. route                  controllers/route.go
+  12. eviction               controllers/eviction.go
+  13. job                    controllers/job.go
+  14. cron                   controllers/cronjob.go
+  15. instance-gc            controllers/instance_gc.go
+  16. audit-log-gc           controllers/audit_gc.go
 ```
 
-#### Leader-Election Controllers (cmd/cca/command_server.go:370)
-
-Added via `startControllersWithLeaderElection()`:
-
+### Leader-election controllers (cmd/cca/command_server.go:370)
 ```
-  17. node-failure       controllers/nodefailure.go
-  18. drain              controllers/drain.go
-  19. network            controllers/network.go
-  20. network-policy     controllers/network_policy.go
-  21. warm-zero          controllers/warmzero.go
+startControllersWithLeaderElection():
+  17. node-failure           controllers/nodefailure.go
+  18. drain                  controllers/drain.go
+  19. network                controllers/network.go
+  20. network-policy         controllers/network_policy.go
+  21. warm-zero              controllers/warmzero.go
 ```
 
-#### Conditional Cloud Controllers (cmd/cca/command_server.go:384)
-
-Only when `--cloud-provider` is set:
-
+### Conditional cloud controllers (cmd/cca/command_server.go:384)
 ```
+IF --cloud-provider set:
   22. cloud-node-lifecycle   controllers/cloud_node_lifecycle.go
   23. cloud-loadbalancer     controllers/cloud_loadbalancer.go
   24. cloud-routes           controllers/cloud_routes.go
 ```
 
-#### Non-Controller Components (same runner)
-
+### Non-controller components on same runner
 ```
-  - EventProjector         controllers/event_projector.go
-  - AuthController         controllers/auth.go
-  - MetricsCollector       controllers/metrics.go
-  - Bulkhead               controllers/bulkhead.go
+  - EventProjector           controllers/event_projector.go
+  - AuthController           controllers/auth.go
+  - MetricsCollector         controllers/metrics.go
+  - Bulkhead                 controllers/bulkhead.go
 ```
-
-### Runner Types
-
-| Runner | File | Purpose |
-|---|---|---|
-| `Runner` | controllers/runner.go | Standard runner for `cca run` / single-node mode |
-| `HARunner` | controllers/ha_runner.go | Leader-election-aware runner for multi-node clusters |
 
 ---
 
-## 7. Build Tags
-
-Build tags gate optional components to keep the default binary small:
+## Build Tags
 
 | Tag | Effect | Files |
 |---|---|---|
-| `cloudprovider` | Includes AWS + GCP cloud providers, links AWS SDK + GCP SDK | cloud/aws.go, cloud/gcp.go |
-| `ebpf` | Includes eBPF data plane, links BPF libraries | network/ebpf_*.go |
-| (none) | Default build: containerd + nftables + iptables + simulator | All other files |
+| `cloudprovider` | AWS + GCP providers, links AWS/GCP SDKs | `cloud/aws.go`, `cloud/gcp.go` |
+| `ebpf` | eBPF data plane, links BPF libraries | `network/ebpf_*.go` |
+| (none) | Default: containerd + nftables + iptables + simulator | all other files |
 
 ---
 
-## 8. Configuration Flags
+## Reverse Index
 
-### Server (`cca server`)
-
-| Flag | Purpose | Default |
-|---|---|---|
-| `--cloud-provider` | Cloud provider name (aws/gcp/azure/simulator) | (empty = no cloud) |
-| `--cloud-region` | Cloud region | (required if cloud provider set) |
-| `--vip-cidr` | VIP address pool CIDR | `10.200.0.0/24` |
-
-### Agent (`cca agent`)
-
-| Flag | Purpose | Default |
-|---|---|---|
-| `--runtime` | Runtime backend: containerd, container, process | `containerd` |
-| `--dataplane` | Data plane provider: nftables, iptables, ebpf | (auto-detect) |
-| `--cluster-cidr` | Container overlay CIDR | `10.100.0.0/16` |
-| `--advertise-address` | Node address for VXLAN + DNS | (auto-detect) |
+| Function | Called By |
+|---|---|
+| `Runtime.Start` | `startInstanceAndPublishState` (agent) |
+| `Runtime.Stop` | `cleanupUndesiredInstance`, `detectConfigChange` (agent) |
+| `Runtime.Status` | `startInstanceAndPublishState`, `observeInstanceState` (agent) |
+| `Runtime.List` | `executeReconciliationCycle` (agent), `CollectAndReportTelemetry` |
+| `Runtime.Exec` | `runProbeCheck` (exec probes) |
+| `Runtime.ExecInit` | `runInitCommand` (init steps) |
+| `Runtime.Stats` | `reportWorkloadTelemetry` |
+| `Runtime.Resize` | `reconcileResourceChanges` |
+| `Runtime.Logs` | `handleLogs` (api/server.go) |
+| `GracefulStopper.StopWithGracePeriod` | `cleanupUndesiredInstance` (if grace period configured) |
+| `HostPortProvider.HostPortsForInstance` | `startInstanceAndPublishState` → `publishInstanceHostPorts` |
+| `ImagePuller.PullImage` | `ensureImageAvailable` |
+| `ImagePuller.IsImageCached` | `ensureImageAvailable` |
+| `ImageLister.ListImages` | `handleImagesList` (api) |
+| `ExecCapturer.ExecCapture` | `handleExec` (api) |
+| `createAgentRuntimeAdapter` | `cmd/cca/command_agent.go` (agent startup) |
+| `CloudProvider.ListInstances` | `NodeLifecycleController.Reconcile` |
+| `CloudProvider.EnsureLoadBalancer` | `CloudLoadBalancerController.Reconcile` |
+| `CloudProvider.DeleteLoadBalancer` | `CloudLoadBalancerController.Reconcile` |
+| `CloudProvider.ListLoadBalancers` | `CloudLoadBalancerController.Reconcile` |
+| `CloudProvider.EnsureRoute` | `CloudRouteController.Reconcile` |
+| `CloudProvider.DeleteRoute` | `CloudRouteController.Reconcile` |
+| `CloudProvider.ListRoutes` | `CloudRouteController.Reconcile` |
+| `RegisterCloudProviderFactory` | `init()` in `cloud/aws.go`, `cloud/gcp.go` |
+| `LookupCloudProviderFactory` | `cmd/cca/command_server.go` (server startup) |
+| `DataPlaneProvider.ReconcileVIPDataPlane` | `DataPlaneReconciler.Reconcile` |
+| `DataPlaneProvider.ReconcileRouteDataPlane` | `DataPlaneReconciler.Reconcile` |
+| `DataPlaneProvider.Cleanup` | Agent shutdown |
+| `DataPlaneInitializer.Initialize` | `initializeDataPlaneIfSupported` |
+| `DataPlaneNodeRegistrar.RegisterNode` | `initializeDataPlaneIfSupported` |
+| `DataPlaneBridgeRetrier.RetryBridgeAttachment` | `retryBridgeAttachmentIfNeeded` |
+| `EndpointIdentityRegistrar.RegisterEndpointIdentity` | `startInstanceAndPublishState` |
+| `DataPlanePolicyReconciler.ReconcilePolicies` | `dataPlaneLoop` |
+| `RegisterDataPlaneFactory` | `init()` in `network/ebpf_dataplane.go` |
+| `LookupDataPlaneFactory` | `cmd/cca/command_agent.go` (agent startup) |
+| `StateStore.Get` | Agent (many), controllers (via facts), API handlers |
+| `StateStore.Put` | Agent (state writes), runner (transaction path) |
+| `StateStore.Scan` | Runner (`scanFactsForController`), API handlers |
+| `StateStore.Watch` | Runner (`setupControllerWatches`), EventProjector |
+| `StateStore.Transaction` | Runner (`attemptSingleReconciliation`) |
+| `Controller.Reconcile` | Runner (`computeReconciliationChanges`) |
+| `DeltaController.ReconcileDelta` | Runner (first attempt if delta events) |
+| `PostCommitController.ExecutePostCommitOperations` | Runner (after successful commit) |
+| `NewCustomController` | Plugin authors via SDK |
+| `NewFactMap` | `CustomController.Reconcile` |
+| `Runner.Run` | `HARunner.startControllers`, `cca run` (single-node) |
+| `HARunner.Run` | `cmd/cca/command_server.go` (server startup) |
 
 ---
 
-## 9. Extension Pattern Summary
+## Extension Pattern Summary
 
-All pluggable subsystems follow the same pattern:
+All pluggable subsystems follow the same four-step pattern:
 
 ```
-1. Interface defined in a standalone file (cloud.go, dataplane.go, runtime.go, store.go)
-2. Factory function type (CloudProviderFactory, DataPlaneFactory)
-3. Package-level registry map (cloudProviderFactories, dataPlaneFactories)
-4. Registration via init() in build-tagged files
-5. Lookup at startup via CLI flag → LookupFactory(name)
-6. Simulator implementation for testing (records calls, no real side effects)
+1. Interface in standalone file     (cloud.go, dataplane.go, runtime.go, store.go)
+2. Factory function type            (CloudProviderFactory, DataPlaneFactory)
+3. Package-level registry map       (cloudProviderFactories, dataPlaneFactories)
+4. Registration via init()          (build-tagged source files)
+   └── Lookup at startup via CLI flag → LookupFactory(name)
 ```
 
-This pattern ensures:
-- Default builds are lightweight (no AWS/GCP/eBPF dependencies)
-- Tests use simulators with full call recording
-- New providers are added by implementing the interface + registering in init()
-- No component hard-codes which provider is active
+New providers: implement the interface, register in `init()`, optionally
+gate with a build tag. No component hard-codes which provider is active.
+Simulators record calls for test assertions.

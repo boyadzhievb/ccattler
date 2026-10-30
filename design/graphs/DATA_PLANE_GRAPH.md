@@ -1,634 +1,487 @@
-# CCattler Data Plane Reference
+# CCattler Data Plane Call Graph
 
-Machine-readable reference for packet forwarding paths across all three data
-plane providers (nftables, iptables, eBPF). Documents what IS, not what should be.
+Machine-readable function-level index for the data plane reconciler and all
+three providers (nftables, iptables, eBPF). Purpose: trace VIP fact → DNAT
+rule flow without reading source files. Load this file instead.
 
-## Interface Topology (per node)
+For eBPF-specific BPF program details, see EBPF_GRAPH.md.
 
-```
-                                    EXTERNAL NETWORK
-                                          │
-                                          │
-                                     ┌────┴────┐
-                                     │  eth0   │  physical NIC
-                                     │         │  (advertise address, e.g. 192.168.100.20)
-                                     └────┬────┘
-                                          │
-                 ┌────────────────────────┼────────────────────────┐
-                 │                        │                        │
-           ┌─────┴──────┐          ┌──────┴──────┐          ┌─────┴──────┐
-           │ cca-vxlan0 │          │  cca-vip0   │          │    cca0    │
-           │ VXLAN tun  │          │ dummy iface │          │ CNI bridge │
-           │ VNI=42     │          │ VIP /32 addrs│          │ 10.100.X.1 │
-           │ MTU=1450   │          │             │          │ /24 subnet │
-           │ UDP:4789   │          │             │          │            │
-           └────────────┘          └─────────────┘          └─────┬──────┘
-                                                                  │
-                                                       ┌──────────┼──────────┐
-                                                       │          │          │
-                                                    ┌──┴──┐    ┌──┴──┐    ┌──┴──┐
-                                                    │veth │    │veth │    │veth │
-                                                    │pair │    │pair │    │pair │
-                                                    └──┬──┘    └──┬──┘    └──┬──┘
-                                                       │          │          │
-                                                   container  container  container
-                                                   10.100.X.2 10.100.X.3 10.100.X.4
-```
+## Source File Index
 
-### Interface Roles
+| File | Line Count | Purpose |
+|---|---|---|
+| `agent/dataplane.go` | 524 | DataPlaneReconciler: reads facts, builds configs, calls provider |
+| `network/dataplane.go` | 140 | DataPlaneProvider interface + extension interfaces |
+| `network/dataplane_registry.go` | 31 | RegisterDataPlaneFactory / LookupDataPlaneFactory |
+| `network/nftables_dataplane.go` | 554 | nftables provider: atomic table replace |
+| `network/iptables_dataplane.go` | 605 | iptables provider: per-chain flush+rebuild |
+| `network/ebpf_dataplane.go` | 840 | eBPF provider: BPF map operations (see EBPF_GRAPH) |
+| `network/simulator_dataplane.go` | 121 | Test-only provider: records calls, no real rules |
+| `network/shadow_dataplane.go` | 141 | Shadow mode: iptables active + nftables comparison |
 
-| Interface | Type | Created By | Purpose |
-|---|---|---|---|
-| `eth0` | physical NIC | OS | Node-to-node traffic, VXLAN underlay |
-| `cca0` | Linux bridge | CNI (containerd) | Container networking, gateway for overlay /24 |
-| `cca-vip0` | dummy | Data plane provider | Holds VIP /32 addresses so kernel accepts VIP packets |
-| `cca-vxlan0` | VXLAN | VXLANReconciler | Cross-node overlay tunnel (VNI=42, UDP 4789, MTU 1450) |
-| `vethXXX` | veth pair | CNI (containerd) | Per-container bridge attachment |
-
-### Interface Creation Order
+## Interface Hierarchy
 
 ```
-1. Agent starts
-   └── VXLANReconciler.ensureVXLANInterfaceExists
-       ├── ip link add cca-vxlan0 type vxlan id 42 local <addr> dstport 4789 dev <nic>
-       ├── ip link set cca-vxlan0 address <derived-MAC>
-       ├── ip link set cca-vxlan0 mtu 1450
-       └── ip link set cca-vxlan0 up
+DataPlaneProvider                                    [network/dataplane.go:20]
+├── ReconcileVIPDataPlane(ctx, []ServiceVIPConfig) error
+├── ReconcileRouteDataPlane(ctx, []RouteDataPlaneConfig) error
+└── Cleanup(ctx) error
 
-2. Data plane reconcile (every 1s)
-   └── Provider.ensureDummyInterface
-       ├── ip link add cca-vip0 type dummy
-       └── ip link set cca-vip0 up
+DataPlaneInitializer                                 [network/dataplane.go:100]
+└── Initialize(ctx) error                            [eBPF only]
 
-3. First container starts
-   └── CNI bridge plugin creates cca0
-       ├── cca0 bridge + first veth pair
-       └── eBPF: RetryBridgeAttachment attaches tc DNAT to cca0
+DataPlaneNodeRegistrar                               [network/dataplane.go:106]
+└── RegisterNode(ctx, nodeIP, podCIDR) error         [eBPF only]
 
-4. Each service VIP
-   └── Provider.ensureVIPAddress
-       └── ip addr add <VIP>/32 dev cca-vip0
+DataPlaneBridgeRetrier                               [network/dataplane.go:112]
+└── RetryBridgeAttachment(ctx, podCIDR) error        [eBPF only]
+
+DataPlanePolicyReconciler                            [network/dataplane.go:125]
+└── ReconcilePolicies(ctx) error                     [not yet implemented]
+
+EndpointIdentityRegistrar                            [network/dataplane.go:118]
+└── RegisterEndpointIdentity(ctx, ...) error         [not yet implemented]
 ```
 
-## Provider 1: nftables (default)
-
-### Kernel Objects
+## Provider Registry
 
 ```
-table ip cca {
-    map vip_dispatch {
-        type ipv4_addr . inet_proto . inet_service : verdict
-        elements = {
-            10.200.0.1 . tcp . 80 : goto svc_web,
-            10.200.0.2 . tcp . 5432 : goto svc_metadata_db,
-            10.200.0.3 . tcp . 8080 : goto rt_web_public     ← route override
-        }
-    }
+network/dataplane_registry.go:15
+  var dataPlaneFactories = map[string]DataPlaneFactory{}
 
-    chain prerouting {
-        type nat hook prerouting priority -100; policy accept;
-        ip daddr . ip protocol . th dport vmap @vip_dispatch
-    }
+RegisterDataPlaneFactory(name, factory)              [dataplane_registry.go:19]
+└── panics on duplicate name
 
-    chain output {
-        type nat hook output priority -100; policy accept;
-        ip daddr . ip protocol . th dport vmap @vip_dispatch
-    }
+LookupDataPlaneFactory(name) → DataPlaneFactory      [dataplane_registry.go:28]
+└── returns nil if not registered
 
-    chain postrouting {
-        type nat hook postrouting priority 100; policy accept;
-        ct status dnat masquerade                              ← SNAT for DNAT'd packets
-    }
-
-    chain container_isolation {                                ← SECURITY: blocks container→etcd
-        type filter hook input priority 0; policy accept;
-        iifname "cca0" tcp dport { 2379, 2380 } limit rate 1/minute log prefix "cca:etcd-blocked: "
-        iifname "cca0" tcp dport { 2379, 2380 } counter drop
-    }
-
-    chain svc_web {
-        meta l4proto tcp dnat to numgen inc mod 3 map {        ← round-robin
-            0 : 10.100.1.2 . 8080,
-            1 : 10.100.2.3 . 8080,
-            2 : 192.168.100.30 . 32100                        ← remote node host port
-        }
-    }
-
-    chain svc_metadata_db {
-        meta l4proto tcp dnat to 10.100.1.4:5432               ← single backend
-    }
-
-    chain rt_web_public {                                       ← source-ip sticky
-        meta l4proto tcp dnat to jhash ip saddr mod 3 map {
-            0 : 10.100.1.2 . 8080,
-            1 : 10.100.2.3 . 8080,
-            2 : 192.168.100.30 . 32100
-        }
-    }
-}
+Registered providers:
+  "nftables" → NewNftablesDataPlane()                [built-in, no tag]
+  "iptables" → NewIptablesDataPlane()                [built-in, no tag]
+  "ebpf"     → NewEbpfDataPlane()                    [//go:build ebpf]
+  "simulator" → NewSimulatorDataPlane()              [test code]
+  "shadow"   → NewShadowDataPlane()                  [iptables active + nftables compare]
 ```
 
-### Packet Path (nftables)
+## DataPlaneReconciler (agent/dataplane.go)
+
+### DataPlaneReconciler.Reconcile → entry point
 
 ```
-INGRESS (external or container → VIP):
-  packet dst=10.200.0.1:80
-    → PREROUTING hook (priority -100)
-      → vip_dispatch verdict map lookup: {10.200.0.1, tcp, 80}
-        → O(1) hash hit → goto svc_web
-          → numgen inc mod 3 → slot 1 → DNAT to 10.100.2.3:8080
-    → conntrack creates DNAT entry
-    → POSTROUTING hook
-      → ct status dnat → masquerade (rewrite src to node IP)
-    → packet forwarded to backend
-
-RETURN PATH:
-  reply from 10.100.2.3:8080
-    → conntrack reverse NAT
-      → src rewritten from 10.100.2.3:8080 → 10.200.0.1:80
-    → delivered to original client
-
-LOCAL PROCESS → VIP:
-  connect(10.200.0.1:80) from host process
-    → OUTPUT hook (priority -100)
-      → same vip_dispatch lookup → DNAT
-    → POSTROUTING → masquerade
+DataPlaneReconciler.Reconcile(ctx)                   [agent/dataplane.go:55]
+├── buildServiceVIPConfigs(ctx)                      [agent/dataplane.go:92]
+│   └── → []ServiceVIPConfig (see below)
+├── dataPlaneProvider.ReconcileVIPDataPlane(ctx, serviceVIPConfigs)
+│   └── dispatches to nftables/iptables/eBPF provider
+├── buildRouteDataPlaneConfigs(ctx, serviceVIPConfigs)
+│                                                    [agent/dataplane.go:190]
+│   └── → []RouteDataPlaneConfig (see below)
+├── IF len(routeConfigs) > 0:
+│   └── dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs)
+└── IF provider implements DataPlanePolicyReconciler:
+    └── policyReconciler.ReconcilePolicies(ctx)
 ```
 
-### Rule Generation Flow (nftables)
+### buildServiceVIPConfigs → fact scan + backend resolution
 
 ```
-buildServiceVIPConfigs (agent/dataplane.go)
-  ├── factStore.Scan(derived/vip/)              → VIP allocations
-  ├── factStore.Scan(derived/vip/*/port)        → service ports
-  ├── resolveServiceBackends                    → local (container IP) or remote (host port)
-  └── → []ServiceVIPConfig
-
-NftablesDataPlane.ReconcileVIPDataPlane (network/nftables_dataplane.go)
-  ├── ensureDummyInterface                      [ip link add cca-vip0]
-  ├── buildVIPRuleset(serviceConfigs)
-  │   ├── table ip cca {}\n delete table ip cca    ← atomic replace
-  │   ├── map vip_dispatch { ... }                 ← empty declaration
-  │   ├── chain prerouting { vmap @vip_dispatch }
-  │   ├── chain output { vmap @vip_dispatch }
-  │   ├── writePostRoutingChain                    ← masquerade for DNAT
-  │   ├── FOR EACH service (sorted by name):
-  │   │   ├── dispatchEntries += "VIP . proto . port : goto svc_NAME"
-  │   │   │   (or "goto rt_NAME" if routeDispatchOverrides has override)
-  │   │   └── writeBackendDNATRules → chain svc_NAME { numgen ... }
-  │   └── writeVerdictMapWithElements              ← populated dispatch map
-  ├── appendRouteChains(&ruleset, lastRouteConfigs)
-  │   ├── source-ip: writeSourceIPStickyChain      ← jhash ip saddr
-  │   └── cookie: writeCookieProxyChain            ← redirect to :proxyPort
-  ├── applyNftablesRuleset
-  │   ├── write ruleset to temp file
-  │   └── nft -f <temp>                            ← ATOMIC APPLY
-  ├── ensureVIPAddress per service                 [ip addr add VIP/32 dev cca-vip0]
-  └── removeStaleVIPAddresses                      [ip addr del stale/32]
+buildServiceVIPConfigs(ctx)                          [agent/dataplane.go:92]
+├── factStore.Scan(ScanNetworkVIPs)                  [derived/vip/]
+│   └── parse: serviceName → VIP address
+│   └── factStore.Get(KeyNetworkVIPServicePort(name))
+│       └── parse: port number
+├── identifyStaleNodes(ctx)                          [agent/dataplane.go:156]
+│   ├── factStore.Scan(ScanLeaseNodes)               [lease/node/]
+│   ├── skip self (nodeID == local)
+│   └── IF now - heartbeat > 30s → staleNodeSet[nodeID] = true
+├── sort serviceNames                                [deterministic order]
+└── FOR EACH service:
+    └── resolveServiceBackends(ctx, name, staleNodeSet)
+                                                     [agent/dataplane.go:367]
+        ├── factStore.Scan(PrefixEndpoint + "/service/" + name + "/")
+        │   └── parse: instanceID, containerPort, endpointIP:port
+        ├── FOR EACH endpoint:
+        │   ├── factStore.Get(KeyObservedInstanceNode(id)) → nodeID
+        │   ├── IF staleNodeSet[nodeID] → SKIP
+        │   ├── IF nodeID == local:
+        │   │   └── resolveLocalBackend(ctx, id, containerPort, ...)
+        │   │                                        [agent/dataplane.go:449]
+        │   │       ├── factStore.Get(KeyObservedInstanceIP(id))
+        │   │       │   └── → container bridge IP
+        │   │       └── → DataPlaneBackend{containerIP, containerPort}
+        │   └── IF nodeID != local:
+        │       └── resolveRemoteBackend(ctx, id, nodeID, containerPort)
+        │                                            [agent/dataplane.go:472]
+        │           ├── factStore.Get(KeyObservedInstanceIP(id))
+        │           │   └── IF overlay IP available → use it (VXLAN routable)
+        │           ├── factStore.Get(KeyObservedNodeAddress(nodeID))
+        │           │   └── → node advertise address
+        │           ├── resolveHostPort(ctx, factStore, id, containerPort)
+        │           │                                [agent/dataplane.go:423]
+        │           │   ├── factStore.Get(KeyObservedInstanceHostPortForPort(id, port))
+        │           │   └── FALLBACK: factStore.Get(KeyObservedInstanceHostPort(id))
+        │           └── → DataPlaneBackend{nodeIP, hostPort}
+        └── → []DataPlaneBackend
 ```
 
-### Key Property: Atomic Replacement
-
-The entire nftables table is deleted and recreated in one `nft -f` transaction.
-No partial state. Either the whole ruleset applies or nothing changes.
-
-## Provider 2: iptables
-
-### Kernel Objects
+### buildRouteDataPlaneConfigs → route fact parsing
 
 ```
-nat table:
-  PREROUTING ─→ CCA_SERVICES                       (jump, position 1)
-  OUTPUT     ─→ CCA_SERVICES                       (jump, position 1)
-  POSTROUTING: ! -o lo -m conntrack --ctstate DNAT -j MASQUERADE
-
-  CCA_SERVICES:
-    -d 10.200.0.1/32 -p tcp --dport 80 -j CCA_SVC_web
-    -d 10.200.0.2/32 -p tcp --dport 5432 -j CCA_SVC_metadata_db
-    -d 10.200.0.1/32 -p tcp --dport 80 -j CCA_RT_web_public  ← route override
-
-  CCA_SVC_web:                                       ← round-robin via -m statistic
-    -p tcp -m statistic --mode nth --every 3 --packet 0 -j DNAT --to 10.100.1.2:8080
-    -p tcp -m statistic --mode nth --every 2 --packet 0 -j DNAT --to 10.100.2.3:8080
-    -p tcp -j DNAT --to 192.168.100.30:32100          ← last backend: no statistic
-
-  CCA_SVC_metadata_db:
-    -p tcp -j DNAT --to 10.100.1.4:5432               ← single backend
-
-  CCA_RT_web_public:                                   ← source-ip sticky via xt_recent
-    -p tcp -m recent --name cca_rt_web_public_0 --rcheck --seconds 1800 -j DNAT --to 10.100.1.2:8080
-    -p tcp -m recent --name cca_rt_web_public_1 --rcheck --seconds 1800 -j DNAT --to 10.100.2.3:8080
-    -p tcp -m statistic --mode nth --every 2 --packet 0 -m recent --name cca_rt_web_public_0 --set -j DNAT --to 10.100.1.2:8080
-    -p tcp -m recent --name cca_rt_web_public_1 --set -j DNAT --to 10.100.2.3:8080
+buildRouteDataPlaneConfigs(ctx, serviceVIPConfigs)   [agent/dataplane.go:190]
+├── factStore.Scan(ScanDesiredRoutes)                [desired/route/]
+├── factStore.Scan(ScanDerivedRoutes)                [derived/route/]
+├── build serviceVIPLookup map
+├── parseRouteFactsForDataPlane(desiredFacts, derivedFacts)
+│                                                    [agent/dataplane.go:290]
+│   ├── FOR EACH desired fact:
+│   │   ├── parse: routeName, fieldPath
+│   │   └── switch fieldPath:
+│   │       ├── "service" → entry.serviceName
+│   │       ├── "port" → entry.servicePort
+│   │       ├── "sticky" → entry.stickyMethod
+│   │       ├── "cookie/name" → entry.cookieName
+│   │       ├── "cookie/secure" → entry.cookieSecure
+│   │       ├── "cookie/httponly" → entry.cookieHTTPOnly
+│   │       └── "cookie/samesite" → entry.cookieSameSite
+│   └── FOR EACH derived fact:
+│       └── "backends" → split by comma → entry.backendAddresses
+└── FOR EACH parsedRoute:
+    └── buildRouteConfigFromEntry(parsedRoute, vipConfig)
+                                                     [agent/dataplane.go:226]
+        ├── resolve port (route port or VIP port fallback)
+        ├── parseBackendAddressList(backendAddresses)
+        │                                            [agent/dataplane.go:255]
+        │   └── split "host:port" → DataPlaneBackend
+        └── IF stickyMethod == "cookie":
+            └── routeConfig.CookieConfig = {Name, Secure, HTTPOnly, SameSite}
 ```
 
-### Packet Path (iptables)
+### PublishAdvertiseAddress / publishInstanceHostPorts
 
 ```
-INGRESS (external or container → VIP):
-  packet dst=10.200.0.1:80
-    → PREROUTING chain
-      → -j CCA_SERVICES
-        → -d 10.200.0.1/32 -p tcp --dport 80 -j CCA_SVC_web
-          → statistic nth --every 3 --packet 0 → backend 0
-          → statistic nth --every 2 --packet 0 → backend 1
-          → (last rule, unconditional) → backend 2
-        → DNAT to selected backend
-    → conntrack creates DNAT entry
-    → POSTROUTING: MASQUERADE if DNAT'd
+PublishAdvertiseAddress(ctx)                          [agent/dataplane.go:500]
+└── factStore.Put(KeyObservedNodeAddress(nodeID), advertiseAddress)
 
-LOCAL PROCESS → VIP:
-  connect(10.200.0.1:80)
-    → OUTPUT chain → -j CCA_SERVICES → same path
+publishInstanceHostPorts(ctx, factStore, id, portMappings)
+                                                     [agent/dataplane.go:512]
+└── FOR EACH containerPort → hostPort:
+    └── factStore.Put(KeyObservedInstanceHostPortForPort(id, port), hostPort)
 ```
 
-### Rule Generation Flow (iptables)
+## Provider 1: NftablesDataPlane (network/nftables_dataplane.go)
+
+### ReconcileVIPDataPlane → atomic table replace
 
 ```
-IptablesDataPlane.ReconcileVIPDataPlane (network/iptables_dataplane.go)
-  ├── ensureGlobalChainAndJumpRules (once)
-  │   ├── iptables -t nat -N CCA_SERVICES
-  │   ├── iptables -t nat -I PREROUTING 1 -j CCA_SERVICES
-  │   ├── iptables -t nat -I OUTPUT 1 -j CCA_SERVICES
-  │   └── ensureMasqueradeForDNAT → POSTROUTING MASQUERADE rule
-  ├── ensureDummyInterface                     [ip link add cca-vip0]
-  ├── FOR EACH service:
-  │   ├── ensureVIPAddress(VIP)                [ip addr add VIP/32]
-  │   └── reconcileServiceChain(config, CCA_SVC_NAME)
-  │       ├── iptables -t nat -N CCA_SVC_NAME (idempotent)
-  │       ├── iptables -t nat -F CCA_SVC_NAME (flush = rebuild)
-  │       ├── FOR EACH backend (except last):
-  │       │   └── -A CCA_SVC_NAME -p tcp -m statistic --mode nth
-  │       │       --every <remaining> --packet 0 -j DNAT --to <backend>
-  │       ├── Last backend:
-  │       │   └── -A CCA_SVC_NAME -p tcp -j DNAT --to <backend>
-  │       └── ensureJumpFromMainToService
-  │           └── -A CCA_SERVICES -d VIP/32 -p tcp --dport PORT -j CCA_SVC_NAME
-  ├── removeStaleServiceChains
-  │   ├── removeJumpRuleFromMainChain (up to 20 passes)
-  │   └── flushAndDeleteChain
-  └── removeStaleVIPAddresses                  [ip addr del]
+NftablesDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
+                                                     [nftables_dataplane.go:92]
+├── ensureDummyInterface()                           [nftables_dataplane.go:471]
+│   ├── runCommandIdempotent("ip", "link", "add", "cca-vip0", "type", "dummy")
+│   └── runCommandStrict("ip", "link", "set", "cca-vip0", "up")
+├── buildRouteDispatchOverrides(lastRouteConfigs)    [nftables_dataplane.go:135]
+│   └── FOR EACH route with StickyMethod + backends:
+│       └── overrides[VIP:port] = "rt_" + sanitizedRouteName
+├── buildVIPRuleset(configs, desiredChains, desiredVIPs, overrides)
+│                                                    [nftables_dataplane.go:234]
+│   ├── "table ip cca {}\n delete table ip cca\n table ip cca {"
+│   ├── map vip_dispatch { type ipv4_addr . inet_proto . inet_service : verdict }
+│   ├── chain prerouting { vmap @vip_dispatch }
+│   ├── chain output { vmap @vip_dispatch }
+│   ├── writePostRoutingChain(&builder)              [nftables_dataplane.go:318]
+│   │   └── "ct status dnat masquerade"
+│   ├── writeContainerIsolationChain(&builder)       [nftables_dataplane.go:305]
+│   │   └── iifname "cca0" tcp dport {2379,2380} → log + drop
+│   ├── FOR EACH service (sorted by name):
+│   │   ├── dispatchEntry = "VIP . proto . port : goto svc_NAME"
+│   │   │   └── OR "goto rt_NAME" if override exists
+│   │   └── writeBackendDNATRules(&builder, backends, proto)
+│   │                                                [nftables_dataplane.go:349]
+│   │       ├── IF 1 backend → "dnat to addr:port"
+│   │       └── IF N backends → "dnat to numgen inc mod N map { ... }"
+│   └── writeVerdictMapWithElements(&builder, entries)
+│                                                    [nftables_dataplane.go:327]
+├── appendRouteChains(&ruleset, lastRouteConfigs, desiredRouteChains)
+│                                                    [nftables_dataplane.go:150]
+│   └── FOR EACH route:
+│       ├── "source-ip" → writeSourceIPStickyChain   [nftables_dataplane.go:421]
+│       │   └── "jhash ip saddr mod N map { ... }"
+│       └── "cookie" → writeCookieProxyChain         [nftables_dataplane.go:446]
+│           └── "redirect to :proxyPort"
+├── applyNftablesRuleset(ruleset)                    [nftables_dataplane.go:508]
+│   ├── os.CreateTemp() → write ruleset
+│   └── exec.Command("nft", "-f", tempFile)          ← ATOMIC APPLY
+├── FOR EACH service: ensureVIPAddress(VIP)          [nftables_dataplane.go:482]
+│   └── runCommandIdempotent("ip", "addr", "add", VIP+"/32", "dev", "cca-vip0")
+└── removeStaleVIPAddresses(desiredVIPs)             [nftables_dataplane.go:495]
+    └── removeVIPAddressFromInterface(staleVIP)
 ```
 
-### Key Property: Per-Chain Rebuild
-
-Each service chain is flushed and rebuilt on every reconcile cycle.
-The CCA_SERVICES jump rules are idempotent (check-then-add via -C).
-Not atomic — transient partial state exists during flush+rebuild.
-
-### Round-Robin Algorithm (iptables statistic module)
+### ReconcileRouteDataPlane
 
 ```
-3 backends → rules in chain:
-  Rule 1: --every 3 --packet 0   → match 1 in 3 (33%) → DNAT to backend[0]
-  Rule 2: --every 2 --packet 0   → match 1 in 2 (50% of remaining) → backend[1]
-  Rule 3: (unconditional)        → all remaining → backend[2]
-
-Effective distribution: 33% / 33% / 33% (equal probability)
+NftablesDataPlane.ReconcileRouteDataPlane(ctx, routeConfigs)
+                                                     [nftables_dataplane.go:198]
+├── cookieProxy.ReconcileRoutes(routeConfigs)
+└── lastRouteConfigs = routeConfigs                  [stored for next VIP cycle]
 ```
 
-## Provider 3: eBPF
-
-### Architecture
+### Cleanup
 
 ```
-                        ┌───────────────────────────────────┐
-                        │         Embedded ELF              │
-                        │  (go:embed cca_dataplane.o)       │
-                        │                                   │
-                        │  5 programs, sharing 5 maps       │
-                        └──────┬──────────┬─────────────────┘
-                               │          │
-                ┌──────────────┘          └──────────────┐
-                │                                        │
-     ┌──────────┴──────────┐              ┌──────────────┴──────────┐
-     │ SOCKET LB (cgroup)  │              │   TC PROGRAMS           │
-     │                     │              │                         │
-     │ cca_sock4_connect   │              │ cca_tc_dnat             │
-     │   (cgroup/connect4) │              │   (tc ingress on cca0)  │
-     │ cca_sock4_sendmsg   │              │                         │
-     │   (cgroup/sendmsg4) │              │ cca_tc_snat             │
-     │ cca_sock4_getpeername│              │   (tc egress on eth0)   │
-     │   (cgroup/getpeername4)│            │                         │
-     └──────────────────────┘              └─────────────────────────┘
+NftablesDataPlane.Cleanup(ctx)                       [nftables_dataplane.go:210]
+├── runNft("delete", "table", "ip", "cca")
+├── FOR EACH activeVIPAddress: removeVIPAddressFromInterface
+├── deleteDummyInterface()                           [iptables_dataplane.go:535]
+│   └── exec.Command("ip", "link", "del", "cca-vip0")
+└── cookieProxy.Cleanup()
 ```
 
-### BPF Maps
+## Provider 2: IptablesDataPlane (network/iptables_dataplane.go)
 
-| Map Name | Type | Max Entries | Key → Value | Purpose |
-|---|---|---|---|---|
-| `cca_services` | HASH | 4096 | `{vip, port, proto}` → `{svc_id, backend_count, flags, affinity_timeout}` | VIP → service lookup |
-| `cca_backends` | HASH | 65536 | `{svc_id, slot}` → `{backend_addr, port}` | Service → backend slot lookup |
-| `cca_affinity` | LRU_HASH | 131072 | `{client_addr, svc_id}` → `{backend_addr, port, timestamp}` | Source-IP session affinity cache |
-| `cca_reverse_nat` | LRU_HASH | 131072 | `{socket_cookie, backend_addr, backend_port}` → `{vip_addr, vip_port}` | getpeername() VIP transparency |
-| `cca_config` | ARRAY | 8 | `index` → `u32` | Node IP, overlay prefix, overlay mask |
-
-Maps are pinned to `/sys/fs/bpf/cca/` for persistence across restarts and
-inspection via `bpftool map dump pinned /sys/fs/bpf/cca/cca_services`.
-
-### Packet Path (eBPF — socket LB, host processes)
+### ReconcileVIPDataPlane → per-chain rebuild
 
 ```
-HOST PROCESS → VIP:
-  connect(10.200.0.1, 80)
-    → cgroup/connect4 hook
-      → cca_sock4_connect
-        ├── service_key = {vip=10.200.0.1, port=80, proto=TCP}
-        ├── bpf_map_lookup_elem(&cca_services, &key) → matched_service
-        ├── select_backend(matched_service, socket_cookie)
-        │   ├── IF sticky-source-ip flag set:
-        │   │   └── bpf_map_lookup_elem(&cca_affinity, {client, svc_id})
-        │   │       └── IF cached && not expired → return cached backend
-        │   ├── slot = bpf_get_prandom_u32() % backend_count
-        │   ├── bpf_map_lookup_elem(&cca_backends, {svc_id, slot}) → backend
-        │   └── IF sticky: bpf_map_update_elem(&cca_affinity, ...) → cache
-        ├── socket_ctx->user_ip4 = backend.addr
-        ├── socket_ctx->user_port = backend.port
-        └── bpf_map_update_elem(&cca_reverse_nat, {cookie, backend} → {vip})
-
-  getpeername() on same socket:
-    → cgroup/getpeername4 hook
-      → cca_sock4_getpeername
-        ├── bpf_map_lookup_elem(&cca_reverse_nat, {cookie, current_addr})
-        └── IF found: restore socket_ctx to original VIP
-
-  sendto(10.200.0.1, 80) (UDP):
-    → cgroup/sendmsg4 hook
-      → cca_sock4_sendmsg
-        └── same logic as connect4, uses msg_src_ip4 for affinity
+IptablesDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
+                                                     [iptables_dataplane.go:80]
+├── ensureGlobalChainAndJumpRules()                  [iptables_dataplane.go:297]
+│   ├── iptables -t nat -N CCA_SERVICES              [create if not exists]
+│   ├── ensureJumpToChain("PREROUTING", "CCA_SERVICES")
+│   │                                                [iptables_dataplane.go:469]
+│   │   ├── iptables -t nat -C PREROUTING -j CCA_SERVICES [check]
+│   │   └── iptables -t nat -I PREROUTING 1 -j CCA_SERVICES [insert if absent]
+│   ├── ensureJumpToChain("OUTPUT", "CCA_SERVICES")
+│   ├── ensureMasqueradeForDNAT()                    [iptables_dataplane.go:446]
+│   │   └── iptables -t nat -A POSTROUTING ! -o lo -m conntrack --ctstate DNAT -j MASQUERADE
+│   └── ensureContainerIsolationRules()              [iptables_dataplane.go:326]
+│       ├── iptables -I INPUT (LOG, rate 1/min)
+│       └── iptables -A INPUT -i cca0 --dports 2379,2380 -j DROP
+├── ensureDummyInterface()                           [iptables_dataplane.go:356]
+│   ├── runCommandIdempotent("ip", "link", "add", "cca-vip0", "type", "dummy")
+│   └── runCommandStrict("ip", "link", "set", "cca-vip0", "up")
+├── FOR EACH service:
+│   ├── ensureVIPAddress(VIP)                        [iptables_dataplane.go:369]
+│   │   └── runCommandIdempotent("ip", "addr", "add", VIP+"/32", "dev", "cca-vip0")
+│   └── reconcileServiceChain(config, chainName)     [iptables_dataplane.go:380]
+│       ├── iptables -t nat -N CCA_SVC_<name>        [create if not exists]
+│       ├── iptables -t nat -F CCA_SVC_<name>        [flush = rebuild]
+│       ├── FOR EACH backend (except last):
+│       │   └── iptables -t nat -A CCA_SVC_<name> -p tcp
+│       │       -m statistic --mode nth --every <remaining> --packet 0
+│       │       -j DNAT --to-destination <addr:port>
+│       ├── last backend:
+│       │   └── iptables -t nat -A CCA_SVC_<name> -p tcp
+│       │       -j DNAT --to-destination <addr:port>
+│       └── ensureJumpFromMainToService(VIP, port, proto, chain)
+│                                                    [iptables_dataplane.go:480]
+│           ├── iptables -t nat -C CCA_SERVICES -d VIP/32 -p tcp --dport PORT -j chain
+│           └── iptables -t nat -A CCA_SERVICES ... [if absent]
+├── removeStaleServiceChains(desiredChains)          [iptables_dataplane.go:418]
+│   └── FOR EACH stale chain:
+│       ├── removeJumpRuleFromMainChain(chain)       [iptables_dataplane.go:495]
+│       │   └── up to 20 passes: iptables -S CCA_SERVICES → iptables -D
+│       └── flushAndDeleteChain(chain)               [iptables_dataplane.go:524]
+│           └── iptables -t nat -F chain; iptables -t nat -X chain
+└── removeStaleVIPAddresses(desiredVIPs)             [iptables_dataplane.go:432]
+    └── removeVIPAddressFromInterface(staleVIP)
 ```
 
-### Packet Path (eBPF — tc DNAT, container-originated)
+### ReconcileRouteDataPlane
 
 ```
-CONTAINER → VIP (via bridge):
-  packet from 10.100.1.2 dst=10.200.0.1:80
-    → arrives on cca0 bridge ingress
-    → tc ingress hook (TCX)
-      → cca_tc_dnat
-        ├── parse Ethernet + IP + L4 headers
-        ├── bpf_skb_ct_lookup(connection_tuple)
-        │   └── IF existing conntrack entry → return TC_ACT_OK (already tracked)
-        ├── service_key = {vip=dst_ip, port=dst_port, proto}
-        ├── bpf_map_lookup_elem(&cca_services, &key) → matched_service
-        ├── select_backend(matched_service, src_ip)
-        ├── bpf_skb_ct_alloc(connection_tuple)
-        ├── bpf_ct_set_nat_info(entry, backend_addr, backend_port, MANIP_DST)
-        └── bpf_ct_insert_entry(entry)
-            → kernel nf_nat handles actual packet rewrite + return path
-
-  SUBSEQUENT PACKETS on same flow:
-    → ct_lookup hits existing entry → kernel nf_nat rewrites transparently
-    → cca_tc_dnat returns TC_ACT_OK immediately (conntrack handles it)
+IptablesDataPlane.ReconcileRouteDataPlane(ctx, routeConfigs)
+                                                     [iptables_dataplane.go:124]
+├── ensureGlobalChainAndJumpRules()
+├── FOR EACH route:
+│   ├── "source-ip" → reconcileSourceIPStickyChain(config, chain)
+│   │                                                [iptables_dataplane.go:166]
+│   │   ├── iptables -t nat -N CCA_RT_<name>
+│   │   ├── iptables -t nat -F CCA_RT_<name>
+│   │   ├── FOR EACH backend: --rcheck rules (xt_recent)
+│   │   ├── FOR EACH backend: --set + statistic rules
+│   │   └── ensureJumpFromMainToService
+│   └── "cookie" → reconcileCookieStickyChain(config, chain)
+│                                                    [iptables_dataplane.go:221]
+│       ├── iptables -t nat -N CCA_RT_<name>
+│       ├── iptables -t nat -F CCA_RT_<name>
+│       ├── iptables -t nat -A CCA_RT_<name> -j DNAT --to 127.0.0.1:proxyPort
+│       └── ensureJumpFromMainToService
+├── cookieProxy.ReconcileRoutes(routeConfigs)
+└── removeStaleRouteChains(desiredChains)            [iptables_dataplane.go:249]
 ```
 
-### Packet Path (eBPF — tc SNAT, cross-node egress)
+### Cleanup
 
 ```
-OVERLAY-SOURCED PACKET → PHYSICAL NIC:
-  packet from 10.100.1.2 (overlay) → external destination
-    → arrives on eth0 tc egress hook (TCX)
-    → cca_tc_snat
-      ├── parse Ethernet + IP headers
-      ├── is_overlay_source(ip_header->saddr)?
-      │   └── (saddr & overlay_mask) == overlay_prefix → yes
-      ├── get_node_ip() from cca_config[0]
-      ├── IF saddr == node_ip → skip (already correct)
-      ├── bpf_l3_csum_replace(check, old_src, node_ip)
-      ├── bpf_skb_store_bytes(saddr ← node_ip)
-      └── bpf_l4_csum_replace(tcp/udp check, old_src, node_ip)
-          → packet leaves with node IP as source
+IptablesDataPlane.Cleanup(ctx)                       [iptables_dataplane.go:262]
+├── cookieProxy.Cleanup()
+├── FOR EACH activeRouteChain: remove jump + flush + delete
+├── FOR EACH activeServiceChain: remove jump + flush + delete
+├── removeJumpFromBuiltinChain("PREROUTING", "CCA_SERVICES")
+├── removeJumpFromBuiltinChain("OUTPUT", "CCA_SERVICES")
+├── flushAndDeleteChain("CCA_SERVICES")
+├── removeMasqueradeForDNAT()                        [iptables_dataplane.go:461]
+├── FOR EACH activeVIPAddress: removeVIPAddressFromInterface
+└── deleteDummyInterface()
 ```
 
-### Map Update Flow (eBPF)
+## Provider 3: SimulatorDataPlane (network/simulator_dataplane.go)
 
 ```
-EbpfDataPlane.ReconcileVIPDataPlane (network/ebpf_dataplane.go)
-  ├── buildDesiredVIPState(serviceConfigs)
-  │   ├── FOR EACH service (sorted by name):
-  │   │   ├── assignOrLookupServiceID(name) → monotonic u32 ID
-  │   │   ├── serviceKey = {ipToUint32(VIP), portToNetworkOrder(port), proto}
-  │   │   ├── serviceValue = {svc_id, backend_count, flags=0, timeout=0}
-  │   │   ├── FOR EACH backend:
-  │   │   │   └── backendKey = {svc_id, slot=index}
-  │   │   │       backendValue = {ipToUint32(addr), portToNetworkOrder(port)}
-  │   │   └── collect into desiredServices, desiredBackends
-  │   └── → (map[ServiceKey]ServiceValue, map[BackendKey]BackendValue)
-  │
-  ├── applyDesiredBackendEntries               ← backends FIRST
-  │   └── FOR EACH desired: backendMap.Put(key, value)
-  ├── applyDesiredServiceEntries               ← services SECOND
-  │   └── FOR EACH desired: serviceMap.Put(key, value)
-  ├── removeStaleServiceEntries                ← stale services THIRD
-  │   ├── serviceMap.Iterate() → find keys not in desired
-  │   └── serviceMap.Delete(staleKey)
-  └── removeStaleBackendEntries                ← stale backends LAST
-      ├── backendMap.Iterate() → find keys not in desired
-      └── backendMap.Delete(staleKey)
+SimulatorDataPlane.ReconcileVIPDataPlane(ctx, configs)
+                                                     [simulator_dataplane.go:40]
+├── copy(configsCopy, configs)
+├── lastReconciled = configsCopy
+└── reconcileCallCount++
 
-ORDER INVARIANT:
-  Add backends → update services → remove stale services → remove stale backends
-  Services always reference valid backends. No dangling references.
+SimulatorDataPlane.ReconcileRouteDataPlane(ctx, configs)
+                                                     [simulator_dataplane.go:53]
+├── copy(configsCopy, configs)
+├── lastReconciledRoutes = configsCopy
+└── routeReconcileCallCount++
+
+Test accessors:
+  LastReconciled() → []ServiceVIPConfig              [simulator_dataplane.go:75]
+  LastReconciledRoutes() → []RouteDataPlaneConfig    [simulator_dataplane.go:96]
+  ReconcileCallCount() → int                         [simulator_dataplane.go:88]
+  RouteReconcileCallCount() → int                    [simulator_dataplane.go:109]
+  IsCleanedUp() → bool                              [simulator_dataplane.go:116]
 ```
 
-### eBPF Initialization Flow
+## Provider 4: ShadowDataPlane (network/shadow_dataplane.go)
 
 ```
-EbpfDataPlane.Initialize (agent startup)
-  ├── rlimit.RemoveMemlock()                    [BPF memlock limit]
-  ├── os.MkdirAll(/sys/fs/bpf/cca)             [pin directory]
-  ├── ebpf.LoadCollectionSpecFromReader(ELF)    [parse embedded ELF]
-  ├── ebpf.NewCollection(spec)                  [load all programs + maps]
-  ├── extractAndPinMaps()
-  │   └── FOR EACH {cca_services, cca_backends, cca_affinity, cca_reverse_nat}:
-  │       └── map.Pin(/sys/fs/bpf/cca/<name>)
-  ├── attachCgroupPrograms()
-  │   └── FOR EACH {connect4, sendmsg4, getpeername4}:
-  │       └── link.AttachCgroup({Path: /sys/fs/cgroup, Program: prog})
-  ├── scanExistingServiceIDs()                  [resume ID allocation after restart]
-  │   └── serviceMap.Iterate() → find max service_id
-  └── extractTCPrograms()
-      ├── tcProgram = collection.Programs["cca_tc_dnat"]
-      └── snatProgram = collection.Programs["cca_tc_snat"]
-
-EbpfDataPlane.RegisterNode (after agent discovers node IP + pod CIDR)
-  ├── discoverBridgeInterfaceBySubnet(podCIDR)  [find cca0 by subnet IP]
-  ├── attachTCProgramToBridge(cca0)
-  │   └── link.AttachTCX({Interface: cca0, Attach: TCXIngress})
-  ├── populateConfigMap(nodeIP, podCIDR)
-  │   ├── configMap.Put(INDEX_NODE_IP, nodeIP)
-  │   ├── configMap.Put(INDEX_OVERLAY_PREFIX, prefix)
-  │   └── configMap.Put(INDEX_OVERLAY_MASK, mask)
-  ├── detectPhysicalInterfaceForNodeIP(nodeIP)  [find eth0/ens3/bond0]
-  └── attachSNATToPhysicalNIC
-      └── link.AttachTCX({Interface: eth0, Attach: TCXEgress})
-
-EbpfDataPlane.RetryBridgeAttachment (called after first container starts)
-  └── IF tcLink == nil AND tcProgram != nil:
-      ├── discoverBridgeInterfaceBySubnet(podCIDR)
-      └── attachTCProgramToBridge(cca0)
+ShadowDataPlane.ReconcileVIPDataPlane(ctx, configs)  [shadow_dataplane.go:50]
+├── activeProvider.ReconcileVIPDataPlane(ctx, configs) [iptables — real]
+├── totalReconciliations++
+└── compareVIPRulesets(configs)                       [shadow_dataplane.go:64]
+    ├── shadowProvider.GenerateVIPRuleset(configs)    [nftables — shadow]
+    └── compareShadowServices(configs, ruleset)       [shadow_dataplane.go:89]
+        └── check each service has chain + correct numgen mod N
 ```
 
-## Cross-Node Packet Path (VXLAN)
+## Store Key Patterns (what the reconciler reads)
 
-### Setup: VXLAN Mesh
+### Reads (DataPlaneReconciler)
 
-```
-Node-A (192.168.100.20, subnet 10.100.1.0/24):
-  ip link add cca-vxlan0 type vxlan id 42 local 192.168.100.20 dstport 4789 dev eth0
-  ip link set cca-vxlan0 mtu 1450
-  ip link set cca-vxlan0 up
+| Key Pattern | Where Read |
+|---|---|
+| `derived/vip/{service}` | `buildServiceVIPConfigs` (VIP address) |
+| `derived/vip/{service}/port` | `buildServiceVIPConfigs` (VIP port) |
+| `derived/endpoint/service/{service}/{instance}/{port}` | `resolveServiceBackends` (endpoint IP:port) |
+| `observed/instance/{id}/node` | `resolveServiceBackends` (which node) |
+| `observed/instance/{id}/ip` | `resolveLocalBackend`, `resolveRemoteBackend` (container IP) |
+| `observed/instance/{id}/host_port/{port}` | `resolveHostPort` (per-port mapping) |
+| `observed/instance/{id}/host_port` | `resolveHostPort` (legacy fallback) |
+| `observed/node/{nodeID}/address` | `resolveRemoteBackend` (node advertise IP) |
+| `lease/node/{nodeID}` | `identifyStaleNodes` (heartbeat timestamp) |
+| `desired/route/{name}/*` | `parseRouteFactsForDataPlane` (route definitions) |
+| `derived/route/{name}/backends` | `parseRouteFactsForDataPlane` (route backends) |
 
-  FOR EACH peer node-B (192.168.100.30, subnet 10.100.2.0/24):
-    bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst 192.168.100.30
-    ip route replace 10.100.2.0/24 dev cca-vxlan0
-```
+### Writes (DataPlaneReconciler)
 
-### Cross-Node VIP → Backend Flow
+| Key Pattern | Where Written |
+|---|---|
+| `observed/node/{nodeID}/address` | `PublishAdvertiseAddress` (node LAN IP) |
+| `observed/instance/{id}/host_port/{port}` | `publishInstanceHostPorts` (port mapping) |
 
-```
-Container on Node-A connects to VIP 10.200.0.1:80
-  Backend selected: 10.100.2.3:8080 (on Node-B)
+## Store Key Data Flow (controller/user writes → reconciler reads)
 
-Node-A data plane has:
-  LOCAL backends  → container IP:containerPort (e.g. 10.100.1.2:8080)
-  REMOTE backends → node advertise address:hostPort (e.g. 192.168.100.30:32100)
+| Key Pattern | Written By | Read By |
+|---|---|---|
+| `derived/vip/{service}` | **VIPController**.Reconcile | `buildServiceVIPConfigs` |
+| `derived/vip/{service}/port` | **VIPController**.Reconcile | `buildServiceVIPConfigs` |
+| `derived/endpoint/service/{svc}/{id}/{port}` | **EndpointController**.Reconcile | `resolveServiceBackends` |
+| `observed/instance/{id}/node` | Agent `publishInstanceStateToStore` | `resolveServiceBackends` |
+| `observed/instance/{id}/ip` | Agent `publishInstanceStateToStore` | `resolveLocalBackend`, `resolveRemoteBackend` |
+| `observed/node/{nodeID}/address` | Agent `PublishAdvertiseAddress` | `resolveRemoteBackend` (other nodes) |
+| `lease/node/{nodeID}` | Agent heartbeat loop | `identifyStaleNodes` |
+| `desired/route/{name}/*` | User via `cca apply` | `parseRouteFactsForDataPlane` |
+| `derived/route/{name}/backends` | **RouteController**.Reconcile | `parseRouteFactsForDataPlane` |
 
-STEP 1: DNAT on Node-A
-  VIP 10.200.0.1:80 → DNAT to 192.168.100.30:32100 (remote host port)
-  Source: 10.100.1.2 (container) → MASQUERADE to 192.168.100.20 (node IP)
+## Reverse Index (who calls this function?)
 
-STEP 2: Node-A → Node-B (physical LAN)
-  packet: src=192.168.100.20:ephemeral dst=192.168.100.30:32100
-  → routed via physical network (NOT VXLAN — uses host port, not overlay IP)
-
-STEP 3: Node-B receives on host port
-  containerd host port mapping: 192.168.100.30:32100 → 10.100.2.3:8080
-  → packet delivered to container
-
-STEP 4: Return path
-  reply: src=10.100.2.3:8080 → containerd un-NATs to 192.168.100.30:32100
-  → physical network back to 192.168.100.20
-  → Node-A conntrack un-NATs to 10.200.0.1:80
-  → container on Node-A receives reply
-```
-
-### Cross-Node Overlay Flow (container-to-container via VXLAN)
-
-```
-Container 10.100.1.2 on Node-A talks to container 10.100.2.3 on Node-B:
-
-STEP 1: Packet from container
-  src=10.100.1.2 dst=10.100.2.3
-  → hits cca0 bridge → route lookup
-  → ip route: 10.100.2.0/24 dev cca-vxlan0
-  → bridge fdb: 00:00:00:00:00:00 dev cca-vxlan0 dst 192.168.100.30
-
-STEP 2: VXLAN encapsulation
-  outer: src=192.168.100.20:random dst=192.168.100.30:4789 UDP
-  VXLAN header: VNI=42
-  inner: src=10.100.1.2 dst=10.100.2.3
-
-STEP 3: Node-B receives UDP 4789
-  → VXLAN decapsulation (kernel)
-  → inner packet: src=10.100.1.2 dst=10.100.2.3
-  → cca0 bridge → veth → container 10.100.2.3
-```
-
-## VIP Lifecycle
-
-```
-1. ALLOCATE
-   VIPController (server-side) scans desired services, allocates VIP from --vip-cidr pool
-   → writes derived/vip/{service} = <VIP address>
-   → writes derived/vip/{service}/port = <port>
-
-2. DISCOVER
-   DataPlaneReconciler.buildServiceVIPConfigs (agent-side, every 1s)
-   → factStore.Scan(derived/vip/) → finds VIP + port
-   → resolveServiceBackends → finds healthy backends
-
-3. PROGRAM
-   Provider.ReconcileVIPDataPlane(serviceConfigs)
-   ├── nftables: atomic table replace (nft -f)
-   ├── iptables: per-chain flush+rebuild
-   └── eBPF: map put/delete operations
-
-4. INTERFACE
-   Provider.ensureVIPAddress(VIP)
-   → ip addr add <VIP>/32 dev cca-vip0
-   → kernel now accepts packets to this VIP
-
-5. STALE CLEANUP
-   Provider.removeStaleVIPAddresses(desired)
-   → ip addr del <stale_VIP>/32 dev cca-vip0
-   Provider removes stale chains/entries for deleted services
-
-6. AGENT SHUTDOWN
-   Provider.Cleanup()
-   ├── nftables: delete table ip cca
-   ├── iptables: remove all CCA_* chains + jump rules + MASQUERADE
-   ├── eBPF: detach all programs, unpin maps, close collection
-   └── all: ip link del cca-vip0
-```
-
-## Backend Resolution (agent/dataplane.go)
-
-```
-resolveServiceBackends(serviceName, staleNodeSet)
-  ├── factStore.Scan(derived/endpoint/{service}/)
-  │   → endpoint facts: key=.../instanceID/port value=IP:port
-  │
-  ├── FOR EACH endpoint:
-  │   ├── factStore.Get(observed/instance/{id}/node) → nodeID
-  │   ├── IF staleNodeSet[nodeID] → SKIP (node heartbeat > 30s stale)
-  │   │
-  │   ├── IF nodeID == thisNode:
-  │   │   └── resolveLocalBackend
-  │   │       ├── factStore.Get(observed/instance/{id}/ip) → container IP
-  │   │       └── → DataPlaneBackend{containerIP, containerPort}
-  │   │
-  │   └── IF nodeID != thisNode:
-  │       └── resolveRemoteBackend
-  │           ├── factStore.Get(observed/node/{nodeID}/address) → node LAN IP
-  │           ├── resolveHostPort(instanceID, containerPort)
-  │           │   ├── TRY: observed/instance/{id}/host_port/{containerPort}
-  │           │   └── FALLBACK: observed/instance/{id}/host_port (legacy)
-  │           └── → DataPlaneBackend{nodeIP, hostPort}
-  │
-  └── → []DataPlaneBackend
-
-LOCAL backend:  direct bridge path,    no NAT overhead
-REMOTE backend: host port mapping,     DNAT to nodeIP:hostPort on LAN
-```
+| Function | Called By |
+|---|---|
+| `DataPlaneReconciler.Reconcile` | Agent `dataPlaneLoop` (every 1s) |
+| `NewDataPlaneReconciler` | Agent startup [agent/agent.go] |
+| `buildServiceVIPConfigs` | `Reconcile` |
+| `identifyStaleNodes` | `buildServiceVIPConfigs` |
+| `resolveServiceBackends` | `buildServiceVIPConfigs` (for each service) |
+| `resolveLocalBackend` | `resolveServiceBackends` (if nodeID == local) |
+| `resolveRemoteBackend` | `resolveServiceBackends` (if nodeID != local) |
+| `resolveHostPort` | `resolveRemoteBackend` |
+| `buildRouteDataPlaneConfigs` | `Reconcile` |
+| `parseRouteFactsForDataPlane` | `buildRouteDataPlaneConfigs` |
+| `buildRouteConfigFromEntry` | `buildRouteDataPlaneConfigs` (for each route) |
+| `parseBackendAddressList` | `buildRouteConfigFromEntry` |
+| `PublishAdvertiseAddress` | Agent startup [agent/agent.go] |
+| `publishInstanceHostPorts` | Agent reconcile (after container start) |
+| `RegisterDataPlaneFactory` | `init()` in each provider's registration file |
+| `LookupDataPlaneFactory` | Agent startup (select provider) |
+| `NewNftablesDataPlane` | Factory via `RegisterDataPlaneFactory` |
+| `NewIptablesDataPlane` | Factory via `RegisterDataPlaneFactory` |
+| `NewEbpfDataPlane` | Factory via `RegisterDataPlaneFactory` [ebpf_register.go:15] |
+| `NewSimulatorDataPlane` | Test setup |
+| `NewShadowDataPlane` | Factory via `RegisterDataPlaneFactory` |
+| `buildVIPRuleset` | `NftablesDataPlane.ReconcileVIPDataPlane` |
+| `buildRouteDispatchOverrides` | `NftablesDataPlane.ReconcileVIPDataPlane` |
+| `appendRouteChains` | `NftablesDataPlane.ReconcileVIPDataPlane` |
+| `applyNftablesRuleset` | `NftablesDataPlane.ReconcileVIPDataPlane` |
+| `writeBackendDNATRules` | `buildVIPRuleset` (for each service) |
+| `writePostRoutingChain` | `buildVIPRuleset` |
+| `writeContainerIsolationChain` | `buildVIPRuleset` |
+| `writeVerdictMapWithElements` | `buildVIPRuleset` |
+| `writeSourceIPStickyChain` | `appendRouteChains`, `buildRouteRuleset` |
+| `writeCookieProxyChain` | `appendRouteChains`, `buildRouteRuleset` |
+| `sanitizeNftablesChainName` | `buildVIPRuleset`, `appendRouteChains` |
+| `CheckNftablesAvailable` | Agent startup (provider selection) |
+| `ensureGlobalChainAndJumpRules` | `IptablesDataPlane.ReconcileVIPDataPlane`, `ReconcileRouteDataPlane` |
+| `ensureJumpToChain` | `ensureGlobalChainAndJumpRules` |
+| `ensureMasqueradeForDNAT` | `ensureGlobalChainAndJumpRules` |
+| `ensureContainerIsolationRules` | `ensureGlobalChainAndJumpRules` |
+| `reconcileServiceChain` | `IptablesDataPlane.ReconcileVIPDataPlane` (for each service) |
+| `ensureJumpFromMainToService` | `reconcileServiceChain`, `reconcileSourceIPStickyChain`, `reconcileCookieStickyChain` |
+| `reconcileSourceIPStickyChain` | `IptablesDataPlane.ReconcileRouteDataPlane` |
+| `reconcileCookieStickyChain` | `IptablesDataPlane.ReconcileRouteDataPlane` |
+| `removeStaleServiceChains` | `IptablesDataPlane.ReconcileVIPDataPlane` |
+| `removeStaleRouteChains` | `IptablesDataPlane.ReconcileRouteDataPlane` |
+| `removeStaleVIPAddresses` | `ReconcileVIPDataPlane` (both nftables and iptables) |
+| `removeJumpRuleFromMainChain` | `removeStaleServiceChains`, `removeStaleRouteChains`, `Cleanup` |
+| `flushAndDeleteChain` | `removeStaleServiceChains`, `removeStaleRouteChains`, `Cleanup` |
+| `removeVIPAddressFromInterface` | `removeStaleVIPAddresses`, `Cleanup` |
+| `deleteDummyInterface` | `Cleanup` (nftables, iptables) |
+| `sanitizeChainName` | `reconcileServiceChain`, route chain creation (iptables) |
+| `compareShadowServices` | `compareVIPRulesets` (shadow mode) |
 
 ## Provider Comparison
 
 | Aspect | nftables | iptables | eBPF |
 |---|---|---|---|
-| **VIP lookup** | O(1) verdict map | O(N) chain walk | O(1) hash map |
-| **Backend selection** | `numgen inc mod N` | `-m statistic --mode nth` | `bpf_get_prandom_u32() % N` |
-| **Atomicity** | Full table replace (`nft -f`) | Per-chain flush+rebuild | Per-entry map put/delete |
-| **Session affinity** | `jhash ip saddr` | `xt_recent` module | `cca_affinity` LRU map |
-| **SNAT** | `ct status dnat masquerade` | `--ctstate DNAT -j MASQUERADE` | `cca_tc_snat` on NIC egress |
-| **Hook point** | netfilter hooks (prerouting, output, postrouting) | same | cgroup syscall hooks + tc |
-| **Kernel requirement** | nftables support (5.x+) | iptables-legacy or nft backend | kernel 6.6+ (TCX, ct helpers) |
-| **Persistence** | stateless (reconstructed) | stateless (reconstructed) | maps pinned at `/sys/fs/bpf/cca/` |
-| **Cleanup** | `delete table ip cca` | flush+delete each chain | detach programs, unpin maps |
-| **Cookie sticky** | redirect to cookie proxy | redirect to cookie proxy | NOT SUPPORTED (uses cookie proxy) |
-| **Selection flag** | `--dataplane nftables` | `--dataplane iptables` | `--dataplane ebpf` (build tag) |
+| VIP lookup | O(1) verdict map | O(N) chain walk | O(1) hash map |
+| Backend selection | `numgen inc mod N` | `statistic --mode nth` | `bpf_get_prandom_u32() % N` |
+| Atomicity | Full table replace (`nft -f`) | Per-chain flush+rebuild | Per-entry map put/delete |
+| Session affinity | `jhash ip saddr` | `xt_recent` module | `cca_affinity` LRU map |
+| SNAT | `ct status dnat masquerade` | `--ctstate DNAT -j MASQUERADE` | `cca_tc_snat` on NIC egress |
+| Hook point | netfilter (prerouting, output, postrouting) | same | cgroup + tc |
+| Kernel requirement | nftables 5.x+ | iptables 2.6+ | 6.6+ (TCX, ct kfuncs) |
+| Cleanup | `delete table ip cca` | flush+delete each chain | detach programs, unpin maps |
+| Build tag | (default) | (default) | `-tags ebpf` |
 
-## Store Keys Read by Data Plane Reconciler
+## Constants Reference
 
-| Key Pattern | Read In | Purpose |
-|---|---|---|
-| `derived/vip/{service}` | buildServiceVIPConfigs | VIP address for service |
-| `derived/vip/{service}/port` | buildServiceVIPConfigs | VIP port for service |
-| `derived/endpoint/{service}/{instance}/{port}` | resolveServiceBackends | Endpoint IP:port |
-| `observed/instance/{id}/node` | resolveServiceBackends | Which node runs instance |
-| `observed/instance/{id}/ip` | resolveLocalBackend | Container bridge IP |
-| `observed/instance/{id}/host_port/{port}` | resolveHostPort | Host port mapping |
-| `observed/node/{nodeID}/address` | resolveRemoteBackend | Node advertise address |
-| `lease/node/{nodeID}` | identifyStaleNodes | Node heartbeat timestamp |
-| `desired/route/{name}/*` | buildRouteDataPlaneConfigs | Route definitions |
-| `derived/route/{name}/backends` | buildRouteDataPlaneConfigs | Route backend list |
+| Constant | Value | File:Line | Used By |
+|---|---|---|---|
+| `defaultNodeStalenessThreshold` | `30s` | `agent/dataplane.go:24` | `identifyStaleNodes` |
+| `nftablesTableName` | `"cca"` | `nftables_dataplane.go:19` | all nftables functions |
+| `nftablesVIPDispatchMap` | `"vip_dispatch"` | `nftables_dataplane.go:23` | `buildVIPRuleset` |
+| `nftablesServiceChainPrefix` | `"svc_"` | `nftables_dataplane.go:27` | `buildVIPRuleset` |
+| `nftablesRouteChainPrefix` | `"rt_"` | `nftables_dataplane.go:31` | `appendRouteChains` |
+| `containerBridgeInterface` | `"cca0"` | `nftables_dataplane.go:36` | `writeContainerIsolationChain` |
+| `etcdClientPort` | `2379` | `nftables_dataplane.go:39` | container isolation |
+| `etcdPeerPort` | `2380` | `nftables_dataplane.go:42` | container isolation |
+| `iptablesMainChain` | `"CCA_SERVICES"` | `iptables_dataplane.go:18` | all iptables VIP functions |
+| `iptablesServiceChainPrefix` | `"CCA_SVC_"` | `iptables_dataplane.go:22` | `reconcileServiceChain` |
+| `iptablesRouteChainPrefix` | `"CCA_RT_"` | `iptables_dataplane.go:36` | route chain creation |
+| `vipDummyInterface` | `"cca-vip0"` | `iptables_dataplane.go:26` | VIP address management |
+| `maxJumpRuleRemovalAttempts` | `20` | `iptables_dataplane.go:32` | `removeJumpRuleFromMainChain` |
+| `shadowDataPlaneMaxLoggedDivergences` | `10` | `shadow_dataplane.go:19` | `compareVIPRulesets` |

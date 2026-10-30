@@ -1,136 +1,376 @@
-# CCattler Scheduling & Placement Graph Reference
+# CCattler Scheduling & Placement Call Graph
 
-Machine-readable reference for the scheduler placement pipeline, rebalancing,
-and per-node placement mode. Purpose: understand how instances land on nodes
+Machine-readable function-level index for the scheduler placement pipeline,
+rebalancing, preemption, and per-node mode. Purpose: trace placement decisions
 without reading scheduler source files.
 
-## Scheduling Pipeline Overview
+## 1. Reconcile Entry Point (scheduler/scheduler.go)
 
+### Scheduler.Reconcile → top-level pipeline
 ```
-                         RECONCILIATION CYCLE
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  extractFacts()      │
-                    │  nodes, instances,   │
-                    │  placements, rsrc,   │
-                    │  constraints, groups │
-                    └──────────┬───────────┘
-                               │
-                    ┌──────────▼───────────┐
-                    │ findUnplacedPending   │  instances with state=pending
-                    │ Instances()          │  and no placement key
-                    └──────────┬───────────┘
-                               │
-               ┌───────────────┼───────────────┐
-               │               │               │
-     ┌─────────▼────────┐     │     ┌─────────▼────────┐
-     │  Grace period?   │     │     │ partitionByGroup  │
-     │ (first boot only)│     │     │ grouped vs ungrouped│
-     └─────────┬────────┘     │     └─────────┬────────┘
-               │ skip/proceed │               │
-               └───────┬──────┘      ┌────────┴────────┐
-                       │             │                  │
-              ┌────────▼───────┐  ┌──▼──────────┐  ┌───▼─────────────┐
-              │ placeGrouped   │  │ groupBy      │  │ placeBatched    │
-              │ Instances()    │  │ Service()    │  │ Instances()     │
-              │ (co-locate)    │  │              │  │ per service     │
-              └────────┬───────┘  └──┬──────────┘  └───┬─────────────┘
-                       │             │                  │
-                       │         ┌───▼──────────────────▼───┐
-                       │         │      FILTER STAGE        │
-                       │         │  filterByConstraints()   │
-                       │         │  (arch, zone, require,   │
-                       │         │   accept, per-node)      │
-                       │         └───────────┬──────────────┘
-                       │                     │
-                       │         ┌───────────▼──────────────┐
-                       │         │      RANK STAGE          │
-                       │         │  rankByPreferences()     │
-                       │         │  (prefer labels → bonus) │
-                       │         └───────────┬──────────────┘
-                       │                     │
-                       │         ┌───────────▼──────────────┐
-                       │         │      HEAP STAGE          │
-                       │         │  NodeCapacityCache       │
-                       │         │  min-heap by loadScore   │
-                       │         │  O(log n) per placement  │
-                       │         └───────────┬──────────────┘
-                       │                     │
-                       │         ┌───────────▼──────────────┐
-                       │         │     ASSIGN STAGE         │
-                       │         │  BestNode() or           │
-                       │         │  BestNodeInZones()       │
-                       │         │  → write placement/      │
-                       │         │    instance/{id}         │
-                       │         └───────────┬──────────────┘
-                       │                     │
-              ┌────────▼─────────────────────▼───┐
-              │      UNPLACED DEMAND FACTS       │
-              │  emitUnplacedDemandFacts()        │
-              │  → derived/scheduler/unplaced/    │
-              └────────┬─────────────────────────┘
-                       │
-              ┌────────▼─────────────────────────┐
-              │      REBALANCE STAGE             │
-              │  rebalancePlacedInstances()      │
-              │  detect imbalance → migrate      │
-              │  up to 2 instances per cycle     │
-              └────────┬─────────────────────────┘
-                       │
-              ┌────────▼─────────────────────────┐
-              │      PRESSURE DETECTION          │
-              │  detectAndLogNodePressure()      │
-              │  warn if CPU/mem > 80%           │
-              └──────────────────────────────────┘
+Scheduler.Reconcile(ctx, facts)                                  :86
+├── extractNodeInfoFromFacts(facts)                              :87  → map[nodeID]*schedulerNodeInfo
+├── extractInstanceInfoFromFacts(facts)                          :88  → map[instanceID]*schedulerInstanceInfo
+├── extractPlacementsFromFacts(facts)                            :89  → map[instanceID]nodeID
+├── extractServiceResourcesFromFacts(facts)                      :90  → map[svc]serviceResourceRequirements
+├── extractPlacementConstraints(facts)                           :91  → map[svc]*servicePlacementConstraint
+├── extractServiceGroupMemberships(facts)                        :92  → map[svc]groupName
+├── extractServicePriorities(facts)                              :93  → map[svc]int
+├── extractStatefulServices(facts)                               :94  → map[svc]bool
+│
+├── findUnplacedPendingInstances(instances, placements)          :96  → []instanceID
+│
+├── shouldDeferInitialPlacement(placements, unplaced, nodes)     :99
+│   ├── existing placements > 0 → false (scale-up, not first boot)
+│   ├── gracePeriod <= 0 → false (tests)
+│   ├── first call → record firstPendingSeenAt, return true
+│   ├── elapsed < gracePeriod → true (still waiting)
+│   └── elapsed >= gracePeriod → false (proceed)
+│
+├── attemptPlacements(unplaced, nodes, ...)                      :102
+│   [full tree in §2]
+│
+├── collectPlacedInstanceIDs(changes)                            :108 → map[instanceID]bool
+│
+├── attemptPreemptions(unplaced, placedInThisCycle, ...)         :110
+│   [full tree in §5]
+│
+├── emitUnplacedDemandFacts(unplaced, placed, nodes, ...)        :117
+│   [full tree in §6]
+│
+├── cleanupStaleUnplacedFacts(facts, placements, placed)         :122
+│
+├── rebalancePlacedInstances(nodes, instances, ...)              :124
+│   [full tree in §4]
+│
+└── detectAndLogNodePressure(nodes, placements, instances, ...)  :130
+    └── FOR EACH alive node:                                     :594
+        ├── cpuPercent = usedCPU * 100 / availCPU
+        ├── memPercent = usedMemory * 100 / availMemory
+        └── >= 80% → log WARN "node under allocation pressure"
 ```
 
-## Fact Keys Read / Written
-
-### Read (Watch prefixes)
-
-| Prefix | Source | Data Extracted |
-|--------|--------|----------------|
-| `placement/instance/` | Scheduler (self) | existing placements: instanceID → nodeID |
-| `placement/node/{id}/` | Scheduler (self) | reverse index: node → instances |
-| `observed/node/{id}/` | Node agent | state, avail CPU/mem, arch, zone, labels, restrictions |
-| `observed/instance/{id}/` | Node agent | service name, lifecycle state |
-| `desired/service/{name}/` | Compiler | resources, placement constraints, groups |
-| `desired/group/{name}/` | Compiler | service group memberships |
-| `derived/scheduler/unplaced/` | Scheduler (self) | stale unplaced demand facts to clean up |
-
-### Written
-
-| Key Pattern | When | Value |
-|-------------|------|-------|
-| `placement/instance/{id}` | Instance placed | nodeID |
-| `placement/node/{nodeID}/{instanceID}` | Instance placed | "" |
-| `derived/scheduler/unplaced/{id}/reason` | Instance unplaceable | no_nodes / insufficient_capacity / unsatisfiable_constraint |
-| `derived/scheduler/unplaced/{id}/requirements` | Instance unplaceable | JSON: {service, cpu, memory, architecture} |
-
-## Placement Constraints
-
-### servicePlacementConstraint struct (scheduler/scheduler.go:1128)
-
+### Watch Prefixes
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  servicePlacementConstraint                                   │
-│                                                               │
-│  mode         string            "" or "per-node"              │
-│  architecture string            "" = any, "amd64", "arm64"    │
-│  zonePolicy   string            "" = none, "spread", "us-1a"  │
-│  require      map[string]string hard label match (all must)   │
-│  prefer       map[string]string soft label match (bonus)      │
-│  accept       map[string]bool   tolerate restricted nodes     │
-│  colocate     []string          soft: prefer nodes with svc   │
-│  separate     []string          soft: avoid nodes with svc    │
-└──────────────────────────────────────────────────────────────┘
+Scheduler.Watch()                                                :64
+└── returns:
+    ├── placement/instance/          [own placements]
+    ├── observed/node/               [node state, resources, labels]
+    ├── observed/instance/           [instance state, service]
+    ├── desired/service/             [resources, constraints, groups]
+    ├── desired/group/               [service group memberships]
+    └── derived/scheduler/unplaced/  [stale unplaced demand facts]
 ```
 
-### DSL Syntax → Fact Keys → Constraint Fields
+## 2. Placement Pipeline (attemptPlacements)
+
+### attemptPlacements → orchestrates grouped + ungrouped placement
+```
+attemptPlacements(unplaced, nodes, instances, ...)               :621
+├── computeNodeLoadAndResourceUsage(placements, instances, res)  :630
+│   └── scans placements × instances → loadPerNode, usedCPU, usedMemory  :1047
+│
+├── buildAliveCandidateNodes(nodes, usedCPU, usedMemory)         :631
+│   └── FOR EACH node where state == "alive":                    :1070
+│       └── → candidateNode{id, availCPU, availMemory, arch, zone, labels, restrictions}
+│
+├── buildNodeIndexMap(alive)                                     :636  → map[nodeID]int
+├── buildNodeZoneMap(alive)                                      :637  → map[nodeID]zone
+├── computeServiceZonePlacements(placements, instances, zoneMap) :638  → map[svc]map[zone]int
+├── buildNodeServicesMap(placements, instances)                   :639  → map[nodeID]map[svc]bool
+│
+├── partitionUnplacedByGroup(unplaced, instances, svcToGroup)    :648
+│   └── → groupedUnplaced map[groupName][]instanceID, ungrouped []instanceID
+│
+├── placeGroupedInstances(groupedUnplaced, svcToGroup, state)    :650
+│   [full tree in §3]
+│
+└── placeUngroupedInstances(ungroupedUnplaced, state)            :651
+    └── groupInstancesByService(unplaced, instances)             :889
+        └── FOR EACH service (sorted):
+            └── placeBatchedInstances(svc, instanceIDs, state)   :893
+                [full tree below]
+```
+
+### placeBatchedInstances → filter → rank → heap → assign
+```
+placeBatchedInstances(serviceName, instanceIDs, state)           :926
+├── filterByConstraints(alive, serviceName, constraints)         :931
+│   └── FOR EACH candidate:                                      :1439
+│       ├── architecture mismatch → skip                         :1447
+│       ├── zone mismatch (non-spread) → skip                   :1450
+│       ├── satisfiesRequireLabels(candidate, require) → false → skip  :1453/:1470
+│       │   └── FOR EACH required k=v: node.labels[k] != v → false
+│       ├── toleratesRestrictions(candidate, accept) → false → skip    :1456/:1484
+│       │   └── FOR EACH node restriction: !accept[label] → false
+│       └── all filtered out → return original list (fallback)   :1462
+│
+├── [per-node] filterOutNodesAlreadyHostingService(candidates, svc, ...) :935/:1413
+│   └── build occupiedNodes from placements → remove from candidates
+│
+├── [prefer] rankByPreferences(candidates, prefer, load, cpu, mem)  :939/:1512
+│   └── FOR EACH candidate: count matching prefer labels → preferScore
+│       └── stable sort: higher preferScore first
+│
+├── [colocate|separate] rankByAffinityHints(candidates, coloc, sep, nodeServicesMap) :943/:1569
+│   └── FOR EACH candidate:
+│       ├── +1 per colocate target present on node
+│       ├── -1 per separate target present on node
+│       └── stable sort: higher affinityScore first
+│
+├── NewNodeCapacityCache(candidates, loadPerNode, reqCPU, reqMem) :947
+│   └── buildNodeHeap(candidates, load, cpu, mem)                [node_heap.go:60]
+│       └── filter by capacity → heap.Init
+│
+└── FOR EACH instanceID:                                         :950
+    ├── [zone-spread] findMinZones(candidates, svc, zoneCounts)  :957/:985
+    │   └── min count across candidate zones → acceptableZones
+    │   └── cache.BestNodeInZones(acceptableZones)               [cache.go:48]
+    ├── [default] cache.BestNode()                               [cache.go:38]
+    ├── loadPerNode[bestNode]++                                  :967
+    ├── cache.RecordPlacement(bestNode, reqCPU, reqMem)          :968
+    │   └── decrement resources, ++load, heap.Fix or heap.Remove [cache.go:71]
+    ├── [per-node] cache.RemoveNode(bestNode)                    :970/[cache.go:93]
+    ├── updateNodeResourcesAfterPlacement(alive, bestNode, ...)  :972/:1145
+    └── emit:
+        ├── PUT placement/instance/{id} = bestNode               :976
+        └── PUT placement/node/{bestNode}/{id} = ""              :977
+```
+
+## 3. Service Group Placement
+
+### placeGroupedInstances → co-schedule group members on one node
+```
+placeGroupedInstances(groupedUnplaced, svcToGroup, state)        :1661
+└── FOR EACH groupName (sorted):
+    └── placeOneGroup(groupName, instanceIDs, state)             :1675/:1685
+        ├── findExistingGroupNode(groupName, state)              :1690/:1724
+        │   └── scan placements for instances whose service is in this group
+        │       └── first node in sorted order (deterministic)
+        │
+        ├── [no existing node] computeGroupResourceTotal(instanceIDs, state) :1693/:1744
+        │   └── sum CPU + memory across all unplaced members
+        │   └── selectLeastLoadedNode(alive, load, totalCPU, totalMem)  :1694/:1193
+        │       └── linear scan: least-loaded node with sufficient capacity
+        │
+        └── FOR EACH instanceID:                                 :1701
+            ├── resolveInstanceResourceNeeds(info, resources)    :1703/:1017
+            ├── loadPerNode[targetNode]++
+            ├── updateNodeResourcesAfterPlacement(...)           :1709
+            └── emit:
+                ├── PUT placement/instance/{id} = targetNode
+                └── PUT placement/node/{targetNode}/{id} = ""
+```
+
+## 4. Rebalancing
+
+### rebalancePlacedInstances → detect imbalance → migrate
+```
+rebalancePlacedInstances(nodes, instances, placements, ...)      :358
+├── collectAliveNodeIDs(nodes)                                   :367/:444
+│   └── sorted list of alive node IDs
+│
+├── computeRunningLoadPerNode(placements, instances, alive)      :372/:457
+│   └── count running|pending instances per alive node
+│
+├── computeMaxMinLoad(nodeLoad, alive)                           :373/:478
+│   └── maxLoad - minLoad <= 2 → return nil (no imbalance)
+│
+├── sumNodeLoad(nodeLoad)                                        :378/:494
+│   └── idealLoad = totalLoad / aliveNodeCount
+│
+├── findOverloadedNodes(nodeLoad, alive, idealLoad)              :387/:504
+│   └── nodes where load > idealLoad + 1, sorted by load desc
+│
+└── executeRebalanceMoves(overloaded, nodeLoad, alive, ...)      :389/:398
+    └── FOR EACH overloaded node:                                :411
+        ├── findMovableInstances(sourceNode, placements, ...)    :415/:519
+        │   └── filter: running, not in group, not placedInThisCycle,
+        │              not per-node, no colocate/separate hints  :542-548
+        │
+        └── FOR EACH movable instance:                           :416
+            ├── selectRebalanceTarget(svc, source, alive, load, constraints)  :424/:558
+            │   └── filterByConstraints → least-loaded non-source node
+            │
+            ├── GUARD: nodeLoad[target] >= nodeLoad[source] - 1 → skip  :428
+            │   [anti-oscillation: move only if genuinely improves balance]
+            │
+            └── buildRebalanceMoveChanges(instanceID, source, target)  :434/:583
+                ├── PUT placement/instance/{id} = targetNode
+                ├── DELETE placement/node/{sourceNode}/{id}
+                └── PUT placement/node/{targetNode}/{id} = ""
+            [cap: maxRebalanceMovesPerCycle (2)]
+```
+
+## 5. Priority & Preemption (M161)
+
+### attemptPreemptions → stop low-priority victims for high-priority requesters
+```
+attemptPreemptions(unplaced, placedInThisCycle, nodes, ...)      :194
+├── stillUnplaced = unplaced \ placedInThisCycle                 :206
+│
+├── sort stillUnplaced: highest priority first, then instanceID  :214
+│
+└── FOR EACH stillUnplaced with priority > 0:                    :227
+    ├── findPreemptionVictim(svc, priority, nodes, ...)          :238/:275
+    │   └── FOR EACH placed running instance:                    :293
+    │       ├── skip if already preempted
+    │       ├── skip if not running
+    │       ├── skip if node not alive
+    │       ├── skip if same service as requester
+    │       ├── skip if victimPriority >= requesterPriority      :310 [strictly less]
+    │       ├── skip if per-node mode                            :314
+    │       ├── skip if stateful                                 :317
+    │       └── collect → sort by priority asc, then instanceID  :330
+    │   └── return first candidate (lowest priority victim)
+    │
+    └── emit:
+        └── PUT derived/instance/{victimID}/controller_stopped = "true"  :265
+    [cap: maxPreemptionsPerCycle (3)]
+```
+
+### Preemption Immunity
+
+| Category | Immune? | Reason |
+|----------|---------|--------|
+| Per-node services | Yes | Pinned one-per-node |
+| Stateful services | Yes | Volume affinity, ordinal stability |
+| Same priority | Yes | Only strictly lower priority preempted |
+| Priority 0 requesters | Yes | Default/unset never preempts |
+| Same service | Yes | Don't cannibalize own instances |
+
+## 6. Unplaced Demand Facts
+
+### emitUnplacedDemandFacts → signal autoscaler
+```
+emitUnplacedDemandFacts(unplaced, placed, nodes, instances, ...) :681
+├── countAliveNodes(nodes)                                       :689/:703
+│
+└── FOR EACH unplaced instance not in placedInThisCycle:
+    ├── classifyUnplacedReason(svc, alive, constraints, resources) :714
+    │   ├── aliveCount == 0 → "no_nodes"
+    │   ├── countConstraintMatchingNodes() == 0 → "unsatisfiable_constraint"  :740
+    │   └── else → "insufficient_capacity"
+    │
+    └── buildUnplacedFactChanges(instanceID, reason, requirements) :787
+        ├── PUT derived/scheduler/unplaced/{id}/reason = reason
+        └── PUT derived/scheduler/unplaced/{id}/requirements = JSON
+```
+
+### cleanupStaleUnplacedFacts
+```
+cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)  :830
+├── extractExistingUnplacedInstanceIDs(facts)                    :852
+└── FOR EACH existing unplaced ID:
+    └── if now placed → DELETE derived/scheduler/unplaced/{id}/*
+```
+
+## 7. Node Heap (scheduler/node_heap.go)
+
+### nodeSelectionHeap — container/heap.Interface
+```
+nodeSelectionHeap type                                           [node_heap.go:4]
+
+nodeHeapEntry:
+    node       candidateNode
+    loadScore  int              ← instance count on node
+    preferRank int              ← position in ranked candidate order
+    heapIndex  int              ← maintained by Swap()
+
+heap.Less ordering:                                              [node_heap.go:25]
+    1. loadScore ascending      (least-loaded wins)
+    2. preferRank ascending     (prefer-label/affinity bonus)
+    3. node.id ascending        (deterministic tie-break)
+```
+
+### buildNodeHeap
+```
+buildNodeHeap(candidates, loadPerNode, reqCPU, reqMem)           [node_heap.go:60]
+├── FOR EACH candidate:
+│   ├── skip if availCPU < reqCPU (capacity filter)
+│   ├── skip if availMemory < reqMem (capacity filter)
+│   └── add nodeHeapEntry{loadScore: loadPerNode[id], preferRank: index}
+├── heap.Init(&heapSlice)
+└── → heapSlice, lookupMap
+```
+
+### Complexity
+
+| Operation | Complexity | Function |
+|-----------|------------|----------|
+| Build heap | O(n) | `buildNodeHeap` via `heap.Init` |
+| BestNode | O(1) | peek `heap[0]` |
+| BestNodeInZones | O(n) worst case | linear scan of heap entries |
+| RecordPlacement | O(log n) | `heap.Fix` or `heap.Remove` |
+| RemoveNode | O(log n) | `heap.Remove` |
+
+## 8. NodeCapacityCache (scheduler/cache.go)
+
+### NodeCapacityCache — persistent heap with O(1) lookup
+```
+NewNodeCapacityCache(candidates, loadPerNode, reqCPU, reqMem)    [cache.go:26]
+└── buildNodeHeap(candidates, load, cpu, mem)                    [node_heap.go:60]
+
+BestNode() string                                                [cache.go:38]
+└── selectFromHeap(&cache.heapData)                              [node_heap.go:86]
+
+BestNodeInZones(acceptableZones) string                          [cache.go:48]
+└── linear scan: first heap entry with zone in acceptableZones
+
+RecordPlacement(nodeID, cpuCost, memCost)                        [cache.go:71]
+├── lookupMap[nodeID] → entry
+├── entry.node.availCPU -= cpuCost
+├── entry.node.availMemory -= memCost
+├── entry.loadScore++
+├── exhausted? → heap.Remove
+└── else → heap.Fix (restore invariant)
+
+RemoveNode(nodeID)                                               [cache.go:93]
+└── lookupMap[nodeID] → heap.Remove
+```
+
+## Store Key Patterns
+
+### Reads
+| Key Pattern | Source | Extracted By |
+|---|---|---|
+| `placement/instance/{id}` | self | `extractPlacementsFromFacts` :1327 |
+| `observed/node/{id}/state` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/available_cpu` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/available_memory` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/architecture` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/zone` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/label/{key}` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/node/{id}/restrict/{key}` | agent | `extractNodeInfoFromFacts` :1269 |
+| `observed/instance/{id}/state` | agent | `extractInstanceInfoFromFacts` :1243 |
+| `observed/instance/{id}/service` | agent | `extractInstanceInfoFromFacts` :1243 |
+| `desired/service/{svc}/resources/cpu` | compiler | `extractServiceResourcesFromFacts` :90 |
+| `desired/service/{svc}/resources/memory` | compiler | `extractServiceResourcesFromFacts` :90 |
+| `desired/service/{svc}/placement/*` | compiler | `extractPlacementConstraints` :1359 |
+| `desired/service/{svc}/priority` | compiler | `extractServicePriorities` :174 |
+| `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :341 |
+| `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
+| `derived/scheduler/unplaced/{id}/*` | self | `extractExistingUnplacedInstanceIDs` :852 |
+
+### Writes
+| Key Pattern | Value | Written By |
+|---|---|---|
+| `placement/instance/{id}` | nodeID | `placeBatchedInstances` :976, `placeOneGroup` :1712, `buildRebalanceMoveChanges` :586 |
+| `placement/node/{nodeID}/{id}` | "" | `placeBatchedInstances` :977, `placeOneGroup` :1713, `buildRebalanceMoveChanges` :588 |
+| `derived/scheduler/unplaced/{id}/reason` | reason string | `buildUnplacedFactChanges` :787 |
+| `derived/scheduler/unplaced/{id}/requirements` | JSON | `buildUnplacedFactChanges` :787 |
+| `derived/instance/{id}/controller_stopped` | "true" | `attemptPreemptions` :265 |
+
+### Deletes
+| Key Pattern | Deleted By |
+|---|---|
+| `placement/node/{oldNode}/{id}` | `buildRebalanceMoveChanges` :587 |
+| `derived/scheduler/unplaced/{id}/*` | `cleanupStaleUnplacedFacts` :830 |
+
+## DSL Syntax → Fact Keys → Constraint Fields
 
 | DSL Declaration | Fact Key | Constraint Field |
-|----------------|----------|------------------|
+|---|---|---|
 | `placement { architecture amd64 }` | `desired/service/{s}/placement/architecture` | `.architecture` |
 | `placement { zone spread }` | `desired/service/{s}/placement/zone` | `.zonePolicy` |
 | `placement { zone us-east-1a }` | `desired/service/{s}/placement/zone` | `.zonePolicy` |
@@ -141,493 +381,97 @@ without reading scheduler source files.
 | `placement { colocate "redis" }` | `desired/service/{s}/placement/colocate/redis` | `.colocate` |
 | `placement { separate "logging" }` | `desired/service/{s}/placement/separate/logging` | `.separate` |
 
-### Filter Evaluation Order (filterByConstraints, :1218)
-
-```
-  for each candidate:
-    1. architecture: skip if constraint.arch != "" && node.arch != constraint.arch
-    2. zone:         skip if zonePolicy != "spread" && node.zone != zonePolicy
-    3. require:      skip if node missing any required label key=value
-    4. accept:       skip if node has restriction label not in service's accept set
-
-  fallback: if all candidates filtered out → return original unfiltered list
-```
-
-### Node Labels and Restrictions
-
-Nodes report labels and restrictions via facts:
-
-```
-observed/node/{id}/label/{key}     = value     ← for require/prefer matching
-observed/node/{id}/restrict/{key}  = value     ← blocks scheduling unless service accepts
-```
-
-Restrictions act as inverse taints: a restricted node rejects all services
-that don't explicitly `accept` the restriction label.
-
-## Per-Node Placement (M160)
-
-### Data Flow
-
-```
-desired/service/{s}/placement/mode = "per-node"
-        │
-        ▼
-┌───────────────────┐    observed/node/*/state = "alive"
-│  IntentResolver   │◄────────────────────────────────
-│  (intent.go)      │
-│                   │    effective count = alive node count
-│                   │    (capped by policy_max)
-└───────┬───────────┘
-        │ writes:
-        │  effective/service/{s}/instances = N
-        │  effective/service/{s}/placement_mode = "per-node"
-        ▼
-┌───────────────────┐
-│  InstanceController│    creates N pending instances
-│  (instance.go)    │    scale-down: stops dead-node instances first
-└───────┬───────────┘
-        │
-        ▼
-┌───────────────────┐
-│  Scheduler        │    per-node mode triggers:
-│  (scheduler.go)   │    1. filterOutNodesAlreadyHostingService()
-│                   │    2. cache.RemoveNode() after each placement
-│                   │    3. findMovableInstances() skips per-node
-└───────────────────┘
-```
-
-### Scheduler Per-Node Behavior (placeBatchedInstances, :719)
-
-1. `filterByConstraints()` — standard architecture/zone/label filtering
-2. `filterOutNodesAlreadyHostingService()` — removes nodes with existing instances of this service
-3. Heap selection — picks least-loaded among remaining candidates
-4. After each placement: `cache.RemoveNode(bestNode)` — prevents batched duplicates
-5. Rebalancing: `findMovableInstances()` skips per-node instances entirely (:344)
-
-### Scale-Down Priority (instance.go)
-
-Per-node scale-down uses `markPerNodeExcessInstancesAsStopped()`:
-```
-Priority order (stopped first):
-  1. Instances on dead/unreachable nodes  (node_failure state)
-  2. Instances in pending state
-  3. Instances in running state            (least recent first)
-```
-
-## Filter Stage Detail
-
-### All Filter Functions
-
-| Function | File:Line | Purpose |
-|----------|-----------|---------|
-| `filterByConstraints` | scheduler.go:1218 | Main filter: arch + zone + require + accept |
-| `filterByRestrictions` | scheduler.go:1274 | Restriction-only filter (no constraints) |
-| `satisfiesRequireLabels` | scheduler.go:1249 | Hard label check: all required k=v present |
-| `toleratesRestrictions` | scheduler.go:1263 | Accept check: service tolerates node restrictions |
-| `filterOutNodesAlreadyHostingService` | scheduler.go:1192 | Per-node: exclude occupied nodes |
-
-### Resource Capacity Filter (in buildNodeHeap, node_heap.go:60)
-
-The heap build stage also filters: nodes with `availCPU < requiredCPU` or
-`availMemory < requiredMemory` are excluded from the heap entirely.
-
-## Rank Stage Detail
-
-### rankByPreferences (scheduler.go:1291)
-
-Soft ranking — all candidates survive, but preferred ones float to the top.
-
-```
-Algorithm:
-  1. For each candidate, count matching prefer labels → preferScore
-  2. Stable sort: higher preferScore first
-  3. Equal preferScore preserves original order (feeds into heap)
-
-Input:   candidates + preferLabels map + loadPerNode
-Output:  reordered candidates slice (same elements, different order)
-Effect:  preferRank in heap entry = position in reordered slice
-         → lower preferRank wins ties in heap.Less()
-```
-
-## Colocate & Separate Hints (M162)
-
-### Data Flow
-
-```
-desired/service/{s}/placement/colocate/{target}
-desired/service/{s}/placement/separate/{target}
-        │
-        ▼
-┌───────────────────┐
-│ extractPlacement   │   reads colocate/separate from desired/ facts
-│ Constraints()     │   → servicePlacementConstraint.colocate[]
-│                   │   → servicePlacementConstraint.separate[]
-└───────┬───────────┘
-        │
-        ▼
-┌───────────────────┐
-│ buildNodeServices │   placements × instances → map[nodeID]map[svc]bool
-│ Map()             │   which services are running/pending on each node
-└───────┬───────────┘
-        │
-        ▼
-┌───────────────────┐
-│ rankByAffinity    │   score per node:
-│ Hints()           │     +1 per colocate target present
-│                   │     -1 per separate target present
-│                   │   stable sort: higher score first
-└───────┬───────────┘
-        │
-        ▼  feeds into heap as candidate order (preferRank)
-```
-
-### Scoring
-
-| Node has | Colocate target | Separate target | Score delta |
-|----------|----------------|-----------------|-------------|
-| target present | +1 | -1 | net effect per target |
-| target absent | 0 | 0 | no change |
-
-Scoring is a **soft tiebreaker** — it only influences placement when nodes have
-equal load. The heap sorts by loadScore first, preferRank second.
-
-### Rebalancing Interaction
-
-Instances with colocate or separate hints are **not eligible for rebalancing**
-(`findMovableInstances` skips them). Moving them could violate the hint
-established at placement time.
-
-### Functions
-
-| Function | File | Purpose |
-|----------|------|---------|
-| `buildNodeServicesMap` | scheduler.go | Build node→services map from placements+instances |
-| `rankByAffinityHints` | scheduler.go | Reorder candidates by colocate/separate scores |
-
-## Node Heap
-
-### Structure (scheduler/node_heap.go)
-
-```
-nodeSelectionHeap implements container/heap.Interface
-
-┌─────────────────────────────────────┐
-│  nodeHeapEntry                       │
-│    node       candidateNode          │
-│    loadScore  int        ← instance count on this node    │
-│    preferRank int        ← position in preference order   │
-│    heapIndex  int        ← maintained by Swap()           │
-└─────────────────────────────────────┘
-
-heap.Less ordering:
-  1. loadScore ascending         (least-loaded wins)
-  2. preferRank ascending        (prefer-label bonus)
-  3. node.id ascending           (deterministic tie-break)
-```
-
-### Complexity
-
-| Operation | Complexity |
-|-----------|------------|
-| Build heap | O(n) via heap.Init |
-| BestNode | O(1) — peek heap[0] |
-| BestNodeInZones | O(n) worst case — linear scan |
-| RecordPlacement | O(log n) via heap.Fix or heap.Remove |
-| RemoveNode | O(log n) via heap.Remove |
-
-## NodeCapacityCache (scheduler/cache.go)
-
-### Purpose
-
-Wraps the min-heap with a `lookupMap` (node ID → entry) for O(1) access.
-Reused across all instances in a single service batch — avoids rebuilding
-the heap per instance.
-
-### Lifecycle
-
-```
-1. NewNodeCapacityCache(candidates, load, reqCPU, reqMem)
-   └─ buildNodeHeap → filter by capacity → heap.Init
-
-2. Per instance in batch:
-   a. BestNode() or BestNodeInZones()  → peek heap[0]
-   b. RecordPlacement(nodeID, cpu, mem) → decrement resources, ++load
-      └─ if exhausted → heap.Remove
-      └─ else → heap.Fix (restore invariant)
-   c. [per-node only] RemoveNode(nodeID)
-
-3. Cache discarded at end of service batch
-```
-
-### Exhaustion Check
-
-A node is exhausted when:
-```
-(minimumCPU > 0  AND  node.availCPU < minimumCPU) OR
-(minimumMemory > 0  AND  node.availMemory < minimumMemory)
-```
-
-## Batch Placement (placeBatchedInstances, :719)
-
-### Algorithm
-
-Unplaced instances are grouped by service. Per service:
-
-```
-1. filterByConstraints(alive, serviceName, constraints)
-2. [per-node] filterOutNodesAlreadyHostingService(candidates, svc, placements, instances)
-3. [prefer]   rankByPreferences(candidates, prefer, load, cpu, mem)
-4. NewNodeCapacityCache(candidates, loadPerNode, reqCPU, reqMem)
-5. For each instance:
-   a. [zone-spread] BestNodeInZones(findMinZones(candidates, svc, zoneCounts))
-      [default]     BestNode()
-   b. loadPerNode[bestNode]++
-   c. cache.RecordPlacement(bestNode, reqCPU, reqMem)
-   d. [per-node] cache.RemoveNode(bestNode)
-   e. updateNodeResourcesAfterPlacement() → O(1) via nodeIndexMap
-   f. emit placement/instance/{id} = bestNode
-         placement/node/{bestNode}/{id} = ""
-```
-
-### Zone Spread (findMinZones, :774)
-
-When `zonePolicy == "spread"`:
-```
-1. Count existing placements per zone for this service
-2. Find minimum count among candidate zones
-3. Return zones matching minimum count → acceptableZones
-4. BestNodeInZones(acceptableZones) → least-loaded in acceptable zone
-```
-
-## Service Groups (Co-Scheduling)
-
-### Data Model
-
-```
-desired/group/{groupName}/process/{serviceName}
-```
-
-Services in a group are co-located on the same node.
-
-### Placement Logic (placeOneGroup, :1397)
-
-```
-1. Check if any existing group member is already placed
-   └─ findExistingGroupNode() → reuse that node
-2. If no existing placement:
-   └─ sum CPU/memory across all unplaced members
-   └─ selectLeastLoadedNode(alive, load, totalCPU, totalMem)
-3. Place all members on chosen node
-```
-
-## Rebalancing
-
-### Trigger Condition
-
-```
-maxLoad - minLoad > rebalanceLoadImbalanceThreshold (2)
-```
-
-Where load = count of running/pending instances per alive node.
-
-### Algorithm (rebalancePlacedInstances, :160)
-
-```
-1. Collect alive node IDs (sorted)
-2. Count running/pending instances per node → nodeLoad
-3. Compute max, min load
-4. If max - min <= 2 → skip
-5. idealLoad = totalInstances / aliveNodeCount
-6. overloaded = nodes where load > idealLoad + 1 (sorted by load desc)
-7. For each overloaded node:
-   a. findMovableInstances() → running, non-grouped, not freshly placed,
-                                 not per-node
-   b. For each movable instance:
-      - selectRebalanceTarget() → least-loaded constraint-compatible node
-      - Only move if targetLoad < sourceLoad - 1 (anti-oscillation)
-      - Write rebalance changes:
-          placement/instance/{id} = newNode
-          DELETE placement/node/{oldNode}/{id}
-          PUT placement/node/{newNode}/{id}
-      - Update nodeLoad counters
-   c. Stop at maxRebalanceMovesPerCycle (2) total moves
-```
-
-### Instance Eligibility (findMovableInstances, :321)
-
-| Check | Reason |
-|-------|--------|
-| `state == running` | Don't move pending/stopped/failed |
-| `not in serviceToGroup` | Co-scheduled instances must stay together |
-| `not placedInThisCycle` | Avoid place-then-move oscillation |
-| `not per-node mode` | Per-node placement is fixed to specific nodes |
-
-### Anti-Oscillation Guard
-
-```
-targetLoad < sourceLoad - 1
-```
-
-Without this, the scheduler could bounce an instance between two nodes:
-A has 5, B has 4 → move to B → B has 5, A has 4 → move to A → loop.
-The `-1` ensures a move only happens if it genuinely improves balance.
-
-## Initial Placement Grace Period
-
-### Purpose
-
-Prevents thundering herd on cluster startup — waits for agents to register
-before placing anything.
-
-### Activation Conditions
-
-```
-activated when ALL of:
-  - zero existing placements in store
-  - at least one pending instance exists
-  - placementGracePeriod > 0
-
-NOT activated when:
-  - any existing placements (scale-up, rolling restart)
-  - no pending instances
-  - gracePeriod is 0 (unit tests)
-```
-
-### Timing
-
-```
-Default:  initialPlacementGracePeriod = 10s   (scheduler.go:28)
-Tests:    SetPlacementGracePeriod(0)           (disables grace)
-```
-
-After grace period expires, `firstPendingSeenAt` resets and normal
-placement proceeds.
-
-## Unplaced Demand Facts
-
-### Purpose
-
-Signal to the cluster autoscaler that instances need nodes but can't be placed.
-
-### Classification (classifyUnplacedReason, :509)
-
-| Reason | Condition |
-|--------|-----------|
-| `no_nodes` | Zero alive nodes in cluster |
-| `unsatisfiable_constraint` | No alive node matches the service's constraints |
-| `insufficient_capacity` | Nodes exist but lack CPU/memory |
-
-### Fact Structure
-
-```
-derived/scheduler/unplaced/{instanceID}/reason       = "no_nodes" | "insufficient_capacity" | ...
-derived/scheduler/unplaced/{instanceID}/requirements = {"service":"web","cpu":500,"memory":512,"architecture":"amd64"}
-```
-
-Stale facts are cleaned up when the instance receives a placement
-(`cleanupStaleUnplacedFacts`, :625).
-
-## Pressure Detection
-
-### Threshold
-
-```
-nodeAllocationPressurePercent = 80    (scheduler.go:37)
-```
-
-### Check (detectAndLogNodePressure, :391)
-
-```
-for each alive node with availCPU > 0:
-  cpuPercent = (usedCPU * 100) / node.availCPU
-  memPercent = (usedMemory * 100) / node.availMemory
-  if cpuPercent >= 80 OR memPercent >= 80:
-    log WARN "node under allocation pressure"
-```
+## Reverse Index
+
+| Function | File:Line | Called By |
+|---|---|---|
+| `Scheduler.Reconcile` | scheduler.go:86 | Runner.executeReconciliationCycle |
+| `Scheduler.Watch` | scheduler.go:64 | Runner.setupControllerWatches |
+| `shouldDeferInitialPlacement` | scheduler.go:138 | Reconcile |
+| `extractNodeInfoFromFacts` | scheduler.go:1269 | Reconcile |
+| `extractInstanceInfoFromFacts` | scheduler.go:1243 | Reconcile |
+| `extractPlacementsFromFacts` | scheduler.go:1327 | Reconcile |
+| `extractServiceResourcesFromFacts` | scheduler.go:90 | Reconcile |
+| `extractPlacementConstraints` | scheduler.go:1359 | Reconcile |
+| `extractServiceGroupMemberships` | scheduler.go:1615 | Reconcile |
+| `extractServicePriorities` | scheduler.go:174 | Reconcile |
+| `extractStatefulServices` | scheduler.go:341 | Reconcile |
+| `findUnplacedPendingInstances` | scheduler.go:1033 | Reconcile |
+| `attemptPlacements` | scheduler.go:621 | Reconcile |
+| `collectPlacedInstanceIDs` | scheduler.go:666 | Reconcile |
+| `attemptPreemptions` | scheduler.go:194 | Reconcile |
+| `findPreemptionVictim` | scheduler.go:275 | attemptPreemptions |
+| `emitUnplacedDemandFacts` | scheduler.go:681 | Reconcile |
+| `classifyUnplacedReason` | scheduler.go:714 | emitUnplacedDemandFacts |
+| `countConstraintMatchingNodes` | scheduler.go:740 | classifyUnplacedReason |
+| `buildUnplacedFactChanges` | scheduler.go:787 | emitUnplacedDemandFacts |
+| `buildUnplacedRequirements` | scheduler.go:808 | buildUnplacedFactChanges |
+| `cleanupStaleUnplacedFacts` | scheduler.go:830 | Reconcile |
+| `extractExistingUnplacedInstanceIDs` | scheduler.go:852 | cleanupStaleUnplacedFacts |
+| `rebalancePlacedInstances` | scheduler.go:358 | Reconcile |
+| `executeRebalanceMoves` | scheduler.go:398 | rebalancePlacedInstances |
+| `collectAliveNodeIDs` | scheduler.go:444 | rebalancePlacedInstances |
+| `computeRunningLoadPerNode` | scheduler.go:457 | rebalancePlacedInstances |
+| `computeMaxMinLoad` | scheduler.go:478 | rebalancePlacedInstances |
+| `sumNodeLoad` | scheduler.go:494 | rebalancePlacedInstances |
+| `findOverloadedNodes` | scheduler.go:504 | rebalancePlacedInstances |
+| `findMovableInstances` | scheduler.go:519 | executeRebalanceMoves |
+| `selectRebalanceTarget` | scheduler.go:558 | executeRebalanceMoves |
+| `buildRebalanceMoveChanges` | scheduler.go:583 | executeRebalanceMoves |
+| `detectAndLogNodePressure` | scheduler.go:594 | Reconcile |
+| `computeNodeLoadAndResourceUsage` | scheduler.go:1047 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |
+| `buildAliveCandidateNodes` | scheduler.go:1070 | attemptPlacements, rebalancePlacedInstances |
+| `buildNodeIndexMap` | scheduler.go:1094 | attemptPlacements |
+| `buildNodeZoneMap` | scheduler.go:1104 | attemptPlacements |
+| `computeServiceZonePlacements` | scheduler.go:1118 | attemptPlacements |
+| `buildNodeServicesMap` | scheduler.go:1547 | attemptPlacements |
+| `partitionUnplacedByGroup` | scheduler.go:1634 | attemptPlacements |
+| `placeGroupedInstances` | scheduler.go:1661 | attemptPlacements |
+| `placeOneGroup` | scheduler.go:1685 | placeGroupedInstances |
+| `findExistingGroupNode` | scheduler.go:1724 | placeOneGroup |
+| `computeGroupResourceTotal` | scheduler.go:1744 | placeOneGroup |
+| `selectLeastLoadedNode` | scheduler.go:1193 | placeOneGroup |
+| `placeUngroupedInstances` | scheduler.go:889 | attemptPlacements |
+| `groupInstancesByService` | scheduler.go:900 | placeUngroupedInstances |
+| `sortedServiceNames` | scheduler.go:913 | placeUngroupedInstances |
+| `placeBatchedInstances` | scheduler.go:926 | placeUngroupedInstances |
+| `filterByConstraints` | scheduler.go:1439 | placeBatchedInstances, selectRebalanceTarget |
+| `filterByRestrictions` | scheduler.go:1495 | filterByConstraints (no constraints path) |
+| `satisfiesRequireLabels` | scheduler.go:1470 | filterByConstraints |
+| `toleratesRestrictions` | scheduler.go:1484 | filterByConstraints, filterByRestrictions |
+| `filterOutNodesAlreadyHostingService` | scheduler.go:1413 | placeBatchedInstances (per-node) |
+| `rankByPreferences` | scheduler.go:1512 | placeBatchedInstances |
+| `rankByAffinityHints` | scheduler.go:1569 | placeBatchedInstances |
+| `findMinZones` | scheduler.go:985 | placeBatchedInstances (zone-spread) |
+| `resolveInstanceResourceNeeds` | scheduler.go:1017 | placeOneGroup, computeGroupResourceTotal |
+| `updateNodeResourcesAfterPlacement` | scheduler.go:1145 | placeBatchedInstances, placeOneGroup |
+| `NewNodeCapacityCache` | cache.go:26 | placeBatchedInstances |
+| `BestNode` | cache.go:38 | placeBatchedInstances |
+| `BestNodeInZones` | cache.go:48 | placeBatchedInstances (zone-spread) |
+| `RecordPlacement` | cache.go:71 | placeBatchedInstances |
+| `RemoveNode` | cache.go:93 | placeBatchedInstances (per-node) |
+| `buildNodeHeap` | node_heap.go:60 | NewNodeCapacityCache |
+| `selectFromHeap` | node_heap.go:86 | BestNode |
+| `countAliveNodes` | scheduler.go:703 | shouldDeferInitialPlacement, emitUnplacedDemandFacts |
+| `satisfiesRequireLabelsForNode` | scheduler.go:764 | countConstraintMatchingNodes |
+| `toleratesRestrictionsForNode` | scheduler.go:776 | countConstraintMatchingNodes |
 
 ## Constants
 
-| Constant | Value | File:Line | Purpose |
-|----------|-------|-----------|---------|
-| `initialPlacementGracePeriod` | 10s | scheduler.go:28 | Wait for agents before first placement |
-| `maxRebalanceMovesPerCycle` | 2 | scheduler.go:31 | Cap rebalance migrations per cycle |
-| `rebalanceLoadImbalanceThreshold` | 2 | scheduler.go:34 | Min max-min diff to trigger rebalance |
-| `nodeAllocationPressurePercent` | 80 | scheduler.go:37 | Warn threshold for allocation pressure |
-| `maxPreemptionsPerCycle` | 3 | scheduler.go:166 | Cap preemption stops per cycle |
+| Constant | Value | File:Line | Used By |
+|---|---|---|---|
+| `initialPlacementGracePeriod` | 10s | scheduler.go:28 | shouldDeferInitialPlacement |
+| `maxRebalanceMovesPerCycle` | 2 | scheduler.go:31 | executeRebalanceMoves |
+| `rebalanceLoadImbalanceThreshold` | 2 | scheduler.go:34 | rebalancePlacedInstances |
+| `nodeAllocationPressurePercent` | 80 | scheduler.go:37 | detectAndLogNodePressure |
+| `maxPreemptionsPerCycle` | 3 | scheduler.go:170 | attemptPreemptions |
 
-## Priority & Preemption (M161)
-
-### Service Priority
-
-Services declare `priority N` (0–1000) in the DSL. Higher values are harder
-to evict and preempt. Default is 0 (unset — never preempts, first to be preempted).
-
-```
-Fact key:    desired/service/{name}/priority
-Effective:   effective/service/{name}/priority
-Extracted:   extractServicePriorities (scheduler.go)
-```
-
-### Preemption Pipeline (attemptPreemptions)
-
-Runs after `attemptPlacements`, before `emitUnplacedDemandFacts`:
-
-```
-stillUnplaced = unplaced \ placedInThisCycle
-  ↓ filter: requesterPriority > 0
-  ↓ sort: highest priority first
-  ↓ for each:
-      findPreemptionVictim → lowest-priority running instance
-        ↓ filter: victimPriority < requesterPriority (strictly less)
-        ↓ filter: not per-node, not stateful, not already preempted
-        ↓ sort victims: lowest priority first, then instance ID
-      emit controller_stopped for victim
-  ↓ cap: maxPreemptionsPerCycle (3)
-```
-
-### Preemption Immunity
-
-| Category | Immune? | Reason |
-|----------|---------|--------|
-| Per-node services (M160) | Yes | Pinned one-per-node, can't be displaced |
-| Stateful services | Yes | Volume affinity, ordinal stability |
-| Same priority | Yes | Only strictly lower priority is preempted |
-| Priority 0 requesters | Yes | Default/unset services never preempt |
-
-### Eviction Integration
-
-The EvictionController uses priority as secondary sort after QoS class:
-1. QoS class: BestEffort (0) < Burstable (1) < Guaranteed (2)
-2. Service priority: lower evicted first (0 before 500 before 1000)
-3. Instance ID: deterministic tie-breaking
-
-## Stateful Considerations
-
-### Volume Affinity (stateful_volume.go)
-
-Stateful services with volumes have placement affinity — the
-`StatefulVolumeController` does not directly constrain the scheduler, but
-the instance will fail init if placed on a node without the required volume.
-The scheduler is volume-unaware; volume affinity is enforced at runtime.
-
-### DNS Stability (stateful_dns.go)
-
-Stateful DNS entries (`{service}-{ordinal}.{service}`) are maintained by the
-`StatefulDNSController`. Rebalancing a stateful instance changes its node,
-which updates the DNS A record. Service groups prevent rebalancing of
-co-located members. Individual stateful instances can be rebalanced (DNS
-updates within the same reconciliation cycle).
-
-## File Reference
+## File Index
 
 | File | Lines | Purpose |
-|------|-------|---------|
-| `scheduler/scheduler.go` | 1492 | Main scheduler: pipeline, filters, rebalance, pressure |
-| `scheduler/cache.go` | 105 | NodeCapacityCache: persistent heap for batch placement |
-| `scheduler/node_heap.go` | 92 | Min-heap implementation (container/heap interface) |
+|---|---|---|
+| `scheduler/scheduler.go` | ~1754 | Pipeline, filters, rank, rebalance, preemption, pressure |
+| `scheduler/cache.go` | ~105 | NodeCapacityCache: persistent heap for batch placement |
+| `scheduler/node_heap.go` | ~92 | Min-heap (container/heap.Interface) |
 | `scheduler/benchmark_test.go` | — | Placement throughput benchmarks |
 | `scheduler/fuzz_test.go` | — | Fuzz testing for placement determinism |
-| `controllers/intent.go` | 399 | IntentResolver: feeds effective counts to scheduler |
-| `types/keys.go` | — | Key functions: placement, unplaced demand, node facts |
-| `design/scheduler-rebalancing.md` | — | Design doc for rebalancing and grace period |

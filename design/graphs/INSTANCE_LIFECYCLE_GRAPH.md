@@ -1,296 +1,556 @@
 # Instance Lifecycle Graph Reference
 
-Machine-readable state machine reference for a single CCattler instance.
-Purpose: trace why an instance is stuck in any state without reading source.
+Machine-readable function call index for the full lifecycle of a single
+CCattler instance — from creation to garbage collection. Purpose: trace
+why an instance is stuck in any state without reading source.
 
-## Complete State Machine
+## 1. Instance Creation (controllers/instance.go)
 
+### InstanceController.Reconcile → entry point
 ```
-                    ┌──────────────────────────────────────────┐
-                    │          USER: cca apply                 │
-                    └────────────────┬─────────────────────────┘
-                                     │
-                                     ▼
-                          ┌─────────────────────┐
-                          │  InstanceController  │
-                          │  writes state=pending│
-                          └──────────┬──────────┘
-                                     │ observed/instance/{id}/state = "pending"
-                                     ▼
-                          ┌─────────────────────┐
-                          │     Scheduler        │
-                          │  writes placement    │
-                          └──────────┬──────────┘
-                                     │ placement/node/{nodeID}/{id}
-                                     ▼
-                    ┌────────────────────────────────────┐
-                    │  AGENT: executeReconciliationCycle  │
-                    │  findInstancesPlacedOnThisNode      │
-                    │  → instance not in runningByID      │
-                    │  → reconcileDesiredInstance          │
-                    └────────────────┬───────────────────┘
-                                     │
-              ┌──────────────────────┼──────────────────────┐
-              │                      │                      │
-              ▼                      ▼                      ▼
-     lookupServiceImage      ensureImageAvailable    (image empty?)
-     returns ""?             ───────┬──────────     → silent return
-     → BAIL (silent)               │                  (no state change)
-                                   │
-                    ┌──────────────┤
-                    │              │
-                    ▼              ▼
-              IMAGE CACHED    IMAGE PULL
-              (skip pull)     state="pulling"
-                    │         ────────┬──────
-                    │                │
-                    │         ┌──────┴──────┐
-                    │         │             │
-                    │         ▼             ▼
-                    │    PULL OK       PULL FAILED
-                    │         │        state="image-pull-backoff"
-                    │         │        → recordImagePullFailure
-                    │         │        → BAIL (retry next cycle)
-                    │         │
-                    ▼         ▼
-              ┌─────────────────────────┐
-              │  hasInitSteps?          │
-              │  ─────────┬─────────── │
-              │  NO       │  YES       │
-              └───┬───────┴────┬───────┘
-                  │            │
-                  │            ▼
-                  │   executeInitializationSteps
-                  │   ─────────┬───────────────
-                  │            │ FOR EACH step (sequential):
-                  │            │
-                  │            ├── readInitStepState
-                  │            │   "succeeded" → skip
-                  │            │   "running" → mark failed (agent restart)
-                  │            │
-                  │            ├── check backoff
-                  │            │   attemptCount >= maxAttempts → PERMANENT FAIL
-                  │            │   time.Now < nextRetryAt → BAIL
-                  │            │
-                  │            ├── publishInitProgress
-                  │            ├── write step state = "running"
-                  │            │
-                  │            ├── IF connection:
-                  │            │   └── runConnectionProbe
-                  │            │       ├── assembleConnectionURL
-                  │            │       ├── resolveConnectionAddress (CCattler DNS)
-                  │            │       └── net.Dialer.DialContext("tcp")
-                  │            │
-                  │            ├── IF exec:
-                  │            │   └── runInitCommand
-                  │            │       └── runtime.ExecInit(image, spec)
-                  │            │
-                  │            ├── SUCCESS → step state = "succeeded"
-                  │            │             delete backoff entry
-                  │            │             continue to next step
-                  │            │
-                  │            └── FAILURE → increment backoff
-                  │                         publishInitProgress (with error)
-                  │                         → BAIL (retry next cycle)
-                  │
-                  │ (all init steps passed → clearInitProgress)
-                  │            │
-                  ▼            ▼
-              ┌─────────────────────────┐
-              │  storageProvider?        │
-              │  ─────────┬─────────── │
-              │  NO       │  YES       │
-              └───┬───────┴────┬───────┘
-                  │            │
-                  │            ▼
-                  │   publishStatusReason("waiting for volumes")
-                  │   ensureVolumesAttachedForInstance
-                  │   ─────────┬───────────────
-                  │            │
-                  │   ┌────────┴────────┐
-                  │   │                 │
-                  │   ▼                 ▼
-                  │  READY          NOT READY
-                  │   │            → BAIL (revoke token)
-                  │   │
-                  ▼   ▼
-              ┌─────────────────────────────────┐
-              │  publishStatusReason("starting") │
-              │  buildRuntimeSpecForInstance      │
-              │  materializeSecretFiles           │
-              │  materializeConnectionFiles       │
-              │  runtime.Start(spec)              │
-              └──────────────┬──────────────────┘
-                             │
-                    ┌────────┴────────┐
-                    │                 │
-                    ▼                 ▼
-             START OK           START FAILED
-                    │           state="failed"
-                    │           publishStatusReason("start failed: {err}")
-                    │           → revoke token
-                    │           → return
-                    │
-                    ▼
-              ┌─────────────────────────────────────┐
-              │  retryBridgeAttachmentIfNeeded       │
-              │  executeLifecycleHook(post_start)    │
-              │  publishInstanceHostPorts            │
-              │  runtime.Status → get IP             │
-              │  observeInstanceState                │
-              │  publishInstanceStateToStore          │
-              │    state="running" (if Status OK)    │
-              │    state="starting" (if Status err)  │
-              │    state="failed" (if exit code != 0)│
-              │  publishStatusReason("running")      │
-              │  write observed image, config hash   │
-              └──────────────────┬──────────────────┘
-                                 │
-              ┌──────────────────┤
-              │                  │
-              ▼                  ▼
-         STATE=RUNNING      STATE=STARTING
-              │             (runtime.Status returned error)
-              │             (next reconcile cycle retries observation)
-              │
-              ▼
-         ═══════════════════════════════════
-         STEADY STATE (reconcile cycle, ~1s)
-         ═══════════════════════════════════
-              │
-              ├── detectConfigChange
-              │   → if changed: stop & re-enter reconcileDesiredInstance
-              │
-              ├── reconcileResourceChanges
-              │   → live resize CPU/memory if supported
-              │
-              ├── republishHostPortIfNeeded
-              │
-              ├── observeInstanceState(runtime.Status)
-              │   ├── Running: true  → InstanceRunning
-              │   ├── Status error   → InstanceStarting
-              │   └── ExitCode != 0  → InstanceFailed
-              │
-              └── publishInstanceStateToStore
-                  publishExitReasonIfFailed
-         ═══════════════════════════════════
-         PROBE SCHEDULER (independent goroutine, ~5s tick)
-         ═══════════════════════════════════
-              │
-              ├── performHealthCheckAndReportResult
-              │   → write observed/instance/{id}/health
-              │
-              └── executeProbesForInstance
-                  │
-                  ├── STARTUP PROBE (gates liveness + readiness)
-                  │   ├── pending → checking → succeeded | failed
-                  │   └── must pass successThreshold times
-                  │
-                  ├── LIVENESS PROBE (only after startup succeeds)
-                  │   ├── healthy | unhealthy
-                  │   └── unhealthy → FailureController drains then replaces
-                  │
-                  ├── READINESS PROBE (only after startup succeeds)
-                  │   ├── ready | not-ready
-                  │   └── not-ready → removed from endpoints (no restart)
-                  │
-                  └── publishProbeProgress
-                      updateSummaryHealthFromProbes
+InstanceController.Reconcile(ctx, facts)                     :77
+├── parseEffectiveServiceFacts(facts)                        :310
+│   └── FOR EACH effective/service/{svc}/ fact:
+│       ├── suffix "instances" → desiredCounts[svc]
+│       ├── suffix "stateful"  → statefulServices[svc]
+│       └── suffix "placement_mode" → perNodeServices[svc]
+│
+├── extractSurgeAllowances(facts)                            :340
+│   └── reads derived/service/{svc}/rollout/surge_allowance
+│       → desiredCounts[svc] += surgeCount
+│
+├── parseInstanceFieldsFromFacts(facts)                      [helpers.go:160]
+│   └── scans observed/instance/ + derived/instance/
+│       → map[instanceID]map[field]value
+│
+├── buildInstanceMapsFromFields(fieldsByInstanceID)           :359
+│   ├── effectiveInstanceState(fields)                       [helpers.go:198]
+│   │   ├── controller_stopped == "true" → InstanceStopped
+│   │   ├── node_failure == "true"       → InstanceFailed
+│   │   └── else                         → observed state
+│   └── → stateByInstanceID, serviceByInstanceID
+│
+├── buildActiveInstanceIDsByService(...)                      :375
+│   └── groups non-stopped IDs by service, sorted
+│
+├── reconcileScaleDowns(...)                                 :131
+│   └── FOR EACH service where haveCount > wantCount:
+│       ├── perNodeServices → markPerNodeExcessInstancesAsStopped  :528
+│       │   └── priority: failedNode > pending > running
+│       ├── statefulServices → stopHighestOrdinalInstances         :465
+│       │   └── reverse ordinal order, writes controller_stopped
+│       └── default → markExcessStatelessInstancesAsStopped        :501
+│           └── selectInstancesForRemoval(pending first)           :570
+│               → writes derived/instance/{id}/controller_stopped
+│
+├── computeServiceDeficits(...)                              :174
+│   └── FOR EACH service where haveCount < wantCount:
+│       ├── stateful → createNextStatefulInstance             :420
+│       │   └── ordered startup: N+1 only after N is running
+│       │       clears stale controller_stopped / node_failure
+│       └── stateless → deficit = wantCount - haveCount
+│
+└── allocateCreationsFairly(deficits, ...)                   :209
+    ├── baseShare = budget / serviceCount, cap at deficit
+    ├── remainder slots → largest unmet demand first
+    ├── stateful → createNextStatefulInstance                 :420
+    │   └── writes observed/instance/{svc}-{ord}/*
+    └── stateless → createPendingInstances                   :482
+        └── FOR EACH count:
+            └── writes grouped:
+                ├── observed/instance/{id}        = ""
+                ├── observed/instance/{id}/service = serviceName
+                └── observed/instance/{id}/state   = "pending"
 ```
 
-## InstanceState Values (types/state.go)
+### Store Key Reads
+| Key Pattern | Purpose |
+|---|---|
+| `effective/service/{svc}/instances` | Desired count |
+| `effective/service/{svc}/stateful` | Ordinal ID mode |
+| `effective/service/{svc}/placement_mode` | Per-node mode |
+| `observed/instance/{id}/state` | Current instance state |
+| `observed/instance/{id}/service` | Owning service |
+| `derived/instance/{id}/controller_stopped` | Stop marker |
+| `derived/instance/{id}/node_failure` | Node failure marker |
+| `derived/service/{svc}/rollout/surge_allowance` | Rollout surge |
 
-| State                | Value                | Written By | Meaning |
+### Store Key Writes
+| Key Pattern | Value | Condition |
+|---|---|---|
+| `observed/instance/{id}` | `""` | Scale up |
+| `observed/instance/{id}/service` | `serviceName` | Scale up |
+| `observed/instance/{id}/state` | `"pending"` | Scale up |
+| `observed/instance/{id}/ordinal` | `"N"` | Stateful scale up |
+| `derived/instance/{id}/controller_stopped` | `"true"` | Scale down |
+| DELETE `derived/instance/{id}/controller_stopped` | — | Stateful re-create |
+| DELETE `derived/instance/{id}/node_failure` | — | Stateful re-create |
+
+### Constants
+| Name | Value | File:Line |
+|---|---|---|
+| `defaultMaxInstanceCreationsPerCycle` | 19 | instance.go:22 |
+| `maxInstanceControllerChangesPerCycle` | 58 | instance.go:28 |
+
+---
+
+## 2. Scheduling (scheduler/scheduler.go)
+
+See SCHEDULING_GRAPH.md for full call tree. Summary of placement-relevant functions:
+
+```
+Scheduler.Reconcile
+├── extractPlacementConstraints        → per-service constraint map
+├── buildNodeServicesMap               → nodeID → {running services}
+├── attemptPlacements
+│   └── placeBatchedInstances
+│       ├── buildCandidateNodes        → heap sorted by loadScore
+│       ├── rankByPreferences          → prefer/require/accept
+│       ├── rankByAffinityHints        → colocate/separate tiebreaker
+│       └── heap.Pop → best candidate
+└── writes:
+    ├── placement/instance/{id}         = nodeID
+    ├── placement/node/{nodeID}/{id}    = ""
+    └── derived/scheduler/unplaced/{id}/reason (if unplaceable)
+```
+
+---
+
+## 3. Agent Instance Startup (agent/agent.go, agent/init.go)
+
+### reconcileDesiredInstance → full startup sequence
+```
+reconcileDesiredInstance(instanceInfo)                        :726
+├── lookupServiceImageFromStore(ctx, service)                :1085
+│   └── store.Get(desired/service/{svc}/image)
+│       → BAIL if empty (silent return, no state change)
+│
+├── resolveImagePullCredentials(ctx, service)                :1116
+│   ├── lookupImagePullSecretFromStore(ctx, service)         :1105
+│   │   └── store.Get(desired/service/{svc}/image_pull_secret)
+│   └── secretProvider.ResolveSecretValue(ctx, secretName)
+│
+├── ensureImageAvailable(ctx, instanceInfo, image, creds)    :792
+│   ├── lookupServicePullPolicyFromStore(ctx, service)       :1095
+│   ├── runtime.IsImageCached(image)                         [return true → skip]
+│   ├── publishStatusReason(ctx, id, "pulling")
+│   ├── PUT observed/instance/{id}/state = "pulling"
+│   ├── runtime.PullImage(image, creds) [5min timeout]
+│   │   ├── SUCCESS → clearPullStatusFromStore               :883
+│   │   └── FAILURE → recordImagePullFailure                 :835
+│   │       ├── PUT observed/instance/{id}/state = "image-pull-backoff"
+│   │       └── PUT observed/instance/{id}/pull-status = {JSON backoff}
+│   └── → BAIL if false
+│
+├── IF secretAPIServer:
+│   └── secretAPIServer.RegisterInstanceToken
+│
+├── IF hasInitSteps(ctx, service):                           [init.go:402]
+│   ├── executeInitializationSteps(ctx, instanceInfo, image) [init.go:57]
+│   │   ├── readCurrentInitPhase(ctx, instanceID)            [init.go:289]
+│   │   │   └── store.Get(derived/instance/{id}/init/phase)
+│   │   │       → "complete" → skip all steps
+│   │   │
+│   │   ├── loadInitStepDefinitions(ctx, service)            [init.go:232]
+│   │   │   └── store.Scan(desired/service/{svc}/init/)
+│   │   │       → ordered list of {exec|connection} steps
+│   │   │
+│   │   └── FOR EACH step (sequential, 0-indexed):
+│   │       └── executeInitStep(ctx, ...)                    [init.go:96]
+│   │           ├── readInitStepState(ctx, id, stepIndex)    [init.go:298]
+│   │           │   ├── "succeeded" → skip to next
+│   │           │   └── "running" → mark "failed" (agent restart)
+│   │           │
+│   │           ├── check backoff:
+│   │           │   ├── attemptCount >= maxAttempts → PERMANENT FAIL
+│   │           │   └── time.Now < nextRetryAt → BAIL
+│   │           │
+│   │           ├── publishInitProgress(ctx, ...)            [init.go:172]
+│   │           │   └── PUT observed/instance/{id}/init-progress = {JSON}
+│   │           │       PUT observed/instance/{id}/status-reason
+│   │           │
+│   │           ├── PUT observed/instance/{id}/init/step/{n}/state = "running"
+│   │           │
+│   │           ├── IF connection:
+│   │           │   └── runConnectionProbe(ctx, step, svc)   [init.go:310]
+│   │           │       ├── assembleConnectionURL(ctx, name)  [agent.go:1488]
+│   │           │       ├── resolveConnectionAddress(ctx, host) [init.go:358]
+│   │           │       │   ├── IF IP literal → use directly
+│   │           │       │   └── ELSE:
+│   │           │       │       ├── buildCCattlerResolver()   [init.go:388]
+│   │           │       │       │   ├── IF advertiseAddress set:
+│   │           │       │       │   │   └── custom resolver → UDP to addr:53
+│   │           │       │       │   └── ELSE: net.DefaultResolver
+│   │           │       │       └── resolver.LookupHost(hostname)
+│   │           │       └── net.Dialer.DialContext("tcp", resolved:port)
+│   │           │
+│   │           ├── IF exec:
+│   │           │   └── runInitCommand(ctx, image, svc, step) [init.go:209]
+│   │           │       ├── materializeInitConfigFiles(ctx, svc, spec) [init.go:419]
+│   │           │       └── runtime.ExecInit(image, ExecSpec)
+│   │           │
+│   │           ├── SUCCESS:
+│   │           │   ├── PUT init/step/{n}/state = "succeeded"
+│   │           │   ├── delete backoff entry
+│   │           │   └── continue to next step
+│   │           │
+│   │           └── FAILURE:
+│   │               ├── increment backoff counter
+│   │               ├── publishInitProgress (with error)
+│   │               └── → BAIL (retry next cycle)
+│   │
+│   └── on all steps passed → clearInitProgress(ctx, id)     [init.go:200]
+│       └── DELETE observed/instance/{id}/init-progress
+│
+├── IF storageProvider:
+│   ├── publishStatusReason(ctx, id, "waiting for volumes")
+│   └── ensureVolumesAttachedForInstance(ctx, instanceInfo)
+│       ├── READY → continue
+│       └── NOT READY → revoke token, BAIL
+│
+├── publishStatusReason(ctx, id, "starting")                 :876
+├── buildRuntimeSpecForInstance(ctx, instanceInfo, image)     :920
+│   ├── lookupServiceCommandFromStore(ctx, service)          :1152
+│   ├── lookupServiceExposedPortsFromStore(ctx, service)     :1204
+│   ├── resolveServiceConfigEnvVars(ctx, service)            :1222
+│   └── resolveServiceConfigFiles(ctx, service)              :1243
+│
+├── materializeSecretFiles(ctx, service, spec)               :1427
+├── materializeConnectionFiles(ctx, service, spec)           :1463
+│
+└── startInstanceAndPublishState(ctx, instanceInfo, ...)     :956
+    ├── runtime.Start(spec)
+    │   ├── START FAILED:
+    │   │   ├── PUT observed/instance/{id}/state = "failed"
+    │   │   ├── publishStatusReason("start failed: {err}")
+    │   │   └── revoke token, return
+    │   └── START OK: continue
+    │
+    ├── retryBridgeAttachmentIfNeeded(ctx)                   :426
+    ├── executeLifecycleHook(ctx, id, svc, "post_start")     :1288
+    ├── publishInstanceHostPorts(ctx, id, ...)
+    ├── runtime.Status(id) → get IP, running state
+    ├── observeInstanceState(status) → state decision
+    ├── publishInstanceStateToStore(ctx, id, state, ip, node)
+    │   ├── PUT observed/instance/{id}/state    = "running"|"starting"|"failed"
+    │   ├── PUT observed/instance/{id}/ip       = containerIP
+    │   ├── PUT observed/instance/{id}/node     = nodeID
+    │   └── PUT observed/instance/{id}/image    = image
+    ├── publishStatusReason("running")
+    └── PUT observed/instance/{id}/config-hash  = hash
+```
+
+### observeInstanceState Decision Table (agent.go:1674-1690)
+| runtime.Status() | Status.Running | Status.ExitCode | Result |
 |---|---|---|---|
-| `InstancePending`    | `"pending"`          | InstanceController | Created, awaiting scheduling |
-| `InstancePulling`    | `"pulling"`          | Agent (ensureImageAvailable) | Image download in progress |
-| `InstanceImagePullBackoff` | `"image-pull-backoff"` | Agent (recordImagePullFailure) | Pull failed, waiting for retry |
-| `InstanceStarting`   | `"starting"`         | Agent (observeInstanceState) | runtime.Status returned error |
-| `InstanceRunning`    | `"running"`          | Agent (observeInstanceState) | runtime.Status confirms alive |
-| `InstanceFailed`     | `"failed"`           | Agent (observeInstanceState / startInstanceAndPublishState) | Non-zero exit or start error |
-| `InstanceStopped`    | `"stopped"`          | Derived (controller_stopped marker) | Intentionally replaced |
+| error | — | — | `InstanceStarting` |
+| nil | true | — | `InstanceRunning` |
+| nil | false | != 0 | `InstanceFailed` |
+| nil | false | 0 (non-empty error) | `InstanceFailed` |
+| nil | false | 0 (empty error) | `InstanceStarting` |
 
-### Effective State Resolution (types/codec.go:234)
+---
 
+## 4. Steady State (agent/agent.go, agent/probes.go)
+
+### executeReconciliationCycle → running instance path
+```
+executeReconciliationCycle                                   :525
+└── FOR EACH running instance:
+    ├── detectConfigChange(ctx, instanceInfo)                :1264
+    │   ├── computeServiceConfigHash(ctx, service)           :1349
+    │   └── compare with observed/instance/{id}/config-hash
+    │       → if changed: stopInstanceWithGracePeriod → restart
+    │
+    ├── reconcileResourceChanges(ctx, instanceInfo)
+    │   └── live resize CPU/memory if supported
+    │
+    ├── republishHostPortIfNeeded(ctx, id)                   :1009
+    │
+    ├── observeInstanceState(runtime.Status)
+    │   ├── Running: true  → InstanceRunning
+    │   ├── Status error   → InstanceStarting
+    │   └── ExitCode != 0  → InstanceFailed
+    │
+    ├── publishInstanceStateToStore(ctx, id, state, ip, node)
+    └── publishExitReasonIfFailed(ctx, id, state, reason)    :905
+```
+
+### ProbeScheduler.Run → independent goroutine (5s tick)
+```
+ProbeScheduler.Run(ctx, findInstances)                       [probes.go:99]
+├── ExecuteProbePass(ctx, findInstances)                     [probes.go:115]
+│   └── FOR EACH instance:
+│       ├── performHealthCheckAndReportResult(ctx, info)     [probes.go:517]
+│       │   └── PUT observed/instance/{id}/health = "healthy"|"unhealthy"
+│       │
+│       └── executeProbesForInstance(ctx, info)              [probes.go:131]
+│           ├── loadProbeConfig(ctx, service, type)          [probes.go:406]
+│           ├── getOrCreateProbeState(instanceID)            [probes.go:483]
+│           │
+│           ├── executeStartupProbe(ctx, ...)                [probes.go:202]
+│           │   ├── runProbeCheck(ctx, config, id, ip)       [probes.go:366]
+│           │   ├── pass ≥ successThreshold → "succeeded"
+│           │   └── fail ≥ failureThreshold → "failed"
+│           │       → FailureController replaces
+│           │
+│           ├── IF startup succeeded:
+│           │   ├── executeLivenessProbe(ctx, ...)           [probes.go:268]
+│           │   │   ├── runProbeCheck(ctx, config, id, ip)
+│           │   │   ├── pass → "healthy"
+│           │   │   └── fail ≥ failureThreshold → "unhealthy"
+│           │   │       → FailureController drain+replace
+│           │   │
+│           │   └── executeReadinessProbe(ctx, ...)          [probes.go:316]
+│           │       ├── runProbeCheck(ctx, config, id, ip)
+│           │       ├── pass → "ready" (included in endpoints)
+│           │       └── fail ≥ failureThreshold → "not-ready"
+│           │           → removed from endpoints (NOT restarted)
+│           │
+│           ├── updateSummaryHealthFromProbes(ctx, id, ...)  [probes.go:178]
+│           │   ├── startup NOT complete → no update
+│           │   ├── liveness unhealthy   → health = unhealthy
+│           │   ├── readiness not-ready  → health = unhealthy
+│           │   └── else                 → health = healthy
+│           │
+│           └── publishProbeProgress(ctx, id, ...)           [probes.go:605]
+│               ├── IF any consecutiveFailures > 0:
+│               │   └── PUT observed/instance/{id}/probe-progress = {JSON}
+│               └── ELSE:
+│                   └── DELETE observed/instance/{id}/probe-progress
+```
+
+---
+
+## 5. Failure and Replacement (controllers/failure.go)
+
+### FailureController.Reconcile → entry point
+```
+FailureController.Reconcile(ctx, facts)                      :161
+├── parseInstanceFieldsFromFacts(facts)                      [helpers.go:160]
+├── parseCrashLoopCounters(facts)                            :425
+│   └── reads derived/crash-loop/{svc} → {count, since}
+│
+├── FOR EACH instance (sorted):
+│   └── processInstanceForRecovery(id, fields, now, ...)     :232
+│       │
+│       ├── IF effectiveState == Failed:
+│       │   ├── check crash-loop backoff:
+│       │   │   ├── count < threshold (10) → exponential backoff
+│       │   │   │   └── calculateCrashLoopBackoff(count)     :414
+│       │   │   │       → 10s * 2^(count-1), cap 5min
+│       │   │   ├── count >= threshold → circuit breaker
+│       │   │   │   ├── now < since + cooldown → BLOCKED
+│       │   │   │   └── now >= since + cooldown → HALF-OPEN
+│       │   │   └── no backoff → proceed
+│       │   └── stopAndReplace(instanceID, serviceName)      :403
+│       │
+│       ├── IF state == Running AND startup == "failed":
+│       │   └── stopAndReplace(instanceID, serviceName)
+│       │
+│       ├── IF draining AND liveness recovered:
+│       │   └── clearDrainState(instanceID)                  :394
+│       │       └── DELETE drain_readiness, drain_since
+│       │
+│       └── IF liveness == "unhealthy":
+│           └── handleUnhealthyLiveness(id, svc, ...)        :318
+│               ├── IF no drain_since:
+│               │   └── beginDrain(instanceID, now)          :377
+│               │       ├── PUT drain_readiness = "not-ready"
+│               │       └── PUT drain_since = now.UnixMilli
+│               └── IF drain_since + grace period elapsed:
+│                   └── stopAndReplace(instanceID, svc)
+│
+├── FOR EACH service with replacements this cycle:
+│   └── PUT derived/crash-loop/{svc} = {count+N, since=now}
+│
+├── FOR EACH service with NO failed instances:
+│   └── DELETE derived/crash-loop/{svc}
+│
+└── capOutputChanges(changes)                                :357
+    └── takeWholeGroups(changes, 58)                         [runner.go:726]
+```
+
+### stopAndReplace (failure.go:403)
+```
+stopAndReplace(instanceID, serviceName)
+└── grouped changes "replace/{id}":
+    ├── PUT derived/instance/{id}/controller_stopped = "true"
+    ├── PUT observed/instance/{replacementID}         = ""
+    ├── PUT observed/instance/{replacementID}/service  = serviceName
+    └── PUT observed/instance/{replacementID}/state    = "pending"
+```
+
+### Constants
+| Name | Value | File:Line |
+|---|---|---|
+| `DefaultDrainGracePeriod` | 5s | failure.go:22 |
+| `crashLoopBaseDelay` | 10s | failure.go:25 |
+| `crashLoopMaxDelay` | 5min | failure.go:28 |
+| `defaultCircuitBreakerThreshold` | 10 | failure.go:33 |
+| `defaultCircuitBreakerCooldown` | 10min | failure.go:38 |
+| `defaultMaxReplacementsPerCycle` | 14 | failure.go:51 |
+| `defaultMaxDrainsPerCycle` | 10 | failure.go:58 |
+| `defaultMaxRecoveriesPerCycle` | 10 | failure.go:65 |
+| `maxFailureControllerChangesPerCycle` | 58 | failure.go:71 |
+
+---
+
+## 6. Node Failure (controllers/nodefailure.go)
+
+### NodeFailureController.Reconcile → entry point
+```
+NodeFailureController.Reconcile(ctx, facts)                  :92
+├── parseNodeLeaseTimestamps(facts)                          :132
+│   └── reads lease/node/{nodeID} → lastHeartbeatMillis
+│
+├── parseCurrentNodeStates(facts)                            :149
+│   └── collectStringValuesBySuffix(facts, observed/node/, "state")
+│
+├── identifyUnreachableNodes(now, heartbeats, states)        :156
+│   ├── FOR EACH node:
+│   │   ├── unreachable + fresh heartbeat → RECOVERED
+│   │   │   └── PUT observed/node/{id}/state = "alive"
+│   │   ├── alive + stale heartbeat → UNREACHABLE
+│   │   │   └── PUT observed/node/{id}/state = "unreachable"
+│   │   └── already unreachable → add to set
+│   └── cap node state changes to MaxNodeStateChangesPerCycle (12)
+│
+├── markInstancesOnUnreachableNodesAsFailed(facts, set, budget) :219
+│   ├── reads placement/instance/{id} → nodeID
+│   ├── FOR EACH running/pending/starting on unreachable node:
+│   │   └── PUT derived/instance/{id}/node_failure = "true"
+│   └── capped by remaining budget
+│
+└── cleanupStaleNodeFailureMarkers(facts, set, budget)       :270
+    └── FOR EACH node_failure marker where node is alive:
+        └── DELETE derived/instance/{id}/node_failure
+```
+
+### Constants
+| Name | Value | File:Line |
+|---|---|---|
+| `defaultNodeFailureLeaseTimeout` | 30s | nodefailure.go:22 |
+| `defaultMaxTotalChangesPerCycle` | 58 | nodefailure.go:29 |
+| `defaultMaxNodeStateChangesPerCycle` | 12 | nodefailure.go:35 |
+
+---
+
+## 7. Init Phase Derivation (controllers/init.go)
+
+### InitController.Reconcile → entry point
+```
+InitController.Reconcile(ctx, facts)                         :46
+├── countDesiredInitSteps(facts)                             :80
+│   └── scans desired/service/{svc}/init/{n}
+│       → map[service]stepCount
+│
+├── mapInstancesToServices(facts)                            :103
+│   └── reads observed/instance/{id}/service
+│       → map[instanceID]serviceName
+│
+├── collectObservedInitStepStates(facts)                     :120
+│   └── reads observed/instance/{id}/init/step/{n}/state
+│       → map["instanceID/stepIndex"]state
+│
+├── collectCurrentInitPhases(facts)                          :142
+│   └── reads derived/instance/{id}/init/phase
+│
+└── FOR EACH instance with init steps:
+    ├── deriveInitPhase(id, stepCount, stepStates)           :159
+    │   ├── all "succeeded"  → InitPhaseComplete
+    │   ├── any "failed"     → InitPhaseFailed
+    │   ├── any "running"    → InitPhaseRunning
+    │   └── no observations  → InitPhasePending
+    │
+    └── IF derivedPhase != currentPhase:
+        └── PUT derived/instance/{id}/init_phase = phase
+```
+
+---
+
+## 8. Garbage Collection (controllers/instance_gc.go)
+
+### InstanceGCController.Reconcile → entry point
+```
+InstanceGCController.Reconcile(ctx, facts)                   :74
+├── parseInstanceFieldsFromFacts(facts)
+├── buildInstanceMapsFromFields(fieldsByInstanceID)
+├── parseEffectiveServiceFacts(facts)
+├── countRunningInstancesByService(serviceByID, stateByID)   :146
+├── parsePlacementFacts(facts)                               :161
+│
+├── FOR EACH stopped/failed instance:
+│   ├── skip if running < desired for service
+│   ├── skip if created-at < retention (10min)
+│   └── add to candidates
+│
+├── sort candidates by instanceID
+│
+└── FOR EACH candidate (max 4 per cycle):
+    └── buildInstanceDeletionChanges(id, facts, placements)  :175
+        ├── DELETE observed/instance/{id}           (marker)
+        ├── DELETE observed/instance/{id}/*         (all sub-keys)
+        ├── DELETE derived/instance/{id}/*          (all markers)
+        ├── DELETE placement/instance/{id}
+        └── DELETE placement/node/{nodeID}/{id}
+```
+
+### Constants
+| Name | Value | File:Line |
+|---|---|---|
+| `defaultGCRetentionPeriod` | 10min | instance_gc.go:21 |
+| `defaultMaxGCDeletionsPerCycle` | 4 | instance_gc.go:26 |
+
+---
+
+## 9. Instance State Values (types/state.go)
+
+| State | Value | Written By |
+|---|---|---|
+| `InstancePending` | `"pending"` | InstanceController |
+| `InstancePulling` | `"pulling"` | Agent (ensureImageAvailable) |
+| `InstanceImagePullBackoff` | `"image-pull-backoff"` | Agent (recordImagePullFailure) |
+| `InstanceStarting` | `"starting"` | Agent (observeInstanceState) |
+| `InstanceRunning` | `"running"` | Agent (observeInstanceState) |
+| `InstanceFailed` | `"failed"` | Agent (observeInstanceState / start error) |
+| `InstanceStopped` | `"stopped"` | Derived (controller_stopped marker) |
+
+### Effective State Resolution (helpers.go:198)
 ```
 IF controller_stopped == "true" → InstanceStopped
 IF node_failure == "true"       → InstanceFailed
 ELSE                            → observed/instance/{id}/state value
 ```
 
-## Status Reason Timeline
+---
 
-Each `publishStatusReason` call writes to `observed/instance/{id}/status-reason`.
-These are the exact strings and where they are produced:
+## 10. Init Step Detail
 
-| Lifecycle Phase | Status Reason String | Source |
-|---|---|---|
-| Image pull active | *(no status-reason written during active pull)* | — |
-| Image pull failed | `"pulling image {image} (attempt {N}): {error}"` | agent.go:842 recordImagePullFailure |
-| Init step (running) | `"init:{step}/{total} {label}"` | init.go:192 publishInitProgress |
-| Init step (failed) | `"init:{step} {label} attempt {N}/{max}: {error}"` | init.go:190 publishInitProgress |
-| Volume wait | `"waiting for volumes"` | agent.go:734 |
-| Starting container | `"starting"` | agent.go:747 |
-| Start failed | `"start failed: {error}"` | agent.go:935 |
-| Running | `"running"` | agent.go:964 |
-
-### Status Reason Gaps (no reason written)
-
-1. **image == ""** — `lookupServiceImageFromStore` returns empty, agent silently returns.
-   Status reason stays whatever it was from a previous cycle (or empty).
-2. **Image cached, no pull needed** — status reason remains from previous cycle.
-3. **Init phase complete** — `clearInitProgress` deletes init-progress but doesn't
-   update status-reason. It stays as `"init:{last}/{total} {label}"` until `"starting"`.
-
-## Probe Lifecycle Detail
-
-### Probe Types (types/state.go:212-227)
-
-| Type | Gate | Effect of Failure | Effect of Success |
+### Init Step Types
+| Type | Mechanism | Default Retries | Source |
 |---|---|---|---|
-| **Startup** | Blocks liveness + readiness | `StartupProbeFailed` → FailureController replaces | `StartupProbeSucceeded` → unlocks other probes |
-| **Liveness** | Requires startup succeeded | `LivenessProbeUnhealthy` → FailureController drain+replace | `LivenessProbeHealthy` → healthy |
-| **Readiness** | Requires startup succeeded | `ReadinessProbeNotReady` → removed from endpoints | `ReadinessProbeReady` → included in endpoints |
+| **exec** | `runtime.ExecInit(image, ExecSpec)` | 0 (no retries) | init.go:209 |
+| **connection** | DNS resolve → TCP dial to host:port | 30 retries | init.go:310 |
 
-### Probe State Machine
+### Init Step Backoff (init.go:22-32)
+| Parameter | Value |
+|---|---|
+| Base delay | 1s (`initStepBackoffBaseDelay`) |
+| Max delay | 30s (`initStepMaxBackoffDelay`) |
+| Formula | `1s * 2^(attemptCount-1)`, capped at 30s |
 
-```
-                          STARTUP PROBE
-                  ┌───────────────────────────┐
-                  │                           │
-                  ▼                           │
-            [initialDelay]                    │
-                  │                           │
-                  ▼                           │
-            ┌─────────┐    pass ≥ threshold   │
-            │ pending  ├──────────────────► succeeded
-            └────┬────┘                       │
-                 │ fail ≥ threshold            │
-                 ▼                             │
-              failed                           │
-              (FailureController replaces)     │
-                                               │
-                  ┌────────────────────────────┘
-                  │ startup succeeded unlocks:
-                  ▼
-     ┌────────────────────────────┐
-     │    LIVENESS + READINESS    │
-     │     (run in parallel)      │
-     └────────────┬───────────────┘
-                  │
-     ┌────────────┼────────────┐
-     ▼                         ▼
-  LIVENESS                  READINESS
-  ├── [initialDelay]        ├── [initialDelay]
-  ├── healthy (passing)     ├── ready (passing)
-  └── unhealthy             └── not-ready
-      (fail ≥ threshold)        (fail ≥ threshold)
-      → drain_since marker      → removed from endpoints
-      → grace period            → NOT restarted
-      → replace
-```
+### Init Phase Values (types/state.go)
+| Phase | Meaning | Key |
+|---|---|---|
+| `"pending"` | Not started yet | `derived/instance/{id}/init_phase` |
+| `"running"` | At least one step in progress | `derived/instance/{id}/init_phase` |
+| `"complete"` | All steps succeeded | `derived/instance/{id}/init_phase` |
+| `"failed"` | A step permanently failed | `derived/instance/{id}/init_phase` |
 
-### Probe Configuration Defaults (agent/probes.go:20-36)
+---
+
+## 11. Probe Configuration Defaults (agent/probes.go:20-36)
 
 | Parameter | Default | Store Key |
 |---|---|---|
@@ -300,271 +560,16 @@ These are the exact strings and where they are produced:
 | successThreshold | 1 | `desired/service/{svc}/probe/{type}/success_threshold` |
 | initialDelay | 0s | `desired/service/{svc}/probe/{type}/initial_delay` |
 
-### Probe IP Prerequisite
-
-Probes only run when `observed/instance/{id}/ip` is non-empty. If the IP fact
-is missing (e.g. NetworkProvider failed to allocate), no probes execute for
-that instance.
-
-### Probe Progress Fact
-
-`observed/instance/{id}/probe-progress` — JSON published by `publishProbeProgress`
-only when any probe has `consecutiveFailures > 0`:
-
-```json
-{
-  "startup_failures": 5,
-  "startup_threshold": 30,
-  "startup_error": "HTTP GET 10.100.1.5:8080/health failed",
-  "liveness_failures": 0,
-  "readiness_failures": 2,
-  "readiness_threshold": 3,
-  "readiness_error": "TCP 10.100.1.5:5432 connection failed"
-}
-```
-
-Deleted when all probes are passing (no failures).
-
-### Health Summary Derivation (probes.go:178-198)
-
-```
-IF startup NOT complete → no health update
-IF liveness == unhealthy → health = unhealthy
-IF readiness == not-ready → health = unhealthy
-IF liveness == healthy OR readiness == ready → health = healthy
-```
-
-## Init Step Detail
-
-### Init Step Types
-
-| Type | Mechanism | Default Retries | Source |
+### Probe Types
+| Type | Gate | Failure Effect | Success Effect |
 |---|---|---|---|
-| **exec** | `runtime.ExecInit(image, ExecSpec)` — runs in temp container from service image | 0 (no retries) | init.go:209 |
-| **connection** | DNS resolve → TCP dial to host:port | 30 retries | init.go:280 (connectionProbeDefaultRetry) |
+| **Startup** | Blocks liveness + readiness | FailureController replaces | Unlocks other probes |
+| **Liveness** | Requires startup succeeded | Drain → replace | Healthy |
+| **Readiness** | Requires startup succeeded | Removed from endpoints | Included in endpoints |
 
-### Init Step Backoff (init.go:22-32)
+---
 
-| Parameter | Value |
-|---|---|
-| Base delay | 1s (`initStepBackoffBaseDelay`) |
-| Max delay | 30s (`initStepMaxBackoffDelay`) |
-| Formula | `1s * 2^(attemptCount-1)`, capped at 30s |
-| Delays | 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s... |
-
-### Init Step State Machine
-
-```
-            ┌──────────────────────────────────────┐
-            │  readCurrentInitPhase                │
-            │  phase == "complete" → skip all      │
-            └───────────────┬──────────────────────┘
-                            │
-                            ▼
-            FOR EACH step (sequential, 0-indexed):
-            ┌──────────────────────────────────────┐
-            │  readInitStepState                   │
-            │  ├── "succeeded" → skip to next      │
-            │  └── "running" → mark "failed"       │
-            │      (agent restarted mid-step)       │
-            └───────────────┬──────────────────────┘
-                            │
-                            ▼
-            ┌──────────────────────────────────────┐
-            │  Check backoff                       │
-            │  ├── attemptCount >= maxAttempts      │
-            │  │   → step state = "failed"         │
-            │  │   → reason = "max retries exceeded"│
-            │  │   → return false (PERMANENT FAIL)  │
-            │  │                                    │
-            │  └── time.Now < nextRetryAt           │
-            │      → return false (BAIL, retry)    │
-            └───────────────┬──────────────────────┘
-                            │
-                            ▼
-            publishInitProgress (attempt N, no error)
-            write step state = "running"
-                            │
-                 ┌──────────┴──────────┐
-                 │                     │
-                 ▼                     ▼
-            connection            exec command
-            runConnectionProbe    runInitCommand
-                 │                     │
-          ┌──────┴──────┐       ┌──────┴──────┐
-          │             │       │             │
-          ▼             ▼       ▼             ▼
-       SUCCESS       FAILURE  SUCCESS      FAILURE
-          │             │       │             │
-          ▼             ▼       ▼             ▼
-    state="succeeded"  attempt++  state="succeeded"  attempt++
-    delete backoff     compute    delete backoff     compute
-    → next step        backoff    → next step        backoff
-                       delay                         delay
-                       → BAIL                        → BAIL
-```
-
-### Init Phase Transitions (derived by InitController)
-
-| Phase | Meaning | Key |
-|---|---|---|
-| `"pending"` | Not started yet | `derived/instance/{id}/init_phase` |
-| `"running"` | At least one step in progress | `derived/instance/{id}/init_phase` |
-| `"complete"` | All steps succeeded | `derived/instance/{id}/init_phase` |
-| `"failed"` | A step permanently failed | `derived/instance/{id}/init_phase` |
-
-### Init Progress Fact
-
-`observed/instance/{id}/init-progress` — JSON published by `publishInitProgress`:
-
-```json
-{
-  "step": 1,
-  "total_steps": 3,
-  "attempt": 5,
-  "max_retries": 31,
-  "step_label": "connection:airflow-db",
-  "last_error": "connection \"airflow-db\": TCP dial to metadata-db:5432 failed: dial tcp: lookup metadata-db: no such host"
-}
-```
-
-Deleted by `clearInitProgress` after all steps succeed.
-
-### Connection Probe DNS Resolution (init.go:358-383)
-
-```
-resolveConnectionAddress(hostname)
-├── IF hostname is IP literal → use directly
-├── ELSE:
-│   └── buildCCattlerResolver()
-│       ├── IF advertiseAddress set:
-│       │   └── custom resolver → UDP to advertiseAddress:53
-│       └── ELSE:
-│           └── net.DefaultResolver (SYSTEM DNS)
-│   └── resolver.LookupHost(hostname)
-│       → first resolved IP replaces hostname in dial address
-└── net.Dialer.DialContext("tcp", resolvedIP:port)
-```
-
-## Failure and Restart Flow
-
-### Failed Instance → Replacement (FailureController)
-
-```
-observed/instance/{id}/state = "failed"
-        │
-        ▼
-FailureController.Reconcile
-├── check crash-loop backoff
-│   ├── crashLoopCounter exists AND now < retryAfter
-│   │   → SKIP (delay replacement)
-│   └── no backoff or expired
-│       → proceed
-│
-├── stopAndReplace(instanceID, serviceName)
-│   ├── PUT derived/instance/{id}/controller_stopped = "true"
-│   ├── PUT observed/instance/{replacementID}/ = ""
-│   ├── PUT observed/instance/{replacementID}/service = serviceName
-│   └── PUT observed/instance/{replacementID}/state = "pending"
-│
-└── increment crash-loop counter for service
-    PUT derived/crash-loop/{serviceName} = {"count":N,"since":now}
-```
-
-### Stopped Instance → Fact GC (InstanceGCController)
-
-```
-derived/instance/{id}/controller_stopped = "true"
-AND service running >= desired count
-AND now - created-at > retention (10m default)
-        │
-        ▼
-InstanceGCController.Reconcile
-├── DELETE observed/instance/{id}/*          (all sub-keys)
-├── DELETE derived/instance/{id}/*           (controller_stopped, etc.)
-├── DELETE placement/instance/{id}
-└── DELETE placement/node/{nodeID}/{id}
-
-Budget: 4 instance trees per cycle (~60 deletes)
-Remaining instances converge in subsequent cycles.
-```
-
-Manual GC: `cca gc instances` → POST /api/gc (no retention check, immediate)
-
-### Crash-Loop Backoff (controllers/failure.go:24-28, 365-373)
-
-| Parameter | Value |
-|---|---|
-| Base delay | 10s (`crashLoopBaseDelay`) |
-| Max delay | 5m (`crashLoopMaxDelay`) |
-| Formula | `10s * 2^(count-1)`, capped at 5m |
-| Delays | 10s, 20s, 40s, 80s, 160s, 300s, 300s... |
-
-### Circuit Breaker (controllers/failure.go)
-
-When crash-loop count reaches the threshold, the circuit breaker trips open.
-Replacements are blocked for the full cooldown instead of normal backoff.
-After cooldown, one probe replacement is allowed (half-open). If the probe
-succeeds (service recovers), the counter is deleted (circuit closes). If it
-fails, the circuit re-opens for another cooldown period.
-
-| Parameter | Default | Constant |
-|---|---|---|
-| Threshold | 10 failures | `defaultCircuitBreakerThreshold` |
-| Cooldown | 10m | `defaultCircuitBreakerCooldown` |
-
-```
-derived/crash-loop/{service} = {"count":N,"since":ms}
-        │
-        ├── count < threshold (normal backoff)
-        │   └── delay = 10s * 2^(count-1), cap 5m
-        │
-        └── count >= threshold (circuit breaker)
-            ├── now < since + cooldown
-            │   → BLOCKED (circuit open, no replacement)
-            │
-            └── now >= since + cooldown
-                → HALF-OPEN: allow one probe replacement
-                  ├── probe succeeds → counter deleted (circuit closed)
-                  └── probe fails → count++, since=now (circuit re-opens)
-```
-
-**CLI visibility:** `cca status` services table shows STATUS column:
-- `OK` — no crash-loop
-- `CrashLoop(N)` — backoff active, N failures so far
-- `CircuitBroken(N)` — circuit tripped after N failures
-
-### Startup Probe Failed → Replacement
-
-```
-observed/instance/{id}/probe/startup = "failed"
-AND state = "running"
-        │
-        ▼
-FailureController.Reconcile
-└── stopAndReplace(instanceID, serviceName)
-    (same as above — immediate, no crash-loop check)
-```
-
-### Liveness Probe Failed → Drain → Replacement
-
-```
-observed/instance/{id}/probe/liveness = "unhealthy"
-AND state = "running"
-        │
-        ▼
-FailureController.handleUnhealthyLiveness
-├── IF no drain_since marker:
-│   └── PUT drain_since = now (begin grace period)
-│
-├── IF drain_since exists AND grace period elapsed:
-│   └── stopAndReplace (same as failed-instance flow)
-│
-└── IF liveness recovers while draining:
-    └── clearDrainState (remove drain_since marker)
-```
-
-### Image Pull Failure Backoff (agent/agent.go:50-57, 806-843)
+## 12. Image Pull Failure Backoff (agent/agent.go:50-57)
 
 | Parameter | Value |
 |---|---|
@@ -572,169 +577,73 @@ FailureController.handleUnhealthyLiveness
 | Max delay | 5m (`imagePullMaxDelay`) |
 | Pull timeout | 5m per attempt (`imagePullTimeout`) |
 | Formula | `10s * 2^(attempts-1)`, capped at 5m |
-| State published | `InstanceImagePullBackoff` during backoff |
 
-### Node Failure → Rescheduling
+---
 
-```
-Node heartbeat expires (NodeFailureController)
-        │
-        ▼
-PUT derived/instance/{id}/node_failure = "true"
-(for every instance on the unreachable node)
-        │
-        ▼
-effectiveInstanceState → InstanceFailed
-        │
-        ▼
-FailureController → stopAndReplace
-(new instance scheduled to different node)
-```
+## 13. Token Revocation Points
 
-### Token Revocation
+| Location | Trigger | Source |
+|---|---|---|
+| Init failure | Before BAIL | agent.go:728 |
+| Volume attach failure | Before BAIL | agent.go:741 |
+| Start failure | In startInstanceAndPublishState | agent.go:932 |
+| Cleanup | In cleanupUndesiredInstance | agent.go:996 |
 
-Secret API tokens are revoked in three places:
-1. **Init failure** — agent.go:728 (before BAIL)
-2. **Volume attach failure** — agent.go:741 (before BAIL)
-3. **Start failure** — agent.go:932 (in startInstanceAndPublishState)
-4. **Cleanup** — agent.go:996 (cleanupUndesiredInstance)
+---
 
-## Store Key Timeline (Fresh Deploy of One Instance)
+## Reverse Index (who calls this function?)
 
-Ordered sequence of store key writes from `cca apply` to fully running instance.
-Controller writes are in **bold**, agent writes are in `code`.
+| Function | Called By |
+|---|---|
+| `parseEffectiveServiceFacts` | InstanceController.Reconcile, InstanceGCController.Reconcile |
+| `parseInstanceFieldsFromFacts` | InstanceController.Reconcile, FailureController.Reconcile, EndpointController.Reconcile, InstanceGCController.Reconcile, EvictionController.Reconcile, NodeFailureController (via markInstances) |
+| `buildInstanceMapsFromFields` | InstanceController.Reconcile, InstanceGCController.Reconcile |
+| `effectiveInstanceState` | buildInstanceMapsFromFields, processInstanceForRecovery, markInstancesOnUnreachableNodesAsFailed |
+| `endpointEligibleState` | buildDesiredEndpoints |
+| `stopAndReplace` | processInstanceForRecovery (failed, startup-probe-failed, drain-elapsed) |
+| `calculateCrashLoopBackoff` | processInstanceForRecovery |
+| `buildInstanceDeletionChanges` | InstanceGCController.Reconcile |
+| `reconcileDesiredInstance` | executeReconciliationCycle (agent) |
+| `executeInitializationSteps` | reconcileDesiredInstance |
+| `runConnectionProbe` | executeInitStep (connection type) |
+| `runInitCommand` | executeInitStep (exec type) |
+| `resolveConnectionAddress` | runConnectionProbe |
+| `observeInstanceState` | executeReconciliationCycle (running path), startInstanceAndPublishState |
+| `publishInstanceStateToStore` | executeReconciliationCycle (running path), startInstanceAndPublishState |
 
-### Phase 1: Control Plane
-
-| # | Key | Value | Writer |
-|---|---|---|---|
-| 1 | **desired/service/{svc}** | `""` | cca apply |
-| 2 | **desired/service/{svc}/image** | `"my-app:1.0"` | cca apply |
-| 3 | **desired/service/{svc}/instances** | `"3"` | cca apply |
-| 4 | **desired/service/{svc}/init/0** | `"0"` | cca apply (if init steps) |
-| 5 | **desired/service/{svc}/init/0/connection** | `"my-db"` | cca apply (if connection init) |
-| 6 | **observed/instance/{id}** | `""` | InstanceController |
-| 7 | **observed/instance/{id}/service** | `"{svc}"` | InstanceController |
-| 8 | **observed/instance/{id}/state** | `"pending"` | InstanceController |
-| 9 | **placement/instance/{id}** | `"{nodeID}"` | Scheduler |
-| 10 | **placement/node/{nodeID}/{id}** | `""` | Scheduler |
-| 11 | **derived/instance/{id}/init_phase** | `"pending"` | InitController (if init steps) |
-
-### Phase 2: Agent (reconcileDesiredInstance)
-
-| # | Key | Value | Writer |
-|---|---|---|---|
-| 12 | `observed/instance/{id}/state` | `"pulling"` | ensureImageAvailable |
-| 13 | `observed/instance/{id}/init/{step}/state` | `"running"` | executeInitStep |
-| 14 | `observed/instance/{id}/init-progress` | `{JSON}` | publishInitProgress |
-| 15 | `observed/instance/{id}/status-reason` | `"init:0/2 connection:my-db"` | publishInitProgress |
-| 16 | `observed/instance/{id}/init/{step}/state` | `"succeeded"` | executeInitStep |
-| 17 | `observed/instance/{id}/status-reason` | `"starting"` | publishStatusReason |
-| 18 | `observed/instance/{id}` | `""` | publishInstanceStateToStore |
-| 19 | `observed/instance/{id}/service` | `"{svc}"` | publishInstanceStateToStore |
-| 20 | `observed/instance/{id}/state` | `"running"` | publishInstanceStateToStore |
-| 21 | `observed/instance/{id}/node` | `"{nodeID}"` | publishInstanceStateToStore |
-| 22 | `observed/instance/{id}/ip` | `"10.100.1.5"` | publishInstanceStateToStore |
-| 23 | `observed/instance/{id}/status-reason` | `"running"` | publishStatusReason |
-| 24 | `observed/instance/{id}/image` | `"my-app:1.0"` | startInstanceAndPublishState |
-| 25 | `observed/instance/{id}/config-hash` | `"a1b2c3..."` | startInstanceAndPublishState |
-
-### Phase 3: Probes (ProbeScheduler, async)
-
-| # | Key | Value | Writer |
-|---|---|---|---|
-| 26 | `observed/instance/{id}/probe/startup` | `"pending"` | executeStartupProbe |
-| 27 | `observed/instance/{id}/probe-progress` | `{JSON}` | publishProbeProgress (if failures) |
-| 28 | `observed/instance/{id}/probe/startup` | `"succeeded"` | executeStartupProbe |
-| 29 | `observed/instance/{id}/health` | `"healthy"` | performHealthCheckAndReportResult |
-| 30 | `observed/instance/{id}/probe/liveness` | `"healthy"` | executeLivenessProbe |
-| 31 | `observed/instance/{id}/probe/readiness` | `"ready"` | executeReadinessProbe |
-
-### Phase 4: Endpoint Creation (EndpointController, async)
-
-| # | Key | Value | Writer |
-|---|---|---|---|
-| 32 | **derived/endpoint/{svc}/{id}** | `"{ip}:{port}"` | EndpointController |
+---
 
 ## Diagnostic: "Why Is My Instance Stuck?"
 
 ### Stuck in `pending`
-
-1. **InstanceController hasn't run** — check `observed/instance/{id}/state` exists
-2. **Scheduler can't place** — check `derived/unplaced/{id}` for reason:
-   - `insufficient_capacity` — no node has enough CPU/memory
-   - `unsatisfiable_constraint` — no node matches placement labels
-   - `no_nodes` — no alive nodes in cluster
-3. **Stuck in scheduler queue** — scheduler watches `observed/instance/`, may be slow
+1. InstanceController hasn't run — check `observed/instance/{id}/state` exists
+2. Scheduler can't place — check `derived/scheduler/unplaced/{id}/reason`
+3. Stuck in scheduler queue — scheduler watches observed/instance/
 
 ### Stuck in `pulling`
-
-1. **Image pull in progress** — check status-reason for the image name
-2. **Registry unreachable** — node can't reach container registry
-3. **Authentication failure** — check image_pull_secret configuration
+1. Image pull in progress — check status-reason
+2. Registry unreachable — node can't reach registry
+3. Auth failure — check image_pull_secret
 
 ### Stuck in `image-pull-backoff`
-
-1. **Check pull-status fact** — `observed/instance/{id}/pull-status`
-   ```json
-   {"error":"...","attempts":5,"retryAfter":"2026-10-27T14:00:00Z","image":"..."}
-   ```
-2. **Bad image reference** — typo in image name, tag doesn't exist
-3. **Registry auth expired** — secret needs rotation
+1. Check `observed/instance/{id}/pull-status` JSON
+2. Bad image reference — typo or missing tag
+3. Expired registry auth
 
 ### Stuck in `starting`
-
-1. **runtime.Status() returning error** — the container started but
-   `observeInstanceState` at agent.go:1674-1677 silently returns
-   `InstanceStarting` on any Status error. The container may actually be running.
-2. **Container exited immediately** — Started then crashed before next observe.
-   Status sees no running task → returns error → stays `starting`.
-3. **etcd timeout** — `publishInstanceStateToStore` PUT fails silently.
-   State in etcd still shows previous value.
-
-**Debug checklist:**
-```
-ctr -n ccattler task ls          # is container actually running?
-ctr -n ccattler container ls     # does container exist?
-cca watch observed/instance/{id} # what does etcd say?
-```
+1. runtime.Status() returning error — container may be running
+2. Container exited immediately — status sees no task
+3. etcd timeout — publishInstanceStateToStore PUT failed silently
 
 ### Stuck in init step (status-reason shows `init:N/M`)
-
-1. **Connection probe failing** — target service not running or DNS not resolving
-   - Check if target service has `observed/instance/{id}/ip` set
-   - Check if DNS forwarder is running on the node
-   - Check `init-progress` fact for specific error
-2. **Exec step failing** — init command returning non-zero
-   - Check `observed/instance/{id}/init/{step}/reason` for error
-3. **Backoff** — waiting between retries
-   - Init backoff: 1s, 2s, 4s, 8s, 16s, 30s cap
-   - Connection default: 30 retries = max ~15 min
-4. **Max retries exceeded** — step state = "failed", init aborted permanently
+1. Connection probe failing — target not running or DNS not resolving
+2. Exec step failing — init command returning non-zero
+3. Backoff — 1s, 2s, 4s, 8s, 16s, 30s cap
+4. Max retries exceeded — permanent failure
 
 ### Running but not `ready`
-
-1. **Startup probe pending** — waiting for startup probe to succeed
-   - Check `observed/instance/{id}/probe/startup`
-   - Check `observed/instance/{id}/probe-progress` for failure count
-2. **Readiness probe failing** — service running but not ready for traffic
-   - Check probe-progress for readiness errors
-   - Instance stays running, just removed from endpoints
+1. Startup probe pending — check probe/startup
+2. Readiness probe failing — check probe-progress
 
 ### Running but `unhealthy`
-
-1. **Liveness probe failing** — check probe-progress
-   - After failureThreshold consecutive failures → drain → replace
-2. **Legacy health check** — `health { tcp/http }` block in DSL
-   - Separate from probes, simpler (no threshold, just pass/fail)
-
-## observeInstanceState Decision Table (agent.go:1674-1690)
-
-| runtime.Status() | Status.Running | Status.ExitCode | Status.Error | Result |
-|---|---|---|---|---|
-| error | — | — | — | `InstanceStarting` |
-| nil | true | — | — | `InstanceRunning` |
-| nil | false | != 0 | any | `InstanceFailed` (exit reason from error or `exit(N)`) |
-| nil | false | != 0 | "" | `InstanceFailed` (exit reason `exit(N)`) |
-| nil | false | 0 | non-empty | `InstanceFailed` (exit reason from error) |
-| nil | false | 0 | "" | `InstanceStarting` |
+1. Liveness probe failing — drain → replace after threshold

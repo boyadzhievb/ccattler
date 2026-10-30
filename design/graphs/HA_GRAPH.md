@@ -1,607 +1,485 @@
-# CCattler High-Availability Architecture Graph
+# CCattler HA Call Graph Reference
 
-Machine-readable reference for the HA control plane: etcd cluster, leader
-election, controller partitioning, and failover behavior. Purpose: understand
-multi-node control-plane operations without reading source files.
+Machine-readable function call index for the HA control plane: leader election,
+HARunner, controller lifecycle, and failover. Purpose: avoid re-reading source
+files to trace HA flow. Load this file instead.
 
-## Cluster Topology
+## Leader Election (controllers/leader.go)
 
+### LeaderElection.Run → entry point
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        HA CCattler Cluster                               │
-│                                                                          │
-│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐            │
-│  │   node-1         │ │   node-2         │ │   node-3         │            │
-│  │   (controlplane) │ │   (controlplane) │ │   (controlplane) │            │
-│  │   192.168.100.215│ │   192.168.100.30 │ │   192.168.100.31 │            │
-│  │                  │ │                  │ │                  │            │
-│  │  ┌────────────┐  │ │  ┌────────────┐  │ │  ┌────────────┐  │            │
-│  │  │ etcd       │  │ │  │ etcd       │  │ │  │ etcd       │  │            │
-│  │  │ :2379/:2380│  │ │  │ :2379/:2380│  │ │  │ :2379/:2380│  │            │
-│  │  └────────────┘  │ │  └────────────┘  │ │  └────────────┘  │            │
-│  │  ┌────────────┐  │ │  ┌────────────┐  │ │  ┌────────────┐  │            │
-│  │  │ cca-server │  │ │  │ cca-server │  │ │  │ cca-server │  │            │
-│  │  │ :9770 API  │  │ │  │ :9770 API  │  │ │  │ :9770 API  │  │            │
-│  │  │ HARunner   │  │ │  │ HARunner   │  │ │  │ HARunner   │  │            │
-│  │  │ [LEADER]   │  │ │  │ [STANDBY]  │  │ │  │ [STANDBY]  │  │            │
-│  │  └────────────┘  │ │  └────────────┘  │ │  └────────────┘  │            │
-│  └─────────────────┘ └─────────────────┘ └─────────────────┘            │
-│                                                                          │
-│  ┌─────────────────┐                                                     │
-│  │   node-4         │                                                     │
-│  │   (worker)       │                                                     │
-│  │   192.168.100.51 │                                                     │
-│  │                  │                                                     │
-│  │  ┌────────────┐  │                                                     │
-│  │  │ cca-agent  │  │                                                     │
-│  │  │ containerd │  │                                                     │
-│  │  └────────────┘  │                                                     │
-│  └─────────────────┘                                                     │
-└──────────────────────────────────────────────────────────────────────────┘
+LeaderElection.Run                                  [controllers/leader.go:94]
+├── tryAcquireOrRenew                               [immediate, first tick]
+└── FOR EACH ticker.C (every renewInterval=5s):
+    ├── tryAcquireOrRenew                           [on tick]
+    └── ON ctx.Done:
+        └── release                                 [graceful shutdown]
 ```
 
-### Node Roles
-
-| Role | Count | Components | Registers as Node? |
-|------|-------|------------|--------------------|
-| controlplane | 3 | etcd + cca-server (HARunner) | No |
-| worker | N | cca-agent + containerd | Yes |
-
-Workers register as nodes in the fact store. Control-plane nodes do NOT run
-`cca agent` and do NOT appear in `observed/node/` facts.
-
-## etcd Cluster Configuration
-
-### Endpoints and Ports
-
-| Port | Protocol | Purpose |
-|------|----------|---------|
-| 2379 | HTTPS | Client API (cca-server → etcd) |
-| 2380 | HTTPS | Peer communication (etcd ↔ etcd) |
-
-### Initial Cluster Formation
-
+### tryAcquireOrRenew → acquire or renew lease
 ```
-etcd-cluster role (deploy/ansible/roles/etcd-cluster/tasks/main.yml):
-  1. Build initial-cluster string from inventory:
-     node-1=https://192.168.100.215:2380,
-     node-2=https://192.168.100.30:2380,
-     node-3=https://192.168.100.31:2380
-  2. Stop etcd, wipe /var/lib/etcd (fresh bootstrap)
-  3. Install systemd drop-in with cluster config
-  4. Start etcd, wait for endpoint health
-  5. Verify quorum via etcdctl member list
+tryAcquireOrRenew                                   [controllers/leader.go:129]
+├── mutex.Lock
+├── IF isLeader:
+│   └── renewLeaseWithCAS(nowStr)                   [renew path]
+│
+├── store.Get("leader/controlplane")
+│   ├── IF err (no lease):
+│   │   └── acquireLease(nowStr)                    [fresh acquisition]
+│   │
+│   └── IF lease found:
+│       ├── parseLeaseTimestamp(leaseFact.Value)
+│       ├── leaseAge = now - leaseTimestamp
+│       └── IF leaseAge > leaseDuration:
+│           ├── store.Transaction                   [CAS: expired lease takeover]
+│           │   ├── Compare: leaderLeaseKey.revision == leaseFact.Revision
+│           │   └── Then: Put(leaseKey, now) + Put(holderKey, nodeID)
+│           └── IF ok:
+│               ├── isLeader = true
+│               ├── lastSuccessfulRenewal = now
+│               └── onAcquired()                    [→ HARunner.startControllers]
+└── mutex.Unlock
 ```
 
-### etcd TLS
-
-All etcd communication uses mTLS with the same PKI as cca-server:
-
+### acquireLease → first-time lease creation
 ```
-/etc/ccattler/pki/ca.pem        — cluster CA certificate
-/etc/ccattler/pki/node.pem      — per-node certificate (used for both server & peer)
-/etc/ccattler/pki/node-key.pem  — per-node private key
-```
-
-### EtcdStore Connection (store/etcd.go)
-
-```
-EtcdStoreConfig:
-  Endpoints     []string      ← comma-split from --endpoints or /etc/ccattler/endpoints
-  KeyPrefix     string        ← --store-prefix (namespace within shared etcd)
-  DialTimeout   5s (default)  ← defaultEtcdDialTimeout (store/etcd.go:23)
-  Username      string        ← optional etcd auth
-  Password      string        ← optional etcd auth
-  TLSConfig     *tls.Config   ← from --etcd-cert/--etcd-key/--etcd-ca
-
-Startup sequence (NewEtcdStore, store/etcd.go:67):
-  1. clientv3.New(config) — connect to etcd cluster
-  2. Status(endpoints[0]) — verify connectivity within DialTimeout
-  3. Return EtcdStore with write rate limiter
+acquireLease(nowStr)                                [controllers/leader.go:177]
+├── store.Transaction                               [CAS: revision==0, key must not exist]
+│   ├── Compare: leaderLeaseKey.revision == 0
+│   └── Then: Put(leaseKey, now) + Put(holderKey, nodeID)
+├── IF err → log WARN, return
+└── IF ok:
+    ├── isLeader = true
+    ├── lastSuccessfulRenewal = now
+    └── onAcquired()                                [→ HARunner.startControllers]
 ```
 
-## Leader Election
-
-### Architecture
-
-Leader election is implemented at the CCattler application layer using
-compare-and-swap (CAS) transactions on etcd keys — NOT etcd's native
-election API. This gives full control over lease semantics.
-
-### Store Keys
-
-| Key | Type | Purpose |
-|-----|------|---------|
-| `leader/controlplane` | Lease timestamp (Unix millis) | When the lease was last renewed |
-| `leader/controlplane/holder` | Node ID string | Which node holds the lease |
-
-### Constants (controllers/leader.go:54-68)
-
-| Constant | Default | Description |
-|----------|---------|-------------|
-| `defaultLeaderLeaseDuration` | 15s | Lease validity window |
-| `defaultLeaderLeaseRenewInterval` | 5s | Renewal tick frequency |
-| `stopControllersTimeout` | 10s | Max wait for controller shutdown on leadership loss |
-
-### Election State Machine
-
+### renewLeaseWithCAS → leader renews lease
 ```
-                    ┌─────────────────────────────────────┐
-                    │                                     │
-                    ▼                                     │
-              ┌──────────┐                                │
-              │ STANDBY  │ ◄──── startup state            │
-              │          │                                │
-              └────┬─────┘                                │
-                   │                                      │
-                   │ tryAcquireOrRenew() every 5s         │
-                   │                                      │
-          ┌────────┴────────────┐                         │
-          │                     │                         │
-     No lease exists     Lease exists but expired         │
-          │                     │                         │
-          ▼                     ▼                         │
-   CAS: revision==0     CAS: revision==lease.rev         │
-   Put lease + holder   Put lease + holder                │
-          │                     │                         │
-     ┌────┴────┐          ┌────┴────┐                     │
-     │ CAS ok? │          │ CAS ok? │                     │
-     └────┬────┘          └────┬────┘                     │
-      yes │ no             yes │ no                       │
-          │  │                 │  │                        │
-          ▼  └─(retry)─┐      ▼  └─(retry)─┐             │
-     ┌──────────┐       │ ┌──────────┐      │             │
-     │ LEADER   │       │ │ LEADER   │      │             │
-     │          │       │ │          │      │             │
-     └────┬─────┘       │ └────┬─────┘      │             │
-          │             │      │            │             │
-          │ renewLeaseWithCAS() every 5s    │             │
-          │                                 │             │
-     ┌────┴─────────────────────────────┐   │             │
-     │                                  │   │             │
-  Holder still == nodeID           Holder changed         │
-     │                                  │                 │
-     ▼                                  ▼                 │
-  CAS: Put new timestamp        relinquishLeadership()   │
-     │                                  │                 │
-  success → update lastRenewal   onLost() callback ───────┘
-     │
-  failure (transient) → check sinceLast > leaseDuration?
-     │                         │
-     yes                       no
-     │                         │
-     ▼                         ▼
-  relinquishLeadership()    retain (log warning)
+renewLeaseWithCAS(nowStr)                           [controllers/leader.go:206]
+├── store.Get("leader/controlplane/holder")
+│   └── IF err → handleTransientRenewalFailure("holder read failed")
+├── IF holderFact.Value != nodeID:
+│   └── relinquishLeadership("holder changed")
+├── store.Transaction                               [CAS: holder revision matches]
+│   ├── Compare: holderKey.revision == holderFact.Revision
+│   └── Then: Put(leaseKey, nowStr)
+├── IF txnErr → handleTransientRenewalFailure("CAS transaction error")
+├── IF !renewed → relinquishLeadership("CAS failed")
+└── ELSE → lastSuccessfulRenewal = now
 ```
 
-### Acquisition Flow (controllers/leader.go:129-173)
-
+### handleTransientRenewalFailure → tolerates brief etcd hiccups
 ```
-tryAcquireOrRenew():
-  if isLeader:
-    renewLeaseWithCAS()
-    return
-
-  leaseFact = store.Get("leader/controlplane")
-  if err (no lease):
-    acquireLease()  — CAS with revision==0
-    return
-
-  leaseAge = now - parseTimestamp(leaseFact.Value)
-  if leaseAge > leaseDuration:
-    CAS transaction:
-      compare: leaderLeaseKey.revision == leaseFact.Revision
-      success: Put(leaseKey, now) + Put(holderKey, nodeID)
-    if ok:
-      isLeader = true
-      onAcquired()
+handleTransientRenewalFailure(reason)               [controllers/leader.go:235]
+├── sinceLast = time.Since(lastSuccessfulRenewal)
+├── IF sinceLast > leaseDuration:
+│   └── relinquishLeadership(reason + " exceeded lease duration")
+└── ELSE:
+    └── log WARN "transient renewal failure, retaining leadership"
 ```
 
-### Renewal Flow (controllers/leader.go:206-230)
-
+### relinquishLeadership → give up leader role
 ```
-renewLeaseWithCAS():
-  holderFact = store.Get("leader/controlplane/holder")
-  if err → handleTransientRenewalFailure("holder read failed")
-  if holderFact.Value != nodeID → relinquishLeadership("holder changed")
-
-  CAS transaction:
-    compare: holderKey.revision == holderFact.Revision
-    success: Put(leaseKey, now)
-  if txnErr → handleTransientRenewalFailure("CAS transaction error")
-  if !renewed → relinquishLeadership("CAS failed")
-  else → lastSuccessfulRenewal = now
+relinquishLeadership(reason)                        [controllers/leader.go:248]
+├── isLeader = false
+├── log WARN "lost leadership during renewal"
+└── onLost()                                        [→ HARunner.stopControllers]
 ```
 
-### Transient Failure Tolerance (controllers/leader.go:235-245)
-
+### release → graceful shutdown cleanup
 ```
-handleTransientRenewalFailure(reason):
-  sinceLast = time.Since(lastSuccessfulRenewal)
-  if sinceLast > leaseDuration:
-    relinquishLeadership(reason + exceeded lease)
-  else:
-    log WARN, retain leadership
-```
-
-A single renewal failure does NOT immediately lose leadership. The leader
-tolerates transient etcd timeouts for up to `leaseDuration` (15s) since
-the last successful renewal.
-
-### Graceful Release (controllers/leader.go:259-289)
-
-```
-release() — called on context cancellation (Ctrl+C / SIGTERM):
-  holderFact = store.Get("leader/controlplane/holder")
-  if err or holderFact.Value != nodeID:
-    isLeader = false  (skip delete — not our lease)
-    return
-
-  CAS transaction:
-    compare: holderKey.revision == holderFact.Revision
-    success: Delete(leaseKey) + Delete(holderKey)
-  isLeader = false
-  onLost()
-```
-
-CAS on release prevents accidentally deleting another node's valid lease
-after a concurrent takeover.
-
-## Controller Partitioning
-
-### Leader-Only Controllers (controllers/ha_runner.go)
-
-All reconciliation controllers run only on the elected leader via HARunner:
-
-```
-coreControllers() — always registered:
-  1.  instance               (controllers/instance.go)
-  2.  scheduler              (scheduler/scheduler.go)
-  3.  endpoint               (controllers/endpoint.go)
-  4.  failure                (controllers/failure.go)
-  5.  autoscale              (controllers/autoscale.go)
-  6.  intent-resolver        (controllers/intent.go)
-  7.  rollout                (controllers/rollout.go)
-  8.  init                   (controllers/init.go)
-  9.  stateful-dns           (controllers/stateful_dns.go)
-  10. stateful-volume        (controllers/stateful_volume.go)
-  11. route                  (controllers/route.go)
-  12. eviction               (controllers/eviction.go)
-  13. job                    (controllers/job.go)
-  14. cron                   (controllers/cronjob.go)
-  15. instance-gc            (controllers/instance_gc.go)
-
-startControllersWithLeaderElection() adds:
-  16. node-failure           (controllers/nodefailure.go)
-  17. drain                  (controllers/drain.go)
-  18. network                (controllers/network.go)
-  19. network-policy         (controllers/network_policy.go)
-  20. warm-zero              (controllers/warmzero.go)
-
-If --cloud-provider set:
-  21. cloud-node-lifecycle   (controllers/cloud_node_lifecycle.go)
-  22. cloud-loadbalancer     (controllers/cloud_loadbalancer.go)
-  23. cloud-routes           (controllers/cloud_routes.go)
-```
-
-### Always-Running Components (all control-plane nodes)
-
-```
-On EVERY control-plane node, regardless of leader status:
-  - API server (HTTP :9770)     ← serves /api/*, /status, /healthz, /metrics
-  - AuthController              ← rebuilds in-memory RBAC from store
-  - MetricsCollector            ← Prometheus metrics export
-  - EventProjector              ← watch-based event log (via HARunner.SetEventLog)
-  - DNS server (if --dns)       ← resolves service names from store
-```
-
-### Split: --api-only vs --controllers-only
-
-```
-cca server --api-only:
-  ✓ API server + Auth + Metrics
-  ✗ HARunner (no leader election, no controllers)
-
-cca server --controllers-only:
-  ✗ API server
-  ✓ HARunner (leader election + all controllers)
-
-cca server (default, full mode):
-  ✓ API server + Auth + Metrics
-  ✓ HARunner (leader election + all controllers)
+release(ctx)                                        [controllers/leader.go:259]
+├── mutex.Lock
+├── IF !isLeader → return
+├── store.Get("leader/controlplane/holder")
+│   └── IF err OR holderFact.Value != nodeID:
+│       ├── isLeader = false
+│       └── return                                  [skip delete — not our lease]
+├── store.Transaction                               [CAS: safe delete]
+│   ├── Compare: holderKey.revision == holderFact.Revision
+│   └── Then: Delete(leaseKey) + Delete(holderKey)
+├── isLeader = false
+└── onLost()                                        [→ HARunner.stopControllers]
 ```
 
 ## HARunner (controllers/ha_runner.go)
 
-### Lifecycle
-
+### NewHARunner → constructor
 ```
-NewHARunner(factStore, nodeID, metrics, controllers...):
-  Creates LeaderElection with callbacks:
-    OnAcquired → haRunner.startControllers
-    OnLost     → haRunner.stopControllers
-
-Run(ctx):
-  awaitPendingOperation()  — wait for any in-flight start/stop
-  election.Run(ctx)        — blocks until ctx cancelled
-
-startControllers() — called by OnAcquired callback:
-  mutex.Lock()
-  wrap each controller with metricsWrappedController
-  create new Runner(factStore, wrappedControllers...)
-  if eventLog != nil → runner.SetEventLog(eventLog)
-  launch runner.Run(ctx) in goroutine
-  log "controllers started (leader)"
-
-stopControllers() — called by OnLost callback:
-  mutex.Lock()
-  cancelRunner()
-  wait for runnerDone (max 10s = stopControllersTimeout)
-  if timeout → log ERROR "runner shutdown timed out, forcing stop"
-  clear runner, cancelRunner, runnerDone
+NewHARunner(factStore, nodeID, metrics, controllers...) [controllers/ha_runner.go:59]
+├── create HARunner{factStore, controllers, metrics}
+└── NewLeaderElection(factStore, LeaderElectionConfig{
+        NodeID:     nodeID,
+        OnAcquired: haRunner.startControllers,
+        OnLost:     haRunner.stopControllers,
+    })
 ```
 
-### Difference from Regular Runner
-
-| Aspect | Runner | HARunner |
-|--------|--------|----------|
-| Leader election | None | LeaderElection wrapper |
-| When controllers run | Always | Only when leader |
-| Failover | N/A | Automatic on lease expiry |
-| Metrics | Optional | Always (metricsWrappedController) |
-| Event log | Optional | Forwarded from SetEventLog |
-| Stop behavior | Context cancel | 10s timeout + force |
-
-## Failover Timeline
-
+### HARunner.Run → entry point
 ```
-T=0s    node-1 is LEADER, renewing lease every 5s
-T=0s    node-2, node-3 are STANDBY, checking lease every 5s
-
-T=5s    node-1 crashes (process killed, network partition, etc.)
-        Last successful renewal was at T=0s
-        Lease timestamp in etcd: T=0s
-
-T=5s    node-2 checks lease: age = 5s < 15s → still valid → stays STANDBY
-T=10s   node-2 checks lease: age = 10s < 15s → still valid → stays STANDBY
-T=15s   node-2 checks lease: age = 15s == 15s → EXPIRED
-        node-2 CAS: compare lease.revision → Put new timestamp + holder=node-2
-        CAS succeeds → node-2 becomes LEADER
-        OnAcquired → startControllers()
-        Controllers resume from current store state (stateless)
-
-T=15s   node-3 also checks lease at same tick
-        CAS fails (node-2 already updated revision) → stays STANDBY
-
-Total failover time: leaseDuration (15s) + up to renewInterval (5s) worst case
-                   = 15–20 seconds
+HARunner.Run(ctx)                                   [controllers/ha_runner.go:78]
+├── awaitPendingOperation()                         [mutex.Lock/Unlock, blocks until start/stop done]
+└── election.Run(ctx)                               [blocks until ctx cancelled]
 ```
 
-### Graceful Shutdown Failover
-
+### startControllers → called by OnAcquired callback
 ```
-T=0s    node-1 receives SIGTERM
-        release() → CAS delete lease + holder keys
-        OnLost → stopControllers() (10s timeout)
-
-T=0s    Lease keys deleted from etcd
-
-T=5s    node-2 tries to acquire: no lease exists
-        acquireLease() → CAS revision==0 → Put lease + holder
-        Becomes LEADER
-
-Total failover time: up to renewInterval (5s) — no lease expiry wait
-```
-
-## Split-Brain Prevention
-
-### etcd Quorum
-
-```
-3-node etcd cluster: quorum = 2
-  - 1 node failure: quorum maintained, cluster operational
-  - 2 node failure: quorum lost, etcd read-only, no writes
-
-Leader election uses CAS transactions on etcd:
-  - CAS is linearizable (etcd guarantee)
-  - Only one CAS can succeed for the same revision
-  - Two nodes cannot both become leader simultaneously
+startControllers()                                  [controllers/ha_runner.go:101]
+├── mutex.Lock
+├── IF cancelRunner != nil → return                 [already running, guard]
+├── context.WithCancel(context.Background())
+├── FOR EACH controller:
+│   └── wrap with metricsWrappedController{inner, metrics}
+├── NewRunner(factStore, wrappedControllers...)
+├── IF eventLog != nil:
+│   └── runner.SetEventLog(eventLog)
+├── runnerDone = make(chan struct{})
+├── go runner.Run(controllerCtx)                    [goroutine]
+│   └── defer close(runnerDone)
+└── log "controllers started (leader)"
 ```
 
-### Defense-in-Depth
-
+### stopControllers → called by OnLost callback
 ```
-1. CAS transactions prevent concurrent lease acquisition
-   (controllers/leader.go:154-161, 178-186)
-
-2. Holder verification on every renewal tick
-   (controllers/leader.go:207-215)
-
-3. CAS on release prevents deleting another node's lease
-   (controllers/leader.go:274-279)
-
-4. stopControllers() blocks until runner exits before allowing re-election
-   (controllers/ha_runner.go:140-155)
-   Prevents overlap: old leader's controllers stop BEFORE new leader starts
-
-5. etcd quorum guarantees linearizable reads/writes
-   Network-partitioned minority cannot form a separate leader
+stopControllers()                                   [controllers/ha_runner.go:140]
+├── mutex.Lock
+├── IF cancelRunner != nil:
+│   ├── cancelRunner()                              [cancel all controllers]
+│   ├── select:
+│   │   ├── <-runnerDone → log "controllers stopped (lost leadership)"
+│   │   └── <-time.After(10s) → log ERROR "runner shutdown timed out"
+│   ├── cancelRunner = nil
+│   ├── runner = nil
+│   └── runnerDone = nil
+└── mutex.Unlock
 ```
 
-## Node Join / Leave
-
-### Control-Plane Node Join
-
+### metricsWrappedController → reconciliation metrics
 ```
-1. Ansible distributes CA from first node:
-   deploy/ansible/roles/ha-controlplane/tasks/main.yml:24-52
-
-2. Generate per-node certificate:
-   cca init --ca /etc/ccattler/pki/ca.pem --ca-key ca-key.pem
-   --advertise-address <IP> --node-id <name>
-
-3. Write /etc/ccattler/endpoints (all etcd endpoints)
-
-4. Start cca-server with --node-id
-   → HARunner starts leader election loop
-   → Node enters STANDBY (existing leader still active)
+metricsWrappedController.Reconcile(ctx, facts)      [controllers/ha_runner.go:171]
+├── startTime = time.Now()
+├── inner.Reconcile(ctx, facts)                     [delegate to wrapped controller]
+└── metrics.RecordReconciliation(name, duration, len(changes), err)
 ```
 
-### Worker Node Join
+## Controller Runner (controllers/runner.go)
 
+### Runner.Run → starts all controllers
 ```
-1. Worker role deploys cca binary + containerd
-   deploy/ansible/roles/worker/tasks/main.yml
-
-2. Worker runs:  cca join <server-address> <bootstrap-token>
-   → mTLS enrollment via /api/enroll
-   → Receives signed node certificate from CA
-   → Starts cca-agent with --node-id
-
-3. Agent heartbeats → observed/node/{id}/state = "alive"
-   → IntentResolver re-evaluates per-node services
-   → Scheduler considers new node for placement
-```
-
-### Node Leave / Failure
-
-```
-Worker failure:
-  1. Agent stops heartbeating
-  2. NodeFailureController detects: observed/node/{id}/state → "unreachable"
-  3. After failure timeout: marks instances as node_failure
-  4. FailureController creates replacements
-  5. Scheduler places new instances on remaining nodes
-
-Control-plane failure:
-  1. cca-server process dies or network partition
-  2. Lease renewal stops (no CAS renewal)
-  3. After 15s: lease expires
-  4. Standby node acquires leadership via CAS
-  5. New leader starts all controllers from current store state
+Runner.Run(ctx)                                     [controllers/runner.go:196]
+├── context.WithCancel(ctx)
+├── IF eventLog != nil:
+│   ├── NewEventProjector(store, eventLog)
+│   └── go eventProjector.Run(childCtx)             [goroutine]
+├── FOR EACH controller:
+│   └── go runSingleController(childCtx, controller) [goroutine]
+├── select:
+│   ├── <-ctx.Done → firstError = ctx.Err()
+│   └── err from controllerErrors channel
+├── cancelChildren()
+└── waitGroup.Wait()
 ```
 
-## Health and Readiness
-
-### Endpoints
-
-| Endpoint | Purpose | Auth Required |
-|----------|---------|---------------|
-| `/healthz` | Liveness probe — server process alive | No |
-| `/metrics` | Prometheus metrics export | No |
-| `/status` | Full cluster status (JSON or text) | Yes (mTLS or bearer) |
-| `/api/get?type=nodes` | Node list via API | Yes |
-
-### Deployment Health Checks (ha-deploy.yml:53-79)
-
+### runSingleController → retry with backoff
 ```
-After etcd cluster formation:
-  1. Restart cca-server on all control-plane nodes
-  2. wait_for: port 9770, timeout 45s
-  3. curl --cacert/--cert/--key https://{host}:9770/healthz (retries: 10, delay: 3)
+runSingleController(ctx, controller)                [controllers/runner.go:238]
+└── FOR attempt 0..∞:
+    ├── runControllerLoop(ctx, controller)
+    ├── IF ctx.Err() → return
+    ├── delay = backoff[attempt]                    [100ms, 500ms, 1s, 2s, 5s, 30s]
+    ├── log WARN "controller failed, retrying"
+    └── time.After(delay)
 ```
 
-### Readiness Command (cmd/cca/command_readiness.go)
-
+### runControllerLoop → watch + reconcile
 ```
-cca readiness [--json]
-
-Runs 16 test areas including:
-  - "control-plane": TestControlPlaneRestart, TestRollingControlPlaneUpgrade,
-                     TestLeaderElection
-  - "recovery": TestDisasterRecovery, TestSplitBrain, TestNetworkPartition
-```
-
-## Deployment Summary
-
-### PKI Bootstrap (ha-controlplane role)
-
-```
-First control-plane node (serial: 1):
-  1. cca init --advertise-address <IP> --node-id <name>
-     → Generates CA (ca.pem, ca-key.pem)
-     → Generates node cert (node.pem, node-key.pem)
-     → Writes /etc/ccattler/pki/*
-  2. Ansible fetches ca.pem + ca-key.pem to controller
-
-Remaining control-plane nodes:
-  3. Ansible distributes ca.pem + ca-key.pem
-  4. cca init --ca ca.pem --ca-key ca-key.pem
-     → Generates unique node cert signed by shared CA
-  5. Writes /etc/ccattler/endpoints (all 3 etcd endpoints)
+runControllerLoop(ctx, controller)                  [controllers/runner.go:274]
+├── setupControllerWatches(watchCtx, controller, trigger, watchLost, deltaBuffer)
+│   └── FOR EACH prefix in controller.Watch():
+│       ├── store.Watch(prefix, {Prefix: true})
+│       └── go forwardWatchEvents(...)              [goroutine]
+├── executeReconciliationCycle(ctx, controller, nil) [initial]
+└── runReconcileSelectLoop(ctx, controller, trigger, watchLost, deltaBuffer)
+    └── select:
+        ├── reconcileTrigger → debounce(50ms) → executeReconciliationCycle
+        ├── resyncTicker(30s) → executeReconciliationCycle
+        └── watchLost → return error → restart controller
 ```
 
-### Inventory Format (deploy/ansible/baremetal-e2e-ha-inventory.ini)
-
-```ini
-[etcd]
-node-1 ansible_host=192.168.100.215
-node-2 ansible_host=192.168.100.30
-node-3 ansible_host=192.168.100.31
-
-[controlplane]
-node-1
-node-2
-node-3
-
-[workers]
-node-4 ansible_host=192.168.100.51
-
-[ccattler:children]
-controlplane
-workers
-
-[all:vars]
-etcd_endpoints=https://192.168.100.215:2379,https://192.168.100.30:2379,https://192.168.100.31:2379
+### executeReconciliationCycle → optimistic concurrency retries
+```
+executeReconciliationCycle(ctx, controller, deltaEvents) [controllers/runner.go:409]
+└── FOR attempt 0..4:
+    ├── attemptSingleReconciliation(ctx, controller, events)
+    │   ├── scanFactsForController → allFacts[]
+    │   ├── computeReconciliationChanges → changes[]
+    │   │   ├── IF deltaEvents + DeltaController:
+    │   │   │   └── ReconcileDelta(ctx, facts, events)
+    │   │   └── ELSE:
+    │   │       └── controller.Reconcile(ctx, facts)
+    │   ├── enforceWriteDomain(controllerName, changes)
+    │   ├── validateAndCapChanges(controllerName, changes)
+    │   └── store.Transaction(compares, operations, nil)
+    ├── IF !conflictDetected → return nil
+    └── ELSE → backoff (10ms–500ms + jitter), retry
 ```
 
-### Playbook Execution Order (deploy/ansible/ha-deploy.yml)
+## Server Startup (cmd/cca/command_server.go)
 
+### startControllersWithLeaderElection → production HA path
 ```
-1. cleanup      (all nodes)    — remove old state
-2. common       (all nodes)    — install cca binary, containerd, deps
-3. ha-controlplane (controlplane, serial:1) — PKI generation + distribution
-4. etcd-cluster (etcd)         — form 3-node raft cluster
-5. restart      (controlplane) — restart cca-server, verify API health
-6. worker       (workers)      — deploy agent + containerd
-7. testapp      (controlplane[0], tags: testapp) — optional demo workload
+startControllersWithLeaderElection(ctx, factStore, eventLog, config) [cmd/cca/command_server.go:370]
+├── coreControllers()                               [cmd/cca/helpers.go:286]
+│   ├── NewInstanceController()
+│   ├── NewScheduler()
+│   ├── NewEndpointController()
+│   ├── NewFailureController()
+│   ├── NewAutoscaleController()
+│   ├── NewIntentResolverController()
+│   ├── NewRolloutController()
+│   ├── NewInitController()
+│   ├── NewStatefulDNSController()
+│   ├── NewStatefulVolumeController()
+│   ├── NewRouteController()
+│   ├── NewEvictionController()
+│   ├── NewJobController()
+│   ├── NewCronController()
+│   ├── NewInstanceGCController()
+│   └── NewAuditLogGCController()
+├── append HA-only controllers:
+│   ├── NewNodeFailureController()
+│   ├── NewDrainController()
+│   ├── NewNetworkController() or NewNetworkControllerWithCIDR(vipCIDR)
+│   ├── NewNetworkPolicyController()
+│   └── NewWarmZeroController()
+├── IF cloudProviderName != "":
+│   ├── NewNodeLifecycleController(cloudProvider)
+│   ├── NewCloudLoadBalancerController(cloudProvider, factStore)
+│   └── NewCloudRouteController(cloudProvider, factStore)
+├── NewHARunner(factStore, nodeID, metricsCollector, controllerList...)
+├── haRunner.SetEventLog(eventLog)
+└── go haRunner.Run(ctx)                            [goroutine]
 ```
 
-## Constants and Timeouts Reference
+## Node Failure Detection (controllers/nodefailure.go)
+
+### NodeFailureController.Reconcile
+```
+NodeFailureController.Reconcile(ctx, facts)         [controllers/nodefailure.go:92]
+├── parseNodeLeaseTimestamps(facts)                 [lease/node/* → map[nodeID]int64]
+├── parseCurrentNodeStates(facts)                   [observed/node/*/state → map[nodeID]string]
+├── identifyUnreachableNodes(currentTime, timestamps, states)
+│   ├── FOR EACH node with heartbeat:
+│   │   ├── IF unreachable + heartbeat fresh → recovered → Change: state=alive
+│   │   ├── IF unreachable + heartbeat stale → add to unreachableNodeSet
+│   │   └── IF alive + heartbeat stale → add to unreachableNodeSet
+│   └── FOR newly unreachable nodes → Change: state=unreachable
+│       [capped at MaxNodeStateChangesPerCycle=12]
+├── markInstancesOnUnreachableNodesAsFailed(facts, unreachableNodeSet, budget)
+│   ├── parse placement → instanceID→nodeID
+│   ├── FOR instances on unreachable nodes (running/pending/starting):
+│   │   └── Change: Put derived/instance/{id}/node_failure = "true"
+│   └── [capped at remainingBudget]
+└── cleanupStaleNodeFailureMarkers(facts, unreachableNodeSet, budget)
+    └── Delete derived/instance/{id}/node_failure for instances on recovered nodes
+```
+
+## EventProjector (controllers/event_projector.go)
+
+### EventProjector.Run → watch committed state transitions
+```
+EventProjector.Run(ctx)                             [controllers/event_projector.go:49]
+├── watch prefixes:
+│   ├── observed/instance/
+│   ├── derived/instance/
+│   ├── observed/node/
+│   ├── placement/instance/
+│   └── effective/service/
+├── mergedChannel = make(chan Event, 64)
+├── FOR EACH prefix:
+│   └── go watchAndForward(ctx, prefix, mergedChannel) [goroutine per prefix]
+└── processEvents(ctx, mergedChannel)               [blocks, emits semantic events]
+```
+
+## Store Key Patterns (HA subsystem reads/writes)
+
+### Leader Election Keys
+| Key Pattern | Read By | Written By |
+|---|---|---|
+| `leader/controlplane` | `tryAcquireOrRenew` | `acquireLease`, `renewLeaseWithCAS` |
+| `leader/controlplane/holder` | `renewLeaseWithCAS`, `release`, `CurrentLeader` | `acquireLease`, `tryAcquireOrRenew` (CAS) |
+
+### Node Failure Keys
+| Key Pattern | Read By | Written By |
+|---|---|---|
+| `lease/node/{nodeID}` | `NodeFailureController.parseNodeLeaseTimestamps` | Agent (heartbeatLoop) |
+| `observed/node/{nodeID}/state` | `NodeFailureController.parseCurrentNodeStates` | `identifyUnreachableNodes`, Agent |
+| `derived/instance/{id}/node_failure` | Agent (`isInstanceMarkedForSkip`) | `markInstancesOnUnreachableNodesAsFailed` |
+
+## Reverse Index (who calls this function?)
+
+| Function | Called By |
+|---|---|
+| `LeaderElection.Run` | `HARunner.Run` |
+| `tryAcquireOrRenew` | `LeaderElection.Run` (initial + every renewInterval tick) |
+| `acquireLease` | `tryAcquireOrRenew` (when no lease exists) |
+| `renewLeaseWithCAS` | `tryAcquireOrRenew` (when isLeader) |
+| `handleTransientRenewalFailure` | `renewLeaseWithCAS` (on Get error or CAS error) |
+| `relinquishLeadership` | `renewLeaseWithCAS` (holder changed/CAS failed), `handleTransientRenewalFailure` (exceeded lease) |
+| `release` | `LeaderElection.Run` (on ctx.Done) |
+| `parseLeaseTimestamp` | `tryAcquireOrRenew` |
+| `HARunner.Run` | `startControllersWithLeaderElection` (goroutine) |
+| `startControllers` | `LeaderElection.onAcquired` callback |
+| `stopControllers` | `LeaderElection.onLost` callback |
+| `awaitPendingOperation` | `HARunner.Run` (before election start) |
+| `metricsWrappedController.Reconcile` | `Runner.executeReconciliationCycle` via `attemptSingleReconciliation` |
+| `Runner.Run` | `startControllers` (goroutine), `startControllerRunner` (non-HA path) |
+| `runSingleController` | `Runner.Run` (goroutine per controller) |
+| `runControllerLoop` | `runSingleController` |
+| `setupControllerWatches` | `runControllerLoop` |
+| `forwardWatchEvents` | `setupControllerWatches` (goroutine per prefix) |
+| `runReconcileSelectLoop` | `runControllerLoop` |
+| `executeReconciliationCycle` (server) | `runControllerLoop` (initial), `runReconcileSelectLoop` (on trigger) |
+| `attemptSingleReconciliation` | `executeReconciliationCycle` (up to 5 retries) |
+| `scanFactsForController` | `attemptSingleReconciliation` |
+| `computeReconciliationChanges` | `attemptSingleReconciliation` |
+| `enforceWriteDomain` | `attemptSingleReconciliation` |
+| `validateAndCapChanges` | `attemptSingleReconciliation` |
+| `buildReconciliationTransaction` | `attemptSingleReconciliation` |
+| `coreControllers` | `startControllersWithLeaderElection`, `startControllerRunner` |
+| `startControllersWithLeaderElection` | `runServerCommand` (if runControllers=true) |
+| `NewEventProjector` | `Runner.Run` (if eventLog != nil) |
+| `EventProjector.Run` | `Runner.Run` (goroutine) |
+| `NodeFailureController.Reconcile` | `Runner` via `attemptSingleReconciliation` |
+| `identifyUnreachableNodes` | `NodeFailureController.Reconcile` |
+| `markInstancesOnUnreachableNodesAsFailed` | `NodeFailureController.Reconcile` |
+| `cleanupStaleNodeFailureMarkers` | `NodeFailureController.Reconcile` |
+| `parseNodeLeaseTimestamps` | `NodeFailureController.Reconcile` |
+| `parseCurrentNodeStates` | `NodeFailureController.Reconcile` |
+
+## Error Propagation Paths
+
+### Leader election errors
+```
+LeaderElection.Run
+├── tryAcquireOrRenew
+│   ├── store.Get fails → acquireLease (treats missing key as fresh)
+│   ├── acquireLease → store.Transaction fails
+│   │   └── LOG WARN "leader election transaction failed", return (retry next tick)
+│   ├── CAS for expired lease → txnErr
+│   │   └── return (retry next tick, another node may have taken it)
+│   └── renewLeaseWithCAS
+│       ├── store.Get(holder) fails
+│       │   └── handleTransientRenewalFailure
+│       │       ├── sinceLast < leaseDuration → LOG WARN, retain
+│       │       └── sinceLast > leaseDuration → relinquishLeadership → onLost
+│       ├── holder changed (another node)
+│       │   └── relinquishLeadership → onLost
+│       └── CAS txn error or failed
+│           └── handleTransientRenewalFailure / relinquishLeadership → onLost
+│
+└── release (ctx.Done)
+    ├── store.Get(holder) fails → isLeader = false, skip delete
+    ├── holder != nodeID → isLeader = false, skip delete
+    └── CAS delete fails → LOG ERROR, isLeader = false
+```
+
+### Controller runner errors
+```
+Runner.Run
+├── EventProjector.Run fails → error on controllerErrors channel → cancelChildren
+└── runSingleController
+    └── runControllerLoop
+        ├── setupControllerWatches → store.Watch fails
+        │   └── return error → backoff retry (100ms, 500ms, 1s, 2s, 5s, 30s)
+        ├── executeReconciliationCycle → scanFactsForController fails
+        │   └── return error → restart controller with backoff
+        └── runReconcileSelectLoop
+            ├── watchLost (channel closed)
+            │   └── return error → restart controller with backoff
+            └── executeReconciliationCycle → reconcile error
+                └── LOG ERROR, continue (non-fatal)
+```
+
+### HARunner stop timeout
+```
+stopControllers
+└── cancelRunner() + select:
+    ├── <-runnerDone (normal) → log "controllers stopped"
+    └── <-time.After(10s) → LOG ERROR "runner shutdown timed out, forcing stop"
+        [controllers may still be running — split-brain risk if new leader starts]
+```
+
+## Implicit Ordering Constraints
+
+### 1. stopControllers completes BEFORE new leader starts controllers
+```
+Old leader loses leadership:
+  stopControllers() → cancelRunner() → wait runnerDone (max 10s)
+  Only AFTER stopControllers returns does the mutex unlock.
+
+New leader acquires via CAS:
+  startControllers() → mutex.Lock → creates fresh Runner
+  The new leader's CAS on etcd ensures the old lease is stale.
+```
+**Why it matters:** If old leader's controllers overlap with new leader's
+controllers, both write to the same keys → CAS conflicts escalate → convergence stalls.
+
+### 2. Leader lease must be renewed before leaseDuration expires
+```
+Leader renews every renewInterval (5s):
+  renewLeaseWithCAS writes new timestamp to leader/controlplane
+
+Standby checks every renewInterval (5s):
+  tryAcquireOrRenew reads leader/controlplane
+  IF leaseAge > leaseDuration (15s) → CAS takeover
+```
+**Failover window:** 15–20 seconds (leaseDuration + up to renewInterval worst case).
+
+### 3. Graceful shutdown deletes lease → immediate failover
+```
+release() CAS-deletes leader/controlplane + holder
+  → next standby tick: no lease exists → acquireLease (revision==0)
+  → failover in ≤ renewInterval (5s), not leaseDuration (15s)
+```
+
+## Constants Reference
 
 | Constant | Value | Location | Purpose |
-|----------|-------|----------|---------|
+|---|---|---|---|
 | `defaultLeaderLeaseDuration` | 15s | controllers/leader.go:64 | Lease validity window |
 | `defaultLeaderLeaseRenewInterval` | 5s | controllers/leader.go:68 | Renewal tick frequency |
 | `stopControllersTimeout` | 10s | controllers/ha_runner.go:18 | Max wait for controller shutdown |
-| `defaultEtcdDialTimeout` | 5s | store/etcd.go:23 | etcd connection timeout |
-| `defaultEtcdWatchBuffer` | 64 | store/etcd.go:28 | Watch event channel buffer |
 | `defaultControllerDebounceInterval` | 50ms | controllers/runner.go:26 | Quiet period between reconcile cycles |
 | `defaultControllerResyncInterval` | 30s | controllers/runner.go:30 | Forced full reconciliation period |
 | `reconcileRetryBaseDelayMs` | 10ms | controllers/runner.go:34 | CAS retry base backoff |
 | `reconcileRetryMaxDelayMs` | 500ms | controllers/runner.go:38 | CAS retry max backoff |
+| `defaultMaxReconciliationAttempts` | 5 | controllers/runner.go:402 | Max CAS retries per cycle |
 | `maxTransactionChanges` | 60 | controllers/runner.go:55 | Max changes per etcd transaction |
-| etcd client port | 2379 | deploy/ansible | Client API port |
-| etcd peer port | 2380 | deploy/ansible | Peer communication port |
-| API server port | 9770 | cmd/cca/command_server.go:37 | HTTP(S) API port |
-| `defaultCACertificateValidity` | 10 years | cmd/cca/command_server.go:42 | CA certificate lifetime |
-| `defaultServerCertificateTTL` | 24h | cmd/cca/command_server.go:46 | Server cert rotation period |
-| `defaultNodeCertificateTTL` | 1 year | cmd/cca/command_server.go:50 | Enrolled node cert lifetime |
-| `certificateExpiryWarningThreshold` | 7 days | cmd/cca/command_server.go:828 | Startup warning threshold |
+| `etcdTransactionOperationLimit` | 128 | controllers/runner.go:42 | etcd hard limit |
+| `defaultNodeFailureLeaseTimeout` | 30s | controllers/nodefailure.go:22 | Heartbeat expiry for node failure |
+| `defaultMaxTotalChangesPerCycle` | 58 | controllers/nodefailure.go:29 | NodeFailure change budget |
+| `defaultMaxNodeStateChangesPerCycle` | 12 | controllers/nodefailure.go:35 | Node state changes per cycle |
+| `defaultEtcdDialTimeout` | 5s | store/etcd.go:23 | etcd connection timeout |
+| `defaultEtcdWatchBuffer` | 64 | store/etcd.go:28 | Watch event channel buffer |
+| `defaultWriteRatePerSecond` | 500 | store/write_rate_limiter.go:17 | Sustained etcd write rate |
+| `controllerRestartBackoffDelays` | 100ms→30s | controllers/runner.go:61 | Controller restart backoff sequence |
 
 ## File Reference
 
 | File | Purpose |
-|------|---------|
-| `controllers/leader.go` | Leader election: lease, CAS, acquire/renew/release |
+|---|---|
+| `controllers/leader.go` | LeaderElection: lease acquire/renew/release with CAS |
 | `controllers/leader_test.go` | 6 tests: acquire, contention, failover, release, stale holder, safe release |
-| `controllers/ha_runner.go` | HARunner: leader-aware controller runner |
-| `controllers/runner.go` | Inner Runner: watch, debounce, reconcile loop |
-| `store/etcd.go` | EtcdStore: connect, CRUD, watch, transactions, leases |
-| `cmd/cca/command_server.go` | Server startup: store, auth, controllers, API |
-| `cmd/cca/command_readiness.go` | Production readiness test runner (16 areas) |
-| `deploy/ansible/ha-deploy.yml` | HA deployment playbook |
-| `deploy/ansible/baremetal-e2e-ha-inventory.ini` | HA cluster inventory (3 cp + 1 worker) |
-| `deploy/ansible/roles/ha-controlplane/tasks/main.yml` | PKI generation and distribution |
-| `deploy/ansible/roles/etcd-cluster/tasks/main.yml` | etcd 3-node raft cluster formation |
-| `.github/workflows/e2e-ha.yml` | CI workflow for HA e2e tests |
+| `controllers/ha_runner.go` | HARunner: leader-aware controller runner, start/stop lifecycle |
+| `controllers/runner.go` | Inner Runner: watch, debounce, reconcile loop, optimistic concurrency |
+| `controllers/nodefailure.go` | NodeFailureController: heartbeat monitoring, node→unreachable, instance→failed |
+| `controllers/event_projector.go` | EventProjector: watch-based semantic event log |
+| `store/etcd.go` | EtcdStore: connect, CRUD, watch, transactions, write rate limiter |
+| `store/store.go` | StateStore interface: Get/Put/Delete/Scan/Watch/Transaction/Lease |
+| `store/write_rate_limiter.go` | Token-bucket write rate limiter (500 writes/s, burst 1000) |
+| `cmd/cca/command_server.go` | Server startup: startControllersWithLeaderElection |
+| `cmd/cca/helpers.go:286` | coreControllers(): 16 built-in controllers |
+| `security/enrollment.go` | Node enrollment: join tokens, re-enrollment after CA loss |
+| `security/rotator.go` | CertificateRotator: auto-renewal before expiry |

@@ -1,542 +1,367 @@
-# CCattler Stateful Services Graph Reference
+# CCattler Stateful Services Function Call Graph
 
-Machine-readable reference for how stateful services are handled across all
-controllers and the scheduler. Purpose: trace the full lifecycle of a stateful
-service — from DSL declaration through ordinal instance creation, volume
-provisioning, DNS registration, and scale-down — without reading controller
-source files.
+Machine-readable function-level index for stateful service handling across all
+controllers and the scheduler. Purpose: trace exact call chains, store key
+patterns, and data flows without reading source files. Load this file instead.
 
-## 1. Overview — What "Stateful" Means
+---
 
-A service with `stateful` enabled gets four behaviors that stateless services
-do not:
+## 1. DSL → Facts (lang/)
 
+### Parser: lang/parser.go
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│ Stateful Service Guarantees                                                  │
-│                                                                              │
-│  1. ORDINAL IDs      Instance IDs are {service}-{ordinal}: postgres-0,       │
-│                      postgres-1, postgres-2 (not random UUIDs)               │
-│                                                                              │
-│  2. ORDERED STARTUP  Instance N+1 is only created once N is running.         │
-│                      (stateless: all created in parallel)                     │
-│                                                                              │
-│  3. REVERSE SCALE-DOWN  Highest ordinal is stopped first.                    │
-│                         (stateless: pending first, then by ID)               │
-│                                                                              │
-│  4. PER-ORDINAL      Each ordinal gets its own volume ({svc}-{ord}-{vol})    │
-│     VOLUMES + DNS    and a stable DNS name ({svc}-{ord}.cca.local)           │
-│                                                                              │
-│  5. PREEMPTION       Stateful instances are never preemption victims (M161). │
-│     IMMUNITY         Eviction still applies (memory pressure override).      │
-└──────────────────────────────────────────────────────────────────────────────┘
+parseService → parseServiceBody
+├── case "stateful":                                           :303
+│   └── serviceDecl.Stateful = true
+└── case "volume":                                             [volume mount binding]
+    └── serviceDecl.Volumes = append(...)
 ```
 
-## 2. DSL Declaration
-
+### AST: lang/ast.go
 ```
-# lang/parser.go:303
-service postgres {
-    image "postgres:16"
-    instances 3
-    stateful                          ← boolean keyword, no value
-    volume pgdata "/var/lib/postgresql/data"
-}
-
-volume pgdata {
-    size "100Gi"
-    persistent true
-}
+ServiceDecl                                                    :74
+├── Stateful bool                                              [stateful flag]
+└── Volumes  []VolumeMount                                     [volume mount bindings]
 ```
 
-**AST**: `lang/ast.go:74` — `ServiceDecl.Stateful bool`
-
-**Parser**: `lang/parser.go:303` — `case "stateful": serviceDecl.Stateful = true`
-
-**Compiler**: `lang/compiler.go:357–362` — Emits two facts:
+### Compiler: lang/compiler.go
 ```
-desired/service/postgres/stateful  = "true"
-effective/service/postgres/stateful = "true"
+compileServiceFacts(serviceDecl)
+└── IF serviceDecl.Stateful:                                   :357–362
+    ├── Fact{ Key: desired/service/{name}/stateful,   Value: "true" }
+    └── Fact{ Key: effective/service/{name}/stateful, Value: "true" }
 ```
 
-The effective fact is written directly by the compiler (stateful is a static
-flag, not resolved by the IntentResolverController).
+---
 
-## 3. Fact Store Keys
+## 2. InstanceController — Stateful Branching (controllers/instance.go)
 
-### Service-Level Keys
-
-| Key Pattern | Producer | Consumer |
-|---|---|---|
-| `desired/service/{name}/stateful` | Compiler | — |
-| `effective/service/{name}/stateful` | Compiler | InstanceController, StatefulVolumeController, StatefulDNSController, Scheduler |
-| `desired/service/{name}/volume/{vol}` | Compiler | StatefulVolumeController |
-
-### Instance-Level Keys (Stateful-Specific)
-
-| Key Pattern | Producer | Consumer |
-|---|---|---|
-| `observed/instance/{svc}-{ord}/ordinal` | InstanceController | StatefulDNSController, Agent |
-| `observed/instance/{svc}-{ord}/state` | Agent | InstanceController, StatefulDNSController |
-| `observed/instance/{svc}-{ord}/ip` | Agent | StatefulDNSController |
-
-### Volume Keys (Per-Ordinal)
-
-| Key Pattern | Producer | Consumer |
-|---|---|---|
-| `desired/volume/{svc}-{ord}-{vol}` | StatefulVolumeController | StorageController |
-| `desired/volume/{svc}-{ord}-{vol}/size` | StatefulVolumeController | StorageController |
-| `desired/volume/{svc}-{ord}-{vol}/persistent` | StatefulVolumeController | StorageController |
-| `observed/volume/{svc}-{ord}-{vol}/state` | Agent | StatefulVolumeController |
-| `observed/volume/{svc}-{ord}-{vol}/instance` | Agent | — |
-
-### DNS Keys (Per-Instance)
-
-| Key Pattern | Producer | Consumer |
-|---|---|---|
-| `network/dns/instance/{instanceID}` | StatefulDNSController | DNS Forwarder (agent) |
-
-**Key functions** (`types/keys.go`):
+### InstanceController.Reconcile :77
 ```
-KeyDesiredServiceStateful(name)    → desired/service/{name}/stateful      (:800)
-KeyEffectiveServiceStateful(name)  → effective/service/{name}/stateful    (:807)
-KeyObservedInstanceOrdinal(id)     → observed/instance/{id}/ordinal       (:566)
-KeyNetworkDNSInstance(id)          → network/dns/instance/{id}
+InstanceController.Reconcile(ctx, facts)
+├── parseEffectiveServiceFacts(facts)                          :310
+│   └── reads effective/service/{name}/stateful
+│   └── returns (desiredCounts map[svc]int, statefulServices map[svc]bool, perNodeServices map[svc]bool)
+├── parseInstanceFieldsFromFacts(facts)
+├── buildInstanceMapsFromFields(fields)                        :359
+├── buildActiveInstanceIDsByService(...)                        :375
+│
+├── reconcileScaleDowns(facts, desiredCounts, ...)             :131
+│   └── FOR EACH service needing scale-down:
+│       ├── IF per-node: markPerNodeExcessInstancesAsStopped   :528
+│       ├── IF stateful: stopHighestOrdinalInstances           :465  [see §2.2]
+│       └── ELSE: markExcessStatelessInstancesAsStopped        :501
+│
+├── computeServiceDeficits(desiredCounts, actualCounts, ...)   :174
+│   └── FOR EACH service:
+│       ├── IF stateful: deficit = min(1, want - have)         [max 1 per cycle]
+│       └── ELSE: deficit = want - have
+│
+└── allocateCreationsFairly(deficits, budget=30, ...)          :209
+    └── FOR EACH service with deficit (priority-sorted):
+        ├── IF stateful:
+        │   └── createNextStatefulInstance(...)                 :420  [see §2.1]
+        └── ELSE:
+            └── createPendingInstances(service, count)         :482
 ```
 
-## 4. Instance Controller — Ordinal Lifecycle
-
-**File**: `controllers/instance.go`
-
-### Reading Stateful Flag
-
-`parseEffectiveServiceFacts()` (:310) reads `effective/service/{name}/stateful`
-and returns a `map[string]bool` of stateful services. This is the single source
-of truth for all stateful branching in the instance controller.
-
-### Ordinal ID Assignment
-
-**`createNextStatefulInstance()`** (:420):
+### 2.1 createNextStatefulInstance :420
 ```
-Input:  serviceName="postgres", wantCount=3, existingOrdinals=[0,1]
-Logic:  for nextOrdinal in 0..wantCount-1:
-          if ordinal exists and instance is running → continue
-          if ordinal exists and instance is NOT running → return nil (block)
-          if ordinal is missing → create it
-Output: create postgres-2 with ordinal=2
-
-Key invariant: instance N+1 is NEVER created until instance N is running.
-This means scaling from 0→3 takes 3 reconciliation cycles minimum.
+createNextStatefulInstance(serviceName, wantCount, activeIDs, states, services, facts)
+├── parseExistingOrdinals(serviceName, activeIDs)              :396
+│   └── extract ordinal integers from "{svc}-{N}" instance IDs
+│   └── sort ascending
+│
+├── FOR nextOrdinal in 0..wantCount-1:
+│   ├── IF ordinal exists AND state == running → continue
+│   ├── IF ordinal exists AND state != running → return nil    [block: wait for N before N+1]
+│   └── IF ordinal missing:
+│       ├── instanceID = "{serviceName}-{ordinal}"
+│       ├── clear stale markers (controller_stopped, node_failure) if present
+│       └── return changes:
+│           ├── PUT observed/instance/{svc}-{ord}          = ""
+│           ├── PUT observed/instance/{svc}-{ord}/service  = "{serviceName}"
+│           ├── PUT observed/instance/{svc}-{ord}/state    = "pending"
+│           └── PUT observed/instance/{svc}-{ord}/ordinal  = "{ordinal}"
+│
+└── return nil (all ordinals satisfied)
 ```
 
-Instance creation emits:
+### 2.2 stopHighestOrdinalInstances :465
 ```
-observed/instance/postgres-2        = ""
-observed/instance/postgres-2/service = "postgres"
-observed/instance/postgres-2/state   = "pending"
-observed/instance/postgres-2/ordinal = "2"
-```
-
-If a previous incarnation left stale markers (`controller_stopped` or
-`node_failure`), they are atomically deleted in the same change group.
-
-### Ordered Startup Sequence
-
-```
-Cycle 1:  postgres-0 created (pending)     → agent starts it
-Cycle 2:  postgres-0 running               → postgres-1 created (pending)
-Cycle 3:  postgres-1 running               → postgres-2 created (pending)
-Cycle 4:  postgres-2 running               → all ordinals up
+stopHighestOrdinalInstances(serviceName, existingOrdinals, count)
+├── sort existingOrdinals descending
+├── take first `count` ordinals
+└── FOR EACH ordinal to stop:
+    └── PUT derived/instance/{svc}-{ord}/controller_stopped = "true"
 ```
 
-Each cycle is gated by the 50ms debounce + agent heartbeat (5s) + container
-startup time. Typical startup for a 3-instance stateful service: ~20–30s.
+### Key invariants
 
-### Scale-Down: Reverse Ordinal Order
+- **Ordered startup**: instance N+1 is NEVER created until instance N is running
+- **Reverse scale-down**: highest ordinal is stopped first
+- **Budget = 1**: stateful services contribute at most 1 deficit per cycle
+- **ID format**: `{serviceName}-{ordinal}` (not random UUID)
 
-**`stopHighestOrdinalInstances()`** (:465):
+---
+
+## 3. StatefulVolumeController (controllers/stateful_volume.go)
+
+### StatefulVolumeController.Reconcile :46
 ```
-Input:  existingOrdinals=[0,1,2], count=1
-Output: controller_stopped(postgres-2) = "true"
-
-Always stops the highest ordinal first.
-Scale 3→1 over two cycles: stop 2, then stop 1.
-```
-
-Compare with stateless scale-down (`markExcessStatelessInstancesAsStopped`
-:501) which prefers pending → then by ID.
-
-### Budget Allocation
-
-**`computeServiceDeficits()`** (:174): Stateful services contribute at most 1
-deficit per cycle (because only one ordinal can be created at a time due to
-ordered startup). This means:
-```
-stateful postgres wants 5, has 2 → deficit = 1 (not 3)
-stateless nginx    wants 5, has 2 → deficit = 3
-```
-
-**`allocateCreationsFairly()`** (:209): When processing stateful services in
-the allocation loop, calls `createNextStatefulInstance` which returns at most 1
-instance. The remaining budget goes to other services.
-
-## 5. Stateful Volume Controller
-
-**File**: `controllers/stateful_volume.go`
-
-### Purpose
-
-Creates per-ordinal volume declarations so each stateful instance gets its own
-persistent storage. The storage controller then materializes them via the
-StorageProvider.
-
-### Watch Prefixes
-
-```
-effective/service/      ← stateful flag + instance count
-desired/service/        ← volume mount bindings
-desired/volume/         ← volume templates (size, persistent)
+StatefulVolumeController.Reconcile(ctx, facts)
+├── parseEffectiveServiceFacts(facts)                          [shared]
+│   └── desiredCounts, statefulServices
+├── parseServiceVolumeMountsWithPaths(facts)                   :84
+│   └── reads desired/service/{name}/volume/{vol} → mountPath
+│   └── returns map[serviceName][]volumeMountBinding{volumeName, mountPath}
+├── parseVolumeTemplates(facts)                                :108
+│   └── reads desired/volume/{vol}/size, desired/volume/{vol}/persistent
+│   └── returns map[volumeName]volumeTemplate{size, persistent}
+├── parseExistingDesiredVolumeNames(facts)                     :129
+│   └── reads desired/volume/{name} root markers
+│   └── returns map[volumeName]bool
+│
+└── FOR EACH stateful service (sorted):
+    └── reconcilePerOrdinalVolumes(svc, count, mounts, templates, existing)  :144
+        └── FOR ordinal in 0..count-1:
+            └── FOR EACH mount:
+                ├── perOrdinalVolumeName = "{svc}-{ordinal}-{volumeName}"
+                ├── IF already exists: skip
+                └── ELSE emit groupedChanges("vol-ordinal/{name}"):
+                    ├── PUT desired/volume/{name}            = ""
+                    ├── PUT desired/volume/{name}/size        = "{template.size}"
+                    └── PUT desired/volume/{name}/persistent  = "{template.persistent|true}"
 ```
 
-### Reconciliation Flow
-
+### Naming convention
 ```
-                    ┌──────────────────────────────┐
-                    │   StatefulVolumeController    │
-                    │          Reconcile            │
-                    └──────┬───────────────────────┘
-                           │
-                ┌──────────▼──────────────┐
-                │ parseEffectiveServiceFacts│ → statefulServices, desiredCounts
-                │ parseServiceVolumeMounts │ → {postgres: [{pgdata, /var/lib/...}]}
-                │ parseVolumeTemplates     │ → {pgdata: {size:"100Gi", persistent:"true"}}
-                │ parseExistingDesired     │ → existing volume names
-                └──────────┬──────────────┘
-                           │
-         for each stateful service, for each ordinal 0..count-1:
-                           │
-                ┌──────────▼──────────────┐
-                │ reconcilePerOrdinalVolumes│
-                │                          │
-                │ volumeName = "{svc}-{ord}-{vol}"  │
-                │ e.g. "postgres-0-pgdata"          │
-                │                          │
-                │ if already exists → skip │
-                │ else → emit:             │
-                │   desired/volume/{name}           = ""
-                │   desired/volume/{name}/size      = "100Gi"
-                │   desired/volume/{name}/persistent = "true"
-                └──────────────────────────┘
+Volume template: pgdata → { size: "100Gi", persistent: "true" }
+Per-ordinal:     postgres-0-pgdata, postgres-1-pgdata, postgres-2-pgdata
 ```
 
-**Naming convention**: `{service}-{ordinal}-{volumeName}`
-- `postgres-0-pgdata`, `postgres-1-pgdata`, `postgres-2-pgdata`
+---
 
-### Volume Template Inheritance
+## 4. StatefulDNSController (controllers/stateful_dns.go)
 
-The per-ordinal volume inherits size and persistent flags from the original
-volume declaration:
+### StatefulDNSController.Reconcile :49
 ```
-volume pgdata { size "100Gi" persistent true }
-  ↓ inherited by
-desired/volume/postgres-0-pgdata/size       = "100Gi"
-desired/volume/postgres-0-pgdata/persistent = "true"
-```
-
-If `persistent` is not set in the template, defaults to `"true"` (:170).
-
-## 6. Stateful DNS Controller
-
-**File**: `controllers/stateful_dns.go`
-
-### Purpose
-
-Creates per-instance stable DNS entries for stateful services. Each running
-ordinal gets a DNS name `{service}-{ordinal}.cca.local`.
-
-### Watch Prefixes
-
-```
-effective/service/         ← stateful flag
-observed/instance/         ← state, IP, ordinal
-network/dns/instance/      ← existing DNS entries
+StatefulDNSController.Reconcile(ctx, facts)
+├── parseEffectiveServiceFacts(facts)                          [shared]
+│   └── statefulServices map[svc]bool
+├── parseInstanceFieldsFromFacts(facts)                        [shared]
+│   └── map[instanceID]map[field]value
+├── parseExistingInstanceDNSEntries(facts)                     :61
+│   └── reads network/dns/instance/{id} → returns map[instanceID]dnsValue
+│
+├── buildDesiredStatefulDNSEntries(statefulServices, instanceFields)  :75
+│   └── FOR EACH instance (sorted by ID):
+│       ├── skip if service not stateful
+│       ├── skip if state != running
+│       ├── skip if no IP
+│       ├── skip if no ordinal
+│       └── desiredDNS[instanceID] = "{svc}-{ord}.cca.local={ip}"
+│
+└── computeStatefulDNSDiffChanges(desired, existing)           :117
+    ├── FOR EACH desired entry:
+    │   └── IF missing or changed:
+    │       └── PUT network/dns/instance/{instanceID} = "{dnsName}={ip}"
+    └── FOR EACH existing entry:
+        └── IF not in desired:
+            └── DELETE network/dns/instance/{instanceID}
 ```
 
-### DNS Name Format
-
+### DNS name format
 ```
 postgres-0.cca.local → 10.100.3.2
 postgres-1.cca.local → 10.100.1.5
-postgres-2.cca.local → 10.100.2.3
 ```
 
-Suffix constant: `statefulDNSSuffix = ".cca.local"` (:19)
+### Constant
 
-### Entry Lifecycle
+| Constant | Value | File | Purpose |
+|---|---|---|---|
+| `statefulDNSSuffix` | `".cca.local"` | `controllers/stateful_dns.go:19` | DNS suffix for per-instance names |
 
+---
+
+## 5. Scheduler Interaction (scheduler/scheduler.go)
+
+### extractStatefulServices :342
 ```
-┌─────────────────────────────────────────┐
-│ buildDesiredStatefulDNSEntries (:75)    │
-│                                         │
-│ for each instance:                      │
-│   if service is not stateful → skip     │
-│   if state != running → skip            │
-│   if no IP → skip                       │
-│   if no ordinal → skip                  │
-│                                         │
-│   entry = "postgres-0.cca.local=10.100.3.2"  │
-│   key   = network/dns/instance/{id}     │
-└────────────┬────────────────────────────┘
-             │
-┌────────────▼────────────────────────────┐
-│ computeStatefulDNSDiffChanges (:117)    │
-│                                         │
-│ - Create missing entries (PUT)          │
-│ - Update entries with changed IP (PUT)  │
-│ - Delete entries for stopped instances  │
-│   (DELETE)                              │
-└─────────────────────────────────────────┘
+extractStatefulServices(facts)
+└── reads desired/service/{name}/stateful = "true"
+└── returns map[serviceName]bool
 ```
 
-**Key**: The DNS entry value is `"{dnsName}={ipAddress}"`, a concatenated
-string that the agent's DNS forwarder parses.
-
-### DNS Stability Guarantee
-
-When a stateful instance restarts on the same node, it keeps the same ordinal
-(e.g. `postgres-0`) and gets its DNS entry updated with the new IP. When it
-moves to a different node (after node failure), the DNS entry follows it — same
-ordinal, new IP. Clients using `postgres-0.cca.local` always reach the correct
-instance.
-
-## 7. Scheduler Interaction
-
-**File**: `scheduler/scheduler.go`
-
-### Stateful Service Detection
-
-The scheduler reads stateful flags from desired service facts:
-
-**`extractStatefulServices()`** (:342):
-```go
-// Reads desired/service/{name}/stateful = "true"
-// Returns map[string]bool
+### Preemption immunity — findPreemptionVictim :~280–335
+```
+findPreemptionVictim(candidates, constraint, statefulServices, ...)
+└── FOR EACH candidate instance:
+    ├── IF statefulServices[victimService]: continue            [never preempt stateful]
+    └── evaluate as preemption candidate
 ```
 
-### Preemption Immunity (M161)
-
-**`findPreemptionVictim()`** (:~280–335): When the scheduler searches for a
-preemption victim, stateful services are explicitly skipped:
-```go
-if statefulServices[victimService] {
-    continue  // never preempt stateful instances
-}
+### Rebalancing — findMovableInstances :520
+```
+findMovableInstances(instances, placementConstraints, ...)
+└── FOR EACH instance:
+    ├── IF constraint.mode == "per-node": continue
+    ├── IF len(constraint.colocate) > 0 || len(constraint.separate) > 0: continue
+    └── [NOTE: stateful instances not explicitly skipped — volume affinity makes them effectively immovable]
 ```
 
-**Rationale**: Stateful instances have volume affinity and ordered startup
-semantics. Preempting a stateful instance would break the startup order
-invariant and potentially leave orphaned volumes in an inconsistent state.
+---
 
-### Rebalancing
+## 6. Store Key Reference
 
-**`findMovableInstances()`** (:520): The rebalancer does NOT currently skip
-stateful instances explicitly. However, stateful services with volume affinity
-are effectively immovable because the scheduler does not implement volume
-migration during rebalance. Per-node services are skipped (:543).
+### Service-Level Keys
 
-**Note**: This is a gap — stateful instances could theoretically be selected for
-rebalance moves. In practice, the volume controller would need to support
-migration for this to work. Future work should add a `statefulServices` check
-to `findMovableInstances`.
+| Key Pattern | Writer | Reader | Purpose |
+|---|---|---|---|
+| `desired/service/{name}/stateful` | Compiler | — | Stateful declaration |
+| `effective/service/{name}/stateful` | Compiler | InstanceController, StatefulVolumeController, StatefulDNSController, Scheduler | Stateful flag (single source of truth) |
+| `desired/service/{name}/volume/{vol}` | Compiler | StatefulVolumeController | Volume mount binding |
 
-## 8. Scale-Down Behavior
+### Instance-Level Keys (Stateful-Specific)
 
-### Stateful vs Stateless vs Per-Node Comparison
+| Key Pattern | Writer | Reader | Purpose |
+|---|---|---|---|
+| `observed/instance/{svc}-{ord}/ordinal` | InstanceController | StatefulDNSController, Agent | Ordinal number |
+| `observed/instance/{svc}-{ord}/state` | Agent | InstanceController, StatefulDNSController | Instance state |
+| `observed/instance/{svc}-{ord}/ip` | Agent | StatefulDNSController | Container IP |
+| `observed/instance/{svc}-{ord}/service` | InstanceController | All controllers | Service membership |
 
+### Volume Keys (Per-Ordinal)
+
+| Key Pattern | Writer | Reader | Purpose |
+|---|---|---|---|
+| `desired/volume/{svc}-{ord}-{vol}` | StatefulVolumeController | StorageController | Volume root marker |
+| `desired/volume/{svc}-{ord}-{vol}/size` | StatefulVolumeController | StorageController | Storage size |
+| `desired/volume/{svc}-{ord}-{vol}/persistent` | StatefulVolumeController | StorageController | Persistence flag |
+| `observed/volume/{svc}-{ord}-{vol}/state` | Agent | StatefulVolumeController | Volume provision state |
+
+### DNS Keys (Per-Instance)
+
+| Key Pattern | Writer | Reader | Purpose |
+|---|---|---|---|
+| `network/dns/instance/{instanceID}` | StatefulDNSController | DNS Forwarder (agent) | Per-instance stable DNS |
+
+---
+
+## 7. Key Functions Reference
+
+### types/keys.go
+
+| Function | Line | Key Pattern |
+|---|---|---|
+| `KeyDesiredServiceStateful(name)` | :800 | `desired/service/{name}/stateful` |
+| `KeyEffectiveServiceStateful(name)` | :807 | `effective/service/{name}/stateful` |
+| `KeyObservedInstanceOrdinal(id)` | :566 | `observed/instance/{id}/ordinal` |
+| `KeyNetworkDNSInstance(id)` | — | `network/dns/instance/{id}` |
+| `KeyDesiredVolume(name)` | — | `desired/volume/{name}` |
+| `KeyDesiredVolumeSize(name)` | — | `desired/volume/{name}/size` |
+| `KeyDesiredVolumePersistent(name)` | — | `desired/volume/{name}/persistent` |
+
+---
+
+## 8. Lifecycle Sequences
+
+### Scale-up 0 → 3 (stateful)
 ```
-Scale-Down Decision Tree (controllers/instance.go:152-165):
+Cycle 1: createNextStatefulInstance → ordinal 0 missing → create postgres-0 (pending)
+         StatefulVolumeController → create postgres-0-pgdata, postgres-1-pgdata, postgres-2-pgdata
+         Scheduler → place postgres-0 → Agent starts it
 
-  Is per-node service?
-    YES → markPerNodeExcessInstancesAsStopped()
-          Priority: node_failure > pending > running
-    NO  →
-      Is stateful service?
-        YES → stopHighestOrdinalInstances()
-              Always stops highest ordinal first: 2, then 1, then 0
-        NO  → markExcessStatelessInstancesAsStopped()
-              Prefers stopping pending over running, then by ID
+Cycle 2: postgres-0 running → ordinal 1 missing → create postgres-1 (pending)
+         StatefulDNSController → network/dns/instance/postgres-0 = "postgres-0.cca.local=10.100.3.2"
+         Scheduler → place postgres-1 → Agent starts it
+
+Cycle 3: postgres-1 running → ordinal 2 missing → create postgres-2 (pending)
+         StatefulDNSController → network/dns/instance/postgres-1 = "postgres-1.cca.local=10.100.1.5"
+
+Cycle 4: postgres-2 running → all ordinals up
+         StatefulDNSController → network/dns/instance/postgres-2 = "postgres-2.cca.local=10.100.2.3"
 ```
 
-### Stateful Scale-Down Example
-
+### Scale-down 3 → 1
 ```
-State: postgres-0 (running), postgres-1 (running), postgres-2 (running)
-Action: scale 3 → 1
-
-Cycle 1: stopHighestOrdinalInstances(existingOrdinals=[0,1,2], count=2)
-  → controller_stopped(postgres-2) = true
-  → controller_stopped(postgres-1) = true
+Cycle 1: stopHighestOrdinalInstances([0,1,2], count=2)
+         → PUT derived/instance/postgres-2/controller_stopped = "true"
+         → PUT derived/instance/postgres-1/controller_stopped = "true"
 
 Agent stops postgres-2 and postgres-1.
-postgres-0 remains running.
+StatefulDNSController: DELETE network/dns/instance/postgres-2
+StatefulDNSController: DELETE network/dns/instance/postgres-1
 
-Volumes postgres-2-pgdata and postgres-1-pgdata remain in desired state
-(volumes are not deleted on scale-down — they persist for future scale-up).
-DNS entries for postgres-1.cca.local and postgres-2.cca.local are deleted
-by the StatefulDNSController once instances are no longer running.
+Volumes postgres-2-pgdata and postgres-1-pgdata remain in desired state (persist for future scale-up).
 ```
 
-### Scale-Up After Scale-Down
-
+### Scale-up after scale-down (1 → 3)
 ```
-State: postgres-0 (running), volumes postgres-1-pgdata and postgres-2-pgdata
-       still exist from previous incarnation
-Action: scale 1 → 3
+Cycle 1: postgres-0 running → ordinal 1 missing → create postgres-1
+         Volume postgres-1-pgdata already exists → no new volume
+         Agent attaches existing volume
 
-Cycle 1: createNextStatefulInstance → postgres-0 running → postgres-1 created
-  Volume postgres-1-pgdata already in desired state → no new volume needed
-  Agent attaches the existing volume
-
-Cycle 2: postgres-1 running → postgres-2 created
-  Volume postgres-2-pgdata already in desired state → reattached
-
-Result: Data from previous incarnation is preserved.
+Cycle 2: postgres-1 running → ordinal 2 missing → create postgres-2
+         Volume postgres-2-pgdata already exists → reattached
+         Data from previous incarnation preserved
 ```
 
-## 9. Node Failure Recovery
-
-When a node hosting a stateful instance fails:
-
+### Node failure recovery
 ```
-Timeline:
-
 t=0    Node-2 dies (hosts postgres-1)
-t=30s  FailureController: heartbeat expired → node=unreachable
-       → derived/instance/postgres-1/node_failure = "true"
-
-t=30s  Agent on Node-2 stops publishing observed state.
-       InstanceController sees postgres-1 as failed.
-
-t=31s  InstanceController: postgres-1 is marked node_failure.
-       It does NOT create postgres-2 (ordered startup gate).
-       It waits for postgres-1 to be cleaned up.
-
-t=31s  InstanceGCController: cleans up postgres-1 observed facts.
-       Instance is removed from active set.
-
-t=32s  InstanceController: postgres-1 missing from active set.
-       deficit = 1. createNextStatefulInstance:
-       - ordinal 0 exists and running → continue
-       - ordinal 1 missing → create postgres-1
-       Atomically deletes stale node_failure marker.
-
-t=32s  Scheduler: places postgres-1 on a healthy node.
-       Volume postgres-1-pgdata migrates to new node.
-       DNS postgres-1.cca.local updates to new IP.
-
-Key: The same ordinal ID (postgres-1) is reused. The volume and DNS
-name follow the ordinal, not the node.
+t=30s  FailureController → derived/instance/postgres-1/node_failure = "true"
+t=31s  InstanceGCController → cleans up postgres-1 observed facts
+t=32s  InstanceController: ordinal 1 missing → create postgres-1 (pending)
+       → atomically deletes stale node_failure marker
+t=32s  Scheduler → places postgres-1 on healthy node
+       Volume postgres-1-pgdata migrates to new node
+       DNS postgres-1.cca.local updates to new IP
 ```
 
-## 10. End-to-End Lifecycle Diagram
+---
 
-```
-USER DSL                    COMPILER                    FACT STORE
-─────────                   ─────────                   ──────────
-service postgres {    →     desired/service/postgres/stateful = "true"
-  image "postgres:16"       effective/service/postgres/stateful = "true"
-  instances 3               desired/service/postgres/instances = "3"
-  stateful                  effective/service/postgres/instances = "3"
-  volume pgdata "..."       desired/service/postgres/volume/pgdata = "/var/lib/..."
-}
-volume pgdata {       →     desired/volume/pgdata = ""
-  size "100Gi"              desired/volume/pgdata/size = "100Gi"
-  persistent true           desired/volume/pgdata/persistent = "true"
-}
+## Reverse Index
 
-    ┌─────────────────────────────────────────────────────────────┐
-    │              CONTROLLER RECONCILIATION LOOP                  │
-    │                                                              │
-    │  ┌─────────────────────────────────────────┐                │
-    │  │    StatefulVolumeController              │                │
-    │  │    Reads: effective/svc/stateful,        │                │
-    │  │           desired/svc/volume,            │                │
-    │  │           desired/volume templates       │                │
-    │  │    Writes: desired/volume/postgres-0-pgdata              │
-    │  │            desired/volume/postgres-1-pgdata              │
-    │  │            desired/volume/postgres-2-pgdata              │
-    │  └─────────────────────────────────────────┘                │
-    │                          │                                   │
-    │  ┌─────────────────────────────────────────┐                │
-    │  │    InstanceController                    │                │
-    │  │    Cycle 1: create postgres-0 (pending)  │                │
-    │  │    Cycle 2: postgres-0 running           │                │
-    │  │             → create postgres-1 (pending)│                │
-    │  │    Cycle 3: postgres-1 running           │                │
-    │  │             → create postgres-2 (pending)│                │
-    │  └─────────────────────────────────────────┘                │
-    │                          │                                   │
-    │  ┌─────────────────────────────────────────┐                │
-    │  │    Scheduler                             │                │
-    │  │    Places each pending instance on       │                │
-    │  │    least-loaded node.                    │                │
-    │  │    Stateful instances are preemption-    │                │
-    │  │    immune (M161).                        │                │
-    │  └─────────────────────────────────────────┘                │
-    │                          │                                   │
-    │  ┌─────────────────────────────────────────┐                │
-    │  │    StatefulDNSController                 │                │
-    │  │    Once instance is running with IP:     │                │
-    │  │    network/dns/instance/{id} =           │                │
-    │  │      "postgres-0.cca.local=10.100.3.2"  │                │
-    │  └─────────────────────────────────────────┘                │
-    │                                                              │
-    │  ┌─────────────────────────────────────────┐                │
-    │  │    Agent (on assigned node)              │                │
-    │  │    - Attaches per-ordinal volume         │                │
-    │  │    - Starts container with mount         │                │
-    │  │    - Publishes: state=running, ip=...    │                │
-    │  └─────────────────────────────────────────┘                │
-    └─────────────────────────────────────────────────────────────┘
-```
+| Function | Called By |
+|---|---|
+| `parseEffectiveServiceFacts` | InstanceController.Reconcile, StatefulVolumeController.Reconcile, StatefulDNSController.Reconcile |
+| `createNextStatefulInstance` | InstanceController.allocateCreationsFairly |
+| `stopHighestOrdinalInstances` | InstanceController.reconcileScaleDowns |
+| `parseExistingOrdinals` | createNextStatefulInstance |
+| `computeServiceDeficits` | InstanceController.Reconcile |
+| `reconcilePerOrdinalVolumes` | StatefulVolumeController.Reconcile |
+| `parseServiceVolumeMountsWithPaths` | StatefulVolumeController.Reconcile |
+| `parseVolumeTemplates` | StatefulVolumeController.Reconcile |
+| `buildDesiredStatefulDNSEntries` | StatefulDNSController.Reconcile |
+| `computeStatefulDNSDiffChanges` | StatefulDNSController.Reconcile |
+| `parseExistingInstanceDNSEntries` | StatefulDNSController.Reconcile |
+| `extractStatefulServices` | Scheduler.attemptPlacements |
+| `findPreemptionVictim` | Scheduler.placeBatchedInstances |
 
-## 11. Controller Responsibilities Summary
+---
 
-| Controller | Role for Stateful Services | File |
+## File Index
+
+| File | Key Functions | Role |
 |---|---|---|
-| InstanceController | Ordinal IDs, ordered startup, reverse scale-down | `controllers/instance.go` |
-| StatefulVolumeController | Per-ordinal volume creation | `controllers/stateful_volume.go` |
-| StatefulDNSController | Per-instance stable DNS entries | `controllers/stateful_dns.go` |
-| Scheduler | Placement (standard), preemption immunity (M161) | `scheduler/scheduler.go` |
-| EvictionController | Can still evict stateful instances under memory pressure | `controllers/eviction.go` |
-| FailureController | Marks node_failure on stateful instances (same as stateless) | `controllers/failure.go` |
-| InstanceGCController | Cleans up stopped stateful instance facts | `controllers/instance_gc.go` |
-
-## 12. Constants
-
-| Constant | Value | Location | Purpose |
-|---|---|---|---|
-| `statefulDNSSuffix` | `.cca.local` | `controllers/stateful_dns.go:19` | DNS suffix for per-instance names |
-| Reconcile debounce | 50ms | `controllers/runner.go` | Min time between cycles |
-| Resync interval | 30s | `controllers/runner.go` | Forced full reconciliation |
-| Max creations/cycle | 30 | `controllers/instance.go` | Budget limit (stateful gets at most 1) |
-
-## 13. File Index
-
-| File | Lines | Role |
-|---|---|---|
-| `lang/ast.go:74` | `Stateful bool` | AST field on ServiceDecl |
+| `lang/ast.go:74` | `ServiceDecl.Stateful` | AST field |
 | `lang/parser.go:303` | `case "stateful"` | Parser keyword |
-| `lang/compiler.go:357-362` | Emit desired + effective | Compiler fact emission |
-| `types/keys.go:800,807` | Key functions | desired/effective stateful keys |
-| `types/keys.go:566` | `KeyObservedInstanceOrdinal` | Ordinal fact key |
+| `lang/compiler.go:357–362` | emit desired + effective | Compiler fact emission |
+| `types/keys.go:800,807,566` | `KeyDesiredServiceStateful`, `KeyEffectiveServiceStateful`, `KeyObservedInstanceOrdinal` | Key functions |
 | `controllers/instance.go:310` | `parseEffectiveServiceFacts` | Reads stateful flag |
-| `controllers/instance.go:420` | `createNextStatefulInstance` | Ordered startup |
+| `controllers/instance.go:420` | `createNextStatefulInstance` | Ordered startup, ordinal ID |
 | `controllers/instance.go:465` | `stopHighestOrdinalInstances` | Reverse scale-down |
 | `controllers/instance.go:174` | `computeServiceDeficits` | Budget=1 for stateful |
-| `controllers/stateful_volume.go:46` | `Reconcile` | Per-ordinal volumes |
+| `controllers/instance.go:396` | `parseExistingOrdinals` | Extract ordinals from IDs |
+| `controllers/stateful_volume.go:46` | `StatefulVolumeController.Reconcile` | Per-ordinal volumes |
+| `controllers/stateful_volume.go:84` | `parseServiceVolumeMountsWithPaths` | Volume mount bindings |
+| `controllers/stateful_volume.go:108` | `parseVolumeTemplates` | Volume size/persistent |
 | `controllers/stateful_volume.go:144` | `reconcilePerOrdinalVolumes` | Naming: {svc}-{ord}-{vol} |
-| `controllers/stateful_dns.go:49` | `Reconcile` | DNS entry lifecycle |
+| `controllers/stateful_dns.go:49` | `StatefulDNSController.Reconcile` | DNS entry lifecycle |
 | `controllers/stateful_dns.go:75` | `buildDesiredStatefulDNSEntries` | DNS name construction |
+| `controllers/stateful_dns.go:117` | `computeStatefulDNSDiffChanges` | DNS diff engine |
 | `scheduler/scheduler.go:342` | `extractStatefulServices` | Scheduler reads stateful flag |
-| `scheduler/scheduler.go:318` | `findPreemptionVictim` | Preemption immunity check |
+| `scheduler/scheduler.go:~280–335` | `findPreemptionVictim` | Preemption immunity check |
+| `scheduler/scheduler.go:520` | `findMovableInstances` | Rebalancing (no explicit skip) |

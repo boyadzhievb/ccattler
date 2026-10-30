@@ -1,712 +1,646 @@
-# CCattler Network Graph Reference
+# CCattler Network Function Call Graph
 
-Machine-readable network topology reference. Purpose: understand the complete
-networking stack without reading source files. Load this file instead.
-
-## Node-Level Network Topology
-
-Every node running a CCattler agent has the following network interfaces:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          NODE (Linux host)                          │
-│                                                                     │
-│  ┌──────────┐                                                       │
-│  │  eth0    │  Physical NIC — node's LAN address (advertiseAddress) │
-│  │ 192.168. │  Used as: VXLAN tunnel endpoint (VTEP),               │
-│  │ 124.20   │  etcd peer, agent ↔ server communication              │
-│  └────┬─────┘                                                       │
-│       │                                                             │
-│  ┌────┴──────────────────────────────────────────────────────┐      │
-│  │                    Linux Routing Table                     │      │
-│  │  10.100.3.0/24 → dev cca0 (local containers)             │      │
-│  │  10.100.1.0/24 via 10.100.1.0 dev cca-vxlan0 onlink      │      │
-│  │  10.100.2.0/24 via 10.100.2.0 dev cca-vxlan0 onlink      │      │
-│  │  default → dev eth0                                       │      │
-│  └───────────────────────────────────────────────────────────┘      │
-│       │           │              │                                   │
-│  ┌────┴─────┐ ┌───┴────────┐ ┌──┴──────────┐                       │
-│  │ cca0     │ │ cca-vxlan0 │ │ cca-vip0    │                       │
-│  │ (bridge) │ │ (vxlan)    │ │ (dummy)     │                       │
-│  │ 10.100.  │ │ no IP      │ │ 10.200.0.x  │                       │
-│  │ 3.1/24   │ │ MTU 1450   │ │ /32 per VIP │                       │
-│  │ gateway  │ │ VNI=42     │ │             │                       │
-│  └────┬─────┘ └────────────┘ └─────────────┘                       │
-│       │                                                             │
-│  ┌────┴──────────────────────────────────────┐                      │
-│  │        Container veth pairs               │                      │
-│  │                                           │                      │
-│  │  vethXXXX ←→ eth0 (in container netns)    │                      │
-│  │  10.100.3.2    metadata-db                │                      │
-│  │                                           │                      │
-│  │  vethYYYY ←→ eth0 (in container netns)    │                      │
-│  │  10.100.3.3    worker                     │                      │
-│  │                                           │                      │
-│  │  vethZZZZ ←→ eth0 (in container netns)    │                      │
-│  │  10.100.3.4    scheduler                  │                      │
-│  └───────────────────────────────────────────┘                      │
-│                                                                     │
-│  DNS Forwarder: 192.168.124.20:53 (agent's advertise address)       │
-│  nftables table: ip cca { prerouting, output, postrouting,         │
-│      container_isolation (blocks cca0→etcd 2379/2380), ... }        │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Interface summary
-
-| Interface | Type | Created By | IP Address | Purpose |
-|---|---|---|---|---|
-| `eth0` (or `ens*`) | Physical | OS | Node LAN IP | VXLAN underlay, etcd, SSH |
-| `cca0` | Bridge | CNI bridge plugin | `{node-subnet}.1/24` | Gateway for containers, intra-node container traffic |
-| `cca-vxlan0` | VXLAN | `agent/vxlan.go` | None (pure tunnel) | Cross-node container-to-container overlay |
-| `cca-vip0` | Dummy | nftables/iptables dataplane | `{VIP}/32` per service | Anchors VIP addresses for DNAT interception |
-| `vethXXXX` | veth pair | CNI bridge plugin | Container-side: `{node-subnet}.N/24` | Per-container connection to bridge |
-
-### CNI configuration (generated in memory)
-
-```json
-{
-  "cniVersion": "1.0.0",
-  "name": "{networkName}",
-  "plugins": [
-    {
-      "type": "bridge",
-      "bridge": "cca0",
-      "isGateway": true,
-      "ipMasq": true,
-      "ipam": {
-        "type": "host-local",
-        "subnet": "{node-subnet-CIDR}",
-        "routes": [{"dst": "0.0.0.0/0"}]
-      }
-    },
-    {
-      "type": "portmap",
-      "capabilities": {"portMappings": true}
-    }
-  ]
-}
-```
-
-**Source:** `runtime/containerd.go:560` `buildCNIConflist()`
+Machine-readable function-level index for the networking subsystem. Purpose:
+trace exact call chains, store key patterns, and data flows without reading
+source files. Load this file instead.
 
 ---
 
-## IP Allocation
+## 1. NetworkController (controllers/network.go)
 
-### Cluster CIDR → Node Subnet → Container IP
-
+### NetworkController.Reconcile :88
 ```
-Cluster CIDR: 10.100.0.0/16 (default, --cluster-cidr)
-     │
-     ├── Node-1: 10.100.1.0/24  (third octet from FNV hash of nodeID)
-     │   ├── .1  → cca0 bridge (gateway)
-     │   ├── .2  → container-A
-     │   ├── .3  → container-B
-     │   └── .N  → host-local IPAM assigns sequentially
-     │
-     ├── Node-2: 10.100.3.0/24
-     │   ├── .1  → cca0 bridge
-     │   ├── .2  → container-C
-     │   └── ...
-     │
-     └── Node-3: 10.100.7.0/24
-         └── ...
-
-VIP CIDR: 10.200.0.0/24 (default, --vip-cidr)
-     ├── 10.200.0.1 → service "web"
-     ├── 10.200.0.2 → service "metadata-db"
-     └── ...
-```
-
-### Subnet allocation flow
-
-```
-Agent startup (agent/vxlan.go)
-├── EnsureSubnetPublished
-│   ├── factStore.Get(network/node/{nodeID}/subnet)    [check existing]
-│   ├── IF exists: done
-│   └── IF not:
-│       ├── factStore.ScanWithRevision(network/node/*)  [all allocated]
-│       ├── collectOccupiedThirdOctets                  [build taken set]
-│       ├── hashNodeIDToOctetOffset(nodeID)             [FNV32a → start offset]
-│       ├── findNextFreeThirdOctetForNode               [probe from offset]
-│       └── factStore.Transaction(CAS: revision=0)      [atomic claim]
-│           └── Retry up to 10 times on contention
-```
-
-### Container IP allocation
-
-```
-Agent reconcile → reconcileDesiredInstance → buildRuntimeSpecForInstance
-├── networkProvider.AllocateIP(ctx, nodeID, instanceID)
-│   └── host-local IPAM (CNI plugin) assigns next free IP in node's /24
-└── runtime.Start(spec)
-    └── cniNetwork.Setup(ctx, instanceID, netnsPath)
-        └── CNI bridge plugin creates veth pair, assigns IP, adds to cca0
+NetworkController.Reconcile(ctx, facts)
+├── collectServicesWithEndpointsFromFacts(facts)               :151
+│   └── store.FactsWithPrefix(facts, ScanEndpoints)
+│       └── returns map[serviceName]bool
+├── extractServiceExposedPorts(facts)                          [shared helper]
+│   └── returns map[serviceName][]int
+├── collectDefinedServiceNamesFromFacts(facts)                 :210
+│   └── store.FactsWithPrefix(facts, ScanDesiredServices)
+│       └── returns map[serviceName]bool
+├── collectExistingVIPAllocations(facts)                       :165
+│   └── store.FactsWithPrefix(facts, ScanNetworkVIPs)
+│       └── returns (existingVIPs map[svc]vipAddr, existingVIPPorts map[svc]port)
+├── collectExistingDNSMappings(facts)                          :182
+│   └── store.FactsWithPrefix(facts, ScanNetworkDNS)
+│       └── returns map[serviceName]vipAddr
+├── determineNextVIPFourthOctet(existingVIPs)                  :193
+│   └── scans existing VIP addresses → returns next available fourth octet
+│
+├── FOR EACH service with endpoints (sorted):
+│   ├── skip if no exposed ports
+│   ├── IF no existing VIP:
+│   │   └── allocate VIP → groupedChanges("vip-create/{svc}"):
+│   │       ├── PUT network/vip/service/{name}       = "{vipAddress}"
+│   │       ├── PUT network/vip/service/{name}/port  = "{port}"
+│   │       └── PUT network/dns/{name}               = "{vipAddress}"
+│   └── ELSE: skip (VIP persists through zero-endpoint windows)
+│
+└── buildStaleVIPAndDNSRemovalChanges(existingVIPs, existingDNS, definedServiceNames)  :226
+    ├── FOR EACH existing VIP (sorted):
+    │   └── IF service definition deleted:
+    │       └── groupedChanges("vip-remove/{svc}"):
+    │           ├── DELETE network/vip/service/{name}
+    │           ├── DELETE network/vip/service/{name}/port
+    │           └── DELETE network/dns/{name}
+    └── FOR EACH existing DNS (sorted):
+        └── IF service definition deleted AND no VIP:
+            └── DELETE network/dns/{name}
 ```
 
-**Store keys:**
-| Key | Written By | Value |
+### Store keys (NetworkController)
+
+| Key Pattern | Op | Purpose |
 |---|---|---|
-| `network/node/{nodeID}/subnet` | VXLANReconciler | `10.100.N.0/24` |
-| `observed/instance/{id}/ip` | Agent (publishInstanceStateToStore) | `10.100.N.M` |
-| `network/vip/service/{name}` | NetworkController | `10.200.0.X` |
-| `network/vip/service/{name}/port` | NetworkController | port number |
+| `network/vip/service/{name}` | Write | VIP address for service |
+| `network/vip/service/{name}/port` | Write | Exposed port for VIP |
+| `network/dns/{name}` | Write | DNS name → VIP mapping |
+| `endpoint/service/{name}/*` | Read | Detect services with endpoints |
+| `desired/service/{name}/*` | Read | Detect defined services, exposed ports |
 
 ---
 
-## DNS Resolution Chain
+## 2. EndpointController (controllers/endpoint.go)
 
-### Full DNS path
-
+### EndpointController.Reconcile :54
 ```
-Container process
+EndpointController.Reconcile(ctx, facts)
+├── parseInstanceFieldsFromFacts(facts)                        [shared helper]
+│   └── returns map[instanceID]map[field]value
+├── extractServiceExposedPorts(facts)                          [shared helper]
+├── detectServicesWithReadinessProbe(facts)                    :71
+│   └── reads desired/service/{name}/probe/readiness/method
+│       └── returns map[serviceName]bool
+├── parseNodeAdvertiseAddresses(facts)                         :85
+│   └── collectStringValuesBySuffix(facts, ScanObservedNodes, "address")
+│       └── returns map[nodeID]advertiseAddress
+├── parseExistingEndpoints(facts)                              :92
+│   └── store.FactsWithPrefix(facts, ScanEndpoints)
+│       └── returns map["{svc}/{id}/{port}"]value
 │
-│ reads /etc/resolv.conf:
-│   nameserver {agent-advertise-address}
-│   search cca.local
+├── buildDesiredEndpoints(instanceFields, servicePorts,        :108
+│   serviceHasReadinessProbe, nodeAddresses)
+│   ├── FOR EACH instance (sorted by ID):
+│   │   ├── skip if state != running
+│   │   ├── skip if no overlay IP AND no host port+node address
+│   │   ├── skip if no exposed ports for service
+│   │   ├── skip if drain_readiness = not_ready
+│   │   ├── skip if service has readiness probe AND probe != ready
+│   │   └── FOR EACH exposed port:
+│   │       ├── IF hasOverlayAddress:
+│   │       │   └── endpoint = "{containerIP}:{containerPort}"
+│   │       └── ELSE (host port):
+│   │           └── endpoint = "{nodeAddress}:{hostPort}"
+│   └── returns map["{svc}/{id}/{port}"]endpoint
 │
-├── lookup "metadata-db.cca.local"
-│   │
-│   └──[UDP]→ DNSForwarder @ {agent-IP}:53
-│              │
-│              ├── cache hit? → return cached response (TTL ≤ 30s)
-│              │
-│              ├── name ends in ".cca.local"?
-│              │   └── YES → forward to ccaUpstream
-│              │       │
-│              │       └──[UDP]→ DNSServer @ {control-plane-IP}:15353
-│              │                  │
-│              │                  ├── strip ".cca.local" → serviceName
-│              │                  ├── resolver.ResolveVIP(serviceName)
-│              │                  │   └── factStore.Get(network/vip/service/{name})
-│              │                  │
-│              │                  ├── IF VIP found:
-│              │                  │   └── reply A record: VIP, TTL=30s
-│              │                  └── IF not found:
-│              │                      └── reply NXDOMAIN
-│              │
-│              └── name does NOT end in ".cca.local"?
-│                  └── forward to systemUpstream
-│                      └── first nameserver from /etc/resolv.conf
-│                          (excluding agent's own address to prevent loop)
-│
-└── lookup "metadata-db-0.cca.local" (stateful per-instance DNS)
-    └── same path, but DNSServer resolves via VIP
-        (per-instance DNS names are mapped to VIPs by StatefulDNSController)
+└── computeEndpointDiffChanges(desired, existing)              :174
+    ├── PUT endpoint/service/{svc}/{id}/{port} for new/changed
+    └── DELETE endpoint/service/{svc}/{id}/{port} for stale
 ```
 
-### DNS components
+### Store keys (EndpointController)
 
-| Component | Location | Listen Address | Purpose |
-|---|---|---|---|
-| **DNSServer** | Control plane | `:15353` (UDP) | Resolves `*.cca.local` → VIP using store-backed resolver |
-| **DNSForwarder** | Each agent node | `{advertiseAddress}:53` (UDP) | Caching split-horizon forwarder |
-| **StoreBackedResolver** | Control plane | (library) | Reads `network/vip/service/*` and `endpoint/service/*` from store |
-
-### DNS data flow (how VIP records get created)
-
-```
-User runs: cca apply service.cca
-│
-├── writes desired/service/{name}/ports  [exposed port]
-│
-├── NetworkController.Reconcile
-│   ├── reads desired/service/{name}/ports
-│   ├── allocates VIP from --vip-cidr pool
-│   └── writes:
-│       ├── network/vip/service/{name}       = "10.200.0.1"
-│       ├── network/vip/service/{name}/port  = 5432
-│       └── network/dns/{name}               = "10.200.0.1"
-│
-└── DNSServer serves A record for {name}.cca.local → 10.200.0.1
-```
-
-### Stateful per-instance DNS (StatefulDNSController)
-
-```
-StatefulDNSController.Reconcile
-├── reads effective/service/{name}/stateful   [is service stateful?]
-├── reads observed/instance/{id}/state        [must be running]
-├── reads observed/instance/{id}/ip           [must have IP]
-├── reads observed/instance/{id}/ordinal      [must have ordinal]
-└── writes network/dns/instance/{id}
-    = "{service}-{ordinal}.cca.local={ipAddress}"
-
-Example: "metadata-db-0.cca.local=10.100.1.2"
-```
-
-### Container resolv.conf injection
-
-```
-runtime/containerd.go:500  (during container start)
-├── generateResolvConf(dnsAddress, searchDomain)
-│   → "nameserver {agent-advertise-address}\nsearch cca.local\n"
-├── write to /var/lib/ccattler/logs/{instanceID}/config/resolv.conf
-└── bind-mount into container at /etc/resolv.conf
-```
-
-**Source:** `runtime/containerd.go:610` `generateResolvConf()`
-
----
-
-## VXLAN Overlay
-
-### Purpose
-
-The VXLAN overlay enables container-to-container communication across nodes.
-Without it, container IPs (e.g. 10.100.1.2) are only reachable from the node
-that hosts them. The overlay encapsulates L2 frames in UDP (port 4789) and
-sends them to the destination node's physical IP.
-
-### Interface creation
-
-```
-Agent startup → vxlanReconciler.ensureVXLANInterfaceExists
-├── interfaceAlreadyExists("cca-vxlan0")?
-│   └── YES: skip
-│
-├── detectPhysicalInterfaceForAddress(advertiseAddress)
-│   └── scans net.Interfaces() to find which NIC has the agent's IP
-│
-├── ip link add cca-vxlan0 type vxlan
-│     id 42                          [VNI — shared by all cluster nodes]
-│     dstport 4789                   [standard VXLAN UDP port]
-│     dev {physicalInterface}        [underlay device]
-│     local {advertiseAddress}       [local VTEP address]
-│
-├── ip link set cca-vxlan0 address 02:XX:XX:XX:XX:XX
-│   └── MAC derived from FNV32a hash of nodeID (locally-administered)
-│
-├── ip link set cca-vxlan0 mtu 1450
-│   └── 1500 - 50 bytes VXLAN encapsulation overhead
-│
-├── ip link set cca-vxlan0 up
-│
-└── sysctl -w net.ipv4.conf.cca-vxlan0.proxy_arp=1
-    └── Required for cross-node L2 resolution: when a remote node
-        ARPs for a container IP on this node's bridge (cca0), proxy
-        ARP lets the kernel respond on cca-vxlan0 on behalf of the
-        container, completing the ARP → FDB → VXLAN tunnel chain.
-```
-
-**Constants (agent/vxlan.go):**
-| Constant | Value | Purpose |
+| Key Pattern | Op | Purpose |
 |---|---|---|
-| `vxlanInterfaceName` | `"cca-vxlan0"` | VXLAN tunnel interface name |
-| `vxlanVNI` | `42` | VXLAN Network Identifier (shared cluster-wide) |
-| `vxlanDestinationPort` | `4789` | UDP port for encapsulated traffic |
-| `vxlanBridgeMTU` | `1450` | MTU (1500 - 50 byte overhead) |
-
-### Peer discovery and route programming
-
-```
-vxlanReconciler.Reconcile (called every 1s from dataPlaneLoop)
-│
-├── discoverPeerNodes
-│   ├── factStore.Scan(observed/node/*)
-│   │   └── builds map[nodeID] → advertiseAddress
-│   ├── factStore.Scan(network/node/*)
-│   │   └── builds map[nodeID] → subnetCIDR
-│   └── excludes self (local nodeID)
-│   └── returns []peerNodeInfo{nodeID, advertiseAddress, subnetCIDR}
-│
-├── programPeerRoutes (for each peer — Flannel model)
-│   ├── deriveVXLANMACAddress(peer.nodeID) → deterministic MAC
-│   ├── ip neigh replace {subnetBase} dev cca-vxlan0 lladdr {peerMAC} nud permanent
-│   │   └── e.g. "ip neigh replace 10.100.1.0 dev cca-vxlan0 lladdr 02:0e:d2:21:7d:bc nud permanent"
-│   ├── ip route replace {peerSubnet} via {subnetBase} dev cca-vxlan0 onlink
-│   │   └── e.g. "ip route replace 10.100.1.0/24 via 10.100.1.0 dev cca-vxlan0 onlink"
-│   ├── bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst {peerAddress}
-│   │   └── BUM flood entry, skips if exists
-│   └── bridge fdb replace {peerMAC} dev cca-vxlan0 dst {peerAddress}
-│       └── unicast FDB: known-destination traffic goes direct to peer VTEP
-│
-└── removeStaleRoutes
-    ├── ip route show dev cca-vxlan0 → installed subnets
-    ├── ip route del {staleSubnet} dev cca-vxlan0
-    └── ip neigh del {staleGateway} dev cca-vxlan0
-```
-
-### Store keys for VXLAN
-
-| Key Pattern | Written By | Read By | Value |
-|---|---|---|---|
-| `network/node/{nodeID}/subnet` | VXLANReconciler.EnsureSubnetPublished | VXLANReconciler.discoverPeerNodes | `10.100.N.0/24` |
-| `observed/node/{nodeID}/address` | DataPlaneReconciler.PublishAdvertiseAddress | VXLANReconciler.discoverPeerNodes | `192.168.124.20` |
+| `endpoint/service/{svc}/{id}/{port}` | Write | Backend endpoint address |
+| `observed/instance/{id}/state` | Read | Instance must be running |
+| `observed/instance/{id}/ip` | Read | Container overlay IP |
+| `observed/instance/{id}/node` | Read | Node hosting instance |
+| `observed/instance/{id}/hostport/{port}` | Read | Per-port host mapping |
+| `observed/node/{nodeID}/address` | Read | Node advertise address |
+| `desired/service/{name}/ports` | Read | Exposed ports |
+| `desired/service/{name}/probe/readiness/method` | Read | Readiness probe config |
+| `derived/instance/{id}/drain/readiness` | Read | Drain readiness state |
 
 ---
 
-## Cross-Node Packet Path
+## 3. NetworkPolicyController (controllers/network_policy.go)
 
-### Container-A (node-1) → Container-B (node-2)
-
+### NetworkPolicyController.Reconcile :78
 ```
-Container-A (10.100.1.2) on node-1
+NetworkPolicyController.Reconcile(ctx, facts)
+├── parseIdentityPolicyRulesFromFacts(facts)                   :95
+│   └── FOR EACH policy/network/{name} fact:
+│       └── parseIdentityPolicyRuleValue(name, value)          :110
+│           └── splits "source:target:port:action"
+│           └── returns identityPolicyRule{name, sourceService, targetService, port, action}
 │
-│ sends packet to 10.100.3.4 (Container-B on node-2)
+├── buildServiceEndpointMapFromFacts(facts)                    :131
+│   └── FOR EACH endpoint/service/{svc}/{id}/{port} fact:
+│       └── parseEndpointFact(fact)                            :153
+│           ├── extracts serviceName, instanceID
+│           └── extractIPFromEndpointValue(value)              :167
+│       └── returns map[serviceName][]serviceEndpointEntry{instanceID, ipAddress}
 │
-├── [1] eth0 (container netns) → vethXXXX → cca0 bridge (node-1)
-│   └── bridge sees dst IP 10.100.3.4, not in bridge FDB
-│   └── packet exits bridge to routing table
+├── buildInstanceNodeMapFromPlacements(facts)                  :177
+│   └── FOR EACH placement/instance/{id} fact:
+│       └── returns map[instanceID]nodeID
 │
-├── [2] Linux routing table on node-1:
-│   │  10.100.3.0/24 via 10.100.3.0 dev cca-vxlan0 onlink
-│   └── matches → forward via gateway 10.100.3.0 on cca-vxlan0
+├── compileIdentityRulesToIPRulesPerNode(rules, endpoints, nodeMap)  :190
+│   ├── FOR EACH identity rule:
+│   │   ├── resolveServiceToIPAddresses(sourceService, endpoints)    :210
+│   │   │   └── returns []string of IPs (or ["*"] for wildcard)
+│   │   ├── resolveServiceToTargetNodeEntries(targetService, endpoints, nodeMap)  :227
+│   │   │   └── joins endpoints with placements → []targetNodeEntry{ipAddress, nodeID}
+│   │   └── appendCompiledRulesForPolicyRule(rulesPerNode, sourceIPs, targets, rule)  :248
+│   │       └── FOR EACH target × source:
+│   │           └── formatCompiledFirewallRule → "sourceIP:targetIP:port:action"
+│   │           └── appended to rulesPerNode[target.nodeID]
+│   └── sortCompiledRulesPerNode(rulesPerNode)                 :272
 │
-├── [3] L2 resolution via static neighbor (Flannel model — no ARP needed):
-│   │  kernel looks up next-hop 10.100.3.0 in neighbor table
-│   │  permanent entry: 10.100.3.0 → node-2's cca-vxlan0 MAC (derived from nodeID)
-│   └── no runtime ARP, no proxy ARP dependency
+├── collectExistingDerivedNetworkRules(facts)                  :280
+│   └── parseDerivedNetworkRuleKey(factKey)                    :297
+│       └── returns map[nodeID]map[ruleIndex]value
 │
-├── [4] cca-vxlan0 looks up FDB for destination MAC:
-│   │  unicast FDB: {node-2-vxlan-MAC} dev cca-vxlan0 dst 192.168.124.30
-│   └── VXLAN encapsulation:
-│       ┌─────────────────────────────────────────────────┐
-│       │ Outer Ethernet: node-1 MAC → next-hop MAC       │
-│       │ Outer IP:       192.168.124.20 → 192.168.124.30 │
-│       │ Outer UDP:      srcPort:hash → dstPort:4789      │
-│       │ VXLAN Header:   VNI=42                           │
-│       │ Inner Ethernet: veth-A MAC → ??? (BUM flood)     │
-│       │ Inner IP:       10.100.1.2 → 10.100.3.4          │
-│       └─────────────────────────────────────────────────┘
-│
-├── [5] Physical network: node-1 eth0 → switch → node-2 eth0
-│
-├── [6] node-2 receives UDP 4789, decapsulates VXLAN header
-│   └── inner frame delivered to cca-vxlan0
-│
-├── [7] Linux routing table on node-2:
-│   │  10.100.3.0/24 dev cca0 (local bridge)
-│   └── matches → forward to cca0 bridge
-│
-└── [8] cca0 bridge delivers to vethYYYY → Container-B eth0
-```
-
-### Diagram
-
-```
-  node-1 (192.168.124.20)               node-2 (192.168.124.30)
-  ┌──────────────────────┐               ┌──────────────────────┐
-  │ Container-A          │               │ Container-B          │
-  │ 10.100.1.2           │               │ 10.100.3.4           │
-  │      │               │               │      ▲               │
-  │  [vethXXXX]          │               │  [vethYYYY]          │
-  │      │               │               │      │               │
-  │  [cca0 bridge]       │               │  [cca0 bridge]       │
-  │  10.100.1.1/24       │               │  10.100.3.1/24       │
-  │      │               │               │      ▲               │
-  │  routing table       │               │  routing table       │
-  │      │               │               │      │               │
-  │  [cca-vxlan0]        │               │  [cca-vxlan0]        │
-  │  VNI=42, MTU=1450    │               │  VNI=42, MTU=1450    │
-  │      │               │               │      ▲               │
-  │  [eth0]              │               │  [eth0]              │
-  │  192.168.124.20      │               │  192.168.124.30      │
-  └──────┼───────────────┘               └──────┼───────────────┘
-         │         UDP 4789 VXLAN tunnel         │
-         └───────────────────────────────────────┘
+└── diffDerivedNetworkRules(desired, existing)                 :312
+    ├── diffDesiredNodeRules(desired, existing)                :324
+    │   ├── PUT derived/network/rule/{nodeID}/{index} for new/changed
+    │   └── removeExcessRulesForNode(nodeID, count, existing)  :349
+    │       └── DELETE derived/network/rule/{nodeID}/{index} for excess
+    └── removeStaleNodeRules(desired, existing)                :366
+        └── DELETE all rules for nodes not in desired set
 ```
 
----
+### Store keys (NetworkPolicyController)
 
-## VIP Data Plane (Service Load Balancing)
-
-### How VIPs become routable
-
-VIPs are IP addresses (from `--vip-cidr`, default `10.200.0.0/24`) that exist
-only as nftables/iptables DNAT targets. They are **not** assigned to any
-container. The data plane makes them work:
-
-```
-Client (container or external)
-│
-│ connects to 10.200.0.1:5432 (VIP for "metadata-db")
-│
-├── [1] Packet hits nftables/iptables PREROUTING or OUTPUT chain
-│   └── Lookup in verdict map: {10.200.0.1, tcp, 5432} → chain svc_metadata_db
-│
-├── [2] svc_metadata_db chain:
-│   └── dnat to numgen inc mod N map {
-│         0 : 10.100.1.2:5432,   ← container IP (local backend)
-│         1 : 192.168.124.30:32001   ← node IP:hostPort (remote backend)
-│       }
-│   └── Round-robin via numgen counter
-│
-├── [3] DNAT rewrites dst to chosen backend
-│
-├── [4] POSTROUTING: masquerade (source NAT for return path)
-│
-└── [5] Packet reaches backend container
-```
-
-### nftables table layout
-
-```
-table ip cca {
-    chain prerouting {
-        type nat hook prerouting priority dstnat; policy accept;
-        ip daddr . ip protocol . th dport vmap @vip_dispatch
-    }
-    chain output {
-        type nat hook output priority dstnat; policy accept;
-        ip daddr . ip protocol . th dport vmap @vip_dispatch
-    }
-    chain postrouting {
-        type nat hook postrouting priority srcnat; policy accept;
-        masquerade
-    }
-    chain container_isolation {
-        type filter hook input priority 0; policy accept;
-        iifname "cca0" tcp dport { 2379, 2380 } limit rate 1/minute log prefix "cca:etcd-blocked: "
-        iifname "cca0" tcp dport { 2379, 2380 } counter drop
-    }
-
-    map vip_dispatch {
-        type ipv4_addr . inet_proto . inet_service : verdict
-        elements = {
-            10.200.0.1 . tcp . 5432 : goto svc_metadata_db,
-            10.200.0.2 . tcp . 8080 : goto svc_web,
-        }
-    }
-
-    chain svc_metadata_db {
-        dnat to numgen inc mod 2 map {
-            0 : 10.100.1.2 . 5432,
-            1 : 192.168.124.30 . 32001,
-        }
-    }
-
-    chain svc_web { ... }
-}
-```
-
-### VIP dummy interface
-
-```
-cca-vip0 (dummy interface)
-├── ip addr add 10.200.0.1/32 dev cca-vip0   [one per service VIP]
-├── ip addr add 10.200.0.2/32 dev cca-vip0
-└── ip link set cca-vip0 up
-
-Purpose: Linux needs a local address to accept packets destined for the VIP.
-Without cca-vip0, the kernel would drop VIP-destined packets as "not for us"
-before they reach nftables PREROUTING.
-```
-
-**Source:** `network/nftables_dataplane.go` (NftablesDataPlane)
-**Alternative:** `network/iptables_dataplane.go` (IptablesDataPlane — same dummy, linear chain walk instead of verdict map)
-**Alternative:** `network/ebpf_dataplane.go` (EbpfDataPlane — BPF maps, TC programs)
-
-### Backend resolution (local vs remote)
-
-```
-DataPlaneReconciler.resolveServiceBackends(ctx, serviceName)
-│
-├── FOR EACH endpoint fact (endpoint/service/{name}/{instanceID}/{port}):
-│   │
-│   ├── Read observed/instance/{id}/node → instanceNodeID
-│   │
-│   ├── IF staleNodeSet[instanceNodeID]:
-│   │   └── SKIP (node heartbeat > 30s stale)
-│   │
-│   ├── IF instanceNodeID == myNodeID:
-│   │   └── resolveLocalBackend
-│   │       ├── Read observed/instance/{id}/ip → container bridge IP
-│   │       └── Backend = {containerIP}:{containerPort}
-│   │       (direct via cca0 bridge — no NAT hairpin)
-│   │
-│   └── IF instanceNodeID != myNodeID:
-│       └── resolveRemoteBackend
-│           ├── [PREFERRED] Read observed/instance/{id}/ip → overlayIP
-│           │   └── IF overlayIP available AND containerPort > 0:
-│           │       └── Backend = {overlayIP}:{containerPort}
-│           │       (routable cross-node via VXLAN tunnel + proxy ARP)
-│           │
-│           └── [FALLBACK] No overlay IP available:
-│               ├── Read observed/node/{remoteNodeID}/address → nodeIP
-│               ├── Read observed/instance/{id}/host_port/{port} → hostPort
-│               └── Backend = {nodeIP}:{hostPort}
-│               (via LAN to remote node's host port mapping)
-```
-
----
-
-## Port Exposure
-
-### How containers become reachable from outside the cluster
-
-```
-Service definition (.cca file):
-  service web {
-      ports 8080
-      expose { port 8080 }
-  }
-
-Two paths:
-
-1. VIP (intra-cluster)
-   ┌─────────────┐         ┌─────────────┐
-   │ Client Pod   │─VIP───→│ nftables    │──DNAT──→ container:8080
-   │ 10.100.1.5   │ 10.200 │ cca table   │         or node:hostPort
-   └─────────────┘ .0.1:   └─────────────┘
-                   8080
-
-2. Host Port (external access)
-   ┌─────────────┐         ┌─────────────┐
-   │ External     │─────── │ Node LAN IP │──portmap──→ container:8080
-   │ client       │  :32001│ 192.168.    │  (CNI
-   └─────────────┘        │ 124.20      │  portmap
-                          └─────────────┘  plugin)
-```
-
-### Host port mapping flow
-
-```
-Agent: startInstanceAndPublishState
-├── runtime.Start(spec) → CNI portmap plugin assigns host port
-├── HostPortsForInstance(instanceID) → map[containerPort]hostPort
-├── publishInstanceHostPorts
-│   └── factStore.Put(observed/instance/{id}/host_port/{containerPort}, hostPort)
-│
-EndpointController.Reconcile
-├── reads observed/instance/{id}/host_port/*
-├── reads observed/node/{nodeID}/address
-└── writes endpoint/service/{name}/{instanceID}/{port} = "{nodeIP}:{hostPort}"
-    (or "{containerIP}:{containerPort}" if using overlay)
-```
-
-### Store keys for port exposure
-
-| Key Pattern | Written By | Read By | Value |
-|---|---|---|---|
-| `observed/instance/{id}/host_port/{port}` | Agent (publishInstanceHostPorts) | DataPlaneReconciler, EndpointController | `32001` |
-| `endpoint/service/{name}/{id}/{port}` | EndpointController | DataPlaneReconciler, StoreBackedResolver | `10.100.1.2:8080` or `192.168.124.20:32001` |
-| `observed/node/{nodeID}/address` | DataPlaneReconciler.PublishAdvertiseAddress | EndpointController, VXLANReconciler | `192.168.124.20` |
-
----
-
-## Complete Data Flow: Deploy to Routable
-
-End-to-end: from `cca apply` to a container being reachable via VIP.
-
-```
-User: cca apply service.cca
-│
-├── [1] desired/service/web/ports = "8080"
-│   desired/service/web/image = "nginx:latest"
-│   desired/service/web/instances = "2"
-│
-├── [2] InstanceController writes observed/instance/web-{hash}/state = pending
-│
-├── [3] NetworkController:
-│   ├── allocates VIP: network/vip/service/web = 10.200.0.1
-│   ├── writes port:  network/vip/service/web/port = 8080
-│   └── writes DNS:   network/dns/web = 10.200.0.1
-│
-├── [4] Scheduler writes placement/node/{nodeID}/web-{hash}
-│
-├── [5] Agent on nodeID sees placement, runs reconcileDesiredInstance:
-│   ├── pulls image
-│   ├── runtime.Start → CNI setup:
-│   │   ├── creates netns, veth pair
-│   │   ├── attaches veth to cca0 bridge
-│   │   ├── host-local IPAM assigns 10.100.N.M
-│   │   └── portmap plugin maps containerPort 8080 → hostPort 32001
-│   ├── publishes:
-│   │   ├── observed/instance/web-{hash}/state = running
-│   │   ├── observed/instance/web-{hash}/ip = 10.100.N.M
-│   │   ├── observed/instance/web-{hash}/node = {nodeID}
-│   │   └── observed/instance/web-{hash}/host_port/8080 = 32001
-│   └── injects /etc/resolv.conf → nameserver {agentIP}, search cca.local
-│
-├── [6] EndpointController:
-│   ├── sees running instance with IP and port
-│   └── writes endpoint/service/web/web-{hash}/8080 = "10.100.N.M:8080"
-│
-├── [7] DataPlaneReconciler on EVERY node (1s cycle):
-│   ├── reads network/vip/service/web → VIP 10.200.0.1
-│   ├── reads endpoint/service/web/* → backends
-│   ├── resolves backends:
-│   │   ├── local: containerIP:containerPort (direct bridge)
-│   │   └── remote: nodeIP:hostPort (LAN)
-│   ├── programs nftables:
-│   │   ├── ensures cca-vip0 has 10.200.0.1/32
-│   │   └── verdict map entry + DNAT chain
-│   └── VIP is now routable from any container on any node
-│
-└── [8] Any container can now:
-    ├── dig web.cca.local → 10.200.0.1
-    └── connect to 10.200.0.1:8080 → DNAT → backend
-```
-
----
-
-## Route-Based Traffic (Sticky Sessions)
-
-Routes override VIP dispatch for specific services, enabling sticky sessions.
-
-```
-Route definition:
-  route web-public {
-      service web
-      sticky source-ip     ← OR sticky cookie { name "session" }
-  }
-
-nftables chain override:
-
-map vip_dispatch {
-    10.200.0.1 . tcp . 8080 : goto rt_web_public     ← route chain instead of svc_web
-}
-
-chain rt_web_public {
-    ── source-ip sticky:
-       jhash ip saddr mod N map { 0: dnat to backend-0, 1: dnat to backend-1 }
-
-    ── cookie sticky:
-       dnat to 127.0.0.1:{proxyPort}
-       └── CookieStickyProxy reverse-proxies with Set-Cookie affinity
-}
-```
-
-**Source:** `network/nftables_dataplane.go` (route chains),
-`network/cookie_proxy.go` (CookieStickyProxy)
-
----
-
-## Network Policy Enforcement
-
-When a DataPlanePolicyReconciler is present (eBPF data plane):
-
-```
-DataPlaneReconciler.Reconcile
-└── policyReconciler.ReconcilePolicies(ctx)
-    └── reads derived/network/rule/* → compiled allow/deny rules
-    └── programs BPF maps for per-packet enforcement
-```
-
-**Source:** `network/dataplane.go:122` (DataPlanePolicyReconciler interface),
-`network/ebpf_dataplane.go` (BPF implementation)
-
----
-
-## Reverse Index: Interface → Source File
-
-| Interface/Component | Source File | Key Function |
+| Key Pattern | Op | Purpose |
 |---|---|---|
-| `cca0` bridge | `runtime/containerd.go:560` | `buildCNIConflist()` |
-| `cca-vxlan0` | `agent/vxlan.go:152` | `ensureVXLANInterfaceExists()` |
-| `cca-vip0` dummy | `network/iptables_dataplane.go:323` / `network/nftables_dataplane.go:444` | `ensureDummyInterface()` |
-| veth pairs | CNI bridge plugin (external binary at `/opt/cni/bin/bridge`) | — |
-| Container resolv.conf | `runtime/containerd.go:500` | `generateResolvConf()` |
-| DNS Forwarder | `network/dns_forwarder.go:92` | `DNSForwarder.Start()` |
-| DNS Server | `network/dns.go:56` | `DNSServer.Start()` |
-| VIP verdict map | `network/nftables_dataplane.go:81` | `ReconcileVIPDataPlane()` |
-| FDB entries | `agent/vxlan.go:560` | `executeBridgeFDBAppend()` |
-| Route tables | `agent/vxlan.go:536` | `executeIPRouteReplace()` |
-| Store-backed resolver | `network/resolver.go:40` | `StoreBackedResolver` |
-| Endpoint facts | `controllers/endpoint.go:54` | `EndpointController.Reconcile()` |
-| VIP allocation | `controllers/network.go:88` | `NetworkController.Reconcile()` |
-| Stateful DNS | `controllers/stateful_dns.go:49` | `StatefulDNSController.Reconcile()` |
+| `derived/network/rule/{nodeID}/{index}` | Write | Compiled IP-based firewall rule |
+| `policy/network/{name}` | Read | Identity-based policy rules |
+| `endpoint/service/{svc}/{id}/{port}` | Read | Service → IP resolution |
+| `placement/instance/{id}` | Read | Instance → node mapping |
+
+---
+
+## 4. DNS Server (network/dns.go)
+
+### DNSServer.Start :56
+```
+DNSServer.Start(ctx)                                           [blocks, goroutine per query]
+├── net.ResolveUDPAddr("udp", listenAddress)
+├── net.ListenUDP("udp", udpAddress)
+├── goroutine: <-ctx.Done() → close connection
+└── loop: ReadFromUDP → go handleDNSQuery
+
+DNSServer.handleDNSQuery(ctx, conn, addr, packet)             :104
+├── parseDNSQuestionName(packet, 12)                           :156
+│   └── extracts dotted domain name from DNS wire format
+├── strip ".{domain}" suffix → serviceName
+├── IF not in domain:
+│   └── sendNXDomainResponse(conn, addr, txid, question)       :141
+├── resolver.ResolveVIP(ctx, serviceName)
+│   └── StoreBackedResolver.ResolveVIP                         [see §6]
+├── IF VIP not found:
+│   └── sendNXDomainResponse
+└── buildDNSARecordResponse(txid, question, ipv4)              :179
+    └── constructs A record: name pointer, type A, TTL=30s, 4-byte IP
+    └── WriteToUDP(response, addr)
+```
+
+---
+
+## 5. DNS Forwarder (network/dns_forwarder.go)
+
+### DNSForwarder.Start :92
+```
+DNSForwarder.Start(ctx)                                        [blocks, goroutine per query]
+├── net.ListenUDP("udp", listenAddress)
+└── loop: ReadFromUDP → go handleForwardedQuery
+
+DNSForwarder.handleForwardedQuery(ctx, conn, addr, packet)     :147
+├── parseDNSQuestionName(packet, 12)
+├── cache.get(queryName)                                       :272
+│   └── IF hit: patch txid → WriteToUDP → return
+├── determine upstream:
+│   ├── IF *.cca.local → ccaUpstream (control plane :15353)
+│   └── ELSE → systemUpstream (host DNS)
+├── forwardToUpstream(ctx, upstream, packet)                    :193
+│   └── DialUDP → Write → Read → return response
+├── extractTTLFromDNSResponse(response)                        :225
+│   └── parse answer section → TTL capped at dnsCacheMaxTTL (30s)
+├── cache.put(queryName, response, ttl)                        :285
+│   └── evicts expired entries when cache >= 1000 entries
+└── patch txid → WriteToUDP(response, addr)
+
+ParseSystemResolvers(resolvConfPath, excludeAddress)           :316
+└── reads /etc/resolv.conf → first nameserver != excludeAddress
+```
+
+### Constants (DNS)
+
+| Constant | Value | File | Purpose |
+|---|---|---|---|
+| `DefaultDNSDomain` | `"cca.local"` | `network/dns.go:18` | Service discovery DNS suffix |
+| `dnsReadBufferSize` | `512` | `network/dns.go:23` | UDP read buffer (RFC 1035) |
+| `dnsCacheMaxTTL` | `30s` | `network/dns_forwarder.go:22` | Max cache TTL |
+| `dnsForwarderReadTimeout` | `3s` | `network/dns_forwarder.go:26` | Upstream read deadline |
+| `dnsForwarderMaxCacheEntries` | `1000` | `network/dns_forwarder.go:30` | Cache size limit |
+
+---
+
+## 6. StoreBackedResolver (network/resolver.go)
+
+### StoreBackedResolver.ResolveVIP :80
+```
+StoreBackedResolver.ResolveVIP(ctx, serviceName)
+└── factStore.Get(ctx, KeyNetworkVIPService(serviceName))
+    └── key: network/vip/service/{name}
+    └── returns VIP address string
+```
+
+### StoreBackedResolver.ResolveEndpoints :46
+```
+StoreBackedResolver.ResolveEndpoints(ctx, serviceName)
+├── factStore.Scan(ctx, "endpoint/service/{name}/")
+└── FOR EACH endpoint fact:
+    └── parse "ip:port" → types.Endpoint{Service, InstanceID, IP, Port}
+```
+
+---
+
+## 7. VXLAN Overlay (agent/vxlan.go)
+
+### VXLANReconciler.Reconcile :71
+```
+VXLANReconciler.Reconcile(ctx)                                 [called every 1s from dataPlaneLoop]
+├── IF not initialized:
+│   └── ensureVXLANInterfaceExists(ctx)                        :160
+│       ├── interfaceAlreadyExists(ctx, "cca-vxlan0")          :476
+│       ├── detectPhysicalInterfaceForAddress(advertiseAddress) :484
+│       │   └── scans net.Interfaces() → finds NIC with agent's IP
+│       ├── executeVXLANCreate(ctx, physicalInterface, localAddress)  :533
+│       │   └── ip link add cca-vxlan0 type vxlan id 42 dstport 4789 dev {nic} local {ip}
+│       ├── deriveVXLANMACAddress(nodeID)                      :510
+│       │   └── FNV32a hash → 02:{4 bytes}:{xor byte}
+│       ├── executeIPLinkSetAddress(ctx, "cca-vxlan0", mac)    :523
+│       ├── executeIPLinkSetUp(ctx, "cca-vxlan0")              :548
+│       ├── executeIPLinkSetMTU(ctx, "cca-vxlan0", 1450)       :557
+│       └── disableReversePathFilter(ctx, "cca-vxlan0")        :640
+│           └── sysctl net.ipv4.conf.{iface}.rp_filter=0 AND net.ipv4.conf.all.rp_filter=0
+│
+├── disableReversePathFilter(ctx, "cca-vxlan0")                [re-apply every pass]
+│
+├── discoverPeerNodes(ctx)                                     :211
+│   ├── factStore.Scan(ctx, ScanObservedNodes)
+│   │   └── buildNodeAddressMap(facts)                         :251
+│   │       └── map[nodeID]advertiseAddress from observed/node/{id}/address
+│   ├── factStore.Scan(ctx, ScanNetworkNodeSubnets)
+│   │   └── buildNodeSubnetMap(facts)                          :265
+│   │       └── map[nodeID]subnetCIDR from network/node/{id}/subnet
+│   └── exclude self → sort → return []peerNodeInfo
+│
+├── programPeerRoutes(ctx, peerNodes)                          :283
+│   └── FOR EACH peer:
+│       ├── deriveVXLANMACAddress(peer.nodeID)
+│       ├── executeIPNeighReplace(ctx, gateway, peerMAC)       :592
+│       │   └── ip neigh replace {subnet.0} dev cca-vxlan0 lladdr {mac} nud permanent
+│       ├── executeIPRouteReplaceOnlink(ctx, subnet, gateway)  :579
+│       │   └── ip route replace {subnet} via {gateway} dev cca-vxlan0 onlink
+│       ├── executeBridgeFDBAppend(ctx, peerAddress)           :655
+│       │   └── bridge fdb append 00:00:00:00:00:00 dev cca-vxlan0 dst {peerIP}
+│       └── executeBridgeFDBReplaceUnicast(ctx, peerMAC, peerAddress)  :671
+│           └── bridge fdb replace {mac} dev cca-vxlan0 dst {peerIP}
+│
+└── removeStaleRoutes(ctx, peerNodes)                          :329
+    ├── listVXLANRouteSubnets(ctx)                             :694
+    │   └── ip route show dev cca-vxlan0 → []subnet
+    └── FOR EACH installed subnet not in active peers:
+        ├── executeIPRouteDelete(ctx, subnet)                  :624
+        └── executeIPNeighDelete(ctx, subnetBaseAddress)       :601
+```
+
+### VXLANReconciler.EnsureSubnetPublished :131
+```
+VXLANReconciler.EnsureSubnetPublished(ctx)
+├── factStore.Get(ctx, KeyNetworkNodeSubnet(nodeID))
+│   └── IF exists: done
+└── allocateNextFreeSubnet(ctx)                                :367
+    ├── parseClusterCIDRBaseOctets(clusterCIDR)                :414
+    └── RETRY up to 10 times:
+        ├── factStore.ScanWithRevision(ctx, ScanNetworkNodeSubnets)
+        ├── collectOccupiedThirdOctets(facts)                  :432
+        ├── findNextFreeThirdOctetForNode(occupied, nodeID)    :452
+        │   └── hashNodeIDToOctetOffset(nodeID, range)         :467
+        │       └── FNV32a(nodeID) mod range → deterministic start
+        └── factStore.Transaction(CAS: revision=0)
+            └── PUT network/node/{nodeID}/subnet = "{cidr}"
+```
+
+### Store keys (VXLAN)
+
+| Key Pattern | Op | Purpose |
+|---|---|---|
+| `network/node/{nodeID}/subnet` | Write/Read | Node's /24 container subnet |
+| `observed/node/{nodeID}/address` | Read | Peer node advertise address |
+
+### Constants (VXLAN)
+
+| Constant | Value | File | Purpose |
+|---|---|---|---|
+| `vxlanInterfaceName` | `"cca-vxlan0"` | `agent/vxlan.go:21` | Tunnel interface name |
+| `vxlanVNI` | `42` | `agent/vxlan.go:24` | VXLAN Network Identifier |
+| `vxlanDestinationPort` | `4789` | `agent/vxlan.go:27` | UDP encapsulation port |
+| `vxlanBridgeMTU` | `1450` | `agent/vxlan.go:31` | MTU (1500 - 50 overhead) |
+| `maxSubnetAllocationAttempts` | `10` | `agent/vxlan.go:35` | CAS retry limit |
+
+---
+
+## 8. DataPlaneProvider Interface (network/dataplane.go)
+
+### Interface hierarchy
+```
+DataPlaneProvider                                              :20
+├── ReconcileVIPDataPlane(ctx, []ServiceVIPConfig) error        :25
+├── ReconcileRouteDataPlane(ctx, []RouteDataPlaneConfig) error  :30
+└── Cleanup(ctx) error                                         :35
+
+DataPlaneInitializer                                           :100
+└── Initialize(ctx) error
+
+DataPlaneNodeRegistrar                                         :106
+└── RegisterNode(ctx, nodeIP, podCIDR) error
+
+DataPlaneBridgeRetrier                                         :112
+└── RetryBridgeAttachment(ctx, podCIDR) error
+
+EndpointIdentityRegistrar                                      :118
+└── RegisterEndpointIdentity(ctx, containerIP, hostIP, service, port) error
+
+DataPlanePolicyReconciler                                      :125
+└── ReconcilePolicies(ctx) error
+```
+
+### Implementations
+
+| Type | File | Mode |
+|---|---|---|
+| `NftablesDataPlane` | `network/nftables_dataplane.go:60` | Production: verdict map O(1) |
+| `IptablesDataPlane` | `network/iptables_dataplane.go:49` | Production: linear chain walk |
+| `EbpfDataPlane` | `network/ebpf_dataplane.go` | Production: BPF maps + TC programs |
+| `ShadowDataPlane` | `network/shadow_dataplane.go:26` | Validation: iptables active + nftables shadow |
+| `SimulatorDataPlane` | `network/simulator_dataplane.go:15` | Testing: records calls, no-op |
+
+---
+
+## 9. NftablesDataPlane (network/nftables_dataplane.go)
+
+### NftablesDataPlane.ReconcileVIPDataPlane :92
+```
+NftablesDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
+├── ensureDummyInterface()                                     :471
+│   ├── ip link add cca-vip0 type dummy
+│   └── ip link set cca-vip0 up
+├── buildRouteDispatchOverrides(lastRouteConfigs)              :135
+│   └── map["{vip}:{port}"] → route chain name
+├── buildVIPRuleset(configs, desiredChains, desiredVIPs, overrides)  :234
+│   ├── table ip cca { delete + recreate }
+│   ├── map vip_dispatch { type verdict }
+│   ├── chain prerouting { nat hook, vmap @vip_dispatch }
+│   ├── chain output { nat hook, vmap @vip_dispatch }
+│   ├── writePostRoutingChain(&builder)                        :318
+│   │   └── chain postrouting { ct status dnat masquerade }
+│   ├── writeContainerIsolationChain(&builder)                 :305
+│   │   └── chain container_isolation { filter hook, drop cca0→etcd 2379/2380 }
+│   ├── FOR EACH service (sorted):
+│   │   └── chain svc_{name} { writeBackendDNATRules }         :349
+│   │       ├── single backend: meta l4proto {proto} dnat to {ip}:{port}
+│   │       └── multi-backend: dnat to numgen inc mod N map { 0: ip.port, ... }
+│   └── writeVerdictMapWithElements(&builder, entries)          :327
+│       └── map vip_dispatch { elements = { {vip} . {proto} . {port} : goto {chain} } }
+├── appendRouteChains(&ruleset, routeConfigs, desiredRouteChains)  :150
+│   ├── source-ip: writeSourceIPStickyChain(&builder, config, chain)  :421
+│   │   └── jhash ip saddr mod N map { ... }
+│   └── cookie: writeCookieProxyChain(&builder, chain, proxyPort)  :446
+│       └── meta l4proto tcp redirect to :{proxyPort}
+├── applyNftablesRuleset(ruleset)                              :508
+│   └── write temp file → nft -f {tempFile} (atomic)
+├── FOR EACH service: ensureVIPAddress(vip)                    :482
+│   └── ip addr add {vip}/32 dev cca-vip0
+└── removeStaleVIPAddresses(desired)                           :495
+    └── ip addr del {staleVip}/32 dev cca-vip0
+```
+
+---
+
+## 10. IptablesDataPlane (network/iptables_dataplane.go)
+
+### IptablesDataPlane.ReconcileVIPDataPlane :80
+```
+IptablesDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
+├── ensureGlobalChainAndJumpRules()                            :297
+│   ├── iptables -t nat -N CCA_SERVICES
+│   ├── ensureJumpToChain("PREROUTING", "CCA_SERVICES")       :469
+│   ├── ensureJumpToChain("OUTPUT", "CCA_SERVICES")
+│   ├── ensureMasqueradeForDNAT()                              :446
+│   │   └── iptables -t nat -A POSTROUTING ! -o lo -m conntrack --ctstate DNAT -j MASQUERADE
+│   └── ensureContainerIsolationRules()                        :326
+│       └── iptables -I INPUT -i cca0 -p tcp --dports 2379,2380 -j LOG/DROP
+├── ensureDummyInterface()                                     :356
+├── FOR EACH service:
+│   ├── ensureVIPAddress(vip)                                  :369
+│   └── reconcileServiceChain(config, chainName)               :380
+│       ├── iptables -t nat -N CCA_SVC_{name}
+│       ├── iptables -t nat -F CCA_SVC_{name}
+│       ├── FOR EACH backend: -A chain -p proto -m statistic --mode nth --every N -j DNAT
+│       └── ensureJumpFromMainToService(vip, port, proto, chain)  :480
+│           └── iptables -t nat -A CCA_SERVICES -d {vip}/32 -p {proto} --dport {port} -j {chain}
+├── removeStaleServiceChains(desired)                          :418
+│   └── removeJumpRuleFromMainChain(chain)                     :495
+│   └── flushAndDeleteChain(chain)                             :524
+└── removeStaleVIPAddresses(desired)                           :432
+```
+
+### IptablesDataPlane.ReconcileRouteDataPlane :124
+```
+IptablesDataPlane.ReconcileRouteDataPlane(ctx, routeConfigs)
+├── ensureGlobalChainAndJumpRules()
+├── FOR EACH route:
+│   ├── "source-ip": reconcileSourceIPStickyChain(config, chain)  :166
+│   │   ├── -A chain -m recent --name {list} --rcheck --seconds 1800 -j DNAT
+│   │   └── -A chain -m statistic --mode nth -m recent --set -j DNAT
+│   └── "cookie": reconcileCookieStickyChain(config, chain)    :221
+│       └── -A chain -p tcp -j DNAT --to-destination 127.0.0.1:{proxyPort}
+├── cookieProxy.ReconcileRoutes(routeConfigs)                  [see §12]
+└── removeStaleRouteChains(desired)                            :249
+```
+
+---
+
+## 11. ShadowDataPlane (network/shadow_dataplane.go)
+
+### ShadowDataPlane.ReconcileVIPDataPlane :50
+```
+ShadowDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
+├── activeProvider.ReconcileVIPDataPlane(ctx, serviceConfigs)   [iptables — real traffic]
+└── compareVIPRulesets(serviceConfigs)                          [nftables — shadow only, log divergences]
+```
+
+---
+
+## 12. CookieStickyProxy (network/cookie_proxy.go)
+
+### CookieStickyProxy.ReconcileRoutes :64
+```
+CookieStickyProxy.ReconcileRoutes(routeConfigs)
+├── filter: only routes with StickyMethod="cookie" + CookieConfig
+├── FOR EACH desired cookie route:
+│   ├── IF already running: updateBackends(backends, cookieConf)  :166
+│   └── IF new: startRouteProxy(routeName, routeConfig)        :118
+│       ├── net.Listen("tcp", "127.0.0.1:0") → allocate port
+│       ├── create cookieRouteProxy{routeName, port, backends, cookieConf}
+│       └── goroutine: server.Serve(listener)
+│           └── cookieRouteProxy.ServeHTTP(w, r)               :180
+│               ├── selectBackendFromCookie(r, backends, cookieName)  :218
+│               │   ├── read cookie → find matching backend
+│               │   └── fallback: round-robin (nextIndex % len)
+│               └── httputil.ReverseProxy.ServeHTTP
+│                   └── ModifyResponse: buildStickyCookie(conf, value)  :247
+└── stop proxies for routes no longer desired
+```
+
+---
+
+## 13. NetworkProvider Interface (network/network.go)
+
+### Interface
+```
+NetworkProvider                                                :26
+├── AllocateIP(ctx, nodeID, instanceID) (string, error)
+├── ReleaseIP(ctx, nodeID, instanceID) error
+└── NodeSubnet(nodeID) string
+```
+
+### SimulatorNetworkProvider (network/simulator.go)
+
+```
+SimulatorNetworkProvider.AllocateIP(ctx, nodeID, instanceID)   :60
+├── IF already allocated: return existing IP
+├── ensureNodeSubnetAssigned(nodeID)                           :116
+│   └── assign next third-octet, init fourthOctet=2
+└── allocate {first}.{second}.{thirdOctet}.{fourthOctet}
+    └── increment fourthOctet for node
+
+SimulatorNetworkProvider.ReleaseIP(ctx, nodeID, instanceID)    :95
+└── delete(instanceAllocations, instanceID)
+
+SimulatorNetworkProvider.NodeSubnet(nodeID)                    :105
+└── ensureNodeSubnetAssigned → format "{first}.{second}.{thirdOctet}.0/24"
+```
+
+---
+
+## 14. Load Balancer (network/load_balancer.go)
+
+### LeastConnectionsBalancer
+```
+LeastConnectionsBalancer.SelectBackend(candidates)             :68
+├── ensure all candidates in heap (lazy init)
+├── scan heap for candidate with fewest active connections
+├── increment activeConnections
+└── heap.Fix → re-heapify
+
+LeastConnectionsBalancer.ReleaseBackend(address)               :110
+└── decrement activeConnections → heap.Fix
+```
+
+---
+
+## 15. CircuitBreaker (network/circuit_breaker.go)
+
+### CircuitBreaker
+```
+CircuitBreaker.AllowRequest(backendAddress)                    :84
+├── IF closed: allow
+├── IF open: check if cooldown expired → half-open (allow one)
+└── IF half-open: reject (one probe in flight)
+
+CircuitBreaker.RecordSuccess(backendAddress)                   :117
+└── reset to closed, clear failure count
+
+CircuitBreaker.RecordFailure(backendAddress)                   :144
+├── increment failure count
+└── IF failures >= threshold: transition to open, set cooldown timer
+```
+
+---
+
+## 16. ServiceProxy (network/proxy.go)
+
+### SimulatorProxy.RouteRequest :58
+```
+SimulatorProxy.RouteRequest(ctx, serviceName)
+├── resolver.ResolveEndpoints(ctx, serviceName)
+├── getOrCreateCounter(serviceName)                            :93
+│   └── lazy init atomic.Uint64 per service
+├── round-robin: endpoints[counter % len]
+└── record in routingDecisions[serviceName]
+```
+
+### UserSpaceProxy (network/userspace_proxy.go)
+```
+UserSpaceProxy — HTTP reverse proxy
+├── resolves service from Host header (strip .cca.local)
+├── resolver.ResolveEndpoints → backends
+├── warm-zero: if min=0 + idle_timeout, triggers activation on cold request
+└── httputil.ReverseProxy → forward to selected backend
+```
+
+---
+
+## 17. DataPlane Registry (network/dataplane_registry.go)
+
+```
+RegisterDataPlaneFactory(name, factory)                        :19
+└── dataPlaneFactories[name] = factory  (called from init() in build-tagged files)
+
+LookupDataPlaneFactory(name)                                   :28
+└── return dataPlaneFactories[name]
+```
+
+---
+
+## Reverse Index
+
+| Function | Called By |
+|---|---|
+| `NetworkController.Reconcile` | `controllers.Runner` via watch loop |
+| `EndpointController.Reconcile` | `controllers.Runner` via watch loop |
+| `NetworkPolicyController.Reconcile` | `controllers.Runner` via watch loop |
+| `DNSServer.Start` | `cmd/server.go` (control plane startup) |
+| `DNSForwarder.Start` | `Agent.Run` (goroutine) |
+| `StoreBackedResolver.ResolveVIP` | `DNSServer.handleDNSQuery` |
+| `StoreBackedResolver.ResolveEndpoints` | `SimulatorProxy.RouteRequest`, `UserSpaceProxy` |
+| `VXLANReconciler.Reconcile` | `Agent.dataPlaneLoop` (1s ticker) |
+| `VXLANReconciler.EnsureSubnetPublished` | `Agent.Run` (startup) |
+| `NftablesDataPlane.ReconcileVIPDataPlane` | `Agent.dataPlaneLoop` via `DataPlaneProvider` |
+| `IptablesDataPlane.ReconcileVIPDataPlane` | `Agent.dataPlaneLoop` via `DataPlaneProvider` |
+| `ShadowDataPlane.ReconcileVIPDataPlane` | `Agent.dataPlaneLoop` via `DataPlaneProvider` |
+| `CookieStickyProxy.ReconcileRoutes` | `IptablesDataPlane.ReconcileRouteDataPlane`, `NftablesDataPlane.ReconcileRouteDataPlane` |
+| `SimulatorNetworkProvider.AllocateIP` | `Agent.reconcileDesiredInstance` → `networkProvider.AllocateIP` |
+| `LeastConnectionsBalancer.SelectBackend` | `UserSpaceProxy` request handler |
+| `CircuitBreaker.AllowRequest` | `UserSpaceProxy` request handler |
+| `collectServicesWithEndpointsFromFacts` | `NetworkController.Reconcile` |
+| `buildDesiredEndpoints` | `EndpointController.Reconcile` |
+| `compileIdentityRulesToIPRulesPerNode` | `NetworkPolicyController.Reconcile` |
+| `deriveVXLANMACAddress` | `ensureVXLANInterfaceExists`, `programPeerRoutes` |
+| `buildStickyCookie` | `cookieRouteProxy.ServeHTTP` |
+| `ParseSystemResolvers` | `Agent.Run` (DNS forwarder setup) |
+
+---
+
+## Store Key Summary (all network-related)
+
+| Prefix | Writer | Reader | Purpose |
+|---|---|---|---|
+| `network/vip/service/{name}` | NetworkController | DataPlaneReconciler, DNSServer, StoreBackedResolver | Service VIP address |
+| `network/vip/service/{name}/port` | NetworkController | DataPlaneReconciler | VIP exposed port |
+| `network/dns/{name}` | NetworkController | DNS subsystem | Service DNS → VIP |
+| `network/dns/instance/{id}` | StatefulDNSController | DNS Forwarder | Per-instance DNS |
+| `network/node/{nodeID}/subnet` | VXLANReconciler | VXLANReconciler (peers) | Node /24 subnet |
+| `endpoint/service/{svc}/{id}/{port}` | EndpointController | NetworkController, DataPlaneReconciler, NetworkPolicyController, StoreBackedResolver | Backend endpoint |
+| `policy/network/{name}` | Compiler | NetworkPolicyController | Identity policy rules |
+| `derived/network/rule/{nodeID}/{index}` | NetworkPolicyController | DataPlanePolicyReconciler (eBPF) | Compiled IP firewall rules |
+| `observed/instance/{id}/ip` | Agent | EndpointController, StatefulDNSController | Container IP |
+| `observed/instance/{id}/host_port/{port}` | Agent | EndpointController, DataPlaneReconciler | Host port mapping |
+| `observed/node/{nodeID}/address` | Agent | EndpointController, VXLANReconciler | Node LAN address |
