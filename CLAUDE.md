@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M160 — Per-Node Placement Mode. M1–M160 complete. Gates A–I resolved.
+**Completed through:** M161 — Service Priority & Preemption. M1–M161 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
