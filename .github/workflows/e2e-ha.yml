@@ -25,7 +25,7 @@ concurrency:
 
 env:
   ANSIBLE_DIR: deploy/ansible
-  INVENTORY: baremetal-e2e-inventory.ini
+  INVENTORY: baremetal-e2e-ha-inventory.ini
   PLAYBOOK: ha-deploy.yml
   SSH_USER: bozhan
   NODE_IPS: "192.168.100.215 192.168.100.30 192.168.100.31 192.168.100.51"
