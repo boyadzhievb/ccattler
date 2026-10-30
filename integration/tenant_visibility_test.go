@@ -6,9 +6,11 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/security"
@@ -380,26 +382,18 @@ func TestTenantAuditEndpoint(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
-	auditLog := security.NewInMemoryAuditLog(100)
-	auditLog.Log(security.AuditEntry{
-		Principal: "user:alice",
-		Action:    "workload.update",
-		Target:    "payments/checkout",
-		Decision:  "ALLOW",
-	})
-	auditLog.Log(security.AuditEntry{
-		Principal: "user:bob",
-		Action:    "workload.update",
-		Target:    "frontend/web",
-		Decision:  "ALLOW",
-	})
-	auditLog.Log(security.AuditEntry{
-		Principal: "user:alice",
-		Action:    "workload.delete",
-		Target:    "payments/database",
-		Decision:  "DENY",
-	})
+	auditEntries := []security.AuditEntry{
+		{Timestamp: time.Now(), Principal: "user:alice", Action: "workload.update", Target: "payments/checkout", Decision: "ALLOW"},
+		{Timestamp: time.Now(), Principal: "user:bob", Action: "workload.update", Target: "frontend/web", Decision: "ALLOW"},
+		{Timestamp: time.Now(), Principal: "user:alice", Action: "workload.delete", Target: "payments/database", Decision: "DENY"},
+	}
+	for entryIndex, entry := range auditEntries {
+		entryJSON, _ := json.Marshal(entry)
+		key := fmt.Sprintf("audit/%020d", entryIndex+1)
+		_, _ = factStore.Put(context.Background(), key, entryJSON)
+	}
 
+	auditLog := security.NewStoreBackedAuditLog(factStore, 100)
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	auditView := tenant.NewTenantAuditView(auditLog, tenantRegistry)
 
@@ -411,6 +405,7 @@ func TestTenantAuditEndpoint(t *testing.T) {
 	apiServer := api.NewServer(factStore)
 	apiServer.SetAPIAuthorizer(apiAuthorizer)
 	apiServer.SetTenantAuditView(auditView)
+	apiServer.SetAuditStore(factStore)
 
 	t.Run("payments tenant sees only payments audit entries", func(t *testing.T) {
 		paymentsPrincipal := security.Principal{

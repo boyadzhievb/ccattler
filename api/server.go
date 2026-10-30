@@ -1352,10 +1352,10 @@ func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction
 	if !sinceTime.IsZero() && entry.Timestamp.Before(sinceTime) {
 		return false
 	}
-	if filterDenied && entry.Decision != "deny" {
+	if filterDenied && !strings.EqualFold(entry.Decision, "deny") {
 		return false
 	}
-	if tenantFilter != "" && !strings.Contains(entry.Target, "/"+tenantFilter+"/") && !strings.Contains(entry.Principal, tenantFilter) {
+	if tenantFilter != "" && !strings.HasPrefix(entry.Target, tenantFilter+"/") && !strings.Contains(entry.Target, "/"+tenantFilter+"/") && !strings.Contains(entry.Principal, tenantFilter) {
 		return false
 	}
 	return true
