@@ -192,6 +192,43 @@ else
     log "  Skipped (no status JSON)"
 fi
 
+# ---- Diagnostic helper: collect logs for NOT CONVERGED services ----
+collect_convergence_diagnostics() {
+    log "  --- Convergence diagnostics ---"
+    for svc_name in "${NOT_CONVERGED_SERVICES[@]}"; do
+        log "  [$svc_name] Instance states:"
+        echo "$STATUS_JSON" | jq -r --arg svc "$svc_name" \
+            '.instances[] | select(.service == $svc) | "    \(.id) state=\(.state) node=\(.node) health=\(.health) init=\(.init_phase // "-")"'
+
+        instance_ids=$(echo "$STATUS_JSON" | jq -r --arg svc "$svc_name" \
+            '.instances[] | select(.service == $svc and .state != "running") | .id')
+
+        for instance_id in $instance_ids; do
+            log "  [$svc_name/$instance_id] Probe progress:"
+            probe_json=$(ssh_vm "$CTRL_NAME" \
+                "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/state?prefix=observed/instance/${instance_id}/probe-progress" \
+                2>/dev/null || true)
+            if [[ -n "$probe_json" ]] && echo "$probe_json" | jq -e '.[0].value' >/dev/null 2>&1; then
+                echo "$probe_json" | jq -r '.[0].value' | jq -r \
+                    '"    startup_failures=\(.startup_failures // 0)/\(.startup_threshold // "-") error=\(.startup_error // "-")"' \
+                    2>/dev/null || log "    (probe data unparseable)"
+            else
+                log "    (no probe data)"
+            fi
+        done
+
+        log "  [$svc_name] Container logs (last 20 lines):"
+        container_logs=$(ssh_vm "$CTRL_NAME" \
+            "sudo cca logs $svc_name --tail 20" 2>/dev/null || true)
+        if [[ -n "$container_logs" ]]; then
+            echo "$container_logs" | sed 's/^/    /'
+        else
+            log "    (no logs available)"
+        fi
+    done
+    log "  --- End diagnostics ---"
+}
+
 # ---- Check 5: Service convergence ----
 log "Check 5: Service convergence"
 if [[ -n "$STATUS_JSON" ]]; then
@@ -201,9 +238,11 @@ if [[ -n "$STATUS_JSON" ]]; then
     if [[ "$service_count" -eq 0 ]]; then
         warn "no services deployed"
     else
+        NOT_CONVERGED_SERVICES=()
         while read -r svc_name svc_desired svc_running; do
             if [[ "$svc_desired" -ne "$svc_running" ]]; then
                 log "  $svc_name: desired=$svc_desired running=$svc_running — NOT CONVERGED"
+                NOT_CONVERGED_SERVICES+=("$svc_name")
             else
                 log "  $svc_name: desired=$svc_desired running=$svc_running — ok"
             fi
@@ -212,6 +251,7 @@ if [[ -n "$STATUS_JSON" ]]; then
         not_converged=$(echo "$STATUS_JSON" | jq '[.services[] | select(.desired != .running)] | length')
         if [[ "$not_converged" -gt 0 ]]; then
             warn "$not_converged service(s) not converged (desired != running)"
+            collect_convergence_diagnostics
         fi
     fi
 else
