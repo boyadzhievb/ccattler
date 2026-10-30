@@ -173,7 +173,7 @@ service scheduler {
 
 service worker {
     image "{{ default "docker.io" .registry }}/airflow:2.10.5"
-    command "celery worker"
+    command "airflow celery worker"
     instances 2
     expose 8793
     termination_grace_period 600s

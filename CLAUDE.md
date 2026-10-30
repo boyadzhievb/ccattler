@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M162 — Phase 162 Colocate & Separate Placement Hints. M1–M162 complete. Gates A–I resolved.
+**Completed through:** M163 — Phase 163 Zone Spread with MaxSkew. M1–M163 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

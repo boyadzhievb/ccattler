@@ -760,6 +760,140 @@ func TestZoneSpreadUnbalanced(t *testing.T) {
 	}
 }
 
+func TestZoneSpreadMaxSkewDefault(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("new-1"), "web"),
+		kv(types.KeyObservedInstanceState("new-1"), "pending"),
+		kv(types.KeyDesiredServicePlacementZonePolicy("web"), "spread"),
+		// Zone-a has 2 instances, zone-b and zone-c have 1 each.
+		kv(types.KeyObservedInstanceService("existing-a1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a1"), "running"),
+		kv(types.KeyPlacementInstance("existing-a1"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-a2"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a2"), "running"),
+		kv(types.KeyPlacementInstance("existing-a2"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-b1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-b1"), "running"),
+		kv(types.KeyPlacementInstance("existing-b1"), "node-2"),
+		kv(types.KeyObservedInstanceService("existing-c1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-c1"), "running"),
+		kv(types.KeyPlacementInstance("existing-c1"), "node-3"),
+		// Three nodes in three zones.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeZone("node-1"), "zone-a"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeZone("node-2"), "zone-b"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeZone("node-3"), "zone-c"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	placedNode := string(changes[0].Value)
+	// Default maxSkew=1: only zones with count==minCount(1) are eligible, so node-1 (zone-a, count=2) is excluded.
+	if placedNode == "node-1" {
+		t.Errorf("default maxSkew=1 should exclude zone-a (count=2 vs min=1), placed on %s", placedNode)
+	}
+}
+
+func TestZoneSpreadMaxSkew2AllowsSkew(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("new-1"), "web"),
+		kv(types.KeyObservedInstanceState("new-1"), "pending"),
+		kv(types.KeyDesiredServicePlacementZonePolicy("web"), "spread"),
+		kv(types.KeyDesiredServicePlacementZoneMaxSkew("web"), "2"),
+		// Zone-a has 2, zone-b has 1, zone-c has 1.
+		kv(types.KeyObservedInstanceService("existing-a1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a1"), "running"),
+		kv(types.KeyPlacementInstance("existing-a1"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-a2"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a2"), "running"),
+		kv(types.KeyPlacementInstance("existing-a2"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-b1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-b1"), "running"),
+		kv(types.KeyPlacementInstance("existing-b1"), "node-2"),
+		kv(types.KeyObservedInstanceService("existing-c1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-c1"), "running"),
+		kv(types.KeyPlacementInstance("existing-c1"), "node-3"),
+		// Three nodes in three zones.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeZone("node-1"), "zone-a"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeZone("node-2"), "zone-b"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeZone("node-3"), "zone-c"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	// maxSkew=2: zones with count < minCount(1)+2=3 are eligible, so all three zones are acceptable.
+	// The instance can go to any node (zone-b and zone-c preferred by scoring, but zone-a is also allowed).
+}
+
+func TestZoneSpreadMaxSkew2RejectsOverskew(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("new-1"), "web"),
+		kv(types.KeyObservedInstanceState("new-1"), "pending"),
+		kv(types.KeyDesiredServicePlacementZonePolicy("web"), "spread"),
+		kv(types.KeyDesiredServicePlacementZoneMaxSkew("web"), "2"),
+		// Zone-a has 3, zone-b has 1, zone-c has 1.
+		kv(types.KeyObservedInstanceService("existing-a1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a1"), "running"),
+		kv(types.KeyPlacementInstance("existing-a1"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-a2"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a2"), "running"),
+		kv(types.KeyPlacementInstance("existing-a2"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-a3"), "web"),
+		kv(types.KeyObservedInstanceState("existing-a3"), "running"),
+		kv(types.KeyPlacementInstance("existing-a3"), "node-1"),
+		kv(types.KeyObservedInstanceService("existing-b1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-b1"), "running"),
+		kv(types.KeyPlacementInstance("existing-b1"), "node-2"),
+		kv(types.KeyObservedInstanceService("existing-c1"), "web"),
+		kv(types.KeyObservedInstanceState("existing-c1"), "running"),
+		kv(types.KeyPlacementInstance("existing-c1"), "node-3"),
+		// Three nodes in three zones.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeZone("node-1"), "zone-a"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeZone("node-2"), "zone-b"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedNodeZone("node-3"), "zone-c"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	placedNode := string(changes[0].Value)
+	// maxSkew=2: threshold = minCount(1)+2=3. Zone-a has count=3, which is NOT < 3, so excluded.
+	if placedNode == "node-1" {
+		t.Errorf("maxSkew=2 should reject zone-a (count=3, threshold=3), placed on %s", placedNode)
+	}
+}
+
 func TestArchitectureFilterAmd64(t *testing.T) {
 	placementScheduler := newTestScheduler()
 

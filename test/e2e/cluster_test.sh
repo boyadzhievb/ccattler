@@ -921,8 +921,16 @@ if [[ -n "$VIP_SERVICES" ]]; then
                 log "  VIP $svc_vip:$svc_port ($svc_name) skipped on $vm (no agent)"
                 continue
             fi
-            nc_out=$(ssh_vm "$vm" "nc -zv -w5 $svc_vip $svc_port 2>&1" || true)
-            if echo "$nc_out" | grep -q "succeeded\|open"; then
+            vip_reachable=false
+            for attempt in 1 2 3; do
+                nc_out=$(ssh_vm "$vm" "nc -zv -w5 $svc_vip $svc_port 2>&1" || true)
+                if echo "$nc_out" | grep -q "succeeded\|open"; then
+                    vip_reachable=true
+                    break
+                fi
+                [[ $attempt -lt 3 ]] && sleep 5
+            done
+            if [[ "$vip_reachable" == "true" ]]; then
                 log "  VIP $svc_vip:$svc_port ($svc_name) reachable from $vm"
             else
                 log "  WARNING: VIP $svc_vip:$svc_port ($svc_name) NOT reachable from $vm (nc: $nc_out)"

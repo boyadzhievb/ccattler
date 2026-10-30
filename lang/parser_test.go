@@ -2016,6 +2016,71 @@ func TestParsePlacementModeInvalid(t *testing.T) {
 	}
 }
 
+func TestParsePlacementZoneSpread(t *testing.T) {
+	input := `service web {
+    image nginx:1.0
+    instances 3
+    placement {
+        zone spread
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("expected placement block, got nil")
+	}
+	if placement.ZonePolicy != "spread" {
+		t.Errorf("zone policy: got %q, want %q", placement.ZonePolicy, "spread")
+	}
+	if placement.ZoneMaxSkew != 0 {
+		t.Errorf("zone max skew: got %d, want 0 (default)", placement.ZoneMaxSkew)
+	}
+}
+
+func TestParsePlacementZoneSpreadMaxSkew(t *testing.T) {
+	input := `service web {
+    image nginx:1.0
+    instances 3
+    placement {
+        zone spread maxSkew 2
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("expected placement block, got nil")
+	}
+	if placement.ZonePolicy != "spread" {
+		t.Errorf("zone policy: got %q, want %q", placement.ZonePolicy, "spread")
+	}
+	if placement.ZoneMaxSkew != 2 {
+		t.Errorf("zone max skew: got %d, want 2", placement.ZoneMaxSkew)
+	}
+}
+
+func TestParsePlacementZoneSpreadMaxSkewInvalid(t *testing.T) {
+	input := `service web {
+    image nginx:1.0
+    instances 3
+    placement {
+        zone spread maxSkew 0
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected parse error for maxSkew 0")
+	}
+	if !strings.Contains(err.Error(), "maxSkew must be >= 1") {
+		t.Errorf("error should mention maxSkew constraint, got: %s", err.Error())
+	}
+}
+
 func TestParsePriorityValid(t *testing.T) {
 	input := `service web {
     image "nginx:1.28"

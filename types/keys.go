@@ -731,6 +731,12 @@ func KeyDesiredServicePlacementZonePolicy(name string) string {
 	return fmt.Sprintf("%s/service/%s/placement/zone", PrefixDesired, name)
 }
 
+// KeyDesiredServicePlacementZoneMaxSkew returns the store path for a service's
+// maximum allowed skew between zone instance counts (only meaningful with "spread").
+func KeyDesiredServicePlacementZoneMaxSkew(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement/zone/maxSkew", PrefixDesired, name)
+}
+
 // KeyDesiredServicePlacementRequire returns the store path for a hard node label
 // requirement. The scheduler will only place instances on nodes where this label matches.
 // Path: desired/service/{name}/placement/require/{label}

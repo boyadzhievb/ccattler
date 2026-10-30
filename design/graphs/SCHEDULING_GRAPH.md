@@ -123,8 +123,8 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
 │       └── filter by capacity → heap.Init
 │
 └── FOR EACH instanceID:                                         :950
-    ├── [zone-spread] findMinZones(candidates, svc, zoneCounts)  :957/:985
-    │   └── min count across candidate zones → acceptableZones
+    ├── [zone-spread] findMinZones(candidates, svc, zoneCounts, maxSkew)  :965/:995
+    │   ├── maxSkew from constraint (default 1): zone eligible if count < minCount + maxSkew
     │   └── cache.BestNodeInZones(acceptableZones)               [cache.go:48]
     ├── [default] cache.BestNode()                               [cache.go:38]
     ├── loadPerNode[bestNode]++                                  :967
@@ -373,6 +373,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 |---|---|---|
 | `placement { architecture amd64 }` | `desired/service/{s}/placement/architecture` | `.architecture` |
 | `placement { zone spread }` | `desired/service/{s}/placement/zone` | `.zonePolicy` |
+| `placement { zone spread maxSkew 2 }` | `desired/service/{s}/placement/zone/maxSkew` | `.zoneMaxSkew` |
 | `placement { zone us-east-1a }` | `desired/service/{s}/placement/zone` | `.zonePolicy` |
 | `placement { require gpu=nvidia }` | `desired/service/{s}/placement/require/gpu` | `.require["gpu"]` |
 | `placement { prefer tier=fast }` | `desired/service/{s}/placement/prefer/tier` | `.prefer["tier"]` |
@@ -442,7 +443,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `filterOutNodesAlreadyHostingService` | scheduler.go:1413 | placeBatchedInstances (per-node) |
 | `rankByPreferences` | scheduler.go:1512 | placeBatchedInstances |
 | `rankByAffinityHints` | scheduler.go:1569 | placeBatchedInstances |
-| `findMinZones` | scheduler.go:985 | placeBatchedInstances (zone-spread) |
+| `findMinZones` | scheduler.go:995 | placeBatchedInstances (zone-spread, maxSkew param) |
 | `resolveInstanceResourceNeeds` | scheduler.go:1017 | placeOneGroup, computeGroupResourceTotal |
 | `updateNodeResourcesAfterPlacement` | scheduler.go:1145 | placeBatchedInstances, placeOneGroup |
 | `NewNodeCapacityCache` | cache.go:26 | placeBatchedInstances |

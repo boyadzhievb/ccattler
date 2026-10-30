@@ -948,6 +948,10 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 	}
 
 	useZoneSpread := constraint != nil && constraint.zonePolicy == "spread"
+	zoneMaxSkew := 1
+	if constraint != nil && constraint.zoneMaxSkew > 0 {
+		zoneMaxSkew = constraint.zoneMaxSkew
+	}
 	cache := NewNodeCapacityCache(candidates, state.loadPerNode, reqCPU, reqMemory)
 
 	var changes []controllers.Change
@@ -958,7 +962,7 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 
 		var bestNode string
 		if useZoneSpread {
-			acceptableZones := findMinZones(candidates, serviceName, state.serviceZoneCounts)
+			acceptableZones := findMinZones(candidates, serviceName, state.serviceZoneCounts, zoneMaxSkew)
 			bestNode = cache.BestNodeInZones(acceptableZones)
 		} else {
 			bestNode = cache.BestNode()
@@ -984,9 +988,14 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 	return changes
 }
 
-// findMinZones returns the set of zones that have the minimum instance count
-// for the given service, enabling zone-spread candidate selection.
-func findMinZones(candidates []candidateNode, serviceName string, serviceZoneCounts map[string]map[string]int) map[string]bool {
+// findMinZones returns the set of zones eligible for placement. A zone is
+// eligible when its instance count is less than minCount + maxSkew.
+// maxSkew=1 gives strict spread (only minimum-count zones); higher values
+// allow controlled imbalance across zones.
+func findMinZones(candidates []candidateNode, serviceName string, serviceZoneCounts map[string]map[string]int, maxSkew int) map[string]bool {
+	if maxSkew < 1 {
+		maxSkew = 1
+	}
 	zoneCounts := serviceZoneCounts[serviceName]
 	if zoneCounts == nil {
 		zoneCounts = make(map[string]int)
@@ -1004,12 +1013,13 @@ func findMinZones(candidates []candidateNode, serviceName string, serviceZoneCou
 	}
 
 	acceptableZones := make(map[string]bool)
+	threshold := minCount + maxSkew
 	for _, candidate := range candidates {
 		zone := candidate.zone
 		if zone == "" {
 			zone = "_default"
 		}
-		if zoneCounts[zone] == minCount {
+		if zoneCounts[zone] < threshold {
 			acceptableZones[zone] = true
 		}
 	}
@@ -1347,6 +1357,8 @@ type servicePlacementConstraint struct {
 	architecture string
 	// zonePolicy is "spread" for zone-aware distribution, or a specific zone name.
 	zonePolicy string
+	// zoneMaxSkew is the maximum allowed difference between zone counts (default 0 means use 1).
+	zoneMaxSkew int
 	// require holds hard node label requirements — the node must have each label with the specified value.
 	require map[string]string
 	// prefer holds soft node label preferences — matching nodes get a scoring bonus.
@@ -1382,6 +1394,11 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 			constraint.architecture = string(fact.Value)
 		case suffix == "placement/zone":
 			constraint.zonePolicy = string(fact.Value)
+		case suffix == "placement/zone/maxSkew":
+			parsedMaxSkew, parseErr := strconv.Atoi(string(fact.Value))
+			if parseErr == nil && parsedMaxSkew >= 1 {
+				constraint.zoneMaxSkew = parsedMaxSkew
+			}
 		case strings.HasPrefix(suffix, "placement/require/"):
 			labelName := strings.TrimPrefix(suffix, "placement/require/")
 			if constraint.require == nil {

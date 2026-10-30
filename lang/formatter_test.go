@@ -460,6 +460,29 @@ func TestFormatServiceWithPlacement(t *testing.T) {
 	verifyIdempotent(t, formatted)
 }
 
+// TestFormatZoneSpreadMaxSkew verifies placement zone spread maxSkew round-trip.
+func TestFormatZoneSpreadMaxSkew(t *testing.T) {
+	input := `service web {
+    image nginx:1.28
+    instances 2
+    placement {
+        zone spread maxSkew 2
+    }
+}
+`
+	parsedFile, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatalf("parse failed: %v", parseError)
+	}
+
+	formatted := Format(parsedFile)
+	if !strings.Contains(formatted, "        zone spread maxSkew 2") {
+		t.Errorf("missing 'zone spread maxSkew 2' in output:\n%s", formatted)
+	}
+
+	verifyIdempotent(t, formatted)
+}
+
 // TestFormatServiceWithConfig verifies config block with env and file entries.
 func TestFormatServiceWithConfig(t *testing.T) {
 	input := `service web {

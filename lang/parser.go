@@ -833,6 +833,21 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 			placementDecl.Architecture, err = parser.expectIdentifier()
 		case "zone":
 			placementDecl.ZonePolicy, err = parser.expectIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			if placementDecl.ZonePolicy == "spread" && parser.currentToken().Type == TokenIdent && parser.currentToken().Value == "maxSkew" {
+				parser.advanceToken()
+				var maxSkewValue int
+				maxSkewValue, err = parser.expectInteger()
+				if err != nil {
+					return nil, err
+				}
+				if maxSkewValue < 1 {
+					return nil, parser.parserErrorf("maxSkew must be >= 1, got %d", maxSkewValue)
+				}
+				placementDecl.ZoneMaxSkew = maxSkewValue
+			}
 		case "require":
 			var matchDecl PlacementMatchDecl
 			matchDecl.Label, err = parser.expectIdentifier()

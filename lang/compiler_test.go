@@ -1665,6 +1665,52 @@ func TestCompilePlacementModePerNode(t *testing.T) {
 	}
 }
 
+func TestCompileZoneSpreadMaxSkew(t *testing.T) {
+	file, _ := Parse(`service web {
+    image nginx:1.0
+    instances 3
+    placement {
+        zone spread maxSkew 3
+    }
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	zonePolicyValue := compiledFactMap[types.KeyDesiredServicePlacementZonePolicy("web")]
+	if zonePolicyValue != "spread" {
+		t.Errorf("zone policy: got %q, want %q", zonePolicyValue, "spread")
+	}
+	maxSkewValue := compiledFactMap[types.KeyDesiredServicePlacementZoneMaxSkew("web")]
+	if maxSkewValue != "3" {
+		t.Errorf("zone max skew: got %q, want %q", maxSkewValue, "3")
+	}
+}
+
+func TestCompileZoneSpreadNoMaxSkew(t *testing.T) {
+	file, _ := Parse(`service web {
+    image nginx:1.0
+    instances 3
+    placement {
+        zone spread
+    }
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	zonePolicyValue := compiledFactMap[types.KeyDesiredServicePlacementZonePolicy("web")]
+	if zonePolicyValue != "spread" {
+		t.Errorf("zone policy: got %q, want %q", zonePolicyValue, "spread")
+	}
+	maxSkewValue := compiledFactMap[types.KeyDesiredServicePlacementZoneMaxSkew("web")]
+	if maxSkewValue != "" {
+		t.Errorf("zone max skew should not be emitted when default, got %q", maxSkewValue)
+	}
+}
+
 func TestCompilePriorityEmitsFacts(t *testing.T) {
 	file, _ := Parse(`service web {
     image "nginx:1.28"

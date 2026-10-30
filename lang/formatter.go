@@ -681,7 +681,11 @@ func formatServicePlacementFields(builder *strings.Builder, serviceDecl ServiceD
 		fmt.Fprintf(builder, "%sarchitecture %s\n", indent2, placementDecl.Architecture)
 	}
 	if placementDecl.ZonePolicy != "" {
-		fmt.Fprintf(builder, "%szone %s\n", indent2, placementDecl.ZonePolicy)
+		if placementDecl.ZoneMaxSkew > 0 {
+			fmt.Fprintf(builder, "%szone %s maxSkew %d\n", indent2, placementDecl.ZonePolicy, placementDecl.ZoneMaxSkew)
+		} else {
+			fmt.Fprintf(builder, "%szone %s\n", indent2, placementDecl.ZonePolicy)
+		}
 	}
 	for _, requireRule := range placementDecl.Require {
 		fmt.Fprintf(builder, "%srequire %s = %s\n", indent2, requireRule.Label, quoteIfNeeded(requireRule.Value))

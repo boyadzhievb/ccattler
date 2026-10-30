@@ -51,7 +51,7 @@ service web {
     placement {
         mode per-node
         architecture amd64
-        zone spread
+        zone spread maxSkew 2
         require gpu = true
         prefer region = us-east
         accept dedicated-compute

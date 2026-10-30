@@ -626,6 +626,12 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 		placementFacts = append(placementFacts, Fact{
 			Key: types.KeyDesiredServicePlacementZonePolicy(serviceName), Value: placementDecl.ZonePolicy,
 		})
+		if placementDecl.ZoneMaxSkew > 0 {
+			placementFacts = append(placementFacts, Fact{
+				Key:   types.KeyDesiredServicePlacementZoneMaxSkew(serviceName),
+				Value: strconv.Itoa(placementDecl.ZoneMaxSkew),
+			})
+		}
 	}
 	for _, requireRule := range placementDecl.Require {
 		placementFacts = append(placementFacts, Fact{

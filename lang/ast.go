@@ -175,6 +175,7 @@ type PlacementDecl struct {
 	Mode         string               // placement mode: "" (default) or "per-node" (one instance per alive node)
 	Architecture string               // required CPU architecture (e.g. "amd64")
 	ZonePolicy   string               // "spread" for zone-aware spreading or a specific zone name
+	ZoneMaxSkew  int                  // max allowed skew between zones (0 = default of 1, only with "spread")
 	Require      []PlacementMatchDecl // hard node label requirements
 	Prefer       []PlacementMatchDecl // soft node label preferences
 	Accept       []string             // accept node restrictions (tolerate restricted nodes)
