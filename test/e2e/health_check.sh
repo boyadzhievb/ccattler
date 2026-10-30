@@ -311,8 +311,8 @@ fi
 # ---- Check 8: systemd services ----
 log "Check 8: systemd services"
 for vm in "${ALL_VM_NAMES[@]}"; do
-    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r' || true)
-    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || echo inactive" 2>/dev/null | tr -d '\n\r' || true)
+    server_active=$(ssh_vm "$vm" "systemctl is-active cca-server 2>/dev/null || true" 2>/dev/null | tr -d '\n\r')
+    agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null || true" 2>/dev/null | tr -d '\n\r')
     log "  $vm: server=${server_active:-unknown} agent=${agent_active:-unknown}"
     if [[ "${agent_active:-inactive}" != "active" ]]; then
         warn "$vm cca-agent not running"
