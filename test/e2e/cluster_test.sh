@@ -192,14 +192,14 @@ declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)
         INVENTORY="baremetal-e2e-inventory.ini"
-        PLAYBOOK="baremetal-deploy.yml"
+        PLAYBOOK="ha-deploy.yml"
         CTRL_IP="192.168.100.215"
-        WORKER_IPS=("192.168.100.30" "192.168.100.31")
+        WORKER_IPS=("192.168.100.30" "192.168.100.31" "192.168.100.51")
         CTRL_NODE="node-1"
-        WORKER1_NODE="node-2"
-        VM_NAMES=("node-1" "node-2" "node-3")
-        NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
-        EXPECTED_NODES=3
+        WORKER1_NODE="node-4"
+        VM_NAMES=("node-1" "node-2" "node-3" "node-4")
+        NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31" ["node-4"]="192.168.100.51")
+        EXPECTED_NODES=4
         SSH_USER="bozhan"
         BAREMETAL=true
         DESTROY_ON_EXIT=none
