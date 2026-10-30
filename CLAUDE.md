@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M158 — Persistent Audit Log & CLI. M1–M158 complete. Gates A–I resolved.
+**Completed through:** M159 — Multi-User Concurrent Auth Test Suite. M1–M159 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
