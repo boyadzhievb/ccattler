@@ -210,7 +210,7 @@ func (authorizedStore *AuthorizedStore) logAllowed(ctx context.Context, principa
 			Principal:  sanitizeForAudit(principal),
 			Action:     sanitizeForAudit(action),
 			Target:     sanitizeForAudit(target),
-			Decision:   "allow",
+			Decision:   AuditDecisionAllow,
 			AuthMethod: AuthMethodFromContext(ctx),
 		})
 	}
@@ -223,7 +223,7 @@ func (authorizedStore *AuthorizedStore) logDenied(ctx context.Context, principal
 			Principal:  sanitizeForAudit(principal),
 			Action:     sanitizeForAudit(action),
 			Target:     sanitizeForAudit(target),
-			Decision:   "deny",
+			Decision:   AuditDecisionDeny,
 			AuthMethod: AuthMethodFromContext(ctx),
 		})
 	}

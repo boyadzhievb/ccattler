@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/boyadzhievb/ccattler/security"
 )
 
 // auditEntryResponse mirrors the JSON shape returned by GET /api/audit.
@@ -32,7 +34,7 @@ func executeAuditCommand(args []string) {
 	principalFilter := ""
 	actionFilter := ""
 	sinceFilter := ""
-	limitValue := "100"
+	limitValue := strconv.Itoa(security.DefaultAuditQueryLimit)
 	followMode := false
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
@@ -87,7 +89,8 @@ func buildAuditQueryParams(principalFilter, actionFilter, sinceFilter, limitValu
 	if sinceFilter != "" {
 		queryParams.Set("since", sinceFilter)
 	}
-	if limitValue != "" && limitValue != "100" {
+	defaultLimitString := strconv.Itoa(security.DefaultAuditQueryLimit)
+	if limitValue != "" && limitValue != defaultLimitString {
 		queryParams.Set("limit", limitValue)
 	}
 	if followMode {
@@ -253,10 +256,11 @@ func printAuditEntryRow(entry auditEntryResponse) {
 	)
 }
 
-// truncateAuditValue shortens a string to maxLength, appending "..." if truncated.
+// truncateAuditValue shortens a string to maxLength runes, appending "..." if truncated.
 func truncateAuditValue(value string, maxLength int) string {
-	if len(value) <= maxLength {
+	runes := []rune(value)
+	if len(runes) <= maxLength {
 		return value
 	}
-	return value[:maxLength-3] + "..."
+	return string(runes[:maxLength-3]) + "..."
 }

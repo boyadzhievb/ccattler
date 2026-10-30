@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,6 +17,16 @@ import (
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// AuditDecisionAllow is the decision value for permitted actions.
+const AuditDecisionAllow = "allow"
+
+// AuditDecisionDeny is the decision value for denied actions.
+const AuditDecisionDeny = "deny"
+
+// DefaultAuditQueryLimit is the maximum number of entries returned by a single
+// audit query when the caller does not specify a limit.
+const DefaultAuditQueryLimit = 100
 
 // AuditEntry records a single authorization decision.
 type AuditEntry struct {
@@ -95,13 +107,16 @@ type StoreBackedAuditLog struct {
 }
 
 // NewStoreBackedAuditLog creates an audit log that writes entries to both
-// an in-memory buffer and the fact store under the audit/ prefix.
+// an in-memory buffer and the fact store under the audit/ prefix. It scans
+// existing entries to resume the sequence counter after a restart.
 func NewStoreBackedAuditLog(stateStore store.StateStore, maxEntries int) *StoreBackedAuditLog {
-	return &StoreBackedAuditLog{
+	auditLog := &StoreBackedAuditLog{
 		stateStore: stateStore,
 		entries:    make([]AuditEntry, 0, maxEntries),
 		maxEntries: maxEntries,
 	}
+	auditLog.resumeSequenceFromStore()
+	return auditLog
 }
 
 // Log records an audit entry to the in-memory buffer and persists it to the
@@ -141,5 +156,31 @@ func (auditLog *StoreBackedAuditLog) persistEntry(entry AuditEntry) {
 	}
 	if _, putError := auditLog.stateStore.Put(context.Background(), key, entryJSON); putError != nil {
 		logging.Default().Error("failed to persist audit entry", "error", putError.Error(), "action", entry.Action, "principal", entry.Principal)
+	}
+}
+
+// resumeSequenceFromStore scans existing audit keys to find the highest
+// sequence number, so new entries don't overwrite old ones after a restart.
+func (auditLog *StoreBackedAuditLog) resumeSequenceFromStore() {
+	auditPrefix := types.PrefixAudit + "/"
+	facts, scanError := auditLog.stateStore.Scan(context.Background(), auditPrefix)
+	if scanError != nil {
+		logging.Default().Warn("audit-log: failed to scan store for sequence resume", "error", scanError.Error())
+		return
+	}
+	var highestSequence int64
+	for _, fact := range facts {
+		sequencePart := strings.TrimPrefix(fact.Key, auditPrefix)
+		parsedSequence, parseError := strconv.ParseInt(sequencePart, 10, 64)
+		if parseError != nil {
+			continue
+		}
+		if parsedSequence > highestSequence {
+			highestSequence = parsedSequence
+		}
+	}
+	if highestSequence > 0 {
+		auditLog.sequenceNum.Store(highestSequence)
+		logging.Default().Info("audit-log: resumed sequence counter", "sequence", strconv.FormatInt(highestSequence, 10))
 	}
 }

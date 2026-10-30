@@ -1240,7 +1240,7 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 	followMode := queryParams.Get("follow") == "true"
 	limitString := queryParams.Get("limit")
 
-	maxEntries := 100
+	maxEntries := security.DefaultAuditQueryLimit
 	if limitString != "" {
 		if parsedLimit, parseErr := strconv.Atoi(limitString); parseErr == nil && parsedLimit > 0 {
 			maxEntries = parsedLimit
@@ -1265,11 +1265,7 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	tenantFilter := ""
-	requestPrincipal := security.PrincipalStructFromContext(request.Context())
-	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
-		tenantFilter = tenant.ResolvePrincipalTenant(requestPrincipal)
-	}
+	tenantFilter := resolveAuditTenantFilter(request)
 
 	filtered := make([]security.AuditEntry, 0, min(len(facts), maxEntries))
 	for entryIndex := len(facts) - 1; entryIndex >= 0 && len(filtered) < maxEntries; entryIndex-- {
@@ -1305,11 +1301,7 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 		return
 	}
 
-	tenantFilter := ""
-	requestPrincipal := security.PrincipalStructFromContext(request.Context())
-	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
-		tenantFilter = tenant.ResolvePrincipalTenant(requestPrincipal)
-	}
+	tenantFilter := resolveAuditTenantFilter(request)
 
 	responseWriter.Header().Set("Content-Type", "text/event-stream")
 	responseWriter.Header().Set("Cache-Control", "no-cache")
@@ -1342,6 +1334,16 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 }
 
 // matchesAuditFilter returns true when the entry passes all active filters.
+// resolveAuditTenantFilter returns the tenant scope for the requesting principal,
+// or empty string for platform principals who can see all entries.
+func resolveAuditTenantFilter(request *http.Request) string {
+	requestPrincipal := security.PrincipalStructFromContext(request.Context())
+	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
+		return tenant.ResolvePrincipalTenant(requestPrincipal)
+	}
+	return ""
+}
+
 func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction string, sinceTime time.Time, filterDenied bool, tenantFilter string) bool {
 	if filterPrincipal != "" && entry.Principal != filterPrincipal {
 		return false
@@ -1352,7 +1354,7 @@ func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction
 	if !sinceTime.IsZero() && entry.Timestamp.Before(sinceTime) {
 		return false
 	}
-	if filterDenied && !strings.EqualFold(entry.Decision, "deny") {
+	if filterDenied && !strings.EqualFold(entry.Decision, security.AuditDecisionDeny) {
 		return false
 	}
 	if tenantFilter != "" && !strings.HasPrefix(entry.Target, tenantFilter+"/") && !strings.Contains(entry.Target, "/"+tenantFilter+"/") && !strings.Contains(entry.Principal, tenantFilter) {
