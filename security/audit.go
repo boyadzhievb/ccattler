@@ -28,6 +28,9 @@ const AuditDecisionDeny = "deny"
 // audit query when the caller does not specify a limit.
 const DefaultAuditQueryLimit = 100
 
+// MaxAuditQueryLimit caps the maximum entries a caller can request.
+const MaxAuditQueryLimit = 10000
+
 // AuditEntry records a single authorization decision.
 type AuditEntry struct {
 	Timestamp  time.Time `json:"timestamp"`

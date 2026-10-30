@@ -73,20 +73,20 @@ secret database.password
 `
 
 func BenchmarkLexSingleService(b *testing.B) {
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		lexer := NewLexer(benchmarkServiceConfig)
 		lexer.Tokenize()
 	}
 }
 
 func BenchmarkParseSingleService(b *testing.B) {
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		Parse(benchmarkServiceConfig)
 	}
 }
 
 func BenchmarkParseFullConfig(b *testing.B) {
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		Parse(benchmarkFullConfig)
 	}
 }

@@ -45,7 +45,7 @@ func BenchmarkSchedule10Nodes10Instances(b *testing.B) {
 	benchContext := context.Background()
 
 	b.ResetTimer()
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		placementScheduler.Reconcile(benchContext, facts)
 	}
 }
@@ -56,7 +56,7 @@ func BenchmarkSchedule100Nodes100Instances(b *testing.B) {
 	benchContext := context.Background()
 
 	b.ResetTimer()
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		placementScheduler.Reconcile(benchContext, facts)
 	}
 }
@@ -67,7 +67,7 @@ func BenchmarkSchedule100Nodes1000Instances(b *testing.B) {
 	benchContext := context.Background()
 
 	b.ResetTimer()
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		placementScheduler.Reconcile(benchContext, facts)
 	}
 }
@@ -78,7 +78,7 @@ func BenchmarkSchedule200Nodes5000Instances(b *testing.B) {
 	benchContext := context.Background()
 
 	b.ResetTimer()
-	for iteration := 0; iteration < b.N; iteration++ {
+	for b.Loop() {
 		placementScheduler.Reconcile(benchContext, facts)
 	}
 }

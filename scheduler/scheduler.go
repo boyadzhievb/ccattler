@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
@@ -40,6 +41,8 @@ const (
 // Scheduler is the placement controller that assigns pending instances to
 // alive nodes. It also rebalances load and detects resource pressure.
 type Scheduler struct {
+	// schedulerMutex protects mutable state accessed during Reconcile.
+	schedulerMutex sync.Mutex
 	// firstPendingSeenAt tracks when pending instances first appeared with no placements.
 	firstPendingSeenAt time.Time
 	// placementGracePeriod is the wait time before initial placement.
@@ -84,6 +87,9 @@ func (placementScheduler *Scheduler) Watch() []string {
 // ones (up to maxRebalanceMovesPerCycle per cycle). It also detects and logs
 // resource allocation pressure on individual nodes.
 func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.Fact) ([]controllers.Change, error) {
+	placementScheduler.schedulerMutex.Lock()
+	defer placementScheduler.schedulerMutex.Unlock()
+
 	nodes := extractNodeInfoFromFacts(facts)
 	instances := extractInstanceInfoFromFacts(facts)
 	placements := extractPlacementsFromFacts(facts)
@@ -109,8 +115,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 
 	preemptionChanges := attemptPreemptions(
 		unplaced, placedInThisCycle, nodes, instances, placements,
-		serviceResources, placementConstraints, servicePriorities,
-		statefulServices,
+		placementConstraints, servicePriorities, statefulServices,
 	)
 	changes = append(changes, preemptionChanges...)
 
@@ -197,7 +202,6 @@ func attemptPreemptions(
 	nodes map[string]*schedulerNodeInfo,
 	instances map[string]*schedulerInstanceInfo,
 	placements map[string]string,
-	serviceResources map[string]serviceResourceRequirements,
 	placementConstraints map[string]*servicePlacementConstraint,
 	servicePriorities map[string]int,
 	statefulServices map[string]bool,
@@ -647,7 +651,7 @@ func attemptPlacements(
 
 	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
 	var changes []controllers.Change
-	changes = append(changes, placeGroupedInstances(groupedUnplaced, serviceToGroup, schedulingState)...)
+	changes = append(changes, placeGroupedInstances(groupedUnplaced, schedulingState)...)
 	changes = append(changes, placeUngroupedInstances(ungroupedUnplaced, schedulingState)...)
 	return changes
 }
@@ -936,7 +940,7 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 	}
 
 	if constraint != nil && len(constraint.prefer) > 0 {
-		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
+		candidates = rankByPreferences(candidates, constraint.prefer)
 	}
 
 	if constraint != nil && (len(constraint.colocate) > 0 || len(constraint.separate) > 0) {
@@ -1509,7 +1513,7 @@ func filterByRestrictions(candidates []candidateNode, acceptLabels map[string]bo
 // labels appear first. Among nodes with equal preference scores, the original
 // order (which feeds into least-loaded selection) is preserved. This is a soft
 // constraint — non-matching nodes remain eligible, they just rank lower.
-func rankByPreferences(candidates []candidateNode, preferLabels map[string]string, loadPerNode map[string]int, reqCPU, reqMemory int64) []candidateNode {
+func rankByPreferences(candidates []candidateNode, preferLabels map[string]string) []candidateNode {
 	type scoredCandidate struct {
 		candidate     candidateNode
 		preferScore   int
@@ -1660,7 +1664,6 @@ func partitionUnplacedByGroup(
 // fits the combined group requirements is selected.
 func placeGroupedInstances(
 	groupedUnplaced map[string][]string,
-	serviceToGroup map[string]string,
 	state *placementState,
 ) []controllers.Change {
 	sortedGroupNames := make([]string, 0, len(groupedUnplaced))

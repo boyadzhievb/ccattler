@@ -955,6 +955,12 @@ func (containerdRuntime *ContainerdRuntime) Logs(ctx context.Context, instanceID
 		logFilePath = containerdRuntime.defaultLogPath(instanceID)
 	}
 
+	cleanedLogPath := filepath.Clean(logFilePath)
+	if !strings.HasPrefix(cleanedLogPath, ContainerdLogBaseDir+string(filepath.Separator)) {
+		return nil, fmt.Errorf("container %s log path escapes base directory", instanceID)
+	}
+	logFilePath = cleanedLogPath
+
 	if _, statError := os.Stat(logFilePath); statError != nil {
 		return nil, fmt.Errorf("container %s log file not found: %w", instanceID, statError)
 	}

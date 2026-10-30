@@ -1246,6 +1246,9 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 			maxEntries = parsedLimit
 		}
 	}
+	if maxEntries > security.MaxAuditQueryLimit {
+		maxEntries = security.MaxAuditQueryLimit
+	}
 
 	var sinceTime time.Time
 	if filterSince != "" {
