@@ -47,6 +47,18 @@
   changed_when: false
   failed_when: false
 
+- name: Stop cca-agent before cleaning BPF pins
+  systemd:
+    name: cca-agent
+    state: stopped
+  failed_when: false
+
+- name: Clean stale BPF pins from previous agent run
+  file:
+    path: /sys/fs/bpf/cca
+    state: absent
+  when: dataplane_backend | default('auto') == 'ebpf'
+
 - name: Install cca-agent systemd unit
   template:
     src: cca-agent.service.j2
@@ -59,12 +71,6 @@
     enabled: true
     state: started
     daemon_reload: true
-
-- name: Clean stale BPF pins from previous agent run
-  file:
-    path: /sys/fs/bpf/cca
-    state: absent
-  when: dataplane_backend | default('auto') == 'ebpf'
 
 - name: Wait for agent to register via API
   shell: >
