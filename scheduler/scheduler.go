@@ -539,8 +539,13 @@ func findMovableInstances(
 		if _, inGroup := serviceToGroup[instanceInfo.service]; inGroup {
 			continue
 		}
-		if constraint := placementConstraints[instanceInfo.service]; constraint != nil && constraint.mode == "per-node" {
-			continue
+		if constraint := placementConstraints[instanceInfo.service]; constraint != nil {
+			if constraint.mode == "per-node" {
+				continue
+			}
+			if len(constraint.colocate) > 0 || len(constraint.separate) > 0 {
+				continue
+			}
 		}
 		movable = append(movable, instanceID)
 	}
@@ -631,11 +636,13 @@ func attemptPlacements(
 	nodeIndexMap := buildNodeIndexMap(alive)
 	nodeZoneMap := buildNodeZoneMap(alive)
 	serviceZoneCounts := computeServiceZonePlacements(placements, instances, nodeZoneMap)
+	nodeServicesMap := buildNodeServicesMap(placements, instances)
 	schedulingState := &placementState{
 		alive: alive, loadPerNode: loadPerNode,
 		serviceZoneCounts: serviceZoneCounts, serviceResources: serviceResources,
 		placementConstraints: placementConstraints, instances: instances, placements: placements,
 		serviceToGroup: serviceToGroup, nodeIndexMap: nodeIndexMap,
+		nodeServicesMap: nodeServicesMap,
 	}
 
 	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
@@ -872,6 +879,8 @@ type placementState struct {
 	serviceToGroup       map[string]string
 	// nodeIndexMap maps node ID to its index in the alive slice for O(1) lookup.
 	nodeIndexMap map[string]int
+	// nodeServicesMap maps node ID to the set of services with running/pending instances on that node.
+	nodeServicesMap map[string]map[string]bool
 }
 
 // placeUngroupedInstances groups unplaced instances by service, then places
@@ -928,6 +937,10 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 
 	if constraint != nil && len(constraint.prefer) > 0 {
 		candidates = rankByPreferences(candidates, constraint.prefer, state.loadPerNode, reqCPU, reqMemory)
+	}
+
+	if constraint != nil && (len(constraint.colocate) > 0 || len(constraint.separate) > 0) {
+		candidates = rankByAffinityHints(candidates, constraint.colocate, constraint.separate, state.nodeServicesMap)
 	}
 
 	useZoneSpread := constraint != nil && constraint.zonePolicy == "spread"
@@ -1336,6 +1349,10 @@ type servicePlacementConstraint struct {
 	prefer map[string]string
 	// accept holds node restriction labels this service tolerates — allowing placement on restricted nodes.
 	accept map[string]bool
+	// colocate holds service names this service prefers to be placed alongside (soft hint).
+	colocate []string
+	// separate holds service names this service prefers to be placed away from (soft hint).
+	separate []string
 }
 
 // extractPlacementConstraints parses placement constraint facts per service.
@@ -1379,6 +1396,12 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 				constraint.accept = make(map[string]bool)
 			}
 			constraint.accept[labelName] = true
+		case strings.HasPrefix(suffix, "placement/colocate/"):
+			targetService := strings.TrimPrefix(suffix, "placement/colocate/")
+			constraint.colocate = append(constraint.colocate, targetService)
+		case strings.HasPrefix(suffix, "placement/separate/"):
+			targetService := strings.TrimPrefix(suffix, "placement/separate/")
+			constraint.separate = append(constraint.separate, targetService)
 		}
 	}
 	return constraints
@@ -1510,6 +1533,73 @@ func rankByPreferences(candidates []candidateNode, preferLabels map[string]strin
 
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].preferScore > scored[j].preferScore
+	})
+
+	reordered := make([]candidateNode, len(candidates))
+	for index, entry := range scored {
+		reordered[index] = entry.candidate
+	}
+	return reordered
+}
+
+// buildNodeServicesMap returns a map from node ID to the set of service names
+// with running or pending instances on that node.
+func buildNodeServicesMap(placements map[string]string, instances map[string]*schedulerInstanceInfo) map[string]map[string]bool {
+	nodeServices := make(map[string]map[string]bool)
+	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil {
+			continue
+		}
+		if instanceInfo.state != types.InstanceRunning && instanceInfo.state != types.InstancePending {
+			continue
+		}
+		if nodeServices[nodeID] == nil {
+			nodeServices[nodeID] = make(map[string]bool)
+		}
+		nodeServices[nodeID][instanceInfo.service] = true
+	}
+	return nodeServices
+}
+
+// rankByAffinityHints reorders candidates so that nodes satisfying colocate
+// hints rank higher and nodes violating separate hints rank lower. This is a
+// soft constraint — all candidates survive, only the order changes. The score
+// per node is: +1 per colocate target present, -1 per separate target present.
+func rankByAffinityHints(candidates []candidateNode, colocateTargets, separateTargets []string, nodeServicesMap map[string]map[string]bool) []candidateNode {
+	if len(colocateTargets) == 0 && len(separateTargets) == 0 {
+		return candidates
+	}
+
+	type scoredCandidate struct {
+		candidate     candidateNode
+		affinityScore int
+		originalIndex int
+	}
+
+	scored := make([]scoredCandidate, len(candidates))
+	for index, candidate := range candidates {
+		affinityScore := 0
+		nodeServices := nodeServicesMap[candidate.id]
+		for _, targetService := range colocateTargets {
+			if nodeServices[targetService] {
+				affinityScore++
+			}
+		}
+		for _, targetService := range separateTargets {
+			if nodeServices[targetService] {
+				affinityScore--
+			}
+		}
+		scored[index] = scoredCandidate{
+			candidate:     candidate,
+			affinityScore: affinityScore,
+			originalIndex: index,
+		}
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].affinityScore > scored[j].affinityScore
 	})
 
 	reordered := make([]candidateNode, len(candidates))

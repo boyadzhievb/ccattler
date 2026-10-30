@@ -752,6 +752,20 @@ func KeyDesiredServicePlacementAccept(name, label string) string {
 	return fmt.Sprintf("%s/service/%s/placement/accept/%s", PrefixDesired, name, label)
 }
 
+// KeyDesiredServicePlacementColocate returns the store path for a soft
+// co-location hint. The scheduler prefers nodes running the target service.
+// Path: desired/service/{name}/placement/colocate/{targetService}
+func KeyDesiredServicePlacementColocate(name, targetService string) string {
+	return fmt.Sprintf("%s/service/%s/placement/colocate/%s", PrefixDesired, name, targetService)
+}
+
+// KeyDesiredServicePlacementSeparate returns the store path for a soft
+// separation hint. The scheduler avoids nodes running the target service.
+// Path: desired/service/{name}/placement/separate/{targetService}
+func KeyDesiredServicePlacementSeparate(name, targetService string) string {
+	return fmt.Sprintf("%s/service/%s/placement/separate/%s", PrefixDesired, name, targetService)
+}
+
 // KeyDesiredServicePlacementMode returns the store path for a service's
 // placement mode (e.g. "per-node" for one instance per alive node).
 // Path: desired/service/{name}/placement/mode

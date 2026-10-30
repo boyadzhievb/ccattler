@@ -2072,3 +2072,95 @@ func TestParsePriorityInvalidTooHigh(t *testing.T) {
 		t.Errorf("error should mention priority range, got: %s", err.Error())
 	}
 }
+
+func TestParseColocateSingleTarget(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        colocate "redis"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("placement is nil")
+	}
+	if len(placement.Colocate) != 1 || placement.Colocate[0] != "redis" {
+		t.Errorf("colocate: got %v, want [redis]", placement.Colocate)
+	}
+}
+
+func TestParseSeparateSingleTarget(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        separate "redis"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("placement is nil")
+	}
+	if len(placement.Separate) != 1 || placement.Separate[0] != "redis" {
+		t.Errorf("separate: got %v, want [redis]", placement.Separate)
+	}
+}
+
+func TestParseColocateMultipleTargets(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        colocate "redis"
+        colocate "memcached"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("placement is nil")
+	}
+	if len(placement.Colocate) != 2 {
+		t.Fatalf("colocate count: got %d, want 2", len(placement.Colocate))
+	}
+	if placement.Colocate[0] != "redis" || placement.Colocate[1] != "memcached" {
+		t.Errorf("colocate: got %v, want [redis memcached]", placement.Colocate)
+	}
+}
+
+func TestParseColocateAndSeparateCombined(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        colocate "redis"
+        separate "logging"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	placement := file.Services[0].Placement
+	if placement == nil {
+		t.Fatal("placement is nil")
+	}
+	if len(placement.Colocate) != 1 || placement.Colocate[0] != "redis" {
+		t.Errorf("colocate: got %v, want [redis]", placement.Colocate)
+	}
+	if len(placement.Separate) != 1 || placement.Separate[0] != "logging" {
+		t.Errorf("separate: got %v, want [logging]", placement.Separate)
+	}
+}

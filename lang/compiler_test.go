@@ -1704,3 +1704,43 @@ func TestCompilePriorityZeroSkipsFacts(t *testing.T) {
 		t.Error("priority 0 should not emit effective priority fact")
 	}
 }
+
+func TestCompileColocateEmitsFacts(t *testing.T) {
+	file, _ := Parse(`service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        colocate "redis"
+        colocate "memcached"
+    }
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if _, hasColocate := compiledFactMap[types.KeyDesiredServicePlacementColocate("web", "redis")]; !hasColocate {
+		t.Error("expected colocate/redis fact")
+	}
+	if _, hasColocate := compiledFactMap[types.KeyDesiredServicePlacementColocate("web", "memcached")]; !hasColocate {
+		t.Error("expected colocate/memcached fact")
+	}
+}
+
+func TestCompileSeparateEmitsFacts(t *testing.T) {
+	file, _ := Parse(`service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        separate "logging"
+    }
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if _, hasSeparate := compiledFactMap[types.KeyDesiredServicePlacementSeparate("web", "logging")]; !hasSeparate {
+		t.Error("expected separate/logging fact")
+	}
+}

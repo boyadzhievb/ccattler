@@ -122,6 +122,8 @@ without reading scheduler source files.
 │  require      map[string]string hard label match (all must)   │
 │  prefer       map[string]string soft label match (bonus)      │
 │  accept       map[string]bool   tolerate restricted nodes     │
+│  colocate     []string          soft: prefer nodes with svc   │
+│  separate     []string          soft: avoid nodes with svc    │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -136,6 +138,8 @@ without reading scheduler source files.
 | `placement { prefer tier=fast }` | `desired/service/{s}/placement/prefer/tier` | `.prefer["tier"]` |
 | `placement { accept spot }` | `desired/service/{s}/placement/accept/spot` | `.accept["spot"]` |
 | `placement { mode per-node }` | `desired/service/{s}/placement/mode` | `.mode` |
+| `placement { colocate "redis" }` | `desired/service/{s}/placement/colocate/redis` | `.colocate` |
+| `placement { separate "logging" }` | `desired/service/{s}/placement/separate/logging` | `.separate` |
 
 ### Filter Evaluation Order (filterByConstraints, :1218)
 
@@ -245,6 +249,61 @@ Output:  reordered candidates slice (same elements, different order)
 Effect:  preferRank in heap entry = position in reordered slice
          → lower preferRank wins ties in heap.Less()
 ```
+
+## Colocate & Separate Hints (M162)
+
+### Data Flow
+
+```
+desired/service/{s}/placement/colocate/{target}
+desired/service/{s}/placement/separate/{target}
+        │
+        ▼
+┌───────────────────┐
+│ extractPlacement   │   reads colocate/separate from desired/ facts
+│ Constraints()     │   → servicePlacementConstraint.colocate[]
+│                   │   → servicePlacementConstraint.separate[]
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│ buildNodeServices │   placements × instances → map[nodeID]map[svc]bool
+│ Map()             │   which services are running/pending on each node
+└───────┬───────────┘
+        │
+        ▼
+┌───────────────────┐
+│ rankByAffinity    │   score per node:
+│ Hints()           │     +1 per colocate target present
+│                   │     -1 per separate target present
+│                   │   stable sort: higher score first
+└───────┬───────────┘
+        │
+        ▼  feeds into heap as candidate order (preferRank)
+```
+
+### Scoring
+
+| Node has | Colocate target | Separate target | Score delta |
+|----------|----------------|-----------------|-------------|
+| target present | +1 | -1 | net effect per target |
+| target absent | 0 | 0 | no change |
+
+Scoring is a **soft tiebreaker** — it only influences placement when nodes have
+equal load. The heap sorts by loadScore first, preferRank second.
+
+### Rebalancing Interaction
+
+Instances with colocate or separate hints are **not eligible for rebalancing**
+(`findMovableInstances` skips them). Moving them could violate the hint
+established at placement time.
+
+### Functions
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `buildNodeServicesMap` | scheduler.go | Build node→services map from placements+instances |
+| `rankByAffinityHints` | scheduler.go | Reorder candidates by colocate/separate scores |
 
 ## Node Heap
 

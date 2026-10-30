@@ -1828,3 +1828,135 @@ func TestPreemptionMaxCap(t *testing.T) {
 			maxPreemptionsPerCycle, preemptionCount)
 	}
 }
+
+func TestColocatePrefersNodeWithTargetService(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		// Pending instance of "web" needs placement.
+		kv(types.KeyObservedInstanceService("web-001"), "web"),
+		kv(types.KeyObservedInstanceState("web-001"), "pending"),
+		// web wants to colocate with redis.
+		kv(types.KeyDesiredServicePlacementColocate("web", "redis"), ""),
+		// node-1 has a running redis instance.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedInstanceService("redis-001"), "redis"),
+		kv(types.KeyObservedInstanceState("redis-001"), "running"),
+		kv(types.KeyPlacementInstance("redis-001"), "node-1"),
+		// node-2 has a different service (equal load to node-1).
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedInstanceService("other-001"), "other"),
+		kv(types.KeyObservedInstanceState("other-001"), "running"),
+		kv(types.KeyPlacementInstance("other-001"), "node-2"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should colocate on node-1 (has redis), got %s", changes[0].Value)
+	}
+}
+
+func TestSeparateAvoidsNodeWithTargetService(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("web-001"), "web"),
+		kv(types.KeyObservedInstanceState("web-001"), "pending"),
+		// web wants to separate from redis.
+		kv(types.KeyDesiredServicePlacementSeparate("web", "redis"), ""),
+		// node-1 has a running redis instance.
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedInstanceService("redis-001"), "redis"),
+		kv(types.KeyObservedInstanceState("redis-001"), "running"),
+		kv(types.KeyPlacementInstance("redis-001"), "node-1"),
+		// node-2 has no redis.
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should separate to node-2 (no redis), got %s", changes[0].Value)
+	}
+}
+
+func TestColocateFallsBackToLeastLoaded(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("web-001"), "web"),
+		kv(types.KeyObservedInstanceState("web-001"), "pending"),
+		// web wants to colocate with redis, but no node has redis.
+		kv(types.KeyDesiredServicePlacementColocate("web", "redis"), ""),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	// Both score 0 affinity, falls back to least-loaded (first alphabetically).
+	if string(changes[0].Value) != "node-1" {
+		t.Errorf("should fall back to least-loaded node-1, got %s", changes[0].Value)
+	}
+}
+
+func TestColocateAndSeparateCombined(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("web-001"), "web"),
+		kv(types.KeyObservedInstanceState("web-001"), "pending"),
+		// web wants to colocate with redis and separate from logging.
+		kv(types.KeyDesiredServicePlacementColocate("web", "redis"), ""),
+		kv(types.KeyDesiredServicePlacementSeparate("web", "logging"), ""),
+		// node-1 has redis AND logging → affinity: +1 - 1 = 0
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedInstanceService("redis-001"), "redis"),
+		kv(types.KeyObservedInstanceState("redis-001"), "running"),
+		kv(types.KeyPlacementInstance("redis-001"), "node-1"),
+		kv(types.KeyObservedInstanceService("log-001"), "logging"),
+		kv(types.KeyObservedInstanceState("log-001"), "running"),
+		kv(types.KeyPlacementInstance("log-001"), "node-1"),
+		// node-2 has redis only → affinity: +1 - 0 = +1 (best)
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedInstanceService("redis-002"), "redis"),
+		kv(types.KeyObservedInstanceState("redis-002"), "running"),
+		kv(types.KeyPlacementInstance("redis-002"), "node-2"),
+		// node-3 has a filler service (equal load) → affinity: 0 - 0 = 0
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+		kv(types.KeyObservedInstanceService("filler-001"), "filler"),
+		kv(types.KeyObservedInstanceState("filler-001"), "running"),
+		kv(types.KeyPlacementInstance("filler-001"), "node-3"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes = filterPlacementChanges(changes)
+	if len(changes) != 1 {
+		t.Fatalf("expected 1 placement, got %d", len(changes))
+	}
+	if string(changes[0].Value) != "node-2" {
+		t.Errorf("should pick node-2 (redis +1, no logging), got %s", changes[0].Value)
+	}
+}

@@ -642,6 +642,16 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 			Key: types.KeyDesiredServicePlacementAccept(serviceName, acceptLabel), Value: "",
 		})
 	}
+	for _, targetService := range placementDecl.Colocate {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementColocate(serviceName, targetService), Value: "",
+		})
+	}
+	for _, targetService := range placementDecl.Separate {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementSeparate(serviceName, targetService), Value: "",
+		})
+	}
 	return placementFacts
 }
 

@@ -55,6 +55,8 @@ service web {
         require gpu = true
         prefer region = us-east
         accept dedicated-compute
+        colocate "redis"
+        separate "logging"
     }
 }
 

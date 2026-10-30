@@ -178,6 +178,8 @@ type PlacementDecl struct {
 	Require      []PlacementMatchDecl // hard node label requirements
 	Prefer       []PlacementMatchDecl // soft node label preferences
 	Accept       []string             // accept node restrictions (tolerate restricted nodes)
+	Colocate     []string             // soft hint: prefer nodes running these services
+	Separate     []string             // soft hint: avoid nodes running these services
 }
 
 // PlacementMatchDecl holds a label=value pair for placement require or prefer rules.
