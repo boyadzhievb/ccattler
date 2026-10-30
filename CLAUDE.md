@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M157 — Instance Fact Garbage Collection. M1–M157 complete. Gates A–I resolved.
+**Completed through:** M158 — Persistent Audit Log & CLI. M1–M158 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
@@ -113,6 +113,7 @@ cca role revoke <principal> [flags] # revoke role or capability
 cca role list [principal]        # list all grants
 cca role check <principal> [flags] # check if principal has capability
 cca gc instances                 # garbage-collect stopped instance facts
+cca audit [flags]                # query/stream audit log (--principal, --action, --since, --limit, --follow)
 cca fmt [--check] <file>
 cca lint <file>
 ```

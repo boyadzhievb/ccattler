@@ -349,16 +349,16 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 }
 
 // initializeAuthorizationLayer creates the RBAC authorizer with all builtin
-// roles, an in-memory audit log, and an AuthorizedStore that wraps the raw
-// fact store with authorization enforcement. Controllers use the raw store
-// directly (they are internal trusted components); the API server uses the
+// roles, a store-backed persistent audit log, and an AuthorizedStore that wraps
+// the raw fact store with authorization enforcement. Controllers use the raw
+// store directly (they are internal trusted components); the API server uses the
 // AuthorizedStore so user requests are subject to RBAC.
-func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAuthorizer, *security.InMemoryAuditLog, *security.AuthorizedStore) {
+func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAuthorizer, *security.StoreBackedAuditLog, *security.AuthorizedStore) {
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	for _, builtinRole := range security.BuiltinRoles() {
 		rbacAuthorizer.AddRole(builtinRole)
 	}
-	auditLog := security.NewInMemoryAuditLog(types.DefaultEventLogMaxEvents)
+	auditLog := security.NewStoreBackedAuditLog(factStore, types.DefaultEventLogMaxEvents)
 	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
 	return rbacAuthorizer, auditLog, authorizedStore
 }
@@ -581,7 +581,7 @@ func configureAndStartAPIServer(
 	factStore store.StateStore,
 	authorizedStore *security.AuthorizedStore,
 	rbacAuthorizer *security.RBACAuthorizer,
-	auditLog *security.InMemoryAuditLog,
+	auditLog security.AuditLogger,
 	eventLog *types.EventLog,
 	parsedConfig serverCommandConfig,
 ) {
@@ -608,6 +608,7 @@ func configureAndStartAPIServer(
 
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 	statusAPIServer.SetEventLog(eventLog)
+	statusAPIServer.SetAuditStore(factStore)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
 	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)

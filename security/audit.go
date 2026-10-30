@@ -18,12 +18,13 @@ import (
 
 // AuditEntry records a single authorization decision.
 type AuditEntry struct {
-	Timestamp time.Time `json:"timestamp"`
-	Principal string    `json:"principal"`
-	Action    string    `json:"action"`
-	Target    string    `json:"target"`
-	Decision  string    `json:"decision"`
-	Policy    string    `json:"policy,omitempty"`
+	Timestamp  time.Time `json:"timestamp"`
+	Principal  string    `json:"principal"`
+	Action     string    `json:"action"`
+	Target     string    `json:"target"`
+	Decision   string    `json:"decision"`
+	AuthMethod string    `json:"auth_method,omitempty"`
+	Policy     string    `json:"policy,omitempty"`
 }
 
 // AuditLogger is the interface for recording authorization decisions.

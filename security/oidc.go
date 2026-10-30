@@ -65,6 +65,7 @@ type AuthenticationResult struct {
 	Groups        []string      // group memberships from the identity provider
 	Attributes    []Attribute   // extracted attributes for ABAC
 	ExpiresAt     time.Time     // token expiry
+	AuthMethod    string        // authentication method used (mtls, oidc, local-token, webhook)
 }
 
 // Authenticate validates a JWT token and returns the extracted identity. The
@@ -194,6 +195,7 @@ func (authenticator *OIDCAuthenticator) constructAuthenticationResultFromClaims(
 		PrincipalKind: PrincipalKindUser,
 		Attributes:    attributes,
 		ExpiresAt:     expiresAt,
+		AuthMethod:    "oidc",
 	}, nil
 }
 

@@ -106,6 +106,7 @@ type Server struct {
 	authenticatorChain         *security.AuthenticatorChain // authenticatorChain maps requests to principals.
 	apiAuthorizer              *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
 	tenantAuditView            *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
+	auditStore                 store.StateStore             // auditStore is the raw store for querying persisted audit entries.
 	serverMode                 ServerMode
 	secretMasterKey            []byte // secretMasterKey is the 32-byte key distributed to joining nodes.
 	requirePrincipal           bool   // requirePrincipal enables 401 on requests without a principal in context.
@@ -141,11 +142,15 @@ func (apiServer *Server) SetSecretMasterKey(masterKey []byte) {
 	apiServer.secretMasterKey = masterKey
 }
 
-// SetTenantAuditView attaches a tenant-scoped audit view to the server,
-// enabling the GET /api/audit endpoint with per-tenant filtering.
+// SetTenantAuditView attaches a tenant-scoped audit view to the server.
 func (apiServer *Server) SetTenantAuditView(auditView *tenant.TenantAuditView) {
 	apiServer.tenantAuditView = auditView
-	apiServer.mux.HandleFunc("/api/audit", apiServer.instrumentedHandler("audit", apiServer.handleAudit))
+}
+
+// SetAuditStore attaches the raw fact store for querying persisted audit
+// entries via the /api/audit endpoint.
+func (apiServer *Server) SetAuditStore(auditStore store.StateStore) {
+	apiServer.auditStore = auditStore
 }
 
 // SetEnrollmentService attaches the enrollment service to the server, enabling
@@ -324,6 +329,7 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 		}
 		if result != nil {
 			enrichedContext := security.WithPrincipal(request.Context(), result.Principal)
+			enrichedContext = security.WithAuthMethod(enrichedContext, result.AuthMethod)
 			principalStruct := security.Principal{
 				Kind:       result.PrincipalKind,
 				Name:       security.PrincipalFromKindAndName(result.Principal).Name,
@@ -379,6 +385,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/role", apiServer.instrumentedHandler("role", apiServer.handleRole))
 	apiServer.mux.HandleFunc("/api/role/check", apiServer.instrumentedHandler("role-check", apiServer.handleRoleCheck))
 	apiServer.mux.HandleFunc("/api/gc", apiServer.instrumentedHandler("gc", apiServer.handleGC))
+	apiServer.mux.HandleFunc("/api/audit", apiServer.handleAudit)
 	apiServer.mux.HandleFunc("/api/auth/whoami", apiServer.instrumentedHandler("whoami", apiServer.handleAuthWhoami))
 	apiServer.mux.HandleFunc("/api/auth/oidc-config", apiServer.instrumentedHandler("oidc-config", apiServer.handleAuthOIDCConfig))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
@@ -1208,10 +1215,9 @@ func (apiServer *Server) handleLogs(responseWriter http.ResponseWriter, request 
 	_ = json.NewEncoder(responseWriter).Encode(events)
 }
 
-// handleAudit serves GET /api/audit returning authorization audit entries.
-// Platform principals see all entries. Tenant principals see only entries
-// related to their tenant's resources. Supports optional query parameters:
-// denied=true to show only DENY decisions.
+// handleAudit serves GET /api/audit returning persistent authorization audit
+// entries from the store. Supports query parameters: principal, action, since
+// (RFC3339), limit (default 100), denied (true/false), follow (true for SSE).
 func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodGet {
 		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
@@ -1220,37 +1226,139 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
 		return
 	}
-
-	responseWriter.Header().Set("Content-Type", "application/json")
-
-	if apiServer.tenantAuditView == nil {
+	if apiServer.auditStore == nil {
+		responseWriter.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(responseWriter).Encode([]security.AuditEntry{})
 		return
 	}
 
+	queryParams := request.URL.Query()
+	filterPrincipal := queryParams.Get("principal")
+	filterAction := queryParams.Get("action")
+	filterSince := queryParams.Get("since")
+	filterDenied := queryParams.Get("denied") == "true"
+	followMode := queryParams.Get("follow") == "true"
+	limitString := queryParams.Get("limit")
+
+	maxEntries := 100
+	if limitString != "" {
+		if parsedLimit, parseErr := strconv.Atoi(limitString); parseErr == nil && parsedLimit > 0 {
+			maxEntries = parsedLimit
+		}
+	}
+
+	var sinceTime time.Time
+	if filterSince != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, filterSince); parseErr == nil {
+			sinceTime = parsed
+		}
+	}
+
+	if followMode {
+		apiServer.handleAuditFollow(responseWriter, request, filterPrincipal, filterAction, sinceTime, filterDenied)
+		return
+	}
+
+	facts, scanError := apiServer.auditStore.Scan(request.Context(), types.PrefixAudit+"/")
+	if scanError != nil {
+		writeJSONError(responseWriter, "scan audit log: "+scanError.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	tenantFilter := ""
 	requestPrincipal := security.PrincipalStructFromContext(request.Context())
-	showDeniedOnly := request.URL.Query().Get("denied") == "true"
-
-	var entries []security.AuditEntry
-	if requestPrincipal.Name == "" || tenant.IsPlatformPrincipal(requestPrincipal) {
-		if showDeniedOnly {
-			entries = apiServer.tenantAuditView.DeniedEntries("")
-		} else {
-			entries = apiServer.tenantAuditView.AllEntries()
-		}
-	} else {
-		tenantName := tenant.ResolvePrincipalTenant(requestPrincipal)
-		if showDeniedOnly {
-			entries = apiServer.tenantAuditView.DeniedEntries(tenantName)
-		} else {
-			entries = apiServer.tenantAuditView.EntriesForTenant(tenantName)
-		}
+	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
+		tenantFilter = tenant.ResolvePrincipalTenant(requestPrincipal)
 	}
 
-	if entries == nil {
-		entries = []security.AuditEntry{}
+	filtered := make([]security.AuditEntry, 0, min(len(facts), maxEntries))
+	for entryIndex := len(facts) - 1; entryIndex >= 0 && len(filtered) < maxEntries; entryIndex-- {
+		var entry security.AuditEntry
+		if unmarshalErr := json.Unmarshal(facts[entryIndex].Value, &entry); unmarshalErr != nil {
+			continue
+		}
+		if !matchesAuditFilter(entry, filterPrincipal, filterAction, sinceTime, filterDenied, tenantFilter) {
+			continue
+		}
+		filtered = append(filtered, entry)
 	}
-	_ = json.NewEncoder(responseWriter).Encode(entries)
+
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(filtered)
+}
+
+// handleAuditFollow streams new audit entries as Server-Sent Events.
+func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, request *http.Request, filterPrincipal, filterAction string, sinceTime time.Time, filterDenied bool) {
+	flusher, flusherOK := responseWriter.(http.Flusher)
+	if !flusherOK {
+		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	watchContext, cancelWatch := context.WithCancel(request.Context())
+	defer cancelWatch()
+
+	auditPrefix := types.PrefixAudit + "/"
+	eventChannel, watchError := apiServer.auditStore.Watch(watchContext, auditPrefix, store.WatchOption{Prefix: true})
+	if watchError != nil {
+		writeJSONError(responseWriter, "watch audit log: "+watchError.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	tenantFilter := ""
+	requestPrincipal := security.PrincipalStructFromContext(request.Context())
+	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
+		tenantFilter = tenant.ResolvePrincipalTenant(requestPrincipal)
+	}
+
+	responseWriter.Header().Set("Content-Type", "text/event-stream")
+	responseWriter.Header().Set("Cache-Control", "no-cache")
+	responseWriter.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	for {
+		select {
+		case <-request.Context().Done():
+			return
+		case event, open := <-eventChannel:
+			if !open {
+				return
+			}
+			if event.Type == store.EventDelete {
+				continue
+			}
+			var entry security.AuditEntry
+			if unmarshalErr := json.Unmarshal(event.Fact.Value, &entry); unmarshalErr != nil {
+				continue
+			}
+			if !matchesAuditFilter(entry, filterPrincipal, filterAction, sinceTime, filterDenied, tenantFilter) {
+				continue
+			}
+			entryBytes, _ := json.Marshal(entry)
+			_, _ = fmt.Fprintf(responseWriter, "data: %s\n\n", entryBytes)
+			flusher.Flush()
+		}
+	}
+}
+
+// matchesAuditFilter returns true when the entry passes all active filters.
+func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction string, sinceTime time.Time, filterDenied bool, tenantFilter string) bool {
+	if filterPrincipal != "" && entry.Principal != filterPrincipal {
+		return false
+	}
+	if filterAction != "" && entry.Action != filterAction {
+		return false
+	}
+	if !sinceTime.IsZero() && entry.Timestamp.Before(sinceTime) {
+		return false
+	}
+	if filterDenied && entry.Decision != "deny" {
+		return false
+	}
+	if tenantFilter != "" && !strings.Contains(entry.Target, "/"+tenantFilter+"/") && !strings.Contains(entry.Principal, tenantFilter) {
+		return false
+	}
+	return true
 }
 
 // handleDescribe serves GET /api/describe returning a detailed single-resource

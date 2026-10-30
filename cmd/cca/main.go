@@ -240,6 +240,8 @@ func main() {
 		executeWhoamiCommand()
 	case "role":
 		executeRoleCommand(os.Args[2:])
+	case "audit":
+		executeAuditCommand(os.Args[2:])
 	case "gc":
 		executeGCCommand(os.Args[2:])
 	case "context":
@@ -301,6 +303,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  role list [principal]         list all grants (optionally filter by principal)")
 	fmt.Fprintln(os.Stderr, "  role check <principal> [flags] check if principal has capability (--capability, --scope)")
 	fmt.Fprintln(os.Stderr, "  gc instances                 garbage-collect stopped instance facts from the store")
+	fmt.Fprintln(os.Stderr, "  audit [flags]                query persistent audit log (--principal, --action, --since, --follow)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "demos:")
 	fmt.Fprintln(os.Stderr, "  demo                         built-in demo with simulated runtime (1 node)")

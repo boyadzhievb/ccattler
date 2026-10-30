@@ -27,6 +27,9 @@ func sanitizeForAudit(input string) string {
 // principalContextKey is the context key for the authenticated principal identity.
 type principalContextKey struct{}
 
+// authMethodContextKey is the context key for the authentication method used.
+type authMethodContextKey struct{}
+
 // WithPrincipal returns a context carrying the given principal identity.
 func WithPrincipal(ctx context.Context, principal string) context.Context {
 	return context.WithValue(ctx, principalContextKey{}, principal)
@@ -37,6 +40,18 @@ func WithPrincipal(ctx context.Context, principal string) context.Context {
 func PrincipalFromContext(ctx context.Context) string {
 	principal, _ := ctx.Value(principalContextKey{}).(string)
 	return principal
+}
+
+// WithAuthMethod returns a context carrying the authentication method name.
+func WithAuthMethod(ctx context.Context, authMethod string) context.Context {
+	return context.WithValue(ctx, authMethodContextKey{}, authMethod)
+}
+
+// AuthMethodFromContext extracts the authentication method from a context, or
+// returns an empty string if none is set.
+func AuthMethodFromContext(ctx context.Context) string {
+	authMethod, _ := ctx.Value(authMethodContextKey{}).(string)
+	return authMethod
 }
 
 // AuthorizedStore wraps a StateStore and enforces authorization on every
@@ -61,10 +76,10 @@ func NewAuthorizedStore(inner store.StateStore, authorizer Authorizer, auditLog 
 func (authorizedStore *AuthorizedStore) Get(ctx context.Context, key string) (*store.Fact, error) {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, key); err != nil {
-		authorizedStore.logDenied(principal, "get", key)
+		authorizedStore.logDenied(ctx, principal, "get", key)
 		return nil, err
 	}
-	authorizedStore.logAllowed(principal, "get", key)
+	authorizedStore.logAllowed(ctx, principal, "get", key)
 	return authorizedStore.inner.Get(ctx, key)
 }
 
@@ -72,10 +87,10 @@ func (authorizedStore *AuthorizedStore) Get(ctx context.Context, key string) (*s
 func (authorizedStore *AuthorizedStore) Put(ctx context.Context, key string, value []byte) (int64, error) {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionWrite, key); err != nil {
-		authorizedStore.logDenied(principal, "put", key)
+		authorizedStore.logDenied(ctx, principal, "put", key)
 		return 0, err
 	}
-	authorizedStore.logAllowed(principal, "put", key)
+	authorizedStore.logAllowed(ctx, principal, "put", key)
 	return authorizedStore.inner.Put(ctx, key, value)
 }
 
@@ -83,10 +98,10 @@ func (authorizedStore *AuthorizedStore) Put(ctx context.Context, key string, val
 func (authorizedStore *AuthorizedStore) Delete(ctx context.Context, key string) error {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionDelete, key); err != nil {
-		authorizedStore.logDenied(principal, "delete", key)
+		authorizedStore.logDenied(ctx, principal, "delete", key)
 		return err
 	}
-	authorizedStore.logAllowed(principal, "delete", key)
+	authorizedStore.logAllowed(ctx, principal, "delete", key)
 	return authorizedStore.inner.Delete(ctx, key)
 }
 
@@ -94,10 +109,10 @@ func (authorizedStore *AuthorizedStore) Delete(ctx context.Context, key string) 
 func (authorizedStore *AuthorizedStore) Scan(ctx context.Context, prefix string) ([]store.Fact, error) {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, prefix); err != nil {
-		authorizedStore.logDenied(principal, "scan", prefix)
+		authorizedStore.logDenied(ctx, principal, "scan", prefix)
 		return nil, err
 	}
-	authorizedStore.logAllowed(principal, "scan", prefix)
+	authorizedStore.logAllowed(ctx, principal, "scan", prefix)
 	return authorizedStore.inner.Scan(ctx, prefix)
 }
 
@@ -105,10 +120,10 @@ func (authorizedStore *AuthorizedStore) Scan(ctx context.Context, prefix string)
 func (authorizedStore *AuthorizedStore) ScanWithRevision(ctx context.Context, prefix string) (*store.ScanResult, error) {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, prefix); err != nil {
-		authorizedStore.logDenied(principal, "scan", prefix)
+		authorizedStore.logDenied(ctx, principal, "scan", prefix)
 		return nil, err
 	}
-	authorizedStore.logAllowed(principal, "scan", prefix)
+	authorizedStore.logAllowed(ctx, principal, "scan", prefix)
 	return authorizedStore.inner.ScanWithRevision(ctx, prefix)
 }
 
@@ -116,10 +131,10 @@ func (authorizedStore *AuthorizedStore) ScanWithRevision(ctx context.Context, pr
 func (authorizedStore *AuthorizedStore) Watch(ctx context.Context, key string, opts store.WatchOption) (<-chan store.Event, error) {
 	principal := PrincipalFromContext(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionWatch, key); err != nil {
-		authorizedStore.logDenied(principal, "watch", key)
+		authorizedStore.logDenied(ctx, principal, "watch", key)
 		return nil, err
 	}
-	authorizedStore.logAllowed(principal, "watch", key)
+	authorizedStore.logAllowed(ctx, principal, "watch", key)
 	return authorizedStore.inner.Watch(ctx, key, opts)
 }
 
@@ -129,7 +144,7 @@ func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compare
 	principal := PrincipalFromContext(ctx)
 	for _, compareItem := range compares {
 		if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, compareItem.Key); err != nil {
-			authorizedStore.logDenied(principal, "transaction-compare", compareItem.Key)
+			authorizedStore.logDenied(ctx, principal, "transaction-compare", compareItem.Key)
 			return false, err
 		}
 	}
@@ -139,7 +154,7 @@ func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compare
 			permission = PermissionDelete
 		}
 		if err := authorizedStore.authorizer.Authorize(principal, permission, operation.Key); err != nil {
-			authorizedStore.logDenied(principal, "transaction-op", operation.Key)
+			authorizedStore.logDenied(ctx, principal, "transaction-op", operation.Key)
 			return false, err
 		}
 	}
@@ -149,12 +164,12 @@ func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compare
 			permission = PermissionDelete
 		}
 		if err := authorizedStore.authorizer.Authorize(principal, permission, failureBranchOp.Key); err != nil {
-			authorizedStore.logDenied(principal, "transaction-op", failureBranchOp.Key)
+			authorizedStore.logDenied(ctx, principal, "transaction-op", failureBranchOp.Key)
 			return false, err
 		}
 	}
 	totalOperations := len(onSuccess) + len(onFailure)
-	authorizedStore.logAllowed(principal, "transaction", fmt.Sprintf("%d ops", totalOperations))
+	authorizedStore.logAllowed(ctx, principal, "transaction", fmt.Sprintf("%d ops", totalOperations))
 	return authorizedStore.inner.Transaction(ctx, compares, onSuccess, onFailure)
 }
 
@@ -189,25 +204,27 @@ func (authorizedStore *AuthorizedStore) Close() error {
 }
 
 // logAllowed writes an audit entry for an allowed operation.
-func (authorizedStore *AuthorizedStore) logAllowed(principal, action, target string) {
+func (authorizedStore *AuthorizedStore) logAllowed(ctx context.Context, principal, action, target string) {
 	if authorizedStore.auditLog != nil {
 		authorizedStore.auditLog.Log(AuditEntry{
-			Principal: sanitizeForAudit(principal),
-			Action:    sanitizeForAudit(action),
-			Target:    sanitizeForAudit(target),
-			Decision:  "allow",
+			Principal:  sanitizeForAudit(principal),
+			Action:     sanitizeForAudit(action),
+			Target:     sanitizeForAudit(target),
+			Decision:   "allow",
+			AuthMethod: AuthMethodFromContext(ctx),
 		})
 	}
 }
 
 // logDenied writes an audit entry for a denied operation.
-func (authorizedStore *AuthorizedStore) logDenied(principal, action, target string) {
+func (authorizedStore *AuthorizedStore) logDenied(ctx context.Context, principal, action, target string) {
 	if authorizedStore.auditLog != nil {
 		authorizedStore.auditLog.Log(AuditEntry{
-			Principal: sanitizeForAudit(principal),
-			Action:    sanitizeForAudit(action),
-			Target:    sanitizeForAudit(target),
-			Decision:  "deny",
+			Principal:  sanitizeForAudit(principal),
+			Action:     sanitizeForAudit(action),
+			Target:     sanitizeForAudit(target),
+			Decision:   "deny",
+			AuthMethod: AuthMethodFromContext(ctx),
 		})
 	}
 }

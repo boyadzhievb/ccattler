@@ -157,6 +157,7 @@ func (authenticator *WebhookAuthenticator) callWebhook(tokenString string) (*Aut
 		Groups:        response.Groups,
 		Attributes:    attributes,
 		ExpiresAt:     time.Now().Add(authenticator.cacheTTL),
+		AuthMethod:    "webhook",
 	}, nil
 }
 

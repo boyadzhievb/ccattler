@@ -128,6 +128,7 @@ func (authenticator *LocalTokenAuthenticator) Authenticate(request *http.Request
 		PrincipalKind: PrincipalKindUser,
 		Groups:        []string{"platform"},
 		ExpiresAt:     time.Now().Add(localTokenExpiry),
+		AuthMethod:    "local-token",
 	}, nil
 }
 

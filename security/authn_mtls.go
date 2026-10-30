@@ -45,5 +45,6 @@ func (authenticator *MTLSAuthenticator) Authenticate(request *http.Request) (*Au
 		Principal:     "node:" + commonName,
 		PrincipalKind: PrincipalKindNode,
 		ExpiresAt:     expiresAt,
+		AuthMethod:    "mtls",
 	}, nil
 }

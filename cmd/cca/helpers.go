@@ -300,6 +300,7 @@ func coreControllers() []controllers.Controller {
 		controllers.NewJobController(),
 		controllers.NewCronController(),
 		controllers.NewInstanceGCController(),
+		controllers.NewAuditLogGCController(),
 	}
 }
 

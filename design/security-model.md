@@ -282,10 +282,11 @@ policy:      production-deployer
 request_id:  8f31...
 ```
 
-**Current status:** `InMemoryAuditLog` only — audit entries are lost on restart.
-No persistent audit sink, no `cca audit` CLI command, no external audit webhook.
-Per-resource audit verbosity (K8s None/Metadata/Request/RequestResponse) is not
-implemented.
+**Current status (M158):** `StoreBackedAuditLog` persists entries under `audit/{sequence}`
+in etcd. `AuditLogGCController` rotates entries older than 7 days. `cca audit` CLI
+queries and streams entries with filters (--principal, --action, --since, --follow).
+Auth method is tracked per entry. Per-resource audit verbosity and external audit
+webhook are not yet implemented.
 
 ## Bootstrap Problem
 
