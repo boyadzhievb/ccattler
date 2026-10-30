@@ -291,6 +291,15 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 			VolumeName: volumeName,
 			MountPath:  mountPath,
 		})
+	case "priority":
+		serviceDecl.Priority, err = parser.expectInteger()
+		if err != nil {
+			return err
+		}
+		if serviceDecl.Priority < 0 || serviceDecl.Priority > 1000 {
+			return parser.parserErrorf("priority must be 0–1000, got %d", serviceDecl.Priority)
+		}
+		return nil
 	case "stateful":
 		serviceDecl.Stateful = true
 	case "disruption":

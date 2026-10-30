@@ -8,6 +8,7 @@ No YAML. A human-oriented declarative language.
 service web {
     image nginx:1.27
     instances 3
+    priority 500
 
     expose 8080
 

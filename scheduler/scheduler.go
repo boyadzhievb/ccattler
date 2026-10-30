@@ -90,6 +90,8 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	serviceResources := extractServiceResourcesFromFacts(facts)
 	placementConstraints := extractPlacementConstraints(facts)
 	serviceToGroup := extractServiceGroupMemberships(facts)
+	servicePriorities := extractServicePriorities(facts)
+	statefulServices := extractStatefulServices(facts)
 
 	unplaced := findUnplacedPendingInstances(instances, placements)
 	var changes []controllers.Change
@@ -104,6 +106,14 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	}
 
 	placedInThisCycle := collectPlacedInstanceIDs(changes)
+
+	preemptionChanges := attemptPreemptions(
+		unplaced, placedInThisCycle, nodes, instances, placements,
+		serviceResources, placementConstraints, servicePriorities,
+		statefulServices,
+	)
+	changes = append(changes, preemptionChanges...)
+
 	unplacedChanges := emitUnplacedDemandFacts(
 		unplaced, placedInThisCycle, nodes, instances,
 		serviceResources, placementConstraints,
@@ -153,6 +163,194 @@ func (placementScheduler *Scheduler) shouldDeferInitialPlacement(
 		"alive_nodes", strconv.Itoa(countAliveNodes(nodes)))
 	placementScheduler.firstPendingSeenAt = time.Time{}
 	return false
+}
+
+// maxPreemptionsPerCycle limits how many instances the scheduler preempts in a
+// single reconciliation cycle to avoid mass churn.
+const maxPreemptionsPerCycle = 3
+
+// extractServicePriorities reads desired/service/{name}/priority facts and
+// returns a map of service name → priority integer (0–1000).
+func extractServicePriorities(facts []store.Fact) map[string]int {
+	priorities := make(map[string]int)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) != 2 || parts[1] != "priority" {
+			continue
+		}
+		parsedValue, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			continue
+		}
+		priorities[parts[0]] = parsedValue
+	}
+	return priorities
+}
+
+// attemptPreemptions tries to place still-unplaced instances by preempting
+// lower-priority running instances on eligible nodes. Only preempts when the
+// unplaced service has strictly higher priority than the victim.
+func attemptPreemptions(
+	unplaced []string,
+	placedInThisCycle map[string]bool,
+	nodes map[string]*schedulerNodeInfo,
+	instances map[string]*schedulerInstanceInfo,
+	placements map[string]string,
+	serviceResources map[string]serviceResourceRequirements,
+	placementConstraints map[string]*servicePlacementConstraint,
+	servicePriorities map[string]int,
+	statefulServices map[string]bool,
+) []controllers.Change {
+	var stillUnplaced []string
+	for _, instanceID := range unplaced {
+		if !placedInThisCycle[instanceID] {
+			stillUnplaced = append(stillUnplaced, instanceID)
+		}
+	}
+	if len(stillUnplaced) == 0 {
+		return nil
+	}
+	sort.Slice(stillUnplaced, func(i, j int) bool {
+		serviceI := instances[stillUnplaced[i]].service
+		serviceJ := instances[stillUnplaced[j]].service
+		priorityI := servicePriorities[serviceI]
+		priorityJ := servicePriorities[serviceJ]
+		if priorityI != priorityJ {
+			return priorityI > priorityJ
+		}
+		return stillUnplaced[i] < stillUnplaced[j]
+	})
+
+	var changes []controllers.Change
+	preemptionCount := 0
+	preemptedInstances := make(map[string]bool)
+
+	for _, instanceID := range stillUnplaced {
+		if preemptionCount >= maxPreemptionsPerCycle {
+			break
+		}
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil {
+			continue
+		}
+		requesterPriority := servicePriorities[instanceInfo.service]
+		if requesterPriority == 0 {
+			continue
+		}
+
+		victimID, victimNode := findPreemptionVictim(
+			instanceInfo.service, requesterPriority,
+			nodes, instances, placements,
+			servicePriorities, placementConstraints,
+			statefulServices, preemptedInstances,
+		)
+		if victimID == "" {
+			continue
+		}
+
+		preemptedInstances[victimID] = true
+		preemptionCount++
+		logging.Default().Info("scheduler: preempting instance",
+			"victim", victimID,
+			"victim_service", instances[victimID].service,
+			"victim_priority", strconv.Itoa(servicePriorities[instances[victimID].service]),
+			"requester", instanceID,
+			"requester_service", instanceInfo.service,
+			"requester_priority", strconv.Itoa(requesterPriority),
+			"node", victimNode,
+		)
+		changes = append(changes, controllers.Change{
+			Type:  store.OpPut,
+			Key:   types.KeyDerivedInstanceControllerStopped(victimID),
+			Value: []byte("true"),
+		})
+	}
+	return changes
+}
+
+// findPreemptionVictim finds the lowest-priority running instance on an
+// eligible node that can be preempted by a service with the given priority.
+// Skips per-node and stateful services. Returns empty strings if no victim.
+func findPreemptionVictim(
+	requesterService string,
+	requesterPriority int,
+	nodes map[string]*schedulerNodeInfo,
+	instances map[string]*schedulerInstanceInfo,
+	placements map[string]string,
+	servicePriorities map[string]int,
+	placementConstraints map[string]*servicePlacementConstraint,
+	statefulServices map[string]bool,
+	alreadyPreempted map[string]bool,
+) (string, string) {
+	type victimCandidate struct {
+		instanceID string
+		nodeID     string
+		priority   int
+	}
+	var candidates []victimCandidate
+
+	for instanceID, nodeID := range placements {
+		if alreadyPreempted[instanceID] {
+			continue
+		}
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil || instanceInfo.state != types.InstanceRunning {
+			continue
+		}
+		node := nodes[nodeID]
+		if node == nil || node.state != types.NodeAlive {
+			continue
+		}
+		victimService := instanceInfo.service
+		if victimService == requesterService {
+			continue
+		}
+		victimPriority := servicePriorities[victimService]
+		if victimPriority >= requesterPriority {
+			continue
+		}
+		constraint := placementConstraints[victimService]
+		if constraint != nil && constraint.mode == "per-node" {
+			continue
+		}
+		if statefulServices[victimService] {
+			continue
+		}
+		candidates = append(candidates, victimCandidate{
+			instanceID: instanceID,
+			nodeID:     nodeID,
+			priority:   victimPriority,
+		})
+	}
+	if len(candidates) == 0 {
+		return "", ""
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].priority != candidates[j].priority {
+			return candidates[i].priority < candidates[j].priority
+		}
+		return candidates[i].instanceID < candidates[j].instanceID
+	})
+	return candidates[0].instanceID, candidates[0].nodeID
+}
+
+// extractStatefulServices reads desired/service/{name}/stateful facts and
+// returns a set of service names that are stateful.
+func extractStatefulServices(facts []store.Fact) map[string]bool {
+	stateful := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) != 2 || parts[1] != "stateful" {
+			continue
+		}
+		if string(fact.Value) == "true" {
+			stateful[parts[0]] = true
+		}
+	}
+	return stateful
 }
 
 // rebalancePlacedInstances detects load imbalance across alive nodes and

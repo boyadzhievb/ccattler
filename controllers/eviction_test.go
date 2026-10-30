@@ -252,3 +252,111 @@ func TestEvictionControllerNoChangeInDeadZone(t *testing.T) {
 		t.Fatalf("expected 0 changes in dead zone (between soft and hard thresholds), got %d", len(changes))
 	}
 }
+
+// TestEvictionPrioritySecondarySort verifies that within the same QoS class,
+// lower-priority services are evicted first.
+func TestEvictionPrioritySecondarySort(t *testing.T) {
+	evictionController := NewEvictionController()
+
+	facts := buildFacts(
+		// Node at 95% utilization
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+
+		// Two BestEffort instances with different priorities
+		kv(types.KeyObservedInstanceNode("inst-low"), "node01"),
+		kv(types.KeyObservedInstanceService("inst-low"), "cache"),
+		kv(types.KeyObservedInstanceState("inst-low"), "running"),
+
+		kv(types.KeyObservedInstanceNode("inst-high"), "node01"),
+		kv(types.KeyObservedInstanceService("inst-high"), "api"),
+		kv(types.KeyObservedInstanceState("inst-high"), "running"),
+
+		kv(types.KeyDerivedServiceQoSClass("cache"), "BestEffort"),
+		kv(types.KeyDerivedServiceQoSClass("api"), "BestEffort"),
+
+		kv(types.KeyDesiredServiceResourcesMemory("cache"), "256Mi"),
+		kv(types.KeyDesiredServiceResourcesMemory("api"), "256Mi"),
+
+		// cache has priority 100, api has priority 500
+		kv(types.KeyEffectiveServicePriority("cache"), "100"),
+		kv(types.KeyEffectiveServicePriority("api"), "500"),
+	)
+
+	changes, err := evictionController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundLowStop := false
+	foundHighStop := false
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("inst-low") {
+			foundLowStop = true
+		}
+		if change.Key == types.KeyDerivedInstanceControllerStopped("inst-high") {
+			foundHighStop = true
+		}
+	}
+
+	if !foundLowStop {
+		t.Error("expected lower-priority instance (cache/inst-low, priority 100) to be evicted first")
+	}
+	if foundHighStop {
+		t.Error("higher-priority instance (api/inst-high, priority 500) should not be evicted when lower-priority is sufficient")
+	}
+}
+
+// TestEvictionQoSTrumpsPriority verifies that QoS class is the primary sort
+// key, even when priorities would suggest a different order.
+func TestEvictionQoSTrumpsPriority(t *testing.T) {
+	evictionController := NewEvictionController()
+
+	facts := buildFacts(
+		// Node at 95% utilization
+		kv(types.KeyObservedNodeCapacityMemory("node01"), "1Gi"),
+		kv(types.KeyObservedNodeAvailableMemory("node01"), "50Mi"),
+
+		// BestEffort instance with very high priority
+		kv(types.KeyObservedInstanceNode("inst-be"), "node01"),
+		kv(types.KeyObservedInstanceService("inst-be"), "cache"),
+		kv(types.KeyObservedInstanceState("inst-be"), "running"),
+
+		// Guaranteed instance with zero priority
+		kv(types.KeyObservedInstanceNode("inst-g"), "node01"),
+		kv(types.KeyObservedInstanceService("inst-g"), "db"),
+		kv(types.KeyObservedInstanceState("inst-g"), "running"),
+
+		kv(types.KeyDerivedServiceQoSClass("cache"), "BestEffort"),
+		kv(types.KeyDerivedServiceQoSClass("db"), "Guaranteed"),
+
+		kv(types.KeyDesiredServiceResourcesMemory("cache"), "256Mi"),
+		kv(types.KeyDesiredServiceResourcesMemory("db"), "512Mi"),
+
+		// cache has high priority 900, db has 0
+		kv(types.KeyEffectiveServicePriority("cache"), "900"),
+	)
+
+	changes, err := evictionController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundBEStop := false
+	foundGStop := false
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("inst-be") {
+			foundBEStop = true
+		}
+		if change.Key == types.KeyDerivedInstanceControllerStopped("inst-g") {
+			foundGStop = true
+		}
+	}
+
+	if !foundBEStop {
+		t.Error("BestEffort instance should be evicted first regardless of high priority")
+	}
+	if foundGStop {
+		t.Error("Guaranteed instance should not be evicted when BestEffort is sufficient")
+	}
+}

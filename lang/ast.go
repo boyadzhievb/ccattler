@@ -72,6 +72,7 @@ type ServiceDecl struct {
 	Lifecycle              *LifecycleDecl             // optional container lifecycle hooks (pre_stop, post_start)
 	TerminationGracePeriod string                     // optional SIGTERM-to-SIGKILL grace period (e.g. "600s", "10m")
 	Stateful               bool                       // true if service uses ordinal instance IDs and ordered startup
+	Priority               int                        // scheduling/eviction priority (0–1000, higher = harder to evict/preempt)
 	Line                   int                        // source line number for error reporting
 }
 

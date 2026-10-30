@@ -1664,3 +1664,43 @@ func TestCompilePlacementModePerNode(t *testing.T) {
 		t.Errorf("placement mode: got %q, want %q", modeValue, "per-node")
 	}
 }
+
+func TestCompilePriorityEmitsFacts(t *testing.T) {
+	file, _ := Parse(`service web {
+    image "nginx:1.28"
+    instances 1
+    priority 500
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	desiredPriority := compiledFactMap[types.KeyDesiredServicePriority("web")]
+	if desiredPriority != "500" {
+		t.Errorf("desired priority: got %q, want %q", desiredPriority, "500")
+	}
+	effectivePriority := compiledFactMap[types.KeyEffectiveServicePriority("web")]
+	if effectivePriority != "500" {
+		t.Errorf("effective priority: got %q, want %q", effectivePriority, "500")
+	}
+}
+
+func TestCompilePriorityZeroSkipsFacts(t *testing.T) {
+	file, _ := Parse(`service web {
+    image "nginx:1.28"
+    instances 1
+    priority 0
+}`)
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if _, hasPriority := compiledFactMap[types.KeyDesiredServicePriority("web")]; hasPriority {
+		t.Error("priority 0 should not emit desired priority fact")
+	}
+	if _, hasPriority := compiledFactMap[types.KeyEffectiveServicePriority("web")]; hasPriority {
+		t.Error("priority 0 should not emit effective priority fact")
+	}
+}

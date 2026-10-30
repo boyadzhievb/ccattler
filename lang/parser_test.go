@@ -2015,3 +2015,60 @@ func TestParsePlacementModeInvalid(t *testing.T) {
 		t.Errorf("error should mention unsupported placement mode, got: %s", err.Error())
 	}
 }
+
+func TestParsePriorityValid(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 1
+    priority 500
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Services[0].Priority != 500 {
+		t.Errorf("priority: got %d, want 500", file.Services[0].Priority)
+	}
+}
+
+func TestParsePriorityZero(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 1
+    priority 0
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if file.Services[0].Priority != 0 {
+		t.Errorf("priority: got %d, want 0", file.Services[0].Priority)
+	}
+}
+
+func TestParsePriorityInvalidNegative(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 1
+    priority -1
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected parse error for negative priority")
+	}
+}
+
+func TestParsePriorityInvalidTooHigh(t *testing.T) {
+	input := `service web {
+    image "nginx:1.28"
+    instances 1
+    priority 1001
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected parse error for priority > 1000")
+	}
+	if !strings.Contains(err.Error(), "priority must be 0") {
+		t.Errorf("error should mention priority range, got: %s", err.Error())
+	}
+}

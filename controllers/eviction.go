@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -35,11 +36,13 @@ var qosPriority = map[string]int{
 }
 
 // evictionCandidate holds the information needed to decide which instance to
-// evict: its ID, parent service, QoS class priority, and memory footprint.
+// evict: its ID, parent service, QoS class priority, service priority, and
+// memory footprint.
 type evictionCandidate struct {
 	instanceID         string // instanceID is the unique instance identifier.
 	serviceName        string // serviceName is the parent service.
 	qosPriorityValue   int    // qosPriorityValue is the eviction order (lower = evicted first).
+	servicePriority    int    // servicePriority is the user-declared priority (0–1000, lower evicted first).
 	memoryRequestBytes int    // memoryRequestBytes is the service's memory request in bytes.
 }
 
@@ -60,13 +63,15 @@ func (evictionController *EvictionController) Name() string { return "eviction" 
 
 // Watch returns the fact prefixes that the eviction controller needs: observed
 // nodes (capacity/available), observed instances (node mapping), desired
-// services (memory requests), and derived services (QoS class).
+// services (memory requests), derived services (QoS class), and effective
+// services (priority).
 func (evictionController *EvictionController) Watch() []string {
 	return []string{
 		types.ScanObservedNodes,
 		types.ScanObservedInstances,
 		types.ScanDesiredServices,
 		types.ScanDerivedServices,
+		types.ScanEffectiveServices,
 	}
 }
 
@@ -80,6 +85,7 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 	instanceStates := extractInstanceStates(facts)
 	serviceQoSClasses := extractServiceQoSClasses(facts)
 	serviceMemoryRequests := extractServiceMemoryRequests(facts)
+	servicePriorities := extractServicePrioritiesFromFacts(facts)
 	existingPressure := extractExistingNodePressure(facts)
 
 	var allChanges []Change
@@ -96,7 +102,8 @@ func (evictionController *EvictionController) Reconcile(ctx context.Context, fac
 		nodeChanges := reconcileNodePressure(
 			nodeID, utilizationPercent, capacityBytes, availableBytes,
 			instanceNodes, instanceServices, instanceStates,
-			serviceQoSClasses, serviceMemoryRequests, existingPressure,
+			serviceQoSClasses, serviceMemoryRequests, servicePriorities,
+			existingPressure,
 		)
 		allChanges = append(allChanges, nodeChanges...)
 	}
@@ -116,6 +123,7 @@ func reconcileNodePressure(
 	instanceStates map[string]string,
 	serviceQoSClasses map[string]string,
 	serviceMemoryRequests map[string]int,
+	servicePriorities map[string]int,
 	existingPressure map[string]bool,
 ) []Change {
 	_, alreadyUnderPressure := existingPressure[nodeID]
@@ -133,11 +141,14 @@ func reconcileNodePressure(
 
 	candidates := buildEvictionCandidates(
 		nodeID, instanceNodes, instanceServices, instanceStates,
-		serviceQoSClasses, serviceMemoryRequests,
+		serviceQoSClasses, serviceMemoryRequests, servicePriorities,
 	)
 	sort.Slice(candidates, func(i, j int) bool {
 		if candidates[i].qosPriorityValue != candidates[j].qosPriorityValue {
 			return candidates[i].qosPriorityValue < candidates[j].qosPriorityValue
+		}
+		if candidates[i].servicePriority != candidates[j].servicePriority {
+			return candidates[i].servicePriority < candidates[j].servicePriority
 		}
 		return candidates[i].instanceID < candidates[j].instanceID
 	})
@@ -163,6 +174,7 @@ func buildEvictionCandidates(
 	instanceStates map[string]string,
 	serviceQoSClasses map[string]string,
 	serviceMemoryRequests map[string]int,
+	servicePriorities map[string]int,
 ) []evictionCandidate {
 	var candidates []evictionCandidate
 	for instanceID, assignedNode := range instanceNodes {
@@ -185,6 +197,7 @@ func buildEvictionCandidates(
 			instanceID:         instanceID,
 			serviceName:        serviceName,
 			qosPriorityValue:   priority,
+			servicePriority:    servicePriorities[serviceName],
 			memoryRequestBytes: serviceMemoryRequests[serviceName],
 		})
 	}
@@ -399,6 +412,29 @@ func extractMiddleSegment(key string, prefix string, suffix string) string {
 		return ""
 	}
 	return middle
+}
+
+// extractServicePrioritiesFromFacts reads effective/service/{name}/priority
+// facts and returns a map of serviceName → priority integer (0–1000).
+func extractServicePrioritiesFromFacts(facts []store.Fact) map[string]int {
+	priorities := make(map[string]int)
+	prefix := "effective/service/"
+	suffix := "/priority"
+	for _, fact := range facts {
+		if !strings.HasPrefix(fact.Key, prefix) || !strings.HasSuffix(fact.Key, suffix) {
+			continue
+		}
+		serviceName := extractMiddleSegment(fact.Key, prefix, suffix)
+		if serviceName == "" {
+			continue
+		}
+		parsedValue, parseError := strconv.Atoi(string(fact.Value))
+		if parseError != nil {
+			continue
+		}
+		priorities[serviceName] = parsedValue
+	}
+	return priorities
 }
 
 // sortedNodeIDs returns a deterministic list of node IDs from the capacity and

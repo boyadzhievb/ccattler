@@ -87,7 +87,7 @@ func controllerOutputPrefixes() map[string][]string {
 	return map[string][]string{
 		"intent-resolver":      {"effective/service/"},
 		"instance":             {"observed/instance/", "derived/instance/"},
-		"scheduler":            {"placement/", "derived/scheduler/unplaced/"},
+		"scheduler":            {"placement/", "derived/scheduler/unplaced/", "derived/instance/"},
 		"endpoint":             {"endpoint/"},
 		"failure":              {"observed/instance/", "derived/instance/", "derived/crash-loop/"},
 		"node-failure":         {"observed/node/", "derived/instance/"},
@@ -101,6 +101,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"cloud-node-lifecycle": {"observed/cloud/instance/", "observed/node/"},
 		"cloud-loadbalancer":   {"observed/cloud/loadbalancer/", "derived/cloud/loadbalancer/"},
 		"cloud-routes":         {"observed/cloud/route/", "derived/cloud/route/"},
+		"eviction":             {"derived/instance/", "derived/node/"},
 		"drain":                {"derived/node/"},
 		"cluster-autoscale":    {"derived/capacity/request/"},
 		"route":                {"derived/route/"},

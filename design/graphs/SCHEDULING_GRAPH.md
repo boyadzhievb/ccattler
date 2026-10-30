@@ -495,6 +495,53 @@ for each alive node with availCPU > 0:
 | `maxRebalanceMovesPerCycle` | 2 | scheduler.go:31 | Cap rebalance migrations per cycle |
 | `rebalanceLoadImbalanceThreshold` | 2 | scheduler.go:34 | Min max-min diff to trigger rebalance |
 | `nodeAllocationPressurePercent` | 80 | scheduler.go:37 | Warn threshold for allocation pressure |
+| `maxPreemptionsPerCycle` | 3 | scheduler.go:166 | Cap preemption stops per cycle |
+
+## Priority & Preemption (M161)
+
+### Service Priority
+
+Services declare `priority N` (0–1000) in the DSL. Higher values are harder
+to evict and preempt. Default is 0 (unset — never preempts, first to be preempted).
+
+```
+Fact key:    desired/service/{name}/priority
+Effective:   effective/service/{name}/priority
+Extracted:   extractServicePriorities (scheduler.go)
+```
+
+### Preemption Pipeline (attemptPreemptions)
+
+Runs after `attemptPlacements`, before `emitUnplacedDemandFacts`:
+
+```
+stillUnplaced = unplaced \ placedInThisCycle
+  ↓ filter: requesterPriority > 0
+  ↓ sort: highest priority first
+  ↓ for each:
+      findPreemptionVictim → lowest-priority running instance
+        ↓ filter: victimPriority < requesterPriority (strictly less)
+        ↓ filter: not per-node, not stateful, not already preempted
+        ↓ sort victims: lowest priority first, then instance ID
+      emit controller_stopped for victim
+  ↓ cap: maxPreemptionsPerCycle (3)
+```
+
+### Preemption Immunity
+
+| Category | Immune? | Reason |
+|----------|---------|--------|
+| Per-node services (M160) | Yes | Pinned one-per-node, can't be displaced |
+| Stateful services | Yes | Volume affinity, ordinal stability |
+| Same priority | Yes | Only strictly lower priority is preempted |
+| Priority 0 requesters | Yes | Default/unset services never preempt |
+
+### Eviction Integration
+
+The EvictionController uses priority as secondary sort after QoS class:
+1. QoS class: BestEffort (0) < Burstable (1) < Guaranteed (2)
+2. Service priority: lower evicted first (0 before 500 before 1000)
+3. Instance ID: deterministic tie-breaking
 
 ## Stateful Considerations
 

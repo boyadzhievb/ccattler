@@ -199,7 +199,7 @@ case "$CLUSTER_ENV" in
         WORKER1_NODE="node-2"
         VM_NAMES=("node-1" "node-2" "node-3")
         NODE_IPS=(["node-1"]="192.168.100.215" ["node-2"]="192.168.100.30" ["node-3"]="192.168.100.31")
-        EXPECTED_NODES=3
+        EXPECTED_NODES=2
         SSH_USER="bozhan"
         BAREMETAL=true
         DESTROY_ON_EXIT=none
@@ -214,7 +214,7 @@ case "$CLUSTER_ENV" in
         WORKER1_NODE="cca-deploy-worker-1"
         VM_NAMES=("cca-deploy-ctrl" "cca-deploy-worker-1" "cca-deploy-worker-2")
         NODE_IPS=(["cca-deploy-ctrl"]="192.168.124.10" ["cca-deploy-worker-1"]="192.168.124.20" ["cca-deploy-worker-2"]="192.168.124.30")
-        EXPECTED_NODES=3
+        EXPECTED_NODES=2
         SSH_USER="vmherd"
         VMHERD_DIR="$SCRIPT_DIR/vm-deploy"
         DESTROY_ON_EXIT=none

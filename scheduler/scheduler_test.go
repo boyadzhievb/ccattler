@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1604,5 +1605,226 @@ func TestPerNodeSkipsRebalance(t *testing.T) {
 		if strings.HasPrefix(change.Group, "rebalance/") {
 			t.Error("per-node services should not be rebalanced")
 		}
+	}
+}
+
+func TestPreemptionHigherPriorityPreempts(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// One node with 1000m CPU, running instance uses 1000m leaving no room
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+
+		kv(types.KeyObservedInstanceService("running-low"), "cache"),
+		kv(types.KeyObservedInstanceState("running-low"), "running"),
+		kv(types.KeyPlacementInstance("running-low"), "node-1"),
+		kv(types.KeyPlacementNodeInstance("node-1", "running-low"), ""),
+		kv(types.KeyDesiredServicePriority("cache"), "100"),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+
+		// High-priority pending instance that needs 500m CPU
+		kv(types.KeyObservedInstanceService("pending-high"), "web"),
+		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
+		kv(types.KeyDesiredServicePriority("web"), "800"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	foundPreemption := false
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("running-low") {
+			foundPreemption = true
+		}
+	}
+	if !foundPreemption {
+		t.Error("expected preemption of low-priority instance running-low")
+	}
+}
+
+func TestPreemptionEqualPriorityNoPreemption(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+		kv(types.KeyObservedInstanceService("running-a"), "cache"),
+		kv(types.KeyObservedInstanceState("running-a"), "running"),
+		kv(types.KeyPlacementInstance("running-a"), "node-1"),
+		kv(types.KeyPlacementNodeInstance("node-1", "running-a"), ""),
+		kv(types.KeyDesiredServicePriority("cache"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+
+		kv(types.KeyObservedInstanceService("pending-b"), "web"),
+		kv(types.KeyObservedInstanceState("pending-b"), "pending"),
+		kv(types.KeyDesiredServicePriority("web"), "500"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("running-a") {
+			t.Error("equal-priority instances should not preempt each other")
+		}
+	}
+}
+
+func TestPreemptionZeroPriorityNoPreemption(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+		kv(types.KeyObservedInstanceService("running-a"), "cache"),
+		kv(types.KeyObservedInstanceState("running-a"), "running"),
+		kv(types.KeyPlacementInstance("running-a"), "node-1"),
+		kv(types.KeyPlacementNodeInstance("node-1", "running-a"), ""),
+		kv(types.KeyDesiredServiceResourcesCPU("cache"), "1000"),
+
+		kv(types.KeyObservedInstanceService("pending-b"), "web"),
+		kv(types.KeyObservedInstanceState("pending-b"), "pending"),
+		kv(types.KeyDesiredServiceResourcesCPU("web"), "500"),
+		// web has no priority set (default 0)
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("running-a") {
+			t.Error("priority-0 service should not preempt")
+		}
+	}
+}
+
+func TestPreemptionSkipsPerNodeVictims(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+
+		// Per-node running instance consuming all CPU
+		kv(types.KeyObservedInstanceService("daemon-inst"), "monitor"),
+		kv(types.KeyObservedInstanceState("daemon-inst"), "running"),
+		kv(types.KeyPlacementInstance("daemon-inst"), "node-1"),
+		kv(types.KeyPlacementNodeInstance("node-1", "daemon-inst"), ""),
+		kv(types.KeyDesiredServicePlacementMode("monitor"), "per-node"),
+		kv(types.KeyDesiredServicePriority("monitor"), "100"),
+		kv(types.KeyDesiredServiceResourcesCPU("monitor"), "1000"),
+
+		// High-priority pending
+		kv(types.KeyObservedInstanceService("pending-high"), "critical"),
+		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
+		kv(types.KeyDesiredServicePriority("critical"), "900"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("daemon-inst") {
+			t.Error("per-node service instances should never be preempted")
+		}
+	}
+}
+
+func TestPreemptionSkipsStatefulVictims(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeAvailableCPU("node-1"), "1000"),
+
+		// Stateful running instance consuming all CPU
+		kv(types.KeyObservedInstanceService("db-inst"), "postgres"),
+		kv(types.KeyObservedInstanceState("db-inst"), "running"),
+		kv(types.KeyPlacementInstance("db-inst"), "node-1"),
+		kv(types.KeyPlacementNodeInstance("node-1", "db-inst"), ""),
+		kv(types.KeyDesiredServiceStateful("postgres"), "true"),
+		kv(types.KeyDesiredServicePriority("postgres"), "100"),
+		kv(types.KeyDesiredServiceResourcesCPU("postgres"), "1000"),
+
+		// High-priority pending
+		kv(types.KeyObservedInstanceService("pending-high"), "critical"),
+		kv(types.KeyObservedInstanceState("pending-high"), "pending"),
+		kv(types.KeyDesiredServicePriority("critical"), "900"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+	)
+
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedInstanceControllerStopped("db-inst") {
+			t.Error("stateful service instances should never be preempted")
+		}
+	}
+}
+
+func TestPreemptionMaxCap(t *testing.T) {
+	placementScheduler := newTestScheduler()
+
+	// 5 nodes each with 1000m CPU, fully consumed by low-priority running instances
+	entries := []struct{ k, v string }{}
+	for nodeIndex := 1; nodeIndex <= 5; nodeIndex++ {
+		nodeID := "node-" + strconv.Itoa(nodeIndex)
+		instanceID := "low-" + strconv.Itoa(nodeIndex)
+		entries = append(entries,
+			kv(types.KeyObservedNodeState(nodeID), "alive"),
+			kv(types.KeyObservedNodeAvailableCPU(nodeID), "1000"),
+			kv(types.KeyObservedInstanceService(instanceID), "filler"),
+			kv(types.KeyObservedInstanceState(instanceID), "running"),
+			kv(types.KeyPlacementInstance(instanceID), nodeID),
+			kv(types.KeyPlacementNodeInstance(nodeID, instanceID), ""),
+		)
+	}
+	entries = append(entries,
+		kv(types.KeyDesiredServicePriority("filler"), "50"),
+		kv(types.KeyDesiredServiceResourcesCPU("filler"), "1000"),
+	)
+
+	// 5 high-priority pending instances that need CPU
+	for pendingIndex := 1; pendingIndex <= 5; pendingIndex++ {
+		instanceID := "high-" + strconv.Itoa(pendingIndex)
+		entries = append(entries,
+			kv(types.KeyObservedInstanceService(instanceID), "critical"),
+			kv(types.KeyObservedInstanceState(instanceID), "pending"),
+		)
+	}
+	entries = append(entries,
+		kv(types.KeyDesiredServicePriority("critical"), "900"),
+		kv(types.KeyDesiredServiceResourcesCPU("critical"), "500"),
+	)
+
+	facts := buildFacts(entries...)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preemptionCount := 0
+	for _, change := range changes {
+		if strings.HasPrefix(change.Key, "derived/instance/") &&
+			strings.HasSuffix(change.Key, "/controller_stopped") {
+			preemptionCount++
+		}
+	}
+	if preemptionCount > maxPreemptionsPerCycle {
+		t.Errorf("preemptions should be capped at %d, got %d", maxPreemptionsPerCycle, preemptionCount)
+	}
+	if preemptionCount != maxPreemptionsPerCycle {
+		t.Errorf("expected exactly %d preemptions (5 pending, 5 victims available), got %d",
+			maxPreemptionsPerCycle, preemptionCount)
 	}
 }

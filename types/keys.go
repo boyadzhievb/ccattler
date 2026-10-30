@@ -767,6 +767,20 @@ func KeyEffectiveServicePlacementMode(name string) string {
 	return fmt.Sprintf("%s/service/%s/placement_mode", PrefixEffective, name)
 }
 
+// KeyDesiredServicePriority returns the store path for a service's scheduling
+// and eviction priority (0–1000). Higher values are harder to evict/preempt.
+// Path: desired/service/{name}/priority
+func KeyDesiredServicePriority(name string) string {
+	return fmt.Sprintf("%s/service/%s/priority", PrefixDesired, name)
+}
+
+// KeyEffectiveServicePriority returns the store path for the resolved service
+// priority. Written directly by the compiler (priority is static, not scaled).
+// Path: effective/service/{name}/priority
+func KeyEffectiveServicePriority(name string) string {
+	return fmt.Sprintf("%s/service/%s/priority", PrefixEffective, name)
+}
+
 // KeyDesiredServiceUpdateMaxUnavailable returns the store path for the maximum number
 // of instances that can be unavailable during a rolling update.
 func KeyDesiredServiceUpdateMaxUnavailable(name string) string {

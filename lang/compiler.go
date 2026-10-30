@@ -368,6 +368,14 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		})
 	}
 
+	if serviceDecl.Priority > 0 {
+		priorityValue := strconv.Itoa(serviceDecl.Priority)
+		facts = append(facts,
+			Fact{Key: types.KeyDesiredServicePriority(serviceDecl.Name), Value: priorityValue},
+			Fact{Key: types.KeyEffectiveServicePriority(serviceDecl.Name), Value: priorityValue},
+		)
+	}
+
 	return facts, nil
 }
 
