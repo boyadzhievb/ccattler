@@ -1,7 +1,13 @@
+volume persistent-nfs-volume {
+    size 1Gi
+    persistent true
+}
+
 service whoami {
     image "{{ default "docker.io" .registry }}/whoami:latest"
     instances 2
     expose 80
+    volume persistent-nfs-volume /data
     health {
         http /health
         every 10s
