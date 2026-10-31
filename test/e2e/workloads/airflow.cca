@@ -190,7 +190,7 @@ service worker {
     startup {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 10s
-        timeout 10s
+        timeout 30s
         failure_threshold 60
         initial_delay 60s
     }
