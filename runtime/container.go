@@ -311,6 +311,10 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 
 	args = append(args, volumeMountArgs...)
 
+	for hostPath, containerPath := range spec.VolumeMounts {
+		args = append(args, "-v", fmt.Sprintf("%s:%s", hostPath, containerPath))
+	}
+
 	for envKey, envValue := range spec.Env {
 		if !isValidEnvVarName(envKey) {
 			continue

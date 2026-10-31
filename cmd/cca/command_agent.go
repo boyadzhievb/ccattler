@@ -17,6 +17,7 @@ import (
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/storage"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -48,6 +49,8 @@ type agentCommandConfig struct {
 	clusterCIDR            string // clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
 	networkMode            string // networkMode selects overlay networking: "local" (bridge only) or "vxlan" (cross-node tunnels).
 	dnsUpstream            string // dnsUpstream is the control plane DNS address for cca.local queries (e.g. "10.0.0.5:15353").
+	storageBackend         string // storageBackend selects the storage provider: "local" or "nfs" (empty means no storage).
+	storageDirectory       string // storageDirectory is the base path for volume storage (e.g. "/var/lib/cca/volumes" for local, "/mnt/nfs/cca-volumes" for NFS).
 }
 
 // parseAgentCommandArgs extracts store and agent flags from the arguments
@@ -186,6 +189,16 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				argIndex++
 				parsedConfig.dnsUpstream = args[argIndex]
 			}
+		case "--storage-backend":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storageBackend = args[argIndex]
+			}
+		case "--storage-dir":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.storageDirectory = args[argIndex]
+			}
 		}
 	}
 
@@ -213,6 +226,17 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 	knownNetworkModes := map[string]bool{"": true, "local": true, "vxlan": true}
 	if !knownNetworkModes[parsedConfig.networkMode] {
 		fmt.Fprintf(os.Stderr, "error: unknown network-mode %q (must be \"local\" or \"vxlan\")\n", parsedConfig.networkMode)
+		os.Exit(1)
+	}
+
+	knownStorageBackends := map[string]bool{"": true, "local": true, "nfs": true}
+	if !knownStorageBackends[parsedConfig.storageBackend] {
+		fmt.Fprintf(os.Stderr, "error: unknown storage-backend %q (must be \"local\" or \"nfs\")\n", parsedConfig.storageBackend)
+		os.Exit(1)
+	}
+
+	if parsedConfig.storageBackend != "" && parsedConfig.storageDirectory == "" {
+		fmt.Fprintf(os.Stderr, "error: --storage-dir is required when --storage-backend is set\n")
 		os.Exit(1)
 	}
 
@@ -312,6 +336,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 
 	configureAgentSecretProvider(ctx, nodeAgent, factStore, parsedConfig)
+	configureAgentStorageProvider(nodeAgent, parsedConfig)
 
 	if parsedConfig.secretAPIListenAddress != "" && nodeAgent.SecretProvider() != nil {
 		secretAPIServer := agent.NewSecretAPIServer(parsedConfig.nodeID, parsedConfig.secretAPIListenAddress, nodeAgent.SecretProvider(), factStore)
@@ -519,6 +544,36 @@ func configureAgentSecretProvider(ctx context.Context, nodeAgent *agent.Agent, f
 	}
 	nodeAgent.SetSecretProvider(localSecretProvider)
 	fmt.Printf("Agent %s: secret decryption enabled (local key)\n", parsedConfig.nodeID)
+}
+
+// configureAgentStorageProvider sets up the agent's storage provider based on
+// the --storage-backend and --storage-dir flags. When not set, the agent runs
+// without persistent volume support (volumes declared in .cca files are ignored).
+func configureAgentStorageProvider(nodeAgent *agent.Agent, parsedConfig agentCommandConfig) {
+	if parsedConfig.storageBackend == "" {
+		return
+	}
+
+	switch parsedConfig.storageBackend {
+	case "local":
+		localStorageProvider, createError := storage.NewLocalPathStorageProvider(parsedConfig.storageDirectory)
+		if createError != nil {
+			fmt.Fprintf(os.Stderr, "error: create local storage provider: %v\n", createError)
+			os.Exit(1)
+		}
+		nodeAgent.SetStorageProvider(localStorageProvider)
+		fmt.Printf("Agent %s: storage enabled (local-path: %s)\n",
+			parsedConfig.nodeID, parsedConfig.storageDirectory)
+	case "nfs":
+		nfsStorageProvider, createError := storage.NewNFSStorageProvider(parsedConfig.storageDirectory)
+		if createError != nil {
+			fmt.Fprintf(os.Stderr, "error: create NFS storage provider: %v\n", createError)
+			os.Exit(1)
+		}
+		nodeAgent.SetStorageProvider(nfsStorageProvider)
+		fmt.Printf("Agent %s: storage enabled (NFS: %s)\n",
+			parsedConfig.nodeID, parsedConfig.storageDirectory)
+	}
 }
 
 // buildPublishableDebugAddress returns the debug API address that remote

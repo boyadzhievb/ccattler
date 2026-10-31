@@ -20,7 +20,9 @@ ExecStart=/usr/local/bin/cca agent \
   --etcd-ca {{ cca_cert_dir }}/ca.pem \
   --network-mode {{ network_mode | default('local') }} \
   --dataplane {{ dataplane_backend | default('auto') }} \
-  --dns-upstream {{ hostvars[groups['controlplane'][0]].ansible_host }}:15353
+  --dns-upstream {{ hostvars[groups['controlplane'][0]].ansible_host }}:15353{% if storage_backend is defined %} \
+  --storage-backend {{ storage_backend }} \
+  --storage-dir {{ storage_directory }}{% endif %}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

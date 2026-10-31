@@ -31,18 +31,19 @@ func isValidEnvVarName(name string) bool {
 // backend needs to start a process or container: the command/image, environment
 // variables, and resource hints.
 type Spec struct {
-	ID          string            // ID is the unique identifier for this workload.
-	ServiceName string            // ServiceName is the name of the service this workload belongs to. Used by ContainerRuntime as a Docker network alias for DNS-based service discovery.
-	Image       string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
-	Command     []string          // Command overrides the container CMD. Empty means use the image default.
-	Env         map[string]string // Env holds environment variables to inject into the workload.
-	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
-	Ports       []int             // Ports to map from container to host (each port is mapped to a random host port).
-	CPUm        int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
-	MemoryB     int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
-	IP          string            // IP is the cluster-network IP address allocated to this workload. Used by ContainerRuntime to assign a specific IP via --network/--ip.
-	LogMaxSize  string            // LogMaxSize is the max size per log file (e.g. "10m"). Empty means unlimited (runtime default).
-	LogMaxFiles int               // LogMaxFiles is the max number of rotated log files. Zero means unlimited (runtime default).
+	ID           string            // ID is the unique identifier for this workload.
+	ServiceName  string            // ServiceName is the name of the service this workload belongs to. Used by ContainerRuntime as a Docker network alias for DNS-based service discovery.
+	Image        string            // Image is the OCI image reference for container runtimes, or the shell command for ProcessRuntime (e.g. "python3 -m http.server 8080").
+	Command      []string          // Command overrides the container CMD. Empty means use the image default.
+	Env          map[string]string // Env holds environment variables to inject into the workload.
+	ConfigFiles  map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
+	Ports        []int             // Ports to map from container to host (each port is mapped to a random host port).
+	CPUm         int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
+	MemoryB      int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
+	IP           string            // IP is the cluster-network IP address allocated to this workload. Used by ContainerRuntime to assign a specific IP via --network/--ip.
+	LogMaxSize   string            // LogMaxSize is the max size per log file (e.g. "10m"). Empty means unlimited (runtime default).
+	LogMaxFiles  int               // LogMaxFiles is the max number of rotated log files. Zero means unlimited (runtime default).
+	VolumeMounts map[string]string // VolumeMounts maps host paths to container mount paths for persistent storage bind mounts.
 }
 
 // Status describes the current observed state of a running or stopped workload.

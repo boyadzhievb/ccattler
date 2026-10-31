@@ -525,6 +525,15 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 		})
 	}
 
+	for hostPath, containerPath := range spec.VolumeMounts {
+		bindMounts = append(bindMounts, specs.Mount{
+			Destination: containerPath,
+			Type:        "bind",
+			Source:      hostPath,
+			Options:     []string{"rbind", "rw"},
+		})
+	}
+
 	if len(bindMounts) > 0 {
 		ociOptions = append(ociOptions, oci.WithMounts(bindMounts))
 	}

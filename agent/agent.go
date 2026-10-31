@@ -776,6 +776,9 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
 	nodeAgent.materializeSecretFiles(ctx, instanceInfo.service, &runtimeSpec)
 	nodeAgent.materializeConnectionFiles(ctx, instanceInfo.service, &runtimeSpec)
+	if nodeAgent.storageProvider != nil {
+		nodeAgent.resolveVolumeMountsForSpec(ctx, instanceInfo, &runtimeSpec)
+	}
 	if secretAPIToken != "" {
 		nodeAgent.injectSecretAPIIntoSpec(secretAPIToken, secretAPIBaseURL, &runtimeSpec)
 	}
@@ -1682,6 +1685,32 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 	}
 
 	return true, nil
+}
+
+// resolveVolumeMountsForSpec reads the attached volume mount paths from the
+// store and populates the runtime spec's VolumeMounts map. Each entry maps
+// a host path (from the storage provider) to a container mount path (from
+// the DSL volume declaration).
+func (nodeAgent *Agent) resolveVolumeMountsForSpec(ctx context.Context, instanceInfo placedInstanceInfo, runtimeSpec *runtime.Spec) {
+	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, instanceInfo.service)
+	if len(volumeMounts) == 0 {
+		return
+	}
+
+	resolvedMounts := make(map[string]string, len(volumeMounts))
+	for volumeName, containerMountPath := range volumeMounts {
+		mountPathFact, readError := nodeAgent.store.Get(ctx, types.KeyObservedVolumeMountPath(volumeName))
+		if readError != nil || mountPathFact.Value == nil {
+			logging.Default().Warn("volume mount path not found in store", "volume", volumeName, "instance", instanceInfo.id)
+			continue
+		}
+		hostMountPath := string(mountPathFact.Value)
+		resolvedMounts[hostMountPath] = containerMountPath
+	}
+
+	if len(resolvedMounts) > 0 {
+		runtimeSpec.VolumeMounts = resolvedMounts
+	}
 }
 
 // detachVolumesForInstance finds volumes attached to the given instance and
