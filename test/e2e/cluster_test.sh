@@ -509,14 +509,14 @@ ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "cca ser
 
 log "Verifying etcd rejects unauthenticated access (T1 mTLS enforcement)..."
 if ssh_vm "$CTRL_NODE" "command -v etcdctl >/dev/null 2>&1" ; then
-    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" | grep -q "is healthy"; then
+    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_ENDPOINTS endpoint health 2>&1" 2>/dev/null | grep -q "is healthy"; then
         fail "etcd accepted unauthenticated connection — mTLS not enforced (T1 CRITICAL)"
     fi
     log "etcd correctly rejects connections without client certificate"
 
     log "Verifying etcd rejects plain HTTP access..."
     ETCD_HTTP_ENDPOINT="http://${CTRL_IP}:2379"
-    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" | grep -q "is healthy"; then
+    if ssh_vm "$CTRL_NODE" "etcdctl --endpoints=$ETCD_HTTP_ENDPOINT endpoint health 2>&1" 2>/dev/null | grep -q "is healthy"; then
         fail "etcd accepted plain HTTP connection — TLS not enforced (T1 CRITICAL)"
     fi
     log "etcd correctly rejects plain HTTP — all access requires mTLS"
@@ -880,17 +880,17 @@ log "  Data plane rules on $DATAPLANE_CHECK_NODE: $DNAT_RULE_COUNT ($DATAPLANE_T
 
 if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null | head -30" || true
+        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null | head -30" 2>/dev/null || true
     else
-        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" || true
+        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" 2>/dev/null || true
     fi
     log "VIP data plane OK — DNAT rules programmed ($DATAPLANE_TYPE)"
 else
     log "WARNING: No data plane rules found — cross-node VIP routing may not work"
     log "  Dumping diagnostics..."
-    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list tables 2>/dev/null" || true
-    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null" || true
-    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" || true
+    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list tables 2>/dev/null" 2>/dev/null || true
+    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null" 2>/dev/null || true
+    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" 2>/dev/null || true
     log "  Networking from API:"
     curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true
     log "  Nodes from API:"
@@ -908,12 +908,12 @@ log "Validating cross-node VIP connectivity and DNS resolution..."
 for vm in "${VM_NAMES[@]}"; do
     log "  data plane backends on $vm ($DATAPLANE_TYPE):"
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null | head -40" || true
+        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null | head -40" 2>/dev/null || true
     else
-        ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" || true
+        ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" 2>/dev/null || true
     fi
     log "  bridge/route info on $vm:"
-    ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" || true
+    ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" 2>/dev/null || true
 done
 
 NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
@@ -1028,7 +1028,7 @@ if [[ -n "$VIP_SERVICES" ]]; then
             fi
             [[ $http_test_count -ge 2 ]] && break
             http_test_count=$((http_test_count + 1))
-            HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" || echo "000")
+            HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${svc_vip}:${svc_port}/ 2>/dev/null" 2>/dev/null || echo "000")
             if [[ "$HTTP_CODE" =~ ^[23] ]]; then
                 log "  HTTP $HTTP_CODE from $vm -> $svc_name ($svc_vip:$svc_port)"
             else
