@@ -264,6 +264,15 @@ func classifyWatchEventAsSemanticEvent(watchEvent store.Event) (string, string, 
 		}
 	}
 
+	if strings.HasPrefix(factKey, observedInstancePrefix) && strings.HasSuffix(factKey, "/exit-reason") {
+		fullPath := strings.TrimPrefix(factKey, observedInstancePrefix)
+		instanceID := strings.TrimSuffix(fullPath, "/exit-reason")
+		if factValue != "" && watchEvent.Type == store.EventPut {
+			return "instance.exit", "instance/" + instanceID, "exit reason: " + factValue
+		}
+		return "", "", ""
+	}
+
 	if strings.HasPrefix(factKey, observedInstancePrefix) && strings.Contains(factKey, "/probe/") {
 		rest := strings.TrimPrefix(factKey, observedInstancePrefix)
 		parts := strings.SplitN(rest, "/probe/", 2)

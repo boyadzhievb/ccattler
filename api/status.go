@@ -59,6 +59,7 @@ type InstanceStatus struct {
 	Liveness      string `json:"liveness,omitempty"`
 	Readiness     string `json:"readiness,omitempty"`
 	StatusReason  string `json:"status_reason,omitempty"`
+	ExitReason    string `json:"exit_reason,omitempty"`
 	InitProgress  string `json:"init_progress,omitempty"`
 	ProbeProgress string `json:"probe_progress,omitempty"`
 	CreatedAt     string `json:"created_at,omitempty"`
@@ -374,6 +375,10 @@ func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateSt
 		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
 			statusReason = string(reasonFact.Value)
 		}
+		exitReason := ""
+		if exitFact, exitErr := factStore.Get(ctx, types.KeyObservedInstanceExitReason(instance.ID)); exitErr == nil {
+			exitReason = string(exitFact.Value)
+		}
 		initProgressJSON := ""
 		if progressFact, progressErr := factStore.Get(ctx, types.KeyObservedInstanceInitProgress(instance.ID)); progressErr == nil {
 			initProgressJSON = string(progressFact.Value)
@@ -392,7 +397,7 @@ func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateSt
 			CPUMillis: instanceCPU, MemoryBytes: instanceMemory,
 			InitPhase: initPhase, Restarts: restartCount,
 			Startup: startupProbe, Liveness: livenessProbe, Readiness: readinessProbe,
-			StatusReason: statusReason, InitProgress: initProgressJSON, ProbeProgress: probeProgressJSON,
+			StatusReason: statusReason, ExitReason: exitReason, InitProgress: initProgressJSON, ProbeProgress: probeProgressJSON,
 			CreatedAt: createdAtTimestamp,
 		})
 	}

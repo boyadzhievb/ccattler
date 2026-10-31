@@ -1493,7 +1493,7 @@ echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t
 log "Verifying all instances are still running after test steps..."
 final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running")] | length')
 if [[ "$final_not_running" -gt 0 ]]; then
-    echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-")"'
+    echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-") exit=\(.exit_reason // "-")"'
     fail "$final_not_running instance(s) regressed to non-running state during test execution"
 fi
 final_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state == "running")] | length')

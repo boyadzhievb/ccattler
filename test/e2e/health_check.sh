@@ -198,7 +198,7 @@ collect_convergence_diagnostics() {
     for svc_name in "${NOT_CONVERGED_SERVICES[@]}"; do
         log "  [$svc_name] Instance states:"
         echo "$STATUS_JSON" | jq -r --arg svc "$svc_name" \
-            '.instances[] | select(.service == $svc) | "    \(.id) state=\(.state) node=\(.node) health=\(.health) init=\(.init_phase // "-")"'
+            '.instances[] | select(.service == $svc) | "    \(.id) state=\(.state) node=\(.node) health=\(.health) init=\(.init_phase // "-") exit=\(.exit_reason // "-")"'
 
         instance_ids=$(echo "$STATUS_JSON" | jq -r --arg svc "$svc_name" \
             '.instances[] | select(.service == $svc and .state != "running") | .id')

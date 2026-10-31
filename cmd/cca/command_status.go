@@ -1484,6 +1484,8 @@ func formatInstanceReason(instance api.InstanceStatus, wideOutput bool) string {
 	}
 	var reason string
 	switch {
+	case instance.ExitReason != "":
+		reason = instance.ExitReason
 	case instance.InitProgress != "":
 		reason = formatInitProgressCompact(instance.InitProgress)
 	case instance.ProbeProgress != "":
