@@ -146,7 +146,7 @@ service scheduler {
     }
     resources {
         cpu 500m
-        memory 1024Mi
+        memory 2048Mi
     }
     config {
         env AIRFLOW__CORE__EXECUTOR CeleryExecutor
