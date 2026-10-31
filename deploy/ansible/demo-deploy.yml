@@ -52,6 +52,13 @@
   roles:
     - controlplane
 
+- name: Mount NFS storage on all nodes
+  hosts: all
+  become: true
+  roles:
+    - role: nfs-client
+      when: nfs_server is defined
+
 - name: Provision worker nodes
   hosts: workers
   become: true
