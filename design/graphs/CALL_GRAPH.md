@@ -104,6 +104,9 @@ reconcileDesiredInstance(instanceInfo)
 ├── IF storageProvider:
 │   ├── publishStatusReason("waiting for volumes")
 │   └── ensureVolumesAttachedForInstance         [BAIL if false, revoke token]
+│       ├── storageProviderForVolume             [route local vs NFS by type fact]
+│       ├── provider.CreateVolume                [ensure directory exists, 0777]
+│       └── provider.AttachVolume                [bind to node, return path]
 │
 ├── publishStatusReason("starting")
 ├── buildRuntimeSpecForInstance

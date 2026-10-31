@@ -377,7 +377,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewDrainController(),
 		networkController,
 		controllers.NewNetworkPolicyController(),
-		controllers.NewWarmZeroController())
+		controllers.NewWarmZeroController(),
+		controllers.NewStorageController(factStore))
 
 	metricsCollector := controllers.NewMetricsCollector()
 
