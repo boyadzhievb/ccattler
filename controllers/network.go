@@ -66,27 +66,25 @@ func NewNetworkControllerWithCIDR(vipCIDR string) *NetworkController {
 // bookkeeping.
 func (networkController *NetworkController) Name() string { return "network" }
 
-// Watch returns the fact prefixes the network controller monitors: existing
-// endpoints (to know which services have backends), desired services (for
-// exposed port info), existing VIPs (to avoid re-allocation), and DNS
-// mappings (for staleness detection).
+// Watch returns the fact prefixes the network controller monitors: desired
+// services (for exposed port info), existing VIPs (to avoid re-allocation),
+// and DNS mappings (for staleness detection).
 func (networkController *NetworkController) Watch() []string {
 	return []string{
-		types.ScanEndpoints,
 		types.ScanDesiredServices,
 		types.ScanNetworkVIPs,
 		types.ScanNetworkDNS,
 	}
 }
 
-// Reconcile examines endpoint facts, desired service port configurations,
-// and existing VIP/DNS facts, then emits changes to create missing VIPs and
-// DNS records for services with endpoints, and remove VIPs and DNS records
-// for services whose definition has been deleted. VIPs persist through
-// transient zero-endpoint windows (node failure, rolling updates) to
-// maintain address stability.
+// Reconcile examines desired service port configurations and existing
+// VIP/DNS facts, then emits changes to create missing VIPs and DNS records
+// for services that declare an exposed port, and remove VIPs and DNS records
+// for services whose definition has been deleted. VIPs are allocated when the
+// service is defined, not when endpoints appear — this ensures DNS resolves
+// immediately so init containers can discover dependencies before backends
+// are ready.
 func (networkController *NetworkController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
-	servicesWithEndpoints := collectServicesWithEndpointsFromFacts(facts)
 	servicePorts := extractServiceExposedPorts(facts)
 	definedServiceNames := collectDefinedServiceNamesFromFacts(facts)
 	existingVIPs, _ := collectExistingVIPAllocations(facts)
@@ -95,18 +93,14 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 
 	var changes []Change
 
-	sortedServiceNames := make([]string, 0, len(servicesWithEndpoints))
-	for serviceName := range servicesWithEndpoints {
+	sortedServiceNames := make([]string, 0, len(servicePorts))
+	for serviceName := range servicePorts {
 		sortedServiceNames = append(sortedServiceNames, serviceName)
 	}
 	sort.Strings(sortedServiceNames)
 
 	for _, serviceName := range sortedServiceNames {
-		exposedPorts := servicePorts[serviceName]
-		if len(exposedPorts) == 0 {
-			continue
-		}
-		exposedPort := exposedPorts[0]
+		exposedPort := servicePorts[serviceName][0]
 
 		if _, hasVIP := existingVIPs[serviceName]; !hasVIP {
 			vipAddress := fmt.Sprintf("%d.%d.%d.%d",
@@ -144,20 +138,6 @@ func (networkController *NetworkController) Reconcile(_ context.Context, facts [
 	changes = append(changes, staleRemovalChanges...)
 
 	return changes, nil
-}
-
-// collectServicesWithEndpointsFromFacts scans endpoint facts and returns a set
-// of service names that have at least one endpoint.
-func collectServicesWithEndpointsFromFacts(facts []store.Fact) map[string]bool {
-	servicesWithEndpoints := make(map[string]bool)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanEndpoints) {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanEndpoints)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) >= 1 {
-			servicesWithEndpoints[pathParts[0]] = true
-		}
-	}
-	return servicesWithEndpoints
 }
 
 // collectExistingVIPAllocations scans VIP facts and returns maps of service

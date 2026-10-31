@@ -47,11 +47,13 @@ Container IPs are written to the store as `observed/instance/{id}/ip` by the nod
 
 ### Layer 2: Service VIPs (VIP CIDR)
 
-Each service with exposed ports gets a stable virtual IP from the VIP CIDR (default `10.200.0.0/24`). The `NetworkController` (`controllers/network.go`) allocates VIPs:
+Each service with exposed ports gets a stable virtual IP from the VIP CIDR (default `10.200.0.0/24`). The `NetworkController` (`controllers/network.go`) allocates VIPs from **desired state** — as soon as a service declares an `expose` port, not when endpoints appear:
 
-1. Watches `endpoint/service/{name}/*` for services with backends
+1. Watches `desired/service/{name}/expose/{port}` for services with exposed ports
 2. Allocates the next free VIP from the pool
 3. Writes `network/vip/{service}` and `network/dns/{service}` facts
+
+This ensures DNS resolves immediately after `cca apply`, so init containers can discover dependencies (e.g. `metadata-db`) before backend containers are running. Endpoints attach to the VIP later via the eBPF/nftables data plane when containers start.
 
 The `NftablesDataPlane` (`network/nftables_dataplane.go`) programs DNAT rules on each node so that traffic to a VIP is forwarded to backend container endpoints. The `cca0` dummy interface holds VIP addresses so the kernel accepts traffic destined for them.
 

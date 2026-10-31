@@ -135,21 +135,40 @@ func TestNetworkControllerMultipleServicesGetDifferentVIPs(t *testing.T) {
 	}
 }
 
-// TestNetworkControllerNoVIPWithoutEndpoints verifies that a service with
-// no running endpoints does not get a VIP allocated.
-func TestNetworkControllerNoVIPWithoutEndpoints(t *testing.T) {
+// TestNetworkControllerAllocatesVIPFromDesiredState verifies that a service
+// with an exposed port gets a VIP allocated from desired state alone, even
+// before any containers are running. This ensures DNS resolves immediately
+// so init containers can discover dependencies.
+func TestNetworkControllerAllocatesVIPFromDesiredState(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 	ctx := context.Background()
 
-	// Service exists with an exposed port but no endpoints.
 	factStore.Put(ctx, types.KeyDesiredServiceExpose("web", 8080), []byte(""))
 
 	networkController := NewNetworkController()
 	changes, _ := helperReconcileNetworkController(ctx, factStore, networkController)
 
-	if len(changes) != 0 {
-		t.Errorf("expected 0 changes for service without endpoints, got %d", len(changes))
+	if len(changes) != 3 {
+		t.Fatalf("expected 3 changes (VIP + port + DNS) for service with exposed port, got %d", len(changes))
+	}
+
+	helperApplyChangesToStore(ctx, factStore, changes)
+
+	vipFact, err := factStore.Get(ctx, types.KeyNetworkVIPService("web"))
+	if err != nil {
+		t.Fatal("VIP should exist for service defined with exposed port, even without endpoints")
+	}
+	if !strings.HasPrefix(string(vipFact.Value), "10.200.0.") {
+		t.Errorf("VIP = %s, want prefix 10.200.0.", vipFact.Value)
+	}
+
+	dnsFact, err := factStore.Get(ctx, types.KeyNetworkDNS("web"))
+	if err != nil {
+		t.Fatal("DNS should exist for service defined with exposed port, even without endpoints")
+	}
+	if string(dnsFact.Value) != string(vipFact.Value) {
+		t.Errorf("DNS = %s, VIP = %s, they should match", dnsFact.Value, vipFact.Value)
 	}
 }
 
@@ -365,7 +384,6 @@ func TestNetworkControllerWatchPrefixes(t *testing.T) {
 	watchPrefixes := networkController.Watch()
 
 	expectedPrefixes := map[string]bool{
-		types.ScanEndpoints:       false,
 		types.ScanDesiredServices: false,
 		types.ScanNetworkVIPs:     false,
 		types.ScanNetworkDNS:      false,
