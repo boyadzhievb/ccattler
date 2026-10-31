@@ -256,6 +256,9 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 		{Key: types.KeyDesiredVolumeSize(volumeDecl.Name), Value: volumeDecl.Size},
 		{Key: types.KeyDesiredVolumePersistent(volumeDecl.Name), Value: persistentValue},
 	}
+	if volumeDecl.StorageType != "" {
+		facts = append(facts, Fact{Key: types.KeyDesiredVolumeType(volumeDecl.Name), Value: volumeDecl.StorageType})
+	}
 	return facts, nil
 }
 

@@ -195,6 +195,9 @@ func formatVolumeDecl(builder *strings.Builder, volumeDecl VolumeDecl) {
 	if volumeDecl.Persistent {
 		fmt.Fprintf(builder, "%spersistent true\n", indentUnit)
 	}
+	if volumeDecl.StorageType != "" {
+		fmt.Fprintf(builder, "%stype %s\n", indentUnit, volumeDecl.StorageType)
+	}
 	builder.WriteString("}\n")
 }
 

@@ -1198,6 +1198,12 @@ func KeyDesiredVolumePersistent(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/persistent", PrefixDesired, volumeName)
 }
 
+// KeyDesiredVolumeType returns the store path for a volume's storage type.
+// Path: desired/volume/{name}/type
+func KeyDesiredVolumeType(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/type", PrefixDesired, volumeName)
+}
+
 // KeyDesiredVolumeReplicas returns the store path for a volume's desired
 // replication count. Value "1" means no replication; higher values enable
 // synchronous replication to that many copies.
@@ -1247,6 +1253,12 @@ func KeyObservedVolumeSize(volumeName string) string {
 // Path: observed/volume/{name}/mount_path
 func KeyObservedVolumeMountPath(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/mount_path", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeType returns the store path for an observed volume's storage type.
+// Path: observed/volume/{name}/type
+func KeyObservedVolumeType(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/type", PrefixObserved, volumeName)
 }
 
 // KeyObservedVolumeMigrationSource returns the store path for the node a volume

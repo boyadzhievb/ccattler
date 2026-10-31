@@ -251,6 +251,7 @@
     - /etc/ccattler
     - /etc/ccattler/pki
     - /var/lib/ccattler
+    - /var/lib/cca/volumes
     - /var/log/ccattler
 
 - name: Write etcd endpoints config

@@ -573,6 +573,16 @@ func configureAgentStorageProvider(nodeAgent *agent.Agent, parsedConfig agentCom
 		nodeAgent.SetStorageProvider(nfsStorageProvider)
 		fmt.Printf("Agent %s: storage enabled (NFS: %s)\n",
 			parsedConfig.nodeID, parsedConfig.storageDirectory)
+
+		localVolumePath := "/var/lib/cca/volumes"
+		localStorageProvider, localCreateError := storage.NewLocalPathStorageProvider(localVolumePath)
+		if localCreateError != nil {
+			fmt.Fprintf(os.Stderr, "warning: local storage fallback unavailable: %v\n", localCreateError)
+		} else {
+			nodeAgent.SetLocalStorageProvider(localStorageProvider)
+			fmt.Printf("Agent %s: local storage fallback enabled (%s)\n",
+				parsedConfig.nodeID, localVolumePath)
+		}
 	}
 }
 

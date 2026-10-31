@@ -86,10 +86,11 @@ type TagDecl struct {
 
 // VolumeDecl represents a parsed top-level "volume" block in the DSL.
 type VolumeDecl struct {
-	Name       string // unique volume identifier from the block header
-	Size       string // declared storage size (e.g. "100Gi")
-	Persistent bool   // true if the volume's data survives instance deletion
-	Line       int    // source line number for error reporting
+	Name        string // unique volume identifier from the block header
+	Size        string // declared storage size (e.g. "100Gi")
+	Persistent  bool   // true if the volume's data survives instance deletion
+	StorageType string // storage backend for this volume: "local" or "nfs" (empty = agent default)
+	Line        int    // source line number for error reporting
 }
 
 // VolumeMountDecl represents a volume mount binding inside a service block.

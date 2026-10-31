@@ -43,6 +43,7 @@
     - /etc/ccattler/pki
     - /etc/ccattler
     - /var/lib/ccattler
+    - /var/lib/cca/volumes
     - /var/log/ccattler
 
 - name: Remove etcd data

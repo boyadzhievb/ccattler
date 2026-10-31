@@ -105,6 +105,7 @@ type Agent struct {
 	runtime                  runtime.Runtime                      // runtime is the pluggable container/process runtime adapter.
 	networkProvider          network.NetworkProvider              // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
 	storageProvider          storage.StorageProvider              // storageProvider manages volume attach/detach; nil means no volume support.
+	localStorageProvider     storage.StorageProvider              // localStorageProvider handles volumes with type=local; nil when no local path configured.
 	secretProvider           SecretProvider                       // secretProvider retrieves decrypted secrets; nil means no secret support.
 	advertiseAddress         string                               // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
 	interval                 time.Duration                        // interval is the period between periodic reconciliation cycles.
@@ -155,6 +156,13 @@ func (nodeAgent *Agent) SetNetworkProvider(networkProvider network.NetworkProvid
 // required by a service before starting its instances.
 func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvider) {
 	nodeAgent.storageProvider = storageProvider
+}
+
+// SetLocalStorageProvider configures a secondary local-path storage provider
+// for volumes declared with type=local. Used alongside an NFS primary provider
+// so databases can use local disk while shared data uses NFS.
+func (nodeAgent *Agent) SetLocalStorageProvider(localProvider storage.StorageProvider) {
+	nodeAgent.localStorageProvider = localProvider
 }
 
 // SetSecretProvider configures the agent to materialize secrets for instances.
@@ -1621,6 +1629,19 @@ func (nodeAgent *Agent) lookupServiceVolumeMountsFromStore(ctx context.Context, 
 	return volumeMounts
 }
 
+// storageProviderForVolume returns the appropriate storage provider for a
+// volume based on its declared type. Volumes with type=local use the local
+// provider; all others use the primary provider.
+func (nodeAgent *Agent) storageProviderForVolume(ctx context.Context, volumeName string) storage.StorageProvider {
+	if nodeAgent.localStorageProvider != nil {
+		typeFact, readErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeType(volumeName))
+		if readErr == nil && string(typeFact.Value) == "local" {
+			return nodeAgent.localStorageProvider
+		}
+	}
+	return nodeAgent.storageProvider
+}
+
 // ensureVolumesAttachedForInstance checks whether all volumes required by the
 // instance's service are available, and attaches them to this node if so.
 // Returns (true, nil) when all volumes are ready. Returns (false, nil) when a
@@ -1652,7 +1673,8 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			return false, nil
 		}
 
-		mountPath, err := nodeAgent.storageProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
+		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+		mountPath, err := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
 		if err != nil {
 			return false, fmt.Errorf("attaching volume %s: %w", volumeName, err)
 		}
@@ -1664,7 +1686,7 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 		}
 
 		var usedBytes, capacityBytes int64
-		usedBytes, capacityBytes, _ = nodeAgent.storageProvider.VolumeUsage(ctx, volumeName)
+		usedBytes, capacityBytes, _ = volumeProvider.VolumeUsage(ctx, volumeName)
 
 		if writeError := types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
 			Name:          volumeName,
@@ -1725,7 +1747,8 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 
 	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, serviceName)
 	for volumeName := range volumeMounts {
-		if detachError := nodeAgent.storageProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
+		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+		if detachError := volumeProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
 			logging.Default().Error("failed to detach volume", "volume", volumeName, "node", nodeAgent.nodeID, "error", detachError.Error())
 		}
 

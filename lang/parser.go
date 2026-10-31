@@ -1261,6 +1261,15 @@ func (parser *Parser) parseVolumeDeclaration() (*VolumeDecl, error) {
 				return nil, persistentErr
 			}
 			volumeDecl.Persistent = persistentValue == "true"
+		case "type":
+			storageType, typeErr := parser.expectIdentifier()
+			if typeErr != nil {
+				return nil, typeErr
+			}
+			if storageType != "local" && storageType != "nfs" {
+				return nil, parser.parserErrorf("volume type must be \"local\" or \"nfs\", got %q", storageType)
+			}
+			volumeDecl.StorageType = storageType
 		default:
 			return nil, parser.parserErrorf("unknown volume field %q", key)
 		}

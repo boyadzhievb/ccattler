@@ -109,6 +109,8 @@ func collectDesiredVolumes(facts []store.Fact) map[string]desiredVolumeInfo {
 				info.size = string(fact.Value)
 			case "persistent":
 				info.persistent = string(fact.Value) == "true"
+			case "type":
+				info.storageType = string(fact.Value)
 			case "replicas":
 				parsedReplicas, parseErr := strconv.Atoi(string(fact.Value))
 				if parseErr != nil {
@@ -186,11 +188,18 @@ func reconcileVolumeCreation(desiredVolumes map[string]desiredVolumeInfo, observ
 	var changes []Change
 	for volumeName, desiredInfo := range desiredVolumes {
 		if _, alreadyObserved := observedVolumes[volumeName]; !alreadyObserved {
-			changes = append(changes, groupedChanges("vol-create/"+volumeName,
+			creationFacts := groupedChanges("vol-create/"+volumeName,
 				Change{Type: store.OpPut, Key: types.KeyObservedVolume(volumeName), Value: []byte("")},
 				Change{Type: store.OpPut, Key: types.KeyObservedVolumeState(volumeName), Value: []byte(string(types.VolumeAvailable))},
 				Change{Type: store.OpPut, Key: types.KeyObservedVolumeSize(volumeName), Value: []byte(desiredInfo.size)},
-			)...)
+			)
+			if desiredInfo.storageType != "" {
+				creationFacts = append(creationFacts, Change{
+					Type: store.OpPut, Key: types.KeyObservedVolumeType(volumeName),
+					Value: []byte(desiredInfo.storageType), Group: "vol-create/" + volumeName,
+				})
+			}
+			changes = append(changes, creationFacts...)
 		}
 	}
 	return changes
@@ -347,9 +356,10 @@ func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observe
 
 // desiredVolumeInfo holds parsed fields from desired volume facts.
 type desiredVolumeInfo struct {
-	size       string // size is the raw DSL size string (e.g. "100Gi").
-	persistent bool   // persistent is true if the volume survives instance deletion.
-	replicas   int    // replicas is the desired number of synchronized copies (0 or 1 means no replication).
+	size        string // size is the raw DSL size string (e.g. "100Gi").
+	persistent  bool   // persistent is true if the volume survives instance deletion.
+	replicas    int    // replicas is the desired number of synchronized copies (0 or 1 means no replication).
+	storageType string // storageType is "local" or "nfs" (empty = agent default).
 }
 
 // observedVolumeInfo holds parsed fields from observed volume facts.

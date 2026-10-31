@@ -44,6 +44,12 @@ volume shared-content {
     persistent true
 }
 
+volume pgdata {
+    size 10Gi
+    persistent true
+    type local
+}
+
 service webserver {
     image nginx:1.27
     instances 2
@@ -51,6 +57,14 @@ service webserver {
     volume shared-content /usr/share/nginx/html
 }
 ```
+
+The optional `type` field selects the storage backend per volume:
+
+- **`local`** — uses `LocalPathStorageProvider` at `/var/lib/cca/volumes`. The volume is pinned to the node where the instance first runs. Use for databases that require POSIX fsync/flock semantics (PostgreSQL, MySQL).
+- **`nfs`** — uses `NFSStorageProvider` on the NFS mount. Accessible from all nodes.
+- **(empty)** — uses the agent's `--storage-backend` default.
+
+When the agent runs with `--storage-backend nfs`, it creates both an NFS provider (primary) and a local provider (fallback at `/var/lib/cca/volumes`). The agent reads the volume's type fact and routes attach/detach operations to the correct provider.
 
 The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent tracks volume attach/detach state via the StorageProvider and passes mount paths to the container runtime via `runtime.Spec.VolumeMounts`. Both containerd (OCI bind mounts) and nerdctl (`-v` flags) support volume pass-through.
 

@@ -19,11 +19,13 @@ connection airflow-celery-backend {
 volume pgdata {
     size 10Gi
     persistent true
+    type local
 }
 
 volume redisdata {
     size 1Gi
     persistent true
+    type local
 }
 
 service metadata-db {

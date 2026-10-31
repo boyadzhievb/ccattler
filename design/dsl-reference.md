@@ -63,6 +63,7 @@ service web {
 volume database {
     size 100Gi
     persistent true
+    type local
 }
 
 group frontend {
