@@ -201,7 +201,7 @@ service worker {
     }
     resources {
         cpu 1000m
-        memory 2048Mi
+        memory 4096Mi
     }
     config {
         env AIRFLOW__CORE__EXECUTOR CeleryExecutor
