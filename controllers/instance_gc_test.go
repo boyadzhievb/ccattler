@@ -254,6 +254,56 @@ func TestGCCollectsDeletedServiceInstances(t *testing.T) {
 	}
 }
 
+// TestGCCollectsOrphanedInstancesWithNoService verifies that instances with
+// no service field (orphaned by partial GC or etcd corruption) are collected
+// regardless of their state.
+func TestGCCollectsOrphanedInstancesWithNoService(t *testing.T) {
+	gcController := NewInstanceGCController()
+	gcController.RetentionPeriod = 1 * time.Minute
+	now := time.Date(2026, 10, 29, 18, 0, 0, 0, time.UTC)
+	gcController.NowFunc = fixedTime(now)
+
+	facts := buildFacts(
+		// Orphaned instance: marker key exists but no service field.
+		kv(types.KeyObservedInstance("553f0b9f3b"), ""),
+		kv(types.KeyObservedInstanceState("553f0b9f3b"), ""),
+
+		// Second orphan with init progress but no service.
+		kv(types.KeyObservedInstance("664a918921"), ""),
+		kv(types.KeyObservedInstanceState("664a918921"), "pending"),
+		kv(types.KeyObservedInstanceInitProgress("664a918921"), `{"step":0,"totalSteps":3}`),
+
+		// Normal running instance — should NOT be collected.
+		kv(types.KeyObservedInstance("running-abc"), ""),
+		kv(types.KeyObservedInstanceService("running-abc"), "web"),
+		kv(types.KeyObservedInstanceState("running-abc"), "running"),
+
+		kv(types.KeyEffectiveServiceInstances("web"), "1"),
+	)
+
+	changes, reconcileError := gcController.Reconcile(context.Background(), facts)
+	if reconcileError != nil {
+		t.Fatal(reconcileError)
+	}
+
+	deletedInstances := make(map[string]bool)
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "gc-") {
+			deletedInstances[change.Group] = true
+		}
+	}
+
+	if !deletedInstances["gc-553f0b9f3b"] {
+		t.Error("expected orphaned instance 553f0b9f3b to be collected")
+	}
+	if !deletedInstances["gc-664a918921"] {
+		t.Error("expected orphaned instance 664a918921 to be collected")
+	}
+	if deletedInstances["gc-running-abc"] {
+		t.Error("normal running instance should not be collected")
+	}
+}
+
 // TestGCNoChangesWhenNothingToCollect verifies the controller produces no
 // changes when all instances are either running or pending.
 func TestGCNoChangesWhenNothingToCollect(t *testing.T) {

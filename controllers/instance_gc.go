@@ -82,11 +82,16 @@ func (instanceGCController *InstanceGCController) Reconcile(_ context.Context, f
 	now := instanceGCController.NowFunc()
 	var candidates []gcCandidate
 	for instanceID, state := range stateByInstanceID {
-		if state != types.InstanceStopped && state != types.InstanceFailed {
-			continue
-		}
 		serviceName := serviceByInstanceID[instanceID]
 		if serviceName == "" {
+			// Orphaned instance with no service field — always eligible for GC.
+			candidates = append(candidates, gcCandidate{
+				instanceID:  instanceID,
+				serviceName: "",
+			})
+			continue
+		}
+		if state != types.InstanceStopped && state != types.InstanceFailed {
 			continue
 		}
 		desiredCount, hasDesired := desiredCounts[serviceName]
@@ -127,8 +132,15 @@ func (instanceGCController *InstanceGCController) Reconcile(_ context.Context, f
 	}
 
 	if deletedCount > 0 {
-		logging.Default().Info("instance-gc collecting stopped instances",
+		orphanedCount := 0
+		for _, candidate := range candidates[:deletedCount] {
+			if candidate.serviceName == "" {
+				orphanedCount++
+			}
+		}
+		logging.Default().Info("instance-gc collecting instances",
 			"count", strconv.Itoa(deletedCount),
+			"orphaned", strconv.Itoa(orphanedCount),
 			"remaining", strconv.Itoa(len(candidates)-deletedCount))
 	}
 

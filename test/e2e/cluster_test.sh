@@ -1483,13 +1483,21 @@ fi
 
 # ---- Step 6: Final status ----
 log "Final cluster status:"
-curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" || true
-echo ""
+FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+echo "$FINAL_STATUS" | jq . || true
 
 log "Instances per node (from API):"
-FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) instances) ---"' || true
 echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
+
+log "Verifying all instances are still running after test steps..."
+final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running")] | length')
+if [[ "$final_not_running" -gt 0 ]]; then
+    echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-")"'
+    fail "$final_not_running instance(s) regressed to non-running state during test execution"
+fi
+final_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state == "running")] | length')
+log "Stability check passed: $final_running/$CUMULATIVE_EXPECTED_CONTAINERS instances still running"
 
 # ---- Step 7: Upgrade test (--upgrade only) ----
 if [[ "$UPGRADE_TEST" == "true" ]]; then
@@ -1540,10 +1548,14 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
             c=$(count_containers "$vm")
             total_containers=$((total_containers + c))
         done
-        log "  Upgrade recovery: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers"
-        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then break; fi
+        upgrade_instance_summary=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get instances --no-headers 2>/dev/null")
+        upgrade_running=$(echo "$upgrade_instance_summary" | awk '$3 == "running" { count++ } END { print count+0 }')
+        upgrade_not_running=$(echo "$upgrade_instance_summary" | awk '$3 != "running" && NF > 0 { count++ } END { print count+0 }')
+        log "  Upgrade recovery: $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS containers, $upgrade_running running, $upgrade_not_running not-running"
+        if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" && "$upgrade_not_running" -eq 0 ]]; then break; fi
     done
     [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" ]] || fail "Upgrade: expected $CUMULATIVE_EXPECTED_CONTAINERS+ containers, found $total_containers"
+    [[ "$upgrade_not_running" -eq 0 ]] || fail "Upgrade: $upgrade_not_running instance(s) not running after recovery"
 
     # Verify API is healthy with new binary.
     log "Verifying API health after upgrade..."

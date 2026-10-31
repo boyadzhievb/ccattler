@@ -480,7 +480,12 @@ InstanceGCController.Reconcile(ctx, facts)                   :74
 ├── countRunningInstancesByService(serviceByID, stateByID)   :146
 ├── parsePlacementFacts(facts)                               :161
 │
-├── FOR EACH stopped/failed instance:
+├── FOR EACH instance in stateByInstanceID:
+│   ├── IF serviceName == "" (orphaned):
+│   │   └── add to candidates unconditionally
+│   ├── skip if state != stopped AND state != failed
+│   ├── IF service has no desired count (deleted):
+│   │   └── treat as desiredCount=0 → eligible
 │   ├── skip if running < desired for service
 │   ├── skip if created-at < retention (10min)
 │   └── add to candidates
