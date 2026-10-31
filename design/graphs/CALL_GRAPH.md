@@ -95,7 +95,7 @@ reconcileDesiredInstance(instanceInfo)
 │   │   │       │       │   │   └── custom resolver → advertiseAddress:53
 │   │   │       │       │   └── ELSE:
 │   │   │       │       │       └── net.DefaultResolver (SYSTEM DNS!)
-│   │   │       │       └── net.Dialer.DialContext("tcp", host:port)
+│   │   │       │       └── net.Dialer{Timeout: 10s}.DialContext("tcp", host:port)
 │   │   │       └── IF exec type:
 │   │   │           └── runInitCommand
 │   │   │               └── runtime.ExecInit(image, initSpec)

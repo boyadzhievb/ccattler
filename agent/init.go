@@ -31,6 +31,11 @@ const connectionProbeDefaultRetry = 30
 // the target service may become reachable at any moment.
 const initStepMaxBackoffDelay = 30 * time.Second
 
+// connectionProbeConnectDeadline is the maximum time a TCP dial attempt waits for a
+// connection before failing. Without this, the OS default (~2 minutes) applies,
+// making each retry burn minutes instead of seconds.
+const connectionProbeConnectDeadline = 10 * time.Second
+
 // initStepDefinition holds the parsed configuration for a single init step
 // read from the desired-state section of the fact store. Exactly one of exec
 // or connection is set — exec runs a command, connection probes a named
@@ -338,7 +343,7 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 		return fmt.Errorf("connection %q: %w", stepDefinition.connection, resolveError)
 	}
 
-	dialer := &net.Dialer{}
+	dialer := &net.Dialer{Timeout: connectionProbeConnectDeadline}
 	tcpConnection, dialError := dialer.DialContext(probeCtx, "tcp", resolvedAddress)
 	if dialError != nil {
 		return fmt.Errorf("connection %q: TCP dial to %s (resolved: %s) failed: %w", stepDefinition.connection, dialAddress, resolvedAddress, dialError)

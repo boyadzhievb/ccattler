@@ -182,7 +182,7 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   │           │       │       │   │   └── custom resolver → UDP to addr:53
 │   │           │       │       │   └── ELSE: net.DefaultResolver
 │   │           │       │       └── resolver.LookupHost(hostname)
-│   │           │       └── net.Dialer.DialContext("tcp", resolved:port)
+│   │           │       └── net.Dialer{Timeout: 10s}.DialContext("tcp", resolved:port)
 │   │           │
 │   │           ├── IF exec:
 │   │           │   └── runInitCommand(ctx, image, svc, step) [init.go:209]
