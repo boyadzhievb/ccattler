@@ -22,7 +22,8 @@ ExecStart=/usr/local/bin/cca agent \
   --dataplane {{ dataplane_backend | default('auto') }} \
   --dns-upstream {{ hostvars[groups['controlplane'][0]].ansible_host }}:15353{% if storage_backend is defined %} \
   --storage-backend {{ storage_backend }} \
-  --storage-dir {{ storage_directory }}{% endif %}
+  --storage-dir {{ storage_directory }}
+{% endif %}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
