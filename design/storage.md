@@ -22,8 +22,8 @@ Eight methods covering the full volume lifecycle:
 Three implementations:
 
 - **`SimulatorStorageProvider`** (`storage/simulator.go`) — in-memory backend for integration tests.
-- **`LocalPathStorageProvider`** (`storage/local.go`) — host-local directories under `--storage-dir`. Volumes survive container restarts on the same node (ReadWriteOnce). Each volume is a subdirectory bind-mounted into the container.
-- **`NFSStorageProvider`** (`storage/nfs.go`) — directories on an NFS mount under `--storage-dir`. Supports ReadWriteMany (multiple nodes attach the same volume). Operator must mount NFS before starting the agent.
+- **`LocalPathStorageProvider`** (`storage/local.go`) — host-local directories under `--storage-dir`. Volumes survive container restarts on the same node (ReadWriteOnce). Each volume is a subdirectory bind-mounted into the container. Volume directories are created with 0777 permissions so containers running as any UID can write.
+- **`NFSStorageProvider`** (`storage/nfs.go`) — directories on an NFS mount under `--storage-dir`. Supports ReadWriteMany (multiple nodes attach the same volume). Operator must mount NFS before starting the agent. Volume directories are created with 0777 permissions.
 
 ### 2. StorageController (`controllers/storage.go`)
 
@@ -66,7 +66,7 @@ The optional `type` field selects the storage backend per volume:
 
 When the agent runs with `--storage-backend nfs`, it creates both an NFS provider (primary) and a local provider (fallback at `/var/lib/cca/volumes`). The agent reads the volume's type fact and routes attach/detach operations to the correct provider.
 
-The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent tracks volume attach/detach state via the StorageProvider and passes mount paths to the container runtime via `runtime.Spec.VolumeMounts`. Both containerd (OCI bind mounts) and nerdctl (`-v` flags) support volume pass-through.
+The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent creates volume directories on first attach (via `CreateVolume`), then attaches them via the StorageProvider and passes mount paths to the container runtime via `runtime.Spec.VolumeMounts`. Both containerd (OCI bind mounts) and nerdctl (`-v` flags) support volume pass-through.
 
 ## How to Use NFS with CCattler
 

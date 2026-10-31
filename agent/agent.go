@@ -1674,6 +1674,11 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 		}
 
 		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+
+		if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
+			return false, fmt.Errorf("creating volume %s: %w", volumeName, createError)
+		}
+
 		mountPath, err := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
 		if err != nil {
 			return false, fmt.Errorf("attaching volume %s: %w", volumeName, err)

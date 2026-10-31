@@ -56,8 +56,11 @@ func (localProvider *LocalPathStorageProvider) CreateVolume(_ context.Context, v
 	defer localProvider.mutex.Unlock()
 
 	volumePath := localProvider.volumeDirectoryPath(volumeName)
-	if createError := os.MkdirAll(volumePath, 0750); createError != nil {
+	if createError := os.MkdirAll(volumePath, 0777); createError != nil { // #nosec G301 — containers run as arbitrary UIDs
 		return fmt.Errorf("creating volume directory %s: %w", volumePath, createError)
+	}
+	if chmodError := os.Chmod(volumePath, 0777); chmodError != nil { // #nosec G302 — MkdirAll respects umask, explicit chmod needed
+		return fmt.Errorf("setting volume directory permissions %s: %w", volumePath, chmodError)
 	}
 
 	if _, alreadyTracked := localProvider.volumes[volumeName]; !alreadyTracked {
