@@ -19,7 +19,11 @@ Eight methods covering the full volume lifecycle:
 | `VolumeUsage` | Used/total bytes |
 | `ResizeVolume` | Expand capacity (shrink not allowed) |
 
-The only implementation is `SimulatorStorageProvider` — an in-memory backend for integration tests. There is no production storage driver because CCattler delegates actual storage to the operator (see below).
+Three implementations:
+
+- **`SimulatorStorageProvider`** (`storage/simulator.go`) — in-memory backend for integration tests.
+- **`LocalPathStorageProvider`** (`storage/local.go`) — host-local directories under `--storage-dir`. Volumes survive container restarts on the same node (ReadWriteOnce). Each volume is a subdirectory bind-mounted into the container.
+- **`NFSStorageProvider`** (`storage/nfs.go`) — directories on an NFS mount under `--storage-dir`. Supports ReadWriteMany (multiple nodes attach the same volume). Operator must mount NFS before starting the agent.
 
 ### 2. StorageController (`controllers/storage.go`)
 
@@ -48,11 +52,11 @@ service webserver {
 }
 ```
 
-The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent tracks volume attach/detach state via the StorageProvider, but does not yet pass mount paths to the container runtime — this is the design intent, not current behavior. Today only the SimulatorStorageProvider is implemented.
+The `volume` keyword inside a service block binds a named volume to a container path. The compiler produces facts that the StorageController consumes. The node agent tracks volume attach/detach state via the StorageProvider and passes mount paths to the container runtime via `runtime.Spec.VolumeMounts`. Both containerd (OCI bind mounts) and nerdctl (`-v` flags) support volume pass-through.
 
 ## How to Use NFS with CCattler
 
-CCattler follows the same model as Docker Compose: the operator mounts shared storage on the host, and the container runtime binds the host path into the container. Currently the volume mount pass-through from DSL facts to `nerdctl --volume` is not yet wired — operators use host-level bind mounts directly. The design intent is for the node agent to resolve volume facts to host paths and pass them to the runtime.
+CCattler follows the same model as Docker Compose: the operator mounts shared storage on the host, and the container runtime binds the host path into the container. The agent resolves volume facts to host paths via the StorageProvider and passes them to the runtime as bind mounts.
 
 ### Example: Two Webservers Serving Files from NFS
 
@@ -119,35 +123,20 @@ Both containers serve the updated file immediately — no redeploy needed.
 
 ### NFS with Ansible
 
-For multi-node clusters, use Ansible to mount NFS on all nodes:
+CCattler ships an `nfs-client` role at `deploy/ansible/roles/nfs-client/`. It is wired into `site.yml` and `demo-deploy.yml` with a guard (`when: nfs_server is defined`), so clusters without NFS vars skip it.
 
-```yaml
-# roles/nfs-client/tasks/main.yml
-- name: Install NFS client
-  apt:
-    name: nfs-common
-    state: present
+Add these variables to your inventory:
 
-- name: Create NFS mount point
-  file:
-    path: /mnt/nfs/web-content
-    state: directory
-
-- name: Mount NFS share
-  mount:
-    path: /mnt/nfs/web-content
-    src: "{{ nfs_server }}:/exports/web-content"
-    fstype: nfs
-    opts: defaults
-    state: mounted
+```ini
+[all:vars]
+nfs_server=192.168.124.1
+nfs_export_path=/mnt/disk2/exports/cca-volumes
+nfs_mount_path=/mnt/nfs/cca-volumes
+storage_backend=nfs
+storage_directory=/mnt/nfs/cca-volumes
 ```
 
-Run before deploying the workload:
-
-```bash
-ansible-playbook -i inventory.ini nfs-setup.yml
-cca apply web-cluster.cca
-```
+The role installs `nfs-common`, creates the mount point, mounts via fstab, and verifies access. The `storage_backend` and `storage_directory` vars are passed to `cca agent` via the systemd unit template.
 
 ## Why No Plugin System
 
@@ -161,7 +150,7 @@ CCattler does not need this because:
 
 3. **The operator owns the mount.** CCattler does not provision, format, or attach storage. It passes host paths to `nerdctl --volume`. This is the same model Docker Compose uses, and it works because the operator is responsible for making storage available on the host.
 
-4. **The StorageProvider interface exists for internal use.** The controller uses it to track volume state in etcd (which node has what attached), enforce exclusive access, and handle cleanup when nodes fail. It is not a plugin boundary — it is an internal adapter for testing (SimulatorStorageProvider) and future local-disk management.
+4. **The StorageProvider interface is an internal Go adapter.** The controller uses it to track volume state in etcd (which node has what attached), enforce exclusive access, and handle cleanup when nodes fail. Three backends exist: SimulatorStorageProvider (tests), LocalPathStorageProvider (host directories), NFSStorageProvider (shared NFS mount). Adding a new backend is one Go file implementing eight methods, compiled into the binary.
 
 5. **Adding a CSI-like protocol would add complexity without value.** It requires a gRPC sidecar per node, a registration mechanism, health checking, and versioned protocol negotiation. For bare-metal NFS this is pure overhead.
 

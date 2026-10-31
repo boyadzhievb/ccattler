@@ -62,6 +62,10 @@
 - [x] Volume facts and attach/mount lifecycle
 - [x] Constraint enforcement (exclusive attach, node compatibility)
 - [x] Storage driver interface (local, NFS, cloud block)
+- [x] LocalPathStorageProvider — host directories, bind-mounted into containers (M164)
+- [x] NFSStorageProvider — shared NFS mount, ReadWriteMany cross-node (M164)
+- [x] Runtime volume pass-through — Spec.VolumeMounts → containerd OCI bind mounts / nerdctl -v (M164)
+- [x] Agent --storage-backend/--storage-dir flags, Ansible nfs-client role (M164)
 
 ### Phase 9 — Failure & Chaos Testing
 - [x] Kill node — does the system reschedule?
@@ -1821,7 +1825,7 @@ vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' 
 | M161 — Service Priority & Preemption ✅ | 161 | `priority N` (0-1000) field on services. Eviction controller uses priority as secondary sort after QoS. Scheduler preempts lowest-priority on full cluster. No PriorityClass objects — just a field. |
 | M162 — Colocate & Separate Placement Hints ✅ | 162 | `placement { colocate "redis" }` / `placement { separate "redis" }`. Soft hints via rankByPreferences scoring. Name services directly — no label selectors or match expressions. |
 | M163 — Zone Spread with MaxSkew ✅ | 163 | `placement { zone spread maxSkew N }`. Scheduler accepts zones where zone_count < minCount + maxSkew. Default maxSkew=1 preserves current strict-spread behavior. |
-| M164 — Stateful Shutdown Order | 164 | `shutdown_order` field on stateful services: "reverse" (default), "parallel", "sequential". Drain and rollout controllers respect ordering. Extends existing stateful support — no StatefulSet type. |
+| M164 — LocalPath & NFS Storage Providers ✅ | 164 | Real StorageProvider backends: LocalPathStorageProvider (host dirs, RWO), NFSStorageProvider (NFS mount, RWX). Runtime volume pass-through via Spec.VolumeMounts (containerd OCI bind mounts, nerdctl -v). Agent --storage-backend/--storage-dir flags. Ansible nfs-client role. Completes Phase 8 storage interface with production backends. |
 | M165 — Job TTL & CronJob Enhancements | 165 | `ttl_after_finished` duration on jobs. `concurrency_policy` (allow/forbid/replace) on cronjobs. Fields on existing blocks — no new controllers. |
 | M166 — External Metrics Scaling | 166 | `scale { horizontal { target external "queue.depth" = 100 endpoint "http://..." } }`. Autoscale controller polls Prometheus-format endpoint. Pluggable adapter interface. Not a new HPA type — another target line. |
 | M167 — Placement Integration Tests | 167 | End-to-end suite combining per-node, priority, colocate, zone spread, stateful shutdown, job TTL, external metrics in 4-node simulated cluster. Update dsl-reference.md. Depends: M160–M166. |

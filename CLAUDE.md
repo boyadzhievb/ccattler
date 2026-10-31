@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M163 — Phase 163 Zone Spread with MaxSkew. M1–M163 complete. Gates A–I resolved.
+**Completed through:** M164 — LocalPath and NFS storage providers. M1–M164 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
@@ -95,7 +95,7 @@ cca apply <file>              # deploy config
 cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
 cca server [flags]            # start control plane
-cca agent --node-id <id>      # start node agent
+cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --storage-dir <path>)
 cca token create/list/revoke  # bootstrap token management
 cca join <server> <token>     # join node to cluster
 cca init [flags]              # initialize cluster

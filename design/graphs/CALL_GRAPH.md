@@ -107,6 +107,8 @@ reconcileDesiredInstance(instanceInfo)
 │
 ├── publishStatusReason("starting")
 ├── buildRuntimeSpecForInstance
+├── IF storageProvider:
+│   └── resolveVolumeMountsForSpec               [reads mount paths from store → Spec.VolumeMounts]
 │   ├── resolveServiceConfigEnvVars
 │   ├── resolveServiceConfigFiles
 │   ├── lookupServiceExposedPortsFromStore
@@ -232,6 +234,7 @@ executeReconciliationCycle(controller, deltaEvents)
 | `hasInitSteps` | `reconcileDesiredInstance` |
 | `publishStatusReason` | `reconcileDesiredInstance` (multiple points) |
 | `ensureVolumesAttachedForInstance` | `reconcileDesiredInstance` (if storageProvider) |
+| `resolveVolumeMountsForSpec` | `reconcileDesiredInstance` (if storageProvider, after buildRuntimeSpec) |
 | `runSingleController` | `Runner.Run` (goroutine per controller) |
 | `runControllerLoop` | `runSingleController` |
 | `setupControllerWatches` | `runControllerLoop` |
