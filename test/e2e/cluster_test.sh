@@ -660,6 +660,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
     last_change_at=$SECONDS
     last_container_count=-1
     last_running_count=-1
+    last_state_fingerprint=""
     total_containers=0
     while [[ $SECONDS -lt $absolute_deadline ]]; do
         sleep 5
@@ -680,6 +681,11 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
         if [[ "$running_count" -ne "$last_running_count" ]]; then
             last_change_at=$SECONDS
             last_running_count=$running_count
+        fi
+        state_fingerprint=$(echo "$instance_summary" | awk 'NF > 0 { state[$3]++ } END { for (s in state) printf "%s=%d ", s, state[s] }')
+        if [[ "$state_fingerprint" != "$last_state_fingerprint" ]]; then
+            last_change_at=$SECONDS
+            last_state_fingerprint="$state_fingerprint"
         fi
         if [[ "$not_running_count" -gt 0 || "$total_containers" -lt "$CUMULATIVE_EXPECTED_CONTAINERS" ]]; then
             summary_line=$(echo "$instance_summary" | awk '
