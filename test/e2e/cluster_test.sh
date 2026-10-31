@@ -701,6 +701,10 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
             [[ -n "$summary_line" ]] && log "$summary_line"
         fi
         if [[ "$total_containers" -ge "$CUMULATIVE_EXPECTED_CONTAINERS" && "$not_running_count" -eq 0 ]]; then break; fi
+        active_count=$(echo "$instance_summary" | awk '$3 == "pulling" || $3 == "init" { count++ } END { print count+0 }')
+        if [[ "$active_count" -gt 0 ]]; then
+            last_change_at=$SECONDS
+        fi
         if [[ "$stale_elapsed" -ge "$STALE_PROGRESS_TIMEOUT" ]]; then
             fail "No convergence progress for ${STALE_PROGRESS_TIMEOUT}s — stuck at $total_containers/$CUMULATIVE_EXPECTED_CONTAINERS (failed at $workload_name)"
         fi
