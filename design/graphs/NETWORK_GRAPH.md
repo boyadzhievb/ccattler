@@ -281,6 +281,12 @@ VXLANReconciler.Reconcile(ctx)                                 [called every 1s 
 │
 ├── disableReversePathFilter(ctx, "cca-vxlan0")                [re-apply every pass]
 │
+├── ensureCorrectMACAddress(ctx)                               [re-check every pass]
+│   ├── readInterfaceMACAddress("cca-vxlan0")
+│   │   └── net.InterfaceByName → HardwareAddr.String()
+│   ├── deriveVXLANMACAddress(nodeID)
+│   └── IF mismatch: executeIPLinkSetAddress(ctx, "cca-vxlan0", expectedMAC)
+│
 ├── discoverPeerNodes(ctx)                                     :211
 │   ├── factStore.Scan(ctx, ScanObservedNodes)
 │   │   └── buildNodeAddressMap(facts)                         :251

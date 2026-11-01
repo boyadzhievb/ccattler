@@ -98,11 +98,12 @@ EbpfDataPlane.RegisterNode(ctx, nodeIP, podCIDR)     [ebpf_dataplane.go:530]
 ## EbpfDataPlane.RetryBridgeAttachment → deferred bridge attach
 
 ```
-EbpfDataPlane.RetryBridgeAttachment(ctx, podCIDR)   [ebpf_dataplane.go:570]
-├── IF tcLink != nil → return (already attached)
-├── IF tcProgram == nil → return (not loaded)
-├── discoverBridgeInterfaceBySubnet(podCIDR)         [ebpf_dataplane.go:725]
-└── attachTCProgramToBridge(bridgeName)              [ebpf_dataplane.go:702]
+EbpfDataPlane.RetryBridgeAttachment(ctx, podCIDR)   [ebpf_dataplane.go:576]
+├── IF tcLink == nil AND tcProgram != nil:
+│   ├── discoverBridgeInterfaceBySubnet(podCIDR)     [ebpf_dataplane.go:725]
+│   └── attachTCProgramToBridge(bridgeName)          [ebpf_dataplane.go:702]
+└── IF snatLink == nil AND registeredNodeIP != "":
+    └── attachSNATToPhysicalNIC(nodeIP, podCIDR)     [ebpf_dataplane.go:610]
 ```
 
 ## EbpfDataPlane.ReconcileVIPDataPlane → map reconciliation
@@ -375,7 +376,7 @@ Used by `cca_tc_dnat` to program conntrack entries instead of modifying packets.
 | `discoverBridgeInterfaceBySubnet` | `RegisterNode`, `RetryBridgeAttachment` |
 | `isBridgeInterface` | `discoverBridgeInterfaceBySubnet` |
 | `attachTCProgramToBridge` | `RegisterNode`, `RetryBridgeAttachment` |
-| `attachSNATToPhysicalNIC` | `RegisterNode` |
+| `attachSNATToPhysicalNIC` | `RegisterNode`, `RetryBridgeAttachment` |
 | `populateConfigMap` | `attachSNATToPhysicalNIC` |
 | `detectPhysicalInterfaceForNodeIP` | `attachSNATToPhysicalNIC` |
 | `closeAllResources` | `Cleanup`, `Initialize` (on attach error) |

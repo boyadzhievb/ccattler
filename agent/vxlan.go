@@ -90,6 +90,8 @@ func (vxlanReconciler *VXLANReconciler) Reconcile(ctx context.Context) {
 			"node", vxlanReconciler.nodeID, "error", rpFilterError.Error())
 	}
 
+	vxlanReconciler.ensureCorrectMACAddress(ctx)
+
 	peerNodes, discoverError := vxlanReconciler.discoverPeerNodes(ctx)
 	if discoverError != nil {
 		logging.Default().Error("vxlan: failed to discover peer nodes",
@@ -203,6 +205,36 @@ func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.C
 		"mac", derivedMAC, "vni", fmt.Sprintf("%d", vxlanVNI),
 		"mtu", fmt.Sprintf("%d", vxlanBridgeMTU))
 	return nil
+}
+
+// ensureCorrectMACAddress reads the current MAC address of the VXLAN interface
+// and corrects it if it does not match the deterministic MAC derived from the
+// node ID. Agent restarts can race during cleanup/creation, leaving the device
+// with a random kernel-assigned MAC while peers expect the deterministic one.
+func (vxlanReconciler *VXLANReconciler) ensureCorrectMACAddress(ctx context.Context) {
+	expectedMAC := deriveVXLANMACAddress(vxlanReconciler.nodeID)
+	currentMAC, readError := readInterfaceMACAddress(vxlanInterfaceName)
+	if readError != nil {
+		return
+	}
+	if strings.EqualFold(currentMAC, expectedMAC) {
+		return
+	}
+	logging.Default().Warn("vxlan: VTEP MAC mismatch, correcting",
+		"node", vxlanReconciler.nodeID, "current", currentMAC, "expected", expectedMAC)
+	if macError := executeIPLinkSetAddress(ctx, vxlanInterfaceName, expectedMAC); macError != nil {
+		logging.Default().Error("vxlan: failed to correct VTEP MAC address",
+			"node", vxlanReconciler.nodeID, "expected", expectedMAC, "error", macError.Error())
+	}
+}
+
+// readInterfaceMACAddress returns the hardware address of the named interface.
+func readInterfaceMACAddress(interfaceName string) (string, error) {
+	networkInterface, lookupError := net.InterfaceByName(interfaceName)
+	if lookupError != nil {
+		return "", lookupError
+	}
+	return networkInterface.HardwareAddr.String(), nil
 }
 
 // discoverPeerNodes reads observed node addresses and network subnet facts

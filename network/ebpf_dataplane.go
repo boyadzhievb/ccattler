@@ -117,6 +117,10 @@ type EbpfDataPlane struct {
 	snatLink link.Link
 	// physicalInterfaceName is the detected physical NIC carrying node traffic.
 	physicalInterfaceName string
+	// registeredNodeIP is the node's advertise address, stored during RegisterNode
+	// so RetryBridgeAttachment can also retry SNAT attachment if the initial
+	// RegisterNode returned before reaching the SNAT step.
+	registeredNodeIP string
 }
 
 // NewEbpfDataPlane creates an EbpfDataPlane ready to load BPF programs from
@@ -531,6 +535,8 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()
 
+	ebpfDataPlane.registeredNodeIP = nodeIP
+
 	logger := logging.Default()
 
 	if ebpfDataPlane.tcProgram == nil {
@@ -566,31 +572,36 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 // RetryBridgeAttachment re-attempts bridge discovery and tc program attachment
 // if the initial RegisterNode call failed to find the bridge (it didn't exist
 // yet because no containers were running). Called by the agent after the first
-// container starts and the CNI bridge is created. No-op if already attached.
+// container starts and the CNI bridge is created. Also retries SNAT attachment
+// to the physical NIC if it was skipped during RegisterNode (because bridge
+// discovery failed before reaching the SNAT step).
 func (ebpfDataPlane *EbpfDataPlane) RetryBridgeAttachment(ctx context.Context, podCIDR string) error {
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()
 
-	if ebpfDataPlane.tcLink != nil {
-		return nil
-	}
-	if ebpfDataPlane.tcProgram == nil {
-		return nil
-	}
-
 	logger := logging.Default()
 
-	bridgeName, discoveryError := discoverBridgeInterfaceBySubnet(podCIDR)
-	if discoveryError != nil {
-		return discoveryError
-	}
-	ebpfDataPlane.bridgeInterfaceName = bridgeName
+	if ebpfDataPlane.tcLink == nil && ebpfDataPlane.tcProgram != nil {
+		bridgeName, discoveryError := discoverBridgeInterfaceBySubnet(podCIDR)
+		if discoveryError != nil {
+			return discoveryError
+		}
+		ebpfDataPlane.bridgeInterfaceName = bridgeName
 
-	if attachError := ebpfDataPlane.attachTCProgramToBridge(bridgeName); attachError != nil {
-		return attachError
+		if attachError := ebpfDataPlane.attachTCProgramToBridge(bridgeName); attachError != nil {
+			return attachError
+		}
+
+		logger.Info("ebpf data plane: tc DNAT attached to bridge (deferred)", "bridge", bridgeName, "subnet", podCIDR)
 	}
 
-	logger.Info("ebpf data plane: tc DNAT attached to bridge (deferred)", "bridge", bridgeName, "subnet", podCIDR)
+	if ebpfDataPlane.snatLink == nil && ebpfDataPlane.registeredNodeIP != "" {
+		if snatError := ebpfDataPlane.attachSNATToPhysicalNIC(ebpfDataPlane.registeredNodeIP, podCIDR); snatError != nil {
+			logger.Warn("ebpf data plane: deferred SNAT attachment failed, nftables handles masquerade",
+				"error", snatError.Error())
+		}
+	}
+
 	return nil
 }
 
