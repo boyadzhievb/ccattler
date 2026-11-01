@@ -1,0 +1,10 @@
+# Workload manifest for warm-zero (scale-to-zero) test.
+# Sourced by cluster_test.sh to discover deployment requirements.
+
+WORKLOAD_DESCRIPTION="Nginx with scale-to-zero (idle_timeout 30s, activation_timeout 15s)"
+WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/library/nginx:alpine")
+WORKLOAD_EXPECTED_CONTAINERS=1
+WORKLOAD_SECRETS=()
+
+# Caddy reverse proxy: domain → service_name (all on port 443 with TLS).
+WORKLOAD_EXPOSE=("warmzero.home.arpa:nginx-warmzero")

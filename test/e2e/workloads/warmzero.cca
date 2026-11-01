@@ -1,0 +1,25 @@
+service nginx-warmzero {
+    image "{{ default "docker.io" .registry }}/library/nginx:alpine"
+    expose 80
+    health {
+        http /
+        every 5s
+    }
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
+    scale {
+        horizontal {
+            min 0
+            max 2
+            idle_timeout 30s
+            activation_timeout 15s
+        }
+    }
+}
+
+gate warmzero-gate {
+    host warmzero.home.arpa
+    service nginx-warmzero port 80
+}
