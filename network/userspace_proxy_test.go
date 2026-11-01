@@ -38,6 +38,10 @@ func (mockResolverInstance *mockResolver) ResolveVIP(_ context.Context, serviceN
 	return vip, nil
 }
 
+func (mockResolverInstance *mockResolver) ResolveHostname(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
 func TestUserSpaceProxyRoutesToBackend(t *testing.T) {
 	backendServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
 		responseWriter.WriteHeader(http.StatusOK)
@@ -551,6 +555,10 @@ func (dynamicResolver *dynamicMockResolver) ResolveEndpoints(ctx context.Context
 }
 
 func (dynamicResolver *dynamicMockResolver) ResolveVIP(_ context.Context, _ string) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (dynamicResolver *dynamicMockResolver) ResolveHostname(_ context.Context, _ string) (string, error) {
 	return "", fmt.Errorf("not implemented")
 }
 

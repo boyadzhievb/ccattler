@@ -418,6 +418,12 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 			return &StartError{ID: spec.ID, Reason: fmt.Sprintf("CNI setup: %v", setupError)}
 		}
 		assignedIP = extractIPFromCNIResult(cniResult)
+		if spec.ServiceName != "" && assignedIP != "" && assignedIP != spec.IP {
+			containerHostname := buildUniqueContainerHostname(spec.ServiceName, spec.ID)
+			hostsContent := generateHostsFile(containerHostname, assignedIP)
+			hostsHostPath := filepath.Join(ContainerdLogBaseDir, spec.ID, "config", "hosts")
+			_ = os.WriteFile(hostsHostPath, []byte(hostsContent), 0644) // #nosec G306
+		}
 	}
 
 	task, taskError := newContainer.NewTask(namespacedCtx,
@@ -477,9 +483,12 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 		ociOptions = append(ociOptions, oci.WithEnv(envVars))
 	}
 
+	var bindMounts []specs.Mount
+
 	if spec.ServiceName != "" {
 		containerHostname := buildUniqueContainerHostname(spec.ServiceName, spec.ID)
 		ociOptions = append(ociOptions, oci.WithHostname(containerHostname))
+		bindMounts = append(bindMounts, writeContainerHostsFile(spec.ID, containerHostname, spec.IP))
 	}
 
 	if spec.MemoryB > 0 {
@@ -498,19 +507,8 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 		}))
 	}
 
-	var bindMounts []specs.Mount
-
 	if containerdRuntime.dnsAddress != "" {
-		resolvConfContent := generateResolvConf(containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain)
-		resolvHostPath := filepath.Join(ContainerdLogBaseDir, spec.ID, "config", "resolv.conf")
-		_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
-		_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
-		bindMounts = append(bindMounts, specs.Mount{
-			Destination: "/etc/resolv.conf",
-			Type:        "bind",
-			Source:      resolvHostPath,
-			Options:     []string{"rbind", "ro"},
-		})
+		bindMounts = append(bindMounts, writeContainerResolvConf(spec.ID, containerdRuntime.dnsAddress, containerdRuntime.dnsSearchDomain))
 	}
 
 	for containerPath, fileContent := range spec.ConfigFiles {
@@ -626,6 +624,48 @@ func generateResolvConf(dnsAddress string, searchDomain string) string {
 		content += "search " + searchDomain + "\n"
 	}
 	return content
+}
+
+// generateHostsFile builds /etc/hosts content mapping the container hostname
+// to its assigned IP address. Mirrors Docker's automatic /etc/hosts generation
+// so that socket.getfqdn(), hostname -i, and getaddrinfo(hostname) work inside
+// containers without relying on DNS.
+func generateHostsFile(containerHostname string, containerIP string) string {
+	var builder strings.Builder
+	builder.WriteString("127.0.0.1\tlocalhost\n")
+	builder.WriteString("::1\tlocalhost ip6-localhost ip6-loopback\n")
+	if containerHostname != "" && containerIP != "" {
+		builder.WriteString(containerIP + "\t" + containerHostname + "\n")
+	}
+	return builder.String()
+}
+
+// writeContainerResolvConf writes resolv.conf to the config dir and returns the bind mount.
+func writeContainerResolvConf(specID string, dnsAddress string, searchDomain string) specs.Mount {
+	resolvConfContent := generateResolvConf(dnsAddress, searchDomain)
+	resolvHostPath := filepath.Join(ContainerdLogBaseDir, specID, "config", "resolv.conf")
+	_ = os.MkdirAll(filepath.Dir(resolvHostPath), 0750)
+	_ = os.WriteFile(resolvHostPath, []byte(resolvConfContent), 0644) // #nosec G306
+	return specs.Mount{
+		Destination: "/etc/resolv.conf",
+		Type:        "bind",
+		Source:      resolvHostPath,
+		Options:     []string{"rbind", "ro"},
+	}
+}
+
+// writeContainerHostsFile writes /etc/hosts to the config dir and returns the bind mount.
+func writeContainerHostsFile(specID string, containerHostname string, containerIP string) specs.Mount {
+	hostsContent := generateHostsFile(containerHostname, containerIP)
+	hostsHostPath := filepath.Join(ContainerdLogBaseDir, specID, "config", "hosts")
+	_ = os.MkdirAll(filepath.Dir(hostsHostPath), 0750)
+	_ = os.WriteFile(hostsHostPath, []byte(hostsContent), 0644) // #nosec G306
+	return specs.Mount{
+		Destination: "/etc/hosts",
+		Type:        "bind",
+		Source:      hostsHostPath,
+		Options:     []string{"rbind", "ro"},
+	}
 }
 
 // extractContainerEnvVars reads the OCI spec from a container and returns its

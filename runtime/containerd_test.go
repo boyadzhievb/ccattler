@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -426,6 +427,50 @@ func testContainerdStopCleansResources(t *testing.T) {
 	_, statusError = containerdRuntime.Status(testCtx, instanceID)
 	if statusError != ErrNotFound {
 		t.Errorf("Status after Stop should return ErrNotFound, got %v", statusError)
+	}
+}
+
+// TestGenerateHostsFileIncludesHostnameEntry verifies that generateHostsFile
+// produces standard /etc/hosts content with the container hostname mapped to
+// its overlay IP, matching Docker's automatic /etc/hosts behavior.
+func TestGenerateHostsFileIncludesHostnameEntry(t *testing.T) {
+	hostsContent := generateHostsFile("worker-a1b2c3d4e5", "10.100.1.5")
+
+	if !strings.Contains(hostsContent, "127.0.0.1\tlocalhost") {
+		t.Error("hosts file must contain localhost entry")
+	}
+	if !strings.Contains(hostsContent, "::1\tlocalhost") {
+		t.Error("hosts file must contain IPv6 localhost entry")
+	}
+	if !strings.Contains(hostsContent, "10.100.1.5\tworker-a1b2c3d4e5") {
+		t.Error("hosts file must map container IP to hostname")
+	}
+}
+
+// TestGenerateHostsFileEmptyIPOmitsHostname verifies that when the container
+// IP is empty (no networking configured), the hosts file still has localhost
+// entries but omits the hostname mapping.
+func TestGenerateHostsFileEmptyIPOmitsHostname(t *testing.T) {
+	hostsContent := generateHostsFile("worker-abc", "")
+
+	if !strings.Contains(hostsContent, "127.0.0.1\tlocalhost") {
+		t.Error("hosts file must contain localhost entry even without IP")
+	}
+	if strings.Contains(hostsContent, "worker-abc") {
+		t.Error("hosts file must not map hostname when IP is empty")
+	}
+}
+
+// TestGenerateResolvConf verifies resolv.conf generation includes the
+// nameserver and search domain.
+func TestGenerateResolvConf(t *testing.T) {
+	content := generateResolvConf("10.100.0.1", "cca.local")
+
+	if !strings.Contains(content, "nameserver 10.100.0.1") {
+		t.Error("resolv.conf must contain nameserver")
+	}
+	if !strings.Contains(content, "search cca.local") {
+		t.Error("resolv.conf must contain search domain")
 	}
 }
 

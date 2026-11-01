@@ -381,7 +381,10 @@ agent/agent.go — `sort.SliceStable` with `hasInitSteps(a) && !hasInitSteps(b)`
 Container starts → runtime.Start returns IP
   → publishInstanceStateToStore(running) writes observed/instance/{id}/ip
   → StatefulDNSController reads observed/instance/{id}/ip
-  → StatefulDNSController writes derived/dns/{name} record
+  → StatefulDNSController writes network/dns/instance/{id} record (ordinal-based)
+  → HostnameDNSController reads observed/instance/{id}/{ip,service,state}
+  → HostnameDNSController writes network/dns/hostname/{hostname} = IP
+  → DNS server resolves VIP first, falls back to hostname lookup
   → DNS forwarder serves the record
   → Connection probe on ANOTHER node can now resolve the hostname
 ```

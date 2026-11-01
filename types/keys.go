@@ -578,6 +578,17 @@ func KeyNetworkDNSInstance(instanceID string) string {
 // ScanNetworkDNSInstances scans all per-instance DNS entries for stateful services.
 const ScanNetworkDNSInstances = PrefixNetwork + "/dns/instance/"
 
+// KeyNetworkDNSHostname returns the store path for a container hostname DNS
+// entry. Maps the unique container hostname (e.g. "worker-a1b2c3d4e5") to its
+// overlay IP so that other containers can resolve it via CCattler DNS.
+// Path: network/dns/hostname/{hostname}
+func KeyNetworkDNSHostname(hostname string) string {
+	return fmt.Sprintf("%s/dns/hostname/%s", PrefixNetwork, hostname)
+}
+
+// ScanNetworkDNSHostnames scans all per-instance hostname DNS entries.
+const ScanNetworkDNSHostnames = PrefixNetwork + "/dns/hostname/"
+
 // KeyDesiredServiceScaleHorizontalMin returns the store path for a service's
 // horizontal autoscaling minimum instance count.
 // Path: desired/service/{name}/scale/horizontal/min

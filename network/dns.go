@@ -123,13 +123,16 @@ func (dnsServer *DNSServer) handleDNSQuery(ctx context.Context, connection *net.
 
 	virtualIP, err := dnsServer.resolver.ResolveVIP(ctx, serviceName)
 	if err != nil || virtualIP == "" {
-		dnsServer.sendNXDomainResponse(connection, remoteAddress, transactionID, queryPacket[12:queryNameEndOffset+4])
-		return
+		virtualIP, err = dnsServer.resolver.ResolveHostname(ctx, serviceName)
+		if err != nil || virtualIP == "" {
+			dnsServer.sendNXDomainResponse(connection, remoteAddress, transactionID, queryPacket[12:queryNameEndOffset+4])
+			return
+		}
 	}
 
 	parsedIP := net.ParseIP(virtualIP).To4()
 	if parsedIP == nil {
-		logging.Default().Warn("invalid VIP for service", "service", serviceName, "vip", virtualIP)
+		logging.Default().Warn("invalid IP resolved for DNS query", "name", serviceName, "ip", virtualIP)
 		return
 	}
 

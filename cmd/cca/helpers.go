@@ -294,6 +294,7 @@ func coreControllers() []controllers.Controller {
 		controllers.NewRolloutController(),
 		controllers.NewInitController(),
 		controllers.NewStatefulDNSController(),
+		controllers.NewHostnameDNSController(),
 		controllers.NewStatefulVolumeController(),
 		controllers.NewRouteController(),
 		controllers.NewEvictionController(),

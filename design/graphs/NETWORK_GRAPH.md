@@ -56,6 +56,7 @@ NetworkController.Reconcile(ctx, facts)
 | `network/vip/service/{name}` | Write | VIP address for service |
 | `network/vip/service/{name}/port` | Write | Exposed port for VIP |
 | `network/dns/{name}` | Write | DNS name → VIP mapping |
+| `network/dns/hostname/{hostname}` | Write | Container hostname → overlay IP (HostnameDNSController) |
 | `endpoint/service/{name}/*` | Read | Detect services with endpoints |
 | `desired/service/{name}/*` | Read | Detect defined services, exposed ports |
 
@@ -192,7 +193,10 @@ DNSServer.handleDNSQuery(ctx, conn, addr, packet)             :104
 ├── resolver.ResolveVIP(ctx, serviceName)
 │   └── StoreBackedResolver.ResolveVIP                         [see §6]
 ├── IF VIP not found:
-│   └── sendNXDomainResponse
+│   ├── resolver.ResolveHostname(ctx, serviceName)
+│   │   └── StoreBackedResolver.ResolveHostname                [per-instance hostname DNS]
+│   └── IF hostname not found:
+│       └── sendNXDomainResponse
 └── buildDNSARecordResponse(txid, question, ipv4)              :179
     └── constructs A record: name pointer, type A, TTL=30s, 4-byte IP
     └── WriteToUDP(response, addr)

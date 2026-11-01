@@ -24,6 +24,10 @@ type ServiceResolver interface {
 	// ResolveVIP returns the virtual IP address assigned to the named service.
 	// Returns an error if the service has no VIP.
 	ResolveVIP(ctx context.Context, serviceName string) (string, error)
+
+	// ResolveHostname returns the IP address for a per-instance container
+	// hostname. Returns an error if no hostname DNS entry exists.
+	ResolveHostname(ctx context.Context, hostname string) (string, error)
 }
 
 // StoreBackedResolver implements ServiceResolver by reading endpoint and VIP
@@ -83,4 +87,14 @@ func (storeBackedResolver *StoreBackedResolver) ResolveVIP(ctx context.Context, 
 		return "", fmt.Errorf("no VIP for service %s: %w", serviceName, err)
 	}
 	return string(vipFact.Value), nil
+}
+
+// ResolveHostname reads the hostname DNS fact for a container hostname.
+// Returns an error if no entry exists.
+func (storeBackedResolver *StoreBackedResolver) ResolveHostname(ctx context.Context, hostname string) (string, error) {
+	hostnameFact, err := storeBackedResolver.factStore.Get(ctx, types.KeyNetworkDNSHostname(hostname))
+	if err != nil {
+		return "", fmt.Errorf("no hostname DNS for %s: %w", hostname, err)
+	}
+	return string(hostnameFact.Value), nil
 }

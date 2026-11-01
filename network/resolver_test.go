@@ -156,3 +156,36 @@ func TestResolveEndpointsDoesNotCrossPollute(t *testing.T) {
 		t.Errorf("api endpoint instance = %s, want bbb", apiEndpoints[0].InstanceID)
 	}
 }
+
+// TestResolveHostnameReturnsContainerIP verifies that the resolver returns the
+// correct IP for a container hostname.
+func TestResolveHostnameReturnsContainerIP(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	factStore.Put(ctx, types.KeyNetworkDNSHostname("worker-a1b2c3d4e5"), []byte("10.100.1.5"))
+
+	storeBackedResolver := NewStoreBackedResolver(factStore)
+	resolvedIP, err := storeBackedResolver.ResolveHostname(ctx, "worker-a1b2c3d4e5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolvedIP != "10.100.1.5" {
+		t.Errorf("hostname IP = %s, want 10.100.1.5", resolvedIP)
+	}
+}
+
+// TestResolveHostnameReturnsErrorForUnknown verifies that resolving an unknown
+// hostname returns an error.
+func TestResolveHostnameReturnsErrorForUnknown(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+
+	storeBackedResolver := NewStoreBackedResolver(factStore)
+	_, err := storeBackedResolver.ResolveHostname(ctx, "nonexistent-abc")
+	if err == nil {
+		t.Error("expected error for unknown hostname")
+	}
+}
