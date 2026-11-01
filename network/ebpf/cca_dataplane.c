@@ -332,6 +332,55 @@ int cca_tc_snat(struct __sk_buff *skb_ctx)
 	if (!is_overlay_source(ip_header->saddr))
 		return TC_ACT_OK;
 
+	/* Skip reply packets: when a remote host-namespace socket connects to
+	 * a local container, the reply must keep its overlay source IP so the
+	 * remote TCP stack sees the address it connected to. Conntrack marks
+	 * the direction — only SNAT original-direction (container-initiated)
+	 * packets. For non-TCP/UDP or if conntrack has no entry, fall through
+	 * to SNAT as before. */
+	if (ip_header->protocol == IPPROTO_TCP ||
+	    ip_header->protocol == IPPROTO_UDP) {
+		__u32 l4_hdr_offset = ETH_HLEN + (ip_header->ihl * 4);
+		struct bpf_sock_tuple conntrack_tuple = {};
+
+		conntrack_tuple.ipv4.saddr = ip_header->saddr;
+		conntrack_tuple.ipv4.daddr = ip_header->daddr;
+
+		if (ip_header->protocol == IPPROTO_TCP) {
+			struct tcphdr *tcp_header =
+				(void *)data_start + l4_hdr_offset;
+			if ((void *)(tcp_header + 1) > data_end)
+				return TC_ACT_OK;
+			conntrack_tuple.ipv4.sport = tcp_header->source;
+			conntrack_tuple.ipv4.dport = tcp_header->dest;
+		} else {
+			struct udphdr *udp_header =
+				(void *)data_start + l4_hdr_offset;
+			if ((void *)(udp_header + 1) > data_end)
+				return TC_ACT_OK;
+			conntrack_tuple.ipv4.sport = udp_header->source;
+			conntrack_tuple.ipv4.dport = udp_header->dest;
+		}
+
+		struct bpf_ct_opts conntrack_options = {
+			.netns_id = BPF_F_CURRENT_NETNS,
+			.l4proto = ip_header->protocol,
+		};
+
+		struct nf_conn *conntrack_entry = bpf_skb_ct_lookup(
+			skb_ctx, &conntrack_tuple,
+			sizeof(conntrack_tuple.ipv4),
+			&conntrack_options, sizeof(conntrack_options));
+
+		if (conntrack_entry) {
+			__u8 conntrack_direction = conntrack_options.dir;
+
+			bpf_ct_release(conntrack_entry);
+			if (conntrack_direction == IP_CT_DIR_REPLY)
+				return TC_ACT_OK;
+		}
+	}
+
 	__u32 node_address = get_node_ip();
 
 	if (node_address == 0)

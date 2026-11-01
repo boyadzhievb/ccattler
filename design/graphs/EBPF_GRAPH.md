@@ -308,6 +308,13 @@ cca_tc_snat(skb)
 ├── is_overlay_source(saddr)?
 │   └── (saddr & cca_config[OVERLAY_MASK]) == cca_config[OVERLAY_PREFIX]
 │       └── IF no → return TC_ACT_OK
+├── IF TCP or UDP:
+│   ├── parse L4 headers → build bpf_sock_tuple
+│   ├── bpf_skb_ct_lookup(tuple)
+│   │   └── IF found AND direction == REPLY:
+│   │       ├── bpf_ct_release(entry)
+│   │       └── return TC_ACT_OK            [skip SNAT for reply packets]
+│   └── bpf_ct_release(entry) if found
 ├── get_node_ip() from cca_config[NODE_IP]
 │   └── IF 0 → return TC_ACT_OK
 ├── IF saddr == node_ip → return TC_ACT_OK
@@ -316,7 +323,10 @@ cca_tc_snat(skb)
 ├── bpf_l4_csum_replace(tcp/udp checksum, old_src, node_ip)
 └── return TC_ACT_OK
 
-NOTE: Direct packet modification (unlike tc_dnat which uses conntrack kfuncs).
+NOTE: Conntrack-aware — skips SNAT on reply packets so remote TCP sockets
+see the original overlay source IP. Without this, a container reply to a
+host-namespace connection gets its source rewritten to node_ip, breaking
+the TCP 4-tuple match on the remote side.
 ```
 
 ## BPF Map Inventory
@@ -339,15 +349,16 @@ NOTE: Direct packet modification (unlike tc_dnat which uses conntrack kfuncs).
 
 ## Conntrack Kfuncs (kernel 6.1+)
 
-Used by `cca_tc_dnat` to program conntrack entries instead of modifying packets.
+Used by `cca_tc_dnat` to program conntrack entries and by `cca_tc_snat`
+to skip SNAT on reply-direction packets.
 
 | Kfunc | Kernel | Called In | Purpose |
 |---|---|---|---|
-| `bpf_skb_ct_lookup` | 5.18+ | `cca_tc_dnat` | Find existing conntrack entry |
+| `bpf_skb_ct_lookup` | 5.18+ | `cca_tc_dnat`, `cca_tc_snat` | Find existing conntrack entry |
 | `bpf_skb_ct_alloc` | 5.18+ | `cca_tc_dnat` | Allocate new conntrack entry |
 | `bpf_ct_set_nat_info` | 6.1+ | `cca_tc_dnat` | Set DNAT target on entry |
 | `bpf_ct_insert_entry` | 5.18+ | `cca_tc_dnat` | Commit entry to conntrack |
-| `bpf_ct_release` | 5.18+ | `cca_tc_dnat` | Release conntrack reference |
+| `bpf_ct_release` | 5.18+ | `cca_tc_dnat`, `cca_tc_snat` | Release conntrack reference |
 
 ## Reverse Index (who calls this function?)
 

@@ -529,8 +529,9 @@ func (ebpfDataPlane *EbpfDataPlane) enableStickyAffinityForService(routeConfig R
 // RegisterNode discovers the container bridge interface from the overlay
 // subnet CIDR and attaches the tc DNAT program to the bridge ingress. Then
 // discovers the physical NIC from the node IP and attaches the tc SNAT
-// program to the physical NIC egress. When both are attached, nftables is
-// no longer needed for any VIP data plane function.
+// program to the physical NIC egress. The SNAT program is conntrack-aware:
+// it only rewrites overlay source IPs on connection-originating packets,
+// skipping reply packets to preserve the return path for remote TCP sockets.
 func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP string, podCIDR string) error {
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()
@@ -573,8 +574,7 @@ func (ebpfDataPlane *EbpfDataPlane) RegisterNode(ctx context.Context, nodeIP str
 // if the initial RegisterNode call failed to find the bridge (it didn't exist
 // yet because no containers were running). Called by the agent after the first
 // container starts and the CNI bridge is created. Also retries SNAT attachment
-// to the physical NIC if it was skipped during RegisterNode (because bridge
-// discovery failed before reaching the SNAT step).
+// to the physical NIC if it was skipped during RegisterNode.
 func (ebpfDataPlane *EbpfDataPlane) RetryBridgeAttachment(ctx context.Context, podCIDR string) error {
 	ebpfDataPlane.mutex.Lock()
 	defer ebpfDataPlane.mutex.Unlock()

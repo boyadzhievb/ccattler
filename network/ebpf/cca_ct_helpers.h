@@ -46,6 +46,10 @@ enum nf_nat_manip_type {
 #define BPF_F_CURRENT_NETNS (-1)
 #endif
 
+/* Conntrack directions as returned in bpf_ct_opts.dir after a lookup. */
+#define IP_CT_DIR_ORIGINAL 0
+#define IP_CT_DIR_REPLY    1
+
 /* bpf_skb_ct_lookup finds an existing conntrack entry matching the given
  * tuple. Returns a locked reference that must be released with
  * bpf_ct_release(). Returns NULL if no entry found. Kernel 5.18+. */

@@ -606,6 +606,27 @@ LookupDataPlaneFactory(name)                                   :28
 
 ---
 
+## Packet Flow Matrix (eBPF dataplane)
+
+All source→destination combinations and which hooks fire on the path.
+Use this to verify that no hook breaks an unexpected traffic pattern.
+
+| Source | Destination | Egress NIC | cgroup connect4 | tc SNAT | nftables MASQ | Notes |
+|---|---|---|---|---|---|---|
+| Container → external host | enp2s0 | N/A | SNAT (original) | MASQ (NEW) | Both fire on outgoing; nftables creates conntrack entry first |
+| Container → overlay container | cca-vxlan0 | N/A | skipped | N/A | Never hits enp2s0 — goes through VXLAN tunnel |
+| Container → local container | cca0 (bridge) | N/A | skipped | N/A | Bridged locally, never leaves the node |
+| Container reply → remote host-ns | enp2s0 | N/A | **skipped (REPLY)** | skipped (REPLY) | Conntrack marks reply; tc SNAT checks direction |
+| Host-ns → remote container (VIP) | cca-vxlan0 | rewrites VIP→backend | skipped | N/A | Agent init probes use this path |
+| Host-ns → remote container (direct) | cca-vxlan0 | N/A | skipped | N/A | VXLAN route for overlay CIDR |
+| Host-ns → external host | enp2s0 | N/A | skipped | N/A | Physical source IP, not overlay — no SNAT |
+
+Key invariant: tc SNAT must NEVER rewrite reply-direction packets. The remote
+TCP stack expects the source IP from the original SYN-ACK to match the address
+it connected to. The `bpf_skb_ct_lookup` direction check enforces this.
+
+---
+
 ## Reverse Index
 
 | Function | Called By |

@@ -725,6 +725,50 @@ random `f6:a1:47:7a:e9:f8`. Possible causes to investigate:
    vmherd ssh cca-deploy-worker-2 -- 'sudo cca exec <metadata-db-id> -- pg_isready'
    ```
 
+---
+
+## Issue 3: tc SNAT Breaks Host-Namespace → Container TCP (2026-11-01 session 2)
+
+### Root Cause
+
+The tc SNAT program (`cca_tc_snat` on `enp2s0 tcx/egress`) is stateless — it
+rewrites the source IP on ALL packets with overlay source, including TCP REPLY
+packets from containers responding to connections from remote host-namespace
+sockets (e.g., agent init probes).
+
+**Packet flow for init probe (broken before fix):**
+1. Worker-2 agent dials VIP 10.191.0.1:5432 (metadata-db)
+2. cgroup connect4 rewrites → 10.38.219.2:5432 (container on ctrl)
+3. TCP SYN: src=192.168.124.30, dst=10.38.219.2 → via VXLAN to ctrl
+4. Container replies: src=10.38.219.2, dst=192.168.124.30
+5. Reply routes via enp2s0 (physical IP destination)
+6. **tc SNAT fires**: is_overlay_source(10.38.219.2) → TRUE → rewrites src to 192.168.124.10
+7. Worker-2 receives SYN-ACK from 192.168.124.10 → TCP mismatch → DROP
+
+nftables MASQUERADE (from CNI) correctly skips reply packets via conntrack,
+but the tc SNAT had no conntrack awareness.
+
+### Fix
+
+Added `bpf_skb_ct_lookup` check to `cca_tc_snat`. For TCP/UDP packets, the
+program now looks up the conntrack entry and checks `bpf_ct_opts.dir`. If the
+direction is `IP_CT_DIR_REPLY` (1), the packet is a response to an incoming
+connection → skip SNAT. Original-direction packets (container-initiated) still
+get SNATed as before.
+
+### Diagnostic Commands
+
+```bash
+# Verify SNAT is attached:
+vmherd ssh cca-deploy-ctrl -- 'sudo bpftool net show'
+
+# Test TCP connectivity (NOT just ping — ping uses ICMP, unaffected by SNAT):
+vmherd ssh cca-deploy-worker-2 -- 'timeout 3 nc -w 2 10.38.219.2 5432'
+
+# Check conntrack entries:
+vmherd ssh cca-deploy-ctrl -- 'sudo conntrack -L | grep 5432'
+```
+
 ### F. Diagnostic one-liner for future health check failures
 
 ```bash
