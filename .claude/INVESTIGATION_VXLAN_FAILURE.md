@@ -271,6 +271,260 @@ vmherd ssh cca-deploy-ctrl -- 'uname -r'
 # Result: 7.0.0-38-generic
 ```
 
+### 20. nftables Comparison (ctrl vs worker-2)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo nft list ruleset'
+```
+Output:
+```
+table ip nat {
+    chain POSTROUTING {
+        type nat hook postrouting priority srcnat; policy accept;
+    }
+}
+table ip filter {}
+table ip6 filter {}
+```
+Empty — no blocking rules.
+
+```bash
+vmherd ssh cca-deploy-worker-2 -- 'sudo nft list ruleset'
+```
+Output: CNI-generated masquerade chains for container IPs. No blocking rules either.
+
+### 21. iptables (Both Nodes Empty)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo iptables-legacy -L -n -v; sudo iptables -L -n -v'
+vmherd ssh cca-deploy-worker-2 -- 'sudo iptables-legacy -L -n -v; sudo iptables -L -n -v'
+```
+All chains ACCEPT policy, zero rules on both nodes. No firewall blocking.
+
+### 22. BPF Attachments Comparison (Key Finding)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo bpftool net show'
+# Result: tc DNAT on cca0 + 3 cgroup hooks (connect4, sendmsg4, getpeername4)
+
+vmherd ssh cca-deploy-worker-1 -- 'sudo bpftool net show'
+# Result: tc DNAT on cca0 only — NO cgroup hooks
+
+vmherd ssh cca-deploy-worker-2 -- 'sudo bpftool net show'
+# Result: tc DNAT on cca0 only — NO cgroup hooks
+```
+Cgroup hooks only on ctrl (runs server+agent). Workers have only tc DNAT.
+Ruled out cgroup hooks as cause: worker-1 has no hooks but VXLAN also broken there.
+
+### 23. VXLAN UDP Socket State
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo ss -ulnp sport = :4789'
+# UNCONN 0 0 0.0.0.0:4789 0.0.0.0:*
+
+vmherd ssh cca-deploy-worker-2 -- 'sudo ss -ulnp sport = :4789'
+# UNCONN 0 0 0.0.0.0:4789 0.0.0.0:*
+```
+Same socket state on both. Not a socket issue.
+
+### 24. Actual Bridge IPs (Corrected from Summary)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'ip addr show cca0 | grep inet'
+# inet 10.32.219.1/24
+
+vmherd ssh cca-deploy-worker-1 -- 'ip addr show cca0 | grep inet'
+# inet 10.32.128.1/24
+
+vmherd ssh cca-deploy-worker-2 -- 'ip addr show cca0 | grep inet'
+# inet 10.32.165.1/24
+```
+
+### 25. Route Resolution
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'ip route get 10.32.165.1'
+# 10.32.165.1 via 10.32.165.0 dev cca-vxlan0 src 192.168.124.10
+```
+Route resolves correctly through VXLAN.
+
+### 26. nstat Before/After VXLAN Ping (Kernel Counter Diff)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo nstat -rz > /tmp/before.txt; \
+  ping -c1 -W1 10.32.165.1 || true; \
+  sudo nstat -rz > /tmp/after.txt; \
+  diff /tmp/before.txt /tmp/after.txt'
+```
+Key changes:
+- `IcmpOutEchos`: +1 (echo request generated)
+- `IpOutRequests`: +1966 (background traffic + our ping)
+- NO `Udp*` counter changes at all
+Confirms ICMP enters VXLAN device but no UDP encapsulation recorded in SNMP counters.
+
+### 27. ftrace: net_dev_xmit (BREAKTHROUGH)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo bash -c "
+  cd /sys/kernel/debug/tracing
+  echo 0 > tracing_on; echo > trace
+  echo 1 > events/net/net_dev_xmit/enable
+  echo 1 > events/net/net_dev_start_xmit/enable
+  echo 1 > tracing_on
+  ping -c1 -W1 10.32.165.1 2>/dev/null || true
+  sleep 0.3; echo 0 > tracing_on
+  echo 0 > events/net/net_dev_xmit/enable
+  echo 0 > events/net/net_dev_start_xmit/enable
+  cat trace | grep -v \"^#\" | grep -E \"ping|cca-vxlan|enp2s0\" | head -20
+"'
+```
+Output:
+```
+ping-3278085 net_dev_start_xmit: dev=cca-vxlan0 protocol=0x0800 len=98
+ping-3278085 net_dev_start_xmit: dev=enp2s0     protocol=0x0800 len=148
+ping-3278085 net_dev_xmit:       dev=enp2s0     len=148 rc=0
+ping-3278085 net_dev_xmit:       dev=cca-vxlan0 len=98  rc=0
+```
+**VXLAN encapsulation IS working.** Inner 98-byte ICMP enters cca-vxlan0, outer 148-byte
+encapsulated packet (98 + 50 VXLAN overhead) leaves enp2s0 with rc=0 (success).
+
+The problem is NOT sending — it's the **receiving side** dropping.
+UDP OutDatagrams not changing is expected: `udp_tunnel_xmit_skb()` bypasses socket accounting.
+
+### 28. kfree_skb Trace (No Drop on Sender)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'sudo bash -c "
+  cd /sys/kernel/debug/tracing
+  echo 0 > tracing_on; echo > trace
+  echo 1 > events/skb/kfree_skb/enable; echo 1 > tracing_on
+  ping -c1 -W1 10.32.165.1 2>/dev/null || true
+  sleep 0.5; echo 0 > tracing_on; echo 0 > events/skb/kfree_skb/enable
+  cat trace | grep -v \"^#\" | tail -5
+"'
+```
+Only unrelated drops (etcd TCP_OLD_DATA, bridge STP). No kfree_skb for our ICMP ping.
+Confirms packet leaves ctrl successfully — not dropped on sender side.
+
+### 29. Full MAC Address Comparison Across All Nodes (ROOT CAUSE)
+
+```bash
+# Actual VXLAN device MACs:
+vmherd ssh cca-deploy-ctrl -- 'ip link show cca-vxlan0 | grep ether'
+#   02:a0:55:03:74:9c
+
+vmherd ssh cca-deploy-worker-1 -- 'ip link show cca-vxlan0 | grep ether'
+#   02:0e:d2:21:7d:bc
+
+vmherd ssh cca-deploy-worker-2 -- 'ip link show cca-vxlan0 | grep ether'
+#   f6:a1:47:7a:e9:f8    ← RANDOM! Not 02: prefix
+
+# FDB entries (what peers EXPECT):
+vmherd ssh cca-deploy-ctrl -- 'bridge fdb show dev cca-vxlan0 | grep -v 33:33'
+#   02:0b:d2:1c:c4:67 dst 192.168.124.30   ← expected worker-2 MAC
+#   02:0e:d2:21:7d:bc dst 192.168.124.20   ← expected worker-1 MAC
+
+vmherd ssh cca-deploy-worker-2 -- 'bridge fdb show dev cca-vxlan0 | grep -v 33:33'
+#   02:a0:55:03:74:9c dst 192.168.124.10   ← expected ctrl MAC (MATCHES!)
+#   02:0e:d2:21:7d:bc dst 192.168.124.20   ← expected worker-1 MAC (MATCHES!)
+
+# Neighbor entries:
+vmherd ssh cca-deploy-ctrl -- 'ip neigh show dev cca-vxlan0'
+#   10.32.165.0 lladdr 02:0b:d2:1c:c4:67 PERMANENT   ← worker-2 expected
+#   10.32.128.0 lladdr 02:0e:d2:21:7d:bc PERMANENT   ← worker-1 expected
+```
+
+**MAC mismatch map:**
+| Node | Actual MAC | What peers expect | Match? |
+|------|-----------|------------------|--------|
+| ctrl | `02:a0:55:03:74:9c` | `02:a0:55:03:74:9c` | ✓ |
+| worker-1 | `02:0e:d2:21:7d:bc` | `02:0e:d2:21:7d:bc` | ✓ |
+| worker-2 | `f6:a1:47:7a:e9:f8` | `02:0b:d2:1c:c4:67` | ✗ MISMATCH |
+
+### 30. Differential Connectivity Test (Proves MAC is Root Cause)
+
+```bash
+vmherd ssh cca-deploy-ctrl -- 'ping -c2 -W1 10.32.128.1'
+# 2/2 received — ctrl → worker-1 WORKS (MACs match)
+
+vmherd ssh cca-deploy-ctrl -- 'ping -c2 -W1 10.32.165.1'
+# 0/2 received — ctrl → worker-2 FAILS (MAC mismatch)
+
+vmherd ssh cca-deploy-worker-1 -- 'ping -c2 -W1 10.32.219.1'
+# 2/2 received — worker-1 → ctrl WORKS (MACs match)
+```
+
+### 31. Fix MAC on Worker-2 → Connectivity Restored
+
+```bash
+vmherd ssh cca-deploy-worker-2 -- 'sudo ip link set cca-vxlan0 down; \
+  sudo ip link set cca-vxlan0 address 02:0b:d2:1c:c4:67; \
+  sudo ip link set cca-vxlan0 up'
+
+vmherd ssh cca-deploy-ctrl -- 'ping -c3 -W1 10.32.165.1'
+# 3/3 received, 0% loss — FIXED
+
+vmherd ssh cca-deploy-worker-1 -- 'ping -c3 -W1 10.32.165.1'
+# 3/3 received, 0% loss — FIXED
+```
+
+### 32. Agent Restart Race (Why MAC Was Wrong)
+
+```bash
+vmherd ssh cca-deploy-worker-2 -- 'sudo journalctl -u cca-agent --no-pager | \
+  grep -i "vxlan\|vtep\|interface created\|Stopping\|Stopped\|Started"'
+```
+Output:
+```
+21:20:07 systemd: Started cca-agent.service
+21:20:08 cca-agent[2586250]: vxlan: subnet published
+21:20:10 cca-agent[2586250]: vxlan: VTEP MAC derived mac=02:0b:d2:1c:c4:67
+21:20:10 cca-agent[2586250]: vxlan: interface created mac=02:0b:d2:1c:c4:67
+21:20:13 systemd: Stopping cca-agent.service     ← Agent A killed
+21:20:13 systemd: Stopped cca-agent.service
+21:20:13 systemd: Started cca-agent.service       ← Agent B starts
+21:20:15 cca-agent[2586362]: vxlan: VTEP MAC derived mac=02:0b:d2:1c:c4:67
+21:20:15 cca-agent[2586362]: vxlan: interface created mac=02:0b:d2:1c:c4:67
+```
+Both agents logged successful MAC set, but current MAC is random. Agent A's Cleanup()
+deleted the device (between 21:20:13 "Stopping" and "Stopped"). Agent B recreated it.
+The exact mechanism for the MAC revert after Agent B is unclear, but the code never
+re-validates — that's the bug.
+
+### 33. MAC Set While UP Works on This Kernel
+
+```bash
+vmherd ssh cca-deploy-worker-2 -- 'sudo bash -c "
+  ip link add test-mac1 type vxlan id 998 dstport 5001 dev enp2s0 local 192.168.124.30
+  echo AFTER-CREATE:; ip link show test-mac1 | grep ether
+  ip link set test-mac1 address 02:aa:bb:cc:dd:ee
+  echo AFTER-SET:; ip link show test-mac1 | grep ether
+  ip link set test-mac1 up
+  echo AFTER-UP:; ip link show test-mac1 | grep ether
+  ip link delete test-mac1
+"'
+```
+Output:
+```
+AFTER-CREATE: 8e:72:bc:ec:d7:e3
+AFTER-SET:    02:aa:bb:cc:dd:ee
+AFTER-UP:     02:aa:bb:cc:dd:ee
+```
+MAC persists through UP on kernel 7.0. No kernel issue.
+
+### 34. eBPF C Source Analysis (network/ebpf/cca_dataplane.c)
+
+```bash
+# Verified sendmsg4 program does NOT interfere with VXLAN:
+# - cca_sock4_sendmsg (line 81-116): cgroup/sendmsg4 hook
+# - Looks up dst in VIP service map → if not VIP, returns 1 (allow)
+# - VXLAN uses udp_tunnel_xmit_skb(), not sendmsg() — hook never fires
+#
+# Verified SNAT program (line 315-378):
+# - Checks is_overlay_source(src_ip) — VXLAN outer src is node IP, not overlay
+# - Would not affect VXLAN encapsulated traffic even if attached
+```
+
 ---
 
 ## Code Analysis
@@ -365,3 +619,123 @@ The exact mechanism for the MAC revert is unclear, but the code bug is clear: `R
 
 Set correct MAC on worker-2: `sudo ip link set cca-vxlan0 address 02:0b:d2:1c:c4:67`
 All VXLAN connectivity restored across all nodes.
+
+---
+
+## Continuation Playbook (If CI Still Fails)
+
+If the MAC reconciliation fix does not resolve the CI health check, here are the
+remaining areas to investigate, ordered by likelihood:
+
+### A. Verify the fix is actually running
+
+```bash
+# Check agent logs for the new MAC reconciliation:
+vmherd ssh cca-deploy-worker-2 -- 'sudo journalctl -u cca-agent --no-pager | grep "MAC mismatch"'
+# If the log appears → fix is working, MAC was corrected
+# If no log → either MAC was already correct or new binary not deployed
+
+# Verify binary version:
+vmherd ssh cca-deploy-worker-2 -- '/usr/local/bin/cca version'
+```
+
+### B. Check if SNAT is now attached
+
+```bash
+# After fix, RetryBridgeAttachment should attach SNAT:
+vmherd ssh cca-deploy-ctrl -- 'sudo bpftool net show'
+# Look for: enp2s0 tcx/egress cca_tc_snat
+# If missing → SNAT retry still not reaching the code path
+
+# Check agent log for deferred SNAT:
+vmherd ssh cca-deploy-ctrl -- 'sudo journalctl -u cca-agent --no-pager | grep -i SNAT'
+```
+
+### C. Remaining connectivity matrix to test
+
+```bash
+# Full overlay mesh — all 6 directions:
+for src in ctrl worker-1 worker-2; do
+  for dst_ip in 10.32.219.1 10.32.128.1 10.32.165.1; do
+    vmherd ssh cca-deploy-$src -- "ping -c1 -W1 $dst_ip 2>&1"
+  done
+done
+
+# Container-to-container (through VIP):
+vmherd ssh cca-deploy-ctrl -- 'sudo cca exec <scheduler-id> -- curl -s http://<vip>:5432'
+```
+
+### D. Unsolved: exact mechanism of MAC revert
+
+Both agents logged successful MAC set to `02:0b:d2:1c:c4:67`, yet the device had
+random `f6:a1:47:7a:e9:f8`. Possible causes to investigate:
+
+1. **Third-party device recreation**: something (containerd, udev rule, netplan apply)
+   recreated the VXLAN device after Agent B set it up
+   ```bash
+   # Check udev rules that might touch VXLAN:
+   grep -r vxlan /etc/udev/rules.d/ /lib/udev/rules.d/ 2>/dev/null
+   # Check netplan:
+   cat /etc/netplan/*.yaml
+   ```
+
+2. **Kernel MAC reset on socket rebind**: VXLAN device might reset MAC when the
+   UDP socket is recreated (if a second `ip link add` happens with same VNI/port)
+   ```bash
+   # Test: create device, set MAC, delete, recreate with same params:
+   ip link add test type vxlan id 42 dstport 4789 dev enp2s0 local 192.168.124.30
+   ip link set test address 02:aa:bb:cc:dd:ee
+   ip link show test | grep ether   # should be 02:aa:bb:cc:dd:ee
+   ip link delete test
+   ip link add test type vxlan id 42 dstport 4789 dev enp2s0 local 192.168.124.30
+   ip link show test | grep ether   # will be random (new device)
+   ip link delete test
+   ```
+
+3. **Race between Cleanup and Create**: Agent A's `ip link delete` runs after Agent B's
+   `ip link add` but before `ip link set address`. This would mean systemd's
+   "Stopped" log is lying about sequencing. Test with:
+   ```bash
+   # Add tracing to Cleanup:
+   # In agent code, log timestamps with nanosecond precision for:
+   #   1. Signal received
+   #   2. Cleanup() entry
+   #   3. ip link delete start/end
+   #   4. Process exit
+   ```
+
+### E. Other potential issues unrelated to MAC
+
+1. **Init container DNS resolution**: VIP connection probes resolve hostname via
+   CCattler DNS → VIP. If DNS is broken, probes fail before VXLAN is involved.
+   ```bash
+   vmherd ssh cca-deploy-ctrl -- 'dig @localhost -p 15353 airflow-db.cca.local'
+   ```
+
+2. **eBPF socket LB stale entries**: if the VIP → backend mapping is stale,
+   connect() rewrites to a wrong/dead container IP.
+   ```bash
+   vmherd ssh cca-deploy-ctrl -- 'sudo bpftool map dump pinned /sys/fs/bpf/cca/services'
+   vmherd ssh cca-deploy-ctrl -- 'sudo bpftool map dump pinned /sys/fs/bpf/cca/backends'
+   ```
+
+3. **Container not listening**: metadata-db container might be running but Postgres
+   not accepting connections on the expected port.
+   ```bash
+   vmherd ssh cca-deploy-worker-2 -- 'sudo cca exec <metadata-db-id> -- pg_isready'
+   ```
+
+### F. Diagnostic one-liner for future health check failures
+
+```bash
+# Quick triage script — run from hypervisor:
+cd /mnt/disk2/home/bojan/actions-runner/_work/ccattler/ccattler/test/e2e/vm-deploy
+for node in ctrl worker-1 worker-2; do
+  echo "=== $node ==="
+  vmherd ssh cca-deploy-$node -- 'echo MAC:$(ip link show cca-vxlan0 2>/dev/null | grep -o "ether [^ ]*" | cut -d" " -f2); \
+    echo ROUTES:; ip route show dev cca-vxlan0 2>/dev/null; \
+    echo NEIGH:; ip neigh show dev cca-vxlan0 2>/dev/null; \
+    echo FDB:; bridge fdb show dev cca-vxlan0 2>/dev/null | grep -v "33:33"; \
+    echo BPF:; sudo bpftool net show 2>/dev/null | grep -v "^$"'
+done
+```
