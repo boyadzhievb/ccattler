@@ -82,7 +82,9 @@ func (dnsServer *DNSServer) Start(ctx context.Context) error {
 			}
 			continue
 		}
-		go dnsServer.handleDNSQuery(ctx, udpConnection, remoteAddress, packetBuffer[:bytesRead])
+		packetCopy := make([]byte, bytesRead)
+		copy(packetCopy, packetBuffer[:bytesRead])
+		go dnsServer.handleDNSQuery(ctx, udpConnection, remoteAddress, packetCopy)
 	}
 }
 
@@ -110,6 +112,16 @@ func (dnsServer *DNSServer) handleDNSQuery(ctx context.Context, connection *net.
 	queryName, queryNameEndOffset := parseDNSQuestionName(queryPacket, 12)
 	if queryName == "" {
 		return
+	}
+
+	// Only handle A record queries (type 1). For AAAA and other types, return
+	// an empty NOERROR response so resolvers don't see a question/answer mismatch.
+	if queryNameEndOffset+4 <= len(queryPacket) {
+		queryType := binary.BigEndian.Uint16(queryPacket[queryNameEndOffset : queryNameEndOffset+2])
+		if queryType != 1 {
+			dnsServer.sendEmptyResponse(connection, remoteAddress, transactionID, queryPacket[12:queryNameEndOffset+4])
+			return
+		}
 	}
 
 	// Extract the service name by stripping the domain suffix.
@@ -146,6 +158,21 @@ func (dnsServer *DNSServer) sendNXDomainResponse(connection *net.UDPConn, remote
 	binary.BigEndian.PutUint16(responseHeader[0:2], transactionID)
 	// Flags: response (0x8000) | authoritative (0x0400) | NXDOMAIN rcode (0x0003)
 	binary.BigEndian.PutUint16(responseHeader[2:4], 0x8403)
+	binary.BigEndian.PutUint16(responseHeader[4:6], 1) // QDCOUNT = 1
+	binary.BigEndian.PutUint16(responseHeader[6:8], 0) // ANCOUNT = 0
+
+	responseHeader = append(responseHeader, questionSection...)
+	_, _ = connection.WriteToUDP(responseHeader, remoteAddress)
+}
+
+// sendEmptyResponse sends a DNS response with no answer records and NOERROR
+// status. Used for query types we don't support (e.g. AAAA) so the resolver
+// falls back to A records cleanly instead of seeing a question/answer mismatch.
+func (dnsServer *DNSServer) sendEmptyResponse(connection *net.UDPConn, remoteAddress *net.UDPAddr, transactionID uint16, questionSection []byte) {
+	responseHeader := make([]byte, 12)
+	binary.BigEndian.PutUint16(responseHeader[0:2], transactionID)
+	// Flags: response (0x8000) | authoritative (0x0400) | no error (0x0000)
+	binary.BigEndian.PutUint16(responseHeader[2:4], 0x8400)
 	binary.BigEndian.PutUint16(responseHeader[4:6], 1) // QDCOUNT = 1
 	binary.BigEndian.PutUint16(responseHeader[6:8], 0) // ANCOUNT = 0
 

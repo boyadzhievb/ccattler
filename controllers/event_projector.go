@@ -25,16 +25,18 @@ const defaultMergedEventBuffer = 64
 // committed state, making events authoritative regardless of which component
 // caused the change.
 type EventProjector struct {
-	factStore store.StateStore
-	eventLog  *types.EventLog
+	factStore        store.StateStore
+	eventLog         *types.EventLog
+	serviceNameCache map[string]string
 }
 
 // NewEventProjector creates an EventProjector that watches the given store
 // and emits events to the provided event log.
 func NewEventProjector(factStore store.StateStore, eventLog *types.EventLog) *EventProjector {
 	return &EventProjector{
-		factStore: factStore,
-		eventLog:  eventLog,
+		factStore:        factStore,
+		eventLog:         eventLog,
+		serviceNameCache: make(map[string]string),
 	}
 }
 
@@ -195,15 +197,19 @@ func (eventProjector *EventProjector) enrichInstanceEventWithServiceName(
 	targetPath := strings.TrimPrefix(eventTarget, "instance/")
 	instanceID := strings.SplitN(targetPath, "/", 2)[0]
 
+	serviceName := ""
 	serviceKey := types.PrefixObserved + "/instance/" + instanceID + "/service"
 	serviceFact, lookupError := eventProjector.factStore.Get(ctx, serviceKey)
-	if lookupError != nil || serviceFact == nil {
-		return eventTarget, eventDetail
+	if lookupError == nil && serviceFact != nil {
+		serviceName = string(serviceFact.Value)
 	}
-	serviceName := string(serviceFact.Value)
+	if serviceName == "" {
+		serviceName = eventProjector.serviceNameCache[instanceID]
+	}
 	if serviceName == "" {
 		return eventTarget, eventDetail
 	}
+	eventProjector.serviceNameCache[instanceID] = serviceName
 
 	containerName := serviceName + "-" + instanceID
 	enrichedTarget := strings.Replace(eventTarget, "instance/"+instanceID, "instance/"+containerName, 1)
