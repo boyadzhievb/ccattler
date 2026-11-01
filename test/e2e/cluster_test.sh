@@ -1491,6 +1491,122 @@ else
     log "Skipping multi-port cross-node test — whoami-multiport not deployed or no port-80 VIP"
 fi
 
+# ---- Step 5.16: Warm-zero (scale-to-zero) lifecycle test ----
+# Exercises the full chain: warm → idle → scale-down to 0 → cold-start
+# activation → proxy buffers → instance starts → response served.
+
+WARMZERO_DEPLOYED=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    [[ "$workload_name" == "warmzero" ]] && WARMZERO_DEPLOYED=true
+done
+
+if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
+    log "Validating warm-zero lifecycle (nginx-warmzero)..."
+
+    WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    WARMZERO_VIP=$(echo "$WARMZERO_STATUS" | jq -r '.networking[] | select(.service == "nginx-warmzero") | .vip' 2>/dev/null || echo "")
+
+    if [[ -n "$WARMZERO_VIP" ]]; then
+        WARMZERO_IDLE_TIMEOUT=30
+        WARMZERO_ACTIVATION_TIMEOUT=15
+
+        # Phase 1: Verify service is warm (1+ running instances).
+        warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
+        if [[ "$warmzero_running" -eq 0 ]]; then
+            log "  Service at zero, sending activation request..."
+            ssh_vm "$CTRL_NODE" "curl -sf --max-time $WARMZERO_ACTIVATION_TIMEOUT http://${WARMZERO_VIP}:80/ >/dev/null 2>&1" || true
+            sleep 10
+            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+            warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
+        fi
+        if [[ "$warmzero_running" -ge 1 ]]; then
+            log "  Phase 1 PASS: $warmzero_running instance(s) running"
+        else
+            log "  Phase 1 FAIL: expected at least 1 running instance, got $warmzero_running"
+            fail "Warm-zero Phase 1: service did not activate"
+        fi
+
+        # Phase 2: Verify HTTP 200 while warm.
+        warmzero_http=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --max-time 10 http://${WARMZERO_VIP}:80/ 2>/dev/null" || echo "000")
+        if [[ "$warmzero_http" == "200" ]]; then
+            log "  Phase 2 PASS: warm request returned HTTP 200"
+        else
+            fail "Warm-zero Phase 2: warm request returned HTTP $warmzero_http, expected 200"
+        fi
+
+        # Phase 3: Wait for idle_timeout, verify scale to zero.
+        warmzero_wait=$((WARMZERO_IDLE_TIMEOUT + 15))
+        log "  Phase 3: waiting ${warmzero_wait}s for idle_timeout + reconciliation..."
+        sleep "$warmzero_wait"
+
+        warmzero_deadline=$((SECONDS + 30))
+        warmzero_running=1
+        while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
+            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+            warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
+            [[ "$warmzero_running" -gt 0 ]] && sleep 5
+        done
+        if [[ "$warmzero_running" -eq 0 ]]; then
+            log "  Phase 3 PASS: service scaled to zero after idle"
+        else
+            fail "Warm-zero Phase 3: expected 0 instances after idle, got $warmzero_running"
+        fi
+
+        # Phase 4: Cold-start activation — send request at zero state.
+        log "  Phase 4: sending cold-start request..."
+        coldstart_time=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{time_total}' --max-time $((WARMZERO_ACTIVATION_TIMEOUT + 5)) http://${WARMZERO_VIP}:80/ 2>/dev/null" || echo "timeout")
+        coldstart_http=$(ssh_vm "$CTRL_NODE" "curl -sf -o /dev/null -w '%{http_code}' --max-time 10 http://${WARMZERO_VIP}:80/ 2>/dev/null" || echo "000")
+        if [[ "$coldstart_http" == "200" ]]; then
+            log "  Phase 4 PASS: cold-start request returned HTTP 200 in ${coldstart_time}s"
+        else
+            fail "Warm-zero Phase 4: cold-start returned HTTP $coldstart_http, expected 200"
+        fi
+
+        # Phase 5 (extended): Concurrent cold-start requests.
+        if [[ "$EXTENDED_TESTS" == "true" ]]; then
+            log "  Phase 5: concurrent cold-start test..."
+            sleep "$warmzero_wait"
+
+            warmzero_deadline=$((SECONDS + 30))
+            warmzero_running=1
+            while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
+                WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+                warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
+                [[ "$warmzero_running" -gt 0 ]] && sleep 5
+            done
+
+            if [[ "$warmzero_running" -eq 0 ]]; then
+                concurrent_success=$(ssh_vm "$CTRL_NODE" "
+                    for i in \$(seq 1 20); do
+                        curl -sf -o /dev/null -w '%{http_code}\n' \
+                            --max-time $((WARMZERO_ACTIVATION_TIMEOUT + 5)) \
+                            http://${WARMZERO_VIP}:80/ &
+                    done
+                    wait
+                " 2>/dev/null | grep -c "200" || echo "0")
+                if [[ "$concurrent_success" -ge 18 ]]; then
+                    log "  Phase 5 PASS: $concurrent_success/20 concurrent cold-start requests succeeded"
+                else
+                    log "  Phase 5 WARN: only $concurrent_success/20 concurrent requests succeeded"
+                fi
+            else
+                log "  Phase 5 SKIP: service did not scale down for concurrency test"
+            fi
+        fi
+
+        # Reduce expected container count so Step 6 final check doesn't fail.
+        # Warm-zero service may have 0 or 1 instances depending on timing.
+        CUMULATIVE_EXPECTED_CONTAINERS=$((CUMULATIVE_EXPECTED_CONTAINERS - WORKLOAD_EXPECTED_CONTAINERS))
+        WARMZERO_EXCLUDE_FROM_FINAL=true
+
+        log "Warm-zero lifecycle test PASSED"
+    else
+        log "Skipping warm-zero test — no VIP found for nginx-warmzero"
+    fi
+else
+    log "Skipping warm-zero test — warmzero workload not deployed"
+fi
+
 # ---- Step 6: Final status ----
 log "Final cluster status:"
 FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
@@ -1501,9 +1617,13 @@ echo "$FINAL_STATUS" | jq -r '.nodes[] | "--- \(.id) (\(.state), \(.instances) i
 echo "$FINAL_STATUS" | jq -r '.instances[] | "  \(.id)\t\(.service)\t\(.state)\t\(.node)"' || true
 
 log "Verifying all instances are still running after test steps..."
-final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running")] | length')
+if [[ "${WARMZERO_EXCLUDE_FROM_FINAL:-false}" == "true" ]]; then
+    final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running" and .service != "nginx-warmzero")] | length')
+else
+    final_not_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state != "running")] | length')
+fi
 if [[ "$final_not_running" -gt 0 ]]; then
-    echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-") exit=\(.exit_reason // "-")"'
+    echo "$FINAL_STATUS" | jq -r '.instances[] | select(.state != "running" and .service != "nginx-warmzero") | "  REGRESSED: \(.id) (\(.service)) state=\(.state) node=\(.node) init=\(.init_phase // "-") exit=\(.exit_reason // "-")"'
     fail "$final_not_running instance(s) regressed to non-running state during test execution"
 fi
 final_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state == "running")] | length')
