@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.66.0-beta <Badge type="tip" text="latest" /> {#v1-66-0-beta}
+## v1.67.0-beta <Badge type="tip" text="latest" /> {#v1-67-0-beta}
+
+**2026-11-01** — Cluster DNS.
+
+- **Cluster DNS** (M168) — CoreDNS as CCattler service with `placement { mode per-node }`. Auto-generate `<service>.svc.ccattler.local` records from service/endpoint facts. Headless services: A records per instance. Depends: M160.
+
+---
+
+## v1.66.0-beta {#v1-66-0-beta}
 
 **2026-11-01** — Cluster DNS.
 
