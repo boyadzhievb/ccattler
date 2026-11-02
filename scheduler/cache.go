@@ -22,9 +22,10 @@ type NodeCapacityCache struct {
 
 // NewNodeCapacityCache builds a persistent cache from the given candidates,
 // filtering out nodes that lack sufficient resources. The cache can then be
-// reused across multiple placements within a single service batch.
-func NewNodeCapacityCache(candidates []candidateNode, loadPerNode map[string]int, requiredCPU int64, requiredMemory int64) *NodeCapacityCache {
-	heapData, lookupMap := buildNodeHeap(candidates, loadPerNode, requiredCPU, requiredMemory)
+// reused across multiple placements within a single service batch;
+// serviceInstancesPerNode (may be nil) is that service's placed instances per node.
+func NewNodeCapacityCache(candidates []candidateNode, loadPerNode map[string]int, serviceInstancesPerNode map[string]int, requiredCPU int64, requiredMemory int64) *NodeCapacityCache {
+	heapData, lookupMap := buildNodeHeap(candidates, loadPerNode, serviceInstancesPerNode, requiredCPU, requiredMemory)
 	return &NodeCapacityCache{
 		heapData:      heapData,
 		lookupMap:     lookupMap,
@@ -33,8 +34,8 @@ func NewNodeCapacityCache(candidates []candidateNode, loadPerNode map[string]int
 	}
 }
 
-// BestNode returns the node ID with the lowest load score, or empty string if
-// no candidates remain in the cache.
+// BestNode returns the node ID with the fewest instances of the batch's
+// service, then the lowest load score, or empty string if no candidates remain.
 func (cache *NodeCapacityCache) BestNode() string {
 	if cache.heapData.Len() == 0 {
 		return ""
@@ -65,7 +66,7 @@ func (cache *NodeCapacityCache) BestNodeInZones(acceptableZones map[string]bool)
 }
 
 // RecordPlacement decrements the selected node's available resources,
-// increments its load score, and restores the heap invariant. If the node no
+// increments its load score and same-service count, and restores the heap invariant. If the node no
 // longer has sufficient resources for another instance, it is removed from the
 // heap entirely.
 func (cache *NodeCapacityCache) RecordPlacement(nodeID string, cpuCost int64, memoryCost int64) {
@@ -76,6 +77,7 @@ func (cache *NodeCapacityCache) RecordPlacement(nodeID string, cpuCost int64, me
 	entry.node.availCPU -= cpuCost
 	entry.node.availMemory -= memoryCost
 	entry.loadScore++
+	entry.serviceInstanceCount++
 
 	exhausted := (cache.minimumCPU > 0 && entry.node.availCPU < cache.minimumCPU) ||
 		(cache.minimumMemory > 0 && entry.node.availMemory < cache.minimumMemory)

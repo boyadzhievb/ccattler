@@ -38,6 +38,16 @@ all agents to register so the least-loaded algorithm can spread evenly.
 - `Scheduler.placementGracePeriod` is configurable (default 10s, 0 in tests)
 - Logs `WARN` when grace period starts and `INFO` when it expires
 
+### Soft service spread (initial placement)
+
+When placing new instances, nodes are ranked by how many instances of the
+same service they already host, then by total load, then by `prefer` /
+`colocate` hints and node ID. Instances of one service therefore land on
+different nodes whenever capacity allows, even if a node with a sibling is
+less loaded overall; with fewer nodes than instances they double up evenly.
+It is soft: resource fit, `per-node`, zone spread and label constraints are
+applied first, and no instance is left unplaced because of spreading.
+
 ### 2. Reactive Rebalancing
 
 **What:** After initial placement, the scheduler detects load imbalance and
@@ -50,7 +60,9 @@ migrates instances from overloaded to underloaded nodes.
 4. Compute `idealLoad = totalInstances / aliveNodeCount`
 5. Identify overloaded nodes: `load > idealLoad + 1`
 6. For each overloaded node, find movable instances (see eligibility below)
-7. Select target: least-loaded node that satisfies service constraints
+7. Select target: least-loaded node that satisfies service constraints and
+   hosts fewer instances of the service than the source (a move never
+   worsens the service's spread)
 8. Only move if `targetLoad < sourceLoad - 1` (prevents oscillation)
 9. Cap at `maxRebalanceMovesPerCycle` (2) moves per reconciliation
 

@@ -16,7 +16,7 @@ func TestBuildNodeHeapSelectsLeastLoaded(t *testing.T) {
 	}
 	loadPerNode := map[string]int{"node-a": 5, "node-b": 2, "node-c": 8}
 
-	heapData, _ := buildNodeHeap(candidates, loadPerNode, 0, 0)
+	heapData, _ := buildNodeHeap(candidates, loadPerNode, nil, 0, 0)
 	selected := selectFromHeap(&heapData)
 
 	if selected != "node-b" {
@@ -31,7 +31,7 @@ func TestBuildNodeHeapFiltersInsufficientResources(t *testing.T) {
 	}
 	loadPerNode := map[string]int{"node-a": 0, "node-b": 0}
 
-	heapData, _ := buildNodeHeap(candidates, loadPerNode, 200, 0)
+	heapData, _ := buildNodeHeap(candidates, loadPerNode, nil, 200, 0)
 	selected := selectFromHeap(&heapData)
 
 	if selected != "node-b" {
@@ -45,7 +45,7 @@ func TestBuildNodeHeapEmptyWhenNoCapacity(t *testing.T) {
 	}
 	loadPerNode := map[string]int{}
 
-	heapData, _ := buildNodeHeap(candidates, loadPerNode, 500, 0)
+	heapData, _ := buildNodeHeap(candidates, loadPerNode, nil, 500, 0)
 	selected := selectFromHeap(&heapData)
 
 	if selected != "" {
@@ -61,7 +61,7 @@ func TestBuildNodeHeapDeterministicTieBreaking(t *testing.T) {
 	}
 	loadPerNode := map[string]int{"node-a": 3, "node-b": 3, "node-c": 3}
 
-	heapData, _ := buildNodeHeap(candidates, loadPerNode, 0, 0)
+	heapData, _ := buildNodeHeap(candidates, loadPerNode, nil, 0, 0)
 	selected := selectFromHeap(&heapData)
 
 	// Tie-breaking prefers input order (preferRank), so node-c (index 0) wins.
@@ -77,7 +77,7 @@ func TestNodeHeapUpdateAfterPlacement(t *testing.T) {
 	}
 	loadPerNode := map[string]int{"node-a": 1, "node-b": 3}
 
-	heapData, lookupMap := buildNodeHeap(candidates, loadPerNode, 0, 0)
+	heapData, lookupMap := buildNodeHeap(candidates, loadPerNode, nil, 0, 0)
 
 	first := selectFromHeap(&heapData)
 	if first != "node-a" {

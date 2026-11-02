@@ -411,6 +411,7 @@ func executeRebalanceMoves(
 ) []controllers.Change {
 	var changes []controllers.Change
 	moveCount := 0
+	serviceInstancesPerNode := countServiceInstancesPerNode(placements, instances)
 
 	for _, sourceNodeID := range overloadedNodes {
 		if moveCount >= maxRebalanceMovesPerCycle {
@@ -427,7 +428,7 @@ func executeRebalanceMoves(
 			}
 			targetNodeID := selectRebalanceTarget(
 				instanceInfo.service, sourceNodeID,
-				aliveCandidates, nodeLoad, placementConstraints,
+				aliveCandidates, nodeLoad, serviceInstancesPerNode[instanceInfo.service], placementConstraints,
 			)
 			if targetNodeID == "" || nodeLoad[targetNodeID] >= nodeLoad[sourceNodeID]-1 {
 				continue
@@ -438,6 +439,8 @@ func executeRebalanceMoves(
 			changes = append(changes, buildRebalanceMoveChanges(instanceID, sourceNodeID, targetNodeID)...)
 			nodeLoad[sourceNodeID]--
 			nodeLoad[targetNodeID]++
+			serviceInstancesPerNode[instanceInfo.service][sourceNodeID]--
+			serviceInstancesPerNode[instanceInfo.service][targetNodeID]++
 			moveCount++
 		}
 	}
@@ -558,12 +561,15 @@ func findMovableInstances(
 }
 
 // selectRebalanceTarget finds the least-loaded constraint-compatible node
-// that is not the source. Returns empty string if no target exists.
+// that is not the source and hosts fewer instances of the service than the
+// source, so a move never worsens the service's spread. Returns empty string
+// if no target exists.
 func selectRebalanceTarget(
 	serviceName string,
 	sourceNodeID string,
 	aliveCandidates []candidateNode,
 	nodeLoad map[string]int,
+	serviceInstancesOnNode map[string]int,
 	placementConstraints map[string]*servicePlacementConstraint,
 ) string {
 	candidates := filterByConstraints(aliveCandidates, serviceName, placementConstraints)
@@ -571,6 +577,9 @@ func selectRebalanceTarget(
 	bestLoad := math.MaxInt
 	for _, candidate := range candidates {
 		if candidate.id == sourceNodeID {
+			continue
+		}
+		if serviceInstancesOnNode[candidate.id] >= serviceInstancesOnNode[sourceNodeID] {
 			continue
 		}
 		load := nodeLoad[candidate.id]
@@ -646,7 +655,8 @@ func attemptPlacements(
 		serviceZoneCounts: serviceZoneCounts, serviceResources: serviceResources,
 		placementConstraints: placementConstraints, instances: instances, placements: placements,
 		serviceToGroup: serviceToGroup, nodeIndexMap: nodeIndexMap,
-		nodeServicesMap: nodeServicesMap,
+		nodeServicesMap:         nodeServicesMap,
+		serviceInstancesPerNode: countServiceInstancesPerNode(placements, instances),
 	}
 
 	groupedUnplaced, ungroupedUnplaced := partitionUnplacedByGroup(unplaced, instances, serviceToGroup)
@@ -885,6 +895,8 @@ type placementState struct {
 	nodeIndexMap map[string]int
 	// nodeServicesMap maps node ID to the set of services with running/pending instances on that node.
 	nodeServicesMap map[string]map[string]bool
+	// serviceInstancesPerNode maps service name to node ID to placed instance count (soft spread).
+	serviceInstancesPerNode map[string]map[string]int
 }
 
 // placeUngroupedInstances groups unplaced instances by service, then places
@@ -952,7 +964,12 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 	if constraint != nil && constraint.zoneMaxSkew > 0 {
 		zoneMaxSkew = constraint.zoneMaxSkew
 	}
-	cache := NewNodeCapacityCache(candidates, state.loadPerNode, reqCPU, reqMemory)
+	serviceInstancesPerNode := state.serviceInstancesPerNode[serviceName]
+	if serviceInstancesPerNode == nil {
+		serviceInstancesPerNode = make(map[string]int)
+		state.serviceInstancesPerNode[serviceName] = serviceInstancesPerNode
+	}
+	cache := NewNodeCapacityCache(candidates, state.loadPerNode, serviceInstancesPerNode, reqCPU, reqMemory)
 
 	var changes []controllers.Change
 	for _, instanceID := range instanceIDs {
@@ -973,6 +990,7 @@ func placeBatchedInstances(serviceName string, instanceIDs []string, state *plac
 		}
 
 		state.loadPerNode[bestNode]++
+		serviceInstancesPerNode[bestNode]++
 		cache.RecordPlacement(bestNode, reqCPU, reqMemory)
 		if constraint != nil && constraint.mode == "per-node" {
 			cache.RemoveNode(bestNode)
@@ -1053,6 +1071,24 @@ func findUnplacedPendingInstances(instances map[string]*schedulerInstanceInfo, p
 	}
 	sort.Strings(unplaced)
 	return unplaced
+}
+
+// countServiceInstancesPerNode returns, per service, how many placed instances
+// each node hosts. It counts placements the same way as loadPerNode (every
+// placement whose instance still exists) so spread and load agree.
+func countServiceInstancesPerNode(placements map[string]string, instances map[string]*schedulerInstanceInfo) map[string]map[string]int {
+	serviceInstancesPerNode := make(map[string]map[string]int)
+	for instanceID, nodeID := range placements {
+		instanceInfo := instances[instanceID]
+		if instanceInfo == nil {
+			continue
+		}
+		if serviceInstancesPerNode[instanceInfo.service] == nil {
+			serviceInstancesPerNode[instanceInfo.service] = make(map[string]int)
+		}
+		serviceInstancesPerNode[instanceInfo.service][nodeID]++
+	}
+	return serviceInstancesPerNode
 }
 
 // computeNodeLoadAndResourceUsage iterates over existing placements and computes
@@ -1205,7 +1241,7 @@ type candidateNode struct {
 // lowest current instance count (load). Uses a min-heap for O(log n) selection
 // instead of linear scan.
 func selectLeastLoadedNode(alive []candidateNode, load map[string]int, reqCPU, reqMemory int64) string {
-	heapData, _ := buildNodeHeap(alive, load, reqCPU, reqMemory)
+	heapData, _ := buildNodeHeap(alive, load, nil, reqCPU, reqMemory)
 	return selectFromHeap(&heapData)
 }
 

@@ -118,9 +118,10 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
 │       ├── -1 per separate target present on node
 │       └── stable sort: higher affinityScore first
 │
-├── NewNodeCapacityCache(candidates, loadPerNode, reqCPU, reqMem) :947
-│   └── buildNodeHeap(candidates, load, cpu, mem)                [node_heap.go:60]
-│       └── filter by capacity → heap.Init
+├── serviceInstancesPerNode = state.serviceInstancesPerNode[svc]  [from countServiceInstancesPerNode :1079]
+├── NewNodeCapacityCache(candidates, loadPerNode, svcPerNode, reqCPU, reqMem)
+│   └── buildNodeHeap(candidates, load, svcPerNode, cpu, mem)    [node_heap.go:60]
+│       └── filter by capacity → heap.Init (soft service spread first)
 │
 └── FOR EACH instanceID:                                         :950
     ├── [zone-spread] findMinZones(candidates, svc, zoneCounts, maxSkew)  :965/:995
@@ -128,8 +129,9 @@ placeBatchedInstances(serviceName, instanceIDs, state)           :926
     │   └── cache.BestNodeInZones(acceptableZones)               [cache.go:48]
     ├── [default] cache.BestNode()                               [cache.go:38]
     ├── loadPerNode[bestNode]++                                  :967
+    ├── serviceInstancesPerNode[bestNode]++
     ├── cache.RecordPlacement(bestNode, reqCPU, reqMem)          :968
-    │   └── decrement resources, ++load, heap.Fix or heap.Remove [cache.go:71]
+    │   └── decrement resources, ++load, ++serviceInstanceCount, heap.Fix or heap.Remove [cache.go:71]
     ├── [per-node] cache.RemoveNode(bestNode)                    :970/[cache.go:93]
     ├── updateNodeResourcesAfterPlacement(alive, bestNode, ...)  :972/:1145
     └── emit:
@@ -182,15 +184,17 @@ rebalancePlacedInstances(nodes, instances, placements, ...)      :358
 ├── findOverloadedNodes(nodeLoad, alive, idealLoad)              :387/:504
 │   └── nodes where load > idealLoad + 1, sorted by load desc
 │
-└── executeRebalanceMoves(overloaded, nodeLoad, alive, ...)      :389/:398
-    └── FOR EACH overloaded node:                                :411
+└── executeRebalanceMoves(overloaded, nodeLoad, alive, ...)      :389/:402
+    ├── countServiceInstancesPerNode(placements, instances)      :1079
+    └── FOR EACH overloaded node:                                :416
         ├── findMovableInstances(sourceNode, placements, ...)    :415/:519
         │   └── filter: running, not in group, not placedInThisCycle,
         │              not per-node, no colocate/separate hints  :542-548
         │
         └── FOR EACH movable instance:                           :416
-            ├── selectRebalanceTarget(svc, source, alive, load, constraints)  :424/:558
+            ├── selectRebalanceTarget(svc, source, alive, load, svcPerNode, constraints)  :429/:567
             │   └── filterByConstraints → least-loaded non-source node
+            │       hosting fewer instances of svc than the source (never worsens spread)
             │
             ├── GUARD: nodeLoad[target] >= nodeLoad[source] - 1 → skip  :428
             │   [anti-oscillation: move only if genuinely improves balance]
@@ -272,24 +276,26 @@ cleanupStaleUnplacedFacts(facts, placements, placedInThisCycle)  :830
 nodeSelectionHeap type                                           [node_heap.go:4]
 
 nodeHeapEntry:
-    node       candidateNode
-    loadScore  int              ← instance count on node
+    node                 candidateNode
+    serviceInstanceCount int    ← instances of the service being placed on node
+    loadScore            int    ← instance count on node
     preferRank int              ← position in ranked candidate order
     heapIndex  int              ← maintained by Swap()
 
 heap.Less ordering:                                              [node_heap.go:25]
-    1. loadScore ascending      (least-loaded wins)
-    2. preferRank ascending     (prefer-label/affinity bonus)
-    3. node.id ascending        (deterministic tie-break)
+    1. serviceInstanceCount asc (soft spread of one service across nodes)
+    2. loadScore ascending      (least-loaded wins)
+    3. preferRank ascending     (prefer-label/affinity bonus)
+    4. node.id ascending        (deterministic tie-break)
 ```
 
 ### buildNodeHeap
 ```
-buildNodeHeap(candidates, loadPerNode, reqCPU, reqMem)           [node_heap.go:60]
+buildNodeHeap(candidates, loadPerNode, svcPerNode, reqCPU, reqMem)  [node_heap.go:60]
 ├── FOR EACH candidate:
 │   ├── skip if availCPU < reqCPU (capacity filter)
 │   ├── skip if availMemory < reqMem (capacity filter)
-│   └── add nodeHeapEntry{loadScore: loadPerNode[id], preferRank: index}
+│   └── add nodeHeapEntry{serviceInstanceCount: svcPerNode[id], loadScore: loadPerNode[id], preferRank: index}
 ├── heap.Init(&heapSlice)
 └── → heapSlice, lookupMap
 ```
@@ -308,8 +314,8 @@ buildNodeHeap(candidates, loadPerNode, reqCPU, reqMem)           [node_heap.go:6
 
 ### NodeCapacityCache — persistent heap with O(1) lookup
 ```
-NewNodeCapacityCache(candidates, loadPerNode, reqCPU, reqMem)    [cache.go:26]
-└── buildNodeHeap(candidates, load, cpu, mem)                    [node_heap.go:60]
+NewNodeCapacityCache(candidates, loadPerNode, svcPerNode, reqCPU, reqMem)  [cache.go:27]
+└── buildNodeHeap(candidates, load, svcPerNode, cpu, mem)        [node_heap.go:60]
 
 BestNode() string                                                [cache.go:38]
 └── selectFromHeap(&cache.heapData)                              [node_heap.go:86]
@@ -417,7 +423,8 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `sumNodeLoad` | scheduler.go:494 | rebalancePlacedInstances |
 | `findOverloadedNodes` | scheduler.go:504 | rebalancePlacedInstances |
 | `findMovableInstances` | scheduler.go:519 | executeRebalanceMoves |
-| `selectRebalanceTarget` | scheduler.go:558 | executeRebalanceMoves |
+| `selectRebalanceTarget` | scheduler.go:567 | executeRebalanceMoves |
+| `countServiceInstancesPerNode` | scheduler.go:1079 | attemptPlacements, executeRebalanceMoves |
 | `buildRebalanceMoveChanges` | scheduler.go:583 | executeRebalanceMoves |
 | `detectAndLogNodePressure` | scheduler.go:594 | Reconcile |
 | `computeNodeLoadAndResourceUsage` | scheduler.go:1047 | attemptPlacements, rebalancePlacedInstances, detectAndLogNodePressure |

@@ -12,7 +12,7 @@ func TestNodeCapacityCacheBestNode(testHandle *testing.T) {
 		{id: "node-3", availCPU: 4000, availMemory: 8192},
 	}
 	loadPerNode := map[string]int{"node-1": 5, "node-2": 2, "node-3": 8}
-	cache := NewNodeCapacityCache(candidates, loadPerNode, 500, 1024)
+	cache := NewNodeCapacityCache(candidates, loadPerNode, nil, 500, 1024)
 
 	bestNode := cache.BestNode()
 	if bestNode != "node-2" {
@@ -26,7 +26,7 @@ func TestNodeCapacityCacheRecordPlacement(testHandle *testing.T) {
 		{id: "node-2", availCPU: 4000, availMemory: 8192},
 	}
 	loadPerNode := map[string]int{"node-1": 0, "node-2": 0}
-	cache := NewNodeCapacityCache(candidates, loadPerNode, 500, 1024)
+	cache := NewNodeCapacityCache(candidates, loadPerNode, nil, 500, 1024)
 
 	// Both at load 0, node-1 wins by ID tiebreak.
 	firstBest := cache.BestNode()
@@ -48,7 +48,7 @@ func TestNodeCapacityCacheEvictsExhaustedNode(testHandle *testing.T) {
 		{id: "node-2", availCPU: 4000, availMemory: 8192},
 	}
 	loadPerNode := map[string]int{}
-	cache := NewNodeCapacityCache(candidates, loadPerNode, 500, 1024)
+	cache := NewNodeCapacityCache(candidates, loadPerNode, nil, 500, 1024)
 
 	if cache.Len() != 2 {
 		testHandle.Fatalf("expected 2 nodes, got %d", cache.Len())
@@ -65,7 +65,7 @@ func TestNodeCapacityCacheEvictsExhaustedNode(testHandle *testing.T) {
 }
 
 func TestNodeCapacityCacheEmptyReturnsEmpty(testHandle *testing.T) {
-	cache := NewNodeCapacityCache(nil, nil, 0, 0)
+	cache := NewNodeCapacityCache(nil, nil, nil, 0, 0)
 	if cache.BestNode() != "" {
 		testHandle.Errorf("expected empty, got %s", cache.BestNode())
 	}
@@ -81,7 +81,7 @@ func TestNodeCapacityCacheBestNodeInZones(testHandle *testing.T) {
 		{id: "node-3", availCPU: 4000, availMemory: 8192, zone: "us-east-1a"},
 	}
 	loadPerNode := map[string]int{"node-1": 0, "node-2": 0, "node-3": 0}
-	cache := NewNodeCapacityCache(candidates, loadPerNode, 500, 1024)
+	cache := NewNodeCapacityCache(candidates, loadPerNode, nil, 500, 1024)
 
 	// Restrict to zone b — only node-2 qualifies.
 	zoneB := map[string]bool{"us-east-1b": true}
@@ -104,7 +104,7 @@ func TestNodeCapacityCacheMultiplePlacements(testHandle *testing.T) {
 		{id: "node-3", availCPU: 2000, availMemory: 8192},
 	}
 	loadPerNode := map[string]int{}
-	cache := NewNodeCapacityCache(candidates, loadPerNode, 500, 1024)
+	cache := NewNodeCapacityCache(candidates, loadPerNode, nil, 500, 1024)
 
 	// Place 4 instances per node (2000 / 500 = 4), total 12.
 	placedCount := 0

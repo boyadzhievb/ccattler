@@ -5,24 +5,29 @@ package scheduler
 
 import "container/heap"
 
-// nodeHeapEntry pairs a candidate node with its current load score for
-// min-heap ordering. The heap selects the least-loaded node with sufficient
-// resources in O(log n) instead of O(n). The preferRank preserves the
-// caller's preference ordering (lower = more preferred).
+// nodeHeapEntry pairs a candidate node with its scores for min-heap ordering.
+// The heap selects, in O(log n), the node with the fewest instances of the
+// service being placed (soft spread), then the least total load. The
+// preferRank preserves the caller's preference ordering (lower = more preferred).
 type nodeHeapEntry struct {
-	node       candidateNode
-	loadScore  int
-	preferRank int
-	heapIndex  int
+	node                 candidateNode // node is the candidate with its remaining resources.
+	serviceInstanceCount int           // serviceInstanceCount is how many instances of the service being placed the node already hosts.
+	loadScore            int           // loadScore is the total number of instances placed on the node.
+	preferRank           int           // preferRank is the candidate's index in the caller's preference order.
+	heapIndex            int           // heapIndex is the entry's position in the heap (-1 once removed).
 }
 
-// nodeSelectionHeap implements heap.Interface, ordering candidates by load
-// score (ascending). Ties are broken by node ID for determinism.
+// nodeSelectionHeap implements heap.Interface, ordering candidates by
+// same-service instance count, then load score, then preference rank, then
+// node ID (all ascending) so placement spreads a service and stays deterministic.
 type nodeSelectionHeap []*nodeHeapEntry
 
 func (heapSlice nodeSelectionHeap) Len() int { return len(heapSlice) }
 
 func (heapSlice nodeSelectionHeap) Less(indexA, indexB int) bool {
+	if heapSlice[indexA].serviceInstanceCount != heapSlice[indexB].serviceInstanceCount {
+		return heapSlice[indexA].serviceInstanceCount < heapSlice[indexB].serviceInstanceCount
+	}
 	if heapSlice[indexA].loadScore != heapSlice[indexB].loadScore {
 		return heapSlice[indexA].loadScore < heapSlice[indexB].loadScore
 	}
@@ -55,9 +60,10 @@ func (heapSlice *nodeSelectionHeap) Pop() interface{} {
 }
 
 // buildNodeHeap creates a min-heap from candidates, filtering out nodes that
-// lack sufficient resources. Returns the heap and a map from node ID to entry
-// for O(1) lookup when updating after placement.
-func buildNodeHeap(candidates []candidateNode, loadPerNode map[string]int, requiredCPU, requiredMemory int64) (nodeSelectionHeap, map[string]*nodeHeapEntry) {
+// lack sufficient resources. serviceInstancesPerNode (may be nil) holds the
+// placed instances of the service being scheduled per node. Returns the heap
+// and a map from node ID to entry for O(1) lookup when updating after placement.
+func buildNodeHeap(candidates []candidateNode, loadPerNode map[string]int, serviceInstancesPerNode map[string]int, requiredCPU, requiredMemory int64) (nodeSelectionHeap, map[string]*nodeHeapEntry) {
 	heapData := make(nodeSelectionHeap, 0, len(candidates))
 	lookupMap := make(map[string]*nodeHeapEntry, len(candidates))
 
@@ -69,9 +75,10 @@ func buildNodeHeap(candidates []candidateNode, loadPerNode map[string]int, requi
 			continue
 		}
 		entry := &nodeHeapEntry{
-			node:       candidate,
-			loadScore:  loadPerNode[candidate.id],
-			preferRank: candidateIndex,
+			node:                 candidate,
+			serviceInstanceCount: serviceInstancesPerNode[candidate.id],
+			loadScore:            loadPerNode[candidate.id],
+			preferRank:           candidateIndex,
 		}
 		heapData = append(heapData, entry)
 		lookupMap[candidate.id] = entry
