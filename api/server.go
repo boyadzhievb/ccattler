@@ -1270,7 +1270,9 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 
 	tenantFilter := resolveAuditTenantFilter(request)
 
-	filtered := make([]security.AuditEntry, 0, min(maxEntries, security.MaxAuditQueryLimit))
+	// Capacity is a constant, not the request's limit, so a client cannot size
+	// the allocation; append grows it up to maxEntries (capped above).
+	filtered := make([]security.AuditEntry, 0, security.DefaultAuditQueryLimit)
 	for entryIndex := len(facts) - 1; entryIndex >= 0 && len(filtered) < maxEntries; entryIndex-- {
 		var entry security.AuditEntry
 		if unmarshalErr := json.Unmarshal(facts[entryIndex].Value, &entry); unmarshalErr != nil {
