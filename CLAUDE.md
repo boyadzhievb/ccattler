@@ -88,6 +88,8 @@ Both via `cca init`, `cca server`, `cca agent`. Must not overlap each other or p
 
 See `design/` directory: security-model, multi-tenancy, controllers, config-secrets, node-agent, cloud-integration, dsl-reference, runtime-invariant-flows, threat-model, etcd-schema, networking, storage, TESTING.
 
+**Call graphs:** `design/graphs/*_GRAPH.md` are function-level call indexes (call trees with line numbers, store keys, reverse index). Read the relevant graph before reading source; update it when a change adds/removes/renames functions, changes call order, or changes store keys.
+
 ## CLI
 
 Command overview: [design/cli-reference.md](design/cli-reference.md) (kept in sync by `TestDocCrossCheckCLICommandsExist`). Full usage: `cca --help`.

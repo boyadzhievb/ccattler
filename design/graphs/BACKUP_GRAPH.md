@@ -16,8 +16,14 @@ StorageProvider interface                            [storage/storage.go:12]
 ├── IsAttached(ctx, volumeName) (bool, string, error)
 ├── SnapshotVolume(ctx, volumeName, snapshotName) error
 ├── VolumeUsage(ctx, volumeName) (usedBytes, totalBytes, error)
-└── ResizeVolume(ctx, volumeName, newSizeBytes) error
+├── ResizeVolume(ctx, volumeName, newSizeBytes) error
+└── SupportsSharedAttach() bool       [NFS true (ReadWriteMany); local, simulator false]
 ```
+
+Shared attach (Flow 14): the agent lets an instance attach a volume another
+node already holds when `SupportsSharedAttach()` is true; the first node's
+observed facts stay the primary record. See CALL_GRAPH.md
+`ensureVolumesAttachedForInstance`.
 
 ## SimulatorStorageProvider (storage/simulator.go)
 
@@ -286,8 +292,9 @@ StorageProvider.CreateVolume
 StorageProvider.AttachVolume
 ├── volume not found → return error
 │   └── Agent: ensureVolumesAttachedForInstance → BAIL (skip instance startup)
-└── attached to different node → return error (ReadWriteOnce)
-    └── Agent: ensureVolumesAttachedForInstance → BAIL (skip instance startup)
+└── attached to different node → return error (ReadWriteOnce providers only)
+    └── Agent never reaches this for exclusive volumes: the observed-state gate
+        waits first; shared (NFS) providers accept multiple nodes
 
 StorageProvider.DeleteVolume
 ├── volume attached → return error

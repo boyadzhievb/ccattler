@@ -207,6 +207,9 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   └── ensureVolumesAttachedForInstance(ctx, instanceInfo)
 │       ├── READY → continue
 │       └── NOT READY → revoke token, BAIL
+│           (only an EXCLUSIVE volume attached to another node waits forever;
+│            shared/NFS volumes attach here too — Flow 14. State stays
+│            "pulling" with reason "waiting for volumes" while blocked)
 │
 ├── publishStatusReason(ctx, id, "starting")                 :876
 ├── buildRuntimeSpecForInstance(ctx, instanceInfo, image)     :920

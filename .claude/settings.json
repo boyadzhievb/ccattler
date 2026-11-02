@@ -47,6 +47,11 @@
             "type": "command",
             "command": "FILE_PATH=$(jq -r '.tool_response.filePath // .tool_input.file_path // empty'); case \"$FILE_PATH\" in *.go) LINT_OUTPUT=$(bash scripts/lint-naming.sh \"$FILE_PATH\" 2>&1) || { echo \"$LINT_OUTPUT\" | head -20 >&2; exit 2; } ;; esac; exit 0",
             "statusMessage": "Checking Go naming conventions..."
+          },
+          {
+            "type": "command",
+            "command": "FILE_PATH=$(jq -r '.tool_response.filePath // .tool_input.file_path // empty'); case \"$FILE_PATH\" in *_test.go) exit 0 ;; */agent/*.go|*/controllers/*.go|*/scheduler/*.go|*/network/*.go|*/storage/*.go) printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"Edited core file %s. If this adds/removes/renames functions, changes call order, or store keys, update the matching design/graphs/*_GRAPH.md (CALL, NETWORK, INSTANCE_LIFECYCLE, BACKUP, DATA_PLANE, ...).\"}}' \"$FILE_PATH\" ;; esac; exit 0",
+            "statusMessage": "Checking if a design graph needs update..."
           }
         ]
       },

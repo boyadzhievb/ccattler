@@ -103,10 +103,17 @@ reconcileDesiredInstance(instanceInfo)
 │
 ├── IF storageProvider:
 │   ├── publishStatusReason("waiting for volumes")
-│   └── ensureVolumesAttachedForInstance         [BAIL if false, revoke token]
-│       ├── storageProviderForVolume             [route local vs NFS by type fact]
-│       ├── provider.CreateVolume                [ensure directory exists, 0777]
-│       └── provider.AttachVolume                [bind to node, return path]
+│   └── ensureVolumesAttachedForInstance  :1651 [BAIL if false, revoke token]
+│       ├── state attached + isVolumePrimaryNode :1752 → ready
+│       ├── state attached to another node (Flow 14):
+│       │   ├── storageProviderForVolume  :1635 [route local vs NFS by type fact]
+│       │   ├── provider.SupportsSharedAttach() false → wait (BAIL)
+│       │   └── true → attachSharedVolumeOnThisNode :1760
+│       │       (CreateVolume + AttachVolume; primary's observed facts untouched)
+│       └── state available / migrating:
+│           ├── provider.CreateVolume            [ensure directory exists, 0777]
+│           ├── provider.AttachVolume            [bind to node, return path]
+│           └── WriteObservedVolume(attached, node=this node)  [becomes primary]
 │
 ├── publishStatusReason("starting")
 ├── buildRuntimeSpecForInstance
@@ -237,6 +244,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `hasInitSteps` | `reconcileDesiredInstance` |
 | `publishStatusReason` | `reconcileDesiredInstance` (multiple points) |
 | `ensureVolumesAttachedForInstance` | `reconcileDesiredInstance` (if storageProvider) |
+| `attachSharedVolumeOnThisNode` | `ensureVolumesAttachedForInstance` (shared volume held by another node) |
+| `detachVolumesForInstance` | instance stop path; writes state=available only for exclusive volumes or on the primary node |
 | `resolveVolumeMountsForSpec` | `reconcileDesiredInstance` (if storageProvider, after buildRuntimeSpec) |
 | `runSingleController` | `Runner.Run` (goroutine per controller) |
 | `runControllerLoop` | `runSingleController` |
@@ -680,24 +689,17 @@ StoreBackedResolver.ResolveVIP(ctx, serviceName)
 └── → VIP string
 ```
 
-### UserSpaceProxy (network/userspace_proxy.go)
+### UserSpaceProxy — agent gate proxy (network/userspace_proxy.go, network/gate_proxy.go)
+
+Full tree incl. HTTPS listener, SNI certificates, 308/421 policy, sticky
+cookies, and RouteTLSController: NETWORK_GRAPH.md §16.
 ```
-UserSpaceProxy.ServeHTTP(responseWriter, incomingRequest)
-├── extractServiceName(incomingRequest.Host)
-│   ├── strip port (":8080")
-│   └── strip ".cca.local" suffix
-│
-├── types.ValidateResourceName(serviceName)
-│   ├── IF valid → direct service name routing (e.g. "webserver.cca.local" → "webserver")
-│   └── IF invalid → resolveRouteHostname(ctx, serviceName)
-│       ├── check routeHostMap cache (5s TTL)
-│       ├── IF cache miss/expired → refreshRouteHostMap(ctx)
-│       │   ├── store.Scan(desired/route/)
-│       │   ├── build hostname→service map from route host + service facts
-│       │   │   (e.g. "airflow.home.arpa" → route "airflow" → service "webserver")
-│       │   └── cache with 5s TTL
-│       ├── IF hostname found → use resolved service name
-│       └── IF hostname not found → 400 "invalid service name in Host header"
+UserSpaceProxy.ServeHTTP(responseWriter, incomingRequest)      :176
+├── lookupGateHost(ctx, hostWithoutPort(Host))   [gate table, 5s TTL; desired+derived route facts]
+│   (e.g. "airflow.home.arpa" → gate "airflow" → service "webserver")
+├── handleGateRequestPolicy  [308 to https for TLS gates on plain port; 421 on SNI/Host mismatch]
+├── serviceName = gate's service, else extractServiceName(Host)  [strip port, ".cca.local"]
+│   └── ValidateResourceName fails → 400 "invalid service name in Host header"
 │
 ├── resolver.ResolveEndpoints(ctx, serviceName)
 │   └── → []Endpoint (or error → 502)
@@ -711,9 +713,9 @@ UserSpaceProxy.ServeHTTP(responseWriter, incomingRequest)
 │   └── store.Put(observed/service/{name}/last_request_time)
 │
 └── forwardToBackend(responseWriter, incomingRequest, serviceName, endpoints)
-    ├── loadBalancer.Select(endpoints) → least-connections pick
-    ├── circuitBreaker.Allow(backend) → check backend health
-    └── httputil.ReverseProxy.ServeHTTP → forward to backend
+    ├── circuitBreaker.AllowRequest(backend) → healthy candidates
+    ├── selectGateBackend → sticky cookie backend, else least-connections pick
+    └── httputil.ReverseProxy.ServeHTTP → forward to backend (+ sticky Set-Cookie)
 ```
 
 ### caddy-sync (scripts/caddy-sync.sh)

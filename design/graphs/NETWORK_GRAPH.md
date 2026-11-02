@@ -490,24 +490,33 @@ ShadowDataPlane.ReconcileVIPDataPlane(ctx, serviceConfigs)
 
 ## 12. CookieStickyProxy (network/cookie_proxy.go)
 
-### CookieStickyProxy.ReconcileRoutes :64
+Plain-HTTP cookie-sticky gates only (VIP:port dispatch override). Gate TLS is
+NOT handled here since M170 — see §16 gate proxy.
+
+### CookieStickyProxy.ReconcileRoutes :65
 ```
 CookieStickyProxy.ReconcileRoutes(routeConfigs)
 ├── filter: only routes with StickyMethod="cookie" + CookieConfig
 ├── FOR EACH desired cookie route:
-│   ├── IF already running: updateBackends(backends, cookieConf)  :166
-│   └── IF new: startRouteProxy(routeName, routeConfig)        :118
+│   ├── IF already running: updateBackends(backends, cookieConf)  :168
+│   └── IF new: startRouteProxy(routeName, routeConfig)        :119
 │       ├── net.Listen("tcp", "127.0.0.1:0") → allocate port
-│       ├── create cookieRouteProxy{routeName, port, backends, cookieConf}
+│       ├── create cookieRouteProxy{routeName, serviceName, port, backends, cookieConf}
 │       └── goroutine: server.Serve(listener)
-│           └── cookieRouteProxy.ServeHTTP(w, r)               :180
-│               ├── selectBackendFromCookie(r, backends, cookieName)  :218
-│               │   ├── read cookie → find matching backend
+│           └── cookieRouteProxy.ServeHTTP(w, r)               :182
+│               ├── stickyCookieName(conf, serviceName)        :249  → conf.Name or "__CCA_STICKY_{service}"
+│               ├── selectBackendFromCookie(r, backends, cookieName)  :221
+│               │   ├── stickyCookieBackend(r, cookieName)     :258  → cookie value "ip:port"
 │               │   └── fallback: round-robin (nextIndex % len)
 │               └── httputil.ReverseProxy.ServeHTTP
-│                   └── ModifyResponse: buildStickyCookie(conf, value)  :247
+│                   └── ModifyResponse: buildStickyCookie(cookieName, conf, value)  :268
 └── stop proxies for routes no longer desired
 ```
+
+Shared sticky helpers (`stickyCookieName`, `stickyCookieBackend`,
+`buildStickyCookie`) are also used by the gate proxy (§16). Reading and
+writing use the same name, fixing the pre-M170 mismatch
+(`__CCA_STICKY_<route>` read vs `__CCA_STICKY` written).
 
 ---
 
@@ -587,14 +596,69 @@ SimulatorProxy.RouteRequest(ctx, serviceName)
 └── record in routingDecisions[serviceName]
 ```
 
-### UserSpaceProxy (network/userspace_proxy.go)
+### UserSpaceProxy — agent gate proxy (network/userspace_proxy.go, network/gate_proxy.go)
+
+Started by `startAgentHTTPProxy` (cmd/cca/command_agent.go) when the agent runs
+with `--proxy`: plain HTTP on `--proxy-listen` (`Start` :148) and gate HTTPS on
+`--proxy-tls-listen`, default port 443 (`StartTLS` gate_proxy.go:152). Both
+listeners share `ServeHTTP`. Gate TLS terminates only here, never on a VIP
+(Flow 13).
+
 ```
-UserSpaceProxy — HTTP reverse proxy
-├── resolves service from Host header (strip .cca.local)
-├── resolver.ResolveEndpoints → backends
-├── warm-zero: if min=0 + idle_timeout, triggers activation on cold request
-└── httputil.ReverseProxy → forward to selected backend
+UserSpaceProxy.ServeHTTP(w, r)                                 :176
+├── lookupGateHost(ctx, hostWithoutPort(r.Host))               :540
+│   ├── cache hit, not expired → entry (or nil; misses are cached too)
+│   └── expired → refreshGateHosts(ctx)                         :566
+│       ├── store.Scan(desired/route/) + store.Scan(derived/route/)
+│       └── buildGateHostEntries(desired, derived)              gate_proxy.go:57
+│           ├── groupRouteFactAttributes → route → attribute → value
+│           ├── skip routes without host or service
+│           ├── buildGateCookieConfig   → *RouteCookieConfig if sticky=cookie
+│           └── parseGateCertificate    → desired tls/cert+key, else derived; tls.X509KeyPair
+│               (invalid PEM → nil cert, warning logs gate name only)
+├── handleGateRequestPolicy(w, r, gateEntry)                   gate_proxy.go:182
+│   ├── plain HTTP + gate has certificate → 308 https://{gate host}{path}?{query}
+│   └── HTTPS + Host's gate ≠ SNI's gate (or no gate) → 421
+├── serviceName = gateEntry.serviceName, else extractServiceName(r.Host)  :620
+│   └── ValidateResourceName fails → 400
+├── resolver.ResolveEndpoints(ctx, serviceName)  → error → 502
+├── no endpoints: warm-zero → handleColdActivation :251, else 502
+├── recordLastRequestTime(ctx, serviceName)                     :374
+└── forwardToBackend(w, r, serviceName, endpoints)             :461
+    ├── circuitBreaker.AllowRequest → healthy candidates (none → 503)
+    ├── selectGateBackend(r, gateEntry, candidates)            :589
+    │   ├── sticky cookie gate + cookie backend healthy → SelectBackend([sticky])
+    │   └── else LeastConnectionsBalancer.SelectBackend(candidates)
+    └── httputil.ReverseProxy
+        └── ModifyResponse: addGateStickyCookie (Secure forced over HTTPS)
+
+TLS handshake (StartTLS listener):
+tls.Config.GetCertificate = getGateCertificate(clientHello)    gate_proxy.go:141
+├── lookupGateHost(ctx, clientHello.ServerName)
+└── no gate / no certificate → errNoGateCertificate (handshake fails; no default cert)
 ```
+
+### RouteTLSController (controllers/route_tls.go) — auto gate certificates
+```
+RouteTLSController.Reconcile(ctx, facts)                       :56
+├── Watch: desired/route/, derived/route/
+├── parseAutoTLSRoutes(facts)                                  :115  → routes with tls/mode=auto and a host
+├── parseExistingDerivedTLSFacts(facts)                        :150
+├── FOR EACH auto route:
+│   └── needsCertificateIssuance(not-after)                    :162  (missing or within 30 days)
+│       └── CertificateAuthority.IssueCertificate(DNSNames=[host], TTL=90d)
+│           → PUT derived/route/{name}/tls/{cert,key,not-after}
+└── cleanupStaleDerivedTLSFacts                                :175  (gates no longer auto)
+Wired in cmd/cca/command_server.go:387 when the cluster CA is loaded.
+```
+
+### Store keys (gate proxy / gate TLS)
+| Key | Writer | Reader |
+|---|---|---|
+| `desired/route/{name}/host`, `/service`, `/sticky`, `/cookie/*` | compiler | gate proxy |
+| `desired/route/{name}/tls/mode` | compiler | RouteTLSController, gate proxy |
+| `desired/route/{name}/tls/cert`, `/tls/key` (manual) | compiler | gate proxy |
+| `derived/route/{name}/tls/cert`, `/tls/key`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
 
 ---
 
@@ -655,7 +719,12 @@ it connected to. The `bpf_skb_ct_lookup` direction check enforces this.
 | `buildDesiredEndpoints` | `EndpointController.Reconcile` |
 | `compileIdentityRulesToIPRulesPerNode` | `NetworkPolicyController.Reconcile` |
 | `deriveVXLANMACAddress` | `ensureVXLANInterfaceExists`, `programPeerRoutes` |
-| `buildStickyCookie` | `cookieRouteProxy.ServeHTTP` |
+| `buildStickyCookie` | `cookieRouteProxy.ServeHTTP`, `addGateStickyCookie` |
+| `stickyCookieName` | `cookieRouteProxy.ServeHTTP`, `selectGateBackend`, `addGateStickyCookie` |
+| `lookupGateHost` | `UserSpaceProxy.ServeHTTP`, `forwardToBackend`, `getGateCertificate`, `handleGateRequestPolicy` |
+| `buildGateHostEntries` | `refreshGateHosts` |
+| `UserSpaceProxy.StartTLS` | `startAgentHTTPProxy` (cmd/cca/command_agent.go) |
+| `RouteTLSController.Reconcile` | `controllers.Runner` via watch loop |
 | `ParseSystemResolvers` | `Agent.Run` (DNS forwarder setup) |
 
 ---
