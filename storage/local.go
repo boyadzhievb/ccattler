@@ -117,6 +117,12 @@ func (localProvider *LocalPathStorageProvider) AttachVolume(_ context.Context, v
 	return volumePath, nil
 }
 
+// SupportsSharedAttach returns false: host-local directories exist on one
+// node only, so a volume is attached to at most one node (ReadWriteOnce).
+func (localProvider *LocalPathStorageProvider) SupportsSharedAttach() bool {
+	return false
+}
+
 // DetachVolume clears the attachment for a volume. Idempotent — detaching an
 // already-detached volume is a no-op.
 func (localProvider *LocalPathStorageProvider) DetachVolume(_ context.Context, volumeName string, nodeID string) error {

@@ -6,7 +6,7 @@ CCattler has a storage layer with three components:
 
 ### 1. StorageProvider Interface (`storage/storage.go`)
 
-Eight methods covering the full volume lifecycle:
+Nine methods covering the full volume lifecycle:
 
 | Method | Purpose |
 |--------|---------|
@@ -18,12 +18,38 @@ Eight methods covering the full volume lifecycle:
 | `SnapshotVolume` | Point-in-time snapshot |
 | `VolumeUsage` | Used/total bytes |
 | `ResizeVolume` | Expand capacity (shrink not allowed) |
+| `SupportsSharedAttach` | Whether a volume may attach to several nodes (ReadWriteMany) |
 
 Three implementations:
 
 - **`SimulatorStorageProvider`** (`storage/simulator.go`) — in-memory backend for integration tests.
 - **`LocalPathStorageProvider`** (`storage/local.go`) — host-local directories under `--storage-dir`. Volumes survive container restarts on the same node (ReadWriteOnce). Each volume is a subdirectory bind-mounted into the container. Volume directories are created with 0777 permissions so containers running as any UID can write.
 - **`NFSStorageProvider`** (`storage/nfs.go`) — directories on an NFS mount under `--storage-dir`. Supports ReadWriteMany (multiple nodes attach the same volume). Operator must mount NFS before starting the agent. Volume directories are created with 0777 permissions.
+
+### Shared Attach (ReadWriteMany)
+
+Each provider reports whether one volume may be attached to several nodes at
+once via `SupportsSharedAttach()`: `NFSStorageProvider` returns true,
+`LocalPathStorageProvider` and the simulator return false.
+
+The observed volume facts (`observed/volume/{name}/state|node|instance|mount_path`)
+record a single **primary** attachment: the first node that attached it. For a
+shared volume:
+
+- An instance on another node does not wait for the primary: the agent calls
+  the provider's `AttachVolume` for its own node and starts the instance with
+  the same mount path (all nodes mount NFS at the same `--storage-dir`). It
+  does not overwrite the primary's facts.
+- When a non-primary node stops its instance, it detaches locally and leaves
+  the facts alone. Only the primary node writes the volume back to `available`.
+- If the primary node becomes unreachable, the storage controller marks the
+  volume `migrating` as usual; other nodes keep using it, and the next attach
+  becomes the new primary.
+
+Exclusive (ReadWriteOnce) volumes are unchanged: an instance waits until the
+volume is free or attached to its own node.
+
+Limitation: `cca get volumes` shows only the primary node for a shared volume.
 
 ### 2. StorageController (`controllers/storage.go`)
 

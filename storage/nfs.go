@@ -119,6 +119,12 @@ func (nfsProvider *NFSStorageProvider) AttachVolume(_ context.Context, volumeNam
 	return volumePath, nil
 }
 
+// SupportsSharedAttach returns true: every node mounts the same NFS export,
+// so one volume can be attached to many nodes (ReadWriteMany).
+func (nfsProvider *NFSStorageProvider) SupportsSharedAttach() bool {
+	return true
+}
+
 // DetachVolume removes a node from the volume's attachment list. Idempotent.
 func (nfsProvider *NFSStorageProvider) DetachVolume(_ context.Context, volumeName string, nodeID string) error {
 	nfsProvider.mutex.Lock()

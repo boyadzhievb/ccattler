@@ -22,9 +22,9 @@ type StorageProvider interface {
 	DeleteVolume(ctx context.Context, volumeName string) error
 
 	// AttachVolume binds a volume to a node, making it available for mounting
-	// by instances on that node. Returns the filesystem mount path. Enforces
-	// exclusive attach (ReadWriteOnce): returns an error if the volume is
-	// already attached to a different node. Idempotent for the same node.
+	// by instances on that node. Returns the filesystem mount path. Exclusive
+	// providers (ReadWriteOnce) return an error if the volume is attached to a
+	// different node; shared providers allow it. Idempotent for the same node.
 	AttachVolume(ctx context.Context, volumeName string, nodeID string) (string, error)
 
 	// DetachVolume unbinds a volume from a node. Idempotent — detaching an
@@ -48,4 +48,9 @@ type StorageProvider interface {
 	// supported — shrinking returns an error. Returns an error if the volume
 	// does not exist.
 	ResizeVolume(ctx context.Context, volumeName string, newSizeBytes int64) error
+
+	// SupportsSharedAttach reports whether a volume may be attached to several
+	// nodes at once (ReadWriteMany). Agents use it to decide whether an
+	// instance must wait for another node to release the volume.
+	SupportsSharedAttach() bool
 }

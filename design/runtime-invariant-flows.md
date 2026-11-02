@@ -789,6 +789,39 @@ cca apply (gate with tls { cert "path" key "path" })
 
 ---
 
+## Flow 14: Shared Volume Attach (ReadWriteMany)
+
+**Problem**: A service with several instances mounting one NFS volume had its
+instances on other nodes wait forever ("waiting for volumes"), because the
+agent treated every volume as attachable to one node only.
+
+**Invariant**: An instance of a service mounting a shared-capable volume
+(`StorageProvider.SupportsSharedAttach()`) never waits for another node's
+attachment. An exclusive volume is attached to at most one node.
+
+```
+agent: instance placed, image ready
+  → for each volume the service mounts:
+       state attached to this node      → ready
+       state available / migrating      → AttachVolume(this node), write facts (become primary)
+       state attached to another node:
+           provider shared   → AttachVolume(this node), keep primary's facts → ready
+           provider exclusive → wait (retry next cycle)
+  → start instance with mount path from observed/volume/{name}/mount_path
+
+agent: instance stopped
+  → DetachVolume(this node)
+  → write state=available only if observed node == this node (the primary)
+```
+
+### Critical Invariants
+
+- Shared vs exclusive is decided by the agent's provider for that volume (`storageProviderForVolume`), not by facts written by another node.
+- A non-primary node never writes observed volume facts, so the primary's record is never overwritten by a later attacher.
+- Shared volumes rely on every node mounting the backing storage at the same path; the primary's `mount_path` is used on all nodes.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
@@ -802,3 +835,4 @@ When adding a new feature that touches the runtime:
 7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
 8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 11) — pull first, start with `--pull=never`. Never assume the image is cached.
 9. **Does it expose external HTTPS?** If yes, verify TLS material flows from controller to agent via fact store (Flow 13). The agent never issues certs.
+10. **Does it mount volumes from several instances?** If yes, check whether the provider supports shared attach (Flow 14); exclusive volumes need all instances on one node.

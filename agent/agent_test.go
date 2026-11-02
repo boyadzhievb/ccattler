@@ -700,6 +700,61 @@ func TestAgentDetachesVolumeOnStop(t *testing.T) {
 	}
 }
 
+// TestAgentStartsWithSharedVolumeAttachedElsewhere verifies Flow 14: an
+// instance whose NFS (shared) volume is attached to another node starts
+// without waiting, and the other node's primary facts are left untouched.
+func TestAgentStartsWithSharedVolumeAttachedElsewhere(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	nfsProvider, providerError := storage.NewNFSStorageProvider(t.TempDir())
+	if providerError != nil {
+		t.Fatal(providerError)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nfsProvider.CreateVolume(ctx, "shared-data", 100)
+	primaryMountPath, _ := nfsProvider.AttachVolume(ctx, "shared-data", "node-2")
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(nfsProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("whoami"), []byte("whoami:latest"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("whoami", "shared-data"), []byte("/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{
+		Name: "shared-data", Size: "1Gi", State: types.VolumeAttached,
+		Node: "node-2", Instance: "primary-1", MountPath: primaryMountPath,
+	})
+	types.WriteInstance(ctx, factStore, types.Instance{ID: "shared-1", Service: "whoami", State: types.InstancePending})
+	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "shared-1", NodeID: "node-1"})
+
+	go nodeAgent.Run(ctx)
+
+	waitFor(t, 2*time.Second, "instance running with shared volume held by node-2", func() bool {
+		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("shared-1"))
+		return err == nil && string(stateFact.Value) == "running"
+	})
+
+	volumeNodeFact, _ := factStore.Get(ctx, types.KeyObservedVolumeNode("shared-data"))
+	if string(volumeNodeFact.Value) != "node-2" {
+		t.Errorf("primary volume node = %s, want node-2 (non-primary must not overwrite)", volumeNodeFact.Value)
+	}
+
+	types.DeletePlacement(ctx, factStore, "node-1", "shared-1")
+	waitFor(t, 2*time.Second, "non-primary instance stopped", func() bool {
+		_, statusError := simulatorRuntime.Status(ctx, "shared-1")
+		return statusError == runtime.ErrNotFound
+	})
+
+	volumeStateFact, _ := factStore.Get(ctx, types.KeyObservedVolumeState("shared-data"))
+	if string(volumeStateFact.Value) != string(types.VolumeAttached) {
+		t.Errorf("volume state after non-primary stop = %s, want attached (primary still holds it)", volumeStateFact.Value)
+	}
+}
+
 // TestAgentWithoutStorageProviderIgnoresVolumes verifies backward compat:
 // agents without a StorageProvider start instances normally even if volume
 // mounts are declared in the service config.

@@ -1644,8 +1644,9 @@ func (nodeAgent *Agent) storageProviderForVolume(ctx context.Context, volumeName
 
 // ensureVolumesAttachedForInstance checks whether all volumes required by the
 // instance's service are available, and attaches them to this node if so.
-// Returns (true, nil) when all volumes are ready. Returns (false, nil) when a
-// volume exists but is attached to a different node (the instance should wait).
+// Returns (true, nil) when all volumes are ready. Returns (false, nil) when an
+// exclusive volume is attached to a different node (the instance should wait);
+// shared volumes attach here too without waiting (Flow 14).
 // Returns (false, error) on unexpected failures.
 func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, instanceInfo placedInstanceInfo) (bool, error) {
 	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, instanceInfo.service)
@@ -1662,11 +1663,17 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 		volumeState := types.VolumeState(volumeStateFact.Value)
 
 		if volumeState == types.VolumeAttached {
-			nodeFact, nodeErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
-			if nodeErr == nil && string(nodeFact.Value) == nodeAgent.nodeID {
+			if nodeAgent.isVolumePrimaryNode(ctx, volumeName) {
 				continue
 			}
-			return false, nil
+			sharedVolumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+			if !sharedVolumeProvider.SupportsSharedAttach() {
+				return false, nil
+			}
+			if attachError := nodeAgent.attachSharedVolumeOnThisNode(ctx, sharedVolumeProvider, volumeName); attachError != nil {
+				return false, attachError
+			}
+			continue
 		}
 
 		if volumeState != types.VolumeAvailable && volumeState != types.VolumeMigrating {
@@ -1740,8 +1747,29 @@ func (nodeAgent *Agent) resolveVolumeMountsForSpec(ctx context.Context, instance
 	}
 }
 
+// isVolumePrimaryNode reports whether the observed volume facts record this
+// node as the volume's (primary) attachment.
+func (nodeAgent *Agent) isVolumePrimaryNode(ctx context.Context, volumeName string) bool {
+	nodeFact, nodeErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
+	return nodeErr == nil && string(nodeFact.Value) == nodeAgent.nodeID
+}
+
+// attachSharedVolumeOnThisNode attaches a shared (ReadWriteMany) volume that
+// another node already holds as primary. The primary's observed facts are
+// left untouched; this node uses the same mount path.
+func (nodeAgent *Agent) attachSharedVolumeOnThisNode(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string) error {
+	if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
+		return fmt.Errorf("creating shared volume %s: %w", volumeName, createError)
+	}
+	if _, attachError := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID); attachError != nil {
+		return fmt.Errorf("attaching shared volume %s: %w", volumeName, attachError)
+	}
+	return nil
+}
+
 // detachVolumesForInstance finds volumes attached to the given instance and
-// detaches them, setting their state back to available.
+// detaches them, setting their state back to available. For shared volumes
+// only the primary node writes the state; other nodes detach locally.
 func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID string) {
 	serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
 	if err != nil {
@@ -1755,6 +1783,9 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
 		if detachError := volumeProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
 			logging.Default().Error("failed to detach volume", "volume", volumeName, "node", nodeAgent.nodeID, "error", detachError.Error())
+		}
+		if volumeProvider.SupportsSharedAttach() && !nodeAgent.isVolumePrimaryNode(ctx, volumeName) {
+			continue
 		}
 
 		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))

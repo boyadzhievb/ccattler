@@ -26,6 +26,9 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Manual cert generated with openssl at test time (SAN = gate host), not committed
 - [x] T1–T15 checks in `cluster_test.sh`, each inside a retry/wait loop
 
+**Found during the first deploy run:**
+- [x] Shared (ReadWriteMany) volume attach: whoami's 2 instances sharing one NFS volume no longer wait forever on different nodes (Flow 14, `StorageProvider.SupportsSharedAttach`)
+
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [ ] Green on the deploy cluster 3 consecutive runs

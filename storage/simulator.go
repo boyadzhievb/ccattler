@@ -107,6 +107,12 @@ func (simulatorStorageProvider *SimulatorStorageProvider) AttachVolume(_ context
 	return existingVolume.mountPath, nil
 }
 
+// SupportsSharedAttach returns false: the simulator models exclusive
+// (ReadWriteOnce) volumes.
+func (simulatorStorageProvider *SimulatorStorageProvider) SupportsSharedAttach() bool {
+	return false
+}
+
 // DetachVolume unbinds a volume from the specified node. Idempotent —
 // detaching an already-detached volume or detaching from a node that doesn't
 // hold the volume is a no-op.
