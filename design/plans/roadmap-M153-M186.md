@@ -1,5 +1,8 @@
 # CCattler Roadmap — M153 to M187
 
+> **Note (2026-11-02):** milestones after M169 were renumbered by priority.
+> Numbers M170+ in this document use the old scheme; see `milestones.md`.
+
 Created 2026-10-29. Revised 2026-10-29 (removed K8s-isms, aligned with
 fact-based architecture). Comprehensive milestone plan for production-grade
 readiness.

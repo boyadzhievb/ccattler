@@ -1,7 +1,9 @@
 # Milestones Archive
 
-Completed phases and milestones, kept for history. Active and upcoming work is
-in [milestones.md](milestones.md).
+Completed phases and milestones (M1–M169), kept for history. Active and upcoming
+work, including the unfinished M136/M141/M151 checklists (renumbered M172/M192/M171),
+is in [milestones.md](milestones.md). Upcoming milestones were renumbered by
+priority on 2026-11-02, so M170+ in older docs refers to the old numbering.
 
 ## Implementation Phases
 
@@ -1475,20 +1477,6 @@ Prevent thundering-herd placement on cluster startup and detect/correct load imb
 - [x] Update benchmark and fuzz tests to use `newTestScheduler()`
 - [x] Design document: `design/scheduler-rebalancing.md`
 
-### Phase 136 — HA Etcd Cluster Validation (M136)
-
-First end-to-end validation of HA control plane on vmherd: 3-node etcd raft cluster, leader-elected cca-server, control plane failover, and etcd member failure recovery.
-
-- [ ] vmherd Herdfile: 3 ctrl (4GB) + 1 worker (2GB) on 192.168.125.0/24
-- [ ] Ansible inventory mapping vmherd VMs to HA groups (etcd, controlplane, workers)
-- [ ] Test workload: whoami (3 instances) + whoami-multiport (2 instances)
-- [ ] HA validation script: 9 checks (reachability, etcd health, API, leader election, nodes, workload, VIP, failover, etcd failure)
-- [ ] Deploy cluster via `ha-deploy.yml` with existing HA Ansible roles
-- [ ] Verify etcd 3-member quorum, leader election, workload placement
-- [ ] Control plane failover: stop leader cca-server, verify new leader within 30s
-- [ ] etcd member failure: stop one member, verify quorum holds (2/3), API works
-- [ ] Recovery: restart failed components, verify they rejoin
-
 ### Phase 137 — Airflow Probes & Init Hardening (M137)
 
 Harden Airflow workload definitions to match Helm chart probe and init patterns.
@@ -1528,14 +1516,6 @@ Platform feature: configurable per-service termination grace period for graceful
 - [x] StopWithGracePeriod on ProcessRuntime, ContainerRuntime, ContainerdRuntime, SimulatorRuntime
 - [x] Agent reads fact and uses GracefulStopper at all stop-instance call sites
 - [x] Apply 600s to Airflow worker in examples and e2e
-
-### Phase 141 — Airflow Triggerer & Observability (M141)
-
-Future placeholder: additional Airflow services for full Helm chart parity.
-
-- [ ] Triggerer service (deferrable operators, exec-based probes)
-- [ ] StatsD metrics exporter sidecar
-- [ ] Log groomer via existing logging DSL keyword
 
 ### Phase 142 — go-cni Dependency + CNI Conflist Generation (M142)
 
@@ -1663,43 +1643,6 @@ vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent -f'
 # If running with --log-format json, parse with jq:
 vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' | jq -r 'select(.msg == "probe check failed") | "\(.fields.instance) \(.fields.reason)"'
 ```
-
-### Phase 151 — eBPF Data Plane Stabilization (M151)
-
-Harden the eBPF data plane (M128–M134) to the point where it can fully replace nftables for VIP, SNAT, and basic network policy — running a single data plane instead of two in parallel. Discovered during VXLAN CI investigation: tc SNAT was stateless and broke TCP reply packets; agent restart race deleted BPF pin directory; no TCP-level integration tests existed; packet flow matrix was undocumented.
-
-**tc SNAT conntrack validation:**
-- [x] Make `cca_tc_snat` conntrack-aware via `bpf_skb_ct_lookup` — skip SNAT for reply-direction packets
-- [x] Add `IP_CT_DIR_ORIGINAL`/`IP_CT_DIR_REPLY` defines to `cca_ct_helpers.h`
-- [x] Document packet flow matrix in `NETWORK_GRAPH.md` (all source→dest combinations)
-- [x] Update `EBPF_GRAPH.md` — SNAT call tree with conntrack, kfuncs table
-- [ ] Validate tc SNAT conntrack fix passes 10+ CI runs without init probe regression
-- [ ] Verify container-initiated egress (container → external) still works with SNAT
-
-**Agent restart BPF pin race:**
-- [ ] Fix `removePinnedMaps()` to only remove pins created by THIS instance (PID-namespaced pin dir or flock)
-- [ ] Add integration test: restart agent under load, verify BPF maps survive and service map entries persist
-- [ ] Add startup log line: "reusing existing BPF pins" vs "creating fresh BPF pins"
-
-**eBPF TCP integration tests:**
-- [ ] Add e2e test: host-ns → remote container TCP via VIP (the init probe path)
-- [ ] Add e2e test: container → container TCP cross-node via VIP
-- [ ] Add e2e test: container → external host TCP (egress SNAT path)
-- [ ] Add e2e test: verify `nc` TCP connectivity, not just ICMP ping, in cluster health check
-- [ ] Each test row from NETWORK_GRAPH.md packet flow matrix has a corresponding e2e assertion
-
-**eBPF network policy (basic):**
-- [ ] tc ingress program on cca0 for ingress allow/deny by source CIDR (replaces nftables filter FORWARD)
-- [ ] BPF map populated from `derived/network/rule/` facts by agent reconciler
-- [ ] Default-deny when at least one policy applies to the service
-- [ ] Integration test: policy blocks cross-service traffic, allows permitted
-
-**nftables elimination gate:**
-- [ ] All above items complete
-- [ ] Remove nftables VIP chains when `--dataplane ebpf` (currently kept as fallback)
-- [ ] Remove nftables POSTROUTING masquerade per-container rules when eBPF SNAT active
-- [ ] `--dataplane ebpf` tested on all three targets: bare-metal, Vagrant, Lima
-- [ ] Document kernel version requirements (6.6+ for TCX, 5.18+ for conntrack kfuncs)
 
 ### Backlog
 
@@ -1832,18 +1775,12 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 | M131 — DSL Gate Keyword | 131 | Rename user-facing DSL keyword from `route` to `gate` for external traffic blocks. `gate` is shorter, unambiguous, and avoids collision with cloud/VPC route terminology already used by `CloudRouteController`. Parser accepts only `gate`; formatter emits `gate`; compiler error messages say "gate". Internal fact store keys (`desired/route/`, `derived/route/`) unchanged — the rename is DSL-surface only. Updated: parser, compiler, formatter, linter, all tests, examples, workloads, design docs, kubernetes migration guide, STATUS.md. |
 | M132 — Image Pull Secrets | 132 | Registry authentication for pulling from private registries. DSL `image_pull_secret "secret-name"` field on services and jobs. Secret value is JSON `{"username":"...","password":"..."}` stored via `cca secret set`. Agent reads pull secret name from store, resolves credential via API, passes `--creds user:pass` to `nerdctl pull`. No docker config.json manipulation — direct nerdctl `--creds` flag. `runtime.PullImage` gains credentials parameter. Compiler emits `desired/service/{name}/image_pull_secret` fact. Simulator tracks credentials for test assertions. Design flow #19 in runtime-invariant-flows.md. |
 | M133 — CronJobs | 133 | Scheduled recurring jobs using cron expressions. DSL `cronjob "name" { schedule "0 2 * * *" image "img" command "cmd" completions N backoff_limit N }`. Hand-rolled 5-field cron parser (`min hour dom month dow`) — supports wildcards, fixed values, comma-separated lists. CronController piggybacks on the 30s runner resync cycle: checks if schedule matches current minute, creates job instance if match and no active job. `derived/cronjob/{name}/last_scheduled` prevents double-firing within same minute. JobController owns created instances from there. Design flow #20 in runtime-invariant-flows.md. |
-| *(future)* Vagrant Cleanup | — | Remove Vagrant files and references now that vmherd manages all VM clusters. Delete 3 Vagrantfiles (`deploy/ansible/demo-Vagrantfile`, `deploy-Vagrantfile`, `test-Vagrantfile`) and `deploy/ccattler-vagrant-test-cluster-deploy.sh`. Update Vagrant SSH key paths and inventory references in `demo-deploy.yml`, `baremetal-deploy.yml`, `test-deploy.yml`, `cluster_test.sh`, and `placement_test.sh` to use vmherd equivalents. Remove any `/tmp/cca-vagrant-state-*` path assumptions. |
-| *(future)* Agent Dependency Bootstrap | — | `cca agent` auto-installs CNI plugins and nerdctl on startup if missing. Checks `/opt/cni/bin/bridge` and `/usr/local/bin/nerdctl` — downloads, verifies SHA256, extracts. URLs configurable via priority chain: `/etc/ccattler/agent.conf` (`cni_url`, `nerdctl_url`) > env vars (`CCA_CNI_URL`, `CCA_NERDCTL_URL`) > flags (`--cni-url`, `--nerdctl-url`) > compiled defaults (GitHub releases for `containernetworking/plugins` and `containerd/nerdctl`). Supports local mirrors, S3 buckets, or air-gapped HTTP servers. Skips download if binaries already present and version matches. Eliminates Ansible dependency for CNI and nerdctl installation. Same pattern as k3s bundled dependencies. |
-| *(future)* HTTP Secret API | — | Replace bind-mount secret delivery with an agent-side HTTP API (`GET /v1/secrets/{name}`). Containers fetch secrets at runtime from the local agent, authenticated by per-instance bearer tokens. No files on host disk, no bind-mounts, no permission issues. Agent registers/revokes tokens on instance lifecycle. Current bind-mount approach (M92) works but requires host filesystem access. |
-| *(future)* Cloud InfrastructureProviders | — | AWS EC2, GCP Compute, and Azure VM implementations of `InfrastructureProvider` for real cloud node provisioning. Cluster autoscaling controller works end-to-end with `SimulatorInfraProvider`; real cloud backends require SDK integration and cloud-specific testing. |
 | M134 — BPF Binary Consolidation | 134 | Consolidated three separate BPF ELF objects into a single multi-program ELF (`cca_dataplane.o`) embedded in the Go binary via `go:embed`. All 5 BPF programs (socket LB, tc DNAT, tc SNAT) share maps from one `ebpf.Collection` — no more `MapReplacements`. Eliminated `/usr/lib/cca/*.o` install step, Ansible on-node BPF compilation, and separate `loadTCProgram`/`loadSNATProgram` methods. `build-ebpf.sh` produces one file; `deploy-ebpf` copies only the binary. |
 | M135 — Scheduler Rebalancing & Pressure Detection | 135 | Prevent thundering-herd placement on cluster startup via 10s grace period (waits for all agents to register before initial placement). Reactive rebalancing detects load imbalance (max-min > 2) and migrates up to 2 instances per cycle from overloaded to underloaded nodes, respecting architecture/zone/label/restrict constraints. Node allocation pressure detection logs WARN when CPU or memory exceeds 80%. WARNING when all valid targets are restricted. 9 new tests, design doc at `design/scheduler-rebalancing.md`. |
-| M136 — HA Etcd Cluster Validation | 136 | First end-to-end HA validation on vmherd: 3 ctrl (4GB, etcd + cca-server) + 1 worker (2GB) on 192.168.125.0/24. HA test script validates 9 areas: VM reachability, etcd 3-member quorum, cca-server API on all 3 ctrl, leader election (one active controller), 4-node registration, whoami/whoami-multiport workload convergence, VIP routing from all nodes, control plane failover (stop leader → new leader in 30s), etcd member failure (2/3 quorum holds). Uses existing `ha-deploy.yml`, `etcd-cluster` and `ha-controlplane` Ansible roles — no Go code changes. |
 | M137 — Airflow Probes & Init Hardening | 137 | Worker celery-inspect-ping probes, DB-ready init steps for scheduler/worker, TCP-without-expose lint warning |
 | M138 — cca get endpoints CLI | 138 | cca get endpoints shows service discovery endpoints (SERVICE, INSTANCE, PORT, ADDRESS), JSON output, ep alias |
 | M139 — Airflow Persistence & Security | 139 | Persistent volumes for metadata-db and redis, FERNET_KEY secret across all Airflow services |
 | M140 — Per-Service Termination Grace Period | 140 | termination_grace_period DSL keyword, parsed/compiled/applied to ProcessRuntime, ContainerRuntime, ContainerdRuntime. 600s for Airflow worker |
-| M141 — Airflow Triggerer & Observability | 141 | Placeholder: triggerer service, StatsD exporter, log groomer |
 | M142 — go-cni Dependency + Conflist Generation | 142 | Add go-cni dep, CNI bridge conflist builder, lazy init from SetNetwork fields |
 | M143 — CNI Lifecycle in Start/Stop/Status | 143 | Named netns per container, CNI Setup in Start, Remove in Stop, IP in Status |
 | M144 — DNS Configuration | 144 | resolv.conf injection with configured nameserver/search domain, webserver probe tuning |
@@ -1874,34 +1811,5 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 | **Phase C — Networking & Service Discovery** | | |
 | M168 — Cluster DNS | 168 | CoreDNS as CCattler service with `placement { mode per-node }`. Auto-generate `<service>.svc.ccattler.local` records from service/endpoint facts. Headless services: A records per instance. Depends: M160. |
 | M169 — Gate TLS Termination | 169 | `tls { mode auto }` or `tls { cert "…" key "…" }` inside `gate` block. Cluster CA issues certs for `mode auto`, auto-renews. Agent embedded proxy serves HTTPS when TLS facts present. `cca get gates` shows TLS status. Depends: M168. |
-| M170 — Service Mesh via Groups | 170 | `mesh { mtls "strict" }` — compiler auto-adds proxy to service group. Proxy uses existing SPIFFE identity. Traffic metrics as derived facts. Uses group network sharing, not sidecar injection. Depends: M169. |
-| M171 — Network Policy Egress Rules | 171 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
-| M172 — Multi-Cluster Service Discovery | 172 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
-| **Phase D — Storage & State** | | |
-| M173 — Persistent Volumes | 173 | `volume "data" { size "10Gi" mount "/data" }` as service block. Volume controller manages lifecycle. Local provisioner with quota. Scheduler considers volume locality. Per-instance volumes for stateful services. |
-| M174 — Volume Snapshots | 174 | `cca volume snapshot create <service>`. Filesystem copy for local provisioner. Restore to new volume. Retention policy (count/age). Depends: M173. |
-| M175 — Storage Plugin Interface | 175 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M173. |
-| **Phase E — Observability & Operations** | | |
-| M176 — Prometheus Metrics Endpoint | 176 | `/metrics` in Prometheus exposition format. Controller metrics (reconcile duration, queue depth, error rate). Cluster metrics (node/instance/service counts by state). Autoscaler metrics. |
-| M177 — Resource Quota Controller | 177 | `quota "team-a" { cpu "8" memory "16Gi" services 50 }`. QuotaController blocks apply when exceeded. `cca quota list/describe`. Scoped to teams. |
-| M178 — Debug & Troubleshooting CLI | 178 | `cca debug <service>` (health report), `cca describe <resource>` (detailed view + events), `cca diff <file>` (dry-run), `cca explain <service>` (placement reasoning). |
-| M179 — Distributed Tracing | 179 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M176. |
-| **Phase F — Extensibility** | | |
-| M180 — Custom Fact Types with Schema Validation | 180 | Schema at `meta/fact-type/{name}`. PolicyGate validates writes to `custom/{type}/`. `cca get <type>` auto-discovers. `cca describe fact-type`. No API group versioning — facts with optional schema. |
-| M180 — DSL Admission Policy Rules | 180 | `policy "no-latest" { on apply match { service where image =~ ":latest$" } deny "not allowed" }`. Mutating policies. Compiled into PolicyGate — no webhooks. Escape hatch: `validate_url` for external validation. |
-| M181 — Controller SDK gRPC Transport | 181 | gRPC streaming for out-of-process controllers. `cca controller register --name X --address host:port`. Health check + auto-deregister. Builds on existing CustomController interface (M81). |
-| M182 — DSL Templates & Imports | 182 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. |
-| M183 — Controller Scaffolding CLI | 183 | `cca controller init <name>` scaffolds Go/Python project with gRPC client, reconciler stub, test harness. Working example included. Not an operator lifecycle manager. Depends: M181. |
-| **Phase G — Production Hardening** | | |
-| M184 — Etcd Backup & Restore | 184 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
-| M185 — Control Plane HA | 185 | Multi-server with leader election. `cca server --join <existing>`. Auto-failover. Split-brain via etcd quorum. Depends: M184. |
-| M186 — Cluster Upgrade Controller | 186 | `cca upgrade plan/apply`. Rolling control-plane + agent upgrade. Drain → upgrade → uncordon. Rollback on failure. Depends: M185. |
-| M187 — Conformance Test Suite | 187 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. |
-| M151 — eBPF Data Plane Stabilization | 151 | Harden eBPF data plane to fully replace nftables. Fix tc SNAT (conntrack-aware reply skip), agent restart BPF pin race, add TCP integration tests for every packet flow matrix row, basic eBPF network policy, then remove nftables fallback under `--dataplane ebpf`. Depends: M128–M134. |
-| *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
-| *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
-| *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |
-| *(future)* Gate L7 Metrics | — | Request-level observability for `gate` blocks. The agent HTTP proxy (`network/userspace_proxy.go`) already sees every L7 request via Host header routing. Add per-gate metrics: request count, latency histogram (p50/p95/p99), status code distribution, error rate. Emit as `derived/metric/gate/{name}/{metric}` facts on each proxy reconciliation cycle. `cca top gates` CLI command reads and displays metrics in real-time. `cca metric export` outputs Prometheus exposition format for external scraping. No kernel instrumentation needed — measured at the userspace proxy layer. |
-| *(future)* BPF L7 Policy | — | eBPF-based L7 request filtering for HTTP traffic. tc BPF program inspects HTTP request headers (method, path) on `cca-net` bridge and enforces allow/deny rules compiled from DSL `firewall` blocks with L7 matchers: `firewall web-api { allow from backend method GET path "/api/*" }`. Compiler emits `derived/network/rule/{name}/l7/{index}` facts with method/path patterns. BPF program parses TCP payload for HTTP/1.1 request line, matches against BPF hash map of compiled rules, drops non-matching packets. Kernel 6.1+ (BPF packet parsing helpers). Complements existing L3/L4 identity-based policy with application-layer granularity. |
 
 **Start with M1.** If the reconciliation loop and fact store work correctly, everything else layers on top. If they don't, nothing else matters.

@@ -33,7 +33,7 @@ When a milestone completes:
 ```bash
 cd /Users/boyadboz/REPOS/ccattler
 # Check what's in a phase
-grep -A 50 '^### Phase 151' milestones.md | head -60
+grep -A 50 '^### Phase 171' milestones.md | head -60
 ```
 
 ### Changelog Generation
