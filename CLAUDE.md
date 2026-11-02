@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M168 — Phase 168 Cluster DNS. M1–M168 complete. Gates A–I resolved.
+**Completed through:** M169 — Phase 169 Gate TLS Termination. M1–M169 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

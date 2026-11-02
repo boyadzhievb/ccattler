@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.67.0-beta <Badge type="tip" text="latest" /> {#v1-67-0-beta}
+## v1.68.0-beta <Badge type="tip" text="latest" /> {#v1-68-0-beta}
+
+**2026-11-02** — Gate TLS Termination.
+
+- **Gate TLS Termination** (M169) — `tls { mode auto }` or `tls { cert "…" key "…" }` inside `gate` block. Cluster CA issues certs for `mode auto`, auto-renews. Agent embedded proxy serves HTTPS when TLS facts present. `cca get gates` shows TLS status. Depends: M168.
+
+---
+
+## v1.67.0-beta {#v1-67-0-beta}
 
 **2026-11-01** — Cluster DNS.
 
