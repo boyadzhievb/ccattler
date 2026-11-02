@@ -56,6 +56,7 @@ gate web {
 - `tls` requires `host` — you need a hostname to issue a certificate for.
 - `tls { cert ... key ... }` reads PEM files at `cca apply` time and stores content in facts (same pattern as `config` blocks with `from`).
 - `tls auto` and `tls { cert ... }` are mutually exclusive.
+- Removing `tls` from a gate and re-applying turns HTTPS off: `cca apply` replaces every declared gate's `desired/route/{name}/` keys, deleting ones the new config no longer produces.
 
 ## Fact Model
 

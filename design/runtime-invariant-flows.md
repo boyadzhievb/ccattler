@@ -786,6 +786,7 @@ cca apply (gate with tls { cert "path" key "path" })
 - The plain-HTTP listener answers requests for a TLS gate's host with a 308 redirect to `https://`.
 - A request whose Host belongs to a different gate than its SNI gets 421 Misdirected Request.
 - Cert renewal happens server-side. The agent picks up new certs on its next reconcile cycle.
+- `cca apply` replaces each declared gate (`collectRemovedGateFacts`): stale `desired/route/{name}/` keys such as a removed `tls` block are deleted after the new facts are written. Only the compiler writes `desired/route/`, so no controller-owned key is lost.
 
 ---
 

@@ -178,6 +178,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 func printDiffChanges(changes []lang.FactChange) {
 	addedCount := 0
 	modifiedCount := 0
+	deletedCount := 0
 	unchangedCount := 0
 
 	for _, change := range changes {
@@ -190,13 +191,16 @@ func printDiffChanges(changes []lang.FactChange) {
 			fmt.Printf("~ %s\n", change.Key)
 			fmt.Printf("  - %s\n", change.OldValue)
 			fmt.Printf("  + %s\n", change.NewValue)
+		case "delete":
+			deletedCount++
+			fmt.Printf("- %s = %s\n", change.Key, change.OldValue)
 		case "unchanged":
 			unchangedCount++
 		}
 	}
 
 	fmt.Println()
-	fmt.Printf("%d added, %d modified, %d unchanged\n", addedCount, modifiedCount, unchangedCount)
+	fmt.Printf("%d added, %d modified, %d deleted, %d unchanged\n", addedCount, modifiedCount, deletedCount, unchangedCount)
 }
 
 // renderCommandConfig holds parsed flags for the "render" command.

@@ -165,6 +165,11 @@ gate web-public {
 Without `sticky` or `tls`, a gate is pure L4 DNAT with round-robin across
 backends.
 
+Re-applying a config replaces each gate it declares: an option removed from
+the gate block (for example `tls` or `sticky`) is removed from the cluster
+(`cca diff` lists it as `- key`). Gates the config no longer declares are not
+deleted by `cca apply`.
+
 ### TLS termination
 
 A gate with `tls` serves HTTPS on every node's gate HTTPS listener (agent

@@ -1556,21 +1556,55 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 			return fmt.Errorf("writing %s: %w", fact.Key, putError)
 		}
 	}
+	removedGateFacts, scanError := collectRemovedGateFacts(ctx, stateStore, file, facts)
+	if scanError != nil {
+		return scanError
+	}
+	for _, removedFact := range removedGateFacts {
+		if deleteError := stateStore.Delete(ctx, removedFact.Key); deleteError != nil {
+			return fmt.Errorf("deleting %s: %w", removedFact.Key, deleteError)
+		}
+	}
 	return nil
 }
 
-// FactChange describes a single fact that would be added or modified by an apply.
+// collectRemovedGateFacts returns stored desired/route/{name}/ facts of gates
+// declared in this file that the new compile no longer produces (e.g. a removed
+// tls block), so apply replaces each declared gate instead of merging into it.
+// Only the compiler writes desired/route/, so no controller-owned key is lost.
+func collectRemovedGateFacts(ctx context.Context, stateStore store.StateStore, file *File, compiledFacts []Fact) ([]store.Fact, error) {
+	compiledKeys := make(map[string]bool, len(compiledFacts))
+	for _, compiledFact := range compiledFacts {
+		compiledKeys[compiledFact.Key] = true
+	}
+	var removedFacts []store.Fact
+	for _, routeDecl := range file.Routes {
+		storedFacts, scanError := stateStore.Scan(ctx, types.KeyDesiredRoute(routeDecl.Name)+"/")
+		if scanError != nil {
+			return nil, fmt.Errorf("scanning gate %s: %w", routeDecl.Name, scanError)
+		}
+		for _, storedFact := range storedFacts {
+			if !compiledKeys[storedFact.Key] {
+				removedFacts = append(removedFacts, storedFact)
+			}
+		}
+	}
+	return removedFacts, nil
+}
+
+// FactChange describes a single fact that would be added, modified or deleted by an apply.
 type FactChange struct {
 	Key      string `json:"key"`
 	OldValue string `json:"old_value,omitempty"`
 	NewValue string `json:"new_value"`
-	Type     string `json:"type"` // "add", "modify", or "unchanged"
+	Type     string `json:"type"` // "add", "modify", "delete", or "unchanged"
 }
 
 // Diff parses a DSL string, compiles it to facts, and compares each fact
 // against the current store state. It returns a list of changes without
-// writing anything. Facts that exist in the store but not in the compiled
-// output are not reported — diff only shows what the apply would write.
+// writing anything. Stored facts missing from the compiled output are reported
+// as "delete" only for gates declared in the file (see collectRemovedGateFacts);
+// other stale facts are not touched by apply and so are not reported.
 func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]FactChange, error) {
 	file, parseError := Parse(input)
 	if parseError != nil {
@@ -1605,6 +1639,13 @@ func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]Fac
 				Type:     "unchanged",
 			})
 		}
+	}
+	removedGateFacts, scanError := collectRemovedGateFacts(ctx, stateStore, file, facts)
+	if scanError != nil {
+		return nil, scanError
+	}
+	for _, removedFact := range removedGateFacts {
+		changes = append(changes, FactChange{Key: removedFact.Key, OldValue: string(removedFact.Value), Type: "delete"})
 	}
 	return changes, nil
 }

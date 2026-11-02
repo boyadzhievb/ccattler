@@ -31,6 +31,7 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Shared volume attachments per instance: `observed/volume/{name}/attachment/{node}/{instance}`, state derived only by StorageController, unreachable-node attachments dropped without migration, ACCESS/NODES/INSTANCES in `cca get volumes`
 - [x] RouteController deleted RouteTLSController's `derived/route/{name}/tls/*` as stale every cycle → certificates re-issued continuously, brief "no gate certificate" handshake failures (T8). Staleness now limited to `/backends` keys
 - [x] e2e: probe captures in `gate_tls_checks.sh` no longer exit silently under `set -e`; `cluster_test.sh` ERR trap reports file:line of any silent exit; T5 requires the background request loop to have run
+- [x] `cca apply` never deleted desired facts, so removing `tls` from a gate kept HTTPS on (T14). Apply now replaces each declared gate (`collectRemovedGateFacts`); `cca diff` lists the deletions. General removal for other resource kinds is not covered
 
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
