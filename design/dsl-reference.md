@@ -275,7 +275,7 @@ service web {
 cca apply --values prod.ccv app.cca
 
 # Inline override (highest precedence after env vars)
-cca apply --set registry=192.168.100.43:5000 app.cca
+cca apply --set registry=192.168.100.49:5000 app.cca
 
 # Override from environment variable
 cca apply --set-from-env DB_HOST app.cca

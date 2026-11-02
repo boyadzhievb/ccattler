@@ -2,7 +2,7 @@
 # Deploy DAG files from deploy/ansible/dags/ into all running Airflow
 # containers across the deploy cluster VMs.
 #
-# Usage (from testbed-100.43):
+# Usage (from testbed-100.49):
 #   cd /path/to/ccattler/deploy/ansible
 #   bash deploy-dags.sh
 #

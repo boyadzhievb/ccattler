@@ -8,7 +8,7 @@
 #
 # Two environments:
 #   --env test     (default): bare-metal 3-node cluster on 100.215/30/31 (always-on)
-#   --env deploy:             3 libvirt VMs on 192.168.124.x (testbed-100.43), long-lived
+#   --env deploy:             3 libvirt VMs on 192.168.124.x (testbed-100.49), long-lived
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload whoami,airflow   deploy specific workloads (comma-separated)
@@ -187,7 +187,7 @@ log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 
 # Environment-specific configuration
 #   test:      bare-metal 3-node cluster on 100.215/30/31 (default, always-on nodes)
-#   deploy:    long-lived VMs on testbed-100.43 via vmherd (Caddy reverse proxy)
+#   deploy:    long-lived VMs on testbed-100.49 via vmherd (Caddy reverse proxy)
 declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)

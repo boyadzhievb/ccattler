@@ -17,7 +17,7 @@ problems the unit tests did not catch:
 | F2 | iptables handles TLS-only gates but has no test. | `network/iptables_dataplane.go:124` | Branch removed with the rest of VIP TLS. |
 | F3 | eBPF ignores gate TLS. | `network/ebpf_dataplane.go:484` | Userspace termination works on every data plane. |
 | F4 | A TLS gate takes over the whole service VIP:port, breaking in-cluster plain-HTTP callers; two gates cannot share a service port. | override keyed by VIP:port | Service VIPs never carry gate TLS; SNI picks the gate. |
-| F5 | Deploy-env external traffic goes through Caddy on testbed-100.43, bypassing gates. | `scripts/caddy-sync.sh` | E2E checks hit node `:443` directly from cluster nodes. Caddy integration out of scope. |
+| F5 | Deploy-env external traffic goes through Caddy on testbed-100.49, bypassing gates. | `scripts/caddy-sync.sh` | E2E checks hit node `:443` directly from cluster nodes. Caddy integration out of scope. |
 
 ## Implementation
 
@@ -31,7 +31,7 @@ problems the unit tests did not catch:
 
 ## E2E Environment
 
-- Deploy cluster on testbed-100.43 (vmherd): ctrl `192.168.124.10`, workers `.20` / `.30`; nftables data plane.
+- Deploy cluster on testbed-100.49 (vmherd): ctrl `192.168.124.10`, workers `.20` / `.30`; nftables data plane.
 - Run via `test/e2e/cluster_test.sh --env deploy --workload gate-tls`.
 - Cluster CA: `/etc/ccattler/ca.pem` on every node (`curl --cacert`).
 - HTTPS checks from cluster nodes to `https://<host>` with `--resolve <host>:443:<node-ip>`, against every node.

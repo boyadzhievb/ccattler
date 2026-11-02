@@ -162,7 +162,7 @@ Scenarios not yet tested that would strengthen confidence:
 
 Two separate clusters, on separate hosts to avoid resource contention:
 
-### E2E cluster (testbed-100.43)
+### E2E cluster (testbed-100.49)
 
 Ephemeral VMs managed by vmherd using official Ubuntu cloud images (cloud-init). Created, tested, and halted on every CI push.
 
@@ -174,9 +174,9 @@ Ephemeral VMs managed by vmherd using official Ubuntu cloud images (cloud-init).
 
 Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
 
-### Deploy cluster (libvirt VMs on testbed-100.43)
+### Deploy cluster (libvirt VMs on testbed-100.49)
 
-Long-lived 3-node cluster on testbed-100.43, managed by vmherd. Runs Airflow and other heavy workloads.
+Long-lived 3-node cluster on testbed-100.49, managed by vmherd. Runs Airflow and other heavy workloads.
 
 | VM | IP | Role | RAM |
 |----|-----|------|-----|
@@ -197,7 +197,7 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 
 ### Two clusters, one host
 
-Both clusters run on testbed-100.43 (16 GB). They use separate Herdfiles (`test/e2e/vm-test/` and `test/e2e/vm-deploy/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by vmherd.
+Both clusters run on testbed-100.49 (16 GB). They use separate Herdfiles (`test/e2e/vm-test/` and `test/e2e/vm-deploy/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by vmherd.
 
 ## Demo Commands
 

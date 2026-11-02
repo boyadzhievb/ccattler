@@ -1,5 +1,5 @@
 # -*- mode: ruby -*-
-# Ephemeral CCattler e2e test cluster on libvirt VMs (runs on testbed-100.43)
+# Ephemeral CCattler e2e test cluster on libvirt VMs (runs on testbed-100.49)
 #
 # Two-node cluster (saves resources — deploy-Vagrantfile has 3 nodes):
 #   cca-test-ctrl     (122.10) — etcd + control plane + worker

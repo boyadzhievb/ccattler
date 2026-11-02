@@ -3,7 +3,7 @@
 #
 # Uses test-Vagrantfile (192.168.122.x, 2 nodes) — separate from deploy-Vagrantfile.
 #
-# Run on 192.168.100.43:
+# Run on 192.168.100.49:
 #   cd /path/to/ccattler/deploy/ansible
 #   ansible-playbook -i test-inventory.ini test-deploy.yml
 
