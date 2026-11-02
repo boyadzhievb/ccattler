@@ -88,7 +88,7 @@ For manual mode the agent reads cert/key directly from `desired/route/{name}/tls
 1. **Parser** — `tls` sub-block inside `gate`, parsed by `parseRouteTLSField()`
 2. **Compiler** — `tls` → `desired/route/{name}/tls/` facts; for manual mode, reads PEM files at compile time
 3. **TLS Certificate Controller** (new) — watches `desired/route/` for `tls/mode=auto`, uses cluster CA to issue cert, writes to `derived/route/{name}/tls/`, auto-renews when approaching expiry
-4. **Agent data plane** — when TLS facts exist for a route, the embedded proxy listens on HTTPS instead of HTTP; non-TLS gates remain L4 DNAT
+4. **Agent gate listener** (revised in M170) — the agent's node-level gate proxy gets an HTTPS listener (`:443`) that picks the certificate by SNI and routes by Host to the gate's service. Service VIPs are never touched by TLS.
 
 ### TLS Certificate Controller
 
@@ -108,22 +108,57 @@ On reconcile:
 
 The controller needs access to the cluster CA. The server already loads it for enrollment — pass the same `*CertificateAuthority` to this controller.
 
-### Agent Data Plane Changes
+### Node HTTPS Listener (M170)
 
-The agent data plane reconciler (`agent/dataplane.go`) already reads route facts and builds `RouteDataPlaneConfig`. Extend it:
+> **Supersedes the M169 design**, where TLS was terminated by the per-route
+> cookie proxy reached through a VIP:port dispatch override. That design made a
+> TLS gate take over the whole service port: cluster-internal plain-HTTP callers
+> of the service broke, two gates could not share a service port, TLS-only gates
+> were never dispatched on nftables, and eBPF ignored TLS entirely.
 
-1. Read `derived/route/{name}/tls/cert` and `desired/route/{name}/tls/cert` (derived for auto, desired for manual)
-2. Add `TLSCertPEM` and `TLSKeyPEM` fields to `RouteDataPlaneConfig`
-3. When TLS material is present, the embedded cookie proxy creates a `tls.Config` and calls `ServeTLS` instead of `Serve`
-4. For non-sticky TLS gates (no cookie), start the embedded proxy anyway (TLS termination requires L7) — forward as plain HTTP to backends
+The agent already runs a node-level gate proxy (`network/userspace_proxy.go`,
+enabled with `--proxy`, listening on `--proxy-listen`). It maps gate hosts to
+services from `desired/route/*/host` and forwards to healthy endpoints with
+least-connections, circuit breaking, and warm-zero activation. M170 adds a
+second, TLS listener to the same proxy:
 
-This means: any gate with `tls` uses the embedded Go proxy. Non-TLS non-sticky gates stay pure nftables DNAT.
+```
+client ──HTTPS──▶ node:443  (agent gate proxy, --proxy-tls-listen)
+                    │ 1. TLS handshake: GetCertificate(SNI) → gate cert
+                    │ 2. Host header → gate → service (same routeHostMap as :80)
+                    │ 3. Host must belong to the SNI's gate, else 421
+                    ▼
+                  backend endpoint (plain HTTP, overlay IP)
 
-### Port Allocation
+client ──HTTP───▶ node:80/8080 (existing listener)
+                    └─ host of a TLS gate → 308 redirect to https://
+in-cluster ─HTTP─▶ service VIP:port → unchanged, never TLS
+```
 
-TLS gates need a listener port on the agent. The existing cookie proxy already allocates ports from a range. TLS gates use the same allocation mechanism.
+**Certificate selection.** The proxy keeps a `host → tls.Certificate` map,
+refreshed on the same 5 s TTL as `routeHostMap`, built from
+`desired/route/{name}/tls/{cert,key}` (manual) or
+`derived/route/{name}/tls/{cert,key}` (auto); desired wins. `GetCertificate`
+looks up `ClientHelloInfo.ServerName`. Unknown or missing SNI → handshake
+fails (no default certificate, so the node never presents an unrelated cert).
 
-External traffic hits port 443 (or the service VIP port). nftables DNAT redirects to the proxy's allocated port. The proxy terminates TLS and forwards to backends.
+**Cookie sticky over HTTPS.** Backend selection from the sticky cookie
+(`selectBackendFromCookie`, `buildStickyCookie` in `network/cookie_proxy.go`)
+is extracted into shared helpers; the gate proxy applies them when the matched
+gate has `sticky cookie`. Plain-HTTP cookie-sticky gates keep using the
+per-route cookie proxy for now.
+
+**Removed.** The `hasTLS` branches in the nftables and iptables route chains,
+TLS support in `CookieStickyProxy`, and `TLSCertPEM`/`TLSKeyPEM` on
+`RouteDataPlaneConfig`. VIP data planes no longer know about TLS.
+
+**Agent flags.** `--proxy-tls-listen <addr>` (default: `--proxy-listen` host
+with port 443 when `--proxy` is set). The Ansible worker template passes
+`{{ ansible_host }}:{{ proxy_tls_port | default(443) }}`.
+
+**Data plane independence.** Termination happens in userspace before
+forwarding to endpoint IPs, so gate TLS works the same on nftables, iptables,
+and eBPF.
 
 ## `cca get gates`
 
@@ -181,11 +216,12 @@ ever returns key or certificate PEM material.
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | No ACME/Let's Encrypt | Cluster CA only | Keep it simple; ACME is a future enhancement. Cluster CA already works. |
-| No Caddy/Envoy | Embedded Go proxy | Already exists for cookie sticky. Adding TLS is just `tls.Config`. No new dependency. |
+| No Caddy/Envoy | Embedded Go proxy | The agent gate proxy already exists. Adding TLS is just `tls.Config`. No new dependency. |
 | PEM in facts (manual) | Read at apply time | Same pattern as `config { from "file" }`. Secrets are encrypted at rest in etcd. |
 | TLS requires host | Validation error | Can't issue a cert without a hostname. IP-based TLS is a future edge case. |
 | 90-day TTL, 30-day renewal | Matches Let's Encrypt convention | Short-lived certs, automatic rotation. |
-| All TLS gates use L7 proxy | Even non-sticky | TLS termination is inherently L7. Consistent behavior. |
+| TLS on a node listener, not the VIP (M170) | `:443` on the agent gate proxy, SNI → cert | Service ports stay plain HTTP for in-cluster callers; many gates per service; works on every data plane. |
+| No default certificate | Unknown SNI fails the handshake | Never present a cert for a host the client didn't ask for. |
 
 ## Security Considerations
 
@@ -193,6 +229,7 @@ ever returns key or certificate PEM material.
 - Auto mode private keys are generated server-side by the CA, never leave the fact store unencrypted.
 - The agent reads TLS material from the fact store over mTLS — same security boundary as secrets.
 - Cert issuance is limited to hostnames declared in `gate` blocks — no wildcard certs.
+- Private keys live only in agent memory (the cert map); they are never written to disk or logs on nodes.
 
 ## Not In Scope
 

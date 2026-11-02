@@ -736,11 +736,13 @@ CronJobs are recurring jobs fired on a cron schedule. The CronController piggyba
 
 ---
 
-## Flow 13: Gate TLS Termination (M169)
+## Flow 13: Gate TLS Termination (M169, listener revised in M170)
 
 **Problem**: A gate with `tls auto` must have a valid cert issued by the cluster CA before the agent can serve HTTPS. Manual mode must have cert/key content available in the fact store at apply time.
 
 **Invariant**: Every TLS gate has cert material available before the agent proxy starts listening on HTTPS. No gate serves TLS with expired or missing certs.
+
+**Invariant (M170)**: TLS is terminated only on the agent gate proxy's node HTTPS listener. Service VIPs never carry TLS from the gate; in-cluster callers of a service port see the same protocol whether or not a gate has `tls`.
 
 ### Auto Mode Flow
 
@@ -753,9 +755,11 @@ cca apply (gate with tls auto)
        → writes derived/route/{name}/tls/cert = <PEM>
        → writes derived/route/{name}/tls/key  = <PEM>
        → writes derived/route/{name}/tls/not-after = <timestamp>
-  → agent data plane reads derived/route/{name}/tls/cert + key
-  → embedded proxy creates tls.Config, calls ServeTLS
-  → nftables DNAT redirects external :443 → proxy allocated port
+  → agent gate proxy refreshes host → certificate map (5 s TTL)
+       from derived/route/{name}/tls/cert + key
+  → client connects to node:443 with SNI = host
+       → GetCertificate(SNI) returns the gate cert (unknown SNI → handshake fails)
+       → Host header → gate → service → healthy endpoint (plain HTTP)
 ```
 
 ### Manual Mode Flow
@@ -766,8 +770,9 @@ cca apply (gate with tls { cert "path" key "path" })
   → writes desired/route/{name}/tls/mode = "manual"
   → writes desired/route/{name}/tls/cert = <PEM content>
   → writes desired/route/{name}/tls/key  = <PEM content>
-  → agent data plane reads desired/route/{name}/tls/cert + key
-  → embedded proxy creates tls.Config, calls ServeTLS
+  → agent gate proxy loads desired/route/{name}/tls/cert + key into its
+       host → certificate map (desired takes precedence over derived)
+  → same request path as auto mode on node:443
 ```
 
 ### Critical Invariants
@@ -776,8 +781,10 @@ cca apply (gate with tls { cert "path" key "path" })
 - Auto mode cert issuance happens in the RouteTLSController, not in the compiler or agent.
 - The agent never generates certs — it only consumes them from the fact store.
 - For auto mode, the agent reads from `derived/route/`. For manual mode, from `desired/route/`.
-- If TLS material is missing when the agent reconciles, the proxy does not start for that gate (logged as warning, retried next cycle).
-- All TLS gates use the embedded L7 proxy, even non-sticky ones — TLS termination is inherently L7.
+- If TLS material is missing, the gate has no entry in the certificate map: handshakes for its host fail until the cert appears (picked up within one refresh).
+- TLS terminates on the node HTTPS listener (`--proxy-tls-listen`, default :443), never via VIP dispatch. VIP data planes (nftables, iptables, eBPF) do not know about TLS.
+- The plain-HTTP listener answers requests for a TLS gate's host with a 308 redirect to `https://`.
+- A request whose Host belongs to a different gate than its SNI gets 421 Misdirected Request.
 - Cert renewal happens server-side. The agent picks up new certs on its next reconcile cycle.
 
 ---

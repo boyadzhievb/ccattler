@@ -6,25 +6,32 @@ When a milestone is released, move its checklist and row to the archive.
 
 ## Open Phase Checklists
 
-### Phase 170 — Gate TLS End-to-End Validation (M170)
+### Phase 170 — Gate HTTPS Listener & End-to-End Validation (M170)
 
-Validate M169 gate TLS on the deploy cluster. Plan: [design/milestones/m170-gate-tls-e2e.md](design/milestones/m170-gate-tls-e2e.md).
+Move gate TLS from the service VIP to a node HTTPS listener on the agent gate proxy, then validate on the deploy cluster. Plan: [design/milestones/m170-gate-tls-e2e.md](design/milestones/m170-gate-tls-e2e.md).
 
-**Fixes found during planning:**
-- [ ] F1: nftables dispatches TLS-only gates (no sticky) to the TLS proxy + unit test
-- [ ] F2: iptables unit test for TLS-only gate dispatch
-- [ ] F3: agent warns when a TLS gate exists under `--dataplane ebpf`
-- [ ] F4: decide VIP:port takeover semantics (Option A: document; Option B: separate milestone)
+**Design:**
+- [x] Node HTTPS listener design in `design/gate-tls-termination.md`
+- [x] Flow 13 updated in `design/runtime-invariant-flows.md`
+
+**Listener:**
+- [ ] Host → certificate map in `UserSpaceProxy` (desired over derived, 5 s refresh) + unit tests
+- [ ] `--proxy-tls-listen` HTTPS listener: SNI cert selection, no default cert, 421 on SNI/Host mismatch
+- [ ] 308 HTTP → HTTPS redirect for TLS gate hosts on the plain listener
+- [ ] Cookie sticky over HTTPS via shared cookie helpers (`Secure` cookie)
+- [ ] Remove VIP TLS: nftables/iptables `hasTLS` branches, `CookieStickyProxy` TLS, `RouteDataPlaneConfig` TLS fields, agent TLS reads
 
 **Workload & harness:**
-- [ ] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto, tls-manual, tls-sticky services)
+- [ ] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto with two gates, tls-manual, tls-sticky)
 - [ ] Manual cert generated with openssl at test time (SAN = gate host), not committed
-- [ ] T1–T12 checks in `cluster_test.sh`, each inside a retry/wait loop
+- [ ] T1–T15 checks in `cluster_test.sh`, each inside a retry/wait loop
 
-**Run & ship:**
+**Deploy, run & ship:**
+- [ ] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [ ] Green on the deploy cluster 3 consecutive runs
+- [ ] One-off run on the bare-metal eBPF cluster
 - [ ] `gate-tls` added to deploy-testbed workflow default workloads
-- [ ] F3/F4 behaviour documented in `design/dsl-reference.md` and `design/gate-tls-termination.md`
+- [ ] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
 
 ### Phase 171 — eBPF Data Plane Correctness (M171)
 
@@ -98,7 +105,7 @@ Ordered by priority. Renumbered 2026-11-02 so numbers follow priority (M170 is n
 | Milestone | Phases | Demo |
 |-----------|--------|------|
 | **Tier 0 — Finish & verify what shipped** | | |
-| M170 — Gate TLS End-to-End Validation | 170 | Deploy `tls auto` and `tls { cert key }` gates on the deploy cluster (192.168.124.x). Verify HTTPS with cluster-CA trust, cert renewal (short TTL override in test), manual cert rotation via re-apply, sticky + TLS together, `cca get gates` / `cca describe gate` output. Depends: M169. |
+| M170 — Gate HTTPS Listener & End-to-End Validation | 170 | Gate TLS moves from the service VIP to a node `:443` listener on the agent gate proxy: SNI selects the gate cert, Host routes to the service, service ports stay plain HTTP for in-cluster callers, multiple gates per service, works on every data plane. Then validate on the deploy cluster (15 e2e cases). Fixes M169 gaps: TLS-only gates not dispatched on nftables, eBPF ignored TLS. Depends: M169. |
 | M171 — eBPF Data Plane Correctness | 171 | Correctness half of the original M151 (see checklist): tc SNAT conntrack fix validated over 10+ CI runs, egress SNAT verified, agent-restart BPF pin race fixed, TCP e2e tests for every packet-flow-matrix row. eBPF policy and nftables removal moved to M184. Depends: M128–M134. |
 | M172 — HA Control Plane Validation | 172 | First end-to-end HA validation on vmherd (see checklist): 3-node etcd quorum, leader-elected cca-server (`controllers/leader.go`, `ha_runner.go` already exist), control plane failover <30s, etcd member failure, recovery. Absorbs the former Control Plane HA milestone: also adds `cca server --join <existing>` if validation shows it is needed. |
 | M173 — Etcd Backup & Restore | 173 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
