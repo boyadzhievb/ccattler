@@ -4,17 +4,12 @@
 package network
 
 import (
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/boyadzhievb/ccattler/security"
 )
 
 func TestCookieStickyProxyPinsToBackend(t *testing.T) {
@@ -213,7 +208,7 @@ func TestCookieStickyProxyRemovesStaleRoute(t *testing.T) {
 }
 
 func TestBuildStickyCookieFormat(t *testing.T) {
-	cookieString := buildStickyCookie(RouteCookieConfig{
+	cookieString := buildStickyCookie("session", RouteCookieConfig{
 		Name:     "session",
 		Secure:   true,
 		HTTPOnly: true,
@@ -237,148 +232,14 @@ func TestBuildStickyCookieFormat(t *testing.T) {
 	}
 }
 
-func TestBuildStickyCookieDefaultName(t *testing.T) {
-	cookieString := buildStickyCookie(RouteCookieConfig{}, "10.0.1.4:8080")
-
-	if !strings.HasPrefix(cookieString, "__CCA_STICKY=") {
-		t.Errorf("expected default name __CCA_STICKY, got: %s", cookieString)
+// TestStickyCookieNameDefaultsPerService verifies the documented default
+// cookie name __CCA_STICKY_{service} and that a configured name wins.
+func TestStickyCookieNameDefaultsPerService(t *testing.T) {
+	if cookieName := stickyCookieName(RouteCookieConfig{}, "api"); cookieName != "__CCA_STICKY_api" {
+		t.Errorf("default cookie name: got %q, want __CCA_STICKY_api", cookieName)
 	}
-}
-
-func TestTLSProxyTerminatesHTTPS(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(responseWriter, "tls-backend")
-	}))
-	defer backend.Close()
-
-	backendAddress, backendPort := parseTestServerAddress(t, backend)
-
-	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
-	if caError != nil {
-		t.Fatalf("failed to create test CA: %v", caError)
-	}
-
-	issuedCert, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-		CommonName: "localhost",
-		DNSNames:   []string{"localhost"},
-		TTL:        1 * time.Hour,
-	})
-	if issueError != nil {
-		t.Fatalf("failed to issue cert: %v", issueError)
-	}
-
-	cookieProxy := NewCookieStickyProxy()
-	defer cookieProxy.Cleanup()
-
-	cookieProxy.ReconcileRoutes([]RouteDataPlaneConfig{
-		{
-			RouteName:   "tls-route",
-			ServiceName: "web",
-			Backends: []DataPlaneBackend{
-				{Address: backendAddress, Port: backendPort},
-			},
-			TLSCertPEM: string(issuedCert.CertificatePEM),
-			TLSKeyPEM:  string(issuedCert.PrivateKeyPEM),
-		},
-	})
-
-	proxyPort := cookieProxy.ListenPort("tls-route")
-	if proxyPort == 0 {
-		t.Fatal("expected non-zero proxy port for TLS route")
-	}
-
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(certificateAuthority.CACertificatePEM())
-
-	tlsClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    caCertPool,
-				ServerName: "localhost",
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-	}
-
-	proxyURL := fmt.Sprintf("https://localhost:%d/", proxyPort)
-	response, requestError := tlsClient.Get(proxyURL) //nolint:gosec // test-only URL
-	if requestError != nil {
-		t.Fatalf("TLS request failed: %v", requestError)
-	}
-	defer response.Body.Close()
-
-	responseBody, _ := io.ReadAll(response.Body)
-	if string(responseBody) != "tls-backend" {
-		t.Errorf("expected 'tls-backend', got %q", string(responseBody))
-	}
-}
-
-func TestTLSProxyWithCookieSticky(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(responseWriter, "sticky-tls")
-	}))
-	defer backend.Close()
-
-	backendAddress, backendPort := parseTestServerAddress(t, backend)
-
-	certificateAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
-	issuedCert, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-		CommonName: "localhost",
-		DNSNames:   []string{"localhost"},
-		TTL:        1 * time.Hour,
-	})
-
-	cookieProxy := NewCookieStickyProxy()
-	defer cookieProxy.Cleanup()
-
-	cookieProxy.ReconcileRoutes([]RouteDataPlaneConfig{
-		{
-			RouteName:    "tls-sticky",
-			ServiceName:  "web",
-			StickyMethod: "cookie",
-			Backends: []DataPlaneBackend{
-				{Address: backendAddress, Port: backendPort},
-			},
-			CookieConfig: &RouteCookieConfig{Name: "sess", Secure: true},
-			TLSCertPEM:   string(issuedCert.CertificatePEM),
-			TLSKeyPEM:    string(issuedCert.PrivateKeyPEM),
-		},
-	})
-
-	caCertPool := x509.NewCertPool()
-	caCertPool.AppendCertsFromPEM(certificateAuthority.CACertificatePEM())
-
-	tlsClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:    caCertPool,
-				ServerName: "localhost",
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-	}
-
-	proxyURL := fmt.Sprintf("https://localhost:%d/", cookieProxy.ListenPort("tls-sticky"))
-	response, requestError := tlsClient.Get(proxyURL) //nolint:gosec // test-only URL
-	if requestError != nil {
-		t.Fatalf("TLS+sticky request failed: %v", requestError)
-	}
-	defer response.Body.Close()
-
-	responseBody, _ := io.ReadAll(response.Body)
-	if string(responseBody) != "sticky-tls" {
-		t.Errorf("expected 'sticky-tls', got %q", string(responseBody))
-	}
-
-	var stickyCookie *http.Cookie
-	for _, cookie := range response.Cookies() {
-		if cookie.Name == "sess" {
-			stickyCookie = cookie
-			break
-		}
-	}
-	if stickyCookie == nil {
-		t.Fatal("expected sticky cookie in TLS response")
+	if cookieName := stickyCookieName(RouteCookieConfig{Name: "session"}, "api"); cookieName != "session" {
+		t.Errorf("configured cookie name: got %q, want session", cookieName)
 	}
 }
 

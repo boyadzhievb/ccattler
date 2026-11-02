@@ -39,6 +39,7 @@ type agentCommandConfig struct {
 	etcdCACertPath         string
 	proxyEnabled           bool
 	proxyListenAddress     string
+	proxyTLSListenAddress  string // gate HTTPS listener; defaults to the proxy host on port 443
 	logLevel               string
 	logFormat              string
 	kmsProvider            string // kmsProvider selects the KMS backend for secret decryption ("aws-kms", "gcp-kms", or empty for local).
@@ -139,6 +140,12 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 				parsedConfig.proxyListenAddress = args[argIndex]
 				parsedConfig.proxyEnabled = true
 			}
+		case "--proxy-tls-listen":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.proxyTLSListenAddress = args[argIndex]
+				parsedConfig.proxyEnabled = true
+			}
 		case "--log-level":
 			if argIndex+1 < len(args) {
 				argIndex++
@@ -204,6 +211,9 @@ func parseAgentCommandArgs(args []string) agentCommandConfig {
 
 	if parsedConfig.proxyEnabled && parsedConfig.proxyListenAddress == "" {
 		parsedConfig.proxyListenAddress = "0.0.0.0:80"
+	}
+	if parsedConfig.proxyEnabled && parsedConfig.proxyTLSListenAddress == "" {
+		parsedConfig.proxyTLSListenAddress = deriveGateHTTPSListenAddress(parsedConfig.proxyListenAddress)
 	}
 
 	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
@@ -370,7 +380,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}
 
 	if parsedConfig.proxyEnabled {
-		startAgentHTTPProxy(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyListenAddress)
+		startAgentHTTPProxy(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyListenAddress, parsedConfig.proxyTLSListenAddress)
 	}
 
 	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
@@ -478,9 +488,24 @@ func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore
 	}
 }
 
-// startAgentHTTPProxy starts the userspace HTTP proxy that routes requests to
-// backend service instances based on the Host header.
-func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID, proxyListenAddress string) {
+// defaultGateHTTPSPort is the port the gate HTTPS listener uses when
+// --proxy-tls-listen is not given.
+const defaultGateHTTPSPort = "443"
+
+// deriveGateHTTPSListenAddress returns the proxy listen host with the default
+// gate HTTPS port, so both listeners bind the same interface.
+func deriveGateHTTPSListenAddress(proxyListenAddress string) string {
+	proxyHost, _, splitError := net.SplitHostPort(proxyListenAddress)
+	if splitError != nil {
+		proxyHost = "0.0.0.0"
+	}
+	return net.JoinHostPort(proxyHost, defaultGateHTTPSPort)
+}
+
+// startAgentHTTPProxy starts the gate proxy: plain HTTP with Host header
+// routing on proxyListenAddress, and gate HTTPS (certificate by SNI) on
+// proxyTLSListenAddress.
+func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID, proxyListenAddress, proxyTLSListenAddress string) {
 	serviceResolver := network.NewStoreBackedResolver(factStore)
 	serviceProxy := network.NewUserSpaceProxy(serviceResolver, proxyListenAddress, factStore)
 	go func() {
@@ -488,8 +513,13 @@ func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID
 			fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
 		}
 	}()
-	fmt.Printf("Agent %s: HTTP proxy listening on %s (Host header routing)\n",
-		nodeID, proxyListenAddress)
+	go func() {
+		if tlsStartError := serviceProxy.StartTLS(ctx, proxyTLSListenAddress); tlsStartError != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "Gate HTTPS proxy error: %v\n", tlsStartError)
+		}
+	}()
+	fmt.Printf("Agent %s: HTTP proxy listening on %s, gate HTTPS on %s (Host/SNI routing)\n",
+		nodeID, proxyListenAddress, proxyTLSListenAddress)
 }
 
 // performAgentShutdownCleanup cleans up the data plane provider, VXLAN overlay,

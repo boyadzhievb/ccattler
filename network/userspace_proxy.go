@@ -79,14 +79,14 @@ type UserSpaceProxy struct {
 	warmZeroCache map[string]warmZeroCacheEntry
 	// warmZeroCacheMutex protects warmZeroCache.
 	warmZeroCacheMutex sync.RWMutex
-	// routeHostMap caches the mapping from external hostnames (e.g.
-	// "airflow.home.arpa") to internal service names (e.g. "webserver").
-	// Built from desired/route/*/host and desired/route/*/service facts.
-	routeHostMap map[string]string
-	// routeHostMapMutex protects routeHostMap.
-	routeHostMapMutex sync.RWMutex
-	// routeHostMapExpiresAt tracks when the cached route host map expires.
-	routeHostMapExpiresAt time.Time
+	// gateHosts caches gate entries keyed by external hostname (e.g.
+	// "airflow.home.arpa"): target service, sticky cookie settings, and TLS
+	// certificate. Built from desired/route/* and derived/route/* facts.
+	gateHosts map[string]*gateHostEntry
+	// gateHostsMutex protects gateHosts.
+	gateHostsMutex sync.RWMutex
+	// gateHostsExpiresAt tracks when the cached gate table expires.
+	gateHostsExpiresAt time.Time
 	// circuitBreaker tracks per-backend health to avoid forwarding to failing backends.
 	circuitBreaker *CircuitBreaker
 	// loadBalancer selects backends using least-connections instead of round-robin.
@@ -104,8 +104,8 @@ type warmZeroCacheEntry struct {
 // warmZeroCacheTTL is how long warm-zero enabled status is cached per service.
 const warmZeroCacheTTL = 5 * time.Second
 
-// routeHostCacheTTL is how long the route hostname-to-service mapping is
-// cached. Kept short so new gate definitions take effect within seconds.
+// routeHostCacheTTL is how long the gate table (hosts, services, certificates)
+// is cached. Kept short so new gates and rotated certs take effect within seconds.
 const routeHostCacheTTL = 5 * time.Second
 
 // maxActivationWaiters is the maximum number of concurrent requests that can
@@ -136,7 +136,7 @@ func NewUserSpaceProxy(resolver ServiceResolver, listenAddress string, factStore
 		lastRequestWriteTime: make(map[string]time.Time),
 		activationWaiters:    make(map[string]*atomic.Int64),
 		warmZeroCache:        make(map[string]warmZeroCacheEntry),
-		routeHostMap:         make(map[string]string),
+		gateHosts:            make(map[string]*gateHostEntry),
 		circuitBreaker:       NewCircuitBreaker(),
 		loadBalancer:         NewLeastConnectionsBalancer(),
 		timeNow:              time.Now,
@@ -169,23 +169,27 @@ func (userSpaceProxy *UserSpaceProxy) Start(ctx context.Context) error {
 }
 
 // ServeHTTP routes an incoming request to a backend endpoint based on the
-// Host header. The service name is extracted by stripping the domain suffix
-// and port from the Host header. If no endpoints are available and the
+// Host header: a gate host maps to its service, otherwise the service name is
+// the Host minus port and domain suffix. If no endpoints are available and the
 // service has warm-zero enabled, the proxy triggers activation and waits
 // for a backend to become ready.
 func (userSpaceProxy *UserSpaceProxy) ServeHTTP(responseWriter http.ResponseWriter, incomingRequest *http.Request) {
+	gateEntry := userSpaceProxy.lookupGateHost(incomingRequest.Context(), hostWithoutPort(incomingRequest.Host))
+	if userSpaceProxy.handleGateRequestPolicy(responseWriter, incomingRequest, gateEntry) {
+		return
+	}
+
 	serviceName := extractServiceName(incomingRequest.Host)
+	if gateEntry != nil {
+		serviceName = gateEntry.serviceName
+	}
 	if serviceName == "" {
 		http.Error(responseWriter, "missing Host header", http.StatusBadRequest)
 		return
 	}
 	if types.ValidateResourceName(serviceName) != nil {
-		resolvedService := userSpaceProxy.resolveRouteHostname(incomingRequest.Context(), serviceName)
-		if resolvedService == "" {
-			http.Error(responseWriter, "invalid service name in Host header", http.StatusBadRequest)
-			return
-		}
-		serviceName = resolvedService
+		http.Error(responseWriter, "invalid service name in Host header", http.StatusBadRequest)
+		return
 	}
 
 	availableEndpoints, resolveError := userSpaceProxy.resolver.ResolveEndpoints(
@@ -475,7 +479,8 @@ func (userSpaceProxy *UserSpaceProxy) forwardToBackend(
 		return
 	}
 
-	backendAddress := userSpaceProxy.loadBalancer.SelectBackend(healthyCandidates)
+	gateEntry := userSpaceProxy.lookupGateHost(incomingRequest.Context(), hostWithoutPort(incomingRequest.Host))
+	backendAddress := userSpaceProxy.selectGateBackend(incomingRequest, gateEntry, healthyCandidates)
 	defer userSpaceProxy.loadBalancer.ReleaseBackend(backendAddress)
 
 	backendURL := &url.URL{
@@ -493,6 +498,10 @@ func (userSpaceProxy *UserSpaceProxy) forwardToBackend(
 			proxyRequest.SetURL(backendURL)
 			proxyRequest.Out.Host = incomingRequest.Host
 			childSpan.InjectHeaders(proxyRequest.Out)
+		},
+		ModifyResponse: func(backendResponse *http.Response) error {
+			addGateStickyCookie(backendResponse, incomingRequest, gateEntry, backendAddress)
+			return nil
 		},
 		ErrorHandler: func(errorResponseWriter http.ResponseWriter, errorRequest *http.Request, transportError error) {
 			userSpaceProxy.circuitBreaker.RecordFailure(backendAddress)
@@ -525,81 +534,85 @@ func (capture *statusCapture) WriteHeader(code int) {
 	capture.ResponseWriter.WriteHeader(code)
 }
 
-// resolveRouteHostname checks whether the given hostname matches an external
-// route host (e.g. "airflow.home.arpa") and returns the target service name.
-// Returns empty string if no route matches or the store is unavailable.
-func (userSpaceProxy *UserSpaceProxy) resolveRouteHostname(ctx context.Context, hostname string) string {
-	if userSpaceProxy.factStore == nil {
-		return ""
-	}
-
-	currentTime := userSpaceProxy.timeNow()
-
-	userSpaceProxy.routeHostMapMutex.RLock()
-	serviceName, found := userSpaceProxy.routeHostMap[hostname]
-	expired := currentTime.After(userSpaceProxy.routeHostMapExpiresAt)
-	userSpaceProxy.routeHostMapMutex.RUnlock()
-
-	if found && !expired {
-		return serviceName
-	}
-
-	refreshedMap := userSpaceProxy.refreshRouteHostMap(ctx)
-	if refreshedMap == nil {
-		if found {
-			return serviceName
-		}
-		return ""
-	}
-
-	resolvedService, exists := refreshedMap[hostname]
-	if !exists {
-		return ""
-	}
-	return resolvedService
-}
-
-// refreshRouteHostMap scans route facts from the store and rebuilds the
-// hostname-to-service mapping cache. Returns the new map, or nil on error.
-func (userSpaceProxy *UserSpaceProxy) refreshRouteHostMap(ctx context.Context) map[string]string {
-	routeFacts, scanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDesiredRoutes)
-	if scanError != nil {
+// lookupGateHost returns the gate entry for an external hostname, refreshing
+// the cached gate table when it has expired. Returns nil if no gate matches
+// or the store is unavailable.
+func (userSpaceProxy *UserSpaceProxy) lookupGateHost(ctx context.Context, hostname string) *gateHostEntry {
+	if userSpaceProxy.factStore == nil || hostname == "" {
 		return nil
 	}
 
-	hostToRoute := make(map[string]string)
-	routeToService := make(map[string]string)
+	userSpaceProxy.gateHostsMutex.RLock()
+	gateEntry, found := userSpaceProxy.gateHosts[hostname]
+	expired := userSpaceProxy.timeNow().After(userSpaceProxy.gateHostsExpiresAt)
+	userSpaceProxy.gateHostsMutex.RUnlock()
 
-	for _, fact := range routeFacts {
-		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		if len(pathParts) != 2 {
-			continue
-		}
-		routeName := pathParts[0]
-		factSuffix := pathParts[1]
-
-		switch factSuffix {
-		case "host":
-			hostToRoute[string(fact.Value)] = routeName
-		case "service":
-			routeToService[routeName] = string(fact.Value)
-		}
+	if !expired {
+		return gateEntry
 	}
 
-	refreshedMap := make(map[string]string, len(hostToRoute))
-	for hostValue, routeName := range hostToRoute {
-		if targetService, hasService := routeToService[routeName]; hasService {
-			refreshedMap[hostValue] = targetService
+	refreshedGateHosts := userSpaceProxy.refreshGateHosts(ctx)
+	if refreshedGateHosts == nil {
+		if found {
+			return gateEntry
 		}
+		return nil
+	}
+	return refreshedGateHosts[hostname]
+}
+
+// refreshGateHosts scans desired and derived route facts and rebuilds the
+// gate table. Returns the new table, or nil on store error.
+func (userSpaceProxy *UserSpaceProxy) refreshGateHosts(ctx context.Context) map[string]*gateHostEntry {
+	desiredRouteFacts, desiredScanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDesiredRoutes)
+	if desiredScanError != nil {
+		return nil
+	}
+	derivedRouteFacts, derivedScanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDerivedRoutes)
+	if derivedScanError != nil {
+		return nil
 	}
 
-	userSpaceProxy.routeHostMapMutex.Lock()
-	userSpaceProxy.routeHostMap = refreshedMap
-	userSpaceProxy.routeHostMapExpiresAt = userSpaceProxy.timeNow().Add(routeHostCacheTTL)
-	userSpaceProxy.routeHostMapMutex.Unlock()
+	refreshedGateHosts := buildGateHostEntries(desiredRouteFacts, derivedRouteFacts)
 
-	return refreshedMap
+	userSpaceProxy.gateHostsMutex.Lock()
+	userSpaceProxy.gateHosts = refreshedGateHosts
+	userSpaceProxy.gateHostsExpiresAt = userSpaceProxy.timeNow().Add(routeHostCacheTTL)
+	userSpaceProxy.gateHostsMutex.Unlock()
+
+	return refreshedGateHosts
+}
+
+// selectGateBackend picks the backend for a request: the sticky-cookie backend
+// when the gate uses cookie stickiness and that backend is still healthy,
+// otherwise the least-loaded healthy candidate.
+func (userSpaceProxy *UserSpaceProxy) selectGateBackend(
+	incomingRequest *http.Request, gateEntry *gateHostEntry, healthyCandidates []string,
+) string {
+	if gateEntry != nil && gateEntry.cookieConfig != nil {
+		cookieName := stickyCookieName(*gateEntry.cookieConfig, gateEntry.serviceName)
+		stickyAddress := stickyCookieBackend(incomingRequest, cookieName)
+		for _, candidateAddress := range healthyCandidates {
+			if candidateAddress == stickyAddress {
+				return userSpaceProxy.loadBalancer.SelectBackend([]string{stickyAddress})
+			}
+		}
+	}
+	return userSpaceProxy.loadBalancer.SelectBackend(healthyCandidates)
+}
+
+// addGateStickyCookie sets the sticky cookie on responses for cookie-sticky
+// gates. Over HTTPS the cookie is always marked Secure.
+func addGateStickyCookie(backendResponse *http.Response, incomingRequest *http.Request, gateEntry *gateHostEntry, backendAddress string) {
+	if gateEntry == nil || gateEntry.cookieConfig == nil {
+		return
+	}
+	cookieConfig := *gateEntry.cookieConfig
+	if incomingRequest.TLS != nil {
+		cookieConfig.Secure = true
+	}
+	cookieName := stickyCookieName(cookieConfig, gateEntry.serviceName)
+	backendResponse.Header.Add("Set-Cookie", buildStickyCookie(cookieName, cookieConfig, backendAddress))
 }
 
 // extractServiceName derives the service name from the Host header value.

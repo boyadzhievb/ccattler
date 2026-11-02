@@ -110,6 +110,8 @@
     - { port: "4789", proto: "udp", comment: "CCattler VXLAN" }
     - { port: "9770", proto: "tcp", comment: "CCattler API" }
     - { port: "2379", proto: "tcp", comment: "etcd client" }
+    - { port: "{{ proxy_port | default(8080) }}", proto: "tcp", comment: "CCattler gate HTTP proxy" }
+    - { port: "{{ proxy_tls_port | default(443) }}", proto: "tcp", comment: "CCattler gate HTTPS proxy" }
   when: ansible_facts.services is defined and ansible_facts.services.get('ufw.service', {}).get('state') == 'running'
   ignore_errors: true
 

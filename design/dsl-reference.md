@@ -167,9 +167,17 @@ backends.
 
 ### TLS termination
 
-A gate with `tls` serves HTTPS. The agent's embedded proxy terminates TLS and
-forwards plain HTTP to the backends. If the gate has no `sticky` setting, the
-proxy picks backends round-robin.
+A gate with `tls` serves HTTPS on every node's gate HTTPS listener (agent
+`--proxy-tls-listen`, default port 443). The listener picks the gate's
+certificate from the client's SNI and routes by Host to the gate's service,
+forwarding plain HTTP to healthy instances (least connections, or the sticky
+backend for `sticky cookie`, with the cookie marked `Secure`). On the plain
+gate proxy port, requests for that host get a 308 redirect to `https://`.
+
+The service itself is unchanged: in-cluster clients keep calling the service
+name or VIP over plain HTTP. Several gates (hosts) may target the same service
+port. Unknown SNI fails the handshake; a Host that belongs to a different gate
+than the SNI gets 421.
 
 **Auto mode** — the cluster CA issues a certificate for `host`:
 

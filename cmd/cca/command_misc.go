@@ -925,7 +925,7 @@ _cca_completions() {
                 --runtime) COMPREPLY=($(compgen -W "process container" -- "$current_word")) ;;
                 --node-id|--endpoints|--store-prefix|--advertise-address) ;;
                 --cert|--key|--ca) COMPREPLY=($(compgen -f -- "$current_word")) ;;
-                *) COMPREPLY=($(compgen -W "--node-id --runtime --cert --key --ca --store --endpoints --store-prefix --advertise-address --proxy --proxy-listen" -- "$current_word")) ;;
+                *) COMPREPLY=($(compgen -W "--node-id --runtime --cert --key --ca --store --endpoints --store-prefix --advertise-address --proxy --proxy-listen --proxy-tls-listen" -- "$current_word")) ;;
             esac
             ;;
         join)
@@ -1094,7 +1094,8 @@ func buildZshCompletionScript() string {
 	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
 	builder.WriteString("                '--advertise-address[node LAN address]:address:' \\\n")
 	builder.WriteString("                '--proxy[enable HTTP proxy]' \\\n")
-	builder.WriteString("                '--proxy-listen[proxy listen address]:address:'\n")
+	builder.WriteString("                '--proxy-listen[proxy listen address]:address:' \\\n")
+	builder.WriteString("                '--proxy-tls-listen[gate HTTPS listen address]:address:'\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        join)\n")
 	builder.WriteString("            _arguments \\\n")

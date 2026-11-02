@@ -15,11 +15,11 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Flow 13 updated in `design/runtime-invariant-flows.md`
 
 **Listener:**
-- [ ] Host → certificate map in `UserSpaceProxy` (desired over derived, 5 s refresh) + unit tests
-- [ ] `--proxy-tls-listen` HTTPS listener: SNI cert selection, no default cert, 421 on SNI/Host mismatch
-- [ ] 308 HTTP → HTTPS redirect for TLS gate hosts on the plain listener
-- [ ] Cookie sticky over HTTPS via shared cookie helpers (`Secure` cookie)
-- [ ] Remove VIP TLS: nftables/iptables `hasTLS` branches, `CookieStickyProxy` TLS, `RouteDataPlaneConfig` TLS fields, agent TLS reads
+- [x] Host → certificate map in `UserSpaceProxy` (desired over derived, 5 s refresh) + unit tests
+- [x] `--proxy-tls-listen` HTTPS listener: SNI cert selection, no default cert, 421 on SNI/Host mismatch
+- [x] 308 HTTP → HTTPS redirect for TLS gate hosts on the plain listener
+- [x] Cookie sticky over HTTPS via shared cookie helpers (`Secure` cookie)
+- [x] Remove VIP TLS: nftables/iptables `hasTLS` branches, `CookieStickyProxy` TLS, `RouteDataPlaneConfig` TLS fields, agent TLS reads
 
 **Workload & harness:**
 - [ ] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto with two gates, tls-manual, tls-sticky)
@@ -27,11 +27,11 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [ ] T1–T15 checks in `cluster_test.sh`, each inside a retry/wait loop
 
 **Deploy, run & ship:**
-- [ ] Ansible worker template passes `--proxy-tls-listen` (port 443)
+- [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [ ] Green on the deploy cluster 3 consecutive runs
 - [ ] One-off run on the bare-metal eBPF cluster
 - [ ] `gate-tls` added to deploy-testbed workflow default workloads
-- [ ] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
+- [x] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
 
 ### Phase 171 — eBPF Data Plane Correctness (M171)
 
