@@ -6,6 +6,26 @@ When a milestone is released, move its checklist and row to the archive.
 
 ## Open Phase Checklists
 
+### Phase 170 — Gate TLS End-to-End Validation (M170)
+
+Validate M169 gate TLS on the deploy cluster. Plan: [design/milestones/m170-gate-tls-e2e.md](design/milestones/m170-gate-tls-e2e.md).
+
+**Fixes found during planning:**
+- [ ] F1: nftables dispatches TLS-only gates (no sticky) to the TLS proxy + unit test
+- [ ] F2: iptables unit test for TLS-only gate dispatch
+- [ ] F3: agent warns when a TLS gate exists under `--dataplane ebpf`
+- [ ] F4: decide VIP:port takeover semantics (Option A: document; Option B: separate milestone)
+
+**Workload & harness:**
+- [ ] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto, tls-manual, tls-sticky services)
+- [ ] Manual cert generated with openssl at test time (SAN = gate host), not committed
+- [ ] T1–T12 checks in `cluster_test.sh`, each inside a retry/wait loop
+
+**Run & ship:**
+- [ ] Green on the deploy cluster 3 consecutive runs
+- [ ] `gate-tls` added to deploy-testbed workflow default workloads
+- [ ] F3/F4 behaviour documented in `design/dsl-reference.md` and `design/gate-tls-termination.md`
+
 ### Phase 171 — eBPF Data Plane Correctness (M171)
 
 Harden the eBPF data plane (M128–M134) to the point where it can fully replace nftables for VIP, SNAT, and basic network policy — running a single data plane instead of two in parallel. Discovered during VXLAN CI investigation: tc SNAT was stateless and broke TCP reply packets; agent restart race deleted BPF pin directory; no TCP-level integration tests existed; packet flow matrix was undocumented.
