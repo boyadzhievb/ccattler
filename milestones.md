@@ -28,7 +28,7 @@ Future placeholder: additional Airflow services for full Helm chart parity.
 - [ ] StatsD metrics exporter sidecar
 - [ ] Log groomer via existing logging DSL keyword
 
-### Phase 151 — eBPF Data Plane Stabilization (M151)
+### Phase 151 — eBPF Data Plane Correctness (M151)
 
 Harden the eBPF data plane (M128–M134) to the point where it can fully replace nftables for VIP, SNAT, and basic network policy — running a single data plane instead of two in parallel. Discovered during VXLAN CI investigation: tc SNAT was stateless and broke TCP reply packets; agent restart race deleted BPF pin directory; no TCP-level integration tests existed; packet flow matrix was undocumented.
 
@@ -52,6 +52,12 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 - [ ] Add e2e test: verify `nc` TCP connectivity, not just ICMP ping, in cluster health check
 - [ ] Each test row from NETWORK_GRAPH.md packet flow matrix has a corresponding e2e assertion
 
+Policy and nftables elimination items moved to Phase 190.
+
+### Phase 190 — eBPF Policy & nftables Elimination (M190)
+
+Second half of the original Phase 151 checklist. Depends: M151.
+
 **eBPF network policy (basic):**
 - [ ] tc ingress program on cca0 for ingress allow/deny by source CIDR (replaces nftables filter FORWARD)
 - [ ] BPF map populated from `derived/network/rule/` facts by agent reconciler
@@ -59,7 +65,7 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 - [ ] Integration test: policy blocks cross-service traffic, allows permitted
 
 **nftables elimination gate:**
-- [ ] All above items complete
+- [ ] M151 complete and all items above done
 - [ ] Remove nftables VIP chains when `--dataplane ebpf` (currently kept as fallback)
 - [ ] Remove nftables POSTROUTING masquerade per-container rules when eBPF SNAT active
 - [ ] `--dataplane ebpf` tested on all three targets: bare-metal, Vagrant, Lima
@@ -67,35 +73,38 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 
 ## Milestones
 
+Ordered by priority (reviewed 2026-11-02). Numbers are identifiers, not order.
+
 | Milestone | Phases | Demo |
 |-----------|--------|------|
-| **Phase C — Networking & Service Discovery** | | |
-| M168 — Cluster DNS | 168 | CoreDNS as CCattler service with `placement { mode per-node }`. Auto-generate `<service>.svc.ccattler.local` records from service/endpoint facts. Headless services: A records per instance. Depends: M160. |
-| M169 — Gate TLS Termination | 169 | `tls { mode auto }` or `tls { cert "…" key "…" }` inside `gate` block. Cluster CA issues certs for `mode auto`, auto-renews. Agent embedded proxy serves HTTPS when TLS facts present. `cca get gates` shows TLS status. Depends: M168. |
-| M170 — Service Mesh via Groups | 170 | `mesh { mtls "strict" }` — compiler auto-adds proxy to service group. Proxy uses existing SPIFFE identity. Traffic metrics as derived facts. Uses group network sharing, not sidecar injection. Depends: M169. |
-| M171 — Network Policy Egress Rules | 171 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
-| M172 — Multi-Cluster Service Discovery | 172 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
-| **Phase D — Storage & State** | | |
-| M173 — Persistent Volumes | 173 | `volume "data" { size "10Gi" mount "/data" }` as service block. Volume controller manages lifecycle. Local provisioner with quota. Scheduler considers volume locality. Per-instance volumes for stateful services. |
-| M174 — Volume Snapshots | 174 | `cca volume snapshot create <service>`. Filesystem copy for local provisioner. Restore to new volume. Retention policy (count/age). Depends: M173. |
-| M175 — Storage Plugin Interface | 175 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M173. |
-| **Phase E — Observability & Operations** | | |
-| M176 — Prometheus Metrics Endpoint | 176 | `/metrics` in Prometheus exposition format. Controller metrics (reconcile duration, queue depth, error rate). Cluster metrics (node/instance/service counts by state). Autoscaler metrics. |
-| M177 — Resource Quota Controller | 177 | `quota "team-a" { cpu "8" memory "16Gi" services 50 }`. QuotaController blocks apply when exceeded. `cca quota list/describe`. Scoped to teams. |
-| M178 — Debug & Troubleshooting CLI | 178 | `cca debug <service>` (health report), `cca describe <resource>` (detailed view + events), `cca diff <file>` (dry-run), `cca explain <service>` (placement reasoning). |
-| M179 — Distributed Tracing | 179 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M176. |
-| **Phase F — Extensibility** | | |
-| M180 — Custom Fact Types with Schema Validation | 180 | Schema at `meta/fact-type/{name}`. PolicyGate validates writes to `custom/{type}/`. `cca get <type>` auto-discovers. `cca describe fact-type`. No API group versioning — facts with optional schema. |
-| M180 — DSL Admission Policy Rules | 180 | `policy "no-latest" { on apply match { service where image =~ ":latest$" } deny "not allowed" }`. Mutating policies. Compiled into PolicyGate — no webhooks. Escape hatch: `validate_url` for external validation. |
-| M181 — Controller SDK gRPC Transport | 181 | gRPC streaming for out-of-process controllers. `cca controller register --name X --address host:port`. Health check + auto-deregister. Builds on existing CustomController interface (M81). |
-| M182 — DSL Templates & Imports | 182 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. |
-| M183 — Controller Scaffolding CLI | 183 | `cca controller init <name>` scaffolds Go/Python project with gRPC client, reconciler stub, test harness. Working example included. Not an operator lifecycle manager. Depends: M181. |
-| **Phase G — Production Hardening** | | |
+| **Tier 0 — Finish & verify what shipped** | | |
+| M188 — Gate TLS End-to-End Validation | 188 | Deploy `tls auto` and `tls { cert key }` gates on the deploy cluster (192.168.124.x). Verify HTTPS with cluster-CA trust, cert renewal (short TTL override in test), manual cert rotation via re-apply, sticky + TLS together, `cca get gates` / `cca describe gate` output. Depends: M169. |
+| M151 — eBPF Data Plane Correctness | 151 | Correctness half of the original M151 (see checklist): tc SNAT conntrack fix validated over 10+ CI runs, egress SNAT verified, agent-restart BPF pin race fixed, TCP e2e tests for every packet-flow-matrix row. eBPF policy and nftables removal moved to M190. Depends: M128–M134. |
+| M136 — HA Control Plane Validation | 136 | First end-to-end HA validation on vmherd (see checklist): 3-node etcd quorum, leader-elected cca-server (`controllers/leader.go`, `ha_runner.go` already exist), control plane failover <30s, etcd member failure, recovery. Absorbs M185: also adds `cca server --join <existing>` if validation shows it is needed. |
 | M184 — Etcd Backup & Restore | 184 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
-| M185 — Control Plane HA | 185 | Multi-server with leader election. `cca server --join <existing>`. Auto-failover. Split-brain via etcd quorum. Depends: M184. |
-| M186 — Cluster Upgrade Controller | 186 | `cca upgrade plan/apply`. Rolling control-plane + agent upgrade. Drain → upgrade → uncordon. Rollback on failure. Depends: M185. |
-| M187 — Conformance Test Suite | 187 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. |
-| M151 — eBPF Data Plane Stabilization | 151 | Harden eBPF data plane to fully replace nftables. Fix tc SNAT (conntrack-aware reply skip), agent restart BPF pin race, add TCP integration tests for every packet flow matrix row, basic eBPF network policy, then remove nftables fallback under `--dataplane ebpf`. Depends: M128–M134. |
+| **Tier 1 — High value for effort** | | |
+| M178 — Debug & Explain CLI | 178 | Existing: `cca describe` (service/node/instance/gate), `cca diff`, `cca events`. Remaining: `cca debug <service>` (one-shot health report: instances, probes, recent events, placement failures) and `cca explain <service>` (scheduler placement reasoning per node). |
+| M171 — Network Policy Egress Rules | 171 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
+| M176 — Prometheus Metrics Gaps | 176 | Existing: `/metrics` in Prometheus format (`metrics/metrics.go`) with API, reconciliation (duration, changes, conflicts), activation, and node/service/instance gauges. Remaining: per-controller labels on reconciliation metrics, autoscaler decision metrics, instance counts by state, scrape config docs. |
+| M177 — Quota CLI | 177 | Existing: tenant `quota {}` DSL and `QuotaAdmission` (`tenant/quota.go`) blocking instance/volume admission, usage facts. Remaining: `cca quota list` / `cca quota describe <tenant>` showing limits vs usage. |
+| M173 — Persistent Volume Gaps | 173 | Existing: `volume` DSL (size, persistent, type, replicas), service volume mounts, per-ordinal stateful volumes (`controllers/stateful_volume.go`), LocalPath/NFS providers (M164). Remaining: scheduler volume locality (place instances on nodes holding their local volume), size enforcement/quota on local provisioner. |
+| **Tier 2 — Substantial features** | | |
+| M170 — Service Mesh via Groups | 170 | `mesh { mtls "strict" }` — compiler auto-adds proxy to service group. Proxy uses existing SPIFFE identity. Traffic metrics as derived facts. Uses group network sharing, not sidecar injection. Depends: M169. |
+| M189 — DSL Admission Policy Rules | 189 | `policy "no-latest" { on apply match { service where image =~ ":latest$" } deny "not allowed" }`. Mutating policies. Compiled into PolicyGate — no webhooks. Escape hatch: `validate_url` for external validation. |
+| M174 — Volume Snapshots | 174 | `cca volume snapshot create <service>`. Filesystem copy for local provisioner. Restore to new volume. Retention policy (count/age). Depends: M173. |
+| M179 — Distributed Tracing | 179 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M176. |
+| M182 — DSL Templates & Imports | 182 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. Reconsider first: Go templates + `.ccv` values already cover parameterization. |
+| M190 — eBPF Policy & nftables Elimination | 190 | Second half of the original M151 checklist: tc ingress policy program on cca0 from `derived/network/rule/` facts, default-deny, then remove nftables VIP/masquerade chains under `--dataplane ebpf`; test on bare-metal, Vagrant, Lima; document kernel requirements. Depends: M151. |
+| **Tier 3 — Later / optional** | | |
+| M172 — Multi-Cluster Service Discovery | 172 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
+| M175 — Storage Plugin Interface | 175 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M173. |
+| M180 — Custom Fact Types with Schema Validation | 180 | Schema at `meta/fact-type/{name}`. PolicyGate validates writes to `custom/{type}/`. `cca get <type>` auto-discovers. `cca describe fact-type`. No API group versioning — facts with optional schema. |
+| M181 — Controller SDK gRPC Transport | 181 | gRPC streaming for out-of-process controllers. `cca controller register --name X --address host:port`. Health check + auto-deregister. Builds on existing CustomController interface (M81). |
+| M183 — Controller Scaffolding CLI | 183 | `cca controller init <name>` scaffolds Go/Python project with gRPC client, reconciler stub, test harness. Working example included. Not an operator lifecycle manager. Depends: M181. |
+| M186 — Cluster Upgrade Controller | 186 | `cca upgrade plan/apply`. Rolling control-plane + agent upgrade. Drain → upgrade → re-enable node. Rollback on failure. Depends: M136, M184. |
+| M187 — Conformance Test Suite | 187 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. Prefer growing it with each milestone over one big phase at the end. |
+| M141 — Airflow Triggerer & Observability | 141 | Placeholder: triggerer service, StatsD exporter, log groomer |
+| **Future (unscheduled)** | | |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |
