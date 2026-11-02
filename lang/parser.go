@@ -6,6 +6,8 @@ package lang
 import (
 	"fmt"
 	"strconv"
+
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // Parser is a recursive-descent parser that transforms a flat token stream
@@ -2541,9 +2543,9 @@ func (parser *Parser) parseRouteCookieSettings() (*RouteCookieSettings, error) {
 func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 	tlsDecl := &RouteTLSDecl{}
 
-	if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "auto" {
+	if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == string(types.RouteTLSModeAuto) {
 		parser.advanceToken()
-		tlsDecl.Mode = "auto"
+		tlsDecl.Mode = types.RouteTLSModeAuto
 		return tlsDecl, nil
 	}
 
@@ -2560,11 +2562,12 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 
 		switch fieldName {
 		case "mode":
-			tlsDecl.Mode, err = parser.expectStringOrIdentifier()
-			if err != nil {
-				return nil, err
+			modeValue, modeError := parser.expectStringOrIdentifier()
+			if modeError != nil {
+				return nil, modeError
 			}
-			if tlsDecl.Mode != "auto" {
+			tlsDecl.Mode = types.RouteTLSMode(modeValue)
+			if tlsDecl.Mode != types.RouteTLSModeAuto {
 				return nil, parser.parserErrorf("unknown tls mode %q (expected auto)", tlsDecl.Mode)
 			}
 		case "cert":
@@ -2584,7 +2587,7 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 		return nil, err
 	}
 
-	if tlsDecl.Mode == "auto" && (tlsDecl.CertFile != "" || tlsDecl.KeyFile != "") {
+	if tlsDecl.Mode == types.RouteTLSModeAuto && (tlsDecl.CertFile != "" || tlsDecl.KeyFile != "") {
 		return nil, parser.parserErrorf("tls mode auto cannot specify cert or key files")
 	}
 	if tlsDecl.Mode == "" && tlsDecl.CertFile == "" && tlsDecl.KeyFile == "" {
@@ -2598,7 +2601,7 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 	}
 
 	if tlsDecl.Mode == "" {
-		tlsDecl.Mode = "manual"
+		tlsDecl.Mode = types.RouteTLSModeManual
 	}
 
 	return tlsDecl, nil

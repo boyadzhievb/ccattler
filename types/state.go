@@ -68,6 +68,20 @@ const (
 	NodeDisabled NodeState = "disabled"
 )
 
+// RouteTLSMode describes how a gate obtains its TLS certificate.
+type RouteTLSMode string
+
+// Gate TLS termination modes.
+const (
+	// RouteTLSModeAuto means the RouteTLSController issues and renews the
+	// certificate from the cluster CA for the gate's host.
+	RouteTLSModeAuto RouteTLSMode = "auto"
+
+	// RouteTLSModeManual means the user supplies cert and key PEM files,
+	// read at compile time into desired facts.
+	RouteTLSModeManual RouteTLSMode = "manual"
+)
+
 // HealthStatus represents the result of a health check probe against
 // an instance. Health checks can be HTTP, TCP, or exec-based.
 type HealthStatus string

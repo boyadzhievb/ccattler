@@ -29,6 +29,7 @@ type ClusterStatus struct {
 	Config          []ConfigStatus        `json:"config,omitempty"`
 	CloudIdentities []CloudIdentityStatus `json:"cloud_identities,omitempty"`
 	Endpoints       []EndpointStatus      `json:"endpoints,omitempty"`
+	Gates           []GateStatus          `json:"gates,omitempty"`
 }
 
 // ServiceStatus represents one service in the cluster status.
@@ -175,11 +176,13 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
 
 	sortedServiceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
+	gateStatusList := collectGateStatusFromStore(ctx, factStore)
 
 	if principal != nil && !tenant.IsPlatformPrincipal(*principal) {
 		tenantName := tenant.ResolvePrincipalTenant(*principal)
 		sortedServiceNames = tenant.FilterServiceNamesByTenant(ctx, factStore, sortedServiceNames, tenantName)
 		allInstances = filterInstancesByServiceNames(allInstances, sortedServiceNames)
+		gateStatusList = filterGatesByServiceNames(gateStatusList, sortedServiceNames)
 	}
 
 	return ClusterStatus{
@@ -192,6 +195,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 		Config:          collectConfigStatusFromStore(ctx, factStore, sortedServiceNames),
 		CloudIdentities: collectCloudIdentityStatusFromStore(ctx, factStore),
 		Endpoints:       collectEndpointStatusFromStore(ctx, factStore),
+		Gates:           gateStatusList,
 	}
 }
 

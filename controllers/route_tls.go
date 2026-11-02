@@ -113,7 +113,7 @@ type autoTLSRoute = string
 // parseAutoTLSRoutes scans desired route facts and returns a map from route
 // name to hostname for routes that have tls/mode=auto.
 func parseAutoTLSRoutes(facts []store.Fact) map[string]autoTLSRoute {
-	routeTLSModes := make(map[string]string)
+	routeTLSModes := make(map[string]types.RouteTLSMode)
 	routeHosts := make(map[string]string)
 
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredRoutes) {
@@ -128,7 +128,7 @@ func parseAutoTLSRoutes(facts []store.Fact) map[string]autoTLSRoute {
 		fieldPath := pathParts[1]
 		switch fieldPath {
 		case "tls/mode":
-			routeTLSModes[routeName] = string(fact.Value)
+			routeTLSModes[routeName] = types.RouteTLSMode(fact.Value)
 		case "host":
 			routeHosts[routeName] = string(fact.Value)
 		}
@@ -136,7 +136,7 @@ func parseAutoTLSRoutes(facts []store.Fact) map[string]autoTLSRoute {
 
 	autoRoutes := make(map[string]autoTLSRoute)
 	for routeName, tlsMode := range routeTLSModes {
-		if tlsMode == "auto" {
+		if tlsMode == types.RouteTLSModeAuto {
 			if hostname, hasHost := routeHosts[routeName]; hasHost && hostname != "" {
 				autoRoutes[routeName] = hostname
 			}

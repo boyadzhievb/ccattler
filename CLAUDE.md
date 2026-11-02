@@ -114,8 +114,8 @@ cca role check <principal> [flags]   # check if principal has capability
 
 # cluster management
 cca status                     # show cluster status
-cca describe <type> <name>     # detailed view (service, node, instance)
-cca get <resource>             # services, instances, nodes, volumes, networking, secrets, config, endpoints
+cca describe <type> <name>     # detailed view (service, node, instance, gate)
+cca get <resource>             # services, instances, nodes, volumes, networking, secrets, config, endpoints, gates
 cca scale <service> <count>
 cca logs <service> [--follow]
 cca events [--follow] [--service]  # event stream

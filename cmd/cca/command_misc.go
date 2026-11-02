@@ -870,14 +870,14 @@ _cca_completions() {
 
     case "$command" in
         get)
-            COMPREPLY=($(compgen -W "services instances nodes volumes networking secrets config" -- "$current_word"))
+            COMPREPLY=($(compgen -W "services instances nodes volumes networking secrets config endpoints gates" -- "$current_word"))
             ;;
         top)
             COMPREPLY=($(compgen -W "nodes workloads" -- "$current_word"))
             ;;
         describe)
             if [ "$COMP_CWORD" -eq 2 ]; then
-                COMPREPLY=($(compgen -W "service node instance" -- "$current_word"))
+                COMPREPLY=($(compgen -W "service node instance gate" -- "$current_word"))
             fi
             ;;
         token)
@@ -1013,7 +1013,7 @@ func buildZshCompletionScript() string {
 	builder.WriteString("    case \"${words[2]}\" in\n")
 	builder.WriteString("        get)\n")
 	builder.WriteString("            local -a resources\n")
-	builder.WriteString("            resources=('services' 'instances' 'nodes' 'volumes' 'networking' 'secrets' 'config')\n")
+	builder.WriteString("            resources=('services' 'instances' 'nodes' 'volumes' 'networking' 'secrets' 'config' 'endpoints' 'gates')\n")
 	builder.WriteString("            _describe 'resource' resources\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        top)\n")
@@ -1024,7 +1024,7 @@ func buildZshCompletionScript() string {
 	builder.WriteString("        describe)\n")
 	builder.WriteString("            if (( CURRENT == 3 )); then\n")
 	builder.WriteString("                local -a types\n")
-	builder.WriteString("                types=('service' 'node' 'instance')\n")
+	builder.WriteString("                types=('service' 'node' 'instance' 'gate')\n")
 	builder.WriteString("                _describe 'type' types\n")
 	builder.WriteString("            fi\n")
 	builder.WriteString("            ;;\n")

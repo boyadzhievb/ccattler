@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // indentUnit is the canonical indentation — 4 spaces per nesting level.
@@ -904,13 +906,13 @@ func formatRouteStickyDecl(builder *strings.Builder, stickyDecl RouteStickyDecl)
 
 // formatRouteTLSDecl emits the TLS termination configuration inside a gate.
 func formatRouteTLSDecl(builder *strings.Builder, tlsDecl RouteTLSDecl) {
-	if tlsDecl.Mode == "auto" && tlsDecl.CertFile == "" {
+	if tlsDecl.Mode == types.RouteTLSModeAuto && tlsDecl.CertFile == "" {
 		fmt.Fprintf(builder, "%stls auto\n", indentUnit)
 		return
 	}
 	fmt.Fprintf(builder, "%stls {\n", indentUnit)
 	indent2 := indentUnit + indentUnit
-	if tlsDecl.Mode == "auto" {
+	if tlsDecl.Mode == types.RouteTLSModeAuto {
 		fmt.Fprintf(builder, "%smode auto\n", indent2)
 	}
 	if tlsDecl.CertFile != "" {

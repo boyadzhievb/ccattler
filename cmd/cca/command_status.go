@@ -34,6 +34,9 @@ const (
 	// sseWatchReadBufferSize is the byte-buffer size used when streaming
 	// SSE watch events from the API server.
 	sseWatchReadBufferSize = 4096
+
+	// hoursPerDay converts certificate time-until-expiry into whole days.
+	hoursPerDay = 24
 )
 
 // eventsCommandConfig holds parsed flags for the "events" command.
@@ -648,8 +651,10 @@ func executeDescribeCommand(resourceType, resourceName string) {
 		normalizedType = "node"
 	case "instance", "inst":
 		normalizedType = "instance"
+	case "gate":
+		normalizedType = "gate"
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource type: %s (use service, node, or instance)\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource type: %s (use service, node, instance, or gate)\n", resourceType)
 		os.Exit(1)
 	}
 
@@ -682,27 +687,81 @@ func executeDescribeCommand(resourceType, resourceName string) {
 
 	switch normalizedType {
 	case "service":
-		var serviceDetail api.ServiceDescribe
-		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&serviceDetail); decodeErr != nil {
-			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
-			os.Exit(1)
-		}
-		printServiceDescribe(serviceDetail)
+		printServiceDescribe(decodeDescribeResponseOrExit[api.ServiceDescribe](httpResponse.Body))
 	case "node":
-		var nodeDetail api.NodeDescribe
-		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&nodeDetail); decodeErr != nil {
-			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
-			os.Exit(1)
-		}
-		printNodeDescribe(nodeDetail)
+		printNodeDescribe(decodeDescribeResponseOrExit[api.NodeDescribe](httpResponse.Body))
 	case "instance":
-		var instanceDetail api.InstanceDescribe
-		if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&instanceDetail); decodeErr != nil {
-			fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
-			os.Exit(1)
-		}
-		printInstanceDescribe(instanceDetail)
+		printInstanceDescribe(decodeDescribeResponseOrExit[api.InstanceDescribe](httpResponse.Body))
+	case "gate":
+		printGateDescribe(decodeDescribeResponseOrExit[api.GateStatus](httpResponse.Body))
 	}
+}
+
+// decodeDescribeResponseOrExit decodes a describe API response body into the
+// requested detail type, exiting with an error message on malformed JSON.
+func decodeDescribeResponseOrExit[DetailType any](responseBody io.Reader) DetailType {
+	var resourceDetail DetailType
+	if decodeErr := json.NewDecoder(responseBody).Decode(&resourceDetail); decodeErr != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
+		os.Exit(1)
+	}
+	return resourceDetail
+}
+
+// printGateDescribe renders a gate's routing, backends, and TLS state as
+// human-readable text. Certificate key material is never part of the response.
+func printGateDescribe(gateDetail api.GateStatus) {
+	fmt.Printf("Name:      %s\n", gateDetail.Name)
+	fmt.Printf("Host:      %s\n", displayValueOrDash(gateDetail.Host))
+	fmt.Printf("Path:      %s\n", displayValueOrDash(gateDetail.Path))
+	fmt.Printf("Service:   %s\n", gateDetail.Service)
+	if gateDetail.Port > 0 {
+		fmt.Printf("Port:      %d\n", gateDetail.Port)
+	}
+	fmt.Printf("Sticky:    %s\n", displayValueOrDash(gateDetail.Sticky))
+
+	fmt.Println()
+	if gateDetail.TLS == nil {
+		fmt.Println("TLS:       disabled")
+	} else {
+		fmt.Println("TLS:")
+		fmt.Printf("  Mode:         %s\n", gateDetail.TLS.Mode)
+		if !gateDetail.TLS.CertificateSet {
+			fmt.Println("  Certificate:  pending (not yet issued)")
+		} else {
+			fmt.Println("  Certificate:  present")
+			fmt.Printf("  Host:         %s\n", displayValueOrDash(gateDetail.TLS.CertificateHost))
+			fmt.Printf("  Expires:      %s\n", formatGateCertificateExpiry(gateDetail.TLS.NotAfter))
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Backends (%d):\n", len(gateDetail.Backends))
+	for _, backendAddress := range gateDetail.Backends {
+		fmt.Printf("  %s\n", backendAddress)
+	}
+}
+
+// formatGateCertificateExpiry renders an RFC 3339 expiry with the number of
+// days remaining, or "-" when unknown.
+func formatGateCertificateExpiry(notAfter string) string {
+	expiryTime, parseError := time.Parse(time.RFC3339, notAfter)
+	if parseError != nil {
+		return displayValueOrDash(notAfter)
+	}
+	daysRemaining := int(time.Until(expiryTime).Hours() / hoursPerDay)
+	if daysRemaining < 0 {
+		return fmt.Sprintf("%s (expired)", notAfter)
+	}
+	return fmt.Sprintf("%s (%dd left)", notAfter, daysRemaining)
+}
+
+// displayValueOrDash returns the value, or "-" when it is empty.
+func displayValueOrDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 // printServiceDescribe renders a ServiceDescribe as human-readable text output,
@@ -1150,8 +1209,10 @@ func executeGetCommand(resourceType string, extraArgs []string) {
 		printCloudIdentitiesTableWithOptions(status.CloudIdentities, outputOptions)
 	case "endpoints", "ep":
 		printEndpointsTableWithOptions(status.Endpoints, outputOptions)
+	case "gates", "gate":
+		printGatesTableWithOptions(status.Gates, outputOptions)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities, endpoints)\n", resourceType)
+		fmt.Fprintf(os.Stderr, "unknown resource: %s (use services, instances, nodes, volumes, networking, secrets, config, cloud-identities, endpoints, gates)\n", resourceType)
 		os.Exit(1)
 	}
 }
@@ -1180,6 +1241,8 @@ func printGetResourceJSON(resourceType string, status api.ClusterStatus, remaini
 		_ = encoder.Encode(status.CloudIdentities)
 	case "endpoints", "ep":
 		_ = encoder.Encode(status.Endpoints)
+	case "gates", "gate":
+		_ = encoder.Encode(status.Gates)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown resource: %s\n", resourceType)
 		os.Exit(1)
@@ -1723,6 +1786,43 @@ func printEndpointsTableWithOptions(endpoints []api.EndpointStatus, options getO
 			endpoint.Hostname,
 			internalDisplay,
 			externalDisplay,
+		})
+	}
+	printAlignedTableFiltered(header, rows, options.noHeaders)
+}
+
+// printGatesTableWithOptions prints gates with their routing match, target
+// service, TLS status, certificate expiry, and backend count.
+func printGatesTableWithOptions(gates []api.GateStatus, options getOutputOptions) {
+	if len(gates) == 0 {
+		fmt.Println("No gates found.")
+		return
+	}
+	header := []string{"NAME", "HOST", "PATH", "SERVICE", "TLS", "EXPIRES", "BACKENDS"}
+	var rows [][]string
+	for _, gate := range gates {
+		serviceDisplay := gate.Service
+		if gate.Port > 0 {
+			serviceDisplay = fmt.Sprintf("%s:%d", gate.Service, gate.Port)
+		}
+		tlsDisplay, expiryDisplay := "-", "-"
+		if gate.TLS != nil {
+			tlsDisplay = string(gate.TLS.Mode)
+			if !gate.TLS.CertificateSet {
+				tlsDisplay += " (pending)"
+			}
+			if expiryTime, parseError := time.Parse(time.RFC3339, gate.TLS.NotAfter); parseError == nil {
+				expiryDisplay = expiryTime.Format(time.DateOnly)
+			}
+		}
+		rows = append(rows, []string{
+			gate.Name,
+			displayValueOrDash(gate.Host),
+			displayValueOrDash(gate.Path),
+			serviceDisplay,
+			tlsDisplay,
+			expiryDisplay,
+			fmt.Sprintf("%d", len(gate.Backends)),
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)

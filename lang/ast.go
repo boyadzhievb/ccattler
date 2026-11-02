@@ -3,6 +3,8 @@
 
 package lang
 
+import "github.com/boyadzhievb/ccattler/types"
+
 // File is the root of the AST — a list of top-level declarations.
 type File struct {
 	Services         []ServiceDecl         // top-level service blocks in the source file
@@ -520,9 +522,9 @@ type RouteCookieSettings struct {
 // RouteTLSDecl holds TLS termination configuration for a gate.
 // Mode is "auto" (cluster CA issues cert for host) or "manual" (user PEM files).
 type RouteTLSDecl struct {
-	Mode     string // "auto" or "manual" (inferred from cert/key presence)
-	CertFile string // PEM certificate file path (manual mode, read at compile time)
-	KeyFile  string // PEM private key file path (manual mode, read at compile time)
-	CertPEM  string // PEM certificate content (populated by compiler for manual mode)
-	KeyPEM   string // PEM private key content (populated by compiler for manual mode)
+	Mode     types.RouteTLSMode // auto or manual (inferred from cert/key presence)
+	CertFile string             // PEM certificate file path (manual mode, read at compile time)
+	KeyFile  string             // PEM private key file path (manual mode, read at compile time)
+	CertPEM  string             // PEM certificate content (populated by compiler for manual mode)
+	KeyPEM   string             // PEM private key content (populated by compiler for manual mode)
 }

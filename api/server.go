@@ -1404,9 +1404,11 @@ func (apiServer *Server) handleDescribe(responseWriter http.ResponseWriter, requ
 		result, describeError = buildNodeDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
 	case "instance", "inst":
 		result, describeError = buildInstanceDescribe(requestContext, apiServer.factStore, apiServer.eventLog, resourceName)
+	case "gate":
+		result, describeError = buildGateDescribe(requestContext, apiServer.factStore, resourceName)
 	default:
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type must be service, node, or instance"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "type must be service, node, instance, or gate"})
 		return
 	}
 

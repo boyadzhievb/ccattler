@@ -957,7 +957,7 @@ func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []
 	}
 
 	if routeDecl.TLS != nil {
-		if routeDecl.TLS.Mode == "manual" && routeDecl.TLS.CertPEM == "" {
+		if routeDecl.TLS.Mode == types.RouteTLSModeManual && routeDecl.TLS.CertPEM == "" {
 			certPath := routeDecl.TLS.CertFile
 			if baseDir != "" && !filepath.IsAbs(certPath) {
 				certPath = filepath.Join(baseDir, certPath)
@@ -1031,10 +1031,10 @@ func compileStickyFacts(routeName string, stickyDecl *RouteStickyDecl) []Fact {
 // compileTLSFacts produces facts for a route's TLS termination configuration.
 func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLines []string) ([]Fact, error) {
 	tlsFacts := []Fact{
-		{Key: types.KeyDesiredRouteTLSMode(routeName), Value: tlsDecl.Mode},
+		{Key: types.KeyDesiredRouteTLSMode(routeName), Value: string(tlsDecl.Mode)},
 	}
 
-	if tlsDecl.Mode == "manual" {
+	if tlsDecl.Mode == types.RouteTLSModeManual {
 		if tlsDecl.CertPEM == "" {
 			return nil, &ParseError{
 				Line: line, Message: fmt.Sprintf("gate %q: tls cert file content is empty", routeName),

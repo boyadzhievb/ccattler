@@ -131,13 +131,19 @@ New resource type for `cca get`:
 
 ```
 $ cca get gates
-NAME          HOST                  SERVICE    PORT   TLS     STICKY     BACKENDS
-web-public    app.example.com       frontend   8080   auto    none       3
-internal-api  api.internal          api        3000   manual  cookie     2
-api-sticky    -                     api        3000   -       source-ip  2
+NAME          HOST             PATH  SERVICE        TLS             EXPIRES     BACKENDS
+web-public    app.example.com  -     frontend:8080  auto            2027-01-31  3
+internal-api  api.internal     -     api:3000       manual          2027-06-01  2
+api-sticky    -                -     api:3000       -               -           2
 ```
 
-TLS column shows `auto`, `manual`, or `-` (no TLS).
+TLS column shows `auto`, `manual`, `auto (pending)` (not yet issued), or `-` (no TLS).
+EXPIRES is read from the effective certificate (desired for manual, derived for auto).
+Gates are tenant-filtered by target service ownership, like services and instances.
+
+`cca describe gate <name>` shows routing, sticky mode, TLS mode, certificate host
+and expiry (with days remaining), and the resolved backend list. Neither command
+ever returns key or certificate PEM material.
 
 ## Implementation Plan
 

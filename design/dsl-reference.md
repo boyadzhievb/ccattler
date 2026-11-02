@@ -120,7 +120,109 @@ export platform/dns {
     allow frontend
     allow payments
 }
+
+gate web-public {
+    host "app.example.com"
+    path "/"
+    service web port 8080
+    sticky cookie
+    tls auto
+}
 ```
+
+## Gates
+
+A `gate` exposes a service to external HTTP traffic. It matches requests by
+host and path prefix and forwards them to the target service's healthy
+instances.
+
+```
+gate web-public {
+    host "app.example.com"       # match by Host header (optional; required with tls)
+    path "/api"                  # match by URL path prefix (optional)
+    service web port 8080        # target service and port (required)
+
+    sticky cookie {              # optional session affinity
+        name "session"           # default: __CCA_STICKY_{service}
+        secure true
+        http-only true
+        same-site "strict"       # strict, lax, none
+    }
+
+    tls auto                     # optional TLS termination
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `service <name> port <n>` | yes | Target service and port |
+| `host "<hostname>"` | with `tls` | Host header match; also the certificate hostname |
+| `path "<prefix>"` | no | URL path prefix match |
+| `sticky cookie [{ ... }]` | no | L7 cookie affinity via the agent proxy |
+| `sticky source-ip` | no | L4 client-IP affinity, no proxy |
+| `tls auto` / `tls { ... }` | no | Terminate HTTPS at the gate |
+
+Without `sticky` or `tls`, a gate is pure L4 DNAT with round-robin across
+backends.
+
+### TLS termination
+
+A gate with `tls` serves HTTPS. The agent's embedded proxy terminates TLS and
+forwards plain HTTP to the backends. If the gate has no `sticky` setting, the
+proxy picks backends round-robin.
+
+**Auto mode** — the cluster CA issues a certificate for `host`:
+
+```
+gate web-tls {
+    host "secure.example.com"
+    service web port 8080
+    tls auto                     # shorthand for: tls { mode auto }
+}
+```
+
+Certificates are valid for 90 days. The controller re-issues them 30 days
+before expiry. The certificate's only DNS name is `host`, so wildcard
+certificates are not supported. Clients must trust the cluster CA.
+
+**Manual mode** — provide your own PEM certificate and key:
+
+```
+gate custom-tls {
+    host "api.example.com"
+    service api port 3000
+    tls {
+        cert "/etc/cca/certs/api.pem"
+        key  "/etc/cca/certs/api-key.pem"
+    }
+}
+```
+
+The files are read when you run `cca apply`, and their contents
+are stored in the fact store. Relative paths are resolved from the `.cca`
+file's directory. To rotate a manual certificate, replace the files and
+re-apply.
+
+Rules (enforced by the parser and `cca lint`):
+
+- `tls` requires `host`.
+- `cert` and `key` must be given together.
+- `mode auto` cannot be combined with `cert` or `key`.
+
+### Inspecting gates
+
+```bash
+$ cca get gates
+NAME        HOST                PATH  SERVICE        TLS             EXPIRES     BACKENDS
+web-public  app.example.com     /     web:8080       auto            2027-01-31  3
+custom-tls  api.example.com     -     api:3000       manual          2027-06-01  2
+web-tls     secure.example.com  -     web:8080       auto (pending)  -           3
+
+$ cca describe gate web-public    # routing, TLS mode, cert host and expiry, backends
+```
+
+`auto (pending)` means the controller has not issued the certificate yet.
+Key material never appears in `get`, `describe`, or `-o json` output.
 
 ## Templates and Values
 
