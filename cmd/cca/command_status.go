@@ -571,62 +571,87 @@ func executeTopCommand(resourceType string, extraArgs []string) {
 
 	switch resourceType {
 	case "nodes", "node":
-		fmt.Printf("%-14s  %-12s  %-16s  %-16s  %s\n", "NODE", "STATUS", "CPU", "MEMORY", "WORKLOADS")
-		for _, nodeStatus := range clusterStatus.Nodes {
-			cpuDisplay := formatResourceUsage(nodeStatus.CapacityCPU-nodeStatus.AvailableCPU, nodeStatus.CapacityCPU, "m")
-			memoryDisplay := formatResourceUsage(nodeStatus.CapacityMemory-nodeStatus.AvailableMemory, nodeStatus.CapacityMemory, "Mi")
-			fmt.Printf("%-14s  %-12s  %-16s  %-16s  %d\n",
-				nodeStatus.ID, nodeStatus.State, cpuDisplay, memoryDisplay, nodeStatus.PlacedInstances)
-		}
+		printTopNodes(clusterStatus.Nodes)
 	case "workloads", "workload", "instances", "inst":
 		tagFilters := parseTagFilterArgs(extraArgs)
-		filteredInstances := filterInstancesByServiceTags(clusterStatus.Instances, clusterStatus.Services, tagFilters)
-		fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n", "WORKLOAD", "NODE", "STATUS", "CPU", "MEMORY", "HEALTH")
-		for _, instanceStatus := range filteredInstances {
-			healthDisplay := instanceStatus.HealthState
-			if healthDisplay == "" || healthDisplay == "-" {
-				healthDisplay = "-"
-			}
-			nodeDisplay := instanceStatus.NodeID
-			if nodeDisplay == "" {
-				nodeDisplay = "-"
-			}
-			cpuDisplay := instanceStatus.CPUMillis
-			if cpuDisplay == "" {
-				cpuDisplay = "-"
-			} else {
-				cpuDisplay += "m"
-			}
-			memDisplay := instanceStatus.MemoryBytes
-			if memDisplay == "" {
-				memDisplay = "-"
-			}
-			workloadName := instanceStatus.ServiceName + "/" + instanceStatus.ID
-			fmt.Printf("%-24s  %-14s  %-10s  %-10s  %-10s  %s\n",
-				workloadName, nodeDisplay, instanceStatus.State, cpuDisplay, memDisplay, healthDisplay)
-		}
+		printTopWorkloads(filterInstancesByServiceTags(clusterStatus.Instances, clusterStatus.Services, tagFilters))
 	case "volumes", "volume", "vol":
-		fmt.Printf("%-16s  %-10s  %-12s  %-14s  %-16s  %s\n", "VOLUME", "STATE", "SIZE", "NODE", "USAGE", "INSTANCE")
-		for _, volumeStatus := range clusterStatus.Volumes {
-			nodeDisplay := volumeStatus.Node
-			if nodeDisplay == "" {
-				nodeDisplay = "-"
-			}
-			instanceDisplay := volumeStatus.Instance
-			if instanceDisplay == "" {
-				instanceDisplay = "-"
-			}
-			usageDisplay := "-"
-			if volumeStatus.CapacityBytes > 0 {
-				usageDisplay = formatResourceUsage(volumeStatus.UsedBytes, volumeStatus.CapacityBytes, "B")
-			}
-			fmt.Printf("%-16s  %-10s  %-12s  %-14s  %-16s  %s\n",
-				volumeStatus.Name, volumeStatus.State, volumeStatus.Size, nodeDisplay, usageDisplay, instanceDisplay)
-		}
+		printTopVolumes(clusterStatus.Volumes)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown resource: %s (use 'nodes', 'workloads', or 'volumes')\n", resourceType)
 		os.Exit(1)
 	}
+}
+
+// printTopNodes prints reserved CPU and memory against capacity per node.
+func printTopNodes(nodes []api.NodeStatus) {
+	header := []string{"NODE", "STATUS", "CPU", "MEMORY", "WORKLOADS"}
+	rows := make([][]string, 0, len(nodes))
+	for _, nodeStatus := range nodes {
+		rows = append(rows, []string{
+			nodeStatus.ID,
+			nodeStatus.State,
+			formatResourceUsage(nodeStatus.CapacityCPU-nodeStatus.AvailableCPU, nodeStatus.CapacityCPU, "m"),
+			formatResourceUsage(nodeStatus.CapacityMemory-nodeStatus.AvailableMemory, nodeStatus.CapacityMemory, "Mi"),
+			strconv.Itoa(nodeStatus.PlacedInstances),
+		})
+	}
+	printAlignedTableFiltered(header, rows, false)
+}
+
+// printTopWorkloads prints observed CPU and memory per instance; memory is
+// shown in binary units (KiB/MiB/GiB) rather than raw bytes.
+func printTopWorkloads(instances []api.InstanceStatus) {
+	header := []string{"WORKLOAD", "NODE", "STATUS", "CPU", "MEMORY", "HEALTH"}
+	rows := make([][]string, 0, len(instances))
+	for _, instanceStatus := range instances {
+		cpuDisplay := "-"
+		if instanceStatus.CPUMillis != "" {
+			cpuDisplay = instanceStatus.CPUMillis + "m"
+		}
+		rows = append(rows, []string{
+			instanceStatus.ServiceName + "/" + instanceStatus.ID,
+			displayValueOrDash(instanceStatus.NodeID),
+			instanceStatus.State,
+			cpuDisplay,
+			formatMemoryBytesDisplay(instanceStatus.MemoryBytes),
+			displayValueOrDash(instanceStatus.HealthState),
+		})
+	}
+	printAlignedTableFiltered(header, rows, false)
+}
+
+// formatMemoryBytesDisplay renders a byte count string in binary units, or the
+// raw value when it is not a number ("-" when empty).
+func formatMemoryBytesDisplay(memoryBytes string) string {
+	parsedBytes, parseError := strconv.ParseInt(memoryBytes, 10, 64)
+	if parseError != nil {
+		return displayValueOrDash(memoryBytes)
+	}
+	return formatBytesHuman(parsedBytes)
+}
+
+// printTopVolumes prints volume usage with every node and instance using it,
+// so a shared volume lists all of its attachments.
+func printTopVolumes(volumes []api.VolumeStatus) {
+	header := []string{"VOLUME", "ACCESS", "STATE", "SIZE", "NODES", "USAGE", "INSTANCES"}
+	rows := make([][]string, 0, len(volumes))
+	for _, volumeStatus := range volumes {
+		usageDisplay := "-"
+		if volumeStatus.CapacityBytes > 0 {
+			usageDisplay = formatResourceUsage(volumeStatus.UsedBytes, volumeStatus.CapacityBytes, "B")
+		}
+		rows = append(rows, []string{
+			volumeStatus.Name,
+			displayValueOrDash(volumeStatus.Access),
+			volumeStatus.State,
+			volumeStatus.Size,
+			displayValueOrDash(strings.Join(volumeStatus.Nodes, ",")),
+			usageDisplay,
+			displayValueOrDash(strings.Join(volumeStatus.Instances, ",")),
+		})
+	}
+	printAlignedTableFiltered(header, rows, false)
 }
 
 // formatResourceUsage formats a used/capacity pair as "used/capacity unit" or
