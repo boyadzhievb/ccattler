@@ -40,9 +40,12 @@ gate_tls_curl() {
 }
 
 # gate_tls_status prints the HTTPS status code for host via node_ip (000 on failure).
+# curl already prints 000 for a failed handshake while exiting non-zero, so the
+# code is captured once instead of appending a fallback to it.
 gate_tls_status() {
-    local node_ip="$1" gate_host="$2"; shift 2
-    gate_tls_curl "$node_ip" "$gate_host" -o /dev/null -w "'%{http_code}'" "$@" || echo "000"
+    local node_ip="$1" gate_host="$2" status_code; shift 2
+    status_code=$(gate_tls_curl "$node_ip" "$gate_host" -o /dev/null -w "'%{http_code}'" "$@" || true)
+    echo "${status_code:-000}"
 }
 
 # gate_tls_fingerprint prints the SHA-256 fingerprint of the cert served for host.
