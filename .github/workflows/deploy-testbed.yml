@@ -14,6 +14,7 @@ on:
           - "airflow"
           - "all"
           - "whoami,whoami-multiport"
+          - "whoami,whoami-multiport,gate-tls"
           - "zabbix"
           - "zabbix,whoami"
       clear_first:
