@@ -1,3 +1,9 @@
+---
+name: test
+description: Run go vet and the full CCattler test suite and summarize failures with root causes
+disable-model-invocation: true
+---
+
 # Run Tests
 
 Run the CCattler test suite and report results.
@@ -5,8 +11,8 @@ Run the CCattler test suite and report results.
 ## Steps
 
 1. Run `go vet ./...` to catch static analysis issues.
-2. Run `go test ./...` for the full suite.
-3. If any package fails, re-run that package with `-v` to get detailed output.
+2. Run `go test ./... 2>&1 | grep -v '^ok\|no test files'` so only failures are printed.
+3. If any package fails, re-run just that package with `-v -run <TestName>` for detail.
 4. Report a summary: how many packages passed, which (if any) failed, and the root cause of failures.
 
 ## Notes

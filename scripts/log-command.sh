@@ -1,13 +1,11 @@
 #!/bin/bash
-# PostToolUse hook for Bash tool — auto-logs every command to COMMAND_HISTORY.md.
+# PostToolUse hook for Bash tool — auto-logs every command to a history file.
 # Receives tool call data as JSON on stdin. Filters sensitive information.
+# The log lives outside the repo so recursive greps never scan it.
+# Override the location with CCATTLER_COMMAND_HISTORY.
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
-if [ -z "$REPO_ROOT" ]; then
-    exit 0
-fi
-
-HISTORY_PATH="$REPO_ROOT/COMMAND_HISTORY.md"
+HISTORY_PATH="${CCATTLER_COMMAND_HISTORY:-$HOME/.cache/ccattler/command-history.md}"
+mkdir -p "$(dirname "$HISTORY_PATH")"
 
 # Create the file with header if it doesn't exist.
 if [ ! -f "$HISTORY_PATH" ]; then

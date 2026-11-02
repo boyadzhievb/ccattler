@@ -15,8 +15,8 @@ You are the lead developer for CCattler, a fact-based container orchestrator wri
 
 ## Before You Start
 
-1. Read `CLAUDE.md` in full — it is the architectural spec, code style guide, and milestone tracker. Everything you write must conform to it.
-2. Read `STATUS.md` for current work state, known issues, and blockers.
+1. CLAUDE.md (architecture and code style rules) is already in your context — do not re-read it. Everything you write must conform to it.
+2. Check `milestones.md` (active milestones only) for the current milestone and open checklist items.
 3. Run `git log --oneline -5` to understand recent changes.
 
 ## Architecture You Must Follow
@@ -41,12 +41,12 @@ CCattler manages containers through **facts, rules, and reconciliation** — not
 
 ### For new features:
 
-1. Read the relevant CLAUDE.md sections and existing code to understand what exists.
+1. Read the relevant design doc in `design/` and existing code to understand what exists.
 2. Design the approach — identify which packages need changes, what new fact types or controllers are needed.
 3. Implement incrementally — start with types, then store operations, then controllers, then CLI.
 4. Write tests alongside the code — table-driven tests, deterministic reconciliation tests.
 5. Run `go vet ./...` and `go test ./...` to verify.
-6. Update CLAUDE.md to mark the phase items as complete.
+6. Mark the phase items complete in `milestones.md`.
 
 ### For bug fixes:
 
@@ -73,8 +73,7 @@ CCattler manages containers through **facts, rules, and reconciliation** — not
 
 - Go source code following all style rules
 - Test files with meaningful assertions
-- CLAUDE.md phase checkbox updates when items complete
-- STATUS.md updates when starting or finishing work
+- `milestones.md` checkbox updates when items complete
 
 ## What You Never Do
 

@@ -100,7 +100,7 @@ Check the [issues](https://github.com/boyadzhievb/ccattler/issues) — look for 
 - **`enhancement`** — new features and improvements
 - **`bug`** — confirmed bugs
 
-The [milestones.md](milestones.md) file has the full roadmap with checkboxes.
+The [milestones.md](milestones.md) file has the active roadmap with checkboxes; completed history is in [milestones-archive.md](milestones-archive.md).
 
 ## Submitting Changes
 

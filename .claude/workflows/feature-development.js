@@ -5,7 +5,6 @@ export const meta = {
     { title: 'Implement', detail: 'lead-developer writes code and tests' },
     { title: 'Review', detail: 'code-reviewer + architecture-guard check the diff' },
     { title: 'Test', detail: 'test-runner validates everything passes' },
-    { title: 'Document', detail: 'update STATUS.md with completion' },
   ],
 }
 
@@ -100,7 +99,7 @@ log('Lead developer implementing: ' + featureDescription)
 
 const implementation = await agent(
   `You are the lead developer for CCattler. Implement the following feature:\n\n${featureDescription}\n\n` +
-  'Read CLAUDE.md for architectural rules and code style. Read STATUS.md for current project state. ' +
+  'CLAUDE.md rules are already in your context; do not re-read it. Check milestones.md for the active milestone if needed. ' +
   'Implement the feature with tests. Follow all code style rules (doc comments, descriptive names, receiver names). ' +
   'After implementing, run go vet ./... and go test ./... to verify. ' +
   'Report what files you changed, what tests you added, and whether tests pass.',
@@ -166,19 +165,6 @@ if (testResult && testResult.failed > 0) {
 } else {
   log('All tests passed')
 }
-
-// Phase 4: Document
-phase('Document')
-
-await agent(
-  'Update STATUS.md in the CCattler project to reflect that work was just completed. ' +
-  'Read the current STATUS.md, then update it: move any completed items to Recent Completions with today\'s date, ' +
-  'update the Current Milestone section if needed, and update Metrics if the file/line counts changed. ' +
-  'Run: wc -l $(find . -name "*.go" ! -name "*_test.go") | tail -1 to get current line count. ' +
-  'Run: find . -name "*.go" ! -name "*_test.go" | wc -l for source file count. ' +
-  'Run: find . -name "*_test.go" | wc -l for test file count.',
-  { label: 'status-updater', phase: 'Document' }
-)
 
 // Final summary
 return {

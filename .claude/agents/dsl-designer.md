@@ -15,7 +15,7 @@ You are the DSL designer for CCattler. You design new language constructs for th
 
 ## Before You Start
 
-1. Read the full DSL section of CLAUDE.md — understand the existing grammar, keywords, and block structure.
+1. Read `design/dsl-reference.md` and `examples/reference.cca` — understand the existing grammar, keywords, and block structure.
 2. Read the lexer and parser source to understand the implementation:
 ```bash
 cd /Users/boyadboz/REPOS/ccattler
@@ -126,7 +126,7 @@ When implementing a new construct:
 4. **Compiler** — add fact compilation for the new AST node
 5. **Validation** — add validation rules (required fields, valid values)
 6. **Tests** — parser tests, compiler tests, validation tests, edge case tests
-7. **CLAUDE.md** — update the DSL section and Core Fact Types
+7. **design/dsl-reference.md** — document the new construct; add it to `examples/reference.cca`
 8. **Examples** — add example usage to the examples directory
 
 ## Output Format

@@ -5,7 +5,6 @@ export const meta = {
     { title: 'Changelog', detail: 'project-manager generates changelog from git history' },
     { title: 'Validate', detail: 'parallel test suite + integration tests + security audit' },
     { title: 'Deployment', detail: 'devops-engineer checks Ansible roles and deployment configs' },
-    { title: 'Release Notes', detail: 'technical-writer produces final release notes and doc updates' },
   ],
 }
 
@@ -123,7 +122,7 @@ log('Generating changelog from ' + tagRange)
 
 var changelog = await agent(
   'Generate a changelog for the CCattler project. ' +
-  'Read CLAUDE.md to check the current milestone and which phase items are checked [x] vs unchecked [ ]. ' +
+  'Check milestones.md for the current milestone and which phase items are checked [x] vs unchecked [ ]. ' +
   (previousTag && releaseTag
     ? 'Run: cd /Users/boyadboz/REPOS/ccattler && git log ' + previousTag + '..' + releaseTag + ' --oneline --no-merges'
     : 'Run: cd /Users/boyadboz/REPOS/ccattler && git log --oneline -30 --no-merges') +
@@ -205,29 +204,6 @@ if (deployCheck && deployCheck.issues.some(function(issue) { return issue.severi
 } else {
   log('Deployment checks passed')
 }
-
-// Phase 4: Release notes
-phase('Release Notes')
-log('Generating release notes and updating docs')
-
-var changelogText = ''
-if (changelog) {
-  var sections = []
-  if (changelog.added.length > 0) sections.push('Added: ' + changelog.added.join(', '))
-  if (changelog.changed.length > 0) sections.push('Changed: ' + changelog.changed.join(', '))
-  if (changelog.fixed.length > 0) sections.push('Fixed: ' + changelog.fixed.join(', '))
-  changelogText = sections.join('. ')
-}
-
-await agent(
-  'Update STATUS.md in the CCattler project to reflect release preparation. ' +
-  'The changelog found: ' + changelogText + '. ' +
-  'Blockers: ' + (blockers.length > 0 ? blockers.join('; ') : 'none') + '. ' +
-  'If there are no blockers, update STATUS.md Recent Completions with today\'s date. ' +
-  'If there are blockers, add them to Known Issues. ' +
-  'Update metrics: run wc -l on Go files and count source/test files.',
-  { label: 'status-updater', phase: 'Release Notes' }
-)
 
 return {
   releaseReady: blockers.length === 0,

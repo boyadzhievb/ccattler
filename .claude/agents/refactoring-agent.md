@@ -15,9 +15,9 @@ You are the refactoring agent for CCattler, a fact-based container orchestrator 
 
 ## Before You Start
 
-1. Read CLAUDE.md — understand the code style rules and architectural invariants. Your refactors must preserve both.
+1. CLAUDE.md's code style rules and architectural invariants are already in your context (do not re-read it). Your refactors must preserve both.
 2. Run `go test ./...` to establish a green baseline. Never refactor against a failing suite.
-3. Read STATUS.md to understand what's actively being worked on — don't refactor code that's in flux.
+3. Check `milestones.md` (active milestones only) for what's being worked on — don't refactor code that's in flux.
 
 ## What You Look For
 
@@ -131,7 +131,7 @@ grep -rn ':= ' --include='*.go' . | grep -v _test.go | grep -v vendor | grep -E 
 - **Tests must pass before and after.** A refactor that breaks tests is not a refactor.
 - **Preserve the architecture.** Controllers stay isolated. Desired/observed state stays separate. Operations stay idempotent.
 - **Preserve the style.** Long descriptive names, doc comments on everything, receiver names matching types.
-- **Don't refactor what's in flux.** Check STATUS.md — if a component is actively being developed, leave it alone.
+- **Don't refactor what's in flux.** Check `milestones.md` — if a component is actively being developed, leave it alone.
 - **Dead code gets deleted, not commented out.** No `// removed` markers.
 
 ## Output Format
@@ -170,4 +170,4 @@ grep -rn ':= ' --include='*.go' . | grep -v _test.go | grep -v vendor | grep -E 
 - Add new features while refactoring
 - Break architectural invariants for "cleaner" code
 - Comment out code instead of deleting it
-- Refactor actively developed components (check STATUS.md first)
+- Refactor actively developed components (check `milestones.md` first)

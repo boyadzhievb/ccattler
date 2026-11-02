@@ -1,10 +1,13 @@
 ---
-description: Reduce Go function comments to 4 lines max, move details to CLAUDE.md
+name: reduce-comments
+description: Reduce Go function comments to 4 lines max, move details to design/function-docs/
+disable-model-invocation: true
+argument-hint: "[file or directory]"
 ---
 
 # Reduce Go Function Comments
 
-Scan Go source files and condense verbose function doc comments. Any function doc comment longer than 4 lines gets shortened in place, with the full original text preserved in the project's CLAUDE.md under the appropriate section.
+Scan Go source files and condense verbose function doc comments. Any function doc comment longer than 4 lines gets shortened in place, with the full original text preserved in `design/function-docs/<package>.md`. (Not CLAUDE.md — it is loaded into every session, so it must stay small.)
 
 ## Inputs
 
@@ -30,16 +33,16 @@ Skip:
 
 - Keep the first sentence (the Go doc convention summary line).
 - Retain the most important behavioral details (what it returns, key side effects, concurrency safety).
-- Drop examples, rationale, history, parameter-by-parameter descriptions, and implementation notes -- those go to CLAUDE.md.
+- Drop examples, rationale, history, parameter-by-parameter descriptions, and implementation notes -- those go to the function-docs file.
 - Preserve the `//` style.
 - Make sure the condensed comment still reads well and follows Go doc conventions.
 
-#### b. Append the full original comment to CLAUDE.md
+#### b. Append the full original comment to design/function-docs/<package>.md
 
-Find or create a section in the project's `CLAUDE.md` file for the package. Use the heading format:
+Find or create `design/function-docs/<package-name>.md`, starting with the heading:
 
 ```markdown
-### <package-name> — Detailed Function Docs
+# <package-name> — Detailed Function Docs
 ```
 
 Under that heading, append a sub-section for each function:
@@ -65,7 +68,7 @@ After processing, print a summary:
 
 ```
 Reduced comments in N functions across M files.
-CLAUDE.md updated with detailed docs for packages: foo, bar
+design/function-docs updated for packages: foo, bar
 ```
 
 If no comments exceeded 4 lines, print:

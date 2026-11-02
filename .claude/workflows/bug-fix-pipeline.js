@@ -81,13 +81,12 @@ log('Diagnosing: ' + bugDescription)
 var fixResult = await agent(
   'You are the lead developer for CCattler. Diagnose and fix this bug:\n\n' + bugDescription + '\n\n' +
   'Steps:\n' +
-  '1. Read CLAUDE.md for architectural context and code style rules.\n' +
-  '2. Reproduce the bug — run relevant tests or read the failing code path.\n' +
-  '3. Identify the root cause — read the affected code, trace the logic.\n' +
-  '4. Write a failing test that captures the bug BEFORE fixing it.\n' +
-  '5. Fix the code so the test passes.\n' +
-  '6. Run go test ./... to verify no regressions.\n' +
-  '7. Follow all CLAUDE.md style rules (doc comments, descriptive names, receiver names).\n\n' +
+  '1. Reproduce the bug — run relevant tests or read the failing code path.\n' +
+  '2. Identify the root cause — read the affected code, trace the logic.\n' +
+  '3. Write a failing test that captures the bug BEFORE fixing it.\n' +
+  '4. Fix the code so the test passes.\n' +
+  '5. Run go test ./... to verify no regressions.\n' +
+  '6. Follow all CLAUDE.md style rules (already in your context; do not re-read it).\n\n' +
   'Report: root cause, files changed, tests added, whether tests pass.',
   { label: 'lead-developer', phase: 'Diagnose', model: 'opus', schema: FIX_SCHEMA }
 )
