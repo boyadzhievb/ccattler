@@ -20,9 +20,10 @@ StorageProvider interface                            [storage/storage.go:12]
 └── SupportsSharedAttach() bool       [NFS true (ReadWriteMany); local, simulator false]
 ```
 
-Shared attach (Flow 14): the agent lets an instance attach a volume another
-node already holds when `SupportsSharedAttach()` is true; the first node's
-observed facts stay the primary record. See CALL_GRAPH.md
+Shared attach (Flow 14): when `SupportsSharedAttach()` is true every node
+attaches the volume and records its own
+`observed/volume/{name}/attachment/{node}/{instance}` fact; StorageController
+derives the state (see below). Agent side: CALL_GRAPH.md
 `ensureVolumesAttachedForInstance`.
 
 ## SimulatorStorageProvider (storage/simulator.go)
@@ -87,6 +88,27 @@ SimulatorStorageProvider.ResizeVolume(_, volumeName, newSizeBytes) [storage/simu
 ├── IF !volumeExists → return error
 ├── IF newSizeBytes < current → return error        [shrink not allowed]
 └── existingVolume.sizeBytes = newSizeBytes
+```
+
+## StorageController (controllers/storage.go)
+
+### Reconcile → volume lifecycle from desired, observed and node facts
+
+```
+StorageController.Reconcile(ctx, facts)              [controllers/storage.go:66]
+├── collectDesiredVolumes(facts)          :97
+├── collectObservedVolumes(facts)         :133       [incl. access, attachment/{node}/{instance}]
+├── collectNodeStates(facts)              :180
+├── reconcileVolumeCreation               :196       [PUT observed/volume/{name}, state=available, size]
+├── reconcileVolumeResize                 :222       [PUT derived/volume/{name}/pending_resize]
+├── reconcileVolumeReplication            :262
+├── reconcileVolumeMigration              :291       [exclusive only: node unreachable →
+│                                                      state=migrating, pending_snapshot, DEL node/instance/mount_path]
+├── reconcileSharedVolumeState            :341       [access=shared only, Flow 14; sole writer of state]
+│   ├── attachment on unreachable/unknown node → DEL attachment/{node}/{instance}
+│   └── state = attached if any live attachment, else available (PUT only on change)
+└── reconcileVolumeCleanup                :376       [not desired → DEL all observed keys,
+                                                       access, every attachment, derived ops]
 ```
 
 ## StatefulVolumeController (controllers/stateful_volume.go)
@@ -269,6 +291,7 @@ RecoveryReport.ToJSON()                             [chaos/recovery_report.go:11
 | `SimulatorStorageProvider.ResizeVolume` | StorageController.Reconcile (expansion) |
 | `SimulatorStorageProvider.VolumeUsage` | Agent (`publishVolumeUsageMetrics`) |
 | `StatefulVolumeController.Reconcile` | Runner via `attemptSingleReconciliation` |
+| `StorageController.reconcileSharedVolumeState` | `StorageController.Reconcile` (shared volumes: state + unreachable-node attachments) |
 | `NewEtcdStore` | `runServerCommand` (cmd/cca/command_server.go) |
 | `ChaosRunner.Run` | chaos benchmark tests, `cca benchmark` CLI |
 | `ComputeRecoveryMetrics` | chaos benchmark tests (after ChaosRunner.Run) |

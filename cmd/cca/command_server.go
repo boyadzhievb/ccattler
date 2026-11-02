@@ -1077,8 +1077,9 @@ type volumeStatusEntry struct {
 	Name      string `json:"name"`                 // volume name from the DSL config
 	Size      string `json:"size"`                 // declared size (e.g. "50Gi")
 	State     string `json:"state"`                // current state: available, attached
-	Node      string `json:"node,omitempty"`       // node the volume is attached to
-	Instance  string `json:"instance,omitempty"`   // instance the volume is mounted into
+	Access    string `json:"access"`               // shared (many nodes) or exclusive (one node)
+	Node      string `json:"node,omitempty"`       // node(s, comma-separated) the volume is attached to
+	Instance  string `json:"instance,omitempty"`   // instance(s, comma-separated) the volume is mounted into
 	MountPath string `json:"mount_path,omitempty"` // filesystem mount path
 }
 
@@ -1351,13 +1352,15 @@ func collectVolumeStatusEntries(ctx context.Context, factStore store.StateStore)
 
 	var volumeEntries []volumeStatusEntry
 	for _, volume := range allVolumes {
+		attachedNodeIDs, attachedInstanceIDs, attachedMountPaths := volume.AttachmentSummary()
 		volumeEntries = append(volumeEntries, volumeStatusEntry{
 			Name:      volume.Name,
 			Size:      volume.Size,
 			State:     string(volume.State),
-			Node:      volume.Node,
-			Instance:  volume.Instance,
-			MountPath: volume.MountPath,
+			Access:    string(volume.Access),
+			Node:      strings.Join(attachedNodeIDs, ","),
+			Instance:  strings.Join(attachedInstanceIDs, ","),
+			MountPath: strings.Join(attachedMountPaths, ","),
 		})
 	}
 	return volumeEntries
@@ -1472,8 +1475,8 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 			if mountPathDisplay == "" {
 				mountPathDisplay = "-"
 			}
-			fmt.Fprintf(&textBuilder, "  %-12s  size=%-8s  state=%-10s  node=%-8s  instance=%-8s  mount=%s\n",
-				volumeEntry.Name, volumeEntry.Size, volumeEntry.State, nodeDisplay, instanceDisplay, mountPathDisplay)
+			fmt.Fprintf(&textBuilder, "  %-12s  size=%-8s  access=%-9s  state=%-10s  node=%-8s  instance=%-8s  mount=%s\n",
+				volumeEntry.Name, volumeEntry.Size, volumeEntry.Access, volumeEntry.State, nodeDisplay, instanceDisplay, mountPathDisplay)
 		}
 	}
 

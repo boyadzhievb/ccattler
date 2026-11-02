@@ -6,6 +6,7 @@ package types
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -575,8 +576,15 @@ func ReadObservedVolume(ctx context.Context, stateStore store.StateStore, volume
 			}
 		case "replica_state":
 			volume.ReplicaState = ReplicaState(val)
+		case "access":
+			volume.Access = VolumeAccessMode(val)
+		default:
+			if attachment, isAttachment := ParseVolumeAttachmentSuffix(suffix, val); isAttachment {
+				volume.Attachments = append(volume.Attachments, attachment)
+			}
 		}
 	}
+	finalizeVolumeAccess(volume)
 	return volume, nil
 }
 
@@ -626,9 +634,77 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 			volume.ReplicaCount = parsedValue
 		}
 		volume.ReplicaState = ReplicaState(fields["replica_state"])
+		volume.Access = VolumeAccessMode(fields["access"])
+		for fieldSuffix, fieldValue := range fields {
+			if attachment, isAttachment := ParseVolumeAttachmentSuffix(fieldSuffix, fieldValue); isAttachment {
+				volume.Attachments = append(volume.Attachments, attachment)
+			}
+		}
+		finalizeVolumeAccess(&volume)
 		volumes = append(volumes, volume)
 	}
 	return volumes, nil
+}
+
+// ParseVolumeAttachmentSuffix parses a key suffix "attachment/{node}/{instance}"
+// (relative to observed/volume/{name}/) into a VolumeAttachment whose mount
+// path is the fact value. Returns false for any other suffix.
+func ParseVolumeAttachmentSuffix(keySuffix string, mountPath string) (VolumeAttachment, bool) {
+	attachmentParts := strings.Split(keySuffix, "/")
+	if len(attachmentParts) != 3 || attachmentParts[0] != "attachment" {
+		return VolumeAttachment{}, false
+	}
+	return VolumeAttachment{Node: attachmentParts[1], Instance: attachmentParts[2], MountPath: mountPath}, true
+}
+
+// AttachmentSummary returns the distinct nodes, instances and host mount paths
+// using the volume: from the attachments of a shared volume, or from the
+// single node/instance/mount_path facts of an exclusive one. Lists are sorted.
+func (volume Volume) AttachmentSummary() (nodeIDs []string, instanceIDs []string, mountPaths []string) {
+	if volume.Access != VolumeAccessShared {
+		return nonEmptyValues(volume.Node), nonEmptyValues(volume.Instance), nonEmptyValues(volume.MountPath)
+	}
+	nodeSet, instanceSet, mountPathSet := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	for _, attachment := range volume.Attachments {
+		nodeSet[attachment.Node] = true
+		instanceSet[attachment.Instance] = true
+		mountPathSet[attachment.MountPath] = true
+	}
+	return sortedSetValues(nodeSet), sortedSetValues(instanceSet), sortedSetValues(mountPathSet)
+}
+
+// nonEmptyValues returns a one-element slice holding value, or nil when empty.
+func nonEmptyValues(value string) []string {
+	if value == "" {
+		return nil
+	}
+	return []string{value}
+}
+
+// sortedSetValues returns the non-empty members of a string set, sorted.
+func sortedSetValues(valueSet map[string]bool) []string {
+	var sortedValues []string
+	for value := range valueSet {
+		if value != "" {
+			sortedValues = append(sortedValues, value)
+		}
+	}
+	sort.Strings(sortedValues)
+	return sortedValues
+}
+
+// finalizeVolumeAccess defaults a missing access mode to exclusive and sorts
+// attachments by node then instance so output is deterministic.
+func finalizeVolumeAccess(volume *Volume) {
+	if volume.Access == "" {
+		volume.Access = VolumeAccessExclusive
+	}
+	sort.Slice(volume.Attachments, func(left, right int) bool {
+		if volume.Attachments[left].Node != volume.Attachments[right].Node {
+			return volume.Attachments[left].Node < volume.Attachments[right].Node
+		}
+		return volume.Attachments[left].Instance < volume.Attachments[right].Instance
+	})
 }
 
 // WriteScalePolicy writes a horizontal autoscaling policy as flat key-value

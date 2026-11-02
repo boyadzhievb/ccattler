@@ -1649,33 +1649,28 @@ func printNodesTableWithOptions(nodes []api.NodeStatus, options getOutputOptions
 	printAlignedTableFiltered(header, rows, options.noHeaders)
 }
 
+// printVolumesTableWithOptions prints volumes with their access mode and every
+// node and instance using them (several for a shared volume).
 func printVolumesTableWithOptions(volumes []api.VolumeStatus, options getOutputOptions) {
 	if len(volumes) == 0 {
 		fmt.Println("No volumes found.")
 		return
 	}
-	header := []string{"NAME", "SIZE", "STATE", "NODE", "INSTANCE", "MOUNT"}
+	header := []string{"NAME", "SIZE", "ACCESS", "STATE", "NODES", "INSTANCES", "MOUNT"}
 	var rows [][]string
 	for _, volume := range volumes {
-		nodeDisplay := volume.Node
-		if nodeDisplay == "" {
-			nodeDisplay = "-"
-		}
-		instanceDisplay := volume.Instance
-		if instanceDisplay == "" {
-			instanceDisplay = "-"
-		}
-		mountDisplay := volume.MountPath
-		if mountDisplay == "" {
-			mountDisplay = "-"
+		truncatedInstanceIDs := make([]string, 0, len(volume.Instances))
+		for _, instanceID := range volume.Instances {
+			truncatedInstanceIDs = append(truncatedInstanceIDs, truncateValue(instanceID, instanceIDDisplayWidth))
 		}
 		rows = append(rows, []string{
 			volume.Name,
 			volume.Size,
+			displayValueOrDash(volume.Access),
 			volume.State,
-			nodeDisplay,
-			truncateValue(instanceDisplay, instanceIDDisplayWidth),
-			mountDisplay,
+			displayValueOrDash(strings.Join(volume.Nodes, ",")),
+			displayValueOrDash(strings.Join(truncatedInstanceIDs, ",")),
+			displayValueOrDash(volume.MountPath),
 		})
 	}
 	printAlignedTableFiltered(header, rows, options.noHeaders)

@@ -103,22 +103,27 @@ reconcileDesiredInstance(instanceInfo)
 │
 ├── IF storageProvider:
 │   ├── publishStatusReason("waiting for volumes")
-│   └── ensureVolumesAttachedForInstance  :1651 [BAIL if false, revoke token]
-│       ├── state attached + isVolumePrimaryNode :1752 → ready
-│       ├── state attached to another node (Flow 14):
-│       │   ├── storageProviderForVolume  :1635 [route local vs NFS by type fact]
-│       │   ├── provider.SupportsSharedAttach() false → wait (BAIL)
-│       │   └── true → attachSharedVolumeOnThisNode :1760
-│       │       (CreateVolume + AttachVolume; primary's observed facts untouched)
-│       └── state available / migrating:
-│           ├── provider.CreateVolume            [ensure directory exists, 0777]
-│           ├── provider.AttachVolume            [bind to node, return path]
-│           └── WriteObservedVolume(attached, node=this node)  [becomes primary]
+│   └── ensureVolumesAttachedForInstance  :1650 [BAIL if false, revoke token]
+│       ├── store.Get(observed/volume/{name}/state)  [missing → wait (BAIL)]
+│       ├── storageProviderForVolume  :1635   [route local vs NFS by type fact]
+│       ├── provider shared (Flow 14) → attachSharedVolumeForInstance :1731
+│       │   ├── provider.CreateVolume + AttachVolume(this node) → mountPath
+│       │   ├── PUT observed/volume/{name}/access = shared
+│       │   └── PUT observed/volume/{name}/attachment/{node}/{instance} = mountPath
+│       │       (never writes state — StorageController derives it)
+│       └── provider exclusive:
+│           ├── state attached + isExclusiveVolumeOnThisNode :1790 → ready
+│           ├── state attached to another node → wait (BAIL)
+│           └── state available / migrating → attachExclusiveVolumeForInstance :1690
+│               ├── provider.CreateVolume            [ensure directory exists, 0777]
+│               ├── provider.AttachVolume            [bind to node, return path]
+│               └── WriteObservedVolume(attached, node, instance, mount_path)
 │
 ├── publishStatusReason("starting")
 ├── buildRuntimeSpecForInstance
 ├── IF storageProvider:
-│   └── resolveVolumeMountsForSpec               [reads mount paths from store → Spec.VolumeMounts]
+│   └── resolveVolumeMountsForSpec  :1753     [→ Spec.VolumeMounts]
+│       └── lookupVolumeHostMountPath :1777   [own attachment/{node}/{instance}, else mount_path]
 │   ├── resolveServiceConfigEnvVars
 │   ├── resolveServiceConfigFiles
 │   ├── lookupServiceExposedPortsFromStore
@@ -244,9 +249,13 @@ executeReconciliationCycle(controller, deltaEvents)
 | `hasInitSteps` | `reconcileDesiredInstance` |
 | `publishStatusReason` | `reconcileDesiredInstance` (multiple points) |
 | `ensureVolumesAttachedForInstance` | `reconcileDesiredInstance` (if storageProvider) |
-| `attachSharedVolumeOnThisNode` | `ensureVolumesAttachedForInstance` (shared volume held by another node) |
-| `detachVolumesForInstance` | instance stop path; writes state=available only for exclusive volumes or on the primary node |
+| `attachSharedVolumeForInstance` | `ensureVolumesAttachedForInstance` (provider supports shared attach) |
+| `attachExclusiveVolumeForInstance` | `ensureVolumesAttachedForInstance` (exclusive volume available or migrating) |
+| `isExclusiveVolumeOnThisNode` | `ensureVolumesAttachedForInstance` |
+| `detachVolumesForInstance` | instance stop path; exclusive → DetachVolume + state=available, shared → `detachSharedVolumeForInstance` |
+| `detachSharedVolumeForInstance` | `detachVolumesForInstance` (deletes own attachment; DetachVolume when node has none left) |
 | `resolveVolumeMountsForSpec` | `reconcileDesiredInstance` (if storageProvider, after buildRuntimeSpec) |
+| `lookupVolumeHostMountPath` | `resolveVolumeMountsForSpec` |
 | `runSingleController` | `Runner.Run` (goroutine per controller) |
 | `runControllerLoop` | `runSingleController` |
 | `setupControllerWatches` | `runControllerLoop` |

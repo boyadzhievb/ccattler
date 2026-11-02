@@ -1254,6 +1254,27 @@ func KeyObservedVolumeInstance(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/instance", PrefixObserved, volumeName)
 }
 
+// KeyObservedVolumeAccess returns the store path for a volume's access mode
+// (written as "shared" on first shared attach; absent means exclusive).
+// Path: observed/volume/{name}/access
+func KeyObservedVolumeAccess(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/access", PrefixObserved, volumeName)
+}
+
+// KeyObservedVolumeAttachment returns the store path for one instance's
+// attachment of a shared volume on a node. The value is the host mount path.
+// Path: observed/volume/{name}/attachment/{node}/{instance}
+func KeyObservedVolumeAttachment(volumeName string, nodeID string, instanceID string) string {
+	return fmt.Sprintf("%s/volume/%s/attachment/%s/%s", PrefixObserved, volumeName, nodeID, instanceID)
+}
+
+// ScanObservedVolumeNodeAttachments returns the prefix for all attachments of
+// a shared volume on one node (trailing slash so node-1 never matches node-10).
+// Path: observed/volume/{name}/attachment/{node}/
+func ScanObservedVolumeNodeAttachments(volumeName string, nodeID string) string {
+	return fmt.Sprintf("%s/volume/%s/attachment/%s/", PrefixObserved, volumeName, nodeID)
+}
+
 // KeyObservedVolumeSize returns the store path for an observed volume's size.
 // Path: observed/volume/{name}/size
 func KeyObservedVolumeSize(volumeName string) string {

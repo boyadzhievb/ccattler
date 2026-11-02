@@ -108,6 +108,22 @@ const (
 	VolumeMigrating VolumeState = "migrating"
 )
 
+// VolumeAccessMode says whether a volume may be attached to one node or to
+// several nodes at once. Stored at observed/volume/{name}/access; a missing
+// fact means exclusive.
+type VolumeAccessMode string
+
+// Volume access modes.
+const (
+	// VolumeAccessExclusive means one node at a time (ReadWriteOnce), tracked
+	// by the single node/instance/mount_path facts.
+	VolumeAccessExclusive VolumeAccessMode = "exclusive"
+
+	// VolumeAccessShared means many nodes at once (ReadWriteMany), tracked by
+	// per-instance attachment facts (Flow 14).
+	VolumeAccessShared VolumeAccessMode = "shared"
+)
+
 // ReplicaState represents the synchronization state of a replicated volume.
 type ReplicaState string
 

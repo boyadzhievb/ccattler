@@ -82,6 +82,9 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 	migrationChanges := storageController.reconcileVolumeMigration(ctx, observedVolumes, nodeStates)
 	allChanges = append(allChanges, migrationChanges...)
 
+	sharedStateChanges := reconcileSharedVolumeState(desiredVolumes, observedVolumes, nodeStates)
+	allChanges = append(allChanges, sharedStateChanges...)
+
 	cleanupChanges := reconcileVolumeCleanup(desiredVolumes, observedVolumes)
 	allChanges = append(allChanges, cleanupChanges...)
 
@@ -159,6 +162,12 @@ func collectObservedVolumes(facts []store.Fact) map[string]observedVolumeInfo {
 				info.replicaCount = parsedReplicaCount
 			case "replica_state":
 				info.replicaState = types.ReplicaState(fact.Value)
+			case "access":
+				info.access = types.VolumeAccessMode(fact.Value)
+			default:
+				if attachment, isAttachment := types.ParseVolumeAttachmentSuffix(pathParts[1], string(fact.Value)); isAttachment {
+					info.attachments = append(info.attachments, attachment)
+				}
 			}
 			observedVolumes[volumeName] = info
 		}
@@ -282,6 +291,9 @@ func reconcileVolumeReplication(desiredVolumes map[string]desiredVolumeInfo, obs
 func (storageController *StorageController) reconcileVolumeMigration(_ context.Context, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
 	var changes []Change
 	for volumeName, observedInfo := range observedVolumes {
+		if observedInfo.access == types.VolumeAccessShared {
+			continue
+		}
 		if observedInfo.state != types.VolumeAttached || observedInfo.node == "" {
 			continue
 		}
@@ -322,6 +334,40 @@ func (storageController *StorageController) reconcileVolumeMigration(_ context.C
 	return changes
 }
 
+// reconcileSharedVolumeState is the single writer of a shared volume's state
+// (Flow 14). It deletes attachments held by unreachable or unknown nodes, then
+// sets state to attached while any attachment remains and available when none
+// do. Volumes being cleaned up are skipped. Iterates in sorted order.
+func reconcileSharedVolumeState(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo, nodeStates map[string]types.NodeState) []Change {
+	var changes []Change
+	for _, volumeName := range sortedMapKeys(observedVolumes) {
+		observedInfo := observedVolumes[volumeName]
+		if _, stillDesired := desiredVolumes[volumeName]; !stillDesired || observedInfo.access != types.VolumeAccessShared {
+			continue
+		}
+		groupID := "vol-shared/" + volumeName
+		liveAttachmentCount := 0
+		for _, attachment := range observedInfo.attachments {
+			nodeState, nodeExists := nodeStates[attachment.Node]
+			if nodeExists && nodeState != types.NodeUnreachable {
+				liveAttachmentCount++
+				continue
+			}
+			changes = append(changes, Change{Type: store.OpDelete, Group: groupID,
+				Key: types.KeyObservedVolumeAttachment(volumeName, attachment.Node, attachment.Instance)})
+		}
+		derivedState := types.VolumeAvailable
+		if liveAttachmentCount > 0 {
+			derivedState = types.VolumeAttached
+		}
+		if observedInfo.state != derivedState {
+			changes = append(changes, Change{Type: store.OpPut, Group: groupID,
+				Key: types.KeyObservedVolumeState(volumeName), Value: []byte(string(derivedState))})
+		}
+	}
+	return changes
+}
+
 // reconcileVolumeCleanup returns changes that delete all observed-state and
 // derived-state keys for volumes which are no longer present in the desired
 // set. Derived keys (pending_resize, pending_snapshot, last_operation) must
@@ -333,7 +379,13 @@ func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observe
 		if _, stillDesired := desiredVolumes[volumeName]; stillDesired {
 			continue
 		}
-		changes = append(changes, groupedChanges("vol-cleanup/"+volumeName,
+		cleanupGroupID := "vol-cleanup/" + volumeName
+		for _, attachment := range observedVolumes[volumeName].attachments {
+			changes = append(changes, Change{Type: store.OpDelete, Group: cleanupGroupID,
+				Key: types.KeyObservedVolumeAttachment(volumeName, attachment.Node, attachment.Instance)})
+		}
+		changes = append(changes, groupedChanges(cleanupGroupID,
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeAccess(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolume(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeState(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeSize(volumeName)},
@@ -364,13 +416,15 @@ type desiredVolumeInfo struct {
 
 // observedVolumeInfo holds parsed fields from observed volume facts.
 type observedVolumeInfo struct {
-	state           types.VolumeState  // state is the current lifecycle state (available, attached, migrating).
-	node            string             // node is the ID of the node this volume is attached to.
-	instance        string             // instance is the ID of the instance this volume is mounted into.
-	size            string             // size is the volume's size.
-	migrationSource string             // migrationSource is the node the volume was force-detached from.
-	replicaCount    int                // replicaCount is the current number of synchronized replicas.
-	replicaState    types.ReplicaState // replicaState is the replication sync state.
+	state           types.VolumeState        // state is the current lifecycle state (available, attached, migrating).
+	node            string                   // node is the ID of the node this volume is attached to.
+	instance        string                   // instance is the ID of the instance this volume is mounted into.
+	size            string                   // size is the volume's size.
+	migrationSource string                   // migrationSource is the node the volume was force-detached from.
+	replicaCount    int                      // replicaCount is the current number of synchronized replicas.
+	replicaState    types.ReplicaState       // replicaState is the replication sync state.
+	access          types.VolumeAccessMode   // access is "shared" for ReadWriteMany volumes, empty for exclusive.
+	attachments     []types.VolumeAttachment // attachments lists per-instance attachments of a shared volume.
 }
 
 // parseSizeToBytes converts a human-readable size string like "100Gi" or "10Mi"

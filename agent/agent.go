@@ -1646,8 +1646,7 @@ func (nodeAgent *Agent) storageProviderForVolume(ctx context.Context, volumeName
 // instance's service are available, and attaches them to this node if so.
 // Returns (true, nil) when all volumes are ready. Returns (false, nil) when an
 // exclusive volume is attached to a different node (the instance should wait);
-// shared volumes attach here too without waiting (Flow 14).
-// Returns (false, error) on unexpected failures.
+// shared volumes never wait (Flow 14). Returns (false, error) on failures.
 func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, instanceInfo placedInstanceInfo) (bool, error) {
 	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, instanceInfo.service)
 	if len(volumeMounts) == 0 {
@@ -1660,65 +1659,91 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			return false, nil
 		}
 
-		volumeState := types.VolumeState(volumeStateFact.Value)
-
-		if volumeState == types.VolumeAttached {
-			if nodeAgent.isVolumePrimaryNode(ctx, volumeName) {
-				continue
-			}
-			sharedVolumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
-			if !sharedVolumeProvider.SupportsSharedAttach() {
-				return false, nil
-			}
-			if attachError := nodeAgent.attachSharedVolumeOnThisNode(ctx, sharedVolumeProvider, volumeName); attachError != nil {
+		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+		if volumeProvider.SupportsSharedAttach() {
+			if attachError := nodeAgent.attachSharedVolumeForInstance(ctx, volumeProvider, volumeName, instanceInfo.id); attachError != nil {
 				return false, attachError
 			}
 			continue
 		}
 
+		volumeState := types.VolumeState(volumeStateFact.Value)
+		if volumeState == types.VolumeAttached {
+			if nodeAgent.isExclusiveVolumeOnThisNode(ctx, volumeName) {
+				continue
+			}
+			return false, nil
+		}
 		if volumeState != types.VolumeAvailable && volumeState != types.VolumeMigrating {
 			return false, nil
 		}
-
-		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
-
-		if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
-			return false, fmt.Errorf("creating volume %s: %w", volumeName, createError)
-		}
-
-		mountPath, err := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
-		if err != nil {
-			return false, fmt.Errorf("attaching volume %s: %w", volumeName, err)
-		}
-
-		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
-		sizeValue := ""
-		if sizeFact.Value != nil {
-			sizeValue = string(sizeFact.Value)
-		}
-
-		var usedBytes, capacityBytes int64
-		usedBytes, capacityBytes, _ = volumeProvider.VolumeUsage(ctx, volumeName)
-
-		if writeError := types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
-			Name:          volumeName,
-			Size:          sizeValue,
-			State:         types.VolumeAttached,
-			Node:          nodeAgent.nodeID,
-			Instance:      instanceInfo.id,
-			MountPath:     mountPath,
-			UsedBytes:     usedBytes,
-			CapacityBytes: capacityBytes,
-		}); writeError != nil {
-			logging.Default().Error("failed to write observed volume", "volume", volumeName, "error", writeError.Error())
-		}
-
-		if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName)); deleteError != nil {
-			logging.Default().Error("failed to delete volume migration source", "volume", volumeName, "error", deleteError.Error())
+		if attachError := nodeAgent.attachExclusiveVolumeForInstance(ctx, volumeProvider, volumeName, instanceInfo.id); attachError != nil {
+			return false, attachError
 		}
 	}
 
 	return true, nil
+}
+
+// attachExclusiveVolumeForInstance attaches a ReadWriteOnce volume to this
+// node and records the single node/instance/mount_path attachment facts.
+func (nodeAgent *Agent) attachExclusiveVolumeForInstance(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string, instanceID string) error {
+	if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
+		return fmt.Errorf("creating volume %s: %w", volumeName, createError)
+	}
+
+	mountPath, err := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
+	if err != nil {
+		return fmt.Errorf("attaching volume %s: %w", volumeName, err)
+	}
+
+	sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
+	sizeValue := ""
+	if sizeFact.Value != nil {
+		sizeValue = string(sizeFact.Value)
+	}
+
+	var usedBytes, capacityBytes int64
+	usedBytes, capacityBytes, _ = volumeProvider.VolumeUsage(ctx, volumeName)
+
+	if writeError := types.WriteObservedVolume(ctx, nodeAgent.store, types.Volume{
+		Name:          volumeName,
+		Size:          sizeValue,
+		State:         types.VolumeAttached,
+		Node:          nodeAgent.nodeID,
+		Instance:      instanceID,
+		MountPath:     mountPath,
+		UsedBytes:     usedBytes,
+		CapacityBytes: capacityBytes,
+	}); writeError != nil {
+		logging.Default().Error("failed to write observed volume", "volume", volumeName, "error", writeError.Error())
+	}
+
+	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName)); deleteError != nil {
+		logging.Default().Error("failed to delete volume migration source", "volume", volumeName, "error", deleteError.Error())
+	}
+	return nil
+}
+
+// attachSharedVolumeForInstance attaches a ReadWriteMany volume on this node
+// and records this instance's own attachment fact. It never writes the
+// volume state; StorageController derives it from the attachments.
+func (nodeAgent *Agent) attachSharedVolumeForInstance(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string, instanceID string) error {
+	if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
+		return fmt.Errorf("creating shared volume %s: %w", volumeName, createError)
+	}
+	mountPath, attachError := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID)
+	if attachError != nil {
+		return fmt.Errorf("attaching shared volume %s: %w", volumeName, attachError)
+	}
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedVolumeAccess(volumeName), []byte(types.VolumeAccessShared)); putError != nil {
+		return fmt.Errorf("recording shared access for volume %s: %w", volumeName, putError)
+	}
+	attachmentKey := types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)
+	if _, putError := nodeAgent.store.Put(ctx, attachmentKey, []byte(mountPath)); putError != nil {
+		return fmt.Errorf("recording attachment for volume %s: %w", volumeName, putError)
+	}
+	return nil
 }
 
 // resolveVolumeMountsForSpec reads the attached volume mount paths from the
@@ -1733,12 +1758,11 @@ func (nodeAgent *Agent) resolveVolumeMountsForSpec(ctx context.Context, instance
 
 	resolvedMounts := make(map[string]string, len(volumeMounts))
 	for volumeName, containerMountPath := range volumeMounts {
-		mountPathFact, readError := nodeAgent.store.Get(ctx, types.KeyObservedVolumeMountPath(volumeName))
-		if readError != nil || mountPathFact.Value == nil {
+		hostMountPath := nodeAgent.lookupVolumeHostMountPath(ctx, volumeName, instanceInfo.id)
+		if hostMountPath == "" {
 			logging.Default().Warn("volume mount path not found in store", "volume", volumeName, "instance", instanceInfo.id)
 			continue
 		}
-		hostMountPath := string(mountPathFact.Value)
 		resolvedMounts[hostMountPath] = containerMountPath
 	}
 
@@ -1747,29 +1771,30 @@ func (nodeAgent *Agent) resolveVolumeMountsForSpec(ctx context.Context, instance
 	}
 }
 
-// isVolumePrimaryNode reports whether the observed volume facts record this
-// node as the volume's (primary) attachment.
-func (nodeAgent *Agent) isVolumePrimaryNode(ctx context.Context, volumeName string) bool {
+// lookupVolumeHostMountPath returns the host path for a volume: this
+// instance's shared attachment fact if present, otherwise the exclusive
+// volume's mount_path fact. Returns "" when neither exists.
+func (nodeAgent *Agent) lookupVolumeHostMountPath(ctx context.Context, volumeName string, instanceID string) string {
+	attachmentKey := types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)
+	if attachmentFact, readError := nodeAgent.store.Get(ctx, attachmentKey); readError == nil && len(attachmentFact.Value) > 0 {
+		return string(attachmentFact.Value)
+	}
+	if mountPathFact, readError := nodeAgent.store.Get(ctx, types.KeyObservedVolumeMountPath(volumeName)); readError == nil {
+		return string(mountPathFact.Value)
+	}
+	return ""
+}
+
+// isExclusiveVolumeOnThisNode reports whether the observed node fact of an
+// exclusive volume names this node.
+func (nodeAgent *Agent) isExclusiveVolumeOnThisNode(ctx context.Context, volumeName string) bool {
 	nodeFact, nodeErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeNode(volumeName))
 	return nodeErr == nil && string(nodeFact.Value) == nodeAgent.nodeID
 }
 
-// attachSharedVolumeOnThisNode attaches a shared (ReadWriteMany) volume that
-// another node already holds as primary. The primary's observed facts are
-// left untouched; this node uses the same mount path.
-func (nodeAgent *Agent) attachSharedVolumeOnThisNode(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string) error {
-	if createError := volumeProvider.CreateVolume(ctx, volumeName, 0); createError != nil {
-		return fmt.Errorf("creating shared volume %s: %w", volumeName, createError)
-	}
-	if _, attachError := volumeProvider.AttachVolume(ctx, volumeName, nodeAgent.nodeID); attachError != nil {
-		return fmt.Errorf("attaching shared volume %s: %w", volumeName, attachError)
-	}
-	return nil
-}
-
 // detachVolumesForInstance finds volumes attached to the given instance and
-// detaches them, setting their state back to available. For shared volumes
-// only the primary node writes the state; other nodes detach locally.
+// detaches them. Exclusive volumes go back to available; shared volumes only
+// lose this instance's attachment fact (Flow 14).
 func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID string) {
 	serviceFact, err := nodeAgent.store.Get(ctx, types.KeyObservedInstanceService(instanceID))
 	if err != nil {
@@ -1781,11 +1806,12 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 	volumeMounts := nodeAgent.lookupServiceVolumeMountsFromStore(ctx, serviceName)
 	for volumeName := range volumeMounts {
 		volumeProvider := nodeAgent.storageProviderForVolume(ctx, volumeName)
+		if volumeProvider.SupportsSharedAttach() {
+			nodeAgent.detachSharedVolumeForInstance(ctx, volumeProvider, volumeName, instanceID)
+			continue
+		}
 		if detachError := volumeProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
 			logging.Default().Error("failed to detach volume", "volume", volumeName, "node", nodeAgent.nodeID, "error", detachError.Error())
-		}
-		if volumeProvider.SupportsSharedAttach() && !nodeAgent.isVolumePrimaryNode(ctx, volumeName) {
-			continue
 		}
 
 		sizeFact, _ := nodeAgent.store.Get(ctx, types.KeyObservedVolumeSize(volumeName))
@@ -1801,6 +1827,23 @@ func (nodeAgent *Agent) detachVolumesForInstance(ctx context.Context, instanceID
 		}); writeError != nil {
 			logging.Default().Error("failed to write observed volume after detach", "volume", volumeName, "error", writeError.Error())
 		}
+	}
+}
+
+// detachSharedVolumeForInstance deletes this instance's attachment fact and
+// detaches the volume from this node once no other instance here uses it.
+func (nodeAgent *Agent) detachSharedVolumeForInstance(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string, instanceID string) {
+	attachmentKey := types.KeyObservedVolumeAttachment(volumeName, nodeAgent.nodeID, instanceID)
+	if deleteError := nodeAgent.store.Delete(ctx, attachmentKey); deleteError != nil {
+		logging.Default().Error("failed to delete volume attachment", "volume", volumeName, "instance", instanceID, "error", deleteError.Error())
+		return
+	}
+	remainingAttachments, scanError := nodeAgent.store.Scan(ctx, types.ScanObservedVolumeNodeAttachments(volumeName, nodeAgent.nodeID))
+	if scanError != nil || len(remainingAttachments) > 0 {
+		return
+	}
+	if detachError := volumeProvider.DetachVolume(ctx, volumeName, nodeAgent.nodeID); detachError != nil {
+		logging.Default().Error("failed to detach volume", "volume", volumeName, "node", nodeAgent.nodeID, "error", detachError.Error())
 	}
 }
 

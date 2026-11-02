@@ -793,32 +793,52 @@ cca apply (gate with tls { cert "path" key "path" })
 
 **Problem**: A service with several instances mounting one NFS volume had its
 instances on other nodes wait forever ("waiting for volumes"), because the
-agent treated every volume as attachable to one node only.
+agent treated every volume as attachable to one node only. A single
+`node`/`instance` record could not describe several attachments either.
 
 **Invariant**: An instance of a service mounting a shared-capable volume
 (`StorageProvider.SupportsSharedAttach()`) never waits for another node's
-attachment. An exclusive volume is attached to at most one node.
+attachment. Every attachment of a shared volume has its own fact, owned by
+the agent that made it; only `StorageController` writes the shared volume's
+`state`. An exclusive volume is attached to at most one node.
 
 ```
+observed/volume/{name}/
+├── access = shared                          ← agent, on first shared attach
+├── state  = attached | available            ← StorageController only (shared)
+└── attachment/{node}/{instance} = mountPath ← owned by that node's agent
+
 agent: instance placed, image ready
   → for each volume the service mounts:
-       state attached to this node      → ready
-       state available / migrating      → AttachVolume(this node), write facts (become primary)
-       state attached to another node:
-           provider shared   → AttachVolume(this node), keep primary's facts → ready
-           provider exclusive → wait (retry next cycle)
-  → start instance with mount path from observed/volume/{name}/mount_path
+       provider shared:
+           AttachVolume(this node) → mountPath
+           put access=shared, attachment/{this node}/{instance}=mountPath → ready
+       provider exclusive (unchanged):
+           state attached to this node      → ready
+           state available / migrating      → AttachVolume, write state/node/instance/mount_path
+           state attached to another node   → wait (retry next cycle)
+  → start instance; mount path from attachment/{node}/{instance} (shared)
+    or observed/volume/{name}/mount_path (exclusive)
 
 agent: instance stopped
-  → DetachVolume(this node)
-  → write state=available only if observed node == this node (the primary)
+  → shared:    delete attachment/{this node}/{instance};
+               DetachVolume(this node) only when no attachment/{this node}/* remains
+  → exclusive: DetachVolume, write state=available
+
+StorageController (access=shared):
+  → ≥1 attachment key        → state=attached
+  → 0 attachment keys        → state=available
+  → attachment on a node that is unreachable or gone → delete that key
+    (no snapshot, no migrating state: other nodes keep using the volume)
+  → volume no longer desired → delete access + all attachment keys
 ```
 
 ### Critical Invariants
 
-- Shared vs exclusive is decided by the agent's provider for that volume (`storageProviderForVolume`), not by facts written by another node.
-- A non-primary node never writes observed volume facts, so the primary's record is never overwritten by a later attacher.
-- Shared volumes rely on every node mounting the backing storage at the same path; the primary's `mount_path` is used on all nodes.
+- Shared vs exclusive on the agent is decided by the agent's provider for that volume (`storageProviderForVolume`); the controller uses the `access` fact the agent wrote.
+- One writer per key: each agent writes only its own `attachment/{node}/…` keys, the controller alone writes a shared volume's `state`. Two nodes detaching at once cannot leave the state wrong.
+- Keys are per instance, so stopping one of two instances on the same node keeps the node attached.
+- Shared volumes do not use the `node`, `instance`, `mount_path` or `migration_source` facts.
 
 ---
 

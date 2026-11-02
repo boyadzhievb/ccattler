@@ -62,8 +62,12 @@ The store schema for CCattler. Every key lives under a top-level prefix that sep
 │   ├── instance/{instance-id}/init/step/{index}/state   # per-step init result
 │   ├── instance/{instance-id}/init/step/{index}/reason  # per-step failure reason
 │   ├── instance/{instance-id}/probe/{probeType}         # per-probe result (startup/liveness/readiness)
-│   ├── volume/{name}/attached_node
-│   └── volume/{name}/state                   # attached | detached | error
+│   ├── volume/{name}/state                   # available | attached | migrating (shared: StorageController only)
+│   ├── volume/{name}/node                    # exclusive volume: attached node
+│   ├── volume/{name}/instance                # exclusive volume: mounting instance
+│   ├── volume/{name}/mount_path              # exclusive volume: host mount path
+│   ├── volume/{name}/access                  # "shared" when ReadWriteMany (absent = exclusive)
+│   └── volume/{name}/attachment/{node}/{instance}  # shared volume: host mount path (Flow 14)
 │
 ├── derived/                        # controller-derived state (not agent observations)
 │   ├── service/{name}/rollout/state          # rolling | complete | rollback

@@ -28,6 +28,7 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 
 **Found during the first deploy run:**
 - [x] Shared (ReadWriteMany) volume attach: whoami's 2 instances sharing one NFS volume no longer wait forever on different nodes (Flow 14, `StorageProvider.SupportsSharedAttach`)
+- [x] Shared volume attachments per instance: `observed/volume/{name}/attachment/{node}/{instance}`, state derived only by StorageController, unreachable-node attachments dropped without migration, ACCESS/NODES/INSTANCES in `cca get volumes`
 
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)

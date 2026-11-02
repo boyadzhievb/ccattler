@@ -89,14 +89,18 @@ type NetworkStatus struct {
 
 // VolumeStatus represents one persistent volume in the cluster status.
 type VolumeStatus struct {
-	Name          string `json:"name"`
-	Size          string `json:"size"`
-	State         string `json:"state"`
-	Node          string `json:"node,omitempty"`
-	Instance      string `json:"instance,omitempty"`
-	MountPath     string `json:"mount_path,omitempty"`
-	UsedBytes     int64  `json:"used_bytes,omitempty"`
-	CapacityBytes int64  `json:"capacity_bytes,omitempty"`
+	Name          string                   `json:"name"`
+	Size          string                   `json:"size"`
+	State         string                   `json:"state"`
+	Node          string                   `json:"node,omitempty"`
+	Instance      string                   `json:"instance,omitempty"`
+	MountPath     string                   `json:"mount_path,omitempty"`
+	UsedBytes     int64                    `json:"used_bytes,omitempty"`
+	CapacityBytes int64                    `json:"capacity_bytes,omitempty"`
+	Access        string                   `json:"access"`                // Access is "shared" (many nodes) or "exclusive" (one node).
+	Nodes         []string                 `json:"nodes,omitempty"`       // Nodes lists every node the volume is attached on, sorted.
+	Instances     []string                 `json:"instances,omitempty"`   // Instances lists every instance the volume is mounted into, sorted.
+	Attachments   []types.VolumeAttachment `json:"attachments,omitempty"` // Attachments lists each shared attachment with its node, instance and mount path.
 }
 
 // SecretStatus represents one secret in the cluster status. Only the name and
@@ -457,15 +461,20 @@ func collectVolumeStatusFromStore(ctx context.Context, factStore store.StateStor
 	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
 	var volumeStatusList []VolumeStatus
 	for _, volume := range allVolumes {
+		attachedNodeIDs, attachedInstanceIDs, attachedMountPaths := volume.AttachmentSummary()
 		volumeStatusList = append(volumeStatusList, VolumeStatus{
 			Name:          volume.Name,
 			Size:          volume.Size,
 			State:         string(volume.State),
 			Node:          volume.Node,
 			Instance:      volume.Instance,
-			MountPath:     volume.MountPath,
+			MountPath:     strings.Join(attachedMountPaths, ","),
 			UsedBytes:     volume.UsedBytes,
 			CapacityBytes: volume.CapacityBytes,
+			Access:        string(volume.Access),
+			Nodes:         attachedNodeIDs,
+			Instances:     attachedInstanceIDs,
+			Attachments:   volume.Attachments,
 		})
 	}
 	return volumeStatusList

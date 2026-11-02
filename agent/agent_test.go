@@ -700,9 +700,95 @@ func TestAgentDetachesVolumeOnStop(t *testing.T) {
 	}
 }
 
-// TestAgentStartsWithSharedVolumeAttachedElsewhere verifies Flow 14: an
-// instance whose NFS (shared) volume is attached to another node starts
-// without waiting, and the other node's primary facts are left untouched.
+// TestAgentSharedVolumePerInstanceAttachments verifies Flow 14: instances of a
+// shared (NFS) volume each record their own attachment fact, the agent never
+// writes the shared volume's state, and the node detaches only after its last
+// instance stops.
+func TestAgentSharedVolumePerInstanceAttachments(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	nfsProvider, providerError := storage.NewNFSStorageProvider(t.TempDir())
+	if providerError != nil {
+		t.Fatal(providerError)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeAgent := New("node-1", factStore, simulatorRuntime)
+	nodeAgent.SetStorageProvider(nfsProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	factStore.Put(ctx, types.KeyDesiredServiceImage("whoami"), []byte("whoami:latest"))
+	factStore.Put(ctx, types.KeyDesiredServiceVolume("whoami", "shared-data"), []byte("/data"))
+	types.WriteObservedVolume(ctx, factStore, types.Volume{Name: "shared-data", Size: "1Gi", State: types.VolumeAvailable})
+	for _, instanceID := range []string{"shared-1", "shared-2"} {
+		types.WriteInstance(ctx, factStore, types.Instance{ID: instanceID, Service: "whoami", State: types.InstancePending})
+		types.WritePlacement(ctx, factStore, types.Placement{InstanceID: instanceID, NodeID: "node-1"})
+	}
+
+	go nodeAgent.Run(ctx)
+
+	attachmentExists := func(instanceID string) bool {
+		attachmentFact, err := factStore.Get(ctx, types.KeyObservedVolumeAttachment("shared-data", "node-1", instanceID))
+		return err == nil && len(attachmentFact.Value) > 0
+	}
+	nodeAttached := func() bool {
+		isAttached, _, _ := nfsProvider.IsAttached(ctx, "shared-data")
+		return isAttached
+	}
+
+	waitFor(t, 2*time.Second, "both instances running with own attachments, state left to controller", func() bool {
+		for _, instanceID := range []string{"shared-1", "shared-2"} {
+			stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState(instanceID))
+			if err != nil || string(stateFact.Value) != "running" || !attachmentExists(instanceID) {
+				return false
+			}
+		}
+		accessFact, accessError := factStore.Get(ctx, types.KeyObservedVolumeAccess("shared-data"))
+		volumeStateFact, _ := factStore.Get(ctx, types.KeyObservedVolumeState("shared-data"))
+		return accessError == nil && string(accessFact.Value) == string(types.VolumeAccessShared) &&
+			string(volumeStateFact.Value) == string(types.VolumeAvailable)
+	})
+
+	types.DeletePlacement(ctx, factStore, "node-1", "shared-1")
+	waitFor(t, 2*time.Second, "first instance stopped, node still attached for the second", func() bool {
+		_, statusError := simulatorRuntime.Status(ctx, "shared-1")
+		return statusError == runtime.ErrNotFound && !attachmentExists("shared-1") && attachmentExists("shared-2") && nodeAttached()
+	})
+
+	types.DeletePlacement(ctx, factStore, "node-1", "shared-2")
+	waitFor(t, 2*time.Second, "last instance stopped, node detached", func() bool {
+		return !attachmentExists("shared-2") && !nodeAttached()
+	})
+}
+
+// TestLookupVolumeHostMountPathPrefersOwnAttachment verifies the host mount
+// path comes from this instance's shared attachment, falls back to the
+// exclusive mount_path fact, and is empty when neither exists.
+func TestLookupVolumeHostMountPathPrefersOwnAttachment(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx := context.Background()
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+
+	if hostMountPath := nodeAgent.lookupVolumeHostMountPath(ctx, "data", "inst-1"); hostMountPath != "" {
+		t.Errorf("no facts: got %q, want empty", hostMountPath)
+	}
+	factStore.Put(ctx, types.KeyObservedVolumeMountPath("data"), []byte("/mnt/exclusive"))
+	if hostMountPath := nodeAgent.lookupVolumeHostMountPath(ctx, "data", "inst-1"); hostMountPath != "/mnt/exclusive" {
+		t.Errorf("exclusive: got %q, want /mnt/exclusive", hostMountPath)
+	}
+	factStore.Put(ctx, types.KeyObservedVolumeAttachment("data", "node-1", "inst-1"), []byte("/mnt/shared"))
+	if hostMountPath := nodeAgent.lookupVolumeHostMountPath(ctx, "data", "inst-1"); hostMountPath != "/mnt/shared" {
+		t.Errorf("shared: got %q, want /mnt/shared", hostMountPath)
+	}
+}
+
+// TestAgentStartsWithSharedVolumeAttachedElsewhere verifies an instance whose
+// shared volume is already attached on another node starts without waiting
+// and leaves that node's attachment fact alone.
 func TestAgentStartsWithSharedVolumeAttachedElsewhere(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
@@ -716,7 +802,7 @@ func TestAgentStartsWithSharedVolumeAttachedElsewhere(t *testing.T) {
 	defer cancel()
 
 	nfsProvider.CreateVolume(ctx, "shared-data", 100)
-	primaryMountPath, _ := nfsProvider.AttachVolume(ctx, "shared-data", "node-2")
+	otherNodeMountPath, _ := nfsProvider.AttachVolume(ctx, "shared-data", "node-2")
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetStorageProvider(nfsProvider)
@@ -724,35 +810,27 @@ func TestAgentStartsWithSharedVolumeAttachedElsewhere(t *testing.T) {
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("whoami"), []byte("whoami:latest"))
 	factStore.Put(ctx, types.KeyDesiredServiceVolume("whoami", "shared-data"), []byte("/data"))
-	types.WriteObservedVolume(ctx, factStore, types.Volume{
-		Name: "shared-data", Size: "1Gi", State: types.VolumeAttached,
-		Node: "node-2", Instance: "primary-1", MountPath: primaryMountPath,
-	})
+	types.WriteObservedVolume(ctx, factStore, types.Volume{Name: "shared-data", Size: "1Gi", State: types.VolumeAttached})
+	factStore.Put(ctx, types.KeyObservedVolumeAccess("shared-data"), []byte(types.VolumeAccessShared))
+	otherNodeAttachmentKey := types.KeyObservedVolumeAttachment("shared-data", "node-2", "other-1")
+	factStore.Put(ctx, otherNodeAttachmentKey, []byte(otherNodeMountPath))
 	types.WriteInstance(ctx, factStore, types.Instance{ID: "shared-1", Service: "whoami", State: types.InstancePending})
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "shared-1", NodeID: "node-1"})
 
 	go nodeAgent.Run(ctx)
 
-	waitFor(t, 2*time.Second, "instance running with shared volume held by node-2", func() bool {
+	waitFor(t, 2*time.Second, "instance running while node-2 holds the volume", func() bool {
 		stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("shared-1"))
-		return err == nil && string(stateFact.Value) == "running"
+		_, ownAttachmentError := factStore.Get(ctx, types.KeyObservedVolumeAttachment("shared-data", "node-1", "shared-1"))
+		return err == nil && string(stateFact.Value) == "running" && ownAttachmentError == nil
 	})
-
-	volumeNodeFact, _ := factStore.Get(ctx, types.KeyObservedVolumeNode("shared-data"))
-	if string(volumeNodeFact.Value) != "node-2" {
-		t.Errorf("primary volume node = %s, want node-2 (non-primary must not overwrite)", volumeNodeFact.Value)
-	}
 
 	types.DeletePlacement(ctx, factStore, "node-1", "shared-1")
-	waitFor(t, 2*time.Second, "non-primary instance stopped", func() bool {
-		_, statusError := simulatorRuntime.Status(ctx, "shared-1")
-		return statusError == runtime.ErrNotFound
+	waitFor(t, 2*time.Second, "own attachment removed, node-2 attachment kept", func() bool {
+		_, ownAttachmentError := factStore.Get(ctx, types.KeyObservedVolumeAttachment("shared-data", "node-1", "shared-1"))
+		otherAttachmentFact, otherAttachmentError := factStore.Get(ctx, otherNodeAttachmentKey)
+		return ownAttachmentError != nil && otherAttachmentError == nil && string(otherAttachmentFact.Value) == otherNodeMountPath
 	})
-
-	volumeStateFact, _ := factStore.Get(ctx, types.KeyObservedVolumeState("shared-data"))
-	if string(volumeStateFact.Value) != string(types.VolumeAttached) {
-		t.Errorf("volume state after non-primary stop = %s, want attached (primary still holds it)", volumeStateFact.Value)
-	}
 }
 
 // TestAgentWithoutStorageProviderIgnoresVolumes verifies backward compat:

@@ -32,24 +32,27 @@ Each provider reports whether one volume may be attached to several nodes at
 once via `SupportsSharedAttach()`: `NFSStorageProvider` returns true,
 `LocalPathStorageProvider` and the simulator return false.
 
-The observed volume facts (`observed/volume/{name}/state|node|instance|mount_path`)
-record a single **primary** attachment: the first node that attached it. For a
-shared volume:
+A shared volume records every attachment separately (Flow 14):
 
-- An instance on another node does not wait for the primary: the agent calls
-  the provider's `AttachVolume` for its own node and starts the instance with
-  the same mount path (all nodes mount NFS at the same `--storage-dir`). It
-  does not overwrite the primary's facts.
-- When a non-primary node stops its instance, it detaches locally and leaves
-  the facts alone. Only the primary node writes the volume back to `available`.
-- If the primary node becomes unreachable, the storage controller marks the
-  volume `migrating` as usual; other nodes keep using it, and the next attach
-  becomes the new primary.
+| Key | Writer | Value |
+|---|---|---|
+| `observed/volume/{name}/access` | agent (first shared attach) | `shared` |
+| `observed/volume/{name}/attachment/{node}/{instance}` | that node's agent | host mount path |
+| `observed/volume/{name}/state` | `StorageController` | `attached` while any attachment exists, else `available` |
 
-Exclusive (ReadWriteOnce) volumes are unchanged: an instance waits until the
-volume is free or attached to its own node.
+- An instance never waits for another node: the agent calls the provider's
+  `AttachVolume` for its own node and writes its own attachment key.
+- Stopping an instance deletes only its own key; the node detaches when its
+  last attachment key is gone.
+- If a node becomes unreachable, the storage controller deletes that node's
+  attachment keys. No snapshot is taken and the volume does not enter
+  `migrating`, because other nodes keep using it.
+- `cca get volumes` shows ACCESS (`shared`/`exclusive`) and every attached
+  node; `-o json` lists each attachment with its node, instance and mount path.
 
-Limitation: `cca get volumes` shows only the primary node for a shared volume.
+Exclusive (ReadWriteOnce) volumes are unchanged: they use the single
+`node`/`instance`/`mount_path` facts, and an instance waits until the volume
+is free or attached to its own node.
 
 ### 2. StorageController (`controllers/storage.go`)
 
