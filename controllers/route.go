@@ -14,6 +14,11 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
+// derivedRouteBackendsSuffix ends every key this controller owns
+// (types.KeyDerivedRouteBackends); other derived/route keys belong to
+// RouteTLSController.
+const derivedRouteBackendsSuffix = "/backends"
+
 // RouteController watches desired route definitions and endpoint facts, then
 // writes derived backend lists for each route. The agent data plane reads
 // these derived facts to program iptables DNAT or start sticky session proxies.
@@ -149,11 +154,16 @@ func collectServiceBackendsFromEndpoints(facts []store.Fact) map[string][]routeB
 	return serviceBackends
 }
 
-// parseExistingDerivedRouteKeys scans derived/route/ facts and returns a map
-// from full key to current value for staleness detection.
+// parseExistingDerivedRouteKeys returns the derived/route/{name}/backends facts
+// (the only keys this controller writes) mapped to their values, for staleness
+// detection. Other derived/route keys, such as tls/* owned by
+// RouteTLSController, are never considered stale here.
 func parseExistingDerivedRouteKeys(facts []store.Fact) map[string]string {
 	existingKeys := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDerivedRoutes) {
+		if !strings.HasSuffix(fact.Key, derivedRouteBackendsSuffix) {
+			continue
+		}
 		existingKeys[fact.Key] = string(fact.Value)
 	}
 	return existingKeys

@@ -153,6 +153,33 @@ func TestRouteControllerRemovesStaleDerived(t *testing.T) {
 	}
 }
 
+// TestRouteControllerLeavesTLSFactsAlone verifies the route controller never
+// deletes derived/route/{name}/tls/* facts owned by RouteTLSController. It
+// used to treat them as stale every cycle, so certificates were deleted and
+// re-issued continuously and the gate listener briefly had no certificate.
+func TestRouteControllerLeavesTLSFactsAlone(t *testing.T) {
+	routeController := NewRouteController()
+
+	facts := buildFacts(
+		kv(types.KeyDesiredRoute("web"), "route"),
+		kv(types.KeyDesiredRouteService("web"), "web"),
+		kv(types.KeyDerivedRouteBackends("web"), ""),
+		kv(types.KeyDerivedRouteTLSCert("web"), "cert-pem"),
+		kv(types.KeyDerivedRouteTLSKey("web"), "key-pem"),
+		kv(types.KeyDerivedRouteTLSNotAfter("web"), "2027-01-31T00:00:00Z"),
+	)
+
+	changes, err := routeController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if change.Type == store.OpDelete {
+			t.Errorf("route controller deleted %s", change.Key)
+		}
+	}
+}
+
 func TestRouteControllerIdempotent(t *testing.T) {
 	routeController := NewRouteController()
 

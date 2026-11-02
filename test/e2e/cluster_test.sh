@@ -51,7 +51,13 @@
 # Each workload manifest declares WORKLOAD_EXPOSE entries mapping
 # external_port → service VIP:internal_port.
 
-set -euo pipefail
+set -Eeuo pipefail
+
+# A command failing outside `if`/`||` exits the script via set -e without any
+# message; report where it happened so a silent exit is never a mystery.
+# Only the top-level shell reports: there ERR fires exactly when set -e exits,
+# while inside $(...) a failing command may be an expected outcome.
+trap 'exit_status=$?; if [[ $BASH_SUBSHELL -eq 0 ]]; then echo "FAIL: exit status $exit_status at ${BASH_SOURCE[0]}:${LINENO}: ${BASH_COMMAND}" >&2; fi' ERR
 
 # Prefer /usr/local/go if available (system Go may be too old for go.mod).
 if [[ -x /usr/local/go/bin/go ]]; then

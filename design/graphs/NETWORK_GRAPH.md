@@ -659,6 +659,7 @@ Wired in cmd/cca/command_server.go:387 when the cluster CA is loaded.
 | `desired/route/{name}/tls/mode` | compiler | RouteTLSController, gate proxy |
 | `desired/route/{name}/tls/cert`, `/tls/key` (manual) | compiler | gate proxy |
 | `derived/route/{name}/tls/cert`, `/tls/key`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
+| `derived/route/{name}/backends` | RouteController (staleness check limited to `/backends` keys, so it never deletes `tls/*`) | agent `parseRouteFactsForDataPlane` (cookie proxy) |
 
 ---
 

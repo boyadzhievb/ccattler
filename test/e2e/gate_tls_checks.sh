@@ -49,23 +49,23 @@ gate_tls_status() {
 gate_tls_fingerprint() {
     local node_ip="$1" gate_host="$2"
     ssh_vm "$CTRL_NODE" "echo | openssl s_client -connect ${node_ip}:${GATE_TLS_PORT} -servername ${gate_host} 2>/dev/null \
-        | openssl x509 -noout -fingerprint -sha256 2>/dev/null" 2>/dev/null | cut -d= -f2 | tr -d '\r'
+        | openssl x509 -noout -fingerprint -sha256 2>/dev/null" 2>/dev/null | cut -d= -f2 | tr -d '\r' || true
 }
 
 # gate_tls_file_fingerprint prints the fingerprint of the manual cert file on the control node.
 gate_tls_file_fingerprint() {
-    ssh_vm "$CTRL_NODE" "sudo openssl x509 -in ${GATE_TLS_CERT_DIR}/manual.pem -noout -fingerprint -sha256" 2>/dev/null | cut -d= -f2 | tr -d '\r'
+    ssh_vm "$CTRL_NODE" "sudo openssl x509 -in ${GATE_TLS_CERT_DIR}/manual.pem -noout -fingerprint -sha256" 2>/dev/null | cut -d= -f2 | tr -d '\r' || true
 }
 
 # gate_tls_gates_json prints `cca get gates -o json` from the control node.
 gate_tls_gates_json() {
-    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get gates -o json" 2>/dev/null
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca get gates -o json" 2>/dev/null || true
 }
 
 # gate_tls_all_certs_issued succeeds when every TLS gate reports a certificate.
 gate_tls_all_certs_issued() {
     local pending
-    pending=$(gate_tls_gates_json | jq '[.[] | select(.tls != null and .tls.certificate_set != true)] | length' 2>/dev/null)
+    pending=$(gate_tls_gates_json | jq '[.[] | select(.tls != null and .tls.certificate_set != true)] | length' 2>/dev/null || true)
     [[ "$pending" == "0" ]]
 }
 
@@ -120,10 +120,10 @@ gate_tls_check_identity() {
     s_client_output=$(ssh_vm "$CTRL_NODE" "echo | openssl s_client -connect ${CTRL_IP}:${GATE_TLS_PORT} \
         -servername tls-auto.home.arpa -CAfile $GATE_TLS_CA 2>/dev/null; echo | openssl s_client \
         -connect ${CTRL_IP}:${GATE_TLS_PORT} -servername tls-auto.home.arpa 2>/dev/null \
-        | openssl x509 -noout -ext subjectAltName 2>/dev/null" 2>/dev/null)
+        | openssl x509 -noout -ext subjectAltName 2>/dev/null" 2>/dev/null || true)
     echo "$s_client_output" | grep -q "Verify return code: 0" || fail "gate-tls T3: certificate does not verify against the cluster CA"
     echo "$s_client_output" | grep -q "DNS:tls-auto.home.arpa" || fail "gate-tls T3: SAN does not contain tls-auto.home.arpa"
-    describe_output=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca describe gate tls-auto" 2>/dev/null)
+    describe_output=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca describe gate tls-auto" 2>/dev/null || true)
     echo "$describe_output" | grep -q "Host:  *tls-auto.home.arpa" || fail "gate-tls T3: describe gate does not show certificate host"
     log "  T3 PASS: SAN = tls-auto.home.arpa, issued by cluster CA, matches describe"
 }
@@ -142,7 +142,7 @@ gate_tls_check_round_robin() {
     local distinct_backends
     distinct_backends=$(ssh_vm "$CTRL_NODE" "for i in \$(seq 1 20); do curl -s --max-time 5 --cacert $GATE_TLS_CA \
         --resolve tls-auto.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} https://tls-auto.home.arpa/ | grep '^Hostname:'; done \
-        | sort -u | wc -l" 2>/dev/null | tr -d ' \r')
+        | sort -u | wc -l" 2>/dev/null | tr -d ' \r' || true)
     [[ "$distinct_backends" -ge 2 ]] || fail "gate-tls T6: 20 requests reached $distinct_backends backend(s), expected 2"
     log "  T6 PASS: requests spread across $distinct_backends instances"
 }
@@ -154,7 +154,7 @@ gate_tls_check_sticky() {
         --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} -c /tmp/gate-tls-jar -D - -o /dev/null \
         https://tls-sticky.home.arpa/ | grep -i '^set-cookie:'; for i in \$(seq 1 10); do curl -s --max-time 5 \
         --cacert $GATE_TLS_CA --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} -b /tmp/gate-tls-jar \
-        https://tls-sticky.home.arpa/ | grep '^Hostname:'; done | sort -u | sed 's/^/HOST /'" 2>/dev/null)
+        https://tls-sticky.home.arpa/ | grep '^Hostname:'; done | sort -u | sed 's/^/HOST /'" 2>/dev/null || true)
     echo "$sticky_output" | grep -qi "set-cookie: __CCA_STICKY_tls-sticky=.*Secure" \
         || fail "gate-tls T7: expected Secure __CCA_STICKY_tls-sticky cookie, got: $(echo "$sticky_output" | head -1)"
     [[ "$(echo "$sticky_output" | grep -c '^HOST ')" -eq 1 ]] || fail "gate-tls T7: sticky requests reached more than one instance"
@@ -176,9 +176,9 @@ gate_tls_check_two_gates() {
 gate_tls_check_service_vip() {
     local service_vip vip_status
     service_vip=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
-        | jq -r '.networking[] | select(.service == "tls-auto") | .vip' 2>/dev/null)
+        | jq -r '.networking[] | select(.service == "tls-auto") | .vip' 2>/dev/null || true)
     [[ -n "$service_vip" && "$service_vip" != "null" ]] || fail "gate-tls T9: no VIP for tls-auto"
-    vip_status=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${service_vip}:80/" 2>/dev/null)
+    vip_status=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${service_vip}:80/" 2>/dev/null || true)
     [[ "$vip_status" == "200" ]] || fail "gate-tls T9: plain HTTP to service VIP returned $vip_status, expected 200"
     log "  T9 PASS: service VIP ${service_vip}:80 still serves plain HTTP"
 }
@@ -187,7 +187,7 @@ gate_tls_check_service_vip() {
 gate_tls_check_redirect() {
     local redirect_result
     redirect_result=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 5 \
-        -H 'Host: tls-auto.home.arpa' 'http://${CTRL_IP}:${GATE_HTTP_PORT}/path?query=1'" 2>/dev/null)
+        -H 'Host: tls-auto.home.arpa' 'http://${CTRL_IP}:${GATE_HTTP_PORT}/path?query=1'" 2>/dev/null || true)
     [[ "$redirect_result" == "308 https://tls-auto.home.arpa/path?query=1" ]] \
         || fail "gate-tls T10: expected 308 to https://tls-auto.home.arpa/path?query=1, got '$redirect_result'"
     log "  T10 PASS: plain listener 308-redirects to https"
@@ -207,10 +207,10 @@ gate_tls_check_rejections() {
 gate_tls_check_no_key_leakage() {
     local vm pem_hits
     pem_hits=$(ssh_vm "$CTRL_NODE" "{ sudo /usr/local/bin/cca get gates -o json; sudo /usr/local/bin/cca describe gate tls-auto; \
-        sudo /usr/local/bin/cca describe gate tls-manual; } | grep -c 'BEGIN'" 2>/dev/null | tr -d ' \r')
+        sudo /usr/local/bin/cca describe gate tls-manual; } | grep -c 'BEGIN'" 2>/dev/null | tr -d ' \r' || true)
     [[ "$pem_hits" == "0" ]] || fail "gate-tls T15: PEM material found in CLI output"
     for vm in "${VM_NAMES[@]}"; do
-        pem_hits=$(ssh_vm "$vm" "sudo journalctl -u cca-agent --since '-60min' --no-pager | grep -c 'BEGIN'" 2>/dev/null | tr -d ' \r')
+        pem_hits=$(ssh_vm "$vm" "sudo journalctl -u cca-agent --since '-60min' --no-pager | grep -c 'BEGIN'" 2>/dev/null | tr -d ' \r' || true)
         [[ "${pem_hits:-0}" == "0" ]] || fail "gate-tls T15: PEM material found in $vm agent log"
     done
     log "  T15 PASS: no PEM material in get/describe output or agent logs"
@@ -218,7 +218,7 @@ gate_tls_check_no_key_leakage() {
 
 # gate_tls_check_rotation covers T5: manual cert rotation without failed requests.
 gate_tls_check_rotation() {
-    local old_fingerprint new_fingerprint failed_requests
+    local old_fingerprint new_fingerprint total_requests failed_requests
     old_fingerprint=$(gate_tls_fingerprint "$CTRL_IP" "tls-manual.home.arpa")
     ssh_vm "$CTRL_NODE" "rm -f /tmp/gate-tls-rotation.log; nohup bash -c 'for i in \$(seq 1 45); do curl -sk -o /dev/null \
         -w \"%{http_code}\n\" --max-time 3 --resolve tls-manual.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} \
@@ -231,7 +231,9 @@ gate_tls_check_rotation() {
     gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "rotated certificate served" \
         gate_tls_fingerprint_is "$CTRL_IP" "tls-manual.home.arpa" "$new_fingerprint"
     sleep 47
-    failed_requests=$(ssh_vm "$CTRL_NODE" "grep -vc '^200$' /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r')
+    total_requests=$(ssh_vm "$CTRL_NODE" "wc -l < /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r' || true)
+    [[ "${total_requests:-0}" -ge 40 ]] || fail "gate-tls T5: background loop logged ${total_requests:-0} requests, expected ~45"
+    failed_requests=$(ssh_vm "$CTRL_NODE" "grep -vc '^200$' /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r' || true)
     [[ "${failed_requests:-0}" == "0" ]] || fail "gate-tls T5: $failed_requests request(s) failed during rotation"
     log "  T5 PASS: rotated certificate served, 0 failed requests during rotation"
 }
@@ -266,7 +268,7 @@ gate_tls_running_at_least() {
 gate_tls_check_backend_failure() {
     local victim_json victim_id victim_node
     victim_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
-        | jq -c '[.instances[] | select(.service == "tls-auto" and .state == "running")][0]')
+        | jq -c '[.instances[] | select(.service == "tls-auto" and .state == "running")][0]' || true)
     victim_id=$(echo "$victim_json" | jq -r '.id')
     victim_node=$(echo "$victim_json" | jq -r '.node')
     [[ -n "$victim_id" && "$victim_id" != "null" ]] || fail "gate-tls T13: no running tls-auto instance"
@@ -296,7 +298,7 @@ gate_tls_check_removal() {
     [[ "$(gate_tls_gates_json | jq '.[] | select(.name == "tls-manual") | .tls')" == "null" ]] \
         || fail "gate-tls T14: cca get gates still shows TLS for tls-manual"
     plain_status=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-        -H 'Host: tls-manual.home.arpa' http://${CTRL_IP}:${GATE_HTTP_PORT}/" 2>/dev/null)
+        -H 'Host: tls-manual.home.arpa' http://${CTRL_IP}:${GATE_HTTP_PORT}/" 2>/dev/null || true)
     [[ "$plain_status" == "200" ]] || fail "gate-tls T14: plain HTTP for tls-manual returned $plain_status, expected 200"
     gate_tls_reapply "$WORKLOADS_DIR/gate-tls.cca"
     rm -f "$without_tls_cca"
