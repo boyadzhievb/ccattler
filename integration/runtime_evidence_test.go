@@ -425,7 +425,7 @@ func TestAPIVersioning_BackwardsCompatibility(t *testing.T) {
 				defer factStore.Close()
 				ctx := context.Background()
 
-				fileBaseDir := filepath.Dir(ccaFilePath)
+				fileBaseDir := prepareManualTLSFixtures(t, dslContent, filepath.Dir(ccaFilePath))
 				if applyError := lang.ApplyWithBaseDir(ctx, factStore, dslContent, fileBaseDir); applyError != nil {
 					t.Fatalf("backwards compatibility broken for %s: %v", fileName, applyError)
 				}
