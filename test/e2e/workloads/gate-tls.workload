@@ -1,0 +1,29 @@
+# Workload manifest for gate TLS end-to-end validation (M170).
+# Sourced by cluster_test.sh to discover deployment requirements.
+
+WORKLOAD_DESCRIPTION="Gate TLS: auto, manual, sticky+TLS, two gates per service (3 whoami services, 6 instances)"
+WORKLOAD_IMAGES=("${LOCAL_REGISTRY}/whoami:latest")
+WORKLOAD_EXPECTED_CONTAINERS=6
+WORKLOAD_SECRETS=()
+
+# Not exposed through Caddy: gate TLS is validated on the nodes' :443 listener.
+WORKLOAD_EXPOSE=()
+
+# GATE_TLS_CERT_DIR is where the manual gate certificate lives on the control
+# node: next to the applied .cca file, matching its relative cert/key paths.
+GATE_TLS_CERT_DIR="/tmp/gate-tls-certs"
+
+# gate_tls_generate_manual_cert creates a fresh self-signed cert/key pair for
+# tls-manual.home.arpa on the control node. Also used by the rotation check.
+gate_tls_generate_manual_cert() {
+    ssh_vm "$CTRL_NODE" "sudo mkdir -p $GATE_TLS_CERT_DIR && sudo openssl req -x509 -newkey ec \
+        -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=tls-manual.home.arpa \
+        -addext subjectAltName=DNS:tls-manual.home.arpa \
+        -keyout $GATE_TLS_CERT_DIR/manual-key.pem -out $GATE_TLS_CERT_DIR/manual.pem 2>/dev/null" \
+        || fail "gate-tls: failed to generate manual certificate"
+}
+
+# workload_pre_apply runs on the test host before `cca apply` for this workload.
+workload_pre_apply() {
+    gate_tls_generate_manual_cert
+}

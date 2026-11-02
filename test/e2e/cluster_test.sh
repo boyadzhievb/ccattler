@@ -630,9 +630,17 @@ CUMULATIVE_EXPECTED_CONTAINERS=0
 for workload_name in "${WORKLOAD_NAMES[@]}"; do
     log "--- Deploying workload: $workload_name ---"
 
-    # Source the manifest to get WORKLOAD_* variables.
+    # Source the manifest to get WORKLOAD_* variables. Clear any pre-apply hook
+    # left by a previously sourced manifest first (Step 3.6 sources them all).
+    unset -f workload_pre_apply
     # shellcheck source=/dev/null
     source "$WORKLOADS_DIR/${workload_name}.workload"
+
+    # Optional manifest hook for files the .cca needs on the control node.
+    if declare -F workload_pre_apply >/dev/null; then
+        log "Running pre-apply hook for $workload_name..."
+        workload_pre_apply
+    fi
 
     # Create secrets if the workload declares any.
     if [[ ${#WORKLOAD_SECRETS[@]} -gt 0 ]]; then
@@ -1605,6 +1613,26 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
     fi
 else
     log "Skipping warm-zero test — warmzero workload not deployed"
+fi
+
+# ---- Step 5.17: Gate TLS end-to-end checks (M170) ----
+# T1–T15 from design/milestones/m170-gate-tls-e2e.md: certificate issuance,
+# HTTPS on every node's :443 gate listener, SNI selection, rotation, restarts,
+# backend failure, and TLS removal.
+
+GATE_TLS_DEPLOYED=false
+for workload_name in "${WORKLOAD_NAMES[@]}"; do
+    [[ "$workload_name" == "gate-tls" ]] && GATE_TLS_DEPLOYED=true
+done
+
+if [[ "$GATE_TLS_DEPLOYED" == "true" ]]; then
+    # shellcheck source=/dev/null
+    source "$WORKLOADS_DIR/gate-tls.workload"
+    # shellcheck source=test/e2e/gate_tls_checks.sh
+    source "$SCRIPT_DIR/gate_tls_checks.sh"
+    run_gate_tls_checks
+else
+    log "Skipping gate TLS checks — gate-tls workload not deployed"
 fi
 
 # ---- Step 6: Final status ----

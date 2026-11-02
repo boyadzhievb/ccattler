@@ -1,0 +1,76 @@
+# Gate TLS end-to-end workload (M170).
+# Gates terminate HTTPS on every node's gate HTTPS listener (:443); the
+# services themselves stay plain HTTP. The manual cert/key pair is generated
+# on the control node by workload_pre_apply (see gate-tls.workload) into
+# gate-tls-certs/ next to this file before `cca apply`.
+
+service tls-auto {
+    image "{{ default "docker.io" .registry }}/whoami:latest"
+    instances 2
+    expose 80
+    health {
+        http /health
+        every 10s
+    }
+    resources {
+        cpu 50m
+        memory 32Mi
+    }
+}
+
+# Two gates on the same service port: each serves its own certificate by SNI.
+gate tls-auto {
+    host tls-auto.home.arpa
+    service tls-auto port 80
+    tls auto
+}
+
+gate tls-auto-alt {
+    host tls-auto-alt.home.arpa
+    service tls-auto port 80
+    tls auto
+}
+
+service tls-manual {
+    image "{{ default "docker.io" .registry }}/whoami:latest"
+    instances 2
+    expose 80
+    health {
+        http /health
+        every 10s
+    }
+    resources {
+        cpu 50m
+        memory 32Mi
+    }
+}
+
+gate tls-manual {
+    host tls-manual.home.arpa
+    service tls-manual port 80
+    tls {
+        cert "gate-tls-certs/manual.pem"
+        key "gate-tls-certs/manual-key.pem"
+    }
+}
+
+service tls-sticky {
+    image "{{ default "docker.io" .registry }}/whoami:latest"
+    instances 2
+    expose 80
+    health {
+        http /health
+        every 10s
+    }
+    resources {
+        cpu 50m
+        memory 32Mi
+    }
+}
+
+gate tls-sticky {
+    host tls-sticky.home.arpa
+    service tls-sticky port 80
+    sticky cookie
+    tls auto
+}

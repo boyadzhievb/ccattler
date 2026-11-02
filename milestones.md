@@ -22,9 +22,9 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Remove VIP TLS: nftables/iptables `hasTLS` branches, `CookieStickyProxy` TLS, `RouteDataPlaneConfig` TLS fields, agent TLS reads
 
 **Workload & harness:**
-- [ ] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto with two gates, tls-manual, tls-sticky)
-- [ ] Manual cert generated with openssl at test time (SAN = gate host), not committed
-- [ ] T1–T15 checks in `cluster_test.sh`, each inside a retry/wait loop
+- [x] `test/e2e/workloads/gate-tls.cca` + `.workload` (tls-auto with two gates, tls-manual, tls-sticky)
+- [x] Manual cert generated with openssl at test time (SAN = gate host), not committed
+- [x] T1–T15 checks in `cluster_test.sh`, each inside a retry/wait loop
 
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
