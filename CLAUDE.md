@@ -90,7 +90,7 @@ See `design/` directory: security-model, multi-tenancy, controllers, config-secr
 
 ## CLI
 
-Run `cca --help` (or `cca <command> --help`) for the command list. Usage text lives in `cmd/cca/main.go`.
+Command overview: [design/cli-reference.md](design/cli-reference.md) (kept in sync by `TestDocCrossCheckCLICommandsExist`). Full usage: `cca --help`.
 
 ---
 

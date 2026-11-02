@@ -21,15 +21,15 @@ func TestParseMinimalService(t *testing.T) {
 	if len(file.Services) != 1 {
 		t.Fatalf("expected 1 service, got %d", len(file.Services))
 	}
-	svc := file.Services[0]
-	if svc.Name != "web" {
-		t.Errorf("name: got %s, want web", svc.Name)
+	serviceDecl := file.Services[0]
+	if serviceDecl.Name != "web" {
+		t.Errorf("name: got %s, want web", serviceDecl.Name)
 	}
-	if svc.Image != "nginx:1.28" {
-		t.Errorf("image: got %s, want nginx:1.28", svc.Image)
+	if serviceDecl.Image != "nginx:1.28" {
+		t.Errorf("image: got %s, want nginx:1.28", serviceDecl.Image)
 	}
-	if svc.Instances != 3 {
-		t.Errorf("instances: got %d, want 3", svc.Instances)
+	if serviceDecl.Instances != 3 {
+		t.Errorf("instances: got %d, want 3", serviceDecl.Instances)
 	}
 }
 
@@ -43,9 +43,9 @@ func TestParseServiceWithExpose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := file.Services[0]
-	if len(svc.Ports) != 1 || svc.Ports[0] != 8080 {
-		t.Errorf("ports: got %v, want [8080]", svc.Ports)
+	serviceDecl := file.Services[0]
+	if len(serviceDecl.Ports) != 1 || serviceDecl.Ports[0] != 8080 {
+		t.Errorf("ports: got %v, want [8080]", serviceDecl.Ports)
 	}
 }
 
@@ -62,15 +62,15 @@ func TestParseServiceWithResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := file.Services[0]
-	if svc.Resources == nil {
+	serviceDecl := file.Services[0]
+	if serviceDecl.Resources == nil {
 		t.Fatal("expected resources block")
 	}
-	if svc.Resources.CPU != "500m" {
-		t.Errorf("cpu: got %s, want 500m", svc.Resources.CPU)
+	if serviceDecl.Resources.CPU != "500m" {
+		t.Errorf("cpu: got %s, want 500m", serviceDecl.Resources.CPU)
 	}
-	if svc.Resources.Memory != "512Mi" {
-		t.Errorf("memory: got %s, want 512Mi", svc.Resources.Memory)
+	if serviceDecl.Resources.Memory != "512Mi" {
+		t.Errorf("memory: got %s, want 512Mi", serviceDecl.Resources.Memory)
 	}
 }
 
@@ -87,18 +87,18 @@ func TestParseServiceWithHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := file.Services[0]
-	if svc.Health == nil {
+	serviceDecl := file.Services[0]
+	if serviceDecl.Health == nil {
 		t.Fatal("expected health block")
 	}
-	if svc.Health.Method != "http" {
-		t.Errorf("method: got %s, want http", svc.Health.Method)
+	if serviceDecl.Health.Method != "http" {
+		t.Errorf("method: got %s, want http", serviceDecl.Health.Method)
 	}
-	if svc.Health.Path != "/health" {
-		t.Errorf("path: got %s, want /health", svc.Health.Path)
+	if serviceDecl.Health.Path != "/health" {
+		t.Errorf("path: got %s, want /health", serviceDecl.Health.Path)
 	}
-	if svc.Health.Interval != "10s" {
-		t.Errorf("interval: got %s, want 10s", svc.Health.Interval)
+	if serviceDecl.Health.Interval != "10s" {
+		t.Errorf("interval: got %s, want 10s", serviceDecl.Health.Interval)
 	}
 }
 
@@ -115,15 +115,15 @@ func TestParseServiceWithHealthBareSlash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := file.Services[0]
-	if svc.Health == nil {
+	serviceDecl := file.Services[0]
+	if serviceDecl.Health == nil {
 		t.Fatal("expected health block")
 	}
-	if svc.Health.Method != "http" {
-		t.Errorf("method: got %s, want http", svc.Health.Method)
+	if serviceDecl.Health.Method != "http" {
+		t.Errorf("method: got %s, want http", serviceDecl.Health.Method)
 	}
-	if svc.Health.Path != "/" {
-		t.Errorf("path: got %q, want /", svc.Health.Path)
+	if serviceDecl.Health.Path != "/" {
+		t.Errorf("path: got %q, want /", serviceDecl.Health.Path)
 	}
 }
 
@@ -147,24 +147,24 @@ func TestParseFullService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := file.Services[0]
-	if svc.Name != "web" {
-		t.Errorf("name: %s", svc.Name)
+	serviceDecl := file.Services[0]
+	if serviceDecl.Name != "web" {
+		t.Errorf("name: %s", serviceDecl.Name)
 	}
-	if svc.Image != "nginx:1.28" {
-		t.Errorf("image: %s", svc.Image)
+	if serviceDecl.Image != "nginx:1.28" {
+		t.Errorf("image: %s", serviceDecl.Image)
 	}
-	if svc.Instances != 3 {
-		t.Errorf("instances: %d", svc.Instances)
+	if serviceDecl.Instances != 3 {
+		t.Errorf("instances: %d", serviceDecl.Instances)
 	}
-	if len(svc.Ports) != 1 || svc.Ports[0] != 8080 {
-		t.Errorf("ports: %v", svc.Ports)
+	if len(serviceDecl.Ports) != 1 || serviceDecl.Ports[0] != 8080 {
+		t.Errorf("ports: %v", serviceDecl.Ports)
 	}
-	if svc.Resources == nil || svc.Resources.CPU != "500m" {
-		t.Errorf("resources: %+v", svc.Resources)
+	if serviceDecl.Resources == nil || serviceDecl.Resources.CPU != "500m" {
+		t.Errorf("resources: %+v", serviceDecl.Resources)
 	}
-	if svc.Health == nil || svc.Health.Path != "/health" {
-		t.Errorf("health: %+v", svc.Health)
+	if serviceDecl.Health == nil || serviceDecl.Health.Path != "/health" {
+		t.Errorf("health: %+v", serviceDecl.Health)
 	}
 }
 

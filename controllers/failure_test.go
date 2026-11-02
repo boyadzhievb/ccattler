@@ -405,8 +405,8 @@ func TestFailureControllerCapsDrainsPerCycle(t *testing.T) {
 
 	// Create 50 running instances with liveness=unhealthy and no drain_since.
 	var entries []struct{ k, v string }
-	for i := 0; i < 50; i++ {
-		instanceID := fmt.Sprintf("drain-%03d", i)
+	for iteration := 0; iteration < 50; iteration++ {
+		instanceID := fmt.Sprintf("drain-%03d", iteration)
 		entries = append(entries,
 			kv(types.KeyObservedInstanceService(instanceID), "web"),
 			kv(types.KeyObservedInstanceState(instanceID), "running"),

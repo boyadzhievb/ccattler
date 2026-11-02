@@ -19,8 +19,8 @@ func TestInstanceControllerMaxCreationsPerCycle(t *testing.T) {
 
 	// 10 services × 100 desired, 0 existing
 	var facts []store.Fact
-	for i := 0; i < 10; i++ {
-		svc := fmt.Sprintf("svc-%02d", i)
+	for iteration := 0; iteration < 10; iteration++ {
+		svc := fmt.Sprintf("svc-%02d", iteration)
 		facts = append(facts, store.Fact{
 			Key:   types.KeyEffectiveServiceInstances(svc),
 			Value: []byte("100"),

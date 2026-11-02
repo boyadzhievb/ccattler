@@ -89,7 +89,7 @@ func TestEventLogQueryWithLimit(t *testing.T) {
 
 	eventLog := NewEventLog(memoryStore, 100)
 
-	for i := 0; i < 5; i++ {
+	for eventIndex := 0; eventIndex < 5; eventIndex++ {
 		eventLog.Emit(ctx, "test.event", "target", "detail", "source")
 	}
 
@@ -154,7 +154,7 @@ func TestEventLogTrimming(t *testing.T) {
 
 	eventLog := NewEventLog(memoryStore, 3)
 
-	for i := 0; i < 5; i++ {
+	for eventIndex := 0; eventIndex < 5; eventIndex++ {
 		eventLog.Emit(ctx, "test.event", "target", "detail", "source")
 	}
 
@@ -195,7 +195,7 @@ func TestEventLogUnlimitedRetention(t *testing.T) {
 
 	eventLog := NewEventLog(memoryStore, 0)
 
-	for i := 0; i < 10; i++ {
+	for eventIndex := 0; eventIndex < 10; eventIndex++ {
 		eventLog.Emit(ctx, "test", "target", "detail", "source")
 	}
 

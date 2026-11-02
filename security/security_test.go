@@ -491,9 +491,9 @@ func TestAuthorizedStoreDenied(t *testing.T) {
 func TestAuditLogCapacity(t *testing.T) {
 	auditLog := NewInMemoryAuditLog(5)
 
-	for i := 0; i < 10; i++ {
+	for entryIndex := 0; entryIndex < 10; entryIndex++ {
 		auditLog.Log(AuditEntry{
-			Principal: fmt.Sprintf("user:%d", i),
+			Principal: fmt.Sprintf("user:%d", entryIndex),
 			Action:    "get",
 			Target:    "/test",
 			Decision:  "allow",

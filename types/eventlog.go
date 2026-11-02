@@ -193,9 +193,9 @@ func (eventLog *EventLog) trimOldEvents(ctx context.Context) {
 		return
 	}
 
-	for i := 0; i < excess; i++ {
-		if deleteError := eventLog.factStore.Delete(ctx, allFacts[i].Key); deleteError != nil {
-			logging.Default().Error("failed to trim old event", "key", allFacts[i].Key, "error", deleteError.Error())
+	for excessIndex := 0; excessIndex < excess; excessIndex++ {
+		if deleteError := eventLog.factStore.Delete(ctx, allFacts[excessIndex].Key); deleteError != nil {
+			logging.Default().Error("failed to trim old event", "key", allFacts[excessIndex].Key, "error", deleteError.Error())
 		}
 	}
 }

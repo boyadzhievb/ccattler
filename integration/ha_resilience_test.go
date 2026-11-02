@@ -627,9 +627,9 @@ func TestRollingControlPlaneUpgrade(testHandle *testing.T) {
 		"endpoint":  {controllers.NewEndpointController()},
 		"failure":   {controllers.NewFailureController()},
 		"node-failure": {func() controllers.Controller {
-			c := controllers.NewNodeFailureController()
-			c.LeaseTimeout = 2 * time.Second
-			return c
+			nodeFailureController := controllers.NewNodeFailureController()
+			nodeFailureController.LeaseTimeout = 2 * time.Second
+			return nodeFailureController
 		}()},
 		"network": {controllers.NewNetworkController()},
 	}

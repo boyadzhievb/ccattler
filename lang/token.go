@@ -42,8 +42,8 @@ type Token struct {
 }
 
 // String returns a human-readable name for the token type, useful for error messages and debugging.
-func (t TokenType) String() string {
-	switch t {
+func (tokenType TokenType) String() string {
+	switch tokenType {
 	case TokenEOF:
 		return "EOF"
 	case TokenIdent:

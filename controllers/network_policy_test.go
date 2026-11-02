@@ -350,8 +350,8 @@ func containsSubstring(haystack, needle string) bool {
 
 // searchForSubstring performs a linear search for a substring.
 func searchForSubstring(haystack, needle string) bool {
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		if haystack[i:i+len(needle)] == needle {
+	for offset := 0; offset <= len(haystack)-len(needle); offset++ {
+		if haystack[offset:offset+len(needle)] == needle {
 			return true
 		}
 	}

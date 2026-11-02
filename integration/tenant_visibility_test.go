@@ -506,8 +506,8 @@ func containsSubstring(s, substr string) bool {
 
 // containsIndex checks if substr appears anywhere in s.
 func containsIndex(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
+	for offset := 0; offset <= len(s)-len(substr); offset++ {
+		if s[offset:offset+len(substr)] == substr {
 			return true
 		}
 	}

@@ -103,11 +103,11 @@ func TestDesiredToPlaced(t *testing.T) {
 	// Verify all instances are pending (no node agent to start them).
 	instances, _ := types.ListInstances(ctx, factStore)
 	webCount := 0
-	for _, inst := range instances {
-		if inst.Service == "web" {
+	for _, instance := range instances {
+		if instance.Service == "web" {
 			webCount++
-			if inst.State != types.InstancePending {
-				t.Errorf("instance %s: expected pending, got %s", inst.ID, inst.State)
+			if instance.State != types.InstancePending {
+				t.Errorf("instance %s: expected pending, got %s", instance.ID, instance.State)
 			}
 		}
 	}
@@ -179,8 +179,8 @@ func TestNoPlacementWithoutNodes(t *testing.T) {
 	waitFor(t, 2*time.Second, "3 instances created", func() bool {
 		instances, _ := types.ListInstances(ctx, factStore)
 		count := 0
-		for _, inst := range instances {
-			if inst.Service == "web" {
+		for _, instance := range instances {
+			if instance.Service == "web" {
 				count++
 			}
 		}

@@ -211,9 +211,9 @@ func verifyECDSASignature(publicKey *ecdsa.PublicKey, hash, signature []byte) bo
 		return false
 	}
 
-	r := new(big.Int).SetBytes(signature[:keySize])
-	s := new(big.Int).SetBytes(signature[keySize:])
-	return ecdsa.Verify(publicKey, hash, r, s)
+	signatureR := new(big.Int).SetBytes(signature[:keySize])
+	signatureS := new(big.Int).SetBytes(signature[keySize:])
+	return ecdsa.Verify(publicKey, hash, signatureR, signatureS)
 }
 
 // CreateTestJWT creates a signed JWT for testing purposes. Not for production.

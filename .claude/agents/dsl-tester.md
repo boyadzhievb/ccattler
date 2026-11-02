@@ -1,7 +1,7 @@
 ---
 name: dsl-tester
 description: Test the CCattler DSL parser with edge cases and verify AST-to-facts compilation
-model: sonnet
+model: haiku
 tools:
   - Bash
   - Read

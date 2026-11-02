@@ -31,7 +31,7 @@ type delayedStartRuntime struct {
 	inner        *runtime.SimulatorRuntime
 	statusCounts map[string]int // how many Status() calls have been made per instance
 	delayCount   int            // Status() returns not-running for this many calls after Start()
-	mu           sync.Mutex
+	mutex        sync.Mutex
 }
 
 func newDelayedStartRuntime(delayCount int) *delayedStartRuntime {
@@ -43,9 +43,9 @@ func newDelayedStartRuntime(delayCount int) *delayedStartRuntime {
 }
 
 func (delayed *delayedStartRuntime) Start(ctx context.Context, spec runtime.Spec) error {
-	delayed.mu.Lock()
+	delayed.mutex.Lock()
 	delayed.statusCounts[spec.ID] = 0
-	delayed.mu.Unlock()
+	delayed.mutex.Unlock()
 	return delayed.inner.Start(ctx, spec)
 }
 
@@ -54,10 +54,10 @@ func (delayed *delayedStartRuntime) Stop(ctx context.Context, instanceID string)
 }
 
 func (delayed *delayedStartRuntime) Status(ctx context.Context, instanceID string) (runtime.Status, error) {
-	delayed.mu.Lock()
+	delayed.mutex.Lock()
 	count := delayed.statusCounts[instanceID]
 	delayed.statusCounts[instanceID] = count + 1
-	delayed.mu.Unlock()
+	delayed.mutex.Unlock()
 
 	if count < delayed.delayCount {
 		return runtime.Status{ID: instanceID, Running: false}, nil
@@ -91,14 +91,14 @@ func (delayed *delayedStartRuntime) Resize(ctx context.Context, instanceID strin
 
 // mockSecretProvider is a test double that serves secrets from an in-memory map.
 type mockSecretProvider struct {
-	mu      sync.Mutex
+	mutex   sync.Mutex
 	secrets map[string][]byte // secretName → plaintext
 	grants  map[string]string // "service/secret" → mountPath
 }
 
 func (mockProvider *mockSecretProvider) GetSecretForService(_ context.Context, serviceName, secretName string) ([]byte, string, error) {
-	mockProvider.mu.Lock()
-	defer mockProvider.mu.Unlock()
+	mockProvider.mutex.Lock()
+	defer mockProvider.mutex.Unlock()
 	grantKey := serviceName + "/" + secretName
 	mountPath, hasGrant := mockProvider.grants[grantKey]
 	if !hasGrant {
@@ -1572,7 +1572,7 @@ type watchClosingStore struct {
 	inner          *store.MemoryStore
 	closuresLeft   int
 	watchCallCount int
-	mu             sync.Mutex
+	mutex          sync.Mutex
 }
 
 func (watchStore *watchClosingStore) Get(ctx context.Context, key string) (*store.Fact, error) {
@@ -1615,13 +1615,13 @@ func (watchStore *watchClosingStore) Close() error {
 // Watch either immediately closes the channel (simulating disconnection)
 // or delegates to the inner store for normal operation.
 func (watchStore *watchClosingStore) Watch(ctx context.Context, key string, opts store.WatchOption) (<-chan store.Event, error) {
-	watchStore.mu.Lock()
+	watchStore.mutex.Lock()
 	watchStore.watchCallCount++
 	shouldClose := watchStore.closuresLeft > 0
 	if shouldClose {
 		watchStore.closuresLeft--
 	}
-	watchStore.mu.Unlock()
+	watchStore.mutex.Unlock()
 
 	if shouldClose {
 		closedChannel := make(chan store.Event)
@@ -1633,8 +1633,8 @@ func (watchStore *watchClosingStore) Watch(ctx context.Context, key string, opts
 
 // WatchCallCount returns how many times Watch was called.
 func (watchStore *watchClosingStore) WatchCallCount() int {
-	watchStore.mu.Lock()
-	defer watchStore.mu.Unlock()
+	watchStore.mutex.Lock()
+	defer watchStore.mutex.Unlock()
 	return watchStore.watchCallCount
 }
 

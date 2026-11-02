@@ -807,8 +807,8 @@ func TestSecretIsolationSameTenantAllowed(t *testing.T) {
 	ctx := context.Background()
 
 	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
+	for byteIndex := range masterKey {
+		masterKey[byteIndex] = byte(byteIndex)
 	}
 	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
@@ -837,8 +837,8 @@ func TestSecretIsolationCrossTenantDenied(t *testing.T) {
 	ctx := context.Background()
 
 	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
+	for byteIndex := range masterKey {
+		masterKey[byteIndex] = byte(byteIndex)
 	}
 	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
@@ -864,8 +864,8 @@ func TestSecretIsolationListForTenant(t *testing.T) {
 	ctx := context.Background()
 
 	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
+	for byteIndex := range masterKey {
+		masterKey[byteIndex] = byte(byteIndex)
 	}
 	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 
@@ -1154,8 +1154,8 @@ func TestSecretIsolationDeleteTenantScoped(t *testing.T) {
 	ctx := context.Background()
 
 	masterKey := make([]byte, 32)
-	for i := range masterKey {
-		masterKey[i] = byte(i)
+	for byteIndex := range masterKey {
+		masterKey[byteIndex] = byte(byteIndex)
 	}
 	secretStore, _ := security.NewSecretStoreWithMasterKey(memoryStore, masterKey)
 

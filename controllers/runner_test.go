@@ -22,9 +22,9 @@ func waitForInstances(t *testing.T, s store.StateStore, service string, count in
 	for time.Now().Before(deadline) {
 		instances, _ := types.ListInstances(context.Background(), s)
 		var matching []types.Instance
-		for _, inst := range instances {
-			if inst.Service == service && inst.State != types.InstanceStopped {
-				matching = append(matching, inst)
+		for _, instance := range instances {
+			if instance.Service == service && instance.State != types.InstanceStopped {
+				matching = append(matching, instance)
 			}
 		}
 		if len(matching) == count {
@@ -56,9 +56,9 @@ func TestRunnerCreatesInstances(t *testing.T) {
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("web"), []byte("3"))
 
 	instances := waitForInstances(t, factStore, "web", 3, 2*time.Second)
-	for _, inst := range instances {
-		if inst.State != types.InstancePending {
-			t.Errorf("instance %s: expected pending, got %s", inst.ID, inst.State)
+	for _, instance := range instances {
+		if instance.State != types.InstancePending {
+			t.Errorf("instance %s: expected pending, got %s", instance.ID, instance.State)
 		}
 	}
 }
@@ -113,9 +113,9 @@ func TestRunnerScalesDown(t *testing.T) {
 
 	// Seed with 4 running instances, desired is 4.
 	factStore.Put(ctx, types.KeyEffectiveServiceInstances("api"), []byte("4"))
-	for i := 1; i <= 4; i++ {
+	for iteration := 1; iteration <= 4; iteration++ {
 		types.WriteInstance(ctx, factStore, types.Instance{
-			ID: fmt.Sprintf("api-%d", i), Service: "api", State: types.InstanceRunning,
+			ID: fmt.Sprintf("api-%d", iteration), Service: "api", State: types.InstanceRunning,
 		})
 	}
 
@@ -252,10 +252,10 @@ func (controller *oversizedController) Name() string    { return "oversized-test
 func (controller *oversizedController) Watch() []string { return []string{"desired/"} }
 func (controller *oversizedController) Reconcile(_ context.Context, _ []store.Fact) ([]Change, error) {
 	changes := make([]Change, controller.changeCount)
-	for i := range changes {
-		changes[i] = Change{
+	for changeIndex := range changes {
+		changes[changeIndex] = Change{
 			Type:  store.OpPut,
-			Key:   fmt.Sprintf("test/key/%04d", i),
+			Key:   fmt.Sprintf("test/key/%04d", changeIndex),
 			Value: []byte("v"),
 		}
 	}

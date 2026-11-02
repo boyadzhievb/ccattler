@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && go vet ./... 2>&1; VET=$?; if [ $VET -ne 0 ]; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BLOCKED: go vet failed. Fix vet warnings before committing.\"}}'; fi",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && VET_OUTPUT=$(go vet ./... 2>&1) || jq -n --arg vetOutput \"$(echo \"$VET_OUTPUT\" | head -20)\" '{hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:(\"BLOCKED: go vet failed. Fix before committing:\\n\" + $vetOutput)}}'; exit 0",
             "statusMessage": "Running go vet..."
           }
         ]

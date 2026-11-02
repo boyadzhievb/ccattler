@@ -24,6 +24,9 @@ var projectRoot = func() string {
 	return workingDirectory
 }()
 
+// cliReferencePath is the doc whose CLI section is cross-checked against main.go.
+const cliReferencePath = "design/cli-reference.md"
+
 // readProjectFile reads a file relative to the project root and returns its
 // contents as a string. It calls t.Fatal if the file cannot be read.
 func readProjectFile(testContext *testing.T, relativePath string) string {
@@ -36,20 +39,20 @@ func readProjectFile(testContext *testing.T, relativePath string) string {
 	return string(fileContents)
 }
 
-// TestDocCrossCheckCLICommandsExist reads CLAUDE.md, extracts all cca
-// subcommand patterns from the CLI section, and verifies each subcommand
-// string appears in the main.go command registration switch statement.
+// TestDocCrossCheckCLICommandsExist reads design/cli-reference.md, extracts
+// all cca subcommand patterns from the CLI section, and verifies each
+// subcommand string appears in the main.go command dispatch.
 func TestDocCrossCheckCLICommandsExist(testContext *testing.T) {
 	testContext.Parallel()
-	claudeDocContents := readProjectFile(testContext, "CLAUDE.md")
+	cliReferenceContents := readProjectFile(testContext, cliReferencePath)
 	mainGoContents := readProjectFile(testContext, "cmd/cca/main.go")
 
-	// Extract the CLI section from CLAUDE.md — starts at "## CLI" and ends
-	// at the next "---" or "## " heading.
+	// Extract the CLI section — starts at "## CLI" and ends at the next
+	// "---" or "## " heading.
 	cliSectionPattern := regexp.MustCompile(`(?s)## CLI\n(.*?)(\n---|\n## )`)
-	cliSectionMatch := cliSectionPattern.FindStringSubmatch(claudeDocContents)
+	cliSectionMatch := cliSectionPattern.FindStringSubmatch(cliReferenceContents)
 	if cliSectionMatch == nil {
-		testContext.Fatal("could not find ## CLI section in CLAUDE.md")
+		testContext.Fatalf("could not find ## CLI section in %s", cliReferencePath)
 	}
 	cliSectionText := cliSectionMatch[1]
 
@@ -59,7 +62,7 @@ func TestDocCrossCheckCLICommandsExist(testContext *testing.T) {
 	subcommandPattern := regexp.MustCompile(`cca\s+([a-z][-a-z]*)`)
 	subcommandMatches := subcommandPattern.FindAllStringSubmatch(cliSectionText, -1)
 	if len(subcommandMatches) == 0 {
-		testContext.Fatal("no cca subcommands found in CLAUDE.md CLI section")
+		testContext.Fatalf("no cca subcommands found in %s CLI section", cliReferencePath)
 	}
 
 	// Deduplicate subcommands.
@@ -78,12 +81,12 @@ func TestDocCrossCheckCLICommandsExist(testContext *testing.T) {
 		usagePattern := `"` + subcommandName + `"`
 
 		if !strings.Contains(mainGoContents, casePattern) && !strings.Contains(mainGoContents, usagePattern) {
-			testContext.Errorf("CLAUDE.md documents 'cca %s' but %q not found in cmd/cca/main.go",
-				subcommandName, subcommandName)
+			testContext.Errorf("%s documents 'cca %s' but %q not found in cmd/cca/main.go",
+				cliReferencePath, subcommandName, subcommandName)
 		}
 	}
 
-	testContext.Logf("verified %d unique CLI subcommands from CLAUDE.md exist in main.go", len(uniqueSubcommands))
+	testContext.Logf("verified %d unique CLI subcommands from %s exist in main.go", len(uniqueSubcommands), cliReferencePath)
 }
 
 // TestDocCrossCheckControllerInterfaceMethods verifies that CLAUDE.md's claim

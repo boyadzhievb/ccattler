@@ -1,7 +1,7 @@
 ---
 name: test-runner
 description: Run Go tests, report failures with context, and identify coverage gaps
-model: sonnet
+model: haiku
 tools:
   - Bash
   - Read

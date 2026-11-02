@@ -1,7 +1,7 @@
 ---
 name: integration-test
 description: Run end-to-end integration tests — etcd + server + agent + apply workflow
-model: sonnet
+model: haiku
 tools:
   - Bash
   - Read

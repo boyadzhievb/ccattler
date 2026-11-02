@@ -55,9 +55,9 @@ func TestScaleUpFromZero(t *testing.T) {
 	}
 
 	// Verify the three instances were created with sequential IDs.
-	for i := 0; i < 3; i++ {
-		base := i * 3
-		id := fmt.Sprintf("inst-%03d", i+1)
+	for iteration := 0; iteration < 3; iteration++ {
+		base := iteration * 3
+		id := fmt.Sprintf("inst-%03d", iteration+1)
 
 		if changes[base].Key != types.KeyObservedInstance(id) {
 			t.Errorf("change %d: got key %s, want %s", base, changes[base].Key, types.KeyObservedInstance(id))
