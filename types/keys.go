@@ -2082,6 +2082,25 @@ func KeyDesiredRouteCookieSameSite(routeName string) string {
 	return fmt.Sprintf("%s/route/%s/cookie/samesite", PrefixDesired, routeName)
 }
 
+// KeyDesiredRouteTLSMode returns the store path for a route's TLS termination mode.
+// Value is "auto" (cluster CA issues cert) or "manual" (user-provided PEM).
+// Path: desired/route/{name}/tls/mode
+func KeyDesiredRouteTLSMode(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/mode", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteTLSCert returns the store path for a route's TLS certificate PEM.
+// Path: desired/route/{name}/tls/cert
+func KeyDesiredRouteTLSCert(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/cert", PrefixDesired, routeName)
+}
+
+// KeyDesiredRouteTLSKey returns the store path for a route's TLS private key PEM.
+// Path: desired/route/{name}/tls/key
+func KeyDesiredRouteTLSKey(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/key", PrefixDesired, routeName)
+}
+
 // ScanDesiredRoutes is the prefix for scanning all route definitions.
 const ScanDesiredRoutes = PrefixDesired + "/route/"
 
@@ -2090,6 +2109,24 @@ const ScanDesiredRoutes = PrefixDesired + "/route/"
 // Path: derived/route/{name}/backends
 func KeyDerivedRouteBackends(routeName string) string {
 	return fmt.Sprintf("%s/route/%s/backends", PrefixDerived, routeName)
+}
+
+// KeyDerivedRouteTLSCert returns the store path for a route's CA-issued TLS cert.
+// Path: derived/route/{name}/tls/cert
+func KeyDerivedRouteTLSCert(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/cert", PrefixDerived, routeName)
+}
+
+// KeyDerivedRouteTLSKey returns the store path for a route's CA-issued TLS key.
+// Path: derived/route/{name}/tls/key
+func KeyDerivedRouteTLSKey(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/key", PrefixDerived, routeName)
+}
+
+// KeyDerivedRouteTLSNotAfter returns the store path for a route's TLS cert expiry.
+// Path: derived/route/{name}/tls/not-after
+func KeyDerivedRouteTLSNotAfter(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/not-after", PrefixDerived, routeName)
 }
 
 // ScanDerivedRoutes is the prefix for scanning all derived route facts.

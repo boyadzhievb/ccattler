@@ -497,6 +497,7 @@ type RouteDecl struct {
 	ServiceName string           // target service name
 	ServicePort int              // target service port
 	Sticky      *RouteStickyDecl // optional sticky session configuration
+	TLS         *RouteTLSDecl    // optional TLS termination configuration
 	Line        int              // source line number for error reporting
 }
 
@@ -514,4 +515,14 @@ type RouteCookieSettings struct {
 	Secure   bool   // Secure flag on the cookie
 	HTTPOnly bool   // HttpOnly flag on the cookie
 	SameSite string // SameSite attribute: "strict", "lax", or "none"
+}
+
+// RouteTLSDecl holds TLS termination configuration for a gate.
+// Mode is "auto" (cluster CA issues cert for host) or "manual" (user PEM files).
+type RouteTLSDecl struct {
+	Mode     string // "auto" or "manual" (inferred from cert/key presence)
+	CertFile string // PEM certificate file path (manual mode, read at compile time)
+	KeyFile  string // PEM private key file path (manual mode, read at compile time)
+	CertPEM  string // PEM certificate content (populated by compiler for manual mode)
+	KeyPEM   string // PEM private key content (populated by compiler for manual mode)
 }

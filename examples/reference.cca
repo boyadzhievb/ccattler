@@ -253,6 +253,23 @@ gate web-public {
     }
 }
 
+# TLS termination — cluster CA auto-issues a certificate for the host:
+# gate web-tls {
+#     host "secure.example.com"
+#     service web port 8080
+#     tls auto
+# }
+
+# TLS with user-provided certificate files:
+# gate custom-tls {
+#     host "api.example.com"
+#     service api port 3000
+#     tls {
+#         cert "/etc/cca/certs/api.pem"
+#         key "/etc/cca/certs/api-key.pem"
+#     }
+# }
+
 # Minimal gate — just sticky, no host/path filtering:
 # gate api-sticky {
 #     service api port 3000

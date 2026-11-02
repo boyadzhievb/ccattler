@@ -247,6 +247,9 @@ func buildRouteConfigFromEntry(parsedRoute dataPlaneRouteEntry, vipConfig networ
 		}
 	}
 
+	routeConfig.TLSCertPEM = parsedRoute.tlsCertPEM
+	routeConfig.TLSKeyPEM = parsedRoute.tlsKeyPEM
+
 	return routeConfig
 }
 
@@ -283,6 +286,8 @@ type dataPlaneRouteEntry struct {
 	cookieHTTPOnly   bool
 	cookieSameSite   string
 	backendAddresses []string
+	tlsCertPEM       string // PEM certificate for TLS termination (empty = no TLS)
+	tlsKeyPEM        string // PEM private key for TLS termination
 }
 
 // parseRouteFactsForDataPlane extracts route definitions from desired and
@@ -321,6 +326,10 @@ func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store
 			entry.cookieHTTPOnly = fieldValue == "true"
 		case "cookie/samesite":
 			entry.cookieSameSite = fieldValue
+		case "tls/cert":
+			entry.tlsCertPEM = fieldValue
+		case "tls/key":
+			entry.tlsKeyPEM = fieldValue
 		}
 	}
 
@@ -333,10 +342,22 @@ func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store
 			continue
 		}
 
-		if len(pathParts) == 2 && pathParts[1] == "backends" {
+		if len(pathParts) < 2 {
+			continue
+		}
+		switch pathParts[1] {
+		case "backends":
 			backendsValue := string(fact.Value)
 			if backendsValue != "" {
 				routeEntries[routeName].backendAddresses = strings.Split(backendsValue, ",")
+			}
+		case "tls/cert":
+			if routeEntries[routeName].tlsCertPEM == "" {
+				routeEntries[routeName].tlsCertPEM = string(fact.Value)
+			}
+		case "tls/key":
+			if routeEntries[routeName].tlsKeyPEM == "" {
+				routeEntries[routeName].tlsKeyPEM = string(fact.Value)
 			}
 		}
 	}

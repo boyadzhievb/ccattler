@@ -125,6 +125,13 @@ func lintMissingRequiredFields(file *File) []LintDiagnostic {
 				Line:     routeDecl.Line,
 			})
 		}
+		if routeDecl.TLS != nil && routeDecl.Host == "" {
+			diagnostics = append(diagnostics, LintDiagnostic{
+				Severity: "error",
+				Message:  fmt.Sprintf("gate %q has tls but no host — cannot issue certificate without a hostname", routeDecl.Name),
+				Line:     routeDecl.Line,
+			})
+		}
 	}
 
 	for _, grantDecl := range file.Grants {

@@ -2434,6 +2434,13 @@ func (parser *Parser) parseRouteDeclaration() (*RouteDecl, error) {
 		}
 	}
 
+	if routeDecl.TLS != nil && routeDecl.Host == "" {
+		return nil, &ParseError{
+			Line: line, Message: "gate with tls requires a host",
+			SourceLine: sourceLineAt(parser.sourceLines, line),
+		}
+	}
+
 	return routeDecl, nil
 }
 
@@ -2456,6 +2463,8 @@ func (parser *Parser) parseRouteField(routeDecl *RouteDecl, fieldName string) er
 		}
 	case "sticky":
 		routeDecl.Sticky, err = parser.parseRouteStickyDeclaration()
+	case "tls":
+		routeDecl.TLS, err = parser.parseRouteTLSDeclaration()
 	default:
 		return parser.parserErrorf("unknown route field %q", fieldName)
 	}
@@ -2525,6 +2534,74 @@ func (parser *Parser) parseRouteCookieSettings() (*RouteCookieSettings, error) {
 		return nil, err
 	}
 	return cookieSettings, nil
+}
+
+// parseRouteTLSDeclaration parses "tls auto" or "tls { mode auto }" or
+// "tls { cert "path" key "path" }".
+func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
+	tlsDecl := &RouteTLSDecl{}
+
+	if parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "auto" {
+		parser.advanceToken()
+		tlsDecl.Mode = "auto"
+		return tlsDecl, nil
+	}
+
+	if err := parser.expectToken(TokenLBrace); err != nil {
+		return nil, err
+	}
+	parser.skipNewlineTokens()
+
+	for !parser.currentTokenIs(TokenRBrace) && !parser.isAtEnd() {
+		fieldName, err := parser.expectIdentifier()
+		if err != nil {
+			return nil, err
+		}
+
+		switch fieldName {
+		case "mode":
+			tlsDecl.Mode, err = parser.expectStringOrIdentifier()
+			if err != nil {
+				return nil, err
+			}
+			if tlsDecl.Mode != "auto" {
+				return nil, parser.parserErrorf("unknown tls mode %q (expected auto)", tlsDecl.Mode)
+			}
+		case "cert":
+			tlsDecl.CertFile, err = parser.expectStringOrIdentifier()
+		case "key":
+			tlsDecl.KeyFile, err = parser.expectStringOrIdentifier()
+		default:
+			return nil, parser.parserErrorf("unknown tls field %q", fieldName)
+		}
+		if err != nil {
+			return nil, err
+		}
+		parser.skipNewlineTokens()
+	}
+
+	if err := parser.expectToken(TokenRBrace); err != nil {
+		return nil, err
+	}
+
+	if tlsDecl.Mode == "auto" && (tlsDecl.CertFile != "" || tlsDecl.KeyFile != "") {
+		return nil, parser.parserErrorf("tls mode auto cannot specify cert or key files")
+	}
+	if tlsDecl.Mode == "" && tlsDecl.CertFile == "" && tlsDecl.KeyFile == "" {
+		return nil, parser.parserErrorf("tls block requires mode auto or cert/key file paths")
+	}
+	if tlsDecl.CertFile != "" && tlsDecl.KeyFile == "" {
+		return nil, parser.parserErrorf("tls cert requires a corresponding key")
+	}
+	if tlsDecl.KeyFile != "" && tlsDecl.CertFile == "" {
+		return nil, parser.parserErrorf("tls key requires a corresponding cert")
+	}
+
+	if tlsDecl.Mode == "" {
+		tlsDecl.Mode = "manual"
+	}
+
+	return tlsDecl, nil
 }
 
 // expectBooleanValue consumes a "true" or "false" identifier and returns its value.

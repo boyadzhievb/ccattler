@@ -1851,6 +1851,133 @@ func TestParseRouteServiceWithoutPort(t *testing.T) {
 	}
 }
 
+func TestParseRouteTLSAutoShorthand(t *testing.T) {
+	input := `gate web-public {
+    host "app.example.com"
+    service frontend port 8080
+    tls auto
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.TLS == nil {
+		t.Fatal("expected tls config, got nil")
+	}
+	if routeDecl.TLS.Mode != "auto" {
+		t.Errorf("tls mode: got %q, want %q", routeDecl.TLS.Mode, "auto")
+	}
+	if routeDecl.TLS.CertFile != "" {
+		t.Errorf("cert file: got %q, want empty", routeDecl.TLS.CertFile)
+	}
+}
+
+func TestParseRouteTLSAutoBlock(t *testing.T) {
+	input := `gate web-public {
+    host "app.example.com"
+    service frontend port 8080
+    tls {
+        mode auto
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.TLS == nil {
+		t.Fatal("expected tls config, got nil")
+	}
+	if routeDecl.TLS.Mode != "auto" {
+		t.Errorf("tls mode: got %q, want %q", routeDecl.TLS.Mode, "auto")
+	}
+}
+
+func TestParseRouteTLSManual(t *testing.T) {
+	input := `gate internal-api {
+    host "api.internal"
+    service api port 3000
+    tls {
+        cert "/etc/cca/certs/api.pem"
+        key "/etc/cca/certs/api-key.pem"
+    }
+}`
+	file, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	routeDecl := file.Routes[0]
+	if routeDecl.TLS == nil {
+		t.Fatal("expected tls config, got nil")
+	}
+	if routeDecl.TLS.Mode != "manual" {
+		t.Errorf("tls mode: got %q, want %q", routeDecl.TLS.Mode, "manual")
+	}
+	if routeDecl.TLS.CertFile != "/etc/cca/certs/api.pem" {
+		t.Errorf("cert file: got %q, want %q", routeDecl.TLS.CertFile, "/etc/cca/certs/api.pem")
+	}
+	if routeDecl.TLS.KeyFile != "/etc/cca/certs/api-key.pem" {
+		t.Errorf("key file: got %q, want %q", routeDecl.TLS.KeyFile, "/etc/cca/certs/api-key.pem")
+	}
+}
+
+func TestParseRouteTLSWithoutHostFails(t *testing.T) {
+	input := `gate broken {
+    service web port 8080
+    tls auto
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for tls without host")
+	}
+}
+
+func TestParseRouteTLSAutoWithCertFails(t *testing.T) {
+	input := `gate broken {
+    host "example.com"
+    service web port 8080
+    tls {
+        mode auto
+        cert "/etc/cca/certs/api.pem"
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for tls auto with cert file")
+	}
+}
+
+func TestParseRouteTLSCertWithoutKeyFails(t *testing.T) {
+	input := `gate broken {
+    host "example.com"
+    service web port 8080
+    tls {
+        cert "/etc/cca/certs/api.pem"
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for tls cert without key")
+	}
+}
+
+func TestParseRouteTLSEmptyBlockFails(t *testing.T) {
+	input := `gate broken {
+    host "example.com"
+    service web port 8080
+    tls {
+    }
+}`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for empty tls block")
+	}
+}
+
 func TestParseServiceWithTags(t *testing.T) {
 	input := `service web {
     image nginx:1.28

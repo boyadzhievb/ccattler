@@ -869,6 +869,9 @@ func formatRouteDecl(builder *strings.Builder, routeDecl RouteDecl) {
 	if routeDecl.Sticky != nil {
 		formatRouteStickyDecl(builder, *routeDecl.Sticky)
 	}
+	if routeDecl.TLS != nil {
+		formatRouteTLSDecl(builder, *routeDecl.TLS)
+	}
 	builder.WriteString("}\n")
 }
 
@@ -895,6 +898,26 @@ func formatRouteStickyDecl(builder *strings.Builder, stickyDecl RouteStickyDecl)
 	}
 	if stickyDecl.Cookie.SameSite != "" {
 		fmt.Fprintf(builder, "%ssame-site %s\n", indent2, quoteIfNeeded(stickyDecl.Cookie.SameSite))
+	}
+	fmt.Fprintf(builder, "%s}\n", indentUnit)
+}
+
+// formatRouteTLSDecl emits the TLS termination configuration inside a gate.
+func formatRouteTLSDecl(builder *strings.Builder, tlsDecl RouteTLSDecl) {
+	if tlsDecl.Mode == "auto" && tlsDecl.CertFile == "" {
+		fmt.Fprintf(builder, "%stls auto\n", indentUnit)
+		return
+	}
+	fmt.Fprintf(builder, "%stls {\n", indentUnit)
+	indent2 := indentUnit + indentUnit
+	if tlsDecl.Mode == "auto" {
+		fmt.Fprintf(builder, "%smode auto\n", indent2)
+	}
+	if tlsDecl.CertFile != "" {
+		fmt.Fprintf(builder, "%scert %s\n", indent2, quoteIfNeeded(tlsDecl.CertFile))
+	}
+	if tlsDecl.KeyFile != "" {
+		fmt.Fprintf(builder, "%skey %s\n", indent2, quoteIfNeeded(tlsDecl.KeyFile))
 	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }

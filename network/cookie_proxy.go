@@ -5,6 +5,7 @@ package network
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -38,7 +39,8 @@ type CookieStickyProxy struct {
 	activeRoutes map[string]*cookieRouteProxy
 }
 
-// cookieRouteProxy holds the state for a single route's cookie-sticky proxy.
+// cookieRouteProxy holds the state for a single route's proxy (cookie-sticky
+// and/or TLS-terminating).
 type cookieRouteProxy struct {
 	routeName  string             // route name for logging
 	listenPort int                // allocated listen port
@@ -46,6 +48,7 @@ type cookieRouteProxy struct {
 	cancel     context.CancelFunc // cancels the route context
 	backends   []DataPlaneBackend // current backend list
 	cookieConf RouteCookieConfig  // cookie settings
+	useTLS     bool               // true if this proxy terminates TLS
 	backendMu  sync.RWMutex       // guards backends
 	nextIndex  int                // round-robin counter
 }
@@ -67,15 +70,27 @@ func (cookieStickyProxy *CookieStickyProxy) ReconcileRoutes(routeConfigs []Route
 
 	desiredRoutes := make(map[string]RouteDataPlaneConfig)
 	for _, routeConfig := range routeConfigs {
-		if routeConfig.StickyMethod == "cookie" && routeConfig.CookieConfig != nil {
+		needsCookieProxy := routeConfig.StickyMethod == "cookie" && routeConfig.CookieConfig != nil
+		needsTLSProxy := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+		if needsCookieProxy || needsTLSProxy {
 			desiredRoutes[routeConfig.RouteName] = routeConfig
 		}
 	}
 
 	for routeName, routeConfig := range desiredRoutes {
 		existing, alreadyRunning := cookieStickyProxy.activeRoutes[routeName]
+		hasTLS := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+		if alreadyRunning && existing.useTLS != hasTLS {
+			existing.stop()
+			delete(cookieStickyProxy.activeRoutes, routeName)
+			alreadyRunning = false
+		}
 		if alreadyRunning {
-			existing.updateBackends(routeConfig.Backends, *routeConfig.CookieConfig)
+			var cookieConf RouteCookieConfig
+			if routeConfig.CookieConfig != nil {
+				cookieConf = *routeConfig.CookieConfig
+			}
+			existing.updateBackends(routeConfig.Backends, cookieConf)
 		} else {
 			cookieStickyProxy.startRouteProxy(routeName, routeConfig)
 		}
@@ -113,31 +128,39 @@ func (cookieStickyProxy *CookieStickyProxy) Cleanup() {
 	}
 }
 
-// startRouteProxy allocates a port, starts a listener, and registers the
-// proxy in the active routes map.
+// startRouteProxy allocates a port, starts a listener (plain or TLS), and
+// registers the proxy in the active routes map.
 func (cookieStickyProxy *CookieStickyProxy) startRouteProxy(routeName string, routeConfig RouteDataPlaneConfig) {
 	listener, listenError := net.Listen("tcp", "127.0.0.1:0")
 	if listenError != nil {
-		logging.Default().Error("cookie proxy: failed to allocate port", "route", routeName, "error", listenError.Error())
+		logging.Default().Error("route proxy: failed to allocate port", "route", routeName, "error", listenError.Error())
 		return
 	}
 
 	tcpAddress, addressOK := listener.Addr().(*net.TCPAddr)
 	if !addressOK {
 		_ = listener.Close()
-		logging.Default().Error("cookie proxy: unexpected listener address type", "route", routeName)
+		logging.Default().Error("route proxy: unexpected listener address type", "route", routeName)
 		return
 	}
 	allocatedPort := tcpAddress.Port
 
 	routeContext, routeCancel := context.WithCancel(context.Background())
 
+	var cookieConf RouteCookieConfig
+	if routeConfig.CookieConfig != nil {
+		cookieConf = *routeConfig.CookieConfig
+	}
+
+	hasTLS := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+
 	routeProxy := &cookieRouteProxy{
 		routeName:  routeName,
 		listenPort: allocatedPort,
 		cancel:     routeCancel,
 		backends:   routeConfig.Backends,
-		cookieConf: *routeConfig.CookieConfig,
+		cookieConf: cookieConf,
+		useTLS:     hasTLS,
 	}
 
 	routeProxy.server = &http.Server{
@@ -147,10 +170,30 @@ func (cookieStickyProxy *CookieStickyProxy) startRouteProxy(routeName string, ro
 
 	cookieStickyProxy.activeRoutes[routeName] = routeProxy
 
+	if hasTLS {
+		tlsCertificate, tlsParseError := tls.X509KeyPair([]byte(routeConfig.TLSCertPEM), []byte(routeConfig.TLSKeyPEM))
+		if tlsParseError != nil {
+			logging.Default().Error("route proxy: invalid TLS certificate", "route", routeName, "error", tlsParseError.Error())
+			_ = listener.Close()
+			routeCancel()
+			delete(cookieStickyProxy.activeRoutes, routeName)
+			return
+		}
+		routeProxy.server.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{tlsCertificate},
+			MinVersion:   tls.VersionTLS12,
+		}
+		listener = tls.NewListener(listener, routeProxy.server.TLSConfig)
+	}
+
 	go func() {
-		logging.Default().Info("starting cookie proxy", "route", routeName, "port", fmt.Sprintf("%d", allocatedPort))
+		proxyType := "http"
+		if hasTLS {
+			proxyType = "https"
+		}
+		logging.Default().Info("starting route proxy", "route", routeName, "port", fmt.Sprintf("%d", allocatedPort), "protocol", proxyType)
 		if serveError := routeProxy.server.Serve(listener); serveError != nil && serveError != http.ErrServerClosed {
-			logging.Default().Error("cookie proxy serve error", "route", routeName, "error", serveError.Error())
+			logging.Default().Error("route proxy serve error", "route", routeName, "error", serveError.Error())
 		}
 	}()
 
@@ -188,28 +231,45 @@ func (routeProxy *cookieRouteProxy) ServeHTTP(responseWriter http.ResponseWriter
 		return
 	}
 
-	selectedBackend := routeProxy.selectBackendFromCookie(incomingRequest, backends, cookieConf.Name)
+	hasCookieSticky := cookieConf != (RouteCookieConfig{})
+	var selectedBackend DataPlaneBackend
+	if hasCookieSticky {
+		selectedBackend = routeProxy.selectBackendFromCookie(incomingRequest, backends, cookieConf.Name)
+	} else {
+		selectedBackend = routeProxy.selectRoundRobin(backends)
+	}
 
 	backendURL := &url.URL{
 		Scheme: "http",
 		Host:   fmt.Sprintf("%s:%d", selectedBackend.Address, selectedBackend.Port),
 	}
 
-	cookieValue := fmt.Sprintf("%s:%d", selectedBackend.Address, selectedBackend.Port)
-
 	reverseProxy := &httputil.ReverseProxy{
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
 			proxyRequest.SetURL(backendURL)
 			proxyRequest.Out.Host = incomingRequest.Host
 		},
-		ModifyResponse: func(response *http.Response) error {
+	}
+
+	if hasCookieSticky {
+		cookieValue := fmt.Sprintf("%s:%d", selectedBackend.Address, selectedBackend.Port)
+		reverseProxy.ModifyResponse = func(response *http.Response) error {
 			stickySetCookie := buildStickyCookie(cookieConf, cookieValue)
 			response.Header.Add("Set-Cookie", stickySetCookie)
 			return nil
-		},
+		}
 	}
 
 	reverseProxy.ServeHTTP(responseWriter, incomingRequest)
+}
+
+// selectRoundRobin picks the next backend in round-robin order.
+func (routeProxy *cookieRouteProxy) selectRoundRobin(backends []DataPlaneBackend) DataPlaneBackend {
+	routeProxy.backendMu.Lock()
+	selectedIndex := routeProxy.nextIndex % len(backends)
+	routeProxy.nextIndex++
+	routeProxy.backendMu.Unlock()
+	return backends[selectedIndex]
 }
 
 // selectBackendFromCookie reads the sticky cookie and returns the matching
@@ -234,12 +294,7 @@ func (routeProxy *cookieRouteProxy) selectBackendFromCookie(
 		}
 	}
 
-	routeProxy.backendMu.Lock()
-	selectedIndex := routeProxy.nextIndex % len(backends)
-	routeProxy.nextIndex++
-	routeProxy.backendMu.Unlock()
-
-	return backends[selectedIndex]
+	return routeProxy.selectRoundRobin(backends)
 }
 
 // buildStickyCookie constructs the Set-Cookie header value from the cookie

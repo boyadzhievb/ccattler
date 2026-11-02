@@ -5,6 +5,8 @@ package lang
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -1466,6 +1468,91 @@ func TestCompileRouteStickyCookieDefaults(t *testing.T) {
 	}
 	if _, exists := compiledFactMap[types.KeyDesiredRouteCookieName("bare-cookie")]; exists {
 		t.Error("cookie name should not be set for bare cookie (uses default)")
+	}
+}
+
+func TestCompileRouteTLSAuto(t *testing.T) {
+	file, parseErr := Parse(`gate web-public {
+    host "app.example.com"
+    service frontend port 8080
+    tls auto
+}`)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredRouteTLSMode("web-public")] != "auto" {
+		t.Errorf("tls mode: got %q, want %q", compiledFactMap[types.KeyDesiredRouteTLSMode("web-public")], "auto")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteTLSCert("web-public")]; exists {
+		t.Error("tls cert should not be set for auto mode")
+	}
+	if _, exists := compiledFactMap[types.KeyDesiredRouteTLSKey("web-public")]; exists {
+		t.Error("tls key should not be set for auto mode")
+	}
+}
+
+func TestCompileRouteTLSManual(t *testing.T) {
+	certDir := t.TempDir()
+	certPath := certDir + "/cert.pem"
+	keyPath := certDir + "/key.pem"
+	os.WriteFile(certPath, []byte("-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----\n"), 0o600)
+	os.WriteFile(keyPath, []byte("-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----\n"), 0o600)
+
+	input := fmt.Sprintf(`gate internal-api {
+    host "api.internal"
+    service api port 3000
+    tls {
+        cert %q
+        key %q
+    }
+}`, certPath, keyPath)
+
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredRouteTLSMode("internal-api")] != "manual" {
+		t.Errorf("tls mode: got %q, want %q", compiledFactMap[types.KeyDesiredRouteTLSMode("internal-api")], "manual")
+	}
+	if !strings.Contains(compiledFactMap[types.KeyDesiredRouteTLSCert("internal-api")], "test-cert") {
+		t.Errorf("tls cert: expected to contain test-cert, got %q", compiledFactMap[types.KeyDesiredRouteTLSCert("internal-api")])
+	}
+	if !strings.Contains(compiledFactMap[types.KeyDesiredRouteTLSKey("internal-api")], "test-key") {
+		t.Errorf("tls key: expected to contain test-key, got %q", compiledFactMap[types.KeyDesiredRouteTLSKey("internal-api")])
+	}
+}
+
+func TestCompileRouteTLSManualMissingCertFile(t *testing.T) {
+	input := `gate broken {
+    host "example.com"
+    service web port 8080
+    tls {
+        cert "/nonexistent/cert.pem"
+        key "/nonexistent/key.pem"
+    }
+}`
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+
+	_, compileErr := Compile(file)
+	if compileErr == nil {
+		t.Fatal("expected error for missing cert file")
 	}
 }
 

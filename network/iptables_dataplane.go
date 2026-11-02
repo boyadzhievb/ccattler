@@ -136,15 +136,15 @@ func (iptablesDataPlane *IptablesDataPlane) ReconcileRouteDataPlane(ctx context.
 			continue
 		}
 
-		switch routeConfig.StickyMethod {
-		case "source-ip":
+		hasTLS := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+		switch {
+		case routeConfig.StickyMethod == "source-ip" && !hasTLS:
 			chainName := iptablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			if err := iptablesDataPlane.reconcileSourceIPStickyChain(routeConfig, chainName); err != nil {
 				logging.Default().Error("failed to reconcile source-ip route chain", "chain", chainName, "error", err.Error())
 			}
-
-		case "cookie":
+		case routeConfig.StickyMethod == "cookie" || hasTLS:
 			chainName := iptablesRouteChainPrefix + sanitizeChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			if err := iptablesDataPlane.reconcileCookieStickyChain(routeConfig, chainName); err != nil {

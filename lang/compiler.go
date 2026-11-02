@@ -127,7 +127,7 @@ func compileInfrastructureDeclarations(file *File, sourceLines []string) ([]Fact
 		facts = append(facts, connectionFacts...)
 	}
 	for _, routeDecl := range file.Routes {
-		routeFacts, err := compileRouteDeclaration(routeDecl, sourceLines)
+		routeFacts, err := compileRouteDeclaration(routeDecl, file.BaseDir, sourceLines)
 		if err != nil {
 			return nil, err
 		}
@@ -916,7 +916,7 @@ func buildConnectionJSON(connectionDecl ConnectionDecl) string {
 }
 
 // compileRouteDeclaration converts a RouteDecl into its corresponding facts.
-func compileRouteDeclaration(routeDecl RouteDecl, sourceLines []string) ([]Fact, error) {
+func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []string) ([]Fact, error) {
 	if routeDecl.Name == "" {
 		return nil, &ParseError{
 			Line: routeDecl.Line, Message: "gate name is required",
@@ -956,6 +956,42 @@ func compileRouteDeclaration(routeDecl RouteDecl, sourceLines []string) ([]Fact,
 		routeFacts = append(routeFacts, compileStickyFacts(routeDecl.Name, routeDecl.Sticky)...)
 	}
 
+	if routeDecl.TLS != nil {
+		if routeDecl.TLS.Mode == "manual" && routeDecl.TLS.CertPEM == "" {
+			certPath := routeDecl.TLS.CertFile
+			if baseDir != "" && !filepath.IsAbs(certPath) {
+				certPath = filepath.Join(baseDir, certPath)
+			}
+			certBytes, certReadError := os.ReadFile(certPath) //nolint:gosec // intentional: user-specified TLS cert file
+			if certReadError != nil {
+				return nil, &ParseError{
+					Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls cert %q: %v", routeDecl.Name, routeDecl.TLS.CertFile, certReadError),
+					SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
+				}
+			}
+			routeDecl.TLS.CertPEM = string(certBytes)
+
+			keyPath := routeDecl.TLS.KeyFile
+			if baseDir != "" && !filepath.IsAbs(keyPath) {
+				keyPath = filepath.Join(baseDir, keyPath)
+			}
+			keyBytes, keyReadError := os.ReadFile(keyPath) //nolint:gosec // intentional: user-specified TLS key file
+			if keyReadError != nil {
+				return nil, &ParseError{
+					Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls key %q: %v", routeDecl.Name, routeDecl.TLS.KeyFile, keyReadError),
+					SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
+				}
+			}
+			routeDecl.TLS.KeyPEM = string(keyBytes)
+		}
+
+		tlsFacts, tlsError := compileTLSFacts(routeDecl.Name, routeDecl.TLS, routeDecl.Line, sourceLines)
+		if tlsError != nil {
+			return nil, tlsError
+		}
+		routeFacts = append(routeFacts, tlsFacts...)
+	}
+
 	return routeFacts, nil
 }
 
@@ -990,6 +1026,28 @@ func compileStickyFacts(routeName string, stickyDecl *RouteStickyDecl) []Fact {
 	}
 
 	return stickyFacts
+}
+
+// compileTLSFacts produces facts for a route's TLS termination configuration.
+func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLines []string) ([]Fact, error) {
+	tlsFacts := []Fact{
+		{Key: types.KeyDesiredRouteTLSMode(routeName), Value: tlsDecl.Mode},
+	}
+
+	if tlsDecl.Mode == "manual" {
+		if tlsDecl.CertPEM == "" {
+			return nil, &ParseError{
+				Line: line, Message: fmt.Sprintf("gate %q: tls cert file content is empty", routeName),
+				SourceLine: sourceLineAt(sourceLines, line),
+			}
+		}
+		tlsFacts = append(tlsFacts,
+			Fact{Key: types.KeyDesiredRouteTLSCert(routeName), Value: tlsDecl.CertPEM},
+			Fact{Key: types.KeyDesiredRouteTLSKey(routeName), Value: tlsDecl.KeyPEM},
+		)
+	}
+
+	return tlsFacts, nil
 }
 
 // compileServiceCloudIdentityFacts produces cloud identity binding facts for a

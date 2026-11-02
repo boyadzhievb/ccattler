@@ -333,16 +333,19 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 
 	rbacAuthorizer, auditLog, authorizedStore := initializeAuthorizationLayer(factStore)
 
+	serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled := resolveServerTLSConfiguration(ctx, parsedConfig)
+
 	runControllers := !parsedConfig.apiOnly
 	runAPIServer := !parsedConfig.controllersOnly
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
 
 	if runControllers {
-		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig)
+		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority)
 	}
 
 	if runAPIServer {
-		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig)
+		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig,
+			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled)
 	}
 
 	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
@@ -367,7 +370,7 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 // controllers plus optional cloud controllers) and starts them inside an HA
 // runner with leader election. The runner goroutine runs until the context is
 // cancelled.
-func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig) {
+func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority) {
 	networkController := controllers.NewNetworkController()
 	if parsedConfig.vipCIDR != "" {
 		networkController = controllers.NewNetworkControllerWithCIDR(parsedConfig.vipCIDR)
@@ -379,6 +382,10 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController(),
 		controllers.NewStorageController(factStore))
+
+	if clusterCertificateAuthority != nil {
+		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority))
+	}
 
 	metricsCollector := controllers.NewMetricsCollector()
 
@@ -585,8 +592,10 @@ func configureAndStartAPIServer(
 	auditLog security.AuditLogger,
 	eventLog *types.EventLog,
 	parsedConfig serverCommandConfig,
+	serverTLSConfig *tls.Config,
+	clusterCertificateAuthority *security.CertificateAuthority,
+	enrollmentEnabled bool,
 ) {
-	serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled := resolveServerTLSConfiguration(ctx, parsedConfig)
 
 	issuerURL := resolveServerIssuerURL(parsedConfig)
 	workloadTokenIssuer, issuerError := security.NewWorkloadTokenIssuer(issuerURL)

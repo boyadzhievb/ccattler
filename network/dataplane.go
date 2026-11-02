@@ -92,6 +92,11 @@ type RouteDataPlaneConfig struct {
 	StickyMethod string
 	// CookieConfig holds cookie-specific settings when StickyMethod is "cookie".
 	CookieConfig *RouteCookieConfig
+	// TLSCertPEM is the PEM-encoded TLS certificate for HTTPS termination.
+	// Empty means the gate does not terminate TLS.
+	TLSCertPEM string
+	// TLSKeyPEM is the PEM-encoded TLS private key for HTTPS termination.
+	TLSKeyPEM string
 }
 
 // DataPlaneInitializer can be implemented by data plane providers that require

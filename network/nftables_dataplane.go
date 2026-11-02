@@ -165,12 +165,13 @@ func (nftablesDataPlane *NftablesDataPlane) appendRouteChains(
 		if len(routeConfig.Backends) == 0 || routeConfig.VirtualIP == "" {
 			continue
 		}
-		switch routeConfig.StickyMethod {
-		case "source-ip":
+		hasTLS := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+		switch {
+		case routeConfig.StickyMethod == "source-ip" && !hasTLS:
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			writeSourceIPStickyChain(&chainsBuilder, routeConfig, chainName)
-		case "cookie":
+		case routeConfig.StickyMethod == "cookie" || hasTLS:
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			proxyPort := nftablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)
@@ -388,13 +389,13 @@ func (nftablesDataPlane *NftablesDataPlane) buildRouteRuleset(
 			continue
 		}
 
-		switch routeConfig.StickyMethod {
-		case "source-ip":
+		hasTLS := routeConfig.TLSCertPEM != "" && routeConfig.TLSKeyPEM != ""
+		switch {
+		case routeConfig.StickyMethod == "source-ip" && !hasTLS:
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			writeSourceIPStickyChain(&chainsBuilder, routeConfig, chainName)
-
-		case "cookie":
+		case routeConfig.StickyMethod == "cookie" || hasTLS:
 			chainName := nftablesRouteChainPrefix + sanitizeNftablesChainName(routeConfig.RouteName)
 			desiredRouteChains[chainName] = true
 			proxyPort := nftablesDataPlane.cookieProxy.ListenPort(routeConfig.RouteName)

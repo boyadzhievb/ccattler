@@ -736,6 +736,52 @@ CronJobs are recurring jobs fired on a cron schedule. The CronController piggyba
 
 ---
 
+## Flow 13: Gate TLS Termination (M169)
+
+**Problem**: A gate with `tls auto` must have a valid cert issued by the cluster CA before the agent can serve HTTPS. Manual mode must have cert/key content available in the fact store at apply time.
+
+**Invariant**: Every TLS gate has cert material available before the agent proxy starts listening on HTTPS. No gate serves TLS with expired or missing certs.
+
+### Auto Mode Flow
+
+```
+cca apply (gate with tls auto)
+  → compiler writes desired/route/{name}/tls/mode = "auto"
+  → RouteTLSController sees mode=auto, checks derived/route/{name}/tls/not-after
+  → if missing or within 30 days of expiry:
+       CertificateAuthority.IssueCertificate(DNSNames: [host], TTL: 90d)
+       → writes derived/route/{name}/tls/cert = <PEM>
+       → writes derived/route/{name}/tls/key  = <PEM>
+       → writes derived/route/{name}/tls/not-after = <timestamp>
+  → agent data plane reads derived/route/{name}/tls/cert + key
+  → embedded proxy creates tls.Config, calls ServeTLS
+  → nftables DNAT redirects external :443 → proxy allocated port
+```
+
+### Manual Mode Flow
+
+```
+cca apply (gate with tls { cert "path" key "path" })
+  → compiler reads PEM files at compile time
+  → writes desired/route/{name}/tls/mode = "manual"
+  → writes desired/route/{name}/tls/cert = <PEM content>
+  → writes desired/route/{name}/tls/key  = <PEM content>
+  → agent data plane reads desired/route/{name}/tls/cert + key
+  → embedded proxy creates tls.Config, calls ServeTLS
+```
+
+### Critical Invariants
+
+- `tls` requires `host` — validation error at parse time if missing.
+- Auto mode cert issuance happens in the RouteTLSController, not in the compiler or agent.
+- The agent never generates certs — it only consumes them from the fact store.
+- For auto mode, the agent reads from `derived/route/`. For manual mode, from `desired/route/`.
+- If TLS material is missing when the agent reconciles, the proxy does not start for that gate (logged as warning, retried next cycle).
+- All TLS gates use the embedded L7 proxy, even non-sticky ones — TLS termination is inherently L7.
+- Cert renewal happens server-side. The agent picks up new certs on its next reconcile cycle.
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
@@ -748,3 +794,4 @@ When adding a new feature that touches the runtime:
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
 7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
 8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 11) — pull first, start with `--pull=never`. Never assume the image is cached.
+9. **Does it expose external HTTPS?** If yes, verify TLS material flows from controller to agent via fact store (Flow 13). The agent never issues certs.
