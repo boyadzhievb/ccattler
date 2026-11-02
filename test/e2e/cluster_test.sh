@@ -1091,8 +1091,8 @@ else
 fi
 
 # ---- Step 5.9: Cross-node path assertion ----
-# Deploy whoami pinned to worker-1, curl from ctrl — proves traffic crosses nodes
-# through VIP DNAT, not just reaches a local container.
+# Curl the whoami VIP from worker-2 — proves traffic crosses nodes through VIP
+# DNAT when the answering instance runs elsewhere (whoami is not pinned).
 
 WHOAMI_DEPLOYED=false
 for workload_name in "${WORKLOAD_NAMES[@]}"; do
@@ -1100,7 +1100,7 @@ for workload_name in "${WORKLOAD_NAMES[@]}"; do
 done
 
 if [[ "$WHOAMI_DEPLOYED" == "true" ]]; then
-    log "Validating cross-node traffic path (whoami pinned to worker-1, curl from ctrl)..."
+    log "Validating cross-node traffic path (curl whoami VIP from $WORKER2_NODE)..."
 
     WHOAMI_VIP=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .vip' 2>/dev/null || echo "")
     WHOAMI_PORT=$(echo "$NET_JSON" | jq -r '.networking[] | select(.service == "whoami") | .port' 2>/dev/null || echo "")
@@ -1398,28 +1398,30 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
         MULTIPORT_PASS=false
     fi
 
+    # Known gap (M179): a service VIP carries only its first exposed port, so
+    # 8081 has no VIP entry yet. Reported, not failed, until M179 lands.
     if [[ -n "$MULTIPORT_PORT8081_VIP" ]]; then
-        log "  Port 8081 VIP: $MULTIPORT_PORT8081_VIP (declared, no listener expected)"
+        log "  Port 8081 VIP: $MULTIPORT_PORT8081_VIP"
     else
-        log "  WARNING: No VIP entry for whoami-multiport port 8081"
+        log "  KNOWN GAP (M179): no VIP for whoami-multiport port 8081 — multi-port service VIPs not implemented"
     fi
 
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
+        # Entries look like "10.x.y.z . tcp . 80 : goto svc_whoami_multiport".
         VERDICT_MAP=$(ssh_vm "$WORKER1_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null" || echo "")
         PORT80_IN_MAP=false
         PORT8081_IN_MAP=false
-        if echo "$VERDICT_MAP" | grep -q "whoami.multiport.*: 80"; then
+        if echo "$VERDICT_MAP" | grep -q "\. tcp \. 80 : goto svc_whoami_multiport"; then
             PORT80_IN_MAP=true
         fi
-        if echo "$VERDICT_MAP" | grep -q "whoami.multiport.*: 8081"; then
+        if echo "$VERDICT_MAP" | grep -q "\. tcp \. 8081 : goto svc_whoami_multiport"; then
             PORT8081_IN_MAP=true
         fi
-
-        if echo "$VERDICT_MAP" | grep -qi "multiport"; then
-            PORT80_IN_MAP=true
-        fi
-
         log "  nftables verdict map entries — port 80: $PORT80_IN_MAP, port 8081: $PORT8081_IN_MAP"
+        if [[ "$PORT80_IN_MAP" != "true" ]]; then
+            log "  FAIL: no nftables vip_dispatch entry for whoami-multiport port 80"
+            MULTIPORT_PASS=false
+        fi
     fi
 
     MULTIPORT_INSTANCES=$(echo "$MULTIPORT_STATUS" | jq -r '[.instances[] | select(.service == "whoami-multiport" and .state == "running")] | .[].id' 2>/dev/null || echo "")
