@@ -355,8 +355,9 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 // initializeAuthorizationLayer creates the RBAC authorizer with all builtin
 // roles, a store-backed persistent audit log, and an AuthorizedStore that wraps
 // the raw fact store with authorization enforcement. Controllers use the raw
-// store directly (they are internal trusted components); the API server uses the
-// AuthorizedStore so user requests are subject to RBAC.
+// store directly (they are internal trusted components). The API server uses
+// the AuthorizedStore as service:api-server, limited by the api-server role;
+// users are authorized by capability at the API layer (Flow 25).
 func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAuthorizer, *security.StoreBackedAuditLog, *security.AuthorizedStore) {
 	rbacAuthorizer := security.NewRBACAuthorizer()
 	for _, builtinRole := range security.BuiltinRoles() {
@@ -364,6 +365,8 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 	}
 	auditLog := security.NewStoreBackedAuditLog(factStore, types.DefaultEventLogMaxEvents)
 	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+	authorizedStore.SetServicePrincipal(security.APIServerPrincipal)
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.APIServerPrincipal, RoleName: "api-server"})
 	return rbacAuthorizer, auditLog, authorizedStore
 }
 
@@ -625,7 +628,7 @@ func configureAndStartAPIServer(
 
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	quotaAdmission := tenant.NewQuotaAdmission(factStore, tenantRegistry)
-	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, rbacAuthorizer, auditLog)
+	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, security.NewCapabilityFactAuthorizer(apiAuthorizer), auditLog)
 	statusAPIServer.SetPolicyGate(policyGate)
 
 	secretMasterKey := loadOrGenerateSecretMasterKey()

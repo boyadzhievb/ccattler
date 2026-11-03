@@ -223,5 +223,52 @@ func BuiltinRoles() []Role {
 				{KeyPrefix: "", Operations: []Permission{PermissionRead, PermissionWatch}},
 			},
 		},
+		apiServerRole(),
+	}
+}
+
+// APIServerPrincipal is the store-layer identity of the API server. Users are
+// authorized by capability at the API layer; the API server's store access is
+// limited by the api-server role (Flow 25).
+const APIServerPrincipal = "service:api-server"
+
+// apiServerRole is the store-layer role of the API server: read and watch on
+// orchestration state, auth, leader, lease and policy facts; write and delete
+// only where its handlers change state. There is no rule for secrets/,
+// credentials/, enrollment/, bootstrap/ or audit/ (those components use the
+// raw store), so a handler bug cannot reach them through the generic path.
+func apiServerRole() Role {
+	readAndWatch := []Permission{PermissionRead, PermissionWatch}
+	readWrite := []Permission{PermissionRead, PermissionWrite}
+	readWriteDelete := []Permission{PermissionRead, PermissionWrite, PermissionDelete}
+	return Role{
+		Name: "api-server",
+		Rules: []Rule{
+			{KeyPrefix: "desired", Operations: readAndWatch},
+			{KeyPrefix: "effective", Operations: readAndWatch},
+			{KeyPrefix: "observed", Operations: readAndWatch},
+			{KeyPrefix: "placement", Operations: readAndWatch},
+			{KeyPrefix: "endpoint", Operations: readAndWatch},
+			{KeyPrefix: "intent", Operations: readAndWatch},
+			{KeyPrefix: "network", Operations: readAndWatch},
+			{KeyPrefix: "derived", Operations: readAndWatch},
+			{KeyPrefix: "event", Operations: readAndWatch},
+			{KeyPrefix: "auth", Operations: readAndWatch},
+			{KeyPrefix: "leader", Operations: readAndWatch},
+			{KeyPrefix: "lease", Operations: readAndWatch},
+			{KeyPrefix: "policy", Operations: readAndWatch},
+			{KeyPrefix: "desired/", Operations: readWrite},
+			{KeyPrefix: "effective/", Operations: readWrite},
+			{KeyPrefix: "intent/", Operations: readWrite},
+			{KeyPrefix: "policy/network/", Operations: readWrite},
+			{KeyPrefix: "derived/service/", Operations: readWrite},
+			{KeyPrefix: "derived/node/", Operations: readWrite},
+			{KeyPrefix: "observed/node/", Operations: readWrite},
+			{KeyPrefix: "observed/metric/", Operations: readWrite},
+			{KeyPrefix: "auth/", Operations: readWriteDelete},
+			{KeyPrefix: "observed/instance/", Operations: readWriteDelete},
+			{KeyPrefix: "derived/instance/", Operations: readWriteDelete},
+			{KeyPrefix: "placement/", Operations: readWriteDelete},
+		},
 	}
 }

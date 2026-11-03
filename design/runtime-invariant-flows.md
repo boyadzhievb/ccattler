@@ -890,11 +890,15 @@ The debug API can run commands in any container, so users never reach it directl
 - An ABAC policy without conditions is ignored, so it can never grant a capability to every principal.
 - `/api/state` and `/api/watch` read only the allowlisted roots (`desired`, `effective`, `observed`, `placement`, `endpoint`, `intent`, `network`, `derived`, `event`). A prefix must equal a root or continue it with `/`. Keys ending in `/tls/key` are dropped from scans and watch streams and refused as single keys.
 - The concurrent watch limit is reserved by incrementing first, then checking.
+- Users are authorized only at the API layer, by capability (CLAUDE.md two-layer rule). The API server reads and writes the store as its own internal principal `service:api-server`, bound to the store-layer role `api-server`: read and watch on the orchestration roots plus `auth`, `leader`, `lease`, `policy`; write and delete only on the prefixes its handlers change. It has no rule for `secrets/`, `credentials/`, `enrollment/`, `bootstrap/` or `audit/`, so a handler bug cannot reach them through the generic store path. Store audit entries record `service:api-server` with the end user in `on_behalf_of`.
+- Applying DSL (`/api/apply`, policy gate and direct path) checks a capability for every compiled fact: `auth/`, `policy/network/` and cloud identity facts need `cluster.admin`; `desired/service/*/secret/` and image pull secrets need `secret.use`; other `desired/`, `effective/`, `intent/`, `derived/service/` facts need `workload.create`; anything else needs `cluster.admin`. A `workload.create` user therefore cannot write grants and escalate.
+- Status, metrics and state reads return a store error as an error, never as an empty cluster.
 
 **What must NOT happen:**
 - A prefix such as `secret`, `s` or `enroll` returning keys from `secrets/`, `credentials/` or `enrollment/`
 - One authenticator's error for a token it does not own blocking the next authenticator
 - Store grants or policies written but never applied (the pre-M173 state)
+- A user authorized at the API layer denied by the store layer because it has no store role binding (500 "has no role bindings", found in run 41637959333)
 
 ---
 

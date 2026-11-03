@@ -174,9 +174,14 @@ type EndpointStatus struct {
 // and assembles it into a structured ClusterStatus by delegating to
 // per-section builder functions. When a non-nil principal is provided,
 // results are filtered to resources visible to that principal's tenant.
-// Platform principals and nil principals see everything.
-func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal, includeAllInstances bool) ClusterStatus {
-	allInstances, _ := types.ListInstances(ctx, factStore)
+// Platform principals and nil principals see everything. A failure to list
+// instances is returned instead of an empty cluster, so a store outage or
+// denial is visible to the caller.
+func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal, includeAllInstances bool) (ClusterStatus, error) {
+	allInstances, listError := types.ListInstances(ctx, factStore)
+	if listError != nil {
+		return ClusterStatus{}, fmt.Errorf("list instances: %w", listError)
+	}
 	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
 
 	sortedServiceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
@@ -200,7 +205,7 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 		CloudIdentities: collectCloudIdentityStatusFromStore(ctx, factStore),
 		Endpoints:       collectEndpointStatusFromStore(ctx, factStore),
 		Gates:           gateStatusList,
-	}
+	}, nil
 }
 
 // filterInstancesByServiceNames returns only instances whose service name

@@ -89,7 +89,11 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 - [x] Chain order mTLS → local token → internal JWT → external OIDC → webhook; each claims only its own token shape or issuer; the webhook never sees local or internal tokens; client sees a generic 401 message
 - [x] Watch connection limit incremented before the check (`reserveWatchConnection`)
 - [x] `AUTH_GRAPH.md` chain, grant and caller sections; threat model T7 correction
-- [ ] Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes
+- [x] Users authorized only at the API layer (found in run 41637959333: a granted user got 500 "has no role bindings" because `AuthorizedStore` checked store-layer RBAC with the user principal). The API server uses the store as `service:api-server` with the new `api-server` store role (no access to secrets/, credentials/, enrollment/, bootstrap/, audit/); store audit records the user in `on_behalf_of`
+- [x] Apply authorizes every compiled fact by capability (`RequiredCapabilityForFactWrite`): `auth/`, `policy/network/` and cloud identities need `cluster.admin`, secret bindings need `secret.use`. Without this, removing the store check would let a `workload.create` user apply `grant cluster-admin to user ...`
+- [x] `/api/status` and `/metrics` return the store error instead of an empty cluster
+- [ ] Decide: a user with a cluster-scope read grant but no team and no `platform` group passes authorization yet sees an empty list (tenant visibility in `ScopedScan`). Either cluster-scope grants imply cluster visibility, or `cca user create` must set a team/group
+- Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes
 
 ### Phase 174 — Secrets Architecture (M174)
 

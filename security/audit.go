@@ -40,6 +40,7 @@ type AuditEntry struct {
 	Decision   string    `json:"decision"`
 	AuthMethod string    `json:"auth_method,omitempty"`
 	Policy     string    `json:"policy,omitempty"`
+	OnBehalfOf string    `json:"on_behalf_of,omitempty"` // end user when Principal is an internal service acting for them
 }
 
 // AuditLogger is the interface for recording authorization decisions.

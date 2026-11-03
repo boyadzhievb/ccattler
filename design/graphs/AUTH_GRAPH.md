@@ -127,6 +127,7 @@ BuiltinRoles() → []Role                                       [:141]
 | cloud-controller | desired/cloud/, desired/service/, observed/node/, observed/cloud/, observed/instance/, endpoint/, network/node/ | mixed |
 | api-reader       | "" (everything)          | read, watch              |
 | api-writer       | desired/, intent/user/, observed/metric/, "" | mixed |
+| api-server       | read/watch: orchestration roots, auth, leader, lease, policy; write: desired/, effective/, intent/, policy/network/, derived/service/, derived/node/, observed/node/, observed/metric/; write+delete: auth/, observed/instance/, derived/instance/, placement/; nothing on secrets/, credentials/, enrollment/, bootstrap/, audit/ | mixed (bound to `service:api-server`) |
 
 ### ABACAuthorizer (security/abac.go)
 
@@ -154,6 +155,9 @@ CombinedAuthorizer.Authorize(principal, operation, key)        [:138]
 ### AuthorizedStore (security/authorized_store.go)
 
 #### AuthorizedStore wraps every StateStore operation
+Principal: `authorizingPrincipal(ctx)` — the service principal when `SetServicePrincipal` was called (the API server uses `service:api-server`, Flow 25), otherwise `PrincipalFromContext(ctx)`. Audit entries then carry the context principal in `on_behalf_of`.
+
+Apply authorization: `PolicyGate.evaluateAuthorizationGate` uses `CapabilityFactAuthorizer.Authorize` (security/fact_authorizer.go) → `RequiredCapabilityForFactWrite(key)` → `APIAuthorizer.AuthorizeAPI`; the direct apply path uses `Server.authorizeCompiledFacts` with the same mapping.
 ```
 AuthorizedStore.Get(ctx, key)                                  [:76]
 ├── PrincipalFromContext(ctx)

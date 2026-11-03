@@ -403,7 +403,11 @@ func (apiServer *Server) registerRoutes() {
 // instance/service/node counts without a separate status query.
 func (apiServer *Server) handleMetrics(responseWriter http.ResponseWriter, request *http.Request) {
 	ctx := request.Context()
-	status := buildStatusFromStore(ctx, apiServer.factStore, nil, false)
+	status, statusError := buildStatusFromStore(ctx, apiServer.factStore, nil, false)
+	if statusError != nil {
+		writeJSONError(responseWriter, "metrics: "+statusError.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	instancesByState.Set(0, string(types.InstancePending))
 	instancesByState.Set(0, string(types.InstanceRunning))
@@ -674,6 +678,11 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})
 		return
 	}
+	if authError := apiServer.authorizeCompiledFacts(security.PrincipalStructFromContext(requestContext), facts); authError != nil {
+		responseWriter.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "authorization: " + authError.Error()})
+		return
+	}
 	for _, fact := range facts {
 		if _, putErr := apiServer.factStore.Put(requestContext, fact.Key, []byte(fact.Value)); putErr != nil {
 			responseWriter.WriteHeader(http.StatusInternalServerError)
@@ -682,6 +691,19 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		}
 	}
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
+}
+
+// authorizeCompiledFacts checks the capability each compiled fact needs
+// (security.RequiredCapabilityForFactWrite), so a workload.create principal
+// cannot write auth/ grants or bind secrets. Returns the first denial.
+func (apiServer *Server) authorizeCompiledFacts(principal security.Principal, facts []lang.Fact) error {
+	for _, fact := range facts {
+		requiredCapability := security.RequiredCapabilityForFactWrite(fact.Key)
+		if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, requiredCapability, security.ScopeCluster, nil); authError != nil {
+			return fmt.Errorf("not authorized to write %q: %w", fact.Key, authError)
+		}
+	}
+	return nil
 }
 
 // handleWatch serves GET /api/watch?prefix=... as a Server-Sent Events stream.
@@ -1156,7 +1178,11 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 	if hasPrincipal {
 		principalPointer = &requestPrincipal
 	}
-	status := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer, includeAllInstances)
+	status, statusError := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer, includeAllInstances)
+	if statusError != nil {
+		writeJSONError(responseWriter, "status: "+statusError.Error(), http.StatusInternalServerError)
+		return
+	}
 	encoded, encodeError := json.Marshal(status)
 	if encodeError != nil {
 		_ = json.NewEncoder(responseWriter).Encode(status)

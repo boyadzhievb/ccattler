@@ -55,11 +55,15 @@ func AuthMethodFromContext(ctx context.Context) string {
 }
 
 // AuthorizedStore wraps a StateStore and enforces authorization on every
-// operation. The principal is extracted from the context via WithPrincipal.
+// operation. The principal is extracted from the context via WithPrincipal,
+// unless a service principal is set: then every operation is authorized as
+// that internal component and the context principal is audited as
+// on_behalf_of (the API server, Flow 25).
 type AuthorizedStore struct {
-	inner      store.StateStore
-	authorizer Authorizer
-	auditLog   AuditLogger
+	inner            store.StateStore
+	authorizer       Authorizer
+	auditLog         AuditLogger
+	servicePrincipal string // servicePrincipal, when set, is the store-layer identity used for every operation
 }
 
 // NewAuthorizedStore creates a store wrapper that checks authorization before
@@ -72,9 +76,35 @@ func NewAuthorizedStore(inner store.StateStore, authorizer Authorizer, auditLog 
 	}
 }
 
+// SetServicePrincipal makes the store authorize every operation as the given
+// internal principal (e.g. "service:api-server") instead of the caller in the
+// context. Users are authorized by capability at the API layer; store-layer
+// RBAC applies to internal components only (CLAUDE.md two-layer rule).
+func (authorizedStore *AuthorizedStore) SetServicePrincipal(servicePrincipal string) {
+	authorizedStore.servicePrincipal = servicePrincipal
+}
+
+// authorizingPrincipal returns the principal store-layer RBAC checks: the
+// service principal when set, otherwise the principal in the context.
+func (authorizedStore *AuthorizedStore) authorizingPrincipal(ctx context.Context) string {
+	if authorizedStore.servicePrincipal != "" {
+		return authorizedStore.servicePrincipal
+	}
+	return PrincipalFromContext(ctx)
+}
+
+// onBehalfOf returns the end user an operation is performed for when a
+// service principal is set, or "" when the context principal itself is checked.
+func (authorizedStore *AuthorizedStore) onBehalfOf(ctx context.Context) string {
+	if authorizedStore.servicePrincipal == "" {
+		return ""
+	}
+	return sanitizeForAudit(PrincipalFromContext(ctx))
+}
+
 // Get reads a fact, checking read permission first.
 func (authorizedStore *AuthorizedStore) Get(ctx context.Context, key string) (*store.Fact, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, key); err != nil {
 		authorizedStore.logDenied(ctx, principal, "get", key)
 		return nil, err
@@ -85,7 +115,7 @@ func (authorizedStore *AuthorizedStore) Get(ctx context.Context, key string) (*s
 
 // Put writes a fact, checking write permission first.
 func (authorizedStore *AuthorizedStore) Put(ctx context.Context, key string, value []byte) (int64, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionWrite, key); err != nil {
 		authorizedStore.logDenied(ctx, principal, "put", key)
 		return 0, err
@@ -96,7 +126,7 @@ func (authorizedStore *AuthorizedStore) Put(ctx context.Context, key string, val
 
 // Delete removes a fact, checking delete permission first.
 func (authorizedStore *AuthorizedStore) Delete(ctx context.Context, key string) error {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionDelete, key); err != nil {
 		authorizedStore.logDenied(ctx, principal, "delete", key)
 		return err
@@ -107,7 +137,7 @@ func (authorizedStore *AuthorizedStore) Delete(ctx context.Context, key string) 
 
 // Scan reads all facts with the given prefix, checking read permission.
 func (authorizedStore *AuthorizedStore) Scan(ctx context.Context, prefix string) ([]store.Fact, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, prefix); err != nil {
 		authorizedStore.logDenied(ctx, principal, "scan", prefix)
 		return nil, err
@@ -118,7 +148,7 @@ func (authorizedStore *AuthorizedStore) Scan(ctx context.Context, prefix string)
 
 // ScanWithRevision reads all facts with the given prefix and the store revision, checking read permission.
 func (authorizedStore *AuthorizedStore) ScanWithRevision(ctx context.Context, prefix string) (*store.ScanResult, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, prefix); err != nil {
 		authorizedStore.logDenied(ctx, principal, "scan", prefix)
 		return nil, err
@@ -129,7 +159,7 @@ func (authorizedStore *AuthorizedStore) ScanWithRevision(ctx context.Context, pr
 
 // Watch creates a watcher on the given key/prefix, checking watch permission.
 func (authorizedStore *AuthorizedStore) Watch(ctx context.Context, key string, opts store.WatchOption) (<-chan store.Event, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	if err := authorizedStore.authorizer.Authorize(principal, PermissionWatch, key); err != nil {
 		authorizedStore.logDenied(ctx, principal, "watch", key)
 		return nil, err
@@ -141,7 +171,7 @@ func (authorizedStore *AuthorizedStore) Watch(ctx context.Context, key string, o
 // Transaction delegates to the inner store. Authorization is checked per-key
 // in the compare list and in both the success and failure operation lists.
 func (authorizedStore *AuthorizedStore) Transaction(ctx context.Context, compares []store.Compare, onSuccess []store.Op, onFailure []store.Op) (bool, error) {
-	principal := PrincipalFromContext(ctx)
+	principal := authorizedStore.authorizingPrincipal(ctx)
 	for _, compareItem := range compares {
 		if err := authorizedStore.authorizer.Authorize(principal, PermissionRead, compareItem.Key); err != nil {
 			authorizedStore.logDenied(ctx, principal, "transaction-compare", compareItem.Key)
@@ -212,6 +242,7 @@ func (authorizedStore *AuthorizedStore) logAllowed(ctx context.Context, principa
 			Target:     sanitizeForAudit(target),
 			Decision:   AuditDecisionAllow,
 			AuthMethod: AuthMethodFromContext(ctx),
+			OnBehalfOf: authorizedStore.onBehalfOf(ctx),
 		})
 	}
 }
@@ -225,6 +256,7 @@ func (authorizedStore *AuthorizedStore) logDenied(ctx context.Context, principal
 			Target:     sanitizeForAudit(target),
 			Decision:   AuditDecisionDeny,
 			AuthMethod: AuthMethodFromContext(ctx),
+			OnBehalfOf: authorizedStore.onBehalfOf(ctx),
 		})
 	}
 }
