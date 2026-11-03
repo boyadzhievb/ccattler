@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -136,7 +137,9 @@ func parsePrincipalRolesFromFacts(facts []store.Fact, groupMembers map[string][]
 
 // buildCapabilityGrants produces the APIAuthorizer grant map from principal→roles,
 // role→capabilities, and role→scopes. When a role has no explicit scopes, the
-// cluster scope is used (granting the capability cluster-wide).
+// cluster scope is used (granting the capability cluster-wide). A role with no
+// capability facts falls back to the builtin role of that name (api-reader,
+// api-writer, ...), since `cca role grant --role` stores only the binding.
 func buildCapabilityGrants(
 	principalRoles map[string][]string,
 	roleCapabilities map[string][]security.Capability,
@@ -154,6 +157,10 @@ func buildCapabilityGrants(
 		roleNames := principalRoles[principalKey]
 		for _, roleName := range roleNames {
 			capabilities := roleCapabilities[roleName]
+			if len(capabilities) == 0 {
+				newGrants[principalKey] = append(newGrants[principalKey], security.BuiltinRoleCapabilities(roleName)...)
+				continue
+			}
 			scopes := roleScopes[roleName]
 			if len(scopes) == 0 {
 				scopes = []security.Scope{security.ScopeCluster}
@@ -205,6 +212,12 @@ func parseConditionalPoliciesFromFacts(facts []store.Fact) []security.Conditiona
 			Name:       policyName,
 			Capability: security.Capability(capabilityName),
 			Conditions: assembleConditionsForPolicy(policyName, components),
+		}
+		// A policy with no conditions would grant its capability to every
+		// authenticated principal; skip it (fail closed).
+		if len(policy.Conditions) == 0 {
+			logging.Default().Warn("ignoring auth policy without conditions", "policy", policyName, "capability", capabilityName)
+			continue
 		}
 		conditionalPolicies = append(conditionalPolicies, policy)
 	}

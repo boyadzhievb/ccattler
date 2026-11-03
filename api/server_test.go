@@ -119,7 +119,7 @@ func TestGetStateMissingKey(t *testing.T) {
 	baseURL, _, cleanup := newTestServer(t)
 	defer cleanup()
 
-	resp, err := http.Get(baseURL + "/api/state?key=/nonexistent")
+	resp, err := http.Get(baseURL + "/api/state?key=" + types.KeyDesiredServiceImage("nonexistent"))
 	if err != nil {
 		t.Fatal(err)
 	}

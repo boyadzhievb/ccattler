@@ -6,50 +6,40 @@ and credential flows without re-reading security/ source files.
 ## Authentication Pipeline (security/authenticator.go)
 
 ### AuthenticatorChain.Authenticate → entry point
+Chain built by `buildServerAuthenticatorAndBindings` (cmd/cca/command_server.go).
+Each authenticator claims only its own credential shape or issuer (M173), so a
+token is validated by exactly one authenticator and the webhook (last) never
+sees local or internal tokens.
 ```
 AuthenticatorChain.Authenticate(request)                       :39
-├── MTLSAuthenticator.Authenticate(request)                    [1st, security/authn_mtls.go:29]
+├── MTLSAuthenticator.Authenticate(request)                    [1st, TLS mode only, security/authn_mtls.go]
 │   ├── request.TLS == nil → return nil, nil                   [no TLS = skip]
-│   ├── request.TLS.PeerCertificates[0].Subject.CommonName     [extract CN]
+│   ├── request.TLS.PeerCertificates[0].Subject.CommonName     [extract CN; CA sets CN for enrolled nodes, Flow 11]
 │   └── return AuthenticationResult{Principal: "node:<CN>"}    [PrincipalKindNode]
 │
-├── BearerTokenAuthenticator.Authenticate(request)             [2nd, security/authn_bearer.go:45]
-│   ├── request.Header.Get("Authorization")                    [no header → skip]
-│   ├── strings.TrimPrefix(header, "Bearer ")
-│   ├── looksLikeJWT(tokenString)                              [:23, count "." == 2]
-│   │   └── false → return nil, nil                            [non-JWT → skip to next]
-│   └── oidcAuthenticator.Authenticate(tokenString)            [delegates to OIDCAuthenticator]
-│       ├── parseAndVerifyJWTSignature                         [security/oidc.go:92]
-│       │   ├── split token into 3 parts (header.payload.signature)
-│       │   ├── decode header → verify alg == "ES256"
-│       │   ├── verifyECDSASignature(publicKey, hash, sig)     [:204, IEEE P1363 format]
-│       │   └── return claimsJSON
-│       ├── extractAndValidateJWTClaims                        [:142]
-│       │   ├── verify iss == config.Issuer
-│       │   ├── verify aud == config.Audience (if set)
-│       │   └── check exp > now (default +1h if no exp)
-│       └── constructAuthenticationResultFromClaims             [:173]
-│           ├── principal = "user:" + claims[PrincipalClaim]   [default: "sub"]
-│           └── attributes: team = claims[TeamClaim], role = claims[RoleClaim]
+├── LocalTokenAuthenticator.Authenticate(request)              [2nd, security/authn_local_token.go]
+│   ├── no "Bearer " header → nil, nil
+│   ├── looksLikeLocalToken(token)                             [64 hex chars; else nil, nil → next]
+│   ├── subtle.ConstantTimeCompare(expected, presented)
+│   │   └── mismatch → error "invalid token"                   [claimed: hard deny]
+│   └── return {Principal: "user:local-admin", Groups: ["platform"]}
 │
-├── LocalTokenAuthenticator.Authenticate(request)              [3rd, security/authn_local_token.go:107]
-│   ├── request.Header.Get("Authorization")                    [no header → skip]
-│   ├── strings.TrimPrefix(header, "Bearer ")
-│   ├── subtle.ConstantTimeCompare(expected, presented)        [constant-time compare]
-│   │   └── mismatch → error "invalid token"                   [hard error, short-circuit]
-│   └── return AuthenticationResult{Principal: "user:local-admin", Groups: ["platform"]}
+├── BearerTokenAuthenticator.Authenticate(request)             [3rd internal JWT, 4th external OIDC; security/authn_bearer.go]
+│   ├── looksLikeJWT(token) false → nil, nil
+│   ├── unverifiedJWTIssuer(token) != config.Issuer → nil, nil [not this issuer → next]
+│   └── oidcAuthenticator.Authenticate(token)                  [claimed: error on failure]
+│       ├── parseAndVerifyJWTSignature                         [security/oidc.go:92, ES256]
+│       ├── extractAndValidateJWTClaims                        [iss, aud, exp]
+│       └── constructAuthenticationResultFromClaims            [principal = "user:" + sub]
 │
-├── WebhookAuthenticator.Authenticate(request)                 [4th, security/authn_webhook.go:71]
-│   ├── request.Header.Get("Authorization")                    [no header → skip]
-│   ├── lookupCache(tokenString)                               [:166, RWMutex.RLock]
-│   │   └── hit + !expired → return cached result
-│   ├── callWebhook(tokenString)                               [:112]
-│   │   ├── POST JSON{token} to endpointURL                   [http.Client with timeout]
-│   │   ├── decode webhookResponse{authenticated, principal, groups, attributes}
-│   │   └── !authenticated → error (fail-closed)
-│   └── storeCache(tokenString, result)                        [:181, RWMutex.Lock]
+├── WebhookAuthenticator.Authenticate(request)                 [5th, only with --authn-webhook-url; security/authn_webhook.go:71]
+│   ├── lookupCache(tokenString)
+│   ├── callWebhook(tokenString)                               [POST {token}; !authenticated → error]
+│   └── storeCache(tokenString, result)
 │
 └── all nil → error "no authenticator accepted the request"    [:49]
+
+api/server.go authenticationMiddleware: chain error → log reason, respond 401 "authentication failed" (no detail)
 ```
 
 ### Chain Semantics
@@ -248,10 +238,10 @@ APIAuthorizer.AuthorizeAPI(principal, capability, scope, resourceContext) [:96]
 
 #### APIAuthorizer state management
 ```
-APIAuthorizer.ReplaceGrants(newGrants)                         [:69, atomic swap]
-APIAuthorizer.ReplacePolicies(newPolicies)                     [:77, atomic swap]
-APIAuthorizer.GrantRole(principal, roleName)                   [:85]
-└── builtinRoleCapabilities(roleName)                          [:169]
+APIAuthorizer.ReplaceGrants(newGrants)                         [atomic swap of store-derived grants]
+APIAuthorizer.ReplacePolicies(newPolicies)                     [atomic swap]
+APIAuthorizer.GrantRole(principal, roleName)                   [bootstrap grant: kept across ReplaceGrants]
+└── BuiltinRoleCapabilities(roleName)
     ├── "cluster-admin" → [{cluster.admin, cluster}]
     ├── "api-reader" → [workload.read, node.read, placement.read, scaling.read, secret.metadata.read]
     ├── "api-writer" → [workload.read/create/update, scaling.read/write, ...]
@@ -310,9 +300,10 @@ AuthController.Reconcile(ctx, facts)                           [:49]
 │       └── kind=="group" → expand each member as "user:{member}"
 ├── buildCapabilityGrants(principalRoles, roleCapabilities, roleScopes) [:140]
 │   └── for principal → role → capability × scope → CapabilityGrant
-│       └── no scope → default to ScopeCluster
+│       ├── no scope → default to ScopeCluster
+│       └── no capability facts → security.BuiltinRoleCapabilities(role)
 ├── apiAuthorizer.ReplaceGrants(newGrants)                     [atomic swap]
-├── parseConditionalPoliciesFromFacts(facts)                   [:192]
+├── parseConditionalPoliciesFromFacts(facts)                   [:192]   [policies without conditions skipped, fail closed]
 │   ├── collectPolicyConditionComponentsFromFacts(facts)       [:218]
 │   │   └── auth/policy/{name}/capability → capability string
 │   │       auth/policy/{name}/condition/{i}/field → field
@@ -764,16 +755,16 @@ InMemoryAuditLog.Entries()                                     [:83]
 | Function | Called By |
 |---|---|
 | `AuthenticatorChain.Authenticate` | HTTP middleware (api/server.go) |
-| `MTLSAuthenticator.Authenticate` | AuthenticatorChain (1st in chain) |
-| `BearerTokenAuthenticator.Authenticate` | AuthenticatorChain (2nd in chain) |
+| `MTLSAuthenticator.Authenticate` | AuthenticatorChain (1st, TLS mode) |
+| `BearerTokenAuthenticator.Authenticate` | AuthenticatorChain (3rd internal JWT, 4th external OIDC) |
 | `OIDCAuthenticator.Authenticate` | BearerTokenAuthenticator.Authenticate |
 | `parseAndVerifyJWTSignature` | OIDCAuthenticator.Authenticate |
 | `extractAndValidateJWTClaims` | OIDCAuthenticator.Authenticate |
 | `constructAuthenticationResultFromClaims` | OIDCAuthenticator.Authenticate |
 | `verifyECDSASignature` | parseAndVerifyJWTSignature |
 | `looksLikeJWT` | BearerTokenAuthenticator.Authenticate |
-| `LocalTokenAuthenticator.Authenticate` | AuthenticatorChain (3rd in chain) |
-| `WebhookAuthenticator.Authenticate` | AuthenticatorChain (4th in chain) |
+| `LocalTokenAuthenticator.Authenticate` | AuthenticatorChain (2nd) |
+| `WebhookAuthenticator.Authenticate` | AuthenticatorChain (5th, last) |
 | `callWebhook` | WebhookAuthenticator.Authenticate |
 | `lookupCache` | WebhookAuthenticator.Authenticate |
 | `storeCache` | WebhookAuthenticator.Authenticate |
@@ -784,13 +775,13 @@ InMemoryAuditLog.Entries()                                     [:83]
 | `CombinedAuthorizer.Authorize` | AuthorizedStore (when combined auth) |
 | `APIAuthorizer.AuthorizeAPI` | API handlers (cca get, apply, scale, etc.) |
 | `resolveGrants` | APIAuthorizer.AuthorizeAPI |
-| `builtinRoleCapabilities` | APIAuthorizer.GrantRole |
+| `BuiltinRoleCapabilities` | APIAuthorizer.GrantRole, buildCapabilityGrants |
 | `EvaluateConditions` | APIAuthorizer.AuthorizeAPI (ABAC policies) |
 | `evaluateSingleCondition` | EvaluateConditions |
 | `resolveField` | evaluateSingleCondition |
 | `resolveSubjectField` | resolveField (objectName=="subject") |
 | `resolveResourceField` | resolveField (objectName=="resource") |
-| `AuthController.Reconcile` | **none in production** — not wired in `cca server` (M173) |
+| `AuthController.Reconcile` | Runner started by `startAPIAuthorizationSync` in every API process (cmd/cca/command_server.go, M173) |
 | `parseRoleCapabilitiesFromFacts` | AuthController.Reconcile |
 | `parseRoleScopesFromFacts` | AuthController.Reconcile |
 | `parseGroupMembersFromFacts` | AuthController.Reconcile |

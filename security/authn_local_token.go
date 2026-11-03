@@ -100,10 +100,10 @@ func LoadLocalTokenAuthenticator(tokenFilePath string) (*LocalTokenAuthenticator
 }
 
 // Authenticate reads the Authorization header for a Bearer token and compares
-// it against the expected local token using constant-time comparison. Returns
-// nil result and nil error when no Authorization header is present, allowing
-// the chain to try the next authenticator. Returns an error when the token is
-// present but does not match.
+// it against the expected local token using constant-time comparison. It
+// claims only tokens shaped like a local token (64 hex characters); other
+// bearer tokens return nil, nil so JWT and webhook authenticators can try.
+// Returns an error when a local-shaped token does not match.
 func (authenticator *LocalTokenAuthenticator) Authenticate(request *http.Request) (*AuthenticationResult, error) {
 	authorizationHeader := request.Header.Get("Authorization")
 	if authorizationHeader == "" {
@@ -115,6 +115,9 @@ func (authenticator *LocalTokenAuthenticator) Authenticate(request *http.Request
 	presentedToken := strings.TrimPrefix(authorizationHeader, bearerTokenPrefix)
 	if presentedToken == "" {
 		return nil, fmt.Errorf("local token: empty bearer token")
+	}
+	if !looksLikeLocalToken(presentedToken) {
+		return nil, nil
 	}
 
 	expectedBytes := []byte(authenticator.expectedTokenHex)
@@ -130,6 +133,16 @@ func (authenticator *LocalTokenAuthenticator) Authenticate(request *http.Request
 		ExpiresAt:     time.Now().Add(localTokenExpiry),
 		AuthMethod:    "local-token",
 	}, nil
+}
+
+// looksLikeLocalToken reports whether a bearer token has the local token shape:
+// exactly 2*localTokenLength hex characters.
+func looksLikeLocalToken(token string) bool {
+	if len(token) != 2*localTokenLength {
+		return false
+	}
+	_, decodeError := hex.DecodeString(token)
+	return decodeError == nil
 }
 
 // TokenFilePath returns the filesystem path where the token file was written.

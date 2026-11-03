@@ -875,6 +875,28 @@ The debug API can run commands in any container, so users never reach it directl
 
 ---
 
+## Flow 25: API Authentication and Authorization (M173)
+
+**Chain:** request → `authenticationMiddleware` → `AuthenticatorChain` (mTLS, local token, internal JWT, external OIDC, webhook) → `requireCapability` → `APIAuthorizer` (bootstrap grants + store grants + ABAC policies) ← `AuthController` runner in each API process ← `auth/` facts (`cca role grant`, DSL roles and policies, `bootstrapAdminGrants`).
+
+**What must hold:**
+- Each authenticator claims only its own credentials: mTLS by client certificate, the local token by its 64-hex shape, each JWT authenticator by matching `iss`. Unclaimed tokens fall through; a claimed token that fails validation is denied.
+- The webhook is last, so the local admin token and internal JWTs are never sent to it.
+- Clients get a generic 401 message; the reason is logged on the server.
+- Every API process runs its own `AuthController` runner (not leader-elected), because each process has its own in-memory `APIAuthorizer`. Grant changes reach every replica within one reconcile cycle.
+- `GrantRole` grants (local-admin, the server principal) are bootstrap grants and survive `ReplaceGrants`. Store-derived grants replace each other atomically.
+- A grant to a builtin role without capability facts (`cca role grant --role api-reader`) uses the builtin role's capabilities.
+- An ABAC policy without conditions is ignored, so it can never grant a capability to every principal.
+- `/api/state` and `/api/watch` read only the allowlisted roots (`desired`, `effective`, `observed`, `placement`, `endpoint`, `intent`, `network`, `derived`, `event`). A prefix must equal a root or continue it with `/`. Keys ending in `/tls/key` are dropped from scans and watch streams and refused as single keys.
+- The concurrent watch limit is reserved by incrementing first, then checking.
+
+**What must NOT happen:**
+- A prefix such as `secret`, `s` or `enroll` returning keys from `secrets/`, `credentials/` or `enrollment/`
+- One authenticator's error for a token it does not own blocking the next authenticator
+- Store grants or policies written but never applied (the pre-M173 state)
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

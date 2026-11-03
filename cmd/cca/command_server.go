@@ -25,6 +25,7 @@ import (
 	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/cloud"
 	"github.com/boyadzhievb/ccattler/controllers"
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/network"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -459,78 +460,55 @@ func resolveServerIssuerURL(parsedConfig serverCommandConfig) string {
 	return scheme + "://" + listenHost
 }
 
-// buildServerAuthenticatorAndBindings creates the authenticator chain and
-// binds the server's own identity to the cluster-admin RBAC role. The chain
-// order is: mTLS → ExternalOIDC (if configured) → InternalJWT → LocalToken.
-// Returns the authenticator chain and the server principal string (empty in
-// non-TLS mode).
+// buildServerAuthenticatorAndBindings assembles the authenticator chain and
+// binds the bootstrap admin principals. Order: mTLS (TLS mode), local token,
+// internal JWT, external OIDC, webhook. Each claims only its own credential
+// shape or issuer, so the webhook (last) never sees local or internal tokens.
+// Returns the chain and the server's own principal ("" without TLS).
 func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
+	var chainAuthenticators []security.Authenticator
 	if serverTLSConfig != nil {
-		chainAuthenticators := []security.Authenticator{
-			security.NewMTLSAuthenticator(),
-		}
-		chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, parsedConfig)
-		localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator("")
-		if tokenError == nil {
-			chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
-			rbacAuthorizer.BindRole(security.RoleBinding{
-				Principal: "user:local-admin",
-				RoleName:  "cluster-admin",
-			})
-		}
-		authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
-		var serverPrincipal string
-		if len(serverTLSConfig.Certificates) > 0 {
-			serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
-			if parseError == nil && serverLeafCert.Subject.CommonName != "" {
-				serverPrincipal = "node:" + serverLeafCert.Subject.CommonName
-				rbacAuthorizer.BindRole(security.RoleBinding{
-					Principal: serverPrincipal,
-					RoleName:  "cluster-admin",
-				})
-			}
-		}
-		return authenticatorChain, serverPrincipal
+		chainAuthenticators = append(chainAuthenticators, security.NewMTLSAuthenticator())
 	}
 
-	// Non-TLS mode: local token authentication with a fixed local-admin
-	// principal bound to cluster-admin for frictionless local development.
-	// Bearer token authenticators are still added so `cca login` works locally.
-	chainAuthenticators := appendBearerTokenAuthenticators(nil, workloadTokenIssuer, parsedConfig)
 	localTokenAuthenticator, tokenError := security.NewLocalTokenAuthenticator("")
-	if tokenError != nil {
+	switch {
+	case tokenError == nil:
+		chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
+		rbacAuthorizer.BindRole(security.RoleBinding{Principal: "user:local-admin", RoleName: "cluster-admin"})
+		if serverTLSConfig == nil {
+			fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
+		}
+	case serverTLSConfig == nil:
+		// Non-TLS mode has no other way in for the operator.
 		fmt.Fprintf(os.Stderr, "error: %v\n", tokenError)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "local auth token: %s\n", localTokenAuthenticator.TokenFilePath())
-	chainAuthenticators = append(chainAuthenticators, localTokenAuthenticator)
+
+	chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, parsedConfig)
 	authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
-	rbacAuthorizer.BindRole(security.RoleBinding{
-		Principal: "user:local-admin",
-		RoleName:  "cluster-admin",
-	})
-	return authenticatorChain, ""
+	return authenticatorChain, bindServerPrincipal(serverTLSConfig, rbacAuthorizer)
 }
 
-// appendBearerTokenAuthenticators adds external OIDC and internal JWT bearer
-// token authenticators to the chain. External OIDC is added only when
-// --oidc-issuer is configured. Internal JWT is always added when a workload
-// token issuer is available, so admin-issued user tokens are validated.
+// bindServerPrincipal binds "node:<server-cert-CN>" to cluster-admin in the
+// store-layer RBAC and returns it. Returns "" without TLS or a static cert.
+func bindServerPrincipal(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer) string {
+	if serverTLSConfig == nil || len(serverTLSConfig.Certificates) == 0 {
+		return ""
+	}
+	serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
+	if parseError != nil || serverLeafCert.Subject.CommonName == "" {
+		return ""
+	}
+	serverPrincipal := "node:" + serverLeafCert.Subject.CommonName
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: serverPrincipal, RoleName: "cluster-admin"})
+	return serverPrincipal
+}
+
+// appendBearerTokenAuthenticators adds the JWT and webhook authenticators in
+// claim order: internal JWT (tokens from this server's issuer), external OIDC
+// (tokens from --oidc-issuer), then the webhook for any remaining bearer token.
 func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) []security.Authenticator {
-	if parsedConfig.authnWebhookURL != "" {
-		webhookAuthenticator := security.NewWebhookAuthenticator(security.WebhookAuthenticatorConfig{
-			EndpointURL: parsedConfig.authnWebhookURL,
-		})
-		chainAuthenticators = append(chainAuthenticators, webhookAuthenticator)
-		fmt.Printf("Webhook authentication enabled (endpoint: %s)\n", parsedConfig.authnWebhookURL)
-	}
-	if parsedConfig.oidcIssuerURL != "" {
-		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
-		if externalOIDCAuthenticator != nil {
-			chainAuthenticators = append(chainAuthenticators, externalOIDCAuthenticator)
-			fmt.Printf("External OIDC authentication enabled (issuer: %s)\n", parsedConfig.oidcIssuerURL)
-		}
-	}
 	if workloadTokenIssuer != nil {
 		internalOIDCConfig := security.OIDCConfig{
 			Issuer:   workloadTokenIssuer.IssuerURL(),
@@ -544,6 +522,20 @@ func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticato
 			security.NewOIDCAuthenticator(internalOIDCConfig, workloadTokenIssuer.PublicKey()),
 		)
 		chainAuthenticators = append(chainAuthenticators, internalJWTAuthenticator)
+	}
+	if parsedConfig.oidcIssuerURL != "" {
+		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
+		if externalOIDCAuthenticator != nil {
+			chainAuthenticators = append(chainAuthenticators, externalOIDCAuthenticator)
+			fmt.Printf("External OIDC authentication enabled (issuer: %s)\n", parsedConfig.oidcIssuerURL)
+		}
+	}
+	if parsedConfig.authnWebhookURL != "" {
+		webhookAuthenticator := security.NewWebhookAuthenticator(security.WebhookAuthenticatorConfig{
+			EndpointURL: parsedConfig.authnWebhookURL,
+		})
+		chainAuthenticators = append(chainAuthenticators, webhookAuthenticator)
+		fmt.Printf("Webhook authentication enabled (endpoint: %s)\n", parsedConfig.authnWebhookURL)
 	}
 	return chainAuthenticators
 }
@@ -609,12 +601,14 @@ func configureAndStartAPIServer(
 
 	// API-layer capability authorizer. Maps builtin roles to capability grants.
 	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.SetAuditLogger(auditLog)
 	apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
 	if serverPrincipal != "" {
 		apiAuthorizer.GrantRole(serverPrincipal, "cluster-admin")
 	}
 
 	bootstrapAdminGrants(factStore, serverPrincipal)
+	startAPIAuthorizationSync(ctx, factStore, apiAuthorizer)
 
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)
 	statusAPIServer.SetEventLog(eventLog)
@@ -910,6 +904,20 @@ func preflightCheckEtcdCertPaths(parsedConfig serverCommandConfig) {
 	preflightRequireReadableFile(parsedConfig.etcdKeyPath, "etcd client private key (--etcd-key)")
 	preflightRequireReadableFile(parsedConfig.etcdCACertPath, "etcd CA certificate (--etcd-ca)")
 	preflightRequireSecureKeyPermissions(parsedConfig.etcdKeyPath, "etcd client private key")
+}
+
+// startAPIAuthorizationSync runs the AuthController in this API process so
+// role grants, group grants, and ABAC policies stored under auth/ reach the
+// APIAuthorizer. It runs on every API replica, not only on the controller
+// leader, because each process holds its own in-memory authorizer.
+func startAPIAuthorizationSync(ctx context.Context, factStore store.StateStore, apiAuthorizer *security.APIAuthorizer) {
+	authorizationSyncRunner := controllers.NewRunner(factStore, controllers.NewAuthController(apiAuthorizer))
+	go func() {
+		if runError := authorizationSyncRunner.Run(ctx); runError != nil && ctx.Err() == nil {
+			logging.Default().Error("authorization sync stopped", "error", runError.Error())
+		}
+	}()
+	fmt.Println("Authorization sync started (auth/ grants and policies)")
 }
 
 // buildAgentDebugClientTLSConfig derives the mTLS client config the API server

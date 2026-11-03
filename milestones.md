@@ -75,11 +75,18 @@ Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug AP
 
 ### Phase 173 — API Authorization Correctness (M173)
 
-- [ ] Grant/policy sync watcher runs in every API process (not leader-only); wired in `cca server`
-- [ ] `/api/state`, `/api/watch` readable-prefix allowlist; `?prefix=secret` style bypass test
-- [ ] Authenticators return "not mine" for other issuers; client sees a generic 401 message
-- [ ] Watch connection limit incremented before the check
-- [ ] Fix M156 / Phase 58b claims, `AUTH_GRAPH.md` caller of `AuthController.Reconcile`
+Design: Flow 25 in `design/runtime-invariant-flows.md`.
+
+- [x] Grant/policy sync: `AuthController` runner in every API process (`startAPIAuthorizationSync`), not leader-only
+- [x] `GrantRole` bootstrap grants (local-admin, server principal) survive `ReplaceGrants`
+- [x] Builtin role grants without capability facts (`cca role grant --role api-reader`) use the builtin role
+- [x] ABAC policies without conditions ignored (would otherwise grant to every principal); `APIAuthorizer.SetAuditLogger` wired
+- [x] `/api/state`, `/api/watch` readable-root allowlist; `?prefix=secret`/`s`/`enroll` bypass tests
+- [x] Gate TLS private keys (`*/tls/key`) dropped from state scans, single-key reads and watch events (found during M173)
+- [x] Chain order mTLS → local token → internal JWT → external OIDC → webhook; each claims only its own token shape or issuer; the webhook never sees local or internal tokens; client sees a generic 401 message
+- [x] Watch connection limit incremented before the check (`reserveWatchConnection`)
+- [x] `AUTH_GRAPH.md` chain, grant and caller sections; threat model T7 correction
+- [ ] Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes
 
 ### Phase 174 — Secrets Architecture (M174)
 
@@ -89,6 +96,7 @@ Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug AP
 - [ ] Envelope records key version; keyring persisted before re-wrap; restart test after rotation
 - [ ] Rotation lock on the API server key field; replicas reload the keyring
 - [ ] Tenant-scoped secret names and capability scope
+- [ ] Gate TLS private keys (`desired/route/*/tls/key`, `derived/route/*/tls/key`) stored encrypted, not as plain facts (found during M173)
 
 ### Phase 175 — HA Correctness (M175)
 
@@ -111,6 +119,7 @@ Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug AP
 - [ ] Secret API bound to the bridge gateway; caller IP must match the token's instance
 - [ ] Process runtime refused when TLS is enabled unless `--allow-process-runtime`
 - [ ] nftables ruleset input validated (IPs, names)
+- [ ] `/api/state` returns raw desired config values: apply the describe/status sensitive-key redaction there too (found during M173)
 - [ ] Paginated store scans
 - [ ] CI check: every `controllers.New*` and API `Set*` has a production caller
 

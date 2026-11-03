@@ -326,7 +326,10 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 		}
 		result, authError := chain.Authenticate(request)
 		if authError != nil {
-			writeJSONError(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
+			// The reason (expired, bad signature, unknown issuer) is logged, not
+			// returned, so callers cannot probe which credentials are valid.
+			logging.Default().Info("authentication failed", "path", request.URL.Path, "remote", request.RemoteAddr, "reason", authError.Error())
+			writeJSONError(responseWriter, "authentication failed", http.StatusUnauthorized)
 			return
 		}
 		if result != nil {
@@ -530,8 +533,8 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	if singleKey := request.URL.Query().Get("key"); singleKey != "" {
-		if isSensitivePrefix(singleKey) {
-			writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+		if !isReadableFactKey(singleKey) {
+			writeJSONError(responseWriter, "access denied: key is not readable through the state API", http.StatusForbidden)
 			return
 		}
 		fact, err := apiServer.factStore.Get(requestContext, singleKey)
@@ -551,8 +554,8 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	if isSensitivePrefix(prefix) {
-		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+	if !isReadableStatePrefix(prefix) {
+		writeJSONError(responseWriter, "access denied: prefix is not readable through the state API", http.StatusForbidden)
 		return
 	}
 
@@ -563,8 +566,9 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	result := make([]factResponse, 0, len(facts))
-	for _, fact := range facts {
+	readableFacts := filterReadableFacts(facts)
+	result := make([]factResponse, 0, len(readableFacts))
+	for _, fact := range readableFacts {
 		result = append(result, factResponse{
 			Key: fact.Key, Value: string(fact.Value), Revision: fact.Revision,
 		})
@@ -711,11 +715,9 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 // subscribes to the store watch. Returns the event channel, flusher, and true
 // on success. Writes an error response and returns false on failure.
 func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, request *http.Request) (<-chan store.Event, http.Flusher, bool) {
-	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
-		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+	if !apiServer.reserveWatchConnection(responseWriter) {
 		return nil, nil, false
 	}
-	apiServer.activeWatchConnectionCount.Add(1)
 
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
@@ -723,9 +725,9 @@ func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, re
 		writeJSONError(responseWriter, "prefix parameter required", http.StatusBadRequest)
 		return nil, nil, false
 	}
-	if isSensitivePrefix(prefix) {
+	if !isReadableStatePrefix(prefix) {
 		apiServer.activeWatchConnectionCount.Add(-1)
-		writeJSONError(responseWriter, "access denied: sensitive prefix", http.StatusForbidden)
+		writeJSONError(responseWriter, "access denied: prefix is not readable through the watch API", http.StatusForbidden)
 		return nil, nil, false
 	}
 
@@ -770,6 +772,9 @@ func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan 
 		case event, open := <-eventChannel:
 			if !open {
 				return
+			}
+			if !isReadableFactKey(event.Fact.Key) {
+				continue
 			}
 			eventType := "put"
 			if event.Type == store.EventDelete {
@@ -1439,11 +1444,9 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 		return
 	}
 
-	if apiServer.activeWatchConnectionCount.Load() >= maxConcurrentWatchConnections {
-		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+	if !apiServer.reserveWatchConnection(responseWriter) {
 		return
 	}
-	apiServer.activeWatchConnectionCount.Add(1)
 	defer apiServer.activeWatchConnectionCount.Add(-1)
 
 	flusher, ok := responseWriter.(http.Flusher)
@@ -1737,16 +1740,17 @@ func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter,
 	_ = json.NewEncoder(responseWriter).Encode(discoveryDocument)
 }
 
-// isSensitivePrefix returns true if the given prefix or key path refers to
-// a sensitive store area that should not be exposed through the public API.
-func isSensitivePrefix(prefix string) bool {
-	sensitiveKeyPrefixes := []string{"secrets/", "credentials/", "enrollment/token/", "bootstrap/"}
-	for _, sensitivePrefix := range sensitiveKeyPrefixes {
-		if strings.HasPrefix(prefix, sensitivePrefix) || prefix == sensitivePrefix {
-			return true
-		}
+// reserveWatchConnection counts a new streaming connection, refusing it with
+// 503 when the limit is exceeded. Incrementing before the check keeps
+// concurrent requests from all passing a stale count. The caller releases the
+// slot with activeWatchConnectionCount.Add(-1).
+func (apiServer *Server) reserveWatchConnection(responseWriter http.ResponseWriter) bool {
+	if apiServer.activeWatchConnectionCount.Add(1) > maxConcurrentWatchConnections {
+		apiServer.activeWatchConnectionCount.Add(-1)
+		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
+		return false
 	}
-	return false
+	return true
 }
 
 // handleOIDCJWKS serves the JSON Web Key Set at /oidc/jwks containing the

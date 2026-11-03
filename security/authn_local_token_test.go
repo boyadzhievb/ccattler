@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,13 +64,29 @@ func TestLocalTokenAuthenticatorRejectsWrongToken(t *testing.T) {
 	}
 
 	request, _ := http.NewRequest("GET", "/api/status", nil)
-	request.Header.Set("Authorization", "Bearer wrong-token-value")
+	request.Header.Set("Authorization", "Bearer "+strings.Repeat("ab", localTokenLength))
 
 	_, authError := tokenAuthenticator.Authenticate(request)
 	if authError == nil {
-		t.Fatal("expected error for wrong token, got nil")
+		t.Fatal("expected error for a wrong local-shaped token, got nil")
 	}
-	_ = tokenAuthenticator
+}
+
+func TestLocalTokenAuthenticatorIgnoresOtherTokenShapes(t *testing.T) {
+	t.Parallel()
+	tokenAuthenticator, createError := NewLocalTokenAuthenticator(t.TempDir())
+	if createError != nil {
+		t.Fatal(createError)
+	}
+
+	for _, otherToken := range []string{"wrong-token-value", "header.payload.signature", strings.Repeat("zz", localTokenLength)} {
+		request, _ := http.NewRequest("GET", "/api/status", nil)
+		request.Header.Set("Authorization", "Bearer "+otherToken)
+		result, authError := tokenAuthenticator.Authenticate(request)
+		if result != nil || authError != nil {
+			t.Errorf("token %q is not a local token: want nil, nil so the chain continues; got %v, %v", otherToken, result, authError)
+		}
+	}
 }
 
 func TestLocalTokenAuthenticatorRejectsNoHeader(t *testing.T) {

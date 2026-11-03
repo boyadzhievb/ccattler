@@ -149,6 +149,8 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Join tokens stored as SHA-256 hashes — plaintext never persisted to etcd (Phase 110)
 - Token listings show only the first 8 characters
 
+**Correction (2026-11-03):** the Phase 45 denylist matched whole prefixes only, so `?prefix=secret`, `?prefix=s` or `?prefix=enroll` still returned those keys, and gate TLS private keys under `desired/route/{name}/tls/key` and `derived/route/{name}/tls/key` were readable with `workload.read`. **Mitigations (added, M173):** an allowlist of readable roots (Flow 25) plus a per-key filter for `/tls/key` on scans, single keys and watch events.
+
 ### T8: Enrollment Sends Private Key Over Network (HIGH)
 
 **Attack surface:** The legacy enrollment flow has the server generate the node's keypair and return the private key PEM in the enrollment response.

@@ -5,6 +5,7 @@ package security
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -29,17 +30,19 @@ type ConditionalPolicy struct {
 // hierarchical scopes. It also evaluates ABAC conditional policies when no
 // unconditional grant matches.
 type APIAuthorizer struct {
-	grants   map[string][]CapabilityGrant // principal string → capability grants
-	policies []ConditionalPolicy          // ABAC policies with conditions
-	mutex    sync.RWMutex
-	auditLog AuditLogger // optional audit logger for condition failures
+	grants          map[string][]CapabilityGrant // principal string → capability grants (rebuilt from store facts)
+	bootstrapGrants map[string][]CapabilityGrant // principal string → startup grants from GrantRole; kept across ReplaceGrants
+	policies        []ConditionalPolicy          // ABAC policies with conditions
+	mutex           sync.RWMutex
+	auditLog        AuditLogger // optional audit logger for condition failures
 }
 
 // NewAPIAuthorizer creates an empty API authorizer. Add grants before checking
 // authorization.
 func NewAPIAuthorizer() *APIAuthorizer {
 	return &APIAuthorizer{
-		grants: make(map[string][]CapabilityGrant),
+		grants:          make(map[string][]CapabilityGrant),
+		bootstrapGrants: make(map[string][]CapabilityGrant),
 	}
 }
 
@@ -63,9 +66,10 @@ func (apiAuthorizer *APIAuthorizer) SetAuditLogger(auditLog AuditLogger) {
 	apiAuthorizer.auditLog = auditLog
 }
 
-// ReplaceGrants atomically replaces all grants with the provided map. This
-// supports the auth reconciliation controller rebuilding state from store facts
-// without leaving a window where grants are partially cleared.
+// ReplaceGrants atomically replaces all store-derived grants with the provided
+// map. This supports the auth reconciliation controller rebuilding state from
+// store facts without leaving a window where grants are partially cleared.
+// Bootstrap grants from GrantRole are not affected.
 func (apiAuthorizer *APIAuthorizer) ReplaceGrants(newGrants map[string][]CapabilityGrant) {
 	apiAuthorizer.mutex.Lock()
 	defer apiAuthorizer.mutex.Unlock()
@@ -80,12 +84,14 @@ func (apiAuthorizer *APIAuthorizer) ReplacePolicies(newPolicies []ConditionalPol
 	apiAuthorizer.policies = newPolicies
 }
 
-// GrantRole maps a builtin role name to capability grants for a principal.
-// This connects the RBAC role model to the capability model.
+// GrantRole gives a principal a builtin role's capabilities as a bootstrap
+// grant. Bootstrap grants survive ReplaceGrants, so the operator principals
+// configured at startup (local-admin, the server) keep access even before the
+// first store sync or if their auth/ facts are missing.
 func (apiAuthorizer *APIAuthorizer) GrantRole(principal string, roleName string) {
-	for _, grant := range builtinRoleCapabilities(roleName) {
-		apiAuthorizer.Grant(principal, grant.Capability, grant.Scope)
-	}
+	apiAuthorizer.mutex.Lock()
+	defer apiAuthorizer.mutex.Unlock()
+	apiAuthorizer.bootstrapGrants[principal] = append(apiAuthorizer.bootstrapGrants[principal], BuiltinRoleCapabilities(roleName)...)
 }
 
 // AuthorizeAPI checks whether the principal has the required capability at the
@@ -149,24 +155,26 @@ func (apiAuthorizer *APIAuthorizer) logConditionFailure(principal Principal, cap
 // resolveGrants collects all grants for a principal, including wildcard
 // bindings (e.g. "user:*" matching "user:alice"). Caller must hold the read lock.
 func (apiAuthorizer *APIAuthorizer) resolveGrants(principal string) []CapabilityGrant {
-	var allGrants []CapabilityGrant
-	if directGrants, hasGrants := apiAuthorizer.grants[principal]; hasGrants {
-		allGrants = append(allGrants, directGrants...)
-	}
-	for boundPrincipal, boundGrants := range apiAuthorizer.grants {
-		if len(boundPrincipal) > 0 && boundPrincipal[len(boundPrincipal)-1] == '*' {
-			wildcardPrefix := boundPrincipal[:len(boundPrincipal)-1]
-			if len(principal) >= len(wildcardPrefix) && principal[:len(wildcardPrefix)] == wildcardPrefix {
-				allGrants = append(allGrants, boundGrants...)
-			}
+	allGrants := appendMatchingGrants(nil, apiAuthorizer.bootstrapGrants, principal)
+	return appendMatchingGrants(allGrants, apiAuthorizer.grants, principal)
+}
+
+// appendMatchingGrants appends the grants in grantMap that apply to principal:
+// its exact entry plus entries whose key ends in "*" and prefixes principal.
+func appendMatchingGrants(allGrants []CapabilityGrant, grantMap map[string][]CapabilityGrant, principal string) []CapabilityGrant {
+	allGrants = append(allGrants, grantMap[principal]...)
+	for boundPrincipal, boundGrants := range grantMap {
+		if wildcardPrefix, isWildcard := strings.CutSuffix(boundPrincipal, "*"); isWildcard && strings.HasPrefix(principal, wildcardPrefix) {
+			allGrants = append(allGrants, boundGrants...)
 		}
 	}
 	return allGrants
 }
 
-// builtinRoleCapabilities maps builtin role names to their capability grants.
-// This bridges the store-layer role model with the API-layer capability model.
-func builtinRoleCapabilities(roleName string) []CapabilityGrant {
+// BuiltinRoleCapabilities maps builtin role names to their capability grants
+// at cluster scope, or nil for an unknown role. This bridges the store-layer
+// role model with the API-layer capability model.
+func BuiltinRoleCapabilities(roleName string) []CapabilityGrant {
 	switch roleName {
 	case "cluster-admin":
 		return []CapabilityGrant{

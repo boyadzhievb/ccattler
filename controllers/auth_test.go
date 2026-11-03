@@ -176,3 +176,55 @@ func TestAuthControllerReconcileEmptyFacts(t *testing.T) {
 		t.Error("previous grants should be cleared when auth facts are empty")
 	}
 }
+
+func TestAuthControllerBuiltinRoleWithoutCapabilityFacts(t *testing.T) {
+	apiAuthorizer := security.NewAPIAuthorizer()
+	authController := NewAuthController(apiAuthorizer)
+
+	facts := sortedFacts([]store.Fact{
+		{Key: types.KeyAuthGrant("user", "bob", "api-reader"), Value: []byte("true")},
+	})
+	if _, reconcileErr := authController.Reconcile(context.Background(), facts); reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+
+	bob := security.Principal{Kind: security.PrincipalKindUser, Name: "bob"}
+	if authError := apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadRead, security.ScopeCluster, nil); authError != nil {
+		t.Fatalf("api-reader grant without role facts must use the builtin role: %v", authError)
+	}
+	if apiAuthorizer.AuthorizeAPI(bob, security.CapabilityWorkloadCreate, security.ScopeCluster, nil) == nil {
+		t.Fatal("api-reader must not grant workload.create")
+	}
+}
+
+func TestAuthControllerIgnoresPolicyWithoutConditions(t *testing.T) {
+	apiAuthorizer := security.NewAPIAuthorizer()
+	authController := NewAuthController(apiAuthorizer)
+
+	facts := sortedFacts([]store.Fact{
+		{Key: types.KeyAuthPolicyCapability("open-exec"), Value: []byte("workload.exec")},
+	})
+	if _, reconcileErr := authController.Reconcile(context.Background(), facts); reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+
+	anyone := security.Principal{Kind: security.PrincipalKindUser, Name: "anyone"}
+	if apiAuthorizer.AuthorizeAPI(anyone, security.CapabilityWorkloadExec, security.ScopeCluster, nil) == nil {
+		t.Fatal("a policy without conditions must not grant its capability to every principal")
+	}
+}
+
+func TestAuthControllerKeepsBootstrapGrants(t *testing.T) {
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.GrantRole("user:local-admin", "cluster-admin")
+	authController := NewAuthController(apiAuthorizer)
+
+	if _, reconcileErr := authController.Reconcile(context.Background(), nil); reconcileErr != nil {
+		t.Fatal(reconcileErr)
+	}
+
+	localAdmin := security.Principal{Kind: security.PrincipalKindUser, Name: "local-admin"}
+	if authError := apiAuthorizer.AuthorizeAPI(localAdmin, security.CapabilitySecretWrite, security.ScopeCluster, nil); authError != nil {
+		t.Fatalf("bootstrap grant must survive a reconcile with no auth facts: %v", authError)
+	}
+}
