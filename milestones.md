@@ -123,25 +123,39 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 - [ ] Paginated store scans
 - [ ] CI check: every `controllers.New*` and API `Set*` has a production caller
 
+### OpenSpec pilot (unscheduled, before M201)
+
+Decision in `design/chats/chat-03nov-2.md`: adopt OpenSpec, pilot on GitOps, migrate no existing documentation.
+
+Roles: `CLAUDE.md` = engineering rules and invariants; `design/` = architecture and implementation details; `design/runtime-invariant-flows.md` = end-to-end chains across components (Flows 11, 24, 25 stay there; specs link to flows and flows link back, nothing copied); `openspec/specs/` = behaviour requirements of maintained capabilities; `openspec/changes/` = work in progress; `milestones.md` = roadmap.
+
+- [ ] Install pinned `@fission-ai/openspec@1.16.0` (needs Node >= 22.12.0; local v25.9.0); record the version
+- [ ] `openspec init --tools claude` on a clean tree; review `git status` and `git diff -- .claude/` before committing; keep existing agents, skills and workflows unless a real conflict shows up
+- [ ] Workflow ownership: OpenSpec drives proposal → specs → tasks → implementation → archive for OpenSpec-managed capabilities; `.claude/workflows/feature-development.js` does not run a competing pipeline for the same change; project-manager and technical-writer agents stay; `release-pipeline.js` / `scripts/release.sh` keep release execution
+- [ ] Minimal `openspec/config.yaml`: `schema: spec-driven`, `context` points at CLAUDE.md and `design/` (no restated invariants), `rules` per artifact, `operations.apply.guidance` (inspect implementation and call graphs first, report real test results)
+- [ ] First change `git-backed-configuration-sources` drafted from M201/M202 and existing architecture, resolving: Git outage, invalid revision, source ownership, partial application, concurrent revisions (pin to commit), sync vs health, `cca scale` overrides, manual `cca apply` (`cli` owner, conflict/adoption), etcd transaction limits
+- [ ] Review ownership, override, prune and transaction semantics before implementation starts
+- [ ] Release order per change: tasks done → tests pass → `openspec archive` → update M201/M202 links to `openspec/specs/...` and the dated `openspec/changes/archive/<date>-<change>/` → `scripts/release.sh`
+
 ### GitOps — Phases 201–202
 
 Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; policy, scheduling, execution and observation stay with CCattler. Ownership and prune come first because they also fix `cca apply` today. Numbers are out of priority order (added 2026-11-03 at the end of the sequence, after M200); renumber in the next priority pass.
 
 ### Phase 201 — Apply Ownership & Prune (M201)
 
-- [ ] Design in `design/gitops.md`: owner model, ownership keys, prune rules, conflict rules; flow in `design/runtime-invariant-flows.md`
+- [ ] Design as OpenSpec change `git-backed-configuration-sources` (see OpenSpec pilot; `design/gitops.md` only if the pilot is dropped): owner model, ownership keys, prune rules, conflict rules; cross-component flow in `design/runtime-invariant-flows.md`
 - [ ] Decide how `intent/user/` overrides (`cca scale`) relate to an owner: kept as a separate layer or reverted by the owner
 - [ ] Ownership facts per resource (e.g. `source/{owner}/owns/{kind}/{name}`), not per fact key; new root in `controllerOutputPrefixes`, store RBAC roles and `key-ownership-matrix.md`
 - [ ] `cca apply` records owner `cli`; applying a resource owned by another owner is refused with the owner's name
 - [ ] Prune: resources owned by this owner and missing from the applied set are deleted; generalize `collectRemovedGateFacts` to every resource kind
 - [ ] Prune never runs on a partial or failed compile; an empty candidate is refused unless explicitly forced
-- [ ] Per-resource atomic commit (one transaction per resource group, within the etcd operation limit); resumable application recorded by revision
+- [ ] Per-resource atomic commit within the etcd operation limit: either enforce a maximum facts-per-resource or add staged generation and promotion for larger resources; source-wide application resumable and recorded by revision
 - [ ] `cca diff` lists additions, changes, removals and ownership conflicts per resource
 - [ ] Integration tests: remove a service from a directory → deleted; another owner's service untouched; repeated apply is a no-op
 
 ### Phase 202 — Git Configuration Sources (M202)
 
-- [ ] Design in `design/gitops.md`: source facts, lifecycle, status model, Git client choice (`git` binary vs Go library: air-gap and supply-chain impact)
+- [ ] Design in the same OpenSpec change: source facts, lifecycle, status model, Git client choice (`git` binary vs Go library: air-gap and supply-chain impact)
 - [ ] `cca source add/list/status/diff/sync/pause/resume/remove`; `design/cli-reference.md`
 - [ ] Source reconciler under controller leadership: poll, resolve branch to SHA, fetch only the path, render values, compile, validate, apply through M201 as the source's owner
 - [ ] Source identity: one service principal per source, grants scope what it may manage (e.g. one tenant); compiled facts go through the policy gate
@@ -261,7 +275,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M199 — Conformance Test Suite | 199 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. Prefer growing it with each milestone over one big phase at the end. |
 | M200 — Airflow Triggerer & Observability | 200 | Placeholder: triggerer service, StatsD exporter, log groomer |
 | **Future (unscheduled)** | | |
-| *(future)* OpenSpec Adoption (pilot) | — | Try OpenSpec (Fission AI, npm `@fission-ai/openspec`) for one change before M201 starts, as discussed in `design/chats/chat-03nov-1.md`. Steps: pin a version (no global `@latest`), run `openspec init --tools claude` on a clean tree and review the `.claude/` diff against the existing agents, skills and workflows (`feature-development.js`, `release-pipeline.js`); keep `openspec/config.yaml` context to a pointer at CLAUDE.md and `design/` instead of restating invariants; first change `git-backed-configuration-sources` with M201 ownership and prune rules as spec deltas. Roles: CLAUDE.md = rules, `design/` = architecture and cross-component flows, `milestones.md` = roadmap (M201/M202 link to the change), `openspec/` = change proposals and behaviour specs of new capabilities. Existing design docs and flows are not migrated. Release order: tasks done → `openspec archive` → `scripts/release.sh`. Decide after M201 whether to keep it or fold the spec into `design/gitops.md`. More input from the maintainer pending. |
+| *(future)* OpenSpec Adoption (pilot) | — | Adopt OpenSpec 1.16.0 (pinned) for new capabilities, GitOps first; existing docs not migrated. Checklist under "OpenSpec pilot" above. Decision and config: `design/chats/chat-03nov-1.md`, `design/chats/chat-03nov-2.md`. Before M201. |
 | *(future)* Production GitOps | — | Stage 3 of the GitOps proposal (`design/chats/chat-03nov.md`): signed commit verification, webhook-triggered fetches (a webhook only triggers a fetch, never carries config), approval policies, pull request previews (`cca source diff` against a branch), rollback by repinning a revision, declarative source definitions. Depends: M202. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
