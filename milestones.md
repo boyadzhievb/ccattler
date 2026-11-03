@@ -187,7 +187,8 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 - [ ] Verify container-initiated egress (container → external) still works with SNAT
 
 **Agent restart BPF pin race:**
-- [ ] Investigate slow recovery after an agent restart on eBPF under load: run 41673229739 (eBPF, Airflow + whoami + gate-tls) took 64s until worker-1 reached the whoami VIP again, vs 9-11s on nftables without Airflow. eBPF programs attached and the whoami instance started within 2s of the restart; the delay is between endpoint publication, readiness and backend map programming. Collect eBPF map dumps and agent logs beyond the 200-line journal cap
+- [ ] Investigate slow recovery after an agent restart on eBPF under load: run 41673229739 (eBPF, Airflow + whoami + gate-tls) took 64s until worker-1 reached the whoami VIP again, vs 9-11s on nftables without Airflow. eBPF programs attached and the whoami instance started within 2s of the restart; the delay is between endpoint publication, readiness and backend map programming. Collect eBPF map dumps and agent logs beyond the 200-line journal cap. Next run 41682266710 (same load, eBPF, real capacity, right-sized Airflow) recovered in 23s, so it varies with load or timing
+- [ ] `cca top nodes` shows 0% CPU/memory used on nodes running 5-6 workloads (run 41682266710): the usage column is not populated
 - [ ] Fix `removePinnedMaps()` to only remove pins created by THIS instance (PID-namespaced pin dir or flock)
 - [ ] Add integration test: restart agent under load, verify BPF maps survive and service map entries persist
 - [ ] Add startup log line: "reusing existing BPF pins" vs "creating fresh BPF pins"
