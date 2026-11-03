@@ -928,8 +928,19 @@ log "  cca role grant and revoke take effect without a server restart"
 
 if [[ "$CLUSTER_ENV" == "deploy" ]]; then
     # caddy-sync reads routes through /api/state with the node certificate;
-    # every route host must reach the Caddyfile after the allowlist change.
-    ROUTE_HOSTS=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/" | jq -r '.[] | select(.key | endswith("/host")) | .value' | sort -u)
+    # every route whose backends are resolved must reach the Caddyfile after
+    # the allowlist change. caddy-sync skips routes without backends on
+    # purpose (run 41685401431: Airflow's webserver was still restarting).
+    ROUTE_DESIRED_JSON=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/")
+    ROUTE_DERIVED_JSON=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=derived/route/")
+    ROUTE_HOSTS=$(jq -r --argjson derived "$ROUTE_DERIVED_JSON" '
+        [$derived[] | select((.key | endswith("/backends")) and .value != "")
+         | .key | split("/")[2]] as $routesWithBackends
+        | .[] | select(.key | endswith("/host"))
+        | select((.key | split("/")[2]) as $route | $routesWithBackends | index($route))
+        | .value' <<< "$ROUTE_DESIRED_JSON" | sort -u)
+    ROUTE_COUNT_TOTAL=$(jq -r '[.[] | select(.key | endswith("/host"))] | length' <<< "$ROUTE_DESIRED_JSON")
+    log "  $(echo "$ROUTE_HOSTS" | grep -c .) of $ROUTE_COUNT_TOTAL routes have resolved backends"
     CADDY_DEADLINE=$((SECONDS + 60))
     MISSING_ROUTE_HOSTS="$ROUTE_HOSTS"
     while [[ $SECONDS -lt $CADDY_DEADLINE && -n "$MISSING_ROUTE_HOSTS" ]]; do
