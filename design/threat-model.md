@@ -235,7 +235,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 | P2 | Switch to CSR-based enrollment | T8 | **FIXED (Phase 110)** |
 | P2 | Store join token hashes, not plaintext | T7 | **FIXED (Phase 110)** |
 | P2 | Redact config values matching sensitive patterns | T3 | **FIXED (Phase 110)** |
-| P0 | CA sets node cert identity; atomic join-token use | T11 | **FIXED (M171)** — deploy validation pending |
-| P0 | Authenticate the agent debug API | T12 | **FIXED (M172)** — deploy validation pending |
+| P0 | CA sets node cert identity; atomic join-token use | T11 | **FIXED (M171)** |
+| P0 | Authenticate the agent debug API | T12 | **FIXED (M172)** |
 | P0 | Stop distributing the master key to nodes | T13 | Open (M174) |
 | P0 | Restrict agent store access | T5 | Open (M176) |

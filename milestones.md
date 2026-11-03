@@ -74,7 +74,7 @@ Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug AP
 - [x] Threat model T12, `CALL_GRAPH.md`, `AUTH_GRAPH.md`, security-model capability list updated
 - [x] `cca exec` runs its arguments directly, without an implicit `sh -c` (found in run 41634411854: every e2e image is shell-less whoami, so exec could never work there). Debug API and proxy take `args` (JSON array) instead of a `command` string; a shell only when the user writes `-- sh -c '…'`. Probes, lifecycle hooks and init commands keep their DSL shell strings
 - [x] e2e exec checks require an empty `error` (the old curl check passed on any response with `instance_id`) and run a binary present in the whoami image
-- Deploy cluster run: `cca exec`, `cca logs -f`, `cca images pull` work from the control plane
+- [x] Deploy cluster run: `cca node-inspect`, `cca exec`, `cca logs`, `cca images pull` work from the control plane (run 41644990156; `cca logs` tested with `--tail`, follow mode not covered by e2e)
 
 ### Phase 173 — API Authorization Correctness (M173)
 
@@ -93,7 +93,7 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 - [x] Apply authorizes every compiled fact by capability (`RequiredCapabilityForFactWrite`): `auth/`, `policy/network/` and cloud identities need `cluster.admin`, secret bindings need `secret.use`. Without this, removing the store check would let a `workload.create` user apply `grant cluster-admin to user ...`
 - [x] `/api/status` and `/metrics` return the store error instead of an empty cluster
 - [ ] Decide: a user with a cluster-scope read grant but no team and no `platform` group passes authorization yet sees an empty list (tenant visibility in `ScopedScan`). Either cluster-scope grants imply cluster visibility, or `cca user create` must set a team/group
-- Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes
+- [x] Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes (run 41644990156: 403 → 200 → 403, all 6 route hosts in the Caddyfile)
 
 ### Phase 174 — Secrets Architecture (M174)
 
