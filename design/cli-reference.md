@@ -41,7 +41,7 @@ cca drain <node-id> [flags]    # gracefully evict instances from a node
 cca disable-node <node-id>     # exclude node from new placements
 cca enable-node <node-id>      # return disabled node to normal scheduling
 cca node-inspect <node-id>     # query agent debug API (via API server)
-cca exec <id> -- <command>
+cca exec <id> -- <command> [args...]   # no shell; -- sh -c '…' for shell syntax
 cca images list/pull
 cca top [nodes|workloads]
 cca metric set <svc> <m> <v>

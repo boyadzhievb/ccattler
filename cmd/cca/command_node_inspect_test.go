@@ -153,7 +153,7 @@ func TestPostNodeDebugEndpointThroughProxy(testContext *testing.T) {
 	simulatorRuntime.Start(context.Background(), runtime.Spec{ID: "exec-test", ServiceName: "web", Image: "nginx:1.28"})
 	startTestDebugProxy(testContext, "test-node", simulatorRuntime)
 
-	requestBody, _ := json.Marshal(agent.DebugExecRequest{InstanceID: "exec-test", Command: "echo hello"})
+	requestBody, _ := json.Marshal(agent.DebugExecRequest{InstanceID: "exec-test", Args: []string{"echo", "hello"}})
 	httpResponse, requestError := postNodeDebugEndpoint("test-node", "exec", requestBody)
 	if requestError != nil {
 		testContext.Fatalf("exec through proxy: %v", requestError)

@@ -867,6 +867,7 @@ The debug API can run commands in any container, so users never reach it directl
 - The API server verifies the agent certificate against the cluster CA and requires its CN to equal the target node ID. Enrolled node certificates are client-auth only (Flow 11), so this check accepts any extended key usage. Hostname verification is not used because the address comes from the store.
 - The API server never forwards the caller's `Authorization` header to the agent.
 - Plain `http://` debug addresses are proxied only to loopback hosts.
+- `exec` takes `args`, a JSON array, and the runtime runs it as given: no implicit shell, so it works in shell-less images and arguments are never re-parsed. `cca exec <id> -- <args...>` sends its arguments unchanged; use `-- sh -c '…'` for shell syntax. Probes, lifecycle hooks and init commands are DSL strings and keep `sh -c`.
 
 **What must NOT happen:**
 - A debug endpoint reachable on a host IP without mTLS

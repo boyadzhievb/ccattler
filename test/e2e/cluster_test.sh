@@ -830,10 +830,15 @@ INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
     WORKER1_INSTANCE=$(echo "$STATUS_JSON" | jq -r --arg node "$WORKER1_NODE_ID" '[.instances[] | select(.node == $node)][0].id // empty')
     if [[ -n "$WORKER1_INSTANCE" ]]; then
+        # The e2e images are shell-less whoami, so exec runs the whoami binary
+        # itself; exec takes argv without a shell (Flow 24). "-h" prints usage
+        # and exits 0.
         EXEC_JSON=$(curl -sf $CURL_TLS -X POST "${DEBUG_PROXY}/exec" \
             -H "Content-Type: application/json" \
-            -d "{\"instance_id\":\"$WORKER1_INSTANCE\",\"command\":\"hostname\"}" 2>&1) || log "WARNING: exec request returned non-zero"
+            -d "{\"instance_id\":\"$WORKER1_INSTANCE\",\"args\":[\"/whoami\",\"-h\"]}" 2>&1) || fail "debug/exec request failed: $EXEC_JSON"
         echo "$EXEC_JSON" | grep -q '"instance_id"' || fail "debug/exec missing instance_id"
+        EXEC_ERROR=$(echo "$EXEC_JSON" | jq -r '.error // empty')
+        [[ -z "$EXEC_ERROR" ]] || fail "debug/exec in $WORKER1_INSTANCE failed: $EXEC_ERROR"
         log "POST /debug/exec OK for instance $WORKER1_INSTANCE"
     else
         log "WARNING: No instance placed on worker-1, skipping exec test"
@@ -856,8 +861,8 @@ if [[ -n "${WORKER1_INSTANCE:-}" ]]; then
     WORKER1_SERVICE=$(echo "$STATUS_JSON" | jq -r --arg id "$WORKER1_INSTANCE" '.instances[] | select(.id == $id) | .service')
     CLI_INSPECT=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca node-inspect $WORKER1_NODE_ID" 2>&1) || fail "cca node-inspect failed: $CLI_INSPECT"
     echo "$CLI_INSPECT" | grep -q "$WORKER1_INSTANCE" || fail "cca node-inspect output does not list instance $WORKER1_INSTANCE: $CLI_INSPECT"
-    CLI_EXEC=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca exec $WORKER1_INSTANCE -- hostname" 2>&1) || fail "cca exec failed: $CLI_EXEC"
-    [[ -n "$CLI_EXEC" ]] || fail "cca exec returned no output"
+    CLI_EXEC=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca exec $WORKER1_INSTANCE -- /whoami -h" 2>&1) || fail "cca exec failed: $CLI_EXEC"
+    echo "$CLI_EXEC" | grep -qi "usage" || fail "cca exec output has no usage text: $CLI_EXEC"
     CLI_LOGS=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca logs ${WORKER1_SERVICE}-${WORKER1_INSTANCE} --tail 5" 2>&1) || fail "cca logs failed: $CLI_LOGS"
     if echo "$CLI_LOGS" | grep -qiE "logs error|API error"; then
         fail "cca logs reported an error: $CLI_LOGS"

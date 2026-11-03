@@ -74,6 +74,9 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - ProcessRuntime uses `exec.Command` (no shell), splits on whitespace
 - ValidateResourceName at API boundaries (Phase 39a) — rejects most injection payloads in service/instance names
 
+**Mitigations (added, M172):**
+- Interactive exec (`cca exec`, debug API `exec`) passes argv to the runtime without a shell, so arguments are never re-parsed. Probes, hooks and init commands are DSL strings and still use `sh -c`.
+
 **Mitigations (added, Phase 45):**
 - Image format validation before passing to any runtime
 - Env var key validation rejects shell metacharacters

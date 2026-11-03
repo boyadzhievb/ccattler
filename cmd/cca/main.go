@@ -213,7 +213,7 @@ func main() {
 	case "exec":
 		instanceID, commandParts := parseExecArgs(os.Args[2:])
 		if instanceID == "" || len(commandParts) == 0 {
-			fmt.Fprintln(os.Stderr, "usage: cca exec <container-name|instance-id> -- <command>")
+			fmt.Fprintln(os.Stderr, "usage: cca exec <container-name|instance-id> -- <command> [args...]  (no shell; use -- sh -c '...')")
 			os.Exit(1)
 		}
 		executeExecCommand(instanceID, commandParts)
@@ -330,7 +330,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  drain <node-id> [flags]      gracefully evict instances from a node")
 	fmt.Fprintln(os.Stderr, "  disable-node <node-id>       exclude node from new placements")
 	fmt.Fprintln(os.Stderr, "  enable-node <node-id>        return disabled node to normal scheduling")
-	fmt.Fprintln(os.Stderr, "  exec <container-name> -- <cmd>  exec into a running container via agent relay")
+	fmt.Fprintln(os.Stderr, "  exec <container-name> -- <cmd>  run a command (no shell) in a container via the API")
 	fmt.Fprintln(os.Stderr, "  images list [--node <id>]    list cached images on nodes")
 	fmt.Fprintln(os.Stderr, "  images pull <img> [--node]   pull image on one or all nodes")
 	fmt.Fprintln(os.Stderr, "  node-inspect <node-id>       query agent debug API for live runtime state")

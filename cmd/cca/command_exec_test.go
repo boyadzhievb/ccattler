@@ -86,7 +86,7 @@ func TestDebugExecEndpoint(testContext *testing.T) {
 
 	execRequest := agent.DebugExecRequest{
 		InstanceID: "exec-test",
-		Command:    "echo hello",
+		Args:       []string{"echo", "hello"},
 	}
 	requestBody, _ := json.Marshal(execRequest)
 
@@ -150,7 +150,7 @@ func TestDebugExecEndpointNotFound(testContext *testing.T) {
 
 	execRequest := agent.DebugExecRequest{
 		InstanceID: "nonexistent",
-		Command:    "echo hello",
+		Args:       []string{"echo", "hello"},
 	}
 	requestBody, _ := json.Marshal(execRequest)
 

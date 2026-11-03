@@ -179,9 +179,19 @@ func buildUniqueContainerHostname(serviceName string, instanceID string) string 
 	return serviceName + "-" + idSuffix
 }
 
+// execProcessArgs returns the argv for an exec: Args as given when set,
+// otherwise Command wrapped in "sh -c" (probes, hooks and init commands).
+func execProcessArgs(execSpec ExecSpec) []string {
+	if len(execSpec.Args) > 0 {
+		return execSpec.Args
+	}
+	return []string{"sh", "-c", execSpec.Command}
+}
+
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
-	Command     string            // Command is the shell command to execute.
+	Command     string            // Command is the shell command to execute (via sh -c) when Args is empty.
+	Args        []string          // Args, when set, is executed as given without a shell (debug exec); Command is ignored.
 	Env         map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
 	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. Init containers get the same secret/connection mounts as the main container.
 }

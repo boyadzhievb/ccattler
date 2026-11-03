@@ -72,7 +72,9 @@ Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug AP
 - [x] e2e (`cluster_test.sh` Phase 69 checks, `health_check.sh`) use the proxy; new check that the debug port rejects requests without a client certificate
 - [x] Unit tests: agent rejects missing/non-admin certs and plain non-loopback listen; proxy capability checks, node identity check, header stripping
 - [x] Threat model T12, `CALL_GRAPH.md`, `AUTH_GRAPH.md`, security-model capability list updated
-- [ ] Deploy cluster run: `cca exec`, `cca logs -f`, `cca images pull` work from the control plane
+- [x] `cca exec` runs its arguments directly, without an implicit `sh -c` (found in run 41634411854: every e2e image is shell-less whoami, so exec could never work there). Debug API and proxy take `args` (JSON array) instead of a `command` string; a shell only when the user writes `-- sh -c '…'`. Probes, lifecycle hooks and init commands keep their DSL shell strings
+- [x] e2e exec checks require an empty `error` (the old curl check passed on any response with `instance_id`) and run a binary present in the whoami image
+- Deploy cluster run: `cca exec`, `cca logs -f`, `cca images pull` work from the control plane
 
 ### Phase 173 — API Authorization Correctness (M173)
 

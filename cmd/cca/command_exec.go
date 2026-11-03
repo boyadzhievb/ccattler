@@ -7,17 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/boyadzhievb/ccattler/agent"
 )
 
 // executeExecCommand runs a command inside a container instance by discovering
 // which node hosts the instance, then sending the exec request through the API
-// server's agent debug proxy. The command arguments follow a "--" separator.
+// server's agent debug proxy. The arguments after "--" are executed as given,
+// without a shell; use `-- sh -c '...'` for shell syntax.
 func executeExecCommand(instanceID string, commandParts []string) {
-	command := strings.Join(commandParts, " ")
-	if command == "" {
+	if len(commandParts) == 0 || commandParts[0] == "" {
 		fmt.Fprintln(os.Stderr, "error: no command specified after --")
 		os.Exit(1)
 	}
@@ -26,7 +25,7 @@ func executeExecCommand(instanceID string, commandParts []string) {
 
 	execRequest := agent.DebugExecRequest{
 		InstanceID: instanceID,
-		Command:    command,
+		Args:       commandParts,
 	}
 	requestBody, marshalError := json.Marshal(execRequest)
 	if marshalError != nil {

@@ -121,7 +121,7 @@ func (fixture *debugProxyFixture) publishDebugAddress(t *testing.T, nodeID strin
 func (fixture *debugProxyFixture) serveAs(principalName string, method string, requestPath string) *httptest.ResponseRecorder {
 	var requestBody *strings.Reader
 	if method == http.MethodPost {
-		requestBody = strings.NewReader(`{"instance_id":"inst-1","command":"hostname"}`)
+		requestBody = strings.NewReader(`{"instance_id":"inst-1","args":["hostname"]}`)
 	} else {
 		requestBody = strings.NewReader("")
 	}

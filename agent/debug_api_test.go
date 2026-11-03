@@ -4,11 +4,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -239,5 +241,44 @@ func TestDebugContainersContentType(testContext *testing.T) {
 	contentType := response.Header.Get("Content-Type")
 	if contentType != "application/json" {
 		testContext.Errorf("expected Content-Type=application/json, got %q", contentType)
+	}
+}
+
+func TestDebugExecPassesArgsWithoutShell(testContext *testing.T) {
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.Start(context.Background(), runtime.Spec{ID: "exec-args", ServiceName: "web", Image: "whoami"})
+	baseURL, cancel := startTestDebugServer(testContext, simulatorRuntime)
+	defer cancel()
+
+	requestBody, _ := json.Marshal(DebugExecRequest{InstanceID: "exec-args", Args: []string{"/whoami", "-h", "a b"}})
+	httpResponse, requestError := http.Post(baseURL+"/debug/exec", "application/json", bytes.NewReader(requestBody))
+	if requestError != nil {
+		testContext.Fatalf("exec request: %v", requestError)
+	}
+	defer httpResponse.Body.Close()
+
+	var execResponse DebugExecResponse
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&execResponse); decodeError != nil {
+		testContext.Fatalf("decode: %v", decodeError)
+	}
+	if !strings.Contains(execResponse.Output, `["/whoami" "-h" "a b"]`) {
+		testContext.Fatalf("args must reach the runtime unchanged and unsplit, got output %q", execResponse.Output)
+	}
+}
+
+func TestDebugExecRejectsCommandStringWithoutArgs(testContext *testing.T) {
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.Start(context.Background(), runtime.Spec{ID: "exec-old", ServiceName: "web", Image: "whoami"})
+	baseURL, cancel := startTestDebugServer(testContext, simulatorRuntime)
+	defer cancel()
+
+	httpResponse, requestError := http.Post(baseURL+"/debug/exec", "application/json",
+		strings.NewReader(`{"instance_id":"exec-old","command":"hostname"}`))
+	if requestError != nil {
+		testContext.Fatalf("exec request: %v", requestError)
+	}
+	defer httpResponse.Body.Close()
+	if httpResponse.StatusCode != http.StatusBadRequest {
+		testContext.Fatalf("request without args: got HTTP %d, want 400", httpResponse.StatusCode)
 	}
 }

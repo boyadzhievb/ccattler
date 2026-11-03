@@ -523,7 +523,7 @@ func (containerRuntime *ContainerRuntime) Exec(ctx context.Context, id string, e
 		return ErrNotFound
 	}
 
-	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
+	args := append([]string{"exec", containerName}, execProcessArgs(execSpec)...)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var stderr bytes.Buffer
 	execCommand.Stderr = &stderr
@@ -546,7 +546,7 @@ func (containerRuntime *ContainerRuntime) ExecCapture(ctx context.Context, insta
 		return nil, ErrNotFound
 	}
 
-	args := []string{"exec", containerName, "sh", "-c", execSpec.Command}
+	args := append([]string{"exec", containerName}, execProcessArgs(execSpec)...)
 	execCommand := containerRuntime.buildExecCommand(ctx, args...)
 	var combinedOutput bytes.Buffer
 	execCommand.Stdout = &combinedOutput

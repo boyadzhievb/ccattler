@@ -419,3 +419,15 @@ func TestBuildRunArgumentsLogRotationMaxSizeOnly(t *testing.T) {
 		t.Error("--log-opt max-file should not be present when LogMaxFiles is 0")
 	}
 }
+
+func TestExecProcessArgsRunsArgsWithoutShell(t *testing.T) {
+	directArgs := execProcessArgs(ExecSpec{Args: []string{"/whoami", "-h"}, Command: "ignored"})
+	if len(directArgs) != 2 || directArgs[0] != "/whoami" || directArgs[1] != "-h" {
+		t.Fatalf("Args must be executed as given, got %q", directArgs)
+	}
+
+	shellArgs := execProcessArgs(ExecSpec{Command: "pg_isready -U postgres"})
+	if len(shellArgs) != 3 || shellArgs[0] != "sh" || shellArgs[1] != "-c" || shellArgs[2] != "pg_isready -U postgres" {
+		t.Fatalf("Command (probes, hooks) must keep sh -c, got %q", shellArgs)
+	}
+}

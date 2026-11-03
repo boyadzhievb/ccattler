@@ -352,8 +352,8 @@ func (debugServer *DebugServer) handleDebugStats(responseWriter http.ResponseWri
 
 // DebugExecRequest is the JSON body for POST /debug/exec.
 type DebugExecRequest struct {
-	InstanceID string `json:"instance_id"`
-	Command    string `json:"command"`
+	InstanceID string   `json:"instance_id"` // instance to run the command in
+	Args       []string `json:"args"`        // argv executed as given, without a shell (Flow 24)
 }
 
 // DebugExecResponse is the JSON envelope for /debug/exec.
@@ -378,8 +378,8 @@ func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWrit
 		writeDebugJSONError(responseWriter, "invalid request body: "+decodeError.Error(), http.StatusBadRequest)
 		return
 	}
-	if execRequest.InstanceID == "" || execRequest.Command == "" {
-		writeDebugJSONError(responseWriter, "instance_id and command are required", http.StatusBadRequest)
+	if execRequest.InstanceID == "" || len(execRequest.Args) == 0 || execRequest.Args[0] == "" {
+		writeDebugJSONError(responseWriter, "instance_id and args are required", http.StatusBadRequest)
 		return
 	}
 
@@ -390,7 +390,7 @@ func (debugServer *DebugServer) handleDebugExec(responseWriter http.ResponseWrit
 	}
 
 	output, execError := execCapturer.ExecCapture(
-		request.Context(), execRequest.InstanceID, runtime.ExecSpec{Command: execRequest.Command})
+		request.Context(), execRequest.InstanceID, runtime.ExecSpec{Args: execRequest.Args})
 
 	response := DebugExecResponse{
 		NodeID:     debugServer.nodeID,

@@ -833,7 +833,7 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 	}
 
 	processSpec := &specs.Process{
-		Args: []string{"sh", "-c", execSpec.Command},
+		Args: execProcessArgs(execSpec),
 		Env:  containerEnvVars,
 		Cwd:  "/",
 	}
