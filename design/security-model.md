@@ -221,8 +221,15 @@ policy production-gate {
 }
 ```
 
-Implementation: `security/abac.go` + `security/condition.go`. Conditions are
-parsed and evaluated, but not yet wired to the admission pipeline in production.
+Implementation: `security/abac.go` + `security/condition.go`.
+
+**Status (2026-11-03):** since M173 the `AuthController` loads `auth/policy/`
+facts into the API authorizer in every API process, and `AuthorizeAPI`
+evaluates them after grants. API handlers pass no resource context, so only
+conditions on the subject (`subject.team`, `subject.groups`, ...) can pass;
+conditions on `resource.*` always fail closed. Policies without conditions are
+ignored. The apply policy gate checks compiled facts by capability
+(`CapabilityFactAuthorizer`) and does not evaluate ABAC conditions.
 
 Every API operation evaluates: `authorize(principal, capability, scope, context) → ALLOW | DENY`
 

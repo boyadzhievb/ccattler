@@ -805,3 +805,24 @@ func TestDataPlaneRunsIndependentlyOfMainLoop(t *testing.T) {
 
 	cancel()
 }
+
+// TestDataPlaneReconcilesRoutesWhenNoneRemain checks that the route data
+// plane is reconciled even with no routes, so deleting the last route
+// clears it (review finding 2026-11-03).
+func TestDataPlaneReconcilesRoutesWhenNoneRemain(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+
+	nodeAgent.dataPlaneReconciler.Reconcile(context.Background())
+
+	if simulatorDataPlane.RouteReconcileCallCount() != 1 {
+		t.Fatalf("route data plane must be reconciled with an empty route list, got %d calls",
+			simulatorDataPlane.RouteReconcileCallCount())
+	}
+	if len(simulatorDataPlane.LastReconciledRoutes()) != 0 {
+		t.Fatalf("expected no routes, got %+v", simulatorDataPlane.LastReconciledRoutes())
+	}
+}

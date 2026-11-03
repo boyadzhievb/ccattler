@@ -73,10 +73,11 @@ func (dataPlaneReconciler *DataPlaneReconciler) Reconcile(ctx context.Context) {
 		return
 	}
 
-	if len(routeConfigs) > 0 {
-		if err := dataPlaneReconciler.dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs); err != nil {
-			logging.Default().Error("dataplane: route reconcile error", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
-		}
+	// Always reconcile, also with no routes: providers clear deleted routes
+	// (nftables dispatch overrides, iptables chains, cookie proxy listeners)
+	// only when they are given the current, possibly empty, list.
+	if err := dataPlaneReconciler.dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs); err != nil {
+		logging.Default().Error("dataplane: route reconcile error", "agent", dataPlaneReconciler.nodeID, "error", err.Error())
 	}
 
 	if policyReconciler, supportsPolicy := dataPlaneReconciler.dataPlaneProvider.(network.DataPlanePolicyReconciler); supportsPolicy {

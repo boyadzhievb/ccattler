@@ -76,8 +76,9 @@ DataPlaneReconciler.Reconcile(ctx)                   [agent/dataplane.go:55]
 ├── buildRouteDataPlaneConfigs(ctx, serviceVIPConfigs)
 │                                                    [agent/dataplane.go:190]
 │   └── → []RouteDataPlaneConfig (see below)
-├── IF len(routeConfigs) > 0:
-│   └── dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs)
+├── dataPlaneProvider.ReconcileRouteDataPlane(ctx, routeConfigs)
+│                                                    [always, also with an empty list,
+│                                                     so the last deleted route is cleared]
 └── IF provider implements DataPlanePolicyReconciler:
     └── policyReconciler.ReconcilePolicies(ctx)
 ```

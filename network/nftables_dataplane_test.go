@@ -4,6 +4,7 @@
 package network
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -404,5 +405,38 @@ func TestSanitizeNftablesChainNameReplacesHyphens(t *testing.T) {
 			t.Errorf("sanitizeNftablesChainName(%q) = %q, want %q",
 				testCase.input, result, testCase.expected)
 		}
+	}
+}
+
+// TestNftablesDeletingLastRouteRestoresServiceDispatch removes the only
+// sticky route and checks that the next VIP ruleset dispatches to the
+// service chain again, with no route chain left.
+func TestNftablesDeletingLastRouteRestoresServiceDispatch(t *testing.T) {
+	nftablesDataPlane := NewNftablesDataPlane()
+	stickyRoute := RouteDataPlaneConfig{
+		RouteName: "web-public", ServiceName: "web",
+		VirtualIP: "10.200.0.1", Port: 80, StickyMethod: "source-ip",
+		Backends: []DataPlaneBackend{{Address: "10.0.0.1", Port: 8080}},
+	}
+	ctx := context.Background()
+	_ = nftablesDataPlane.ReconcileRouteDataPlane(ctx, []RouteDataPlaneConfig{stickyRoute})
+	_ = nftablesDataPlane.ReconcileRouteDataPlane(ctx, nil)
+
+	serviceConfigs := []ServiceVIPConfig{{
+		ServiceName: "web", VirtualIP: "10.200.0.1", Port: 80,
+		Backends: []DataPlaneBackend{{Address: "10.0.0.1", Port: 8080}},
+	}}
+	desiredRouteChains := make(map[string]bool)
+	routeOverrides := buildRouteDispatchOverrides(nftablesDataPlane.lastRouteConfigs)
+	ruleset := nftablesDataPlane.buildVIPRuleset(serviceConfigs,
+		make(map[string]bool), make(map[string]bool), routeOverrides)
+	nftablesDataPlane.appendRouteChains(&ruleset,
+		nftablesDataPlane.lastRouteConfigs, desiredRouteChains)
+
+	if strings.Contains(ruleset, "rt_web_public") || len(desiredRouteChains) != 0 {
+		t.Fatalf("deleted route must leave no dispatch or chain:\n%s", ruleset)
+	}
+	if !strings.Contains(ruleset, "10.200.0.1 . tcp . 80 : goto svc_web") {
+		t.Fatalf("VIP must dispatch to the service chain again:\n%s", ruleset)
 	}
 }
