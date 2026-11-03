@@ -15,6 +15,8 @@ GATE_TLS_PORT=443                              # agent --proxy-tls-listen port
 GATE_HTTP_PORT=8080                            # agent --proxy-listen port (Ansible proxy_port)
 GATE_TLS_ISSUE_TIMEOUT=90                      # seconds for RouteTLSController to issue certs
 GATE_TLS_CONVERGE_TIMEOUT=30                   # seconds for agents to serve a changed gate
+GATE_TLS_ROTATION_REQUESTS=45                  # requests the T5 background loop sends during rotation
+GATE_TLS_ROTATION_LOOP_TIMEOUT=$((GATE_TLS_ROTATION_REQUESTS * 4 + 10))  # each request: up to 3s curl + 1s sleep
 GATE_TLS_RECOVERY_TIMEOUT=90                   # seconds to recover after restarts/failures
 GATE_TLS_AUTO_GATES=("tls-auto" "tls-auto-alt" "tls-sticky")
 GATE_TLS_APPLIED_CCA="/tmp/gate-tls.cca"       # where cluster_test.sh copied the workload
@@ -219,11 +221,19 @@ gate_tls_check_no_key_leakage() {
     log "  T15 PASS: no PEM material in get/describe output or agent logs"
 }
 
+# gate_tls_rotation_loop_finished reports whether the T5 background loop
+# has logged all of its requests.
+gate_tls_rotation_loop_finished() {
+    local logged_requests
+    logged_requests=$(ssh_vm "$CTRL_NODE" "wc -l < /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r' || true)
+    [[ "${logged_requests:-0}" -ge "$GATE_TLS_ROTATION_REQUESTS" ]]
+}
+
 # gate_tls_check_rotation covers T5: manual cert rotation without failed requests.
 gate_tls_check_rotation() {
     local old_fingerprint new_fingerprint total_requests failed_requests
     old_fingerprint=$(gate_tls_fingerprint "$CTRL_IP" "tls-manual.home.arpa")
-    ssh_vm "$CTRL_NODE" "rm -f /tmp/gate-tls-rotation.log; nohup bash -c 'for i in \$(seq 1 45); do curl -sk -o /dev/null \
+    ssh_vm "$CTRL_NODE" "rm -f /tmp/gate-tls-rotation.log; nohup bash -c 'for i in \$(seq 1 $GATE_TLS_ROTATION_REQUESTS); do curl -sk -o /dev/null \
         -w \"%{http_code}\n\" --max-time 3 --resolve tls-manual.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} \
         https://tls-manual.home.arpa/ >> /tmp/gate-tls-rotation.log; sleep 1; done' >/dev/null 2>&1 &" 2>/dev/null
     gate_tls_generate_manual_cert
@@ -233,9 +243,11 @@ gate_tls_check_rotation() {
         || fail "gate-tls T5: re-apply after rotation failed"
     gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "rotated certificate served" \
         gate_tls_fingerprint_is "$CTRL_IP" "tls-manual.home.arpa" "$new_fingerprint"
-    sleep 47
+    # Wait for the whole loop instead of a fixed sleep: on a loaded cluster
+    # each request takes longer (run 41673229739 logged 39 of 45 after 47s).
+    gate_tls_wait_until "$GATE_TLS_ROTATION_LOOP_TIMEOUT" "all $GATE_TLS_ROTATION_REQUESTS rotation requests logged" \
+        gate_tls_rotation_loop_finished
     total_requests=$(ssh_vm "$CTRL_NODE" "wc -l < /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r' || true)
-    [[ "${total_requests:-0}" -ge 40 ]] || fail "gate-tls T5: background loop logged ${total_requests:-0} requests, expected ~45"
     failed_requests=$(ssh_vm "$CTRL_NODE" "grep -vc '^200$' /tmp/gate-tls-rotation.log" 2>/dev/null | tr -d ' \r' || true)
     [[ "${failed_requests:-0}" == "0" ]] || fail "gate-tls T5: $failed_requests request(s) failed during rotation"
     log "  T5 PASS: rotated certificate served, 0 failed requests during rotation"
