@@ -1635,7 +1635,20 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
 
     if [[ -n "$CROSS_NODE_SENDER" ]]; then
         log "  Sending from $CROSS_NODE_SENDER (no local whoami-multiport backend)..."
-        MULTIPORT_CROSS_BODY=$(ssh_vm "$CROSS_NODE_SENDER" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
+        # Runs right after the node-failure test replaced worker-1's
+        # instances; the sender's data plane may still list the old backend
+        # for a few seconds (run 41712652069), so retry until a deadline.
+        MULTIPORT_CROSS_DEADLINE_SECONDS=30
+        MULTIPORT_CROSS_DEADLINE=$((SECONDS + MULTIPORT_CROSS_DEADLINE_SECONDS))
+        MULTIPORT_CROSS_ATTEMPTS=0
+        MULTIPORT_CROSS_BODY=""
+        while [[ $SECONDS -lt $MULTIPORT_CROSS_DEADLINE ]]; do
+            MULTIPORT_CROSS_ATTEMPTS=$((MULTIPORT_CROSS_ATTEMPTS + 1))
+            MULTIPORT_CROSS_BODY=$(ssh_vm "$CROSS_NODE_SENDER" "curl -sf --connect-timeout 3 --max-time 5 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
+            echo "$MULTIPORT_CROSS_BODY" | grep -qi "hostname" && break
+            sleep 2
+        done
+        log "  Cross-node attempts: $MULTIPORT_CROSS_ATTEMPTS (deadline ${MULTIPORT_CROSS_DEADLINE_SECONDS}s)"
         if echo "$MULTIPORT_CROSS_BODY" | grep -qi "hostname"; then
             MULTIPORT_CROSS_HOST=$(echo "$MULTIPORT_CROSS_BODY" | grep -i "hostname" | head -1)
             log "  Cross-node response: $MULTIPORT_CROSS_HOST"
