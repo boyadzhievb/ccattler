@@ -4,7 +4,9 @@
 package runtime
 
 import (
+	"io"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -429,5 +431,54 @@ func TestExecProcessArgsRunsArgsWithoutShell(t *testing.T) {
 	shellArgs := execProcessArgs(ExecSpec{Command: "pg_isready -U postgres"})
 	if len(shellArgs) != 3 || shellArgs[0] != "sh" || shellArgs[1] != "-c" || shellArgs[2] != "pg_isready -U postgres" {
 		t.Fatalf("Command (probes, hooks) must keep sh -c, got %q", shellArgs)
+	}
+}
+
+// blockingEmptyStream behaves like an exec stdout FIFO with no output: Read
+// blocks until release is closed, then reports EOF.
+type blockingEmptyStream struct {
+	release chan struct{} // release is closed once the other stream has been copied
+}
+
+// Read waits for release and returns EOF.
+func (stream blockingEmptyStream) Read([]byte) (int, error) {
+	<-stream.release
+	return 0, io.EOF
+}
+
+// fifoLikeStream hides strings.Reader's WriteTo, so io.Copy takes the same
+// path as for a containerd FIFO (the destination's ReadFrom when available).
+type fifoLikeStream struct {
+	inner io.Reader // inner supplies the stream content
+}
+
+// Read forwards to the wrapped reader.
+func (stream fifoLikeStream) Read(chunk []byte) (int, error) {
+	return stream.inner.Read(chunk)
+}
+
+// TestSynchronizedOutputBufferKeepsBothStreams copies an empty stdout that is
+// still blocked in Read while stderr is written, as containerd does for exec.
+// A shared bytes.Buffer lost stderr in this case (deploy run 41650731009).
+func TestSynchronizedOutputBufferKeepsBothStreams(t *testing.T) {
+	const stderrText = "Usage of /whoami:\n  -port int\n"
+	for attempt := 0; attempt < 200; attempt++ {
+		outputBuffer := &synchronizedOutputBuffer{}
+		release := make(chan struct{})
+		var copyGroup sync.WaitGroup
+		copyGroup.Add(2)
+		go func() {
+			defer copyGroup.Done()
+			_, _ = io.Copy(outputBuffer, blockingEmptyStream{release: release})
+		}()
+		go func() {
+			defer copyGroup.Done()
+			_, _ = io.Copy(outputBuffer, fifoLikeStream{inner: strings.NewReader(stderrText)})
+			close(release)
+		}()
+		copyGroup.Wait()
+		if got := string(outputBuffer.Bytes()); got != stderrText {
+			t.Fatalf("attempt %d: output %q, want %q", attempt, got, stderrText)
+		}
 	}
 }

@@ -838,10 +838,10 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 		Cwd:  "/",
 	}
 
-	var outputBuffer bytes.Buffer
+	outputBuffer := &synchronizedOutputBuffer{}
 	var ioCreator cio.Creator
 	if captureOutput {
-		ioCreator = cio.NewCreator(cio.WithStreams(nil, &outputBuffer, &outputBuffer))
+		ioCreator = cio.NewCreator(cio.WithStreams(nil, outputBuffer, outputBuffer))
 	} else {
 		ioCreator = cio.NullIO
 	}
@@ -864,7 +864,7 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 	exitStatus := <-exitStatusChannel
 	// The exit status can arrive before containerd has finished copying the
 	// process output into outputBuffer; wait for the copy so the output is
-	// complete and the buffer is not read while still being written.
+	// complete before it is returned.
 	if captureOutput {
 		execProcess.IO().Wait()
 	}
@@ -881,6 +881,29 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 		return outputBuffer.Bytes(), fmt.Errorf("exec in %s exited with code %d", instanceID, exitCode)
 	}
 	return outputBuffer.Bytes(), nil
+}
+
+// synchronizedOutputBuffer collects exec stdout and stderr, which containerd
+// copies in two goroutines. A shared bytes.Buffer is unsafe there: io.Copy uses
+// its ReadFrom, and the stdout copy finishing with zero bytes can truncate what
+// stderr already wrote. Write is serialized and ReadFrom is not exposed.
+type synchronizedOutputBuffer struct {
+	mutex  sync.Mutex   // mutex serializes writes from the stdout and stderr copies
+	buffer bytes.Buffer // buffer holds the combined output in write order
+}
+
+// Write appends a chunk of process output.
+func (outputBuffer *synchronizedOutputBuffer) Write(chunk []byte) (int, error) {
+	outputBuffer.mutex.Lock()
+	defer outputBuffer.mutex.Unlock()
+	return outputBuffer.buffer.Write(chunk)
+}
+
+// Bytes returns a copy of the collected output.
+func (outputBuffer *synchronizedOutputBuffer) Bytes() []byte {
+	outputBuffer.mutex.Lock()
+	defer outputBuffer.mutex.Unlock()
+	return append([]byte(nil), outputBuffer.buffer.Bytes()...)
 }
 
 // minInt returns the smaller of two integers.
