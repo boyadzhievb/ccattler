@@ -828,7 +828,11 @@ log "Testing POST /debug/exec on worker-1..."
 STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
 INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
-    WORKER1_INSTANCE=$(echo "$STATUS_JSON" | jq -r --arg node "$WORKER1_NODE_ID" '[.instances[] | select(.node == $node)][0].id // empty')
+    # Exec runs /whoami -h, so the target must be a worker-1 instance of a
+    # service built from the whoami image (Airflow containers do not have it).
+    WORKER1_INSTANCE=$(echo "$STATUS_JSON" | jq -r --arg node "$WORKER1_NODE_ID" '
+        [.services[] | select(.image | test("whoami")) | .name] as $whoamiServices
+        | [.instances[] | select(.node == $node and (.service as $s | $whoamiServices | index($s)))][0].id // empty')
     if [[ -n "$WORKER1_INSTANCE" ]]; then
         # The e2e images are shell-less whoami, so exec runs the whoami binary
         # itself; exec takes argv without a shell (Flow 24). "-h" prints usage
@@ -842,7 +846,7 @@ if [[ -n "$INSTANCE_ID" ]]; then
         echo "$EXEC_JSON" | jq -r '.output // empty' | grep -qi "usage" || fail "debug/exec in $WORKER1_INSTANCE returned no usage output: $EXEC_JSON"
         log "POST /debug/exec OK for instance $WORKER1_INSTANCE"
     else
-        log "WARNING: No instance placed on worker-1, skipping exec test"
+        log "SKIP: no whoami-image instance on worker-1 — exec checks need the whoami workload"
     fi
 else
     log "WARNING: No placements found, skipping exec test"
