@@ -5,6 +5,7 @@ package security
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -88,5 +89,18 @@ func TestAuthorizedStoreServicePrincipalAuthorizesAsAPIServer(t *testing.T) {
 	lastEntry := auditEntries[len(auditEntries)-1]
 	if lastEntry.Principal != APIServerPrincipal || lastEntry.OnBehalfOf != "user:bob" {
 		t.Fatalf("audit must record the service principal acting for the user, got %+v", lastEntry)
+	}
+}
+
+func TestAuditLogsSanitizeEveryWriter(t *testing.T) {
+	forgedPrincipal := "user:mallory\n2026-11-03 allow user:admin"
+	for _, auditLog := range []AuditLogger{NewInMemoryAuditLog(10), NewStoreBackedAuditLog(store.NewMemoryStore(), 10)} {
+		auditLog.Log(AuditEntry{Principal: forgedPrincipal, Action: "apply", Target: "desired/service/web\r\nx", Decision: "deny", Policy: "team:condition_failed\n"})
+		loggedEntry := auditLog.Entries()[0]
+		for fieldName, fieldValue := range map[string]string{"principal": loggedEntry.Principal, "target": loggedEntry.Target, "policy": loggedEntry.Policy} {
+			if strings.ContainsAny(fieldValue, "\n\r") {
+				t.Errorf("%T %s keeps a raw line break: %q", auditLog, fieldName, fieldValue)
+			}
+		}
 	}
 }

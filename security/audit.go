@@ -69,11 +69,27 @@ func NewInMemoryAuditLog(maxEntries int) *InMemoryAuditLog {
 	}
 }
 
+// sanitizeAuditEntry escapes control characters and redacts secret paths in
+// every text field. Principals come from token claims and targets from
+// request input, so a value containing a newline could otherwise forge audit
+// lines. Applied by every AuditLogger so no writer can skip it.
+func sanitizeAuditEntry(entry AuditEntry) AuditEntry {
+	entry.Principal = sanitizeForAudit(entry.Principal)
+	entry.Action = sanitizeForAudit(entry.Action)
+	entry.Target = sanitizeForAudit(entry.Target)
+	entry.Decision = sanitizeForAudit(entry.Decision)
+	entry.AuthMethod = sanitizeForAudit(entry.AuthMethod)
+	entry.Policy = sanitizeForAudit(entry.Policy)
+	entry.OnBehalfOf = sanitizeForAudit(entry.OnBehalfOf)
+	return entry
+}
+
 // Log appends an entry to the audit log with the current timestamp.
 func (auditLog *InMemoryAuditLog) Log(entry AuditEntry) {
 	auditLog.mutex.Lock()
 	defer auditLog.mutex.Unlock()
 
+	entry = sanitizeAuditEntry(entry)
 	entry.Timestamp = time.Now()
 
 	if len(auditLog.entries) >= auditLog.maxEntries {
@@ -126,6 +142,7 @@ func NewStoreBackedAuditLog(stateStore store.StateStore, maxEntries int) *StoreB
 // Log records an audit entry to the in-memory buffer and persists it to the
 // store asynchronously.
 func (auditLog *StoreBackedAuditLog) Log(entry AuditEntry) {
+	entry = sanitizeAuditEntry(entry)
 	entry.Timestamp = time.Now()
 
 	auditLog.mutex.Lock()
