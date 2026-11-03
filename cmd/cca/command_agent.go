@@ -293,7 +293,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	registerLocalNode(ctx, factStore, parsedConfig.nodeID)
+	registerAgentNode(ctx, factStore, parsedConfig.nodeID)
 
 	containerNetworkCIDR := parsedConfig.clusterCIDR
 	var vxlanReconciler *agent.VXLANReconciler
@@ -380,6 +380,24 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	<-ctx.Done()
 	fmt.Printf("\nAgent %s shutting down...\n", parsedConfig.nodeID)
 	performAgentShutdownCleanup(nodeAgent, runtimeAdapter)
+}
+
+// registerAgentNode registers this node with its real schedulable capacity
+// (agent.DetectNodeCapacity: all CPUs, MemTotal minus the system reserve).
+// The simulated 4000m / 8192Mi default let the scheduler overcommit small
+// machines; run and demo modes keep it through registerLocalNode.
+func registerAgentNode(ctx context.Context, factStore store.StateStore, nodeID string) {
+	nodeCapacity := agent.DetectNodeCapacity()
+	if writeError := types.WriteNode(ctx, factStore, types.Node{
+		ID: nodeID, State: types.NodeAlive,
+		CapacityCPU: nodeCapacity.CPUMillicores, CapacityMemory: nodeCapacity.MemoryMiB,
+		AvailableCPU: nodeCapacity.CPUMillicores, AvailableMemory: nodeCapacity.MemoryMiB,
+	}); writeError != nil {
+		logging.Default().Error("failed to write node", "node", nodeID, "error", writeError.Error())
+		return
+	}
+	fmt.Printf("Agent %s: capacity %dm CPU, %dMi memory — %s\n",
+		nodeID, nodeCapacity.CPUMillicores, nodeCapacity.MemoryMiB, nodeCapacity.Source)
 }
 
 // startAgentDebugServer starts the debug API and publishes its URL. With TLS

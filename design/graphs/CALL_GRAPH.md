@@ -474,6 +474,18 @@ DataPlaneReconciler.Reconcile
 └── DataPlaneProvider.ReconcileRouteDataPlane(routeConfigs)
 ```
 
+### Agent startup: registerAgentNode (node capacity)
+```
+registerAgentNode(ctx, factStore, nodeID)            [cmd/cca/command_agent.go]
+├── agent.DetectNodeCapacity()                       [agent/capacity.go]
+│   ├── runtime.NumCPU() × 1000 → CPU millicores
+│   ├── parseMemTotalMiB(/proc/meminfo)
+│   ├── allocatableMemoryMiB(total)                  [total − max(768Mi, total/10)]
+│   └── no /proc/meminfo → simulated 4000m / 8192Mi (logged as such)
+└── types.WriteNode(capacity = available = detected)
+```
+run/demo modes keep registerLocalNode (simulated capacity).
+
 ### Agent startup: initializeDataPlaneIfSupported
 ```
 initializeDataPlaneIfSupported

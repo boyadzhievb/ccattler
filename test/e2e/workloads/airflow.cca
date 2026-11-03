@@ -108,10 +108,12 @@ service webserver {
     }
     resources {
         cpu 500m
-        memory 2048Mi
+        memory 1024Mi
     }
     config {
         env AIRFLOW__CORE__EXECUTOR CeleryExecutor
+        # 2 gunicorn workers (default 4): about 550 MB on the 4 GiB deploy VMs
+        env AIRFLOW__WEBSERVER__WORKERS "2"
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
@@ -148,7 +150,7 @@ service scheduler {
     }
     resources {
         cpu 500m
-        memory 2048Mi
+        memory 1536Mi
     }
     config {
         env AIRFLOW__CORE__EXECUTOR CeleryExecutor
@@ -205,10 +207,12 @@ service worker {
     }
     resources {
         cpu 1000m
-        memory 4096Mi
+        memory 1536Mi
     }
     config {
         env AIRFLOW__CORE__EXECUTOR CeleryExecutor
+        # 4 Celery processes (default 16 used ~1.9 GiB per worker)
+        env AIRFLOW__CELERY__WORKER_CONCURRENCY "4"
         env AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD "cat /run/connections/airflow-db"
         env AIRFLOW__CELERY__BROKER_URL "redis://redis:6379/0"
         env AIRFLOW__CELERY__RESULT_BACKEND_CMD "cat /run/connections/airflow-celery-backend"
