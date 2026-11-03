@@ -839,6 +839,7 @@ if [[ -n "$INSTANCE_ID" ]]; then
         echo "$EXEC_JSON" | grep -q '"instance_id"' || fail "debug/exec missing instance_id"
         EXEC_ERROR=$(echo "$EXEC_JSON" | jq -r '.error // empty')
         [[ -z "$EXEC_ERROR" ]] || fail "debug/exec in $WORKER1_INSTANCE failed: $EXEC_ERROR"
+        echo "$EXEC_JSON" | jq -r '.output // empty' | grep -qi "usage" || fail "debug/exec in $WORKER1_INSTANCE returned no usage output: $EXEC_JSON"
         log "POST /debug/exec OK for instance $WORKER1_INSTANCE"
     else
         log "WARNING: No instance placed on worker-1, skipping exec test"

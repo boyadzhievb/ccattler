@@ -862,6 +862,12 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 	}
 
 	exitStatus := <-exitStatusChannel
+	// The exit status can arrive before containerd has finished copying the
+	// process output into outputBuffer; wait for the copy so the output is
+	// complete and the buffer is not read while still being written.
+	if captureOutput {
+		execProcess.IO().Wait()
+	}
 	exitCode, exitError := exitStatus.ExitCode(), exitStatus.Error()
 	if exitError != nil {
 		oomSuffix := containerdRuntime.detectOOMKill(namespacedCtx, task)
