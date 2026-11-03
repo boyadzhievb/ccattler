@@ -41,7 +41,7 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [x] Green on the deploy cluster 3 consecutive runs (beea1ae: 41652626638, 41655543117, 41656173560, workloads whoami, whoami-multiport, gate-tls)
 - [ ] One-off run on the bare-metal eBPF cluster
-- [ ] `gate-tls` added to deploy-testbed workflow default workloads
+- [x] `gate-tls` added to deploy-testbed workflow default workloads (`airflow,whoami,whoami-multiport,gate-tls`)
 - [x] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
 
 ### Security review (2026-11-03) — Phases 171–177

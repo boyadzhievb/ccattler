@@ -6,9 +6,10 @@ on:
       workload:
         description: "Workloads to deploy (comma-separated or 'all')"
         required: false
-        default: "airflow,whoami,whoami-multiport"
+        default: "airflow,whoami,whoami-multiport,gate-tls"
         type: choice
         options:
+          - "airflow,whoami,whoami-multiport,gate-tls"
           - "airflow,whoami,whoami-multiport"
           - "airflow,whoami"
           - "airflow"
@@ -60,7 +61,7 @@ jobs:
 
       - name: Deploy cluster (3-node, no teardown, source-built binary)
         run: |
-          WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport' }}"
+          WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport,gate-tls' }}"
           DATAPLANE="${{ inputs.dataplane || 'ebpf' }}"
           ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" --dataplane "$DATAPLANE"
 
