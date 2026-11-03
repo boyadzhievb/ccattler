@@ -5,8 +5,13 @@ package api
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -231,5 +236,68 @@ func TestNodeDebugProxyReportsMissingDebugAddress(t *testing.T) {
 	recorder := fixture.serveAs("admin", http.MethodGet, "/api/node/debug/worker-9/containers")
 	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "--debug-listen") {
 		t.Fatalf("missing debug address: got HTTP %d: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// parsedTestCertificate issues a certificate for commonName with the given
+// TTL from certificateAuthority and returns it parsed.
+func parsedTestCertificate(t *testing.T, certificateAuthority *security.CertificateAuthority, commonName string, certificateTTL time.Duration) *x509.Certificate {
+	t.Helper()
+	issuedCertificate, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: commonName, TTL: certificateTTL})
+	if issueError != nil {
+		t.Fatalf("issue certificate: %v", issueError)
+	}
+	certificateBlock, _ := pem.Decode(issuedCertificate.CertificatePEM)
+	parsedCertificate, parseError := x509.ParseCertificate(certificateBlock.Bytes)
+	if parseError != nil {
+		t.Fatalf("parse certificate: %v", parseError)
+	}
+	return parsedCertificate
+}
+
+// enrolledNodeCertificate signs a CSR the way enrollment does (Flow 11), giving
+// a client-auth-only certificate with CN = nodeID.
+func enrolledNodeCertificate(t *testing.T, certificateAuthority *security.CertificateAuthority, nodeID string) *x509.Certificate {
+	t.Helper()
+	nodeKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csrDER, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{Subject: pkix.Name{CommonName: nodeID}}, nodeKey)
+	parsedCSR, _ := x509.ParseCertificateRequest(csrDER)
+	signResponse, signError := certificateAuthority.SignCSR(security.SignCSRRequest{CSR: parsedCSR, TTL: time.Hour, CommonName: nodeID, DNSNames: []string{nodeID}})
+	if signError != nil {
+		t.Fatalf("sign CSR: %v", signError)
+	}
+	certificateBlock, _ := pem.Decode(signResponse.CertificatePEM)
+	parsedCertificate, _ := x509.ParseCertificate(certificateBlock.Bytes)
+	return parsedCertificate
+}
+
+// TestVerifyNodeCertificate covers the custom check that replaces Go's default
+// verification for the agent debug proxy (code scanning alert #21): chain to
+// the cluster CA, validity period, and CN pinned to the node ID.
+func TestVerifyNodeCertificate(t *testing.T) {
+	clusterAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
+	foreignAuthority, _ := security.NewCertificateAuthority(24 * time.Hour)
+	clusterRoots := x509.NewCertPool()
+	clusterRoots.AppendCertsFromPEM(clusterAuthority.CACertificatePEM())
+
+	enrolledCertificate := enrolledNodeCertificate(t, clusterAuthority, "worker-1")
+	if len(enrolledCertificate.ExtKeyUsage) != 1 || enrolledCertificate.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Fatalf("test setup: enrolled certificate must be client-auth only, got %v", enrolledCertificate.ExtKeyUsage)
+	}
+	if verifyError := verifyNodeCertificate([]*x509.Certificate{enrolledCertificate}, clusterRoots, "worker-1"); verifyError != nil {
+		t.Fatalf("an enrolled client-auth-only certificate for the node must be accepted: %v", verifyError)
+	}
+
+	rejectionCases := map[string][]*x509.Certificate{
+		"no certificate":       nil,
+		"foreign CA":           {parsedTestCertificate(t, foreignAuthority, "worker-1", time.Hour)},
+		"expired":              {parsedTestCertificate(t, clusterAuthority, "worker-1", -time.Hour)},
+		"another node's CN":    {enrolledNodeCertificate(t, clusterAuthority, "worker-2")},
+		"server identity's CN": {parsedTestCertificate(t, clusterAuthority, "ccattler-server", time.Hour)},
+	}
+	for caseName, peerCertificates := range rejectionCases {
+		if verifyNodeCertificate(peerCertificates, clusterRoots, "worker-1") == nil {
+			t.Errorf("%s: certificate must be rejected", caseName)
+		}
 	}
 }
