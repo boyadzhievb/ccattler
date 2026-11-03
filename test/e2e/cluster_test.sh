@@ -1216,42 +1216,73 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     else
 
     ssh_vm "$WORKER1_NODE" "sudo systemctl stop cca-agent" || fail "Failed to stop agent on worker-1"
+    FAILOVER_START=$SECONDS
     log "  Stopped cca-agent on worker-1"
 
-    FAILOVER_DEADLINE=$((SECONDS + 30))
+    # Flow 13 fast path: other agents drop a node's backends once its heartbeat
+    # is older than defaultNodeStalenessThreshold (30s) plus one data plane
+    # cycle (1s). Before that a request may still reach the stopped node, so
+    # the assertion is that after the threshold every request succeeds:
+    # NODE_FAILOVER_REQUIRED_STREAK consecutive answers within the deadline.
+    NODE_STALENESS_SECONDS=30
+    NODE_FAILOVER_DEADLINE_SECONDS=75
+    NODE_FAILOVER_REQUIRED_STREAK=5
+    FAILOVER_DEADLINE=$((FAILOVER_START + NODE_FAILOVER_DEADLINE_SECONDS))
+    FAILOVER_STREAK=0
     FAILOVER_SUCCESS=false
     while [[ $SECONDS -lt $FAILOVER_DEADLINE ]]; do
-        HTTP_CODE=$(ssh_vm "$WORKER2_NODE" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "000")
-        if [[ "$HTTP_CODE" =~ ^[23] ]]; then
-            FAILOVER_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 5 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
-            if echo "$FAILOVER_BODY" | grep -qi "hostname"; then
-                log "  Failover response: $(echo "$FAILOVER_BODY" | grep -i hostname | head -1)"
-                FAILOVER_SUCCESS=true
-                break
+        FAILOVER_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 2 --max-time 4 http://${WHOAMI_VIP}:${WHOAMI_PORT}/ 2>/dev/null" || echo "")
+        if echo "$FAILOVER_BODY" | grep -qi "hostname"; then
+            if [[ $((SECONDS - FAILOVER_START)) -gt $NODE_STALENESS_SECONDS ]]; then
+                FAILOVER_STREAK=$((FAILOVER_STREAK + 1))
             fi
+        else
+            FAILOVER_STREAK=0
         fi
-        sleep 5
+        if [[ $FAILOVER_STREAK -ge $NODE_FAILOVER_REQUIRED_STREAK ]]; then
+            log "  Failover: $FAILOVER_STREAK consecutive responses from $WORKER2_NODE, $((SECONDS - FAILOVER_START))s after stop; last: $(echo "$FAILOVER_BODY" | grep -i hostname | head -1)"
+            FAILOVER_SUCCESS=true
+            break
+        fi
+        sleep 1
     done
 
     ssh_vm "$WORKER1_NODE" "sudo systemctl start cca-agent" || fail "Failed to restart agent on worker-1"
+    RECOVER_START=$SECONDS
     log "  Restarted cca-agent on worker-1"
 
-    RECOVER_DEADLINE=$((SECONDS + 30))
+    # Recovery means worker-1 serves the VIP again, not only that two
+    # instances are running: an agent restart rebuilds the data plane and
+    # cca-vxlan0, and later steps send traffic from worker-1.
+    NODE_RECOVERY_DEADLINE_SECONDS=60
+    NODE_RECOVERY_REQUIRED_STREAK=3
+    RECOVER_DEADLINE=$((RECOVER_START + NODE_RECOVERY_DEADLINE_SECONDS))
+    RECOVER_STREAK=0
+    WORKER1_RECOVERED=false
     while [[ $SECONDS -lt $RECOVER_DEADLINE ]]; do
         RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
-        if [[ "$RUNNING_COUNT" -ge 2 ]]; then
+        if [[ "$RUNNING_COUNT" -ge 2 ]] && ssh_vm "$WORKER1_NODE" "curl -sf -o /dev/null --connect-timeout 2 --max-time 4 http://${WHOAMI_VIP}:${WHOAMI_PORT}/" 2>/dev/null; then
+            RECOVER_STREAK=$((RECOVER_STREAK + 1))
+        else
+            RECOVER_STREAK=0
+        fi
+        if [[ $RECOVER_STREAK -ge $NODE_RECOVERY_REQUIRED_STREAK ]]; then
+            WORKER1_RECOVERED=true
             break
         fi
-        sleep 3
+        sleep 1
     done
     log "  whoami instances after recovery: $RUNNING_COUNT"
 
-    if [[ "$FAILOVER_SUCCESS" == "true" ]]; then
-        log "Node-failure traffic test PASSED — VIP served traffic during worker-1 outage"
-    else
-        fail "Node-failure traffic test FAILED — no successful HTTP response within 45s after worker-1 stopped"
+    if [[ "$FAILOVER_SUCCESS" != "true" ]]; then
+        fail "Node-failure traffic test FAILED — no $NODE_FAILOVER_REQUIRED_STREAK consecutive responses from $WORKER2_NODE within ${NODE_FAILOVER_DEADLINE_SECONDS}s after worker-1 stopped (staleness threshold ${NODE_STALENESS_SECONDS}s, Flow 13)"
     fi
+    if [[ "$WORKER1_RECOVERED" != "true" ]]; then
+        fail "Node-failure recovery FAILED — worker-1 did not reach the whoami VIP $NODE_RECOVERY_REQUIRED_STREAK times in a row within ${NODE_RECOVERY_DEADLINE_SECONDS}s after agent restart"
+    fi
+    log "  worker-1 reaches the whoami VIP again $((SECONDS - RECOVER_START))s after agent restart"
+    log "Node-failure traffic test PASSED — VIP served traffic during worker-1 outage"
 
     fi  # HAS_OTHER_NODE
 else
@@ -1392,12 +1423,19 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
 
     if [[ -n "$MULTIPORT_PORT80_VIP" ]]; then
         log "  Port 80 VIP: $MULTIPORT_PORT80_VIP"
+        MULTIPORT_HTTP_DEADLINE_SECONDS=30
         for vm in "$WORKER1_NODE" "$WORKER2_NODE"; do
-            HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 5 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "000")
+            MULTIPORT_HTTP_DEADLINE=$((SECONDS + MULTIPORT_HTTP_DEADLINE_SECONDS))
+            HTTP_CODE="000"
+            while [[ $SECONDS -lt $MULTIPORT_HTTP_DEADLINE ]]; do
+                HTTP_CODE=$(ssh_vm "$vm" "curl -sf -o /dev/null -w '%{http_code}' --connect-timeout 2 --max-time 4 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "000")
+                [[ "$HTTP_CODE" =~ ^[23] ]] && break
+                sleep 2
+            done
             if [[ "$HTTP_CODE" =~ ^[23] ]]; then
                 log "  HTTP $HTTP_CODE from $vm -> whoami-multiport:80"
             else
-                log "  FAIL: HTTP $HTTP_CODE from $vm -> whoami-multiport:80"
+                log "  FAIL: HTTP $HTTP_CODE from $vm -> whoami-multiport:80 (no success within ${MULTIPORT_HTTP_DEADLINE_SECONDS}s)"
                 MULTIPORT_PASS=false
             fi
         done
