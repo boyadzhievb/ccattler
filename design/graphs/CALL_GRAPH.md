@@ -577,7 +577,7 @@ VXLANReconciler.Reconcile
 │   └── store.Put(observed/node/{nodeID}/subnet)
 │
 ├── ensureVXLANInterfaceExists                [one-shot, guarded by `initialized` flag]
-│   ├── interfaceAlreadyExists("cca-vxlan0")
+│   ├── interfaceAlreadyExists("cca-vxlan0")  [exists → ensureInterfaceUpWithMTU, not trusted as complete]
 │   ├── detectPhysicalInterfaceForAddress
 │   ├── deriveVXLANMACAddress(nodeID)
 │   ├── executeVXLANCreate                    [ip link add cca-vxlan0 type vxlan]
@@ -585,10 +585,15 @@ VXLANReconciler.Reconcile
 │   ├── executeIPLinkSetMTU(1450)
 │   └── executeIPLinkSetUp("cca-vxlan0")
 │
+├── interfaceAlreadyExists                    [every pass; missing → initialized=false, recreate next pass]
 ├── ensureCorrectMACAddress                   [every pass — fixes drift from agent restart races]
 │   ├── readInterfaceMACAddress("cca-vxlan0")
 │   ├── deriveVXLANMACAddress(nodeID)
 │   └── executeIPLinkSetAddress               [only if mismatch]
+├── ensureInterfaceUpWithMTU                  [every pass — a stopped agent can leave cca-vxlan0 down]
+│   ├── net.InterfaceByName → vxlanInterfaceRepairs(flags, mtu)
+│   ├── executeIPLinkSetMTU(1450)             [only if MTU differs]
+│   └── executeIPLinkSetUp                    [only if not up]
 │
 ├── discoverPeerNodes
 │   ├── store.Scan(observed/node/*/address)

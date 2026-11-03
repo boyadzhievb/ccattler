@@ -270,7 +270,7 @@ StoreBackedResolver.ResolveEndpoints(ctx, serviceName)
 VXLANReconciler.Reconcile(ctx)                                 [called every 1s from dataPlaneLoop]
 ├── IF not initialized:
 │   └── ensureVXLANInterfaceExists(ctx)                        :160
-│       ├── interfaceAlreadyExists(ctx, "cca-vxlan0")          :476
+│       ├── interfaceAlreadyExists(ctx, "cca-vxlan0")          :476  [exists → ensureInterfaceUpWithMTU]
 │       ├── detectPhysicalInterfaceForAddress(advertiseAddress) :484
 │       │   └── scans net.Interfaces() → finds NIC with agent's IP
 │       ├── executeVXLANCreate(ctx, physicalInterface, localAddress)  :533
@@ -285,11 +285,18 @@ VXLANReconciler.Reconcile(ctx)                                 [called every 1s 
 │
 ├── disableReversePathFilter(ctx, "cca-vxlan0")                [re-apply every pass]
 │
+├── interfaceAlreadyExists(ctx, "cca-vxlan0")                  [missing → initialized=false, recreate next pass]
+│
 ├── ensureCorrectMACAddress(ctx)                               [re-check every pass]
 │   ├── readInterfaceMACAddress("cca-vxlan0")
 │   │   └── net.InterfaceByName → HardwareAddr.String()
 │   ├── deriveVXLANMACAddress(nodeID)
 │   └── IF mismatch: executeIPLinkSetAddress(ctx, "cca-vxlan0", expectedMAC)
+│
+├── ensureInterfaceUpWithMTU(ctx)                              [re-check every pass]
+│   ├── net.InterfaceByName("cca-vxlan0") → vxlanInterfaceRepairs(flags, mtu)
+│   ├── IF MTU != 1450: executeIPLinkSetMTU
+│   └── IF not up: executeIPLinkSetUp   [agent stopped between "ip link add" and "set up", run 41662762813]
 │
 ├── discoverPeerNodes(ctx)                                     :211
 │   ├── factStore.Scan(ctx, ScanObservedNodes)

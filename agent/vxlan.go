@@ -90,7 +90,18 @@ func (vxlanReconciler *VXLANReconciler) Reconcile(ctx context.Context) {
 			"node", vxlanReconciler.nodeID, "error", rpFilterError.Error())
 	}
 
+	if !interfaceAlreadyExists(ctx, vxlanInterfaceName) {
+		logging.Default().Warn("vxlan: interface missing, recreating on the next pass",
+			"node", vxlanReconciler.nodeID, "interface", vxlanInterfaceName)
+		vxlanReconciler.initialized = false
+		return
+	}
+
 	vxlanReconciler.ensureCorrectMACAddress(ctx)
+	if repairError := vxlanReconciler.ensureInterfaceUpWithMTU(ctx); repairError != nil {
+		logging.Default().Error("vxlan: failed to repair interface",
+			"node", vxlanReconciler.nodeID, "error", repairError.Error())
+	}
 
 	peerNodes, discoverError := vxlanReconciler.discoverPeerNodes(ctx)
 	if discoverError != nil {
@@ -158,10 +169,11 @@ type peerNodeInfo struct {
 }
 
 // ensureVXLANInterfaceExists creates the VXLAN interface if it does not already
-// exist, sets it up, configures the MTU, and assigns the node's overlay IP.
+// exist, sets it up, configures the MTU, and assigns the node's overlay IP. An
+// existing interface is repaired instead of trusted as complete.
 func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.Context) error {
 	if interfaceAlreadyExists(ctx, vxlanInterfaceName) {
-		return nil
+		return vxlanReconciler.ensureInterfaceUpWithMTU(ctx)
 	}
 
 	physicalInterface, detectError := detectPhysicalInterfaceForAddress(vxlanReconciler.advertiseAddress)
@@ -204,6 +216,39 @@ func (vxlanReconciler *VXLANReconciler) ensureVXLANInterfaceExists(ctx context.C
 		"node", vxlanReconciler.nodeID, "interface", vxlanInterfaceName,
 		"mac", derivedMAC, "vni", fmt.Sprintf("%d", vxlanVNI),
 		"mtu", fmt.Sprintf("%d", vxlanBridgeMTU))
+	return nil
+}
+
+// vxlanInterfaceRepairs reports which settings of an existing VXLAN interface
+// differ from the expected state: administratively up and vxlanBridgeMTU.
+func vxlanInterfaceRepairs(interfaceFlags net.Flags, interfaceMTU int) (needsUp bool, needsMTU bool) {
+	return interfaceFlags&net.FlagUp == 0, interfaceMTU != vxlanBridgeMTU
+}
+
+// ensureInterfaceUpWithMTU brings the VXLAN interface up and sets its MTU
+// when they differ from the expected state. An agent stopped between
+// "ip link add" and "ip link set up" leaves the device down; the next agent
+// sees it exists, and without this repair every route fails with "Nexthop
+// device is not up" (deploy run 41662762813). No ip command runs when the
+// interface is already correct.
+func (vxlanReconciler *VXLANReconciler) ensureInterfaceUpWithMTU(ctx context.Context) error {
+	vxlanInterface, lookupError := net.InterfaceByName(vxlanInterfaceName)
+	if lookupError != nil {
+		return fmt.Errorf("looking up %s: %w", vxlanInterfaceName, lookupError)
+	}
+	needsUp, needsMTU := vxlanInterfaceRepairs(vxlanInterface.Flags, vxlanInterface.MTU)
+	if needsMTU {
+		if mtuError := executeIPLinkSetMTU(ctx, vxlanInterfaceName, vxlanBridgeMTU); mtuError != nil {
+			return fmt.Errorf("setting VXLAN MTU: %w", mtuError)
+		}
+	}
+	if needsUp {
+		logging.Default().Warn("vxlan: interface was down, bringing it up",
+			"node", vxlanReconciler.nodeID, "interface", vxlanInterfaceName)
+		if setUpError := executeIPLinkSetUp(ctx, vxlanInterfaceName); setUpError != nil {
+			return fmt.Errorf("setting VXLAN interface up: %w", setUpError)
+		}
+	}
 	return nil
 }
 
