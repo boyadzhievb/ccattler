@@ -57,7 +57,7 @@ A join-token holder could submit a CSR with CN `ccattler-server` and authenticat
 - [x] Join token consumed and node record created in one transaction (no double use)
 - [x] Re-enrolling an already-enrolled node ID requires a token bound to that node ID
 - [x] Unit tests for each rule (`security/enrollment_test.go`, concurrent single-use test); `AUTH_GRAPH.md` and threat model updated
-- [ ] Deploy cluster run: workers join and agents reach etcd and the API with client-auth-only certificates
+- [x] Deploy cluster run: workers join and agents reach etcd and the API with client-auth-only certificates (run 41616667630: both workers re-enrolled, all nodes alive, agent debug mTLS works with the enrolled certificates)
 
 ### Phase 172 — Agent Debug API Lockdown (M172)
 
@@ -122,6 +122,34 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 - [ ] `/api/state` returns raw desired config values: apply the describe/status sensitive-key redaction there too (found during M173)
 - [ ] Paginated store scans
 - [ ] CI check: every `controllers.New*` and API `Set*` has a production caller
+
+### GitOps — Phases 201–202
+
+Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; policy, scheduling, execution and observation stay with CCattler. Ownership and prune come first because they also fix `cca apply` today. Numbers are out of priority order (added 2026-11-03 at the end of the sequence, after M200); renumber in the next priority pass.
+
+### Phase 201 — Apply Ownership & Prune (M201)
+
+- [ ] Design in `design/gitops.md`: owner model, ownership keys, prune rules, conflict rules; flow in `design/runtime-invariant-flows.md`
+- [ ] Decide how `intent/user/` overrides (`cca scale`) relate to an owner: kept as a separate layer or reverted by the owner
+- [ ] Ownership facts per resource (e.g. `source/{owner}/owns/{kind}/{name}`), not per fact key; new root in `controllerOutputPrefixes`, store RBAC roles and `key-ownership-matrix.md`
+- [ ] `cca apply` records owner `cli`; applying a resource owned by another owner is refused with the owner's name
+- [ ] Prune: resources owned by this owner and missing from the applied set are deleted; generalize `collectRemovedGateFacts` to every resource kind
+- [ ] Prune never runs on a partial or failed compile; an empty candidate is refused unless explicitly forced
+- [ ] Per-resource atomic commit (one transaction per resource group, within the etcd operation limit); resumable application recorded by revision
+- [ ] `cca diff` lists additions, changes, removals and ownership conflicts per resource
+- [ ] Integration tests: remove a service from a directory → deleted; another owner's service untouched; repeated apply is a no-op
+
+### Phase 202 — Git Configuration Sources (M202)
+
+- [ ] Design in `design/gitops.md`: source facts, lifecycle, status model, Git client choice (`git` binary vs Go library: air-gap and supply-chain impact)
+- [ ] `cca source add/list/status/diff/sync/pause/resume/remove`; `design/cli-reference.md`
+- [ ] Source reconciler under controller leadership: poll, resolve branch to SHA, fetch only the path, render values, compile, validate, apply through M201 as the source's owner
+- [ ] Source identity: one service principal per source, grants scope what it may manage (e.g. one tenant); compiled facts go through the policy gate
+- [ ] Safe fetch: allowed URL schemes and hosts, path traversal and symlink protection, size limits
+- [ ] Credentials stored as CCattler secrets, never in URLs (depends: M174)
+- [ ] Failure handling: fetch or compile failure keeps last good state, reports Failed, never prunes
+- [ ] Status API: fetched revision, applied revision, sync status, last error; health reported separately from workload observations
+- [ ] Integration tests with a local bare repository; e2e on the deploy cluster
 
 ### Phase 178 — eBPF Data Plane Correctness (M178)
 
@@ -221,6 +249,8 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M190 — Distributed Tracing | 190 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M183. |
 | M191 — DSL Templates & Imports | 191 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. Reconsider first: Go templates + `.ccv` values already cover parameterization. |
 | M192 — eBPF Policy & nftables Elimination | 192 | Second half of the original M151 checklist: tc ingress policy program on cca0 from `derived/network/rule/` facts, default-deny, then remove nftables VIP/masquerade chains under `--dataplane ebpf`; test on bare-metal, Vagrant, Lima; document kernel requirements. Depends: M178. |
+| M201 — Apply Ownership & Prune | 201 | Foundation for GitOps, useful without Git: every resource in desired state has one owner (`cli` for `cca apply`, later a Git source), recorded per resource. `cca apply <dir>` of the same owner deletes resources removed from the files (today only gates are pruned, M170). Applying a resource owned by someone else is refused. Each resource's facts commit atomically; application is resumable and idempotent. `cca diff` shows removals and ownership conflicts in CCattler terms. Proposal: `design/chats/chat-03nov.md` (stage 2). |
+| M202 — Git Configuration Sources | 202 | `cca source add/list/status/diff/sync/pause/resume/remove`. A source = repository, revision, path, values files, sync mode, prune flag. Polls (webhook later), pins the branch to a commit SHA, fetches only the path, renders `.ccv` values, compiles and validates before writing; a failed fetch or compile keeps the last good desired state and never prunes. Applies through M201 ownership as the source's own service identity, scoped by grants (M173). Source status (Synced/OutOfSync/Applying/Failed, fetched vs applied revision) kept separate from workload health. Runs under controller leadership. Credentials as CCattler secrets (M174). Depends: M201, M173, M174. |
 | **Tier 3 — Later / optional** | | |
 | M193 — Multi-Cluster Service Discovery | 193 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
 | M194 — Storage Plugin Interface | 194 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M185. |
@@ -231,6 +261,8 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M199 — Conformance Test Suite | 199 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. Prefer growing it with each milestone over one big phase at the end. |
 | M200 — Airflow Triggerer & Observability | 200 | Placeholder: triggerer service, StatsD exporter, log groomer |
 | **Future (unscheduled)** | | |
+| *(future)* OpenSpec Adoption (pilot) | — | Try OpenSpec (Fission AI, npm `@fission-ai/openspec`) for one change before M201 starts, as discussed in `design/chats/chat-03nov-1.md`. Steps: pin a version (no global `@latest`), run `openspec init --tools claude` on a clean tree and review the `.claude/` diff against the existing agents, skills and workflows (`feature-development.js`, `release-pipeline.js`); keep `openspec/config.yaml` context to a pointer at CLAUDE.md and `design/` instead of restating invariants; first change `git-backed-configuration-sources` with M201 ownership and prune rules as spec deltas. Roles: CLAUDE.md = rules, `design/` = architecture and cross-component flows, `milestones.md` = roadmap (M201/M202 link to the change), `openspec/` = change proposals and behaviour specs of new capabilities. Existing design docs and flows are not migrated. Release order: tasks done → `openspec archive` → `scripts/release.sh`. Decide after M201 whether to keep it or fold the spec into `design/gitops.md`. More input from the maintainer pending. |
+| *(future)* Production GitOps | — | Stage 3 of the GitOps proposal (`design/chats/chat-03nov.md`): signed commit verification, webhook-triggered fetches (a webhook only triggers a fetch, never carries config), approval policies, pull request previews (`cca source diff` against a branch), rollback by repinning a revision, declarative source definitions. Depends: M202. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |
