@@ -98,7 +98,7 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 
 ### Phase 174 — Secrets Architecture (M174)
 
-- [ ] Design in `design/config-secrets.md`: per-node secret delivery, keyring format, rotation flow
+- [ ] Design in `design/config-secrets.md` (draft 2026-11-03, "M174 design" section, awaiting review): implementation-vs-doc audit, key hierarchy (root key → keyring in etcd → DEK), envelope v2 with KEK version and AAD, crash-safe rotation controller, node delivery endpoint, tmpfs materialization, sealed gate TLS keys, enrollment and Ansible changes, migration order
 - [ ] Enrollment response no longer contains the master key
 - [ ] Agents fetch only secrets granted to instances placed on their node
 - [ ] Envelope records key version; keyring persisted before re-wrap; restart test after rotation
