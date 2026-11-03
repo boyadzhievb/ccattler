@@ -847,6 +847,34 @@ StorageController (access=shared):
 
 ---
 
+## Flow 24: Agent Debug API Access (M172)
+
+**Chain:** `cca exec` / `cca logs` / `cca node-inspect` / `cca images` → `GET|POST /api/node/debug/{node}/{endpoint}` on the API server (user token or client cert, capability check) → reads `observed/node/{node}/debug_address` → mTLS request to the agent `/debug/{endpoint}` with the API server's certificate → agent checks the client certificate principal holds a cluster-admin grant → runtime.
+
+The debug API can run commands in any container, so users never reach it directly. User authorization stays in the API layer (CLAUDE.md two-layer rule); the agent authenticates only the control plane.
+
+| Endpoint | Method | API capability |
+|----------|--------|----------------|
+| `containers`, `images`, `stats` | GET | `node.read` |
+| `logs` | GET (streams with `follow=true`) | `workload.read` |
+| `exec` | POST | `workload.exec` |
+| `images/pull` | POST | `node.manage` |
+
+**What must hold:**
+- With `--cert/--key/--ca` (or the auto-discovered `/etc/ccattler/pki` files) the agent serves the debug API over TLS 1.3 and requires a client certificate signed by the cluster CA. It publishes `https://<advertise>:<port>`.
+- The agent allows a request only when `auth/grant/node/<client-cn>/role/cluster-admin` exists. The server principal gets that grant in `bootstrapAdminGrants`; enrolled nodes never do (Flow 11).
+- Without TLS credentials the agent refuses a non-loopback `--debug-listen` and publishes `http://127.0.0.1:<port>` (single-host dev mode).
+- The API server verifies the agent certificate against the cluster CA and requires its CN to equal the target node ID. Enrolled node certificates are client-auth only (Flow 11), so this check accepts any extended key usage. Hostname verification is not used because the address comes from the store.
+- The API server never forwards the caller's `Authorization` header to the agent.
+- Plain `http://` debug addresses are proxied only to loopback hosts.
+
+**What must NOT happen:**
+- A debug endpoint reachable on a host IP without mTLS
+- The CLI or e2e scripts calling the agent debug port directly
+- An unknown endpoint path forwarded to the agent
+
+---
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

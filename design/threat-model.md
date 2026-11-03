@@ -193,7 +193,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 
 **Impact:** Anyone who can reach port 9771 can execute commands in every container on the node.
 
-**Mitigations:** M172. Bind to loopback, then require mTLS and an admin principal.
+**Mitigations (added, M172):** Users reach the debug API only through `/api/node/debug/{node}/{endpoint}` on the API server, which checks a per-endpoint capability (`exec` needs `workload.exec`, `images/pull` needs `node.manage`). The agent serves TLS 1.3, requires a cluster-CA client certificate, and admits only principals holding the cluster-admin grant (the API server). Without TLS credentials it refuses non-loopback addresses. The API server pins the agent certificate CN to the node ID and does not forward the caller's credentials (Flow 24).
 
 ### T13: Cluster Master Key on Every Node (CRITICAL)
 
@@ -231,6 +231,6 @@ User CLI ──→ API Server ──→ etcd (fact store)
 | P2 | Store join token hashes, not plaintext | T7 | **FIXED (Phase 110)** |
 | P2 | Redact config values matching sensitive patterns | T3 | **FIXED (Phase 110)** |
 | P0 | CA sets node cert identity; atomic join-token use | T11 | **FIXED (M171)** — deploy validation pending |
-| P0 | Authenticate the agent debug API | T12 | Open (M172) |
+| P0 | Authenticate the agent debug API | T12 | **FIXED (M172)** — deploy validation pending |
 | P0 | Stop distributing the master key to nodes | T13 | Open (M174) |
 | P0 | Restrict agent store access | T5 | Open (M176) |

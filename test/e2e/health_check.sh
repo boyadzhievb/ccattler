@@ -374,7 +374,8 @@ if [[ -n "$STATUS_JSON" ]]; then
             log "  $vm: no debug address — skipping"
             continue
         fi
-        stats_json=$(ssh_vm "$vm" "curl -sf http://${debug_address}/debug/stats" 2>/dev/null || echo "")
+        stats_json=$(ssh_vm "$CTRL_NAME" \
+            "sudo curl -sf $CCA_TLS_FLAGS ${CCA_API_URL}/api/node/debug/${vm}/stats" 2>/dev/null || echo "")
         if [[ -z "$stats_json" ]]; then
             log "  $vm: debug API unreachable at $debug_address — skipping"
             continue

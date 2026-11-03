@@ -797,14 +797,42 @@ streamContainerLogs(serviceName, instanceID, config)
 ├── discoverInstancePlacement(instanceID)
 │   └── GET /api/state?prefix=placement/instance/{id}
 │       → nodeID
-├── discoverNodeDebugAddress(nodeID)
-│   └── GET /api/state?prefix=observed/node/{nodeID}/debug_address
-│       → host:port
-├── GET http://{debugAddress}/debug/logs?instance={id}&tail=...&follow=...
+├── nodeDebugProxyURL(nodeID, "logs")
+├── GET /api/node/debug/{nodeID}/logs?instance={id}&tail=...&follow=...   [API proxy, Flow 24]
 ├── IF 404 (workload not found):
 │   ├── lookupInstanceState(instanceID) → check if in init/pulling
 │   └── print hint with current instance state
 └── stream response body to stdout
+```
+
+### Agent debug API through the API server proxy (Flow 24)
+```
+CLI: executeNodeInspectCommand / executeExecCommand / executeImages{List,Pull}Command / streamContainerLogs
+├── queryNodeDebugEndpoint(nodeID, endpoint)          [GET, cmd/cca/command_node_inspect.go]
+├── postNodeDebugEndpoint(nodeID, endpoint, body)     [POST]
+└── → {GET|POST} /api/node/debug/{nodeID}/{endpoint}  [user token or client cert]
+
+Server.handleNodeDebugProxy(w, r)                     [api/node_debug_proxy.go]
+├── parseNodeDebugPath → nodeID, endpoint
+├── nodeDebugEndpointRules[endpoint] → method, capability   [unknown → 404]
+├── requireCapability(capability, cluster)
+├── types.ValidateNodeID(nodeID)
+├── factStore.Get("observed/node/{nodeID}/debug_address")
+├── resolveAgentDebugTarget(nodeID, address)
+│   ├── https → buildNodePinnedTLSConfig(agentDebugClientTLS, nodeID)
+│   │   └── VerifyConnection → verifyNodeCertificate(chain → cluster CA, CN == nodeID)
+│   └── http  → loopback hosts only
+└── buildNodeDebugReverseProxy → /debug/{endpoint}    [Authorization/Cookie stripped, FlushInterval -1]
+
+cca agent: startAgentDebugServer(ctx, factStore, runtime, config, agentTLSConfig)   [cmd/cca/command_agent.go]
+├── agent.NewDebugServer(nodeID, listen, runtime, logDir)
+├── IF TLS credentials: SetMutualTLS(tlsConfig, NewClusterAdminGrantChecker(factStore))
+│   └── requireAuthorizedClient: factStore.Get("auth/grant/node/{clientCN}/role/cluster-admin")
+├── CheckListenSecurity → exit on plain non-loopback listen (Start re-checks)
+├── go DebugServer.Start
+└── factStore.Put("observed/node/{nodeID}/debug_address", buildPublishedDebugURL(...))   [https://… or http://127.0.0.1:…]
+
+cca server: SetAgentDebugClientTLS(buildAgentDebugClientTLSConfig(serverTLSConfig))
 ```
 
 ### cca agent debug → local runtime inspection

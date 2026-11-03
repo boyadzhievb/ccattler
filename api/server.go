@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -116,6 +117,7 @@ type Server struct {
 	listener                   net.Listener
 	activeWatchConnectionCount atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
 	externalOIDCConfig         *ExternalOIDCLoginConfig // externalOIDCConfig holds external IdP parameters for browser login.
+	agentDebugClientTLS        *tls.Config              // agentDebugClientTLS is the mTLS client config for the agent debug proxy; nil allows loopback only.
 }
 
 // ExternalOIDCLoginConfig holds the external identity provider parameters that
@@ -380,6 +382,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
 	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))
 	apiServer.mux.HandleFunc("/api/node/enable", apiServer.instrumentedHandler("node-enable", apiServer.handleNodeEnable))
+	apiServer.mux.HandleFunc(nodeDebugPathPrefix, apiServer.handleNodeDebugProxy)
 	apiServer.mux.HandleFunc("/api/user", apiServer.instrumentedHandler("user", apiServer.handleUser))
 	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))
 	apiServer.mux.HandleFunc("/api/role", apiServer.instrumentedHandler("role", apiServer.handleRole))

@@ -4,68 +4,31 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
-	"strings"
 
 	"github.com/boyadzhievb/ccattler/agent"
 )
 
-// executeNodeInspectCommand queries a node agent's debug API and displays
-// live runtime containers, images, and resource usage. It first discovers
-// the agent's debug address from the control plane, then queries the agent
-// directly.
+// executeNodeInspectCommand queries a node agent's debug API through the API
+// server proxy and displays live runtime containers, images, and resource usage.
 func executeNodeInspectCommand(nodeID string) {
-	debugAddress := discoverNodeDebugAddress(nodeID)
+	fmt.Printf("Inspecting node %s\n\n", nodeID)
 
-	fmt.Printf("Inspecting node %s (debug API at %s)\n\n", nodeID, debugAddress)
-
-	displayNodeContainers(debugAddress)
-	displayNodeStats(debugAddress)
-	displayNodeImages(debugAddress)
-}
-
-// discoverNodeDebugAddress reads the node's debug_address fact from the
-// control plane API. Falls back to querying the store directly via the
-// state API endpoint. Exits with an error if the address cannot be found.
-func discoverNodeDebugAddress(nodeID string) string {
-	factKey := fmt.Sprintf("observed/node/%s/debug_address", nodeID)
-	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + factKey
-	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
-	if requestError != nil {
-		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
-		os.Exit(1)
-	}
-	defer func() { _ = httpResponse.Body.Close() }()
-	checkAPIResponseStatus(httpResponse)
-
-	var facts []struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	}
-	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&facts); decodeError != nil {
-		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
-		os.Exit(1)
-	}
-
-	for _, factEntry := range facts {
-		if factEntry.Key == factKey && factEntry.Value != "" {
-			return factEntry.Value
-		}
-	}
-
-	fmt.Fprintf(os.Stderr, "node %q has no debug API address — is the agent running with --debug-listen?\n", nodeID)
-	os.Exit(1)
-	return ""
+	displayNodeContainers(nodeID)
+	displayNodeStats(nodeID)
+	displayNodeImages(nodeID)
 }
 
 // displayNodeContainers fetches and prints the container list from the agent's
 // debug API in a tabular format.
-func displayNodeContainers(debugAddress string) {
-	responseBody := queryAgentDebugEndpoint(debugAddress, "/debug/containers")
+func displayNodeContainers(nodeID string) {
+	responseBody := queryNodeDebugEndpoint(nodeID, "containers")
 
 	var containerResponse agent.DebugContainersResponse
 	if decodeError := json.Unmarshal(responseBody, &containerResponse); decodeError != nil {
@@ -104,8 +67,8 @@ func displayNodeContainers(debugAddress string) {
 
 // displayNodeStats fetches and prints aggregate resource usage from the agent's
 // debug API.
-func displayNodeStats(debugAddress string) {
-	responseBody := queryAgentDebugEndpoint(debugAddress, "/debug/stats")
+func displayNodeStats(nodeID string) {
+	responseBody := queryNodeDebugEndpoint(nodeID, "stats")
 
 	var statsResponse agent.DebugStatsResponse
 	if decodeError := json.Unmarshal(responseBody, &statsResponse); decodeError != nil {
@@ -122,8 +85,8 @@ func displayNodeStats(debugAddress string) {
 }
 
 // displayNodeImages fetches and prints the image list from the agent's debug API.
-func displayNodeImages(debugAddress string) {
-	responseBody := queryAgentDebugEndpoint(debugAddress, "/debug/images")
+func displayNodeImages(nodeID string) {
+	responseBody := queryNodeDebugEndpoint(nodeID, "images")
 
 	var imagesResponse agent.DebugImagesResponse
 	if decodeError := json.Unmarshal(responseBody, &imagesResponse); decodeError != nil {
@@ -148,19 +111,22 @@ func displayNodeImages(debugAddress string) {
 	}
 }
 
-// queryAgentDebugEndpoint sends a GET request to the agent's debug API and
-// returns the response body. Exits on connection failure.
-func queryAgentDebugEndpoint(debugAddress string, endpointPath string) []byte {
-	requestURL := "http://" + debugAddress + endpointPath
-	if strings.HasPrefix(debugAddress, "http://") || strings.HasPrefix(debugAddress, "https://") {
-		requestURL = debugAddress + endpointPath
-	}
-	httpResponse, requestError := http.Get(requestURL) //nolint:gosec // CLI connects to agent debug API
+// nodeDebugProxyURL returns the API server URL that proxies the given debug
+// endpoint on a node's agent (Flow 24).
+func nodeDebugProxyURL(nodeID string, endpointName string) string {
+	return statusAPIBaseURL() + "/api/node/debug/" + url.PathEscape(nodeID) + "/" + endpointName
+}
+
+// queryNodeDebugEndpoint sends an authenticated GET for a node debug endpoint
+// through the API server and returns the response body. Exits on failure.
+func queryNodeDebugEndpoint(nodeID string, endpointName string) []byte {
+	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(nodeDebugProxyURL(nodeID, endpointName)) //nolint:gosec // CLI connects to user-configured API server
 	if requestError != nil {
-		fmt.Fprintf(os.Stderr, "cannot connect to agent debug API at %s: %v\n", debugAddress, requestError)
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
 
 	responseBody, readError := io.ReadAll(httpResponse.Body)
 	if readError != nil {
@@ -168,6 +134,12 @@ func queryAgentDebugEndpoint(debugAddress string, endpointPath string) []byte {
 		os.Exit(1)
 	}
 	return responseBody
+}
+
+// postNodeDebugEndpoint sends an authenticated JSON POST for a node debug
+// endpoint through the API server. The caller closes the response body.
+func postNodeDebugEndpoint(nodeID string, endpointName string, requestBody []byte) (*http.Response, error) {
+	return buildAuthenticatedHTTPClient().Post(nodeDebugProxyURL(nodeID, endpointName), "application/json", bytes.NewReader(requestBody))
 }
 
 // formatBytesHuman formats a byte count into a human-readable string with

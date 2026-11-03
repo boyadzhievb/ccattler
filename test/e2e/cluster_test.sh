@@ -800,19 +800,27 @@ fi
 [[ -n "$WORKER1_DEBUG_ADDR" ]] || fail "Worker-1 debug address not found in etcd"
 log "Worker-1 debug API at $WORKER1_DEBUG_ADDR"
 
-log "Testing GET /debug/containers on worker-1..."
-CONTAINERS_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/containers" 2>&1) || fail "debug/containers request failed"
+# Flow 24: the debug API is mTLS-only and reached through the API server proxy.
+[[ "$WORKER1_DEBUG_ADDR" == https://* ]] || fail "worker-1 debug API is not published as https:// ($WORKER1_DEBUG_ADDR)"
+if curl -sfk --max-time 5 "${WORKER1_DEBUG_ADDR}/debug/containers" >/dev/null 2>&1; then
+    fail "worker-1 debug API answered a request without a client certificate"
+fi
+log "Debug API rejects requests without a client certificate"
+DEBUG_PROXY="${CCA_API}/api/node/debug/${WORKER1_NODE_ID}"
+
+log "Testing GET /debug/containers on worker-1 (via API proxy)..."
+CONTAINERS_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/containers" 2>&1) || fail "debug/containers request failed"
 echo "$CONTAINERS_JSON" | grep -q '"node_id"' || fail "debug/containers missing node_id"
 CONTAINER_COUNT=$(echo "$CONTAINERS_JSON" | grep -o '"count":[0-9]*' | head -1 | cut -d: -f2)
 log "GET /debug/containers OK — $CONTAINER_COUNT containers on worker-1"
 
 log "Testing GET /debug/stats on worker-1..."
-STATS_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/stats" 2>&1) || fail "debug/stats request failed"
+STATS_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/stats" 2>&1) || fail "debug/stats request failed"
 echo "$STATS_JSON" | grep -q '"workload_count"' || fail "debug/stats missing workload_count"
 log "GET /debug/stats OK"
 
 log "Testing GET /debug/images on worker-1..."
-IMAGES_JSON=$(curl -sf "http://${WORKER1_DEBUG_ADDR}/debug/images" 2>&1) || fail "debug/images request failed"
+IMAGES_JSON=$(curl -sf $CURL_TLS "${DEBUG_PROXY}/images" 2>&1) || fail "debug/images request failed"
 echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images field"
 log "GET /debug/images OK"
 
@@ -822,7 +830,7 @@ INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
     WORKER1_INSTANCE=$(echo "$STATUS_JSON" | jq -r --arg node "$WORKER1_NODE_ID" '[.instances[] | select(.node == $node)][0].id // empty')
     if [[ -n "$WORKER1_INSTANCE" ]]; then
-        EXEC_JSON=$(curl -sf -X POST "http://${WORKER1_DEBUG_ADDR}/debug/exec" \
+        EXEC_JSON=$(curl -sf $CURL_TLS -X POST "${DEBUG_PROXY}/exec" \
             -H "Content-Type: application/json" \
             -d "{\"instance_id\":\"$WORKER1_INSTANCE\",\"command\":\"hostname\"}" 2>&1) || log "WARNING: exec request returned non-zero"
         echo "$EXEC_JSON" | grep -q '"instance_id"' || fail "debug/exec missing instance_id"
@@ -836,7 +844,7 @@ fi
 
 PULL_REF="${LOCAL_REGISTRY}/whoami:latest"
 log "Testing POST /debug/images/pull on worker-1 (image: ${PULL_REF})..."
-PULL_JSON=$(curl -sf --max-time 60 -X POST "http://${WORKER1_DEBUG_ADDR}/debug/images/pull" \
+PULL_JSON=$(curl -sf $CURL_TLS --max-time 60 -X POST "${DEBUG_PROXY}/images/pull" \
     -H "Content-Type: application/json" \
     -d "{\"image\":\"${PULL_REF}\"}" 2>&1) || fail "debug/images/pull request failed"
 echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"

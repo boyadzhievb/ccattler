@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"os"
@@ -287,7 +288,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 			parsedConfig.nodeID, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
 	}
 
-	loadAgentTLSCredentialsIfPresent(parsedConfig.nodeID, parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
+	agentTLSConfig := loadAgentTLSCredentialsIfPresent(parsedConfig.nodeID, parsedConfig.tlsCertPath, parsedConfig.tlsKeyPath, parsedConfig.tlsCACertPath)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -366,17 +367,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	}()
 
 	if parsedConfig.debugListenAddress != "" {
-		debugServer := agent.NewDebugServer(parsedConfig.nodeID, parsedConfig.debugListenAddress, runtimeAdapter, runtime.ContainerdLogBaseDir)
-		go func() {
-			if debugError := debugServer.Start(ctx); debugError != nil {
-				logging.Default().Error("debug API server error", "node", parsedConfig.nodeID, "error", debugError.Error())
-			}
-		}()
-		publishableDebugAddress := buildPublishableDebugAddress(parsedConfig.debugListenAddress, parsedConfig.advertiseAddress)
-		if _, putError := factStore.Put(ctx, types.KeyObservedNodeDebugAddress(parsedConfig.nodeID), []byte(publishableDebugAddress)); putError != nil {
-			logging.Default().Error("failed to publish debug address", "node", parsedConfig.nodeID, "error", putError.Error())
-		}
-		fmt.Printf("Agent %s: debug API listening on %s (published as %s)\n", parsedConfig.nodeID, parsedConfig.debugListenAddress, publishableDebugAddress)
+		startAgentDebugServer(ctx, factStore, runtimeAdapter, parsedConfig, agentTLSConfig)
 	}
 
 	if parsedConfig.proxyEnabled {
@@ -391,10 +382,47 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	performAgentShutdownCleanup(nodeAgent, runtimeAdapter)
 }
 
+// startAgentDebugServer starts the debug API and publishes its URL. With TLS
+// credentials it requires mTLS from a cluster-admin principal (the API server
+// proxy, Flow 24); without them a non-loopback address is a configuration
+// error and the agent exits.
+func startAgentDebugServer(ctx context.Context, factStore store.StateStore, runtimeAdapter runtime.Runtime, parsedConfig agentCommandConfig, agentTLSConfig *tls.Config) {
+	debugServer := agent.NewDebugServer(parsedConfig.nodeID, parsedConfig.debugListenAddress, runtimeAdapter, runtime.ContainerdLogBaseDir)
+	if agentTLSConfig != nil {
+		debugServer.SetMutualTLS(agentTLSConfig, agent.NewClusterAdminGrantChecker(factStore))
+	}
+	if securityError := debugServer.CheckListenSecurity(); securityError != nil {
+		fmt.Fprintf(os.Stderr, "error: agent %s: %v\n", parsedConfig.nodeID, securityError)
+		os.Exit(1)
+	}
+	go func() {
+		if debugError := debugServer.Start(ctx); debugError != nil {
+			logging.Default().Error("debug API server error", "node", parsedConfig.nodeID, "error", debugError.Error())
+		}
+	}()
+
+	publishedDebugURL := buildPublishedDebugURL(parsedConfig.debugListenAddress, parsedConfig.advertiseAddress, agentTLSConfig != nil)
+	if _, putError := factStore.Put(ctx, types.KeyObservedNodeDebugAddress(parsedConfig.nodeID), []byte(publishedDebugURL)); putError != nil {
+		logging.Default().Error("failed to publish debug address", "node", parsedConfig.nodeID, "error", putError.Error())
+	}
+	fmt.Printf("Agent %s: debug API listening on %s (published as %s)\n", parsedConfig.nodeID, parsedConfig.debugListenAddress, publishedDebugURL)
+}
+
+// buildPublishedDebugURL returns the debug API URL other components use. A
+// TLS listener is published as https:// on the reachable address; a plain
+// listener is loopback-only and published as http:// on its listen address.
+func buildPublishedDebugURL(debugListenAddress string, advertiseAddress string, tlsEnabled bool) string {
+	if tlsEnabled {
+		return "https://" + buildPublishableDebugAddress(debugListenAddress, advertiseAddress)
+	}
+	return "http://" + debugListenAddress
+}
+
 // loadAgentTLSCredentialsIfPresent discovers TLS credentials in the default data
 // directory if no explicit paths were provided, and loads them if found. Prints
-// status messages about credential discovery and loading.
-func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACertPath string) {
+// status messages about credential discovery and loading. Returns the mTLS
+// server config built from the credentials, or nil when none were found.
+func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACertPath string) *tls.Config {
 	if tlsCertPath == "" {
 		const systemPKIDirectory = "/etc/ccattler/pki"
 		discoveredCertPath := systemPKIDirectory + "/node.pem"
@@ -407,10 +435,12 @@ func loadAgentTLSCredentialsIfPresent(nodeID, tlsCertPath, tlsKeyPath, tlsCACert
 			fmt.Printf("Agent %s auto-discovered credentials from %s\n", nodeID, systemPKIDirectory)
 		}
 	}
-	if tlsCertPath != "" {
-		loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath, false)
-		fmt.Printf("Agent %s TLS credentials loaded\n", nodeID)
+	if tlsCertPath == "" {
+		return nil
 	}
+	agentTLSConfig := loadServerTLSConfig(tlsCertPath, tlsKeyPath, tlsCACertPath, false)
+	fmt.Printf("Agent %s TLS credentials loaded\n", nodeID)
+	return agentTLSConfig
 }
 
 // createAgentRuntimeAdapter creates the appropriate runtime adapter based on

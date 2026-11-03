@@ -279,6 +279,7 @@ ServiceScope(serviceName) → "service/" + serviceName           [:35]
 | workload.create      | Create services via apply                 |
 | workload.update      | Modify services (image, config)           |
 | workload.delete      | Remove services                           |
+| workload.exec        | Run commands in containers (debug proxy)  |
 | secret.metadata.read | List secret names and grants              |
 | secret.read          | Retrieve plaintext secret values          |
 | secret.use           | Mount secrets into workloads              |

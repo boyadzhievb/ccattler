@@ -155,6 +155,7 @@ what the user can do, not which API endpoint they call.
 ```
 Capabilities (from security/capability.go):
   workload.read      workload.create     workload.update     workload.delete
+  workload.exec      (run commands in containers via the agent debug proxy)
   secret.metadata.read  secret.read      secret.use          secret.write
   node.read          node.manage
   placement.read     placement.write

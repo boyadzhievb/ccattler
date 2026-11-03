@@ -6,14 +6,18 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
-	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/agent"
+	"github.com/boyadzhievb/ccattler/api"
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/security"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 func TestFormatBytesHuman(testContext *testing.T) {
@@ -60,38 +64,55 @@ func TestBuildPublishableDebugAddress(testContext *testing.T) {
 	}
 }
 
-func TestQueryAgentDebugEndpoint(testContext *testing.T) {
-	simulatorRuntime := runtime.NewSimulatorRuntime()
-	ctx := context.Background()
-	simulatorRuntime.Start(ctx, runtime.Spec{ID: "test-instance", ServiceName: "web", Image: "nginx:1.28"})
-
+// startTestDebugProxy starts a loopback debug server for nodeID and an API
+// server that proxies to it (Flow 24), and points the CLI at that API server.
+// The API server uses the demo admin authenticator.
+func startTestDebugProxy(testContext *testing.T, nodeID string, runtimeAdapter runtime.Runtime) {
+	testContext.Helper()
 	listener, listenError := net.Listen("tcp", "127.0.0.1:0")
 	if listenError != nil {
 		testContext.Fatalf("failed to listen: %v", listenError)
 	}
-	port := listener.Addr().(*net.TCPAddr).Port
+	listenAddress := listener.Addr().String()
 	listener.Close()
 
-	listenAddress := fmt.Sprintf("127.0.0.1:%d", port)
-	debugServer := agent.NewDebugServer("test-node", listenAddress, simulatorRuntime, "")
-
+	debugServer := agent.NewDebugServer(nodeID, listenAddress, runtimeAdapter, "")
 	serverCtx, serverCancel := context.WithCancel(context.Background())
-	defer serverCancel()
-	go func() {
-		_ = debugServer.Start(serverCtx)
-	}()
-
+	testContext.Cleanup(serverCancel)
+	go func() { _ = debugServer.Start(serverCtx) }()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		conn, dialError := net.Dial("tcp", listenAddress)
-		if dialError == nil {
+		if conn, dialError := net.Dial("tcp", listenAddress); dialError == nil {
 			conn.Close()
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	responseBody := queryAgentDebugEndpoint(listenAddress, "/debug/containers")
+	factStore := store.NewMemoryStore()
+	testContext.Cleanup(func() { factStore.Close() })
+	if _, putError := factStore.Put(context.Background(), types.KeyObservedNodeDebugAddress(nodeID), []byte("http://"+listenAddress)); putError != nil {
+		testContext.Fatalf("publish debug address: %v", putError)
+	}
+	apiServer := api.NewServer(factStore)
+	apiServer.SetAuthenticatorChain(security.NewAuthenticatorChain(&demoAlwaysAdminAuthenticator{}))
+	demoAuthorizer := security.NewAPIAuthorizer()
+	demoAuthorizer.Grant("user:local-demo", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(demoAuthorizer)
+	apiTestServer := httptest.NewServer(apiServer.Handler())
+	testContext.Cleanup(apiTestServer.Close)
+
+	previousScheme, previousAddress := statusAPIScheme, statusAPIListenAddress
+	statusAPIScheme, statusAPIListenAddress = "http", strings.TrimPrefix(apiTestServer.URL, "http://")
+	testContext.Cleanup(func() { statusAPIScheme, statusAPIListenAddress = previousScheme, previousAddress })
+}
+
+func TestQueryNodeDebugEndpointThroughProxy(testContext *testing.T) {
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.Start(context.Background(), runtime.Spec{ID: "test-instance", ServiceName: "web", Image: "nginx:1.28"})
+	startTestDebugProxy(testContext, "test-node", simulatorRuntime)
+
+	responseBody := queryNodeDebugEndpoint("test-node", "containers")
 
 	var containerResponse agent.DebugContainersResponse
 	if decodeError := json.Unmarshal(responseBody, &containerResponse); decodeError != nil {
@@ -108,7 +129,7 @@ func TestQueryAgentDebugEndpoint(testContext *testing.T) {
 		testContext.Errorf("expected instance test-instance, got %q", containerResponse.Containers[0].InstanceID)
 	}
 
-	statsBody := queryAgentDebugEndpoint(listenAddress, "/debug/stats")
+	statsBody := queryNodeDebugEndpoint("test-node", "stats")
 	var statsResponse agent.DebugStatsResponse
 	if decodeError := json.Unmarshal(statsBody, &statsResponse); decodeError != nil {
 		testContext.Fatalf("decode stats error: %v", decodeError)
@@ -117,7 +138,7 @@ func TestQueryAgentDebugEndpoint(testContext *testing.T) {
 		testContext.Errorf("expected running_count=1, got %d", statsResponse.RunningCount)
 	}
 
-	imagesBody := queryAgentDebugEndpoint(listenAddress, "/debug/images")
+	imagesBody := queryNodeDebugEndpoint("test-node", "images")
 	var imagesResponse agent.DebugImagesResponse
 	if decodeError := json.Unmarshal(imagesBody, &imagesResponse); decodeError != nil {
 		testContext.Fatalf("decode images error: %v", decodeError)
@@ -127,11 +148,42 @@ func TestQueryAgentDebugEndpoint(testContext *testing.T) {
 	}
 }
 
-func TestQueryAgentDebugEndpointConnectionFailure(testContext *testing.T) {
-	// queryAgentDebugEndpoint calls os.Exit on failure, so we can't test it
-	// directly in-process. Instead, verify the HTTP request would fail.
-	_, requestError := http.Get("http://127.0.0.1:1/debug/containers") //nolint:gosec // test only
-	if requestError == nil {
-		testContext.Error("expected connection error to port 1")
+func TestPostNodeDebugEndpointThroughProxy(testContext *testing.T) {
+	simulatorRuntime := runtime.NewSimulatorRuntime()
+	simulatorRuntime.Start(context.Background(), runtime.Spec{ID: "exec-test", ServiceName: "web", Image: "nginx:1.28"})
+	startTestDebugProxy(testContext, "test-node", simulatorRuntime)
+
+	requestBody, _ := json.Marshal(agent.DebugExecRequest{InstanceID: "exec-test", Command: "echo hello"})
+	httpResponse, requestError := postNodeDebugEndpoint("test-node", "exec", requestBody)
+	if requestError != nil {
+		testContext.Fatalf("exec through proxy: %v", requestError)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+
+	var execResponse agent.DebugExecResponse
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&execResponse); decodeError != nil {
+		testContext.Fatalf("decode error: %v", decodeError)
+	}
+	if execResponse.InstanceID != "exec-test" || execResponse.Output == "" {
+		testContext.Errorf("unexpected exec response through proxy: %+v", execResponse)
+	}
+}
+
+func TestBuildPublishedDebugURL(testContext *testing.T) {
+	testCases := []struct {
+		debugListen      string
+		advertiseAddress string
+		tlsEnabled       bool
+		expected         string
+	}{
+		{"0.0.0.0:9771", "192.168.1.10", true, "https://192.168.1.10:9771"},
+		{"192.168.1.10:9771", "", true, "https://192.168.1.10:9771"},
+		{"127.0.0.1:9771", "192.168.1.10", false, "http://127.0.0.1:9771"},
+	}
+	for _, testCase := range testCases {
+		if published := buildPublishedDebugURL(testCase.debugListen, testCase.advertiseAddress, testCase.tlsEnabled); published != testCase.expected {
+			testContext.Errorf("buildPublishedDebugURL(%q, %q, %v) = %q, want %q",
+				testCase.debugListen, testCase.advertiseAddress, testCase.tlsEnabled, published, testCase.expected)
+		}
 	}
 }

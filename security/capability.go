@@ -22,6 +22,9 @@ const (
 	// CapabilityWorkloadDelete allows removing services.
 	CapabilityWorkloadDelete Capability = "workload.delete"
 
+	// CapabilityWorkloadExec allows running commands inside workload containers.
+	CapabilityWorkloadExec Capability = "workload.exec"
+
 	// CapabilitySecretMetadataRead allows listing secret names and grants without values.
 	CapabilitySecretMetadataRead Capability = "secret.metadata.read"
 
@@ -62,6 +65,7 @@ var AllCapabilities = []Capability{
 	CapabilityWorkloadCreate,
 	CapabilityWorkloadUpdate,
 	CapabilityWorkloadDelete,
+	CapabilityWorkloadExec,
 	CapabilitySecretMetadataRead,
 	CapabilitySecretRead,
 	CapabilitySecretUse,

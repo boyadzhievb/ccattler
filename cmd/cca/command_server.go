@@ -621,6 +621,7 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetAuditStore(factStore)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
+	statusAPIServer.SetAgentDebugClientTLS(buildAgentDebugClientTLSConfig(serverTLSConfig))
 	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)
 	statusAPIServer.SetUserTokenIssuer(userTokenIssuer)
 
@@ -909,6 +910,27 @@ func preflightCheckEtcdCertPaths(parsedConfig serverCommandConfig) {
 	preflightRequireReadableFile(parsedConfig.etcdKeyPath, "etcd client private key (--etcd-key)")
 	preflightRequireReadableFile(parsedConfig.etcdCACertPath, "etcd CA certificate (--etcd-ca)")
 	preflightRequireSecureKeyPermissions(parsedConfig.etcdKeyPath, "etcd client private key")
+}
+
+// buildAgentDebugClientTLSConfig derives the mTLS client config the API server
+// uses to reach agent debug APIs: the server certificate (static or rotated)
+// as client certificate and the cluster CA as roots. Returns nil without TLS.
+func buildAgentDebugClientTLSConfig(serverTLSConfig *tls.Config) *tls.Config {
+	if serverTLSConfig == nil {
+		return nil
+	}
+	clientTLSConfig := &tls.Config{
+		RootCAs:    serverTLSConfig.ClientCAs,
+		MinVersion: tls.VersionTLS13,
+	}
+	if len(serverTLSConfig.Certificates) > 0 {
+		clientTLSConfig.Certificates = serverTLSConfig.Certificates
+	} else if serverTLSConfig.GetCertificate != nil {
+		clientTLSConfig.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return serverTLSConfig.GetCertificate(&tls.ClientHelloInfo{})
+		}
+	}
+	return clientTLSConfig
 }
 
 // bootstrapAdminGrants persists the cluster-admin role definition and grants

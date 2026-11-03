@@ -4,10 +4,8 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
@@ -15,8 +13,8 @@ import (
 )
 
 // executeExecCommand runs a command inside a container instance by discovering
-// which node hosts the instance, then relaying the exec request through the
-// agent's debug API. The command arguments follow a "--" separator.
+// which node hosts the instance, then sending the exec request through the API
+// server's agent debug proxy. The command arguments follow a "--" separator.
 func executeExecCommand(instanceID string, commandParts []string) {
 	command := strings.Join(commandParts, " ")
 	if command == "" {
@@ -25,7 +23,6 @@ func executeExecCommand(instanceID string, commandParts []string) {
 	}
 
 	placementNodeID := discoverInstancePlacement(instanceID)
-	debugAddress := discoverNodeDebugAddress(placementNodeID)
 
 	execRequest := agent.DebugExecRequest{
 		InstanceID: instanceID,
@@ -37,14 +34,9 @@ func executeExecCommand(instanceID string, commandParts []string) {
 		os.Exit(1)
 	}
 
-	requestURL := "http://" + debugAddress + "/debug/exec"
-	if strings.HasPrefix(debugAddress, "http://") || strings.HasPrefix(debugAddress, "https://") {
-		requestURL = debugAddress + "/debug/exec"
-	}
-
-	httpResponse, requestError := http.Post(requestURL, "application/json", bytes.NewReader(requestBody)) //nolint:gosec // CLI connects to agent debug API
+	httpResponse, requestError := postNodeDebugEndpoint(placementNodeID, "exec", requestBody)
 	if requestError != nil {
-		fmt.Fprintf(os.Stderr, "cannot connect to agent debug API at %s: %v\n", debugAddress, requestError)
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()

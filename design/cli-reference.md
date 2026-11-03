@@ -40,7 +40,7 @@ cca rollout restart <service>  # rolling restart all instances
 cca drain <node-id> [flags]    # gracefully evict instances from a node
 cca disable-node <node-id>     # exclude node from new placements
 cca enable-node <node-id>      # return disabled node to normal scheduling
-cca node-inspect <node-id>     # query agent debug API
+cca node-inspect <node-id>     # query agent debug API (via API server)
 cca exec <id> -- <command>
 cca images list/pull
 cca top [nodes|workloads]

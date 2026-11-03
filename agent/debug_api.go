@@ -5,7 +5,9 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // defaultDebugReadTimeout is the HTTP read timeout for the debug server.
@@ -27,18 +31,38 @@ const defaultDebugWriteTimeout = 120 * time.Second
 // defaultHTTPShutdownTimeout is the grace period for HTTP server shutdown.
 const defaultHTTPShutdownTimeout = 5 * time.Second
 
-// DebugServer serves agent-local HTTP debug endpoints that expose runtime
-// state without going through the control plane. It provides three endpoints:
+// DebugServer serves agent-local debug endpoints that expose runtime state:
+// /debug/containers, /debug/images, /debug/stats, /debug/logs, /debug/exec and
+// /debug/images/pull. Users reach it only through the API server proxy.
 //
-//   - GET /debug/containers — list all containers with their running state
-//   - GET /debug/images     — list locally cached container images
-//   - GET /debug/stats      — aggregate resource usage across all containers
+// The debug API can run commands in any container. Without TLS it only binds
+// to loopback; with SetMutualTLS it requires a cluster-CA client certificate
+// whose principal passes the access checker (Flow 24).
 type DebugServer struct {
-	nodeID         string          // nodeID identifies this node in response payloads.
-	runtimeAdapter runtime.Runtime // runtimeAdapter is the runtime to query for containers and stats.
-	logBaseDir     string          // logBaseDir is the directory where container log subdirectories are stored.
-	httpServer     *http.Server    // httpServer is the underlying HTTP server.
+	nodeID         string             // nodeID identifies this node in response payloads.
+	runtimeAdapter runtime.Runtime    // runtimeAdapter is the runtime to query for containers and stats.
+	logBaseDir     string             // logBaseDir is the directory where container log subdirectories are stored.
+	httpServer     *http.Server       // httpServer is the underlying HTTP server.
+	tlsConfig      *tls.Config        // tlsConfig enables mTLS when non-nil; nil means loopback-only plain HTTP.
+	accessChecker  DebugAccessChecker // accessChecker authorizes the client certificate CN when TLS is enabled.
 }
+
+// DebugAccessChecker reports whether the client whose certificate carries the
+// given common name may use the debug API.
+type DebugAccessChecker func(ctx context.Context, clientCommonName string) bool
+
+// NewClusterAdminGrantChecker returns a DebugAccessChecker that allows only
+// principals "node:<cn>" holding the cluster-admin role grant in the store.
+// The API server principal has this grant; enrolled nodes never do.
+func NewClusterAdminGrantChecker(factStore store.StateStore) DebugAccessChecker {
+	return func(ctx context.Context, clientCommonName string) bool {
+		_, getError := factStore.Get(ctx, types.KeyAuthGrant("node", clientCommonName, clusterAdminRoleName))
+		return getError == nil
+	}
+}
+
+// clusterAdminRoleName is the role whose grant admits a client to the debug API.
+const clusterAdminRoleName = "cluster-admin"
 
 // NewDebugServer creates a DebugServer bound to the given listen address.
 // The server is not started until Start is called.
@@ -70,9 +94,16 @@ func NewDebugServer(nodeID string, listenAddress string, runtimeAdapter runtime.
 // Start begins serving debug endpoints. It blocks until the server is shut
 // down or the context is cancelled.
 func (debugServer *DebugServer) Start(ctx context.Context) error {
+	if securityError := debugServer.CheckListenSecurity(); securityError != nil {
+		return securityError
+	}
+
 	listener, listenError := net.Listen("tcp", debugServer.httpServer.Addr)
 	if listenError != nil {
 		return listenError
+	}
+	if debugServer.tlsConfig != nil {
+		listener = tls.NewListener(listener, debugServer.tlsConfig)
 	}
 
 	go func() { //nolint:gosec // G118: shutdown goroutine needs context.Background — parent ctx is already done
@@ -87,6 +118,61 @@ func (debugServer *DebugServer) Start(ctx context.Context) error {
 		return serveError
 	}
 	return nil
+}
+
+// SetMutualTLS makes the server require a client certificate signed by the CA
+// in serverTLSConfig.ClientCAs and admit only clients that pass accessChecker.
+// Must be called before Start.
+func (debugServer *DebugServer) SetMutualTLS(serverTLSConfig *tls.Config, accessChecker DebugAccessChecker) {
+	mutualTLSConfig := serverTLSConfig.Clone()
+	mutualTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	mutualTLSConfig.MinVersion = tls.VersionTLS13
+	debugServer.tlsConfig = mutualTLSConfig
+	debugServer.accessChecker = accessChecker
+	debugServer.httpServer.Handler = debugServer.requireAuthorizedClient(debugServer.httpServer.Handler)
+}
+
+// requireAuthorizedClient rejects requests whose verified client certificate
+// CN does not pass the access checker. The TLS layer has already verified the
+// certificate chain against the cluster CA.
+func (debugServer *DebugServer) requireAuthorizedClient(wrappedHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		if request.TLS == nil || len(request.TLS.PeerCertificates) == 0 {
+			writeDebugJSONError(responseWriter, "client certificate required", http.StatusUnauthorized)
+			return
+		}
+		clientCommonName := request.TLS.PeerCertificates[0].Subject.CommonName
+		if clientCommonName == "" || !debugServer.accessChecker(request.Context(), clientCommonName) {
+			logging.Default().Warn("debug API request denied", "node", debugServer.nodeID, "client", clientCommonName, "path", request.URL.Path)
+			writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
+			return
+		}
+		wrappedHandler.ServeHTTP(responseWriter, request)
+	})
+}
+
+// CheckListenSecurity returns an error when the server would serve plain HTTP
+// on a non-loopback address. Start enforces it; callers can check it first to
+// fail fast on misconfiguration.
+func (debugServer *DebugServer) CheckListenSecurity() error {
+	if debugServer.tlsConfig == nil && !isLoopbackListenAddress(debugServer.httpServer.Addr) {
+		return fmt.Errorf("debug API on %s needs TLS credentials (--cert/--key/--ca); without them it may only listen on loopback", debugServer.httpServer.Addr)
+	}
+	return nil
+}
+
+// isLoopbackListenAddress reports whether a host:port listen address binds
+// only to a loopback interface.
+func isLoopbackListenAddress(listenAddress string) bool {
+	listenHost, _, splitError := net.SplitHostPort(listenAddress)
+	if splitError != nil {
+		return false
+	}
+	if listenHost == "localhost" {
+		return true
+	}
+	listenIP := net.ParseIP(listenHost)
+	return listenIP != nil && listenIP.IsLoopback()
 }
 
 // DebugContainerEntry is the JSON representation of a single container in the

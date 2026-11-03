@@ -458,9 +458,9 @@ func lookupInstanceState(instanceID string) string {
 	return facts[0].Value
 }
 
-// streamContainerLogs fetches logs for a container instance through the agent
-// debug API. It discovers the instance's placement, connects to the node's
-// debug endpoint, and streams the response to stdout.
+// streamContainerLogs fetches logs for a container instance through the API
+// server's agent debug proxy. It discovers the instance's placement and
+// streams the response to stdout.
 func streamContainerLogs(serviceName string, instanceID string, logsConfig logsCommandConfig) {
 	if logsConfig.previous {
 		previousID := findPreviousInstance(serviceName)
@@ -472,12 +472,7 @@ func streamContainerLogs(serviceName string, instanceID string, logsConfig logsC
 	}
 
 	placementNodeID := discoverInstancePlacement(instanceID)
-	debugAddress := discoverNodeDebugAddress(placementNodeID)
-
-	endpointURL := "http://" + debugAddress + "/debug/logs"
-	if strings.HasPrefix(debugAddress, "http://") || strings.HasPrefix(debugAddress, "https://") {
-		endpointURL = debugAddress + "/debug/logs"
-	}
+	endpointURL := nodeDebugProxyURL(placementNodeID, "logs")
 
 	queryParams := url.Values{}
 	queryParams.Set("instance", instanceID)
@@ -495,9 +490,9 @@ func streamContainerLogs(serviceName string, instanceID string, logsConfig logsC
 	}
 
 	requestURL := endpointURL + "?" + queryParams.Encode()
-	httpResponse, requestError := http.Get(requestURL) //nolint:gosec // CLI connects to agent debug API on discovered node
+	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(requestURL)
 	if requestError != nil {
-		fmt.Fprintf(os.Stderr, "cannot connect to agent debug API at %s: %v\n", debugAddress, requestError)
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()

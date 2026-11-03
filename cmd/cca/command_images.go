@@ -4,11 +4,10 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/agent"
@@ -48,16 +47,16 @@ func parseImagesCommandArgs(args []string) imagesCommandConfig {
 }
 
 // executeImagesListCommand lists cached images on one or all nodes by querying
-// each node's agent debug API.
+// each node's agent debug API through the API server proxy.
 func executeImagesListCommand(nodeID string) {
-	debugAddresses := discoverNodeDebugAddresses(nodeID)
-	if len(debugAddresses) == 0 {
+	targetNodeIDs := discoverNodesWithDebugAPI(nodeID)
+	if len(targetNodeIDs) == 0 {
 		fmt.Fprintln(os.Stderr, "no nodes with debug API found")
 		os.Exit(1)
 	}
 
-	for targetNodeID, debugAddress := range debugAddresses {
-		responseBody := queryAgentDebugEndpoint(debugAddress, "/debug/images")
+	for _, targetNodeID := range targetNodeIDs {
+		responseBody := queryNodeDebugEndpoint(targetNodeID, "images")
 
 		var imagesResponse agent.DebugImagesResponse
 		if decodeError := json.Unmarshal(responseBody, &imagesResponse); decodeError != nil {
@@ -85,26 +84,21 @@ func executeImagesListCommand(nodeID string) {
 }
 
 // executeImagesPullCommand pulls an image on one or all nodes by sending
-// POST /debug/images/pull to each node's agent debug API.
+// images/pull to each node's agent debug API through the API server proxy.
 func executeImagesPullCommand(imageReference string, nodeID string) {
-	debugAddresses := discoverNodeDebugAddresses(nodeID)
-	if len(debugAddresses) == 0 {
+	targetNodeIDs := discoverNodesWithDebugAPI(nodeID)
+	if len(targetNodeIDs) == 0 {
 		fmt.Fprintln(os.Stderr, "no nodes with debug API found")
 		os.Exit(1)
 	}
 
-	for targetNodeID, debugAddress := range debugAddresses {
+	for _, targetNodeID := range targetNodeIDs {
 		fmt.Printf("Pulling %s on %s... ", imageReference, targetNodeID)
 
 		pullRequest := agent.DebugImagePullRequest{ImageReference: imageReference}
 		requestBody, _ := json.Marshal(pullRequest)
 
-		requestURL := "http://" + debugAddress + "/debug/images/pull"
-		if strings.HasPrefix(debugAddress, "http://") || strings.HasPrefix(debugAddress, "https://") {
-			requestURL = debugAddress + "/debug/images/pull"
-		}
-
-		httpResponse, requestError := http.Post(requestURL, "application/json", bytes.NewReader(requestBody)) //nolint:gosec // CLI connects to agent debug API
+		httpResponse, requestError := postNodeDebugEndpoint(targetNodeID, "images/pull", requestBody)
 		if requestError != nil {
 			fmt.Printf("FAILED (%v)\n", requestError)
 			continue
@@ -131,13 +125,12 @@ func executeImagesPullCommand(imageReference string, nodeID string) {
 	}
 }
 
-// discoverNodeDebugAddresses returns a map of nodeID → debug address for
-// nodes that have published a debug_address. When filterNodeID is non-empty,
-// only that node is returned.
-func discoverNodeDebugAddresses(filterNodeID string) map[string]string {
+// discoverNodesWithDebugAPI returns the sorted IDs of nodes that have published
+// a debug_address. When filterNodeID is non-empty, only that node is returned;
+// the API proxy reports it if the node has no debug API.
+func discoverNodesWithDebugAPI(filterNodeID string) []string {
 	if filterNodeID != "" {
-		address := discoverNodeDebugAddress(filterNodeID)
-		return map[string]string{filterNodeID: address}
+		return []string{filterNodeID}
 	}
 
 	apiURL := statusAPIBaseURL() + "/api/state?prefix=observed/node/"
@@ -158,16 +151,17 @@ func discoverNodeDebugAddresses(filterNodeID string) map[string]string {
 		os.Exit(1)
 	}
 
-	debugAddresses := make(map[string]string)
+	var nodeIDs []string
 	for _, factEntry := range facts {
 		if strings.HasSuffix(factEntry.Key, "/debug_address") && factEntry.Value != "" {
 			extractedNodeID := extractNodeIDFromDebugKey(factEntry.Key)
 			if extractedNodeID != "" {
-				debugAddresses[extractedNodeID] = factEntry.Value
+				nodeIDs = append(nodeIDs, extractedNodeID)
 			}
 		}
 	}
-	return debugAddresses
+	sort.Strings(nodeIDs)
+	return nodeIDs
 }
 
 // extractNodeIDFromDebugKey extracts the node ID from a key like

@@ -61,11 +61,17 @@ A join-token holder could submit a CSR with CN `ccattler-server` and authenticat
 
 ### Phase 172 — Agent Debug API Lockdown (M172)
 
-- [ ] Ansible binds `--debug-listen` to `127.0.0.1` (immediate containment)
-- [ ] Debug API serves TLS and requires a cluster-CA client certificate
-- [ ] `/debug/exec` and `/debug/images/pull` require an admin principal; read endpoints require any cluster principal
-- [ ] `cca exec` / `cca node-inspect` present the CLI client certificate
-- [ ] Threat model entry for the debug API
+Design: Flow 24 in `design/runtime-invariant-flows.md`. Users reach the debug API only through an authenticated API server proxy; the agent accepts only the control plane over mTLS. The loopback-only Ansible step was skipped (it would break remote `cca exec`).
+
+- [x] Flow 24 in `design/runtime-invariant-flows.md`
+- [x] Agent debug API serves TLS 1.3 with a required cluster-CA client certificate; the client principal must hold a cluster-admin grant
+- [x] Agent refuses a non-loopback `--debug-listen` without TLS credentials; published address carries its scheme
+- [x] API proxy `/api/node/debug/{node}/{endpoint}`: per-endpoint capability (`node.read`, `workload.read`, new `workload.exec`, `node.manage`), agent cert CN must equal the node ID, caller's `Authorization` not forwarded, log streaming
+- [x] `cca exec`, `cca logs`, `cca node-inspect`, `cca images` go through the API proxy
+- [x] e2e (`cluster_test.sh` Phase 69 checks, `health_check.sh`) use the proxy; new check that the debug port rejects requests without a client certificate
+- [x] Unit tests: agent rejects missing/non-admin certs and plain non-loopback listen; proxy capability checks, node identity check, header stripping
+- [x] Threat model T12, `CALL_GRAPH.md`, `AUTH_GRAPH.md`, security-model capability list updated
+- [ ] Deploy cluster run: `cca exec`, `cca logs -f`, `cca images pull` work from the control plane
 
 ### Phase 173 — API Authorization Correctness (M173)
 
