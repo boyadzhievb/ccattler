@@ -529,7 +529,8 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+	visibility, visible := apiServer.requireWorkloadVisibility(responseWriter, request)
+	if !visible {
 		return
 	}
 
@@ -541,8 +542,10 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 			writeJSONError(responseWriter, "access denied: key is not readable through the state API", http.StatusForbidden)
 			return
 		}
+		// A key outside the caller's teams answers like a missing key, so the
+		// response does not reveal which other teams' facts exist.
 		fact, err := apiServer.factStore.Get(requestContext, singleKey)
-		if err != nil {
+		if err != nil || !visibility.allowsFactKey(singleKey) {
 			writeJSONError(responseWriter, fmt.Sprintf("key not found: %s", singleKey), http.StatusNotFound)
 			return
 		}
@@ -563,8 +566,13 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	statePrincipal := security.PrincipalStructFromContext(requestContext)
-	facts, err := tenant.ScopedScan(requestContext, apiServer.factStore, prefix, statePrincipal)
+	var facts []store.Fact
+	var err error
+	if visibility.allTeams {
+		facts, err = apiServer.factStore.Scan(requestContext, prefix)
+	} else {
+		facts, err = tenant.ScanVisibleToTeams(requestContext, apiServer.factStore, prefix, visibility.teams)
+	}
 	if err != nil {
 		writeJSONError(responseWriter, err.Error(), http.StatusInternalServerError)
 		return
@@ -713,7 +721,8 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+	visibility, visible := apiServer.requireWorkloadVisibility(responseWriter, request)
+	if !visible {
 		return
 	}
 
@@ -730,7 +739,7 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	responseWriter.Header().Set("Connection", "keep-alive")
 	flusher.Flush()
 
-	streamWatchEventsAsSSE(request.Context(), eventChannel, responseWriter, flusher)
+	streamWatchEventsAsSSE(request.Context(), eventChannel, responseWriter, flusher, visibility)
 }
 
 // setupWatchStream validates the watch request, enforces connection limits, and
@@ -786,7 +795,7 @@ func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, re
 
 // streamWatchEventsAsSSE reads events from the watch channel and writes them
 // as Server-Sent Events until the channel closes or the request context ends.
-func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan store.Event, responseWriter http.ResponseWriter, flusher http.Flusher) {
+func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan store.Event, responseWriter http.ResponseWriter, flusher http.Flusher, visibility workloadVisibility) {
 	for {
 		select {
 		case <-requestContext.Done():
@@ -795,7 +804,7 @@ func streamWatchEventsAsSSE(requestContext context.Context, eventChannel <-chan 
 			if !open {
 				return
 			}
-			if !isReadableFactKey(event.Fact.Key) {
+			if !isReadableFactKey(event.Fact.Key) || !visibility.allowsFactKey(event.Fact.Key) {
 				continue
 			}
 			eventType := "put"
@@ -1155,30 +1164,23 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		writeJSONError(responseWriter, "GET only", http.StatusMethodNotAllowed)
 		return
 	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilityWorkloadRead, security.ScopeCluster) {
+	visibility, visible := apiServer.requireWorkloadVisibility(responseWriter, request)
+	if !visible {
 		return
 	}
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 
 	requestContext := request.Context()
-	requestPrincipal := security.PrincipalStructFromContext(requestContext)
-	hasPrincipal := requestPrincipal.Name != ""
-
 	includeAllInstances := request.URL.Query().Get("all") == "true"
-	isPlatform := !hasPrincipal || tenant.IsPlatformPrincipal(requestPrincipal)
-	if isPlatform && !includeAllInstances {
+	if visibility.allTeams && !includeAllInstances {
 		if cached := apiServer.statusCache.Get("status"); cached != nil {
 			_, _ = responseWriter.Write(cached)
 			return
 		}
 	}
 
-	var principalPointer *security.Principal
-	if hasPrincipal {
-		principalPointer = &requestPrincipal
-	}
-	status, statusError := buildStatusFromStore(requestContext, apiServer.factStore, principalPointer, includeAllInstances)
+	status, statusError := buildStatusFromStore(requestContext, apiServer.factStore, &visibility, includeAllInstances)
 	if statusError != nil {
 		writeJSONError(responseWriter, "status: "+statusError.Error(), http.StatusInternalServerError)
 		return
@@ -1189,7 +1191,7 @@ func (apiServer *Server) handleStatus(responseWriter http.ResponseWriter, reques
 		return
 	}
 
-	if isPlatform {
+	if visibility.allTeams {
 		apiServer.statusCache.Set("status", encoded)
 	}
 	_, _ = responseWriter.Write(encoded)

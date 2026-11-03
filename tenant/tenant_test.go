@@ -1642,23 +1642,44 @@ func TestIsPlatformPrincipalUserWithoutGroup(t *testing.T) {
 	}
 }
 
-func TestScopedScanNodePrincipalSeesObservedFacts(t *testing.T) {
+func TestScanVisibleToTeams(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 
 	ctx := context.Background()
-	memoryStore.Put(ctx, types.KeyObservedNodeDebugAddress("worker-1"), []byte("192.168.1.20:9771"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v1"))
+	memoryStore.Put(ctx, types.KeyDesiredServiceImage("frontend/web"), []byte("nginx:1.28"))
+	memoryStore.Put(ctx, types.KeyObservedNodeDebugAddress("worker-1"), []byte("https://192.168.1.20:9771"))
 
-	nodePrincipal := security.Principal{Kind: security.PrincipalKindNode, Name: "ctrl"}
-	facts, scanError := ScopedScan(ctx, memoryStore, "observed/node/worker-1/debug_address", nodePrincipal)
-	if scanError != nil {
-		t.Fatalf("ScopedScan: %v", scanError)
+	paymentsFacts, scanError := ScanVisibleToTeams(ctx, memoryStore, "desired/service/", []string{"payments"})
+	if scanError != nil || len(paymentsFacts) != 1 || paymentsFacts[0].Key != types.KeyDesiredServiceImage("payments/checkout") {
+		t.Fatalf("payments team must see only its service: %v %+v", scanError, paymentsFacts)
 	}
-	if len(facts) != 1 {
-		t.Fatalf("expected 1 fact, got %d", len(facts))
+	bothFacts, _ := ScanVisibleToTeams(ctx, memoryStore, "desired/service/", []string{"frontend", "payments"})
+	if len(bothFacts) != 2 {
+		t.Fatalf("two granted teams must see both services, got %d", len(bothFacts))
 	}
-	if string(facts[0].Value) != "192.168.1.20:9771" {
-		t.Errorf("expected 192.168.1.20:9771, got %s", string(facts[0].Value))
+	sharedFacts, _ := ScanVisibleToTeams(ctx, memoryStore, "observed/node/", []string{"payments"})
+	if len(sharedFacts) != 1 {
+		t.Fatalf("node facts are shared infrastructure, got %d", len(sharedFacts))
+	}
+	if noTeamFacts, _ := ScanVisibleToTeams(ctx, memoryStore, "desired/service/", nil); len(noTeamFacts) != 0 {
+		t.Fatalf("no teams must see nothing, got %d", len(noTeamFacts))
+	}
+}
+
+func TestFilterServiceNamesByTeams(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx := context.Background()
+	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("api"), []byte("payments"))
+
+	visibleNames := FilterServiceNamesByTeams(ctx, memoryStore, []string{"api", "payments/checkout", "frontend/web"}, []string{"payments"})
+	if len(visibleNames) != 2 || visibleNames[0] != "api" || visibleNames[1] != "payments/checkout" {
+		t.Fatalf("expected owner fact and hierarchical name to match payments, got %v", visibleNames)
+	}
+	if FilterServiceNamesByTeams(ctx, memoryStore, []string{"api"}, nil) != nil {
+		t.Fatal("no teams must see no services")
 	}
 }
 

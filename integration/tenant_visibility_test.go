@@ -73,8 +73,11 @@ func TestTenantVisibilityStatus(t *testing.T) {
 	setupTwoTenantStore(t, factStore)
 
 	apiAuthorizer := security.NewAPIAuthorizer()
+	// Visibility comes from grant scope, not the team attribute (Flow 25).
 	apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
-		"*": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
+		"user:alice":    {{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("payments")}},
+		"user:bob":      {{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("frontend")}},
+		"user:platform": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
 	})
 
 	apiServer := api.NewServer(factStore)
@@ -158,10 +161,10 @@ func TestTenantVisibilityStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("platform principal sees all services", func(t *testing.T) {
+	t.Run("cluster-scope reader sees all services", func(t *testing.T) {
 		platformPrincipal := security.Principal{
 			Kind:   security.PrincipalKindUser,
-			Name:   "admin",
+			Name:   "platform",
 			Groups: []string{"platform"},
 			Attributes: []security.Attribute{
 				{Key: "team", Value: "platform"},
@@ -170,7 +173,7 @@ func TestTenantVisibilityStatus(t *testing.T) {
 
 		request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		requestCtx := security.WithPrincipalStruct(request.Context(), platformPrincipal)
-		requestCtx = security.WithPrincipal(requestCtx, "user:admin")
+		requestCtx = security.WithPrincipal(requestCtx, "user:platform")
 		request = request.WithContext(requestCtx)
 		recorder := httptest.NewRecorder()
 
@@ -186,11 +189,11 @@ func TestTenantVisibilityStatus(t *testing.T) {
 		}
 
 		if len(status.Services) != 4 {
-			t.Fatalf("expected 4 services for platform principal, got %d: %+v", len(status.Services), status.Services)
+			t.Fatalf("expected 4 services for a cluster-scope reader, got %d: %+v", len(status.Services), status.Services)
 		}
 	})
 
-	t.Run("system principal sees all services", func(t *testing.T) {
+	t.Run("system principal without a grant is refused", func(t *testing.T) {
 		systemPrincipal := security.Principal{
 			Kind: security.PrincipalKindSystem,
 			Name: "scheduler",
@@ -204,20 +207,19 @@ func TestTenantVisibilityStatus(t *testing.T) {
 
 		apiServer.Handler().ServeHTTP(recorder, request)
 
-		var status api.ClusterStatus
-		if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
-			t.Fatalf("failed to unmarshal status: %v", err)
-		}
-
-		if len(status.Services) != 4 {
-			t.Fatalf("expected 4 services for system principal, got %d", len(status.Services))
+		// Principal kind gives no visibility; only grants do (Flow 25).
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for a system principal without a grant, got %d", recorder.Code)
 		}
 	})
 
-	t.Run("principal without team attribute sees nothing", func(t *testing.T) {
+	t.Run("team attribute without a grant is refused", func(t *testing.T) {
 		noTeamPrincipal := security.Principal{
 			Kind: security.PrincipalKindUser,
 			Name: "orphan",
+			Attributes: []security.Attribute{
+				{Key: "team", Value: "payments"},
+			},
 		}
 
 		request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
@@ -228,13 +230,8 @@ func TestTenantVisibilityStatus(t *testing.T) {
 
 		apiServer.Handler().ServeHTTP(recorder, request)
 
-		var status api.ClusterStatus
-		if err := json.Unmarshal(recorder.Body.Bytes(), &status); err != nil {
-			t.Fatalf("failed to unmarshal status: %v", err)
-		}
-
-		if len(status.Services) != 0 {
-			t.Fatalf("expected 0 services for principal without team, got %d", len(status.Services))
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("expected 403 for team membership without a grant, got %d", recorder.Code)
 		}
 	})
 }
@@ -253,8 +250,11 @@ func TestTenantVisibilityScopedScan(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredServiceInstances("frontend/web"), []byte("5"))
 
 	apiAuthorizer := security.NewAPIAuthorizer()
+	// Visibility comes from grant scope, not the team attribute (Flow 25).
 	apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
-		"*": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
+		"user:alice":    {{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("payments")}},
+		"user:bob":      {{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("frontend")}},
+		"user:platform": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
 	})
 
 	apiServer := api.NewServer(factStore)
@@ -296,16 +296,16 @@ func TestTenantVisibilityScopedScan(t *testing.T) {
 		}
 	})
 
-	t.Run("platform principal scoped scan sees all", func(t *testing.T) {
+	t.Run("cluster-scope reader scan sees all", func(t *testing.T) {
 		platformPrincipal := security.Principal{
 			Kind:   security.PrincipalKindUser,
-			Name:   "admin",
+			Name:   "platform",
 			Groups: []string{"platform"},
 		}
 
 		request := httptest.NewRequest(http.MethodGet, "/api/state?prefix=desired/service/", nil)
 		requestCtx := security.WithPrincipalStruct(request.Context(), platformPrincipal)
-		requestCtx = security.WithPrincipal(requestCtx, "user:admin")
+		requestCtx = security.WithPrincipal(requestCtx, "user:platform")
 		request = request.WithContext(requestCtx)
 		recorder := httptest.NewRecorder()
 
@@ -327,7 +327,7 @@ func TestTenantVisibilityScopedScan(t *testing.T) {
 			}
 		}
 		if !hasPayments || !hasFrontend {
-			t.Errorf("platform principal should see both tenants: payments=%v, frontend=%v", hasPayments, hasFrontend)
+			t.Errorf("cluster-scope reader should see both tenants: payments=%v, frontend=%v", hasPayments, hasFrontend)
 		}
 	})
 }
@@ -398,6 +398,8 @@ func TestTenantAuditEndpoint(t *testing.T) {
 	auditView := tenant.NewTenantAuditView(auditLog, tenantRegistry)
 
 	apiAuthorizer := security.NewAPIAuthorizer()
+	// The audit endpoint keeps its membership-based tenant filter; only
+	// state, watch and status moved to grant-scope visibility (Flow 25).
 	apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
 		"*": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
 	})

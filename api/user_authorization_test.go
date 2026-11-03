@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -69,11 +70,11 @@ func TestGrantedUserReadsStateThroughAPIServerPrincipal(t *testing.T) {
 		t.Fatalf("platform api-reader status: got HTTP %d %s", statusResponse.Code, statusResponse.Body.String())
 	}
 
-	// A user outside the platform group with no tenant passes authorization
-	// but tenant visibility (ScopedScan) shows nothing: 200 with an empty list.
+	// A cluster-scope grant gives cluster-wide visibility without team
+	// membership or the platform group (Flow 25).
 	tenantlessResponse := serveAsUser(apiServer, "carol", http.MethodGet, "/api/state?prefix=desired/service/", "")
-	if tenantlessResponse.Code != http.StatusOK || strings.Contains(tenantlessResponse.Body.String(), "nginx") {
-		t.Fatalf("tenantless api-reader: got HTTP %d %s, want 200 with no facts", tenantlessResponse.Code, tenantlessResponse.Body.String())
+	if tenantlessResponse.Code != http.StatusOK || !strings.Contains(tenantlessResponse.Body.String(), "nginx:1.28") {
+		t.Fatalf("cluster-scope api-reader without a team: got HTTP %d %s, want 200 with the service", tenantlessResponse.Code, tenantlessResponse.Body.String())
 	}
 }
 
@@ -96,5 +97,96 @@ func TestWorkloadWriterCannotApplyGrants(t *testing.T) {
 		if serviceResponse := serveAsUser(apiServer, "mallory", http.MethodPost, "/api/apply", serviceDSL); serviceResponse.Code != http.StatusOK {
 			t.Fatalf("policy gate %v: service apply by api-writer got HTTP %d %s, want 200", withPolicyGate, serviceResponse.Code, serviceResponse.Body.String())
 		}
+	}
+}
+
+// newTwoTeamServer returns a service-principal API server holding one payments
+// and one frontend service.
+func newTwoTeamServer(t *testing.T) (*Server, *security.APIAuthorizer) {
+	t.Helper()
+	apiServer, apiAuthorizer, rawStore := newServicePrincipalServer(t, false)
+	_, _ = rawStore.Put(context.Background(), types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v1"))
+	_, _ = rawStore.Put(context.Background(), types.KeyDesiredServiceImage("frontend/site"), []byte("site:v1"))
+	for _, serviceName := range []string{"payments/checkout", "frontend/site"} {
+		_, _ = rawStore.Put(context.Background(), types.KeyDesiredService(serviceName), []byte(""))
+	}
+	return apiServer, apiAuthorizer
+}
+
+func TestVisibilityFollowsGrantScopeNotMembership(t *testing.T) {
+	apiServer, apiAuthorizer := newTwoTeamServer(t)
+	apiAuthorizer.Grant("user:pat", security.CapabilityWorkloadRead, security.TeamScope("payments"))
+	apiAuthorizer.Grant("user:deep", security.CapabilityWorkloadRead, security.Scope("team/payments/checkout"))
+
+	teamScoped := serveAsUser(apiServer, "pat", http.MethodGet, "/api/state?prefix=desired/service/", "")
+	if teamScoped.Code != http.StatusOK || !strings.Contains(teamScoped.Body.String(), "checkout:v1") || strings.Contains(teamScoped.Body.String(), "site:v1") {
+		t.Fatalf("team/payments grant must see payments only: HTTP %d %s", teamScoped.Code, teamScoped.Body.String())
+	}
+	hiddenKey := serveAsUser(apiServer, "pat", http.MethodGet, "/api/state?key="+types.KeyDesiredServiceImage("frontend/site"), "")
+	if hiddenKey.Code != http.StatusNotFound {
+		t.Fatalf("another team's key must answer like a missing key: got HTTP %d", hiddenKey.Code)
+	}
+
+	// Membership alone grants nothing, even for the team it names.
+	memberOnly := httptest.NewRequest(http.MethodGet, "/api/state?prefix=desired/service/", nil)
+	memberContext := security.WithPrincipalStruct(memberOnly.Context(), security.Principal{
+		Kind: security.PrincipalKindUser, Name: "member", Groups: []string{"platform"},
+		Attributes: []security.Attribute{{Key: "team", Value: "payments"}},
+	})
+	memberContext = security.WithPrincipal(memberContext, "user:member")
+	memberRecorder := httptest.NewRecorder()
+	apiServer.Handler().ServeHTTP(memberRecorder, memberOnly.WithContext(memberContext))
+	if memberRecorder.Code != http.StatusForbidden {
+		t.Fatalf("team attribute and platform group without a grant must be 403, got %d", memberRecorder.Code)
+	}
+
+	if deepScope := serveAsUser(apiServer, "deep", http.MethodGet, "/api/state?prefix=desired/service/", ""); deepScope.Code != http.StatusForbidden {
+		t.Fatalf("a scope deeper than team/<name> must not grant team visibility, got HTTP %d", deepScope.Code)
+	}
+}
+
+func TestStatusUsesTheSameVisibility(t *testing.T) {
+	apiServer, apiAuthorizer := newTwoTeamServer(t)
+	apiAuthorizer.Grant("user:pat", security.CapabilityWorkloadRead, security.TeamScope("payments"))
+	apiAuthorizer.Grant("user:ops", security.CapabilityWorkloadRead, security.ScopeCluster)
+
+	teamStatus := serveAsUser(apiServer, "pat", http.MethodGet, "/api/status", "")
+	if teamStatus.Code != http.StatusOK || !strings.Contains(teamStatus.Body.String(), "payments/checkout") || strings.Contains(teamStatus.Body.String(), "frontend/site") {
+		t.Fatalf("team-scoped status must list payments only: HTTP %d %s", teamStatus.Code, teamStatus.Body.String())
+	}
+	clusterStatus := serveAsUser(apiServer, "ops", http.MethodGet, "/api/status", "")
+	if clusterStatus.Code != http.StatusOK || !strings.Contains(clusterStatus.Body.String(), "frontend/site") {
+		t.Fatalf("cluster-scoped status must list every team: HTTP %d %s", clusterStatus.Code, clusterStatus.Body.String())
+	}
+}
+
+func TestWatchUsesTheSameVisibility(t *testing.T) {
+	apiServer, apiAuthorizer := newTwoTeamServer(t)
+	apiAuthorizer.Grant("user:pat", security.CapabilityWorkloadRead, security.TeamScope("payments"))
+	testServer := httptest.NewServer(http.HandlerFunc(func(responseWriter http.ResponseWriter, request *http.Request) {
+		userContext := security.WithPrincipalStruct(request.Context(), security.Principal{Kind: security.PrincipalKindUser, Name: "pat"})
+		apiServer.Handler().ServeHTTP(responseWriter, request.WithContext(security.WithPrincipal(userContext, "user:pat")))
+	}))
+	defer testServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	watchRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, testServer.URL+"/api/watch?prefix=desired/service/", nil)
+	watchResponse, watchError := http.DefaultClient.Do(watchRequest)
+	if watchError != nil {
+		t.Fatal(watchError)
+	}
+	defer watchResponse.Body.Close()
+
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = apiServer.factStore.Put(context.Background(), types.KeyDesiredServiceImage("frontend/site"), []byte("site:v2"))
+		_, _ = apiServer.factStore.Put(context.Background(), types.KeyDesiredServiceImage("payments/checkout"), []byte("checkout:v2"))
+	}()
+	readBuffer := make([]byte, 4096)
+	readCount, _ := watchResponse.Body.Read(readBuffer)
+	firstEvent := string(readBuffer[:readCount])
+	if strings.Contains(firstEvent, "site:v2") || !strings.Contains(firstEvent, "checkout:v2") {
+		t.Fatalf("team-scoped watch must deliver payments events only, first event: %s", firstEvent)
 	}
 }

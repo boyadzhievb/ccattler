@@ -172,12 +172,12 @@ type EndpointStatus struct {
 
 // buildStatusFromStore collects the full cluster state from the fact store
 // and assembles it into a structured ClusterStatus by delegating to
-// per-section builder functions. When a non-nil principal is provided,
-// results are filtered to resources visible to that principal's tenant.
-// Platform principals and nil principals see everything. A failure to list
+// per-section builder functions. A non-nil visibility limited to teams keeps
+// only those teams' services, instances and gates; nil or a cluster-scope
+// visibility sees everything (Flow 25). A failure to list
 // instances is returned instead of an empty cluster, so a store outage or
 // denial is visible to the caller.
-func buildStatusFromStore(ctx context.Context, factStore store.StateStore, principal *security.Principal, includeAllInstances bool) (ClusterStatus, error) {
+func buildStatusFromStore(ctx context.Context, factStore store.StateStore, visibility *workloadVisibility, includeAllInstances bool) (ClusterStatus, error) {
 	allInstances, listError := types.ListInstances(ctx, factStore)
 	if listError != nil {
 		return ClusterStatus{}, fmt.Errorf("list instances: %w", listError)
@@ -187,9 +187,8 @@ func buildStatusFromStore(ctx context.Context, factStore store.StateStore, princ
 	sortedServiceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
 	gateStatusList := collectGateStatusFromStore(ctx, factStore)
 
-	if principal != nil && !tenant.IsPlatformPrincipal(*principal) {
-		tenantName := tenant.ResolvePrincipalTenant(*principal)
-		sortedServiceNames = tenant.FilterServiceNamesByTenant(ctx, factStore, sortedServiceNames, tenantName)
+	if visibility != nil && !visibility.allTeams {
+		sortedServiceNames = tenant.FilterServiceNamesByTeams(ctx, factStore, sortedServiceNames, visibility.teams)
 		allInstances = filterInstancesByServiceNames(allInstances, sortedServiceNames)
 		gateStatusList = filterGatesByServiceNames(gateStatusList, sortedServiceNames)
 	}

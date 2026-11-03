@@ -38,18 +38,17 @@ func ResolvePrincipalTenant(principal security.Principal) string {
 	return ""
 }
 
-// FilterServiceNamesByTenant returns only service names that belong to the
-// given tenant, determined by explicit owner fact or hierarchical name.
-// An empty tenantName returns no services (deny by default).
-func FilterServiceNamesByTenant(ctx context.Context, factStore store.StateStore, serviceNames []string, tenantName string) []string {
-	if tenantName == "" {
-		return nil
-	}
-
+// FilterServiceNamesByTeams returns only the service names that belong to one
+// of the given teams, determined by explicit owner fact or hierarchical name.
+// No teams returns no services (deny by default).
+func FilterServiceNamesByTeams(ctx context.Context, factStore store.StateStore, serviceNames []string, teamNames []string) []string {
 	var visibleServiceNames []string
 	for _, serviceName := range serviceNames {
-		if isServiceOwnedByTenant(ctx, factStore, serviceName, tenantName) {
-			visibleServiceNames = append(visibleServiceNames, serviceName)
+		for _, teamName := range teamNames {
+			if isServiceOwnedByTenant(ctx, factStore, serviceName, teamName) {
+				visibleServiceNames = append(visibleServiceNames, serviceName)
+				break
+			}
 		}
 	}
 	return visibleServiceNames
@@ -67,32 +66,32 @@ func isServiceOwnedByTenant(ctx context.Context, factStore store.StateStore, ser
 	return ExtractTenantFromName(serviceName) == tenantName
 }
 
-// ScopedScan wraps a store Scan call and filters results to facts visible
-// to the given principal. Platform principals and unauthenticated requests
-// (empty principal name) see everything. Tenant principals see only facts
-// belonging to their services.
-func ScopedScan(ctx context.Context, factStore store.StateStore, prefix string, principal security.Principal) ([]store.Fact, error) {
+// ScanVisibleToTeams scans the prefix and keeps only the facts visible to one
+// of the given teams (IsFactVisibleToTeams). The caller decides the teams from
+// the principal's grants; a cluster-scope reader scans the store directly.
+func ScanVisibleToTeams(ctx context.Context, factStore store.StateStore, prefix string, teamNames []string) ([]store.Fact, error) {
 	facts, err := factStore.Scan(ctx, prefix)
 	if err != nil {
 		return nil, err
 	}
-
-	if principal.Name == "" || IsPlatformPrincipal(principal) {
-		return facts, nil
-	}
-
-	tenantName := ResolvePrincipalTenant(principal)
-	if tenantName == "" {
-		return nil, nil
-	}
-
 	var visibleFacts []store.Fact
 	for _, fact := range facts {
-		if isFactVisibleToTenant(fact.Key, tenantName) {
+		if IsFactVisibleToTeams(fact.Key, teamNames) {
 			visibleFacts = append(visibleFacts, fact)
 		}
 	}
 	return visibleFacts, nil
+}
+
+// IsFactVisibleToTeams reports whether a fact key is visible to any of the
+// given teams. No teams sees nothing.
+func IsFactVisibleToTeams(factKey string, teamNames []string) bool {
+	for _, teamName := range teamNames {
+		if isFactVisibleToTenant(factKey, teamName) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFactVisibleToTenant checks whether a fact key belongs to the given tenant.

@@ -106,6 +106,8 @@ func setupConcurrentAuthHarness(t *testing.T) *concurrentAuthTestHarness {
 	rbacAuthorizer.BindRole(security.RoleBinding{Principal: "user:admin", RoleName: "cluster-admin"})
 
 	authorizedStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+	authorizedStore.SetServicePrincipal(security.APIServerPrincipal)
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.APIServerPrincipal, RoleName: "api-server"})
 
 	tenantRegistry := tenant.NewTenantRegistry(factStore)
 	auditView := tenant.NewTenantAuditView(auditLog, tenantRegistry)
@@ -187,11 +189,17 @@ func TestConcurrentMultiUserAPICalls(t *testing.T) {
 	}
 	resultChannel := make(chan requestResult, concurrentRequestsPerUser*3)
 
+	// Team readers may read their team's status (Flow 25), so the operation
+	// they must be denied is the cluster-admin-only role listing.
 	performRequests := func(userLabel, token string) {
 		defer waitGroup.Done()
+		requestPath := "/api/role"
+		if userLabel == "admin" {
+			requestPath = "/api/status"
+		}
 		for requestIndex := 0; requestIndex < concurrentRequestsPerUser; requestIndex++ {
 			recorder := httptest.NewRecorder()
-			request := authenticatedRequest(http.MethodGet, "/api/status", token, "")
+			request := authenticatedRequest(http.MethodGet, requestPath, token, "")
 			harness.apiServer.Handler().ServeHTTP(recorder, request)
 			resultChannel <- requestResult{
 				userLabel:  userLabel,
@@ -221,12 +229,12 @@ func TestConcurrentMultiUserAPICalls(t *testing.T) {
 			adminSuccessCount++
 		case "team-a-dev":
 			if result.statusCode != http.StatusForbidden {
-				t.Errorf("team-a-dev on cluster-scoped /api/status got %d, expected 403", result.statusCode)
+				t.Errorf("team-a-dev on cluster-admin-only /api/role got %d, expected 403", result.statusCode)
 			}
 			teamAForbiddenCount++
 		case "team-b-readonly":
 			if result.statusCode != http.StatusForbidden {
-				t.Errorf("team-b-readonly on cluster-scoped /api/status got %d, expected 403", result.statusCode)
+				t.Errorf("team-b-readonly on cluster-admin-only /api/role got %d, expected 403", result.statusCode)
 			}
 			teamBForbiddenCount++
 		}
@@ -346,10 +354,10 @@ func TestAuditCorrectnessMultiUser(t *testing.T) {
 		defer waitGroup.Done()
 		for requestIndex := 0; requestIndex < requestsPerUser; requestIndex++ {
 			recorder := httptest.NewRecorder()
-			request := authenticatedRequest(http.MethodGet, "/api/status", harness.teamADevToken, "")
+			request := authenticatedRequest(http.MethodGet, "/api/role", harness.teamADevToken, "")
 			harness.apiServer.Handler().ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusForbidden {
-				t.Errorf("team-a status request %d: expected 403, got %d", requestIndex, recorder.Code)
+				t.Errorf("team-a role request %d: expected 403, got %d", requestIndex, recorder.Code)
 			}
 		}
 	}()
@@ -357,10 +365,10 @@ func TestAuditCorrectnessMultiUser(t *testing.T) {
 		defer waitGroup.Done()
 		for requestIndex := 0; requestIndex < requestsPerUser; requestIndex++ {
 			recorder := httptest.NewRecorder()
-			request := authenticatedRequest(http.MethodGet, "/api/status", harness.teamBReadToken, "")
+			request := authenticatedRequest(http.MethodGet, "/api/role", harness.teamBReadToken, "")
 			harness.apiServer.Handler().ServeHTTP(recorder, request)
 			if recorder.Code != http.StatusForbidden {
-				t.Errorf("team-b status request %d: expected 403, got %d", requestIndex, recorder.Code)
+				t.Errorf("team-b role request %d: expected 403, got %d", requestIndex, recorder.Code)
 			}
 		}
 	}()
@@ -383,7 +391,12 @@ func TestAuditCorrectnessMultiUser(t *testing.T) {
 		if entry.AuthMethod != "oidc" {
 			t.Errorf("expected auth_method oidc for store-layer audit, got %q for %s", entry.AuthMethod, entry.Principal)
 		}
-		switch entry.Principal {
+		// Store audit entries name service:api-server and record the end user
+		// in on_behalf_of (Flow 25).
+		if entry.Principal != security.APIServerPrincipal {
+			t.Errorf("store-layer audit principal must be %s, got %q", security.APIServerPrincipal, entry.Principal)
+		}
+		switch entry.OnBehalfOf {
 		case "user:admin":
 			adminAuditCount++
 		case "user:alice":
@@ -552,7 +565,7 @@ func TestConcurrentAuditTrailCompleteness(t *testing.T) {
 		forbiddenCount := 0
 		for operationIndex := 0; operationIndex < teamOperations; operationIndex++ {
 			recorder := httptest.NewRecorder()
-			request := authenticatedRequest(http.MethodGet, "/api/status", harness.teamADevToken, "")
+			request := authenticatedRequest(http.MethodGet, "/api/role", harness.teamADevToken, "")
 			harness.apiServer.Handler().ServeHTTP(recorder, request)
 			if recorder.Code == http.StatusForbidden {
 				forbiddenCount++
@@ -567,7 +580,7 @@ func TestConcurrentAuditTrailCompleteness(t *testing.T) {
 		forbiddenCount := 0
 		for operationIndex := 0; operationIndex < teamOperations; operationIndex++ {
 			recorder := httptest.NewRecorder()
-			request := authenticatedRequest(http.MethodGet, "/api/status", harness.teamBReadToken, "")
+			request := authenticatedRequest(http.MethodGet, "/api/role", harness.teamBReadToken, "")
 			harness.apiServer.Handler().ServeHTTP(recorder, request)
 			if recorder.Code == http.StatusForbidden {
 				forbiddenCount++
@@ -590,7 +603,8 @@ func TestConcurrentAuditTrailCompleteness(t *testing.T) {
 		if unmarshalError := json.Unmarshal(auditFact.Value, &entry); unmarshalError != nil {
 			continue
 		}
-		if entry.Principal == "user:admin" {
+		// Store audit entries name the API server and carry the user in on_behalf_of.
+		if entry.Principal == "user:admin" || entry.OnBehalfOf == "user:admin" {
 			adminAuditCount++
 		}
 	}

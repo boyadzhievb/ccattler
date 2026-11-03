@@ -157,6 +157,8 @@ CombinedAuthorizer.Authorize(principal, operation, key)        [:138]
 #### AuthorizedStore wraps every StateStore operation
 Principal: `authorizingPrincipal(ctx)` — the service principal when `SetServicePrincipal` was called (the API server uses `service:api-server`, Flow 25), otherwise `PrincipalFromContext(ctx)`. Audit entries then carry the context principal in `on_behalf_of`.
 
+Workload visibility (state, watch, status): `requireWorkloadVisibility` → `resolveWorkloadVisibility` → `APIAuthorizer.GrantedScopes(principal, workload.read)`: `cluster` → all teams; exact `team/<name>` → that team; then `tenant.ScanVisibleToTeams` / `tenant.IsFactVisibleToTeams` / `tenant.FilterServiceNamesByTeams` (api/visibility.go, tenant/scoped_query.go).
+
 Apply authorization: `PolicyGate.evaluateAuthorizationGate` uses `CapabilityFactAuthorizer.Authorize` (security/fact_authorizer.go) → `RequiredCapabilityForFactWrite(key)` → `APIAuthorizer.AuthorizeAPI`; the direct apply path uses `Server.authorizeCompiledFacts` with the same mapping.
 ```
 AuthorizedStore.Get(ctx, key)                                  [:76]

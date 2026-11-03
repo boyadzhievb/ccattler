@@ -252,17 +252,16 @@ func TestTenantIsolation_CrossTenantRead(t *testing.T) {
 	factStore.Put(secretContext, "desired/service/web/secret/frontend/cdn-key", []byte("/run/secrets/cdn"))
 
 	// Grant cluster-wide workload.read so the status endpoint is accessible,
-	// then rely on the visibility filter (team attribute) to isolate tenants.
+	// scoped to each team: visibility comes from grant scope (Flow 25).
 	// Secret reads are team-scoped — cross-tenant reads should be denied.
 	apiAuthorizer := security.NewAPIAuthorizer()
 	apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
-		"*": {
-			{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster},
-		},
 		"user:alice": {
+			{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("payments")},
 			{Capability: security.CapabilitySecretRead, Scope: security.TeamScope("payments")},
 		},
 		"user:bob": {
+			{Capability: security.CapabilityWorkloadRead, Scope: security.TeamScope("frontend")},
 			{Capability: security.CapabilitySecretRead, Scope: security.TeamScope("frontend")},
 		},
 	})

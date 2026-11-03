@@ -137,6 +137,25 @@ func (apiAuthorizer *APIAuthorizer) AuthorizeAPI(principal Principal, requiredCa
 	return fmt.Errorf("api: principal %q denied capability %q at scope %q", principalKey, requiredCapability, requiredScope)
 }
 
+// GrantedScopes returns the scopes at which the principal holds the
+// capability, directly or through cluster.admin. Conditional (ABAC) policies
+// are not included because they need a resource context to evaluate.
+func (apiAuthorizer *APIAuthorizer) GrantedScopes(principal Principal, capability Capability) []Scope {
+	if principal.Name == "" {
+		return nil
+	}
+	apiAuthorizer.mutex.RLock()
+	defer apiAuthorizer.mutex.RUnlock()
+
+	var grantedScopes []Scope
+	for _, grant := range apiAuthorizer.resolveGrants(principal.String()) {
+		if grant.Capability == capability || grant.Capability == CapabilityClusterAdmin {
+			grantedScopes = append(grantedScopes, grant.Scope)
+		}
+	}
+	return grantedScopes
+}
+
 // logConditionFailure records an audit entry when a policy's capability matched
 // but its conditions did not pass.
 func (apiAuthorizer *APIAuthorizer) logConditionFailure(principal Principal, capability Capability, scope Scope, conditionalPolicy ConditionalPolicy) {

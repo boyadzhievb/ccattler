@@ -893,12 +893,14 @@ The debug API can run commands in any container, so users never reach it directl
 - Users are authorized only at the API layer, by capability (CLAUDE.md two-layer rule). The API server reads and writes the store as its own internal principal `service:api-server`, bound to the store-layer role `api-server`: read and watch on the orchestration roots plus `auth`, `leader`, `lease`, `policy`; write and delete only on the prefixes its handlers change. It has no rule for `secrets/`, `credentials/`, `enrollment/`, `bootstrap/` or `audit/`, so a handler bug cannot reach them through the generic store path. Store audit entries record `service:api-server` with the end user in `on_behalf_of`.
 - Applying DSL (`/api/apply`, policy gate and direct path) checks a capability for every compiled fact: `auth/`, `policy/network/` and cloud identity facts need `cluster.admin`; `desired/service/*/secret/` and image pull secrets need `secret.use`; other `desired/`, `effective/`, `intent/`, `derived/service/` facts need `workload.create`; anything else needs `cluster.admin`. A `workload.create` user therefore cannot write grants and escalate.
 - Status, metrics and state reads return a store error as an error, never as an empty cluster.
+- Workload visibility for `/api/state`, `/api/watch` and `/api/status` comes only from `workload.read` grants (direct or via `cluster.admin`). A `cluster`-scope grant sees every team. A `team/<name>` grant sees that team only. Membership (`team` attribute, `platform` group) adds nothing, and deeper scopes (`team/<name>/...`, node or service scopes) give no team visibility. No grant at any scope is a 403. The same per-key filter applies to scans, single-key reads and watch events. A read grant gives no `secret.*` or `cluster.admin` rights, and the readable-root allowlist and `/tls/key` filter still apply.
 
 **What must NOT happen:**
 - A prefix such as `secret`, `s` or `enroll` returning keys from `secrets/`, `credentials/` or `enrollment/`
 - One authenticator's error for a token it does not own blocking the next authenticator
 - Store grants or policies written but never applied (the pre-M173 state)
 - A user authorized at the API layer denied by the store layer because it has no store role binding (500 "has no role bindings", found in run 41637959333)
+- Team membership hiding facts from a principal with an explicit cluster-scope grant, or showing a team's facts to a member without a grant
 
 ---
 

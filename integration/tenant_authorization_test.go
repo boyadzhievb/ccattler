@@ -4,6 +4,7 @@
 package integration
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,7 +45,7 @@ func TestCrossTenantAuthorizationDenied(t *testing.T) {
 		},
 	}
 
-	t.Run("team-scoped principal denied cluster-scoped status", func(t *testing.T) {
+	t.Run("team-scoped principal reads only its team's status", func(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, "/api/status", nil)
 		requestCtx := security.WithPrincipalStruct(request.Context(), alicePrincipal)
 		requestCtx = security.WithPrincipal(requestCtx, "user:alice")
@@ -53,8 +54,21 @@ func TestCrossTenantAuthorizationDenied(t *testing.T) {
 
 		apiServer.Handler().ServeHTTP(recorder, request)
 
-		if recorder.Code != http.StatusForbidden {
-			t.Errorf("expected 403 for team-scoped principal at cluster scope, got %d", recorder.Code)
+		// workload.read at team/payments: status answers, limited to payments (Flow 25).
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("expected 200 for team-scoped reader, got %d: %s", recorder.Code, recorder.Body.String())
+		}
+		var status api.ClusterStatus
+		if unmarshalError := json.Unmarshal(recorder.Body.Bytes(), &status); unmarshalError != nil {
+			t.Fatalf("unmarshal status: %v", unmarshalError)
+		}
+		for _, service := range status.Services {
+			if service.Name == "web" || service.Name == "assets" {
+				t.Errorf("team/payments reader must not see frontend service %q", service.Name)
+			}
+		}
+		if len(status.Services) != 2 {
+			t.Errorf("expected the 2 payments services, got %+v", status.Services)
 		}
 	})
 

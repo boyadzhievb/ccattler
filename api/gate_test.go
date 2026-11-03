@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -232,11 +231,8 @@ func TestBuildStatusFiltersGatesByTenant(t *testing.T) {
 	writeTestGate(ctx, factStore, "pay", "pay.example.com", "checkout")
 	writeTestGate(ctx, factStore, "find", "find.example.com", "search")
 
-	paymentsPrincipal := security.Principal{
-		Kind: security.PrincipalKindUser, Name: "alice",
-		Attributes: []security.Attribute{{Key: "team", Value: "payments"}},
-	}
-	tenantStatus, _ := buildStatusFromStore(ctx, factStore, &paymentsPrincipal, false)
+	paymentsVisibility := workloadVisibility{teams: []string{"payments"}}
+	tenantStatus, _ := buildStatusFromStore(ctx, factStore, &paymentsVisibility, false)
 	if len(tenantStatus.Gates) != 1 || tenantStatus.Gates[0].Name != "pay" {
 		t.Errorf("tenant should see only gate pay, got %+v", tenantStatus.Gates)
 	}
