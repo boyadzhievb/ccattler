@@ -70,7 +70,7 @@ Init containers (temporary `nerdctl run --rm` containers for `init { exec "..." 
 
 **What must match:**
 - CA used to sign server cert = CA that signs agent certs
-- Certificate CN = `"node:" + nodeID` → becomes the RBAC principal
+- Certificate CN = node ID, and the mTLS principal is `"node:" + CN`. For enrolled nodes the CA sets the CN (Flow 11), never the CSR.
 - CA fingerprint in join token must match actual CA
 
 **Requirements:**
@@ -192,13 +192,17 @@ Enrollment is the trust bootstrap between a new node and the cluster. The node g
 **What must hold:**
 - Private key never leaves the node (generated locally, never serialized to network)
 - CSR signature is verified before signing (prevents key substitution)
-- Server-side SANs (DNS names, IPs) are merged with CSR SANs
-- Legacy flow (server-generated keypair) preserved for backward compatibility during rolling upgrades
-- Bootstrap token consumed (deleted) after successful enrollment
+- The CA sets the certificate identity itself (M171): CN = the validated node ID, SANs = `<node-id>`, `<node-id>.cca.local` and the request IPs. The CSR contributes only its public key; its subject and SANs are ignored.
+- Enrolled node certificates carry client-auth only. They authenticate the node to the API server and etcd and can never act as a server certificate. Control-plane and etcd server certificates come from `cca init`.
+- The node ID passes `ValidateNodeID` (lowercase DNS name, no `/`), because it becomes both a store key segment and the mTLS principal `node:<id>`.
+- A node ID is refused when it is reserved (`ccattler-server`) or already holds grants under `auth/grant/node/<id>/` (the server principal is `node:<server-cn>` and holds cluster-admin).
+- Re-enrolling an already-enrolled node ID needs a token bound to that node ID (`cca token create --node-id`).
+- The token is consumed and `enrollment/node/<id>` written in one transaction guarded by both revisions, so two concurrent requests with one token cannot both succeed. The certificate is signed before the transaction and returned only if the transaction succeeds.
 
 **What must NOT happen:**
-- Private key PEM in the enrollment HTTP response (the old flow — deprecated)
+- Private key PEM in the enrollment HTTP response (the old flow — removed)
 - CSR accepted without signature verification
+- A CSR-chosen CN or SAN in the issued certificate (a CN of `ccattler-server` or a control-plane node ID would map to a cluster-admin principal)
 - Enrollment without `--ca-cert` or CA fingerprint (unless `--insecure` explicitly set)
 
 ## 12. etcd mTLS

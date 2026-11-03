@@ -1905,6 +1905,12 @@ func KeyAuthGrant(principalKind string, principalName string, roleName string) s
 	return fmt.Sprintf("%s/grant/%s/%s/role/%s", PrefixAuth, principalKind, principalName, roleName)
 }
 
+// ScanAuthGrantsForPrincipal returns the scan prefix covering every role grant
+// held by one principal. Path: auth/grant/{principalKind}/{principalName}/
+func ScanAuthGrantsForPrincipal(principalKind string, principalName string) string {
+	return fmt.Sprintf("%s%s/%s/", ScanAuthGrants, principalKind, principalName)
+}
+
 // KeyAuthGroupMember returns the store path for a member in a group.
 // Path: auth/group/{groupName}/member/{memberName}
 func KeyAuthGroupMember(groupName string, memberName string) string {

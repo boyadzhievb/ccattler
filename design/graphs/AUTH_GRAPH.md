@@ -501,11 +501,11 @@ CertificateAuthority.IssueCertificate(request)                 [:183]
 ├── pem.EncodeToMemory → CertificatePEM, PrivateKeyPEM
 └── return IssuedCertificate{CertificatePEM, PrivateKeyPEM, NotAfter}
 
-CertificateAuthority.SignCSR(signRequest)                      [:300]
+CertificateAuthority.SignCSR(signRequest)                      [:301]
 ├── signRequest.CSR.CheckSignature()                           [verify CSR integrity]
-├── mergeUniqueStrings(CSR.DNSNames, request.DNSNames)         [:356]
-├── mergeUniqueIPs(CSR.IPAddresses, request.IPAddresses)       [:375]
-├── buildCSRLeafTemplate(serial, subject, dns, ips, notAfter)  [:339]
+├── require signRequest.CommonName                             [CA chooses identity; CSR subject/SANs ignored]
+├── buildCSRLeafTemplate(serial, CN, dns, ips, notAfter)       [:341]
+│   └── O=CCattler, ExtKeyUsage = ClientAuth only
 ├── x509.CreateCertificate(template, caCert, CSR.PublicKey, caKey)
 └── return SignCSRResponse{CertificatePEM, NotAfter}
 
@@ -555,22 +555,27 @@ EnrollmentService.GenerateJoinToken(ctx, nodeID, tokenTTL)     [:96]
 
 ### EnrollNode
 ```
-EnrollmentService.EnrollNode(ctx, request)                     [:173]
+EnrollmentService.EnrollNode(ctx, request)                     [:180]
+├── types.ValidateNodeID(request.NodeID)                       [lowercase DNS name]
 ├── hashTokenValue(request.Token) → tokenKey
-├── validateJoinToken(ctx, tokenKey, request)                  [:212]
-│   ├── factStore.Get(tokenKey) → unmarshal JoinToken
+├── validateJoinToken(ctx, tokenKey, request)                  [:216]
+│   ├── factStore.Get(tokenKey) → unmarshal JoinToken, revision
 │   ├── check not expired (delete if expired)
 │   └── check nodeID matches (if token is node-specific)
-├── issueOrSignCertificate(request, dnsNames)                  [:239]
-│   └── signCSRFromRequest(request, dnsNames)                  [:251]
-│       ├── pem.Decode(CSRPEM) → x509.ParseCertificateRequest
-│       └── ca.SignCSR(SignCSRRequest{CSR, TTL, DNSNames, IPs})
-├── bindRBACRoleForNode(principal)                             [:278]
+├── checkNodeIdentityAvailable(ctx, nodeID, tokenBound)        [:245]
+│   ├── reservedNodeIDs["ccattler-server"] → reject
+│   ├── factStore.Scan("auth/grant/node/<nodeID>/") non-empty → reject
+│   └── factStore.Get("enrollment/node/<nodeID>") exists && !tokenBound → reject
+├── signNodeCSR(request)                                       [:309]
+│   ├── pem.Decode(CSRPEM) → x509.ParseCertificateRequest
+│   └── ca.SignCSR(SignCSRRequest{CSR, TTL, CN=nodeID, DNSNames, IPs})
+├── commitEnrollment(ctx, tokenKey, tokenRev, ..., enrolledRev) [:271]
+│   └── factStore.Transaction(
+│         compare tokenKey@tokenRev, enrollment/node/<nodeID>@enrolledRev,
+│         delete tokenKey, put "enrollment/node/<nodeID>")      [one-time use, atomic]
+├── bindRBACRoleForNode(principal)                             [:339]
 │   └── rbacAuthorizer.BindRole({principal, "node-agent"})
-├── recordEnrolledNode(ctx, nodeID, principal, certExpiry)     [:288]
-│   └── factStore.Put("enrollment/node/<nodeID>", JSON)
-├── factStore.Delete(tokenKey)                                 [one-time use, destroy token]
-└── return EnrollmentResponse{CertPEM, PrivateKeyPEM, CACertPEM, Principal}
+└── return EnrollmentResponse{CertPEM, CACertPEM, Principal}
 ```
 
 ### Enrollment queries
@@ -736,7 +741,7 @@ InMemoryAuditLog.Entries()                                     [:83]
 | `bootstrap/expiry` | GenerateBootstrapToken |
 | `bootstrap/used` | ValidateBootstrapToken |
 | `enrollment/token/{hash}` | GenerateJoinToken |
-| `enrollment/node/{id}` | recordEnrolledNode |
+| `enrollment/node/{id}` | commitEnrollment |
 | `secrets/{name}` | SecretStore.PutSecret, RotateKeyProvider |
 | `policy/network/{name}` | NetworkPolicyEngine.AddRule |
 | `audit/{sequence}` | StoreBackedAuditLog.persistEntry |
@@ -784,7 +789,7 @@ InMemoryAuditLog.Entries()                                     [:83]
 | `resolveField` | evaluateSingleCondition |
 | `resolveSubjectField` | resolveField (objectName=="subject") |
 | `resolveResourceField` | resolveField (objectName=="resource") |
-| `AuthController.Reconcile` | Runner.runControllerLoop (on auth/ watch) |
+| `AuthController.Reconcile` | **none in production** — not wired in `cca server` (M173) |
 | `parseRoleCapabilitiesFromFacts` | AuthController.Reconcile |
 | `parseRoleScopesFromFacts` | AuthController.Reconcile |
 | `parseGroupMembersFromFacts` | AuthController.Reconcile |
@@ -812,12 +817,12 @@ InMemoryAuditLog.Entries()                                     [:83]
 | `GenerateJoinToken` | cca token create |
 | `EnrollNode` | cca join handler |
 | `validateJoinToken` | EnrollNode |
-| `issueOrSignCertificate` | EnrollNode |
-| `signCSRFromRequest` | issueOrSignCertificate |
+| `checkNodeIdentityAvailable` | EnrollNode |
+| `signNodeCSR` | EnrollNode |
 | `bindRBACRoleForNode` | EnrollNode |
-| `recordEnrolledNode` | EnrollNode |
+| `commitEnrollment` | EnrollNode |
 | `CertificateAuthority.IssueCertificate` | renewCertificate, EnrollNode (legacy) |
-| `CertificateAuthority.SignCSR` | signCSRFromRequest |
+| `CertificateAuthority.SignCSR` | signNodeCSR |
 | `renewCertificate` | NewCertificateRotator, renewalLoop |
 | `NetworkPolicyEngine.Evaluate` | data plane nftables rules |
 | `DetectPolicyCycles` | lint / validation |
@@ -874,10 +879,10 @@ InMemoryAuditLog.Entries()                                     [:83]
 | security/authorized_store.go:67 | AuthorizedStore — per-op authorization wrapper |
 | security/audit.go:112 | StoreBackedAuditLog — persistent audit entries |
 | security/ca.go:183 | CertificateAuthority.IssueCertificate |
-| security/ca.go:300 | CertificateAuthority.SignCSR |
+| security/ca.go:301 | CertificateAuthority.SignCSR |
 | security/rotator.go:36 | CertificateRotator — auto-renewal |
-| security/enrollment.go:173 | EnrollmentService.EnrollNode |
-| security/enrollment.go:96 | EnrollmentService.GenerateJoinToken |
+| security/enrollment.go:180 | EnrollmentService.EnrollNode |
+| security/enrollment.go:103 | EnrollmentService.GenerateJoinToken |
 | security/bootstrap.go:37 | GenerateBootstrapToken |
 | security/bootstrap.go:64 | ValidateBootstrapToken |
 | security/user_token.go:54 | UserTokenIssuer.MintUserToken |

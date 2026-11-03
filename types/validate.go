@@ -35,6 +35,27 @@ func ValidateResourceName(resourceName string) error {
 	return nil
 }
 
+// validNodeIDPattern matches node IDs: a lowercase DNS name of one or more
+// labels separated by dots. Node IDs become store key segments and the mTLS
+// principal "node:<id>", so slashes and other separators are rejected.
+var validNodeIDPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+// ValidateNodeID checks that a node ID is a lowercase DNS name of at most
+// MaxResourceNameLength characters. Use this before issuing a node identity
+// or constructing store keys from a node-supplied ID.
+func ValidateNodeID(nodeID string) error {
+	if nodeID == "" {
+		return fmt.Errorf("node ID must not be empty")
+	}
+	if len(nodeID) > MaxResourceNameLength {
+		return fmt.Errorf("node ID %q exceeds maximum length %d", nodeID, MaxResourceNameLength)
+	}
+	if !validNodeIDPattern.MatchString(nodeID) {
+		return fmt.Errorf("node ID %q is invalid: must be a lowercase DNS name (letters, digits, hyphens, dots)", nodeID)
+	}
+	return nil
+}
+
 // validSecretNamePattern matches hierarchical secret names: one or more
 // path segments separated by dots or slashes, where each segment is
 // lowercase alphanumeric with hyphens. Prevents path traversal and

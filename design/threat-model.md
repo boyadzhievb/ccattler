@@ -122,7 +122,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Controller write domain enforcement in runner (Phase 43)
 - Node agents are bound to specific key prefixes via RBAC roles
 
-**Residual risk:** If RBAC is not configured (development mode), agents have full store access.
+**Residual risk (corrected 2026-11-03):** Agents connect to etcd directly with a CA-signed certificate and do not use `AuthorizedStore`, and etcd has no roles configured. Every agent therefore has full read/write access to every key in all modes, not just development mode. A compromised node can rewrite desired state, grants and enrollment records. Fix: M176.
 
 ### T6: Denial of Service (MEDIUM)
 
@@ -179,6 +179,30 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - No `--privileged` flag in container start
 - No capability additions beyond defaults
 
+### T11: Enrollment Identity Spoofing (CRITICAL)
+
+**Attack surface:** `SignCSR` copied the CSR subject and SANs into the node certificate, and the mTLS authenticator maps the certificate CN to `node:<CN>`. The server certificate's CN is `ccattler-server`, and `node:ccattler-server` is bound to cluster-admin.
+
+**Impact:** Anyone holding a join token could request CN `ccattler-server` and become cluster-admin. CSR SANs naming the API or etcd host produced a valid server certificate for those hosts.
+
+**Mitigations (added, M171):** The CA sets CN to the validated node ID and ignores the CSR subject and SANs. Enrolled certificates are client-auth only. Reserved node IDs and IDs holding role grants are refused, and the join token is consumed in the same transaction that records the node.
+
+### T12: Unauthenticated Agent Debug API (CRITICAL)
+
+**Attack surface:** The agent debug API serves plain HTTP with no authentication. Ansible binds it to the host IP. `/debug/exec` runs any command in any container, and `/debug/images/pull` pulls any image.
+
+**Impact:** Anyone who can reach port 9771 can execute commands in every container on the node.
+
+**Mitigations:** M172. Bind to loopback, then require mTLS and an admin principal.
+
+### T13: Cluster Master Key on Every Node (CRITICAL)
+
+**Attack surface:** The enrollment response includes the secret master key. Every node can decrypt every secret ciphertext it can read from etcd, which is all of them (see T5).
+
+**Impact:** One compromised node exposes every tenant's secrets.
+
+**Mitigations:** M174. Per-node secret delivery, versioned keyring.
+
 ## File Permission Summary
 
 | File | Expected | Actual | Status |
@@ -206,3 +230,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 | P2 | Switch to CSR-based enrollment | T8 | **FIXED (Phase 110)** |
 | P2 | Store join token hashes, not plaintext | T7 | **FIXED (Phase 110)** |
 | P2 | Redact config values matching sensitive patterns | T3 | **FIXED (Phase 110)** |
+| P0 | CA sets node cert identity; atomic join-token use | T11 | **FIXED (M171)** — deploy validation pending |
+| P0 | Authenticate the agent debug API | T12 | Open (M172) |
+| P0 | Stop distributing the master key to nodes | T13 | Open (M174) |
+| P0 | Restrict agent store access | T5 | Open (M176) |

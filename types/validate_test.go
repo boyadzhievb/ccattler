@@ -111,3 +111,19 @@ func TestValidateSecretNameInvalid(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateNodeID(t *testing.T) {
+	validNodeIDs := []string{"node-1", "worker-1", "ctrl", "n1.dc1.example", "192-168-1-5"}
+	for _, nodeID := range validNodeIDs {
+		if validateError := ValidateNodeID(nodeID); validateError != nil {
+			t.Errorf("ValidateNodeID(%q) returned error: %v", nodeID, validateError)
+		}
+	}
+
+	invalidNodeIDs := []string{"", "Node-1", "a/b", "../x", "node_1", "-node", "node-", "node.", ".node", "a..b", strings.Repeat("a", 254)}
+	for _, nodeID := range invalidNodeIDs {
+		if ValidateNodeID(nodeID) == nil {
+			t.Errorf("ValidateNodeID(%q) accepted an invalid node ID", nodeID)
+		}
+	}
+}

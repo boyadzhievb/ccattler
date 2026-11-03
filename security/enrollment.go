@@ -19,6 +19,7 @@ import (
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // JoinTokenPrefix is the fact store prefix for node join tokens.
@@ -26,6 +27,12 @@ const JoinTokenPrefix = "enrollment/token/"
 
 // EnrolledNodePrefix is the fact store prefix for enrolled node records.
 const EnrolledNodePrefix = "enrollment/node/"
+
+// reservedNodeIDs are node IDs that enrollment never issues, because their
+// "node:<id>" principal is the auto-TLS server identity bound to cluster-admin.
+var reservedNodeIDs = map[string]bool{
+	"ccattler-server": true,
+}
 
 // tokenHashPrefix is the number of characters from the raw token value stored
 // in the JoinToken struct for display in token listings.
@@ -166,112 +173,166 @@ type EnrollmentResponse struct {
 	Principal      string // assigned security principal
 }
 
-// EnrollNode validates the join token and issues a certificate for the node.
-// On success, it records the node as enrolled, binds the node-agent RBAC role,
-// and destroys the join token. If the request contains a CSR, the server signs
-// it instead of generating a new keypair.
+// EnrollNode validates the join token and the requested node identity, signs
+// the node's CSR, and atomically consumes the token while recording the node.
+// The certificate is returned only if that transaction succeeds, so one token
+// can enroll at most one node. Binds the node-agent RBAC role on success.
 func (enrollmentService *EnrollmentService) EnrollNode(ctx context.Context, request EnrollmentRequest) (*EnrollmentResponse, error) {
-	hashedTokenKey := hashTokenValue(request.Token)
-	tokenKey := JoinTokenPrefix + hashedTokenKey
+	if validateError := types.ValidateNodeID(request.NodeID); validateError != nil {
+		return nil, fmt.Errorf("enrollment rejected: %w", validateError)
+	}
 
-	joinToken, validateError := enrollmentService.validateJoinToken(ctx, tokenKey, request)
+	tokenKey := JoinTokenPrefix + hashTokenValue(request.Token)
+	joinToken, tokenRevision, validateError := enrollmentService.validateJoinToken(ctx, tokenKey, request)
 	if validateError != nil {
 		return nil, validateError
 	}
-	_ = joinToken // token metadata used only for validation above
 
-	dnsNames := []string{
-		request.NodeID,
-		request.NodeID + ".cca.local",
+	enrolledRecordRevision, identityError := enrollmentService.checkNodeIdentityAvailable(ctx, request.NodeID, joinToken.NodeID != "")
+	if identityError != nil {
+		return nil, identityError
 	}
 
-	certificatePEM, privateKeyPEM, certExpiry, issueError := enrollmentService.issueOrSignCertificate(request, dnsNames)
-	if issueError != nil {
-		return nil, issueError
+	certificatePEM, certExpiry, signError := enrollmentService.signNodeCSR(request)
+	if signError != nil {
+		return nil, signError
 	}
 
 	principal := "node:" + request.NodeID
-	enrollmentService.bindRBACRoleForNode(principal)
-	enrollmentService.recordEnrolledNode(ctx, request.NodeID, principal, certExpiry)
-
-	// Destroy the join token (one-time use).
-	if deleteError := enrollmentService.factStore.Delete(ctx, tokenKey); deleteError != nil {
-		logging.Default().Error("failed to delete used join token", "key", tokenKey, "error", deleteError.Error())
+	if commitError := enrollmentService.commitEnrollment(ctx, tokenKey, tokenRevision, request.NodeID, principal, certExpiry, enrolledRecordRevision); commitError != nil {
+		return nil, commitError
 	}
+	enrollmentService.bindRBACRoleForNode(principal)
 
 	return &EnrollmentResponse{
 		CertificatePEM: certificatePEM,
-		PrivateKeyPEM:  privateKeyPEM,
 		CACertPEM:      enrollmentService.certificateAuthority.CACertificatePEM(),
 		Principal:      principal,
 	}, nil
 }
 
 // validateJoinToken reads and validates the join token from the fact store.
-// Returns the parsed token or an error.
-func (enrollmentService *EnrollmentService) validateJoinToken(ctx context.Context, tokenKey string, request EnrollmentRequest) (*JoinToken, error) {
+// Returns the parsed token and its store revision, used to consume it atomically.
+func (enrollmentService *EnrollmentService) validateJoinToken(ctx context.Context, tokenKey string, request EnrollmentRequest) (*JoinToken, int64, error) {
 	tokenFact, err := enrollmentService.factStore.Get(ctx, tokenKey)
 	if err != nil {
-		return nil, fmt.Errorf("invalid join token")
+		return nil, 0, fmt.Errorf("invalid join token")
 	}
 
 	var joinToken JoinToken
 	if unmarshalErr := json.Unmarshal(tokenFact.Value, &joinToken); unmarshalErr != nil {
-		return nil, fmt.Errorf("corrupt join token")
+		return nil, 0, fmt.Errorf("corrupt join token")
 	}
 
 	if time.Now().After(joinToken.ExpiresAt) {
 		if deleteError := enrollmentService.factStore.Delete(ctx, tokenKey); deleteError != nil {
 			logging.Default().Error("failed to delete expired join token", "key", tokenKey, "error", deleteError.Error())
 		}
-		return nil, fmt.Errorf("join token expired")
+		return nil, 0, fmt.Errorf("join token expired")
 	}
 
 	if joinToken.NodeID != "" && joinToken.NodeID != request.NodeID {
-		return nil, fmt.Errorf("token is for node %q, not %q", joinToken.NodeID, request.NodeID)
+		return nil, 0, fmt.Errorf("token is for node %q, not %q", joinToken.NodeID, request.NodeID)
 	}
 
-	return &joinToken, nil
+	return &joinToken, tokenFact.Revision, nil
 }
 
-// issueOrSignCertificate either signs a CSR (new flow) or generates a full
-// keypair (legacy flow) depending on whether the request contains a CSR.
-func (enrollmentService *EnrollmentService) issueOrSignCertificate(
-	request EnrollmentRequest, dnsNames []string,
-) (certificatePEM []byte, privateKeyPEM []byte, certExpiry time.Time, issueError error) {
-	if len(request.CSRPEM) > 0 {
-		return enrollmentService.signCSRFromRequest(request, dnsNames)
+// checkNodeIdentityAvailable refuses node IDs whose principal would carry more
+// than node-agent rights: reserved names and IDs that already hold role grants
+// (the server principal holds cluster-admin). An already-enrolled ID needs a
+// token bound to it. Returns the enrolled record's revision (0 when absent).
+func (enrollmentService *EnrollmentService) checkNodeIdentityAvailable(ctx context.Context, nodeID string, tokenBoundToNode bool) (int64, error) {
+	if reservedNodeIDs[nodeID] {
+		return 0, fmt.Errorf("enrollment rejected: node ID %q is reserved", nodeID)
 	}
-	return nil, nil, time.Time{}, fmt.Errorf("enrollment rejected: CSR required (legacy server-generated keypair is no longer supported)")
+
+	existingGrants, scanError := enrollmentService.factStore.Scan(ctx, types.ScanAuthGrantsForPrincipal(string(PrincipalKindNode), nodeID))
+	if scanError != nil {
+		return 0, fmt.Errorf("check node grants: %w", scanError)
+	}
+	if len(existingGrants) > 0 {
+		return 0, fmt.Errorf("enrollment rejected: node ID %q holds role grants and cannot be enrolled", nodeID)
+	}
+
+	enrolledFact, getError := enrollmentService.factStore.Get(ctx, EnrolledNodePrefix+nodeID)
+	if getError != nil {
+		return 0, nil
+	}
+	if !tokenBoundToNode {
+		return 0, fmt.Errorf("enrollment rejected: node %q is already enrolled; re-enrolling needs a token created with --node-id %s", nodeID, nodeID)
+	}
+	return enrolledFact.Revision, nil
 }
 
-// signCSRFromRequest decodes the PEM-encoded CSR from the enrollment request,
-// parses it, and signs it using the cluster CA. Returns only the certificate
-// PEM — the private key PEM is nil because the key stays on the node.
-func (enrollmentService *EnrollmentService) signCSRFromRequest(
-	request EnrollmentRequest, dnsNames []string,
-) ([]byte, []byte, time.Time, error) {
+// commitEnrollment deletes the join token and writes the enrolled node record
+// in one transaction guarded by both revisions. A concurrent enrollment that
+// used the same token, or raced on the same node ID, makes it fail.
+func (enrollmentService *EnrollmentService) commitEnrollment(
+	ctx context.Context, tokenKey string, tokenRevision int64,
+	nodeID string, principal string, certExpiry time.Time, enrolledRecordRevision int64,
+) error {
+	enrolledJSON, marshalError := json.Marshal(EnrolledNode{
+		NodeID:     nodeID,
+		Principal:  principal,
+		EnrolledAt: time.Now(),
+		CertExpiry: certExpiry,
+	})
+	if marshalError != nil {
+		return fmt.Errorf("marshal enrolled node: %w", marshalError)
+	}
+
+	enrolledKey := EnrolledNodePrefix + nodeID
+	committed, transactionError := enrollmentService.factStore.Transaction(ctx,
+		[]store.Compare{
+			{Key: tokenKey, Revision: tokenRevision},
+			{Key: enrolledKey, Revision: enrolledRecordRevision},
+		},
+		[]store.Op{
+			{Type: store.OpDelete, Key: tokenKey},
+			{Type: store.OpPut, Key: enrolledKey, Value: enrolledJSON},
+		},
+		nil,
+	)
+	if transactionError != nil {
+		return fmt.Errorf("record enrollment: %w", transactionError)
+	}
+	if !committed {
+		return fmt.Errorf("enrollment rejected: join token already used or node %q enrolled concurrently", nodeID)
+	}
+	return nil
+}
+
+// signNodeCSR decodes and parses the node's CSR and signs it with the cluster
+// CA. The CA sets CN to the node ID and the DNS SANs to the node ID names;
+// only the CSR's public key is used. The private key stays on the node.
+func (enrollmentService *EnrollmentService) signNodeCSR(request EnrollmentRequest) ([]byte, time.Time, error) {
+	if len(request.CSRPEM) == 0 {
+		return nil, time.Time{}, fmt.Errorf("enrollment rejected: CSR required (legacy server-generated keypair is no longer supported)")
+	}
+
 	csrBlock, _ := pem.Decode(request.CSRPEM)
 	if csrBlock == nil {
-		return nil, nil, time.Time{}, fmt.Errorf("invalid CSR PEM encoding")
+		return nil, time.Time{}, fmt.Errorf("invalid CSR PEM encoding")
 	}
 
 	parsedCSR, parseError := x509.ParseCertificateRequest(csrBlock.Bytes)
 	if parseError != nil {
-		return nil, nil, time.Time{}, fmt.Errorf("parse CSR: %w", parseError)
+		return nil, time.Time{}, fmt.Errorf("parse CSR: %w", parseError)
 	}
 
 	signResponse, signError := enrollmentService.certificateAuthority.SignCSR(SignCSRRequest{
 		CSR:         parsedCSR,
 		TTL:         enrollmentService.certificateTTL,
-		DNSNames:    dnsNames,
+		CommonName:  request.NodeID,
+		DNSNames:    []string{request.NodeID, request.NodeID + ".cca.local"},
 		IPAddresses: request.IPAddresses,
 	})
 	if signError != nil {
-		return nil, nil, time.Time{}, fmt.Errorf("sign CSR: %w", signError)
+		return nil, time.Time{}, fmt.Errorf("sign CSR: %w", signError)
 	}
 
-	return signResponse.CertificatePEM, nil, signResponse.NotAfter, nil
+	return signResponse.CertificatePEM, signResponse.NotAfter, nil
 }
 
 // bindRBACRoleForNode binds the node-agent RBAC role to the given principal.
@@ -281,20 +342,6 @@ func (enrollmentService *EnrollmentService) bindRBACRoleForNode(principal string
 			Principal: principal,
 			RoleName:  "node-agent",
 		})
-	}
-}
-
-// recordEnrolledNode persists the enrolled node record to the fact store.
-func (enrollmentService *EnrollmentService) recordEnrolledNode(ctx context.Context, nodeID string, principal string, certExpiry time.Time) {
-	enrolledNode := EnrolledNode{
-		NodeID:     nodeID,
-		Principal:  principal,
-		EnrolledAt: time.Now(),
-		CertExpiry: certExpiry,
-	}
-	enrolledJSON, _ := json.Marshal(enrolledNode)
-	if _, putError := enrollmentService.factStore.Put(ctx, EnrolledNodePrefix+nodeID, enrolledJSON); putError != nil {
-		logging.Default().Error("failed to store enrolled node", "nodeID", nodeID, "error", putError.Error())
 	}
 }
 

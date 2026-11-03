@@ -1387,6 +1387,7 @@ func TestSignCSR_ValidRequest(t *testing.T) {
 	signResponse, err := certificateAuthority.SignCSR(SignCSRRequest{
 		CSR:         parsedCSR,
 		TTL:         1 * time.Hour,
+		CommonName:  "node-csr-test",
 		DNSNames:    []string{"node-csr-test", "node-csr-test.cca.local"},
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.50")},
 	})
@@ -1448,13 +1449,13 @@ func TestSignCSR_InvalidSignature(t *testing.T) {
 	}
 }
 
-func TestSignCSR_MergesSANs(t *testing.T) {
+func TestSignCSR_IgnoresCSRSubjectAndSANs(t *testing.T) {
 	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
 
 	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
 	csrTemplate := &x509.CertificateRequest{
-		Subject:     pkix.Name{CommonName: "node-san-merge"},
-		DNSNames:    []string{"from-csr.local"},
+		Subject:     pkix.Name{CommonName: "ccattler-server", Organization: []string{"Attacker"}},
+		DNSNames:    []string{"api.cluster.example", "localhost"},
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.1")},
 	}
 	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, csrTemplate, nodePrivateKey)
@@ -1463,7 +1464,8 @@ func TestSignCSR_MergesSANs(t *testing.T) {
 	signResponse, err := certificateAuthority.SignCSR(SignCSRRequest{
 		CSR:         parsedCSR,
 		TTL:         1 * time.Hour,
-		DNSNames:    []string{"from-server.local", "from-csr.local"}, // overlap with CSR
+		CommonName:  "node-7",
+		DNSNames:    []string{"node-7", "node-7.cca.local"},
 		IPAddresses: []net.IP{net.ParseIP("10.0.0.2")},
 	})
 	if err != nil {
@@ -1473,20 +1475,34 @@ func TestSignCSR_MergesSANs(t *testing.T) {
 	certBlock, _ := pem.Decode(signResponse.CertificatePEM)
 	signedCert, _ := x509.ParseCertificate(certBlock.Bytes)
 
-	// Should have merged DNS names without duplicates.
-	expectedDNSNames := map[string]bool{"from-csr.local": true, "from-server.local": true}
-	if len(signedCert.DNSNames) != len(expectedDNSNames) {
-		t.Fatalf("expected %d DNS names, got %d: %v", len(expectedDNSNames), len(signedCert.DNSNames), signedCert.DNSNames)
+	if signedCert.Subject.CommonName != "node-7" {
+		t.Fatalf("CN must come from the request, got %q", signedCert.Subject.CommonName)
 	}
-	for _, dnsName := range signedCert.DNSNames {
-		if !expectedDNSNames[dnsName] {
-			t.Fatalf("unexpected DNS name: %s", dnsName)
-		}
+	if len(signedCert.Subject.Organization) != 1 || signedCert.Subject.Organization[0] != "CCattler" {
+		t.Fatalf("organization must be set by the CA, got %v", signedCert.Subject.Organization)
 	}
+	if len(signedCert.DNSNames) != 2 || signedCert.DNSNames[0] != "node-7" || signedCert.DNSNames[1] != "node-7.cca.local" {
+		t.Fatalf("DNS SANs must come from the request only, got %v", signedCert.DNSNames)
+	}
+	if len(signedCert.IPAddresses) != 1 || !signedCert.IPAddresses[0].Equal(net.ParseIP("10.0.0.2")) {
+		t.Fatalf("IP SANs must come from the request only, got %v", signedCert.IPAddresses)
+	}
+	if len(signedCert.ExtKeyUsage) != 1 || signedCert.ExtKeyUsage[0] != x509.ExtKeyUsageClientAuth {
+		t.Fatalf("enrolled certificates must be client-auth only, got %v", signedCert.ExtKeyUsage)
+	}
+}
 
-	// Should have merged IPs without duplicates.
-	if len(signedCert.IPAddresses) != 2 {
-		t.Fatalf("expected 2 IPs, got %d: %v", len(signedCert.IPAddresses), signedCert.IPAddresses)
+func TestSignCSR_RequiresCommonName(t *testing.T) {
+	certificateAuthority, _ := NewCertificateAuthority(24 * time.Hour)
+
+	nodePrivateKey, _ := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	csrDER, _ := x509.CreateCertificateRequest(cryptorand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "node-from-csr"},
+	}, nodePrivateKey)
+	parsedCSR, _ := x509.ParseCertificateRequest(csrDER)
+
+	if _, err := certificateAuthority.SignCSR(SignCSRRequest{CSR: parsedCSR, TTL: time.Hour}); err == nil {
+		t.Fatal("expected error when the request has no common name")
 	}
 }
 

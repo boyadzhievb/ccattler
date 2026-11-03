@@ -142,6 +142,10 @@ Implementation: `security/authorized_store.go` wraps the raw store. Every
 `Put`/`Delete`/`Scan` checks `RBACAuthorizer.Authorize(principal, permission, key)`
 against prefix rules before reaching etcd.
 
+**Status (2026-11-03):** only the API server uses `AuthorizedStore`. Agents and
+controllers use the raw etcd client, so this layer is not enforced for them
+(see threat-model T5, fixed in M176).
+
 ### Layer 2: API-Layer Capability Auth (users)
 
 Users authenticate via mTLS or JWT/OIDC and receive capability grants at

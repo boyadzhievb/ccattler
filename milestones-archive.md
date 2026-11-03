@@ -910,7 +910,7 @@ Raw string comparisons used where typed enums would catch bugs at compile time:
 - [x] Parse `when subject.X == resource.Y` clauses inside `policy` blocks
 - [x] `PolicyDecl` AST node: name, capability, conditions list
 - [x] Compiler emits `auth/policy/{name}/condition/{index}` facts
-- [x] AuthController reads policy facts and builds in-memory condition set
+- [x] AuthController reads policy facts and builds in-memory condition set *(correction 2026-11-03: AuthController was never wired in `cca server`, so policies are not enforced in production — fixed in M173)*
 
 #### 58c — Enforcement
 - [x] Wire condition evaluation into APIAuthorizer: after capability match, evaluate conditions
@@ -1795,7 +1795,7 @@ vmherd ssh <vm-name> -- 'sudo journalctl -u cca-agent --no-pager -n 100 -o cat' 
 | M153 — OIDC Browser Login Flow | 153 | `cca login <server>` starts OAuth2 PKCE flow with localhost callback. Exchanges auth code for tokens, stores access+refresh in credentials.json, auto-refreshes when <5min from expiry. Works with Google, GitHub, generic OIDC. Builds on existing OIDCDiscoveryClient. |
 | M154 — Credential Storage & Server Contexts | 154 | `~/.ccattler/config.json` with named contexts (server, auth method, token/cert paths, default team). `cca context list/use/current/delete`. `cca login` creates/updates context. `--context` flag on all commands. Auto-migrate old credentials.json. |
 | M155 — Webhook Token Authentication | 155 | `WebhookAuthenticator` sends token to configured HTTPS endpoint, gets back principal/groups/attributes. Configurable via `cca server --authn-webhook-url`. Response caching (default 2min TTL). Fail-closed on timeout. |
-| M156 — Runtime Role Management CLI | 156 | `cca role grant/revoke/list/check` manages capability grants at runtime. Grants stored as `auth/grant/{kind}/{name}/role/{role}` and `auth/role/{name}/capability/{cap}` facts. Direct capability grants create inline roles. Built-in cluster-admin role auto-bootstrapped to local-admin and server principal, persisted to store. Auth controller auto-reconciles grants on change. 10 unit tests. |
+| M156 — Runtime Role Management CLI | 156 | `cca role grant/revoke/list/check` manages capability grants at runtime. Grants stored as `auth/grant/{kind}/{name}/role/{role}` and `auth/role/{name}/capability/{cap}` facts. Direct capability grants create inline roles. Built-in cluster-admin role auto-bootstrapped to local-admin and server principal, persisted to store. Auth controller auto-reconciles grants on change. *(Correction 2026-11-03: the auth controller was never wired in `cca server`, so grants do not reach the API authorizer — fixed in M173.)* 10 unit tests. |
 | M157 — Instance Fact Garbage Collection | 157 | `InstanceGCController` auto-deletes stopped instance fact trees (observed/, derived/, placement/) when the owning service is converged and the retention period (10m default) has elapsed. Budget: 4 trees/cycle (~60 deletes). Manual `cca gc instances` CLI + POST /api/gc endpoint for immediate cleanup. 7 unit tests. |
 | M158 — Persistent Audit Log & CLI | 158 | `cca audit [--principal] [--action] [--since] [--follow]` queries StoreBackedAuditLog. `/api/audit` REST endpoint. Log rotation (default 7 days). Entries include auth method (mTLS, OIDC, webhook, local-token). |
 | M159 — Multi-User Concurrent Auth Test Suite ✅ | 159 | Integration test: 3 concurrent users (admin, team-a-dev, team-b-readonly). Concurrent API calls, tenant isolation, audit correctness, token expiry mid-session, escalation denial. Depends: M153–M158. |

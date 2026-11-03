@@ -1398,12 +1398,12 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
         MULTIPORT_PASS=false
     fi
 
-    # Known gap (M179): a service VIP carries only its first exposed port, so
-    # 8081 has no VIP entry yet. Reported, not failed, until M179 lands.
+    # Known gap (M186): a service VIP carries only its first exposed port, so
+    # 8081 has no VIP entry yet. Reported, not failed, until M186 lands.
     if [[ -n "$MULTIPORT_PORT8081_VIP" ]]; then
         log "  Port 8081 VIP: $MULTIPORT_PORT8081_VIP"
     else
-        log "  KNOWN GAP (M179): no VIP for whoami-multiport port 8081 — multi-port service VIPs not implemented"
+        log "  KNOWN GAP (M186): no VIP for whoami-multiport port 8081 — multi-port service VIPs not implemented"
     fi
 
     if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
