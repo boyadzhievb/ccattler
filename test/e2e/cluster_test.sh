@@ -850,7 +850,90 @@ PULL_JSON=$(curl -sf $CURL_TLS --max-time 60 -X POST "${DEBUG_PROXY}/images/pull
 echo "$PULL_JSON" | grep -q '"success":true' || fail "image pull did not succeed"
 log "POST /debug/images/pull OK — pulled ${PULL_REF} on worker-1"
 
+# M172: the cca commands themselves reach agents through the API proxy
+# (Flow 24) with the control node's local token, not only curl.
+if [[ -n "${WORKER1_INSTANCE:-}" ]]; then
+    WORKER1_SERVICE=$(echo "$STATUS_JSON" | jq -r --arg id "$WORKER1_INSTANCE" '.instances[] | select(.id == $id) | .service')
+    CLI_INSPECT=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca node-inspect $WORKER1_NODE_ID" 2>&1) || fail "cca node-inspect failed: $CLI_INSPECT"
+    echo "$CLI_INSPECT" | grep -q "$WORKER1_INSTANCE" || fail "cca node-inspect output does not list instance $WORKER1_INSTANCE: $CLI_INSPECT"
+    CLI_EXEC=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca exec $WORKER1_INSTANCE -- hostname" 2>&1) || fail "cca exec failed: $CLI_EXEC"
+    [[ -n "$CLI_EXEC" ]] || fail "cca exec returned no output"
+    CLI_LOGS=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca logs ${WORKER1_SERVICE}-${WORKER1_INSTANCE} --tail 5" 2>&1) || fail "cca logs failed: $CLI_LOGS"
+    if echo "$CLI_LOGS" | grep -qiE "logs error|API error"; then
+        fail "cca logs reported an error: $CLI_LOGS"
+    fi
+    log "cca node-inspect, exec and logs OK through the API proxy (instance $WORKER1_INSTANCE)"
+fi
+CLI_PULL=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca images pull $PULL_REF --node $WORKER1_NODE_ID" 2>&1) || fail "cca images pull failed: $CLI_PULL"
+echo "$CLI_PULL" | grep -q "OK" || fail "cca images pull did not report OK: $CLI_PULL"
+log "cca images pull OK through the API proxy"
+
 log "Phase 69 E2E tests passed"
+
+# ---- Step 5.5b: API authorization (M173, Flow 25) ----
+# The state API reads only allowlisted roots and hides private keys; role
+# grants stored with cca role grant take effect and are revoked without a
+# server restart. The user token is sent without a client certificate, since
+# mTLS would otherwise authenticate the request as the control node.
+log "Validating API authorization (M173)..."
+for SENSITIVE_PREFIX in secret s enroll auth/; do
+    PREFIX_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $CURL_TLS "${CCA_API}/api/state?prefix=${SENSITIVE_PREFIX}" || echo "000")
+    [[ "$PREFIX_CODE" == "403" ]] || fail "state API prefix '${SENSITIVE_PREFIX}' returned HTTP $PREFIX_CODE, want 403"
+done
+TLS_KEY_FACTS=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/" | jq '[.[] | select(.key | endswith("/tls/key"))] | length')
+[[ "$TLS_KEY_FACTS" == "0" ]] || fail "state API returned $TLS_KEY_FACTS gate TLS private key facts"
+log "  State API refuses sensitive prefixes and hides gate private keys"
+
+API_TOKEN_TLS="--cacert $CA_CERT_LOCAL"
+GRANT_TEST_USER="e2e-reader"
+GRANT_DEADLINE_SECONDS=30
+ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca role revoke user:${GRANT_TEST_USER} --role api-reader >/dev/null 2>&1; sudo /usr/local/bin/cca user create ${GRANT_TEST_USER} >/dev/null 2>&1" || true
+GRANT_TEST_TOKEN=$(ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca user token ${GRANT_TEST_USER} --ttl 10m" | tr -d '\r\n')
+[[ -n "$GRANT_TEST_TOKEN" ]] || fail "cca user token returned no token"
+# user_state_code returns the HTTP status of a state read with the test user's token.
+user_state_code() {
+    curl -s -o /dev/null -w '%{http_code}' --max-time 5 $API_TOKEN_TLS \
+        -H "Authorization: Bearer $GRANT_TEST_TOKEN" "${CCA_API}/api/state?prefix=desired/service/" || echo "000"
+}
+# wait_for_user_state_code polls until the user's state read returns the code.
+wait_for_user_state_code() {
+    local wantedCode="$1" deadline=$((SECONDS + GRANT_DEADLINE_SECONDS)) lastCode=""
+    while [[ $SECONDS -lt $deadline ]]; do
+        lastCode=$(user_state_code)
+        [[ "$lastCode" == "$wantedCode" ]] && return 0
+        sleep 1
+    done
+    fail "user ${GRANT_TEST_USER} state read returned HTTP $lastCode, want $wantedCode within ${GRANT_DEADLINE_SECONDS}s"
+}
+wait_for_user_state_code 403
+ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca role grant user:${GRANT_TEST_USER} --role api-reader" || fail "cca role grant failed"
+wait_for_user_state_code 200
+APPLY_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 $API_TOKEN_TLS -X POST \
+    -H "Authorization: Bearer $GRANT_TEST_TOKEN" "${CCA_API}/api/apply" || echo "000")
+[[ "$APPLY_CODE" == "403" ]] || fail "api-reader POST /api/apply returned HTTP $APPLY_CODE, want 403"
+ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca role revoke user:${GRANT_TEST_USER} --role api-reader" || fail "cca role revoke failed"
+wait_for_user_state_code 403
+ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca user delete ${GRANT_TEST_USER} >/dev/null 2>&1" || true
+log "  cca role grant and revoke take effect without a server restart"
+
+if [[ "$CLUSTER_ENV" == "deploy" ]]; then
+    # caddy-sync reads routes through /api/state with the node certificate;
+    # every route host must reach the Caddyfile after the allowlist change.
+    ROUTE_HOSTS=$(curl -sf $CURL_TLS "${CCA_API}/api/state?prefix=desired/route/" | jq -r '.[] | select(.key | endswith("/host")) | .value' | sort -u)
+    CADDY_DEADLINE=$((SECONDS + 60))
+    MISSING_ROUTE_HOSTS="$ROUTE_HOSTS"
+    while [[ $SECONDS -lt $CADDY_DEADLINE && -n "$MISSING_ROUTE_HOSTS" ]]; do
+        CADDYFILE_CONTENT=$(sudo cat /etc/caddy/Caddyfile 2>/dev/null || echo "")
+        MISSING_ROUTE_HOSTS=""
+        for routeHost in $ROUTE_HOSTS; do
+            grep -qF "$routeHost" <<< "$CADDYFILE_CONTENT" || MISSING_ROUTE_HOSTS="$MISSING_ROUTE_HOSTS $routeHost"
+        done
+        [[ -n "$MISSING_ROUTE_HOSTS" ]] && sleep 2
+    done
+    [[ -z "$MISSING_ROUTE_HOSTS" ]] || fail "caddy-sync did not write routes for:$MISSING_ROUTE_HOSTS"
+    log "  caddy-sync wrote all $(echo "$ROUTE_HOSTS" | grep -c .) route hosts to the Caddyfile"
+fi
+log "API authorization checks passed (M173)"
 
 # ---- Step 5.6: VIP data plane validation ----
 # Verify that the agent programs data plane DNAT rules for service VIPs. With
