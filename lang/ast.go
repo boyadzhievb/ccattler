@@ -184,6 +184,7 @@ type PlacementDecl struct {
 	Accept       []string             // accept node restrictions (tolerate restricted nodes)
 	Colocate     []string             // soft hint: prefer nodes running these services
 	Separate     []string             // soft hint: avoid nodes running these services
+	Rebalance    bool                 // opt-in: the scheduler may move running instances to even out node load
 }
 
 // PlacementMatchDecl holds a label=value pair for placement require or prefer rules.

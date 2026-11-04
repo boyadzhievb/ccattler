@@ -1877,3 +1877,39 @@ func TestCompileSeparateEmitsFacts(t *testing.T) {
 		t.Error("expected separate/logging fact")
 	}
 }
+
+// TestCompileRebalanceOptIn checks that placement { rebalance true } emits the
+// opt-in fact and that services without it emit none.
+func TestCompileRebalanceOptIn(t *testing.T) {
+	file, parseError := Parse(`service web {
+    image "nginx:1.28"
+    instances 2
+    placement {
+        rebalance true
+    }
+}
+
+service db {
+    image "postgres:16"
+    instances 1
+}`)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	facts, err := Compile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredServicePlacementRebalance("web")] != "true" {
+		t.Error("expected web rebalance opt-in fact")
+	}
+	if _, hasOptIn := compiledFactMap[types.KeyDesiredServicePlacementRebalance("db")]; hasOptIn {
+		t.Error("db must not opt in to rebalancing by default")
+	}
+
+	formatted := Format(file)
+	if !strings.Contains(formatted, "        rebalance true") {
+		t.Errorf("formatter dropped rebalance:\n%s", formatted)
+	}
+}

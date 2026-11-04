@@ -97,6 +97,9 @@ func TestRebalanceDoesNotStackSameService(t *testing.T) {
 	entries = append(entries, placedInstanceFacts("f-web-3", "web", "node-3")...)
 	entries = append(entries, placedInstanceFacts("g-db-1", "db", "node-3")...)
 	entries = append(entries,
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("api"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("db"), "true"),
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 		kv(types.KeyObservedNodeState("node-3"), "alive"),

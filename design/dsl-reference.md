@@ -57,6 +57,7 @@ service web {
         accept dedicated-compute
         colocate "redis"
         separate "logging"
+        rebalance true            # opt-in: scheduler may move running instances to even out load
     }
 }
 

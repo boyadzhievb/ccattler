@@ -636,13 +636,12 @@ func findMovableInstances(
 		if instanceInfo.stillStarting {
 			continue
 		}
-		if constraint := placementConstraints[instanceInfo.service]; constraint != nil {
-			if constraint.mode == "per-node" {
-				continue
-			}
-			if len(constraint.colocate) > 0 || len(constraint.separate) > 0 {
-				continue
-			}
+		constraint := placementConstraints[instanceInfo.service]
+		if constraint == nil || !constraint.rebalance {
+			continue
+		}
+		if constraint.mode == "per-node" || len(constraint.colocate) > 0 || len(constraint.separate) > 0 {
+			continue
 		}
 		movable = append(movable, instanceID)
 	}
@@ -1509,6 +1508,8 @@ type servicePlacementConstraint struct {
 	colocate []string
 	// separate holds service names this service prefers to be placed away from (soft hint).
 	separate []string
+	// rebalance is the opt-in that lets the rebalancer move running instances.
+	rebalance bool
 	// volumeHomeNodes holds the home nodes of node-local volumes the service
 	// mounts (Flow 26). Hard: the instance may run only on a node that is the
 	// home of every such volume, so two different home nodes allow none.
@@ -1534,6 +1535,8 @@ func extractPlacementConstraints(facts []store.Fact) map[string]*servicePlacemen
 		switch {
 		case suffix == "placement/mode":
 			constraint.mode = string(fact.Value)
+		case suffix == "placement/rebalance":
+			constraint.rebalance = string(fact.Value) == "true"
 		case suffix == "placement/architecture":
 			constraint.architecture = string(fact.Value)
 		case suffix == "placement/zone":

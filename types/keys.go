@@ -783,6 +783,13 @@ func KeyDesiredServicePlacementSeparate(name, targetService string) string {
 	return fmt.Sprintf("%s/service/%s/placement/separate/%s", PrefixDesired, name, targetService)
 }
 
+// KeyDesiredServicePlacementRebalance returns the store path for a service's
+// rebalance opt-in. "true" lets the scheduler move running instances.
+// Path: desired/service/{name}/placement/rebalance
+func KeyDesiredServicePlacementRebalance(name string) string {
+	return fmt.Sprintf("%s/service/%s/placement/rebalance", PrefixDesired, name)
+}
+
 // KeyDesiredServicePlacementMode returns the store path for a service's
 // placement mode (e.g. "per-node" for one instance per alive node).
 // Path: desired/service/{name}/placement/mode

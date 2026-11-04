@@ -899,6 +899,8 @@ func (parser *Parser) parsePlacementBlock() (*PlacementDecl, error) {
 				return nil, err
 			}
 			placementDecl.Separate = append(placementDecl.Separate, targetService)
+		case "rebalance":
+			placementDecl.Rebalance, err = parser.expectBooleanValue()
 		case "mode":
 			placementDecl.Mode, err = parser.expectIdentifier()
 			if err != nil {

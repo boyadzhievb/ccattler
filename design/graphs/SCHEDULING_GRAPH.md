@@ -196,7 +196,8 @@ rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
     ├── countServiceInstancesPerNode(placements, instances)      :1132
     └── FOR EACH overloaded node:
         ├── findMovableInstances(sourceNode, placements, ..., pinned)  :469/:575
-        │   └── filter: running, not in group, not placedInThisCycle,
+        │   └── filter: running, service opted in (placement/rebalance = "true"),
+        │              not in group, not placedInThisCycle,
         │              not pinned (stateful / non-shared volume),
         │              not stillStarting (markInstancesStillStarting:
         │              service declares desired/service/{svc}/probe/startup/method
@@ -367,6 +368,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `desired/service/{svc}/placement/*` | compiler | `extractPlacementConstraints` :1359 |
 | `desired/service/{svc}/priority` | compiler | `extractServicePriorities` :174 |
 | `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :347 |
+| `desired/service/{svc}/placement/rebalance` | compiler | `extractPlacementConstraints` → `constraint.rebalance` (opt-in for `findMovableInstances`) |
 | `desired/service/{svc}/volume/{vol}` | compiler | `extractRebalancePinnedServices` :371 |
 | `observed/volume/{vol}/access` | node agent | `extractSharedVolumeNames` :392 |
 | `observed/volume/{vol}/home_node` | node agent | `applyVolumeHomeNodeConstraints` (Flow 26: hard placement pin; `filterByConstraints`, `countConstraintMatchingNodes`, `placeOneGroup`) |

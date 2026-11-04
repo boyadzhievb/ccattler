@@ -661,6 +661,11 @@ func compileServicePlacementFacts(serviceName string, placementDecl *PlacementDe
 			Key: types.KeyDesiredServicePlacementSeparate(serviceName, targetService), Value: "",
 		})
 	}
+	if placementDecl.Rebalance {
+		placementFacts = append(placementFacts, Fact{
+			Key: types.KeyDesiredServicePlacementRebalance(serviceName), Value: "true",
+		})
+	}
 	return placementFacts
 }
 

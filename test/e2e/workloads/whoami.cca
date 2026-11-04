@@ -16,6 +16,9 @@ service whoami {
         cpu 100m
         memory 64Mi
     }
+    placement {
+        rebalance true
+    }
 }
 
 gate whoami {

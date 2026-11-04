@@ -1450,6 +1450,9 @@ func TestGracePeriodExpiresAndPlaces(t *testing.T) {
 func TestRebalanceSpreadsFromOverloadedNode(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("api"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		// 4 running instances all placed on node-1
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1512,6 +1515,10 @@ func TestRebalanceSkipsBalancedCluster(t *testing.T) {
 func TestRebalanceSkipsGroupedInstances(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("api"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("db"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		// 3 grouped instances on node-1, node-2 empty
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1546,6 +1553,11 @@ func TestRebalanceSkipsGroupedInstances(t *testing.T) {
 func TestRebalanceSkipsPinnedServices(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("cache"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("db"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("postgres"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		// 5 running instances on node-1, node-2 and node-3 empty
 		kv(types.KeyObservedInstanceService("aaa"), "db"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1603,6 +1615,11 @@ func TestRebalanceSkipsPinnedServices(t *testing.T) {
 func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("api"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("cron"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
+		kv(types.KeyDesiredServicePlacementRebalance("worker"), "true"),
 		// 5 running web instances on node-1, node-2 and node-3 empty
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1653,6 +1670,8 @@ func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
 func TestRebalanceRespectsConstraints(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		// 4 instances on node-1 (amd64), node-2 is arm64
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1698,6 +1717,7 @@ func TestRebalanceMaxMovesPerCycle(t *testing.T) {
 		)
 	}
 	factEntries = append(factEntries,
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 		kv(types.KeyObservedNodeState("node-3"), "alive"),
@@ -1722,6 +1742,8 @@ func TestRebalanceMaxMovesPerCycle(t *testing.T) {
 func TestRebalanceMoveTargetsLeastLoaded(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("web"), "true"),
 		// 4 on node-1, 1 on node-2, 0 on node-3
 		kv(types.KeyObservedInstanceService("aaa"), "web"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -1826,6 +1848,8 @@ func TestPerNodeSkipsOccupiedNode(t *testing.T) {
 func TestPerNodeSkipsRebalance(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
+		// services opt in to rebalancing (placement { rebalance true })
+		kv(types.KeyDesiredServicePlacementRebalance("agent"), "true"),
 		// 3 per-node instances, all on node-1 (extreme imbalance)
 		kv(types.KeyObservedInstanceService("aaa"), "agent"),
 		kv(types.KeyObservedInstanceState("aaa"), "running"),
@@ -2299,4 +2323,42 @@ func hasPlacementChange(changes []controllers.Change, instanceID string, nodeID 
 		}
 	}
 	return false
+}
+
+// TestRebalanceSkipsServicesWithoutOptIn checks that, like Kubernetes, running
+// instances are never moved unless their service declares rebalance true.
+func TestRebalanceSkipsServicesWithoutOptIn(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 4 running instances on node-1, node-2 and node-3 empty; only api opts in
+		kv(types.KeyDesiredServicePlacementRebalance("api"), "true"),
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "api"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceService("ddd"), "scheduler"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedInstanceIDs := make(map[string]bool)
+	for _, change := range changes {
+		if strings.HasPrefix(change.Group, "rebalance/") {
+			movedInstanceIDs[strings.TrimPrefix(change.Group, "rebalance/")] = true
+		}
+	}
+	if len(movedInstanceIDs) != 1 || !movedInstanceIDs["ccc"] {
+		t.Fatalf("expected only opted-in api instance ccc to move, moved %v", movedInstanceIDs)
+	}
 }

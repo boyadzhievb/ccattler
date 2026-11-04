@@ -53,6 +53,21 @@ applied first, and no instance is left unplaced because of spreading.
 **What:** After initial placement, the scheduler detects load imbalance and
 migrates instances from overloaded to underloaded nodes.
 
+**Opt-in per service.** A move is a restart: for a single-instance service it
+is a full outage, and slow starters (Airflow: minutes) stay down long after
+the move. Like Kubernetes, which never moves running pods without the
+optional descheduler, CCattler moves only services that declare:
+
+```
+placement {
+    rebalance true      # desired/service/{name}/placement/rebalance = "true"
+}
+```
+
+Services without it keep their placement until they stop or their node fails.
+Load still counts every instance, so opted-out services influence which
+opted-in instances move.
+
 **Algorithm:**
 1. Count placed running/pending instances per alive node
 2. Compute max and min load across alive nodes
@@ -67,6 +82,7 @@ migrates instances from overloaded to underloaded nodes.
 9. Cap at `maxRebalanceMovesPerCycle` (2) moves per reconciliation
 
 **Instance eligibility for rebalancing:**
+- Service declares `placement { rebalance true }`
 - State must be `running` (not pending, stopped, failed)
 - Not part of a service group (co-scheduled instances stay together)
 - Not placed in the current reconciliation cycle (no place-then-move)

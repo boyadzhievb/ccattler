@@ -701,6 +701,9 @@ func formatServicePlacementFields(builder *strings.Builder, serviceDecl ServiceD
 	for _, acceptLabel := range placementDecl.Accept {
 		fmt.Fprintf(builder, "%saccept %s\n", indent2, acceptLabel)
 	}
+	if placementDecl.Rebalance {
+		fmt.Fprintf(builder, "%srebalance true\n", indent2)
+	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
 
