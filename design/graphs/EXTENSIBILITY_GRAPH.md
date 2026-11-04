@@ -622,7 +622,7 @@ IF --cloud-provider set:
 | `Runtime.Status` | `startInstanceAndPublishState`, `observeInstanceState` (agent) |
 | `Runtime.List` | `executeReconciliationCycle` (agent), `CollectAndReportTelemetry` |
 | `Runtime.Exec` | `runExecProbe` (exec probes, runtimes without ExecCapturer) |
-| `ExecCapturer.ExecCapture` | `runExecProbe` (exec probes; output tail in failure reason) |
+| `ExecCapturer.ExecCapture` | `runExecProbe` (exec probes; output tail logged on failure, not stored) |
 | `Runtime.ExecInit` | `runInitCommand` (init steps) |
 | `Runtime.Stats` | `reportWorkloadTelemetry` |
 | `Runtime.Resize` | `reconcileResourceChanges` |

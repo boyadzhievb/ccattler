@@ -810,6 +810,26 @@ func (containerdRuntime *ContainerdRuntime) ExecCapture(ctx context.Context, ins
 	return containerdRuntime.execInContainer(ctx, instanceID, execSpec, true)
 }
 
+// execOutputCopyGracePeriod bounds how long an exec waits for containerd to
+// finish copying output after the process exited. A background child that
+// keeps stdout open would otherwise block the caller past its timeout.
+const execOutputCopyGracePeriod = 2 * time.Second
+
+// waitForExecOutputCopy waits for the exec output copy to finish, cancelling
+// it after execOutputCopyGracePeriod so the caller always returns.
+func waitForExecOutputCopy(processIO cio.IO) {
+	copyDone := make(chan struct{})
+	go func() {
+		processIO.Wait()
+		close(copyDone)
+	}()
+	select {
+	case <-copyDone:
+	case <-time.After(execOutputCopyGracePeriod):
+		processIO.Cancel()
+	}
+}
+
 // execInContainer is the shared implementation for Exec and ExecCapture. When
 // captureOutput is true, stdout and stderr are captured and returned.
 func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context, instanceID string, execSpec ExecSpec, captureOutput bool) ([]byte, error) {
@@ -867,7 +887,7 @@ func (containerdRuntime *ContainerdRuntime) execInContainer(ctx context.Context,
 	// process output into outputBuffer; wait for the copy so the output is
 	// complete before it is returned.
 	if captureOutput {
-		execProcess.IO().Wait()
+		waitForExecOutputCopy(execProcess.IO())
 	}
 	exitCode, exitError := exitStatus.ExitCode(), exitStatus.Error()
 	if exitError != nil {
