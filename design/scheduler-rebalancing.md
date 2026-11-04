@@ -70,8 +70,10 @@ migrates instances from overloaded to underloaded nodes.
 - State must be `running` (not pending, stopped, failed)
 - Not part of a service group (co-scheduled instances stay together)
 - Not placed in the current reconciliation cycle (no place-then-move)
-- Startup probe succeeded, or the service has no startup probe
-  (`observed/instance/{id}/probe/startup` absent or `succeeded`). Moving an
+- Startup probe succeeded, or the service declares no startup probe
+  (`desired/service/{svc}/probe/startup/method` absent, or
+  `observed/instance/{id}/probe/startup` = `succeeded`). An instance with no
+  result yet (still in `initial_delay`) counts as starting. Moving an
   instance that is still starting restarts its startup from scratch
 - Service not marked `stateful` (same rule as preemption)
 - Every volume the service mounts is observed as shared
@@ -149,7 +151,7 @@ All thresholds are compile-time constants in `scheduler/scheduler.go`:
 | `TestRebalanceSpreadsFromOverloadedNode` | Rebalance | 4 on 1 node, 2 empty → moves 2 |
 | `TestRebalanceSkipsBalancedCluster` | Rebalance | 1 per node → no moves |
 | `TestRebalanceSkipsGroupedInstances` | Rebalance | Co-scheduled → not moved |
-| `TestRebalanceSkipsInstancesStillStarting` | Rebalance | Startup probe pending/failed → not moved; succeeded or no probe → moved |
+| `TestRebalanceSkipsInstancesStillStarting` | Rebalance | Startup probe pending/failed/no result yet → not moved; succeeded or no probe declared → moved |
 | `TestRebalanceSkipsPinnedServices` | Rebalance | Stateful or exclusive-volume service → not moved; shared-volume service → moved |
 | `TestRebalanceRespectsConstraints` | Rebalance | Architecture mismatch → no move |
 | `TestRebalanceMaxMovesPerCycle` | Rebalance | 8 on 1 node → exactly 2 moves |

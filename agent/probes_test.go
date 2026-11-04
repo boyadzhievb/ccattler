@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -569,5 +570,49 @@ func TestProbeProgressClearedWhenNoFailures(t *testing.T) {
 	_, progressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instanceID))
 	if progressErr == nil {
 		t.Error("expected probe progress to be deleted when no failures, but fact still exists")
+	}
+}
+
+// captureRuntime embeds the simulator and adds an ExecCapture that returns a
+// fixed output and error, to test exec probe failure reasons.
+type captureRuntime struct {
+	*runtime.SimulatorRuntime
+	capturedOutput []byte // capturedOutput is returned by every ExecCapture call.
+	captureError   error  // captureError is returned by every ExecCapture call.
+}
+
+// ExecCapture returns the configured output and error.
+func (fakeRuntime *captureRuntime) ExecCapture(_ context.Context, _ string, _ runtime.ExecSpec) ([]byte, error) {
+	return fakeRuntime.capturedOutput, fakeRuntime.captureError
+}
+
+// TestExecProbeFailureReasonIncludesOutputTail checks that a failing exec
+// probe's reason carries the end of the command output, truncated.
+func TestExecProbeFailureReasonIncludesOutputTail(t *testing.T) {
+	longOutput := strings.Repeat("x", 2*maxProbeOutputReasonBytes) + "\nNo alive jobs found.\n"
+	fakeRuntime := &captureRuntime{
+		SimulatorRuntime: runtime.NewSimulatorRuntime(),
+		capturedOutput:   []byte(longOutput),
+		captureError:     fmt.Errorf("exec in abc exited with code 120"),
+	}
+	probeScheduler := NewProbeScheduler("node-1", store.NewMemoryStore(), fakeRuntime, time.Second)
+
+	passed, failureReason := probeScheduler.runExecProbe(context.Background(), "abc", &probeConfig{method: "exec", path: "check", timeout: time.Second})
+	if passed {
+		t.Fatal("expected probe failure")
+	}
+	if !strings.HasPrefix(failureReason, "exec in abc exited with code 120 output=") {
+		t.Errorf("reason missing exec error prefix: %q", failureReason)
+	}
+	if !strings.Contains(failureReason, `No alive jobs found.`) || !strings.Contains(failureReason, `"...x`) {
+		t.Errorf("reason missing truncated output tail: %q", failureReason)
+	}
+	if len(failureReason) > maxProbeOutputReasonBytes+100 {
+		t.Errorf("reason not truncated: %d bytes", len(failureReason))
+	}
+
+	fakeRuntime.captureError = nil
+	if passed, _ := probeScheduler.runExecProbe(context.Background(), "abc", &probeConfig{method: "exec", path: "check", timeout: time.Second}); !passed {
+		t.Error("expected probe success when exec succeeds")
 	}
 }

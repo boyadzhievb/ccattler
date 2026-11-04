@@ -99,6 +99,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	serviceToGroup := extractServiceGroupMemberships(facts)
 	servicePriorities := extractServicePriorities(facts)
 	statefulServices := extractStatefulServices(facts)
+	markInstancesStillStarting(instances, extractServicesWithStartupProbe(facts))
 
 	unplaced := findUnplacedPendingInstances(instances, placements)
 	var changes []controllers.Change
@@ -363,6 +364,34 @@ func extractStatefulServices(facts []store.Fact) map[string]bool {
 // relative to the instance.
 const startupProbeStateKeySuffix = "probe/" + string(types.ProbeStartup)
 
+// startupProbeMethodKeySuffix is the path of desired/service/{name}/probe/startup/method
+// relative to the service; its presence means the service declares a startup probe.
+const startupProbeMethodKeySuffix = "probe/" + string(types.ProbeStartup) + "/method"
+
+// extractServicesWithStartupProbe returns the services that declare a startup
+// probe (desired/service/{name}/probe/startup/method present).
+func extractServicesWithStartupProbe(facts []store.Fact) map[string]bool {
+	servicesWithStartupProbe := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) == 2 && parts[1] == startupProbeMethodKeySuffix {
+			servicesWithStartupProbe[parts[0]] = true
+		}
+	}
+	return servicesWithStartupProbe
+}
+
+// markInstancesStillStarting flags instances of services with a startup probe
+// whose startup probe has not succeeded, including before the first result
+// is recorded (during initial_delay).
+func markInstancesStillStarting(instances map[string]*schedulerInstanceInfo, servicesWithStartupProbe map[string]bool) {
+	for _, instanceInfo := range instances {
+		instanceInfo.stillStarting = servicesWithStartupProbe[instanceInfo.service] &&
+			instanceInfo.startupProbeState != types.StartupProbeSucceeded
+	}
+}
+
 // serviceVolumeKeySegment is the path segment of desired/service/{name}/volume/{volume}.
 const serviceVolumeKeySegment = "volume"
 
@@ -603,7 +632,7 @@ func findMovableInstances(
 		if pinnedServices[instanceInfo.service] {
 			continue
 		}
-		if instanceInfo.startupProbeState != "" && instanceInfo.startupProbeState != types.StartupProbeSucceeded {
+		if instanceInfo.stillStarting {
 			continue
 		}
 		if constraint := placementConstraints[instanceInfo.service]; constraint != nil {
@@ -1323,9 +1352,12 @@ type schedulerInstanceInfo struct {
 	service string
 	// state is the current lifecycle state (e.g. pending, running, failed).
 	state types.InstanceState
-	// startupProbeState is observed/instance/{id}/probe/startup; empty when
-	// the service has no startup probe.
+	// startupProbeState is observed/instance/{id}/probe/startup; empty until
+	// the first startup probe result (or when the service has none).
 	startupProbeState types.StartupProbeState
+	// stillStarting is true when the service declares a startup probe and this
+	// instance has not recorded a succeeded result yet.
+	stillStarting bool
 }
 
 // schedulerNodeInfo captures the identity, health state, and available resource

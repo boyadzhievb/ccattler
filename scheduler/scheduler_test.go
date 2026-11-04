@@ -1598,8 +1598,8 @@ func TestRebalanceSkipsPinnedServices(t *testing.T) {
 }
 
 // TestRebalanceSkipsInstancesStillStarting checks that rebalance never moves an
-// instance whose startup probe has not succeeded yet, while instances with a
-// succeeded startup probe or no startup probe are still moved.
+// instance of a service with a startup probe until that probe has succeeded,
+// including before any result is recorded; services without one still move.
 func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(
@@ -1622,6 +1622,11 @@ func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
 		kv(types.KeyObservedInstanceService("eee"), "cron"),
 		kv(types.KeyObservedInstanceState("eee"), "running"),
 		kv(types.KeyPlacementInstance("eee"), "node-1"),
+		// web, api and cron declare a startup probe; worker does not.
+		// eee (cron) has no result yet (initial_delay) and must not move.
+		kv(types.KeyDesiredServiceProbeMethod("web", types.ProbeStartup), "exec"),
+		kv(types.KeyDesiredServiceProbeMethod("api", types.ProbeStartup), "exec"),
+		kv(types.KeyDesiredServiceProbeMethod("cron", types.ProbeStartup), "exec"),
 		kv(types.KeyObservedNodeState("node-1"), "alive"),
 		kv(types.KeyObservedNodeState("node-2"), "alive"),
 		kv(types.KeyObservedNodeState("node-3"), "alive"),
@@ -1637,7 +1642,7 @@ func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
 			movedInstanceIDs[strings.TrimPrefix(change.Group, "rebalance/")] = true
 		}
 	}
-	if movedInstanceIDs["aaa"] || movedInstanceIDs["bbb"] {
+	if movedInstanceIDs["aaa"] || movedInstanceIDs["bbb"] || movedInstanceIDs["eee"] {
 		t.Errorf("instances still starting were rebalanced: %v", movedInstanceIDs)
 	}
 	if !movedInstanceIDs["ccc"] || !movedInstanceIDs["ddd"] {

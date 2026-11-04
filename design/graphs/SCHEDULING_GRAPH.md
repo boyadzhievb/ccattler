@@ -198,8 +198,9 @@ rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
         ├── findMovableInstances(sourceNode, placements, ..., pinned)  :469/:575
         │   └── filter: running, not in group, not placedInThisCycle,
         │              not pinned (stateful / non-shared volume),
-        │              startup probe absent or succeeded
-        │              (observed/instance/{id}/probe/startup),
+        │              not stillStarting (markInstancesStillStarting:
+        │              service declares desired/service/{svc}/probe/startup/method
+        │              and observed/instance/{id}/probe/startup != succeeded),
         │              not per-node, no colocate/separate hints
         │
         └── FOR EACH movable instance:
@@ -368,6 +369,8 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :347 |
 | `desired/service/{svc}/volume/{vol}` | compiler | `extractRebalancePinnedServices` :371 |
 | `observed/volume/{vol}/access` | node agent | `extractSharedVolumeNames` :392 |
+| `desired/service/{svc}/probe/startup/method` | compiler | `extractServicesWithStartupProbe` |
+| `observed/instance/{id}/probe/startup` | node agent | `extractInstanceInfoFromFacts` |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
 | `derived/scheduler/unplaced/{id}/*` | self | `extractExistingUnplacedInstanceIDs` :852 |
 

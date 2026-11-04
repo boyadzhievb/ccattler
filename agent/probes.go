@@ -387,18 +387,48 @@ func (probeScheduler *ProbeScheduler) runProbeCheck(ctx context.Context, config 
 		}
 		return true, ""
 	case "exec":
-		execCtx, cancelExec := context.WithTimeout(ctx, config.timeout)
-		defer cancelExec()
-		execErr := probeScheduler.runtimeAdapter.Exec(execCtx, instanceID, runtime.ExecSpec{
-			Command: config.path,
-		})
-		if execErr != nil {
-			return false, execErr.Error()
-		}
-		return true, ""
+		return probeScheduler.runExecProbe(ctx, instanceID, config)
 	default:
 		return false, "unknown probe method"
 	}
+}
+
+// maxProbeOutputReasonBytes caps how much exec probe output is appended to a
+// failure reason, keeping the end where errors usually are.
+const maxProbeOutputReasonBytes = 512
+
+// runExecProbe runs an exec probe within the probe timeout. When the runtime
+// can capture output, a failing probe's reason ends with the tail of its
+// combined stdout/stderr so the cause shows in the agent log.
+func (probeScheduler *ProbeScheduler) runExecProbe(ctx context.Context, instanceID string, config *probeConfig) (bool, string) {
+	execCtx, cancelExec := context.WithTimeout(ctx, config.timeout)
+	defer cancelExec()
+	execSpec := runtime.ExecSpec{Command: config.path}
+	execCapturer, supportsCapture := probeScheduler.runtimeAdapter.(runtime.ExecCapturer)
+	if !supportsCapture {
+		if execErr := probeScheduler.runtimeAdapter.Exec(execCtx, instanceID, execSpec); execErr != nil {
+			return false, execErr.Error()
+		}
+		return true, ""
+	}
+	probeOutput, execErr := execCapturer.ExecCapture(execCtx, instanceID, execSpec)
+	if execErr != nil {
+		return false, appendProbeOutputTail(execErr.Error(), probeOutput)
+	}
+	return true, ""
+}
+
+// appendProbeOutputTail appends the last maxProbeOutputReasonBytes of probe
+// output to a failure reason. Returns the reason unchanged for empty output.
+func appendProbeOutputTail(failureReason string, probeOutput []byte) string {
+	trimmedOutput := strings.TrimSpace(string(probeOutput))
+	if trimmedOutput == "" {
+		return failureReason
+	}
+	if len(trimmedOutput) > maxProbeOutputReasonBytes {
+		trimmedOutput = "..." + trimmedOutput[len(trimmedOutput)-maxProbeOutputReasonBytes:]
+	}
+	return failureReason + " output=" + strconv.Quote(trimmedOutput)
 }
 
 // loadProbeConfig reads the probe configuration for a service and probe type
