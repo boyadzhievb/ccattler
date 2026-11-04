@@ -356,8 +356,9 @@ func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec
 		if currentStatus.Running {
 			return nil
 		}
-		containerdRuntime.cleanupCNIState(ctx, spec.ID)
-		containerdRuntime.removeContainerResources(ctx, spec.ID)
+		// The exited container and its snapshot still exist in containerd;
+		// remove them so NewContainer can reuse the name and snapshot key.
+		_ = containerdRuntime.Stop(ctx, spec.ID)
 	} else {
 		containerdRuntime.mutex.Unlock()
 	}
