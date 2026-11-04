@@ -229,6 +229,7 @@ First end-to-end validation of HA control plane on vmherd: 3-node etcd raft clus
 Second half of the original Phase 151 checklist. Depends: M178.
 
 **eBPF network policy (basic):**
+- [ ] Review identity-based design draft [design/network-policy-identity.md](design/network-policy-identity.md) (identity maps instead of per-node IP rules; default-deny derived from team/export/gate declarations); the items below assume the CIDR model and change if the draft is accepted
 - [ ] tc ingress program on cca0 for ingress allow/deny by source CIDR (replaces nftables filter FORWARD)
 - [ ] BPF map populated from `derived/network/rule/` facts by agent reconciler
 - [ ] Default-deny when at least one policy applies to the service
