@@ -989,8 +989,8 @@ func TestControllerInterface(t *testing.T) {
 	if placementScheduler.Name() != "scheduler" {
 		t.Fatalf("name: got %s, want scheduler", placementScheduler.Name())
 	}
-	if len(placementScheduler.Watch()) != 6 {
-		t.Fatalf("expected 6 watch prefixes, got %d", len(placementScheduler.Watch()))
+	if len(placementScheduler.Watch()) != 7 {
+		t.Fatalf("expected 7 watch prefixes, got %d", len(placementScheduler.Watch()))
 	}
 }
 
@@ -1537,6 +1537,63 @@ func TestRebalanceSkipsGroupedInstances(t *testing.T) {
 		if strings.HasPrefix(change.Group, "rebalance/") {
 			t.Error("grouped instances should not be rebalanced individually")
 		}
+	}
+}
+
+// TestRebalanceSkipsPinnedServices checks that rebalance never moves a stateful
+// service or a service with an exclusive (or not yet observed) volume, while a
+// service whose only volume is observed as shared is still moved.
+func TestRebalanceSkipsPinnedServices(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 5 running instances on node-1, node-2 and node-3 empty
+		kv(types.KeyObservedInstanceService("aaa"), "db"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceService("bbb"), "postgres"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceService("ccc"), "cache"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceService("ddd"), "web"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		kv(types.KeyObservedInstanceService("eee"), "web"),
+		kv(types.KeyObservedInstanceState("eee"), "running"),
+		kv(types.KeyPlacementInstance("eee"), "node-1"),
+		// db is stateful
+		kv(types.KeyDesiredServiceStateful("db"), "true"),
+		// postgres mounts a volume with no recorded access mode (exclusive)
+		kv(types.KeyDesiredServiceVolume("postgres", "pgdata"), "/var/lib/postgresql/data"),
+		kv(types.KeyObservedVolume("pgdata"), ""),
+		// cache mounts a volume never observed at all
+		kv(types.KeyDesiredServiceVolume("cache", "scratch"), "/scratch"),
+		// web mounts a volume observed as shared
+		kv(types.KeyDesiredServiceVolume("web", "nfs"), "/data"),
+		kv(types.KeyObservedVolumeAccess("nfs"), string(types.VolumeAccessShared)),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedInstanceIDs := make(map[string]bool)
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) &&
+			strings.HasPrefix(change.Group, "rebalance/") {
+			movedInstanceIDs[strings.TrimPrefix(change.Group, "rebalance/")] = true
+		}
+	}
+	for _, pinnedInstanceID := range []string{"aaa", "bbb", "ccc"} {
+		if movedInstanceIDs[pinnedInstanceID] {
+			t.Errorf("pinned instance %s was rebalanced", pinnedInstanceID)
+		}
+	}
+	if !movedInstanceIDs["ddd"] || !movedInstanceIDs["eee"] {
+		t.Errorf("expected shared-volume instances ddd and eee to move, moved %v", movedInstanceIDs)
 	}
 }
 

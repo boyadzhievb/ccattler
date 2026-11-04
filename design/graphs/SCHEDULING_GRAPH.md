@@ -40,7 +40,7 @@ Scheduler.Reconcile(ctx, facts)                                  :86
 │
 ├── cleanupStaleUnplacedFacts(facts, placements, placed)         :122
 │
-├── rebalancePlacedInstances(nodes, instances, ...)              :124
+├── rebalancePlacedInstances(nodes, instances, ..., pinned)      :130
 │   [full tree in §4]
 │
 └── detectAndLogNodePressure(nodes, placements, instances, ...)  :130
@@ -52,14 +52,15 @@ Scheduler.Reconcile(ctx, facts)                                  :86
 
 ### Watch Prefixes
 ```
-Scheduler.Watch()                                                :64
+Scheduler.Watch()                                                :67
 └── returns:
     ├── placement/instance/          [own placements]
     ├── observed/node/               [node state, resources, labels]
     ├── observed/instance/           [instance state, service]
-    ├── desired/service/             [resources, constraints, groups]
+    ├── desired/service/             [resources, constraints, groups, volumes]
     ├── desired/group/               [service group memberships]
-    └── derived/scheduler/unplaced/  [stale unplaced demand facts]
+    ├── derived/scheduler/unplaced/  [stale unplaced demand facts]
+    └── observed/volume/             [volume access mode, rebalance pinning]
 ```
 
 ## 2. Placement Pipeline (attemptPlacements)
@@ -168,38 +169,46 @@ placeGroupedInstances(groupedUnplaced, svcToGroup, state)        :1661
 
 ### rebalancePlacedInstances → detect imbalance → migrate
 ```
-rebalancePlacedInstances(nodes, instances, placements, ...)      :358
-├── collectAliveNodeIDs(nodes)                                   :367/:444
+Reconcile → extractRebalancePinnedServices(facts, stateful)     :133/:371
+├── stateful services (extractStatefulServices :347)
+├── extractSharedVolumeNames(facts)                              :392
+│   └── observed/volume/{name}/access == "shared"
+└── + services with desired/service/{svc}/volume/{vol} where vol not shared
+    [absent access mode = exclusive → pinned]
+
+rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
+├── collectAliveNodeIDs(nodes)                                   :500
 │   └── sorted list of alive node IDs
 │
-├── computeRunningLoadPerNode(placements, instances, alive)      :372/:457
+├── computeRunningLoadPerNode(placements, instances, alive)      :513
 │   └── count running|pending instances per alive node
 │
-├── computeMaxMinLoad(nodeLoad, alive)                           :373/:478
+├── computeMaxMinLoad(nodeLoad, alive)                           :534
 │   └── maxLoad - minLoad <= 2 → return nil (no imbalance)
 │
-├── sumNodeLoad(nodeLoad)                                        :378/:494
+├── sumNodeLoad(nodeLoad)                                        :550
 │   └── idealLoad = totalLoad / aliveNodeCount
 │
-├── findOverloadedNodes(nodeLoad, alive, idealLoad)              :387/:504
+├── findOverloadedNodes(nodeLoad, alive, idealLoad)              :560
 │   └── nodes where load > idealLoad + 1, sorted by load desc
 │
-└── executeRebalanceMoves(overloaded, nodeLoad, alive, ...)      :389/:402
-    ├── countServiceInstancesPerNode(placements, instances)      :1079
-    └── FOR EACH overloaded node:                                :416
-        ├── findMovableInstances(sourceNode, placements, ...)    :415/:519
+└── executeRebalanceMoves(overloaded, nodeLoad, alive, ..., pinned)  :441/:450
+    ├── countServiceInstancesPerNode(placements, instances)      :1132
+    └── FOR EACH overloaded node:
+        ├── findMovableInstances(sourceNode, placements, ..., pinned)  :469/:575
         │   └── filter: running, not in group, not placedInThisCycle,
-        │              not per-node, no colocate/separate hints  :542-548
+        │              not pinned (stateful / non-shared volume) :599,
+        │              not per-node, no colocate/separate hints
         │
-        └── FOR EACH movable instance:                           :416
-            ├── selectRebalanceTarget(svc, source, alive, load, svcPerNode, constraints)  :429/:567
+        └── FOR EACH movable instance:
+            ├── selectRebalanceTarget(svc, source, alive, load, svcPerNode, constraints)  :478/:620
             │   └── filterByConstraints → least-loaded non-source node
             │       hosting fewer instances of svc than the source (never worsens spread)
             │
-            ├── GUARD: nodeLoad[target] >= nodeLoad[source] - 1 → skip  :428
+            ├── GUARD: nodeLoad[target] >= nodeLoad[source] - 1 → skip
             │   [anti-oscillation: move only if genuinely improves balance]
             │
-            └── buildRebalanceMoveChanges(instanceID, source, target)  :434/:583
+            └── buildRebalanceMoveChanges(instanceID, source, target)  :488/:649
                 ├── PUT placement/instance/{id} = targetNode
                 ├── DELETE placement/node/{sourceNode}/{id}
                 └── PUT placement/node/{targetNode}/{id} = ""
@@ -354,7 +363,9 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `desired/service/{svc}/resources/memory` | compiler | `extractServiceResourcesFromFacts` :90 |
 | `desired/service/{svc}/placement/*` | compiler | `extractPlacementConstraints` :1359 |
 | `desired/service/{svc}/priority` | compiler | `extractServicePriorities` :174 |
-| `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :341 |
+| `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :347 |
+| `desired/service/{svc}/volume/{vol}` | compiler | `extractRebalancePinnedServices` :371 |
+| `observed/volume/{vol}/access` | node agent | `extractSharedVolumeNames` :392 |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |
 | `derived/scheduler/unplaced/{id}/*` | self | `extractExistingUnplacedInstanceIDs` :852 |
 

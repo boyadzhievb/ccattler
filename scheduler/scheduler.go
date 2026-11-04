@@ -72,6 +72,7 @@ func (placementScheduler *Scheduler) Watch() []string {
 		types.ScanDesiredServices,
 		types.ScanDesiredGroups,
 		types.ScanDerivedSchedulerUnplaced,
+		types.ScanObservedVolumes,
 	}
 }
 
@@ -129,6 +130,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	rebalanceChanges := rebalancePlacedInstances(
 		nodes, instances, placements, serviceResources,
 		placementConstraints, serviceToGroup, placedInThisCycle,
+		extractRebalancePinnedServices(facts, statefulServices),
 	)
 	changes = append(changes, rebalanceChanges...)
 
@@ -357,6 +359,51 @@ func extractStatefulServices(facts []store.Fact) map[string]bool {
 	return stateful
 }
 
+// serviceVolumeKeySegment is the path segment of desired/service/{name}/volume/{volume}.
+const serviceVolumeKeySegment = "volume"
+
+// volumeAccessKeySegment is the path segment of observed/volume/{name}/access.
+const volumeAccessKeySegment = "access"
+
+// extractRebalancePinnedServices returns the services the rebalancer must not
+// move: stateful services and services that mount any volume not observed as
+// shared. A volume without a recorded access mode counts as exclusive.
+func extractRebalancePinnedServices(facts []store.Fact, statefulServices map[string]bool) map[string]bool {
+	sharedVolumeNames := extractSharedVolumeNames(facts)
+	pinnedServices := make(map[string]bool, len(statefulServices))
+	for serviceName := range statefulServices {
+		pinnedServices[serviceName] = true
+	}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
+		parts := strings.SplitN(relativePath, "/", 3)
+		if len(parts) != 3 || parts[1] != serviceVolumeKeySegment {
+			continue
+		}
+		if !sharedVolumeNames[parts[2]] {
+			pinnedServices[parts[0]] = true
+		}
+	}
+	return pinnedServices
+}
+
+// extractSharedVolumeNames reads observed/volume/{name}/access facts and
+// returns the set of volume names whose access mode is shared.
+func extractSharedVolumeNames(facts []store.Fact) map[string]bool {
+	sharedVolumeNames := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedVolumes) {
+		relativePath := strings.TrimPrefix(fact.Key, types.ScanObservedVolumes)
+		parts := strings.SplitN(relativePath, "/", 2)
+		if len(parts) != 2 || parts[1] != volumeAccessKeySegment {
+			continue
+		}
+		if types.VolumeAccessMode(fact.Value) == types.VolumeAccessShared {
+			sharedVolumeNames[parts[0]] = true
+		}
+	}
+	return sharedVolumeNames
+}
+
 // rebalancePlacedInstances detects load imbalance across alive nodes and
 // migrates instances from overloaded to underloaded nodes.
 func rebalancePlacedInstances(
@@ -367,6 +414,7 @@ func rebalancePlacedInstances(
 	placementConstraints map[string]*servicePlacementConstraint,
 	serviceToGroup map[string]string,
 	placedInThisCycle map[string]bool,
+	pinnedServices map[string]bool,
 ) []controllers.Change {
 	aliveNodeIDs := collectAliveNodeIDs(nodes)
 	if len(aliveNodeIDs) < 2 {
@@ -393,7 +441,7 @@ func rebalancePlacedInstances(
 	return executeRebalanceMoves(
 		overloadedNodes, nodeLoad, aliveCandidates,
 		placements, instances, serviceToGroup,
-		placementConstraints, placedInThisCycle,
+		placementConstraints, placedInThisCycle, pinnedServices,
 	)
 }
 
@@ -408,6 +456,7 @@ func executeRebalanceMoves(
 	serviceToGroup map[string]string,
 	placementConstraints map[string]*servicePlacementConstraint,
 	placedInThisCycle map[string]bool,
+	pinnedServices map[string]bool,
 ) []controllers.Change {
 	var changes []controllers.Change
 	moveCount := 0
@@ -417,7 +466,7 @@ func executeRebalanceMoves(
 		if moveCount >= maxRebalanceMovesPerCycle {
 			break
 		}
-		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle, placementConstraints)
+		movable := findMovableInstances(sourceNodeID, placements, instances, serviceToGroup, placedInThisCycle, placementConstraints, pinnedServices)
 		for _, instanceID := range movable {
 			if moveCount >= maxRebalanceMovesPerCycle {
 				break
@@ -530,6 +579,7 @@ func findMovableInstances(
 	serviceToGroup map[string]string,
 	placedInThisCycle map[string]bool,
 	placementConstraints map[string]*servicePlacementConstraint,
+	pinnedServices map[string]bool,
 ) []string {
 	var movable []string
 	for instanceID, nodeID := range placements {
@@ -544,6 +594,9 @@ func findMovableInstances(
 			continue
 		}
 		if _, inGroup := serviceToGroup[instanceInfo.service]; inGroup {
+			continue
+		}
+		if pinnedServices[instanceInfo.service] {
 			continue
 		}
 		if constraint := placementConstraints[instanceInfo.service]; constraint != nil {
