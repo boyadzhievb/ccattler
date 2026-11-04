@@ -226,3 +226,8 @@ func (nfsProvider *NFSStorageProvider) ForceDetach(_ context.Context, volumeName
 	trackedVolume.attachedNodes = nil
 	return nil
 }
+
+// NodeLocal returns false: every node mounts the same NFS share.
+func (nfsProvider *NFSStorageProvider) NodeLocal() bool {
+	return false
+}

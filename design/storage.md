@@ -61,7 +61,10 @@ A reconciliation controller that watches volume facts and manages lifecycle:
 - Creates observed volumes when desired volumes are declared
 - Force-detaches volumes from unreachable nodes so they can be reattached
 - Executes resize and snapshot operations after store transactions commit
-- Replicates and migrates volumes when nodes fail
+- Force-detaches exclusive volumes from failed nodes (state `migrating`) so a
+  replacement can attach them. This moves no data: it is only correct for
+  network volumes (NFS). The `replicas` field only records a sync state; no
+  data is copied between nodes.
 
 ### 3. DSL Volume Blocks
 
@@ -89,7 +92,7 @@ service webserver {
 
 The optional `type` field selects the storage backend per volume:
 
-- **`local`** — uses `LocalPathStorageProvider` at `/var/lib/cca/volumes`. The volume is pinned to the node where the instance first runs. Use for databases that require POSIX fsync/flock semantics (PostgreSQL, MySQL).
+- **`local`** — uses `LocalPathStorageProvider` at `/var/lib/cca/volumes`. The volume is pinned to the node where the instance first runs: the agent records `observed/volume/{name}/home_node`, the scheduler places instances that mount it only on that node, and other agents refuse to attach it (Flow 26). If the home node is down, the instance stays unplaced (`volume_home_node_unavailable`) instead of starting on another node's empty or stale directory. Use for databases that require POSIX fsync/flock semantics (PostgreSQL, MySQL), and accept that they do not fail over.
 - **`nfs`** — uses `NFSStorageProvider` on the NFS mount. Accessible from all nodes.
 - **(empty)** — uses the agent's `--storage-backend` default.
 

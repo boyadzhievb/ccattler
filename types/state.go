@@ -324,4 +324,8 @@ const (
 
 	// UnplacedNoNodes means there are no alive nodes in the cluster at all.
 	UnplacedNoNodes UnplacedReason = "no_nodes"
+
+	// UnplacedVolumeHomeNodeUnavailable means the service mounts a node-local
+	// volume whose home node is not alive or cannot host the instance (Flow 26).
+	UnplacedVolumeHomeNodeUnavailable UnplacedReason = "volume_home_node_unavailable"
 )

@@ -1667,6 +1667,10 @@ func (nodeAgent *Agent) ensureVolumesAttachedForInstance(ctx context.Context, in
 			continue
 		}
 
+		if !nodeAgent.isNodeLocalVolumeHomeOrUnset(ctx, volumeProvider, volumeName, instanceInfo.id) {
+			return false, nil
+		}
+
 		volumeState := types.VolumeState(volumeStateFact.Value)
 		if volumeState == types.VolumeAttached {
 			if nodeAgent.isExclusiveVolumeOnThisNode(ctx, volumeName) {
@@ -1719,10 +1723,50 @@ func (nodeAgent *Agent) attachExclusiveVolumeForInstance(ctx context.Context, vo
 		logging.Default().Error("failed to write observed volume", "volume", volumeName, "error", writeError.Error())
 	}
 
+	if volumeProvider.NodeLocal() {
+		nodeAgent.recordVolumeHomeNode(ctx, volumeName)
+	}
+
 	if deleteError := nodeAgent.store.Delete(ctx, types.KeyObservedVolumeMigrationSource(volumeName)); deleteError != nil {
 		logging.Default().Error("failed to delete volume migration source", "volume", volumeName, "error", deleteError.Error())
 	}
 	return nil
+}
+
+// isNodeLocalVolumeHomeOrUnset reports whether this node may attach the
+// volume: true for network volumes, and for node-local volumes whose home
+// node is unset or this node (Flow 26). Logs when another node holds the data.
+func (nodeAgent *Agent) isNodeLocalVolumeHomeOrUnset(ctx context.Context, volumeProvider storage.StorageProvider, volumeName string, instanceID string) bool {
+	if !volumeProvider.NodeLocal() {
+		return true
+	}
+	homeNodeFact, getError := nodeAgent.store.Get(ctx, types.KeyObservedVolumeHomeNode(volumeName))
+	if errors.Is(getError, store.ErrKeyNotFound) {
+		return true
+	}
+	if getError != nil {
+		return false
+	}
+	if string(homeNodeFact.Value) == nodeAgent.nodeID {
+		return true
+	}
+	logging.Default().Warn("node-local volume lives on another node, not starting instance here",
+		"volume", volumeName, "home_node", string(homeNodeFact.Value), "instance", instanceID)
+	return false
+}
+
+// recordVolumeHomeNode writes observed/volume/{name}/home_node = this node
+// only if no home node is recorded yet (create-only transaction).
+func (nodeAgent *Agent) recordVolumeHomeNode(ctx context.Context, volumeName string) {
+	homeNodeKey := types.KeyObservedVolumeHomeNode(volumeName)
+	_, transactionError := nodeAgent.store.Transaction(ctx,
+		[]store.Compare{{Key: homeNodeKey, Revision: 0}},
+		[]store.Op{{Type: store.OpPut, Key: homeNodeKey, Value: []byte(nodeAgent.nodeID)}},
+		nil,
+	)
+	if transactionError != nil {
+		logging.Default().Error("failed to record volume home node", "volume", volumeName, "error", transactionError.Error())
+	}
 }
 
 // attachSharedVolumeForInstance attaches a ReadWriteMany volume on this node

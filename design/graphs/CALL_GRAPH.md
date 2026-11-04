@@ -112,12 +112,17 @@ reconcileDesiredInstance(instanceInfo)
 │       │   └── PUT observed/volume/{name}/attachment/{node}/{instance} = mountPath
 │       │       (never writes state — StorageController derives it)
 │       └── provider exclusive:
+│           ├── isNodeLocalVolumeHomeOrUnset  [Flow 26: NodeLocal() and
+│           │   observed/volume/{name}/home_node is another node → wait (BAIL);
+│           │   store error → wait]
 │           ├── state attached + isExclusiveVolumeOnThisNode :1790 → ready
 │           ├── state attached to another node → wait (BAIL)
 │           └── state available / migrating → attachExclusiveVolumeForInstance :1690
 │               ├── provider.CreateVolume            [ensure directory exists, 0777]
 │               ├── provider.AttachVolume            [bind to node, return path]
-│               └── WriteObservedVolume(attached, node, instance, mount_path)
+│               ├── WriteObservedVolume(attached, node, instance, mount_path)
+│               └── NodeLocal() → recordVolumeHomeNode
+│                   [Txn create-only: observed/volume/{name}/home_node = this node]
 │
 ├── publishStatusReason("starting")
 ├── buildRuntimeSpecForInstance
@@ -252,6 +257,8 @@ executeReconciliationCycle(controller, deltaEvents)
 | `attachSharedVolumeForInstance` | `ensureVolumesAttachedForInstance` (provider supports shared attach) |
 | `attachExclusiveVolumeForInstance` | `ensureVolumesAttachedForInstance` (exclusive volume available or migrating) |
 | `isExclusiveVolumeOnThisNode` | `ensureVolumesAttachedForInstance` |
+| `isNodeLocalVolumeHomeOrUnset` | `ensureVolumesAttachedForInstance` (exclusive provider, Flow 26) |
+| `recordVolumeHomeNode` | `attachExclusiveVolumeForInstance` (node-local provider) |
 | `detachVolumesForInstance` | instance stop path; exclusive → DetachVolume + state=available, shared → `detachSharedVolumeForInstance` |
 | `detachSharedVolumeForInstance` | `detachVolumesForInstance` (deletes own attachment; DetachVolume when node has none left) |
 | `resolveVolumeMountsForSpec` | `reconcileDesiredInstance` (if storageProvider, after buildRuntimeSpec) |

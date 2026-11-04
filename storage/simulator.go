@@ -251,3 +251,8 @@ func (simulatorStorageProvider *SimulatorStorageProvider) ForceDetach(_ context.
 	existingVolume.mountPath = ""
 	return nil
 }
+
+// NodeLocal returns false: the simulator models network-attached storage.
+func (simulatorStorageProvider *SimulatorStorageProvider) NodeLocal() bool {
+	return false
+}

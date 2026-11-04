@@ -2204,3 +2204,99 @@ func TestColocateAndSeparateCombined(t *testing.T) {
 		t.Errorf("should pick node-2 (redis +1, no logging), got %s", changes[0].Value)
 	}
 }
+
+// TestPlacementPinsNodeLocalVolumeToHomeNode checks Flow 26: an instance of a
+// service mounting a node-local volume is placed only on the volume's home
+// node, even when another node is less loaded.
+func TestPlacementPinsNodeLocalVolumeToHomeNode(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "postgres"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyDesiredServiceVolume("postgres", "pgdata"), "/var/lib/postgresql/data"),
+		kv(types.KeyObservedVolumeHomeNode("pgdata"), "node-2"),
+		// node-2 already busy, node-1 and node-3 empty
+		kv(types.KeyObservedInstanceService("busy"), "web"),
+		kv(types.KeyObservedInstanceState("busy"), "running"),
+		kv(types.KeyPlacementInstance("busy"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range filterPlacementChanges(changes) {
+		if change.Key == types.KeyPlacementInstance("aaa") && string(change.Value) != "node-2" {
+			t.Fatalf("aaa placed on %s, want home node node-2", change.Value)
+		}
+	}
+	if !hasPlacementChange(changes, "aaa", "node-2") {
+		t.Fatal("expected aaa placed on node-2")
+	}
+}
+
+// TestPlacementLeavesNodeLocalVolumeUnplacedWhenHomeNodeDown checks Flow 26:
+// with the home node down the instance stays unplaced with reason
+// volume_home_node_unavailable instead of starting on another node.
+func TestPlacementLeavesNodeLocalVolumeUnplacedWhenHomeNodeDown(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "postgres"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyDesiredServiceVolume("postgres", "pgdata"), "/var/lib/postgresql/data"),
+		kv(types.KeyObservedVolumeHomeNode("pgdata"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "unreachable"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if placements := filterPlacementChanges(changes); len(placements) != 0 {
+		t.Fatalf("expected no placement while home node is down, got %d", len(placements))
+	}
+	foundReason := false
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedSchedulerUnplacedReason("aaa") {
+			foundReason = string(change.Value) == string(types.UnplacedVolumeHomeNodeUnavailable)
+		}
+	}
+	if !foundReason {
+		t.Error("expected unplaced reason volume_home_node_unavailable for aaa")
+	}
+}
+
+// TestPlacementNodeLocalVolumesWithDifferentHomeNodes checks that a service
+// mounting two node-local volumes with different home nodes is not placed.
+func TestPlacementNodeLocalVolumesWithDifferentHomeNodes(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		kv(types.KeyObservedInstanceService("aaa"), "postgres"),
+		kv(types.KeyObservedInstanceState("aaa"), "pending"),
+		kv(types.KeyDesiredServiceVolume("postgres", "pgdata"), "/data"),
+		kv(types.KeyDesiredServiceVolume("postgres", "pgwal"), "/wal"),
+		kv(types.KeyObservedVolumeHomeNode("pgdata"), "node-1"),
+		kv(types.KeyObservedVolumeHomeNode("pgwal"), "node-2"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if placements := filterPlacementChanges(changes); len(placements) != 0 {
+		t.Fatalf("expected no placement for conflicting home nodes, got %d", len(placements))
+	}
+}
+
+// hasPlacementChange reports whether changes place instanceID on nodeID.
+func hasPlacementChange(changes []controllers.Change, instanceID string, nodeID string) bool {
+	for _, change := range changes {
+		if change.Type == store.OpPut && change.Key == types.KeyPlacementInstance(instanceID) && string(change.Value) == nodeID {
+			return true
+		}
+	}
+	return false
+}

@@ -265,3 +265,8 @@ func copyDirectory(sourceDir string, destinationDir string) error {
 		return os.WriteFile(destinationPath, sourceContent, fileInfo.Mode()) // #nosec G703 — path constructed from internal basePath
 	})
 }
+
+// NodeLocal returns true: volumes are host directories on one node.
+func (localProvider *LocalPathStorageProvider) NodeLocal() bool {
+	return true
+}

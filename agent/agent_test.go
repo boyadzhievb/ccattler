@@ -2494,3 +2494,71 @@ func TestInitProgressAndStatusReasonPublished(t *testing.T) {
 		return reasonErr == nil && string(reasonFact.Value) == "running"
 	})
 }
+
+// nodeLocalStorageProvider wraps the simulator provider but reports node-local
+// volumes, like LocalPathStorageProvider (Flow 26).
+type nodeLocalStorageProvider struct {
+	*storage.SimulatorStorageProvider
+}
+
+// NodeLocal returns true: volumes live on one node.
+func (nodeLocalProvider *nodeLocalStorageProvider) NodeLocal() bool { return true }
+
+// startNodeLocalVolumeAgent starts an agent on nodeID with a node-local
+// storage provider and one pending postgres instance mounting pgdata.
+func startNodeLocalVolumeAgent(ctx context.Context, factStore store.StateStore, nodeID string) {
+	localProvider := &nodeLocalStorageProvider{SimulatorStorageProvider: storage.NewSimulatorStorageProvider()}
+	_ = localProvider.CreateVolume(ctx, "pgdata", 100)
+	nodeAgent := New(nodeID, factStore, runtime.NewSimulatorRuntime())
+	nodeAgent.SetStorageProvider(localProvider)
+	nodeAgent.SetInterval(50 * time.Millisecond)
+
+	_, _ = factStore.Put(ctx, types.KeyDesiredServiceImage("postgres"), []byte("postgres:16"))
+	_, _ = factStore.Put(ctx, types.KeyDesiredServiceVolume("postgres", "pgdata"), []byte("/var/lib/postgresql/data"))
+	_ = types.WriteObservedVolume(ctx, factStore, types.Volume{Name: "pgdata", Size: "100Gi", State: types.VolumeAvailable})
+	_ = types.WriteInstance(ctx, factStore, types.Instance{ID: "vol-aaa", Service: "postgres", State: types.InstancePending})
+	_, _ = types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "vol-aaa", NodeID: nodeID})
+	go nodeAgent.Run(ctx)
+}
+
+// TestAgentRecordsNodeLocalVolumeHomeNode checks that the first attach of a
+// node-local volume records this node as its home node.
+func TestAgentRecordsNodeLocalVolumeHomeNode(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startNodeLocalVolumeAgent(ctx, factStore, "node-1")
+
+	waitFor(t, 2*time.Second, "instance running and home node recorded", func() bool {
+		stateFact, stateErr := factStore.Get(ctx, types.KeyObservedInstanceState("vol-aaa"))
+		homeNodeFact, homeErr := factStore.Get(ctx, types.KeyObservedVolumeHomeNode("pgdata"))
+		return stateErr == nil && string(stateFact.Value) == "running" &&
+			homeErr == nil && string(homeNodeFact.Value) == "node-1"
+	})
+}
+
+// TestAgentRefusesNodeLocalVolumeOfAnotherNode checks that an agent does not
+// attach a node-local volume whose home node is another node, and never
+// starts the instance on its own (empty or stale) directory.
+func TestAgentRefusesNodeLocalVolumeOfAnotherNode(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	_, _ = factStore.Put(ctx, types.KeyObservedVolumeHomeNode("pgdata"), []byte("node-2"))
+	startNodeLocalVolumeAgent(ctx, factStore, "node-1")
+
+	time.Sleep(500 * time.Millisecond)
+	if stateFact, err := factStore.Get(ctx, types.KeyObservedInstanceState("vol-aaa")); err == nil && string(stateFact.Value) == "running" {
+		t.Fatal("instance started on node-1 although pgdata lives on node-2")
+	}
+	if nodeFact, err := factStore.Get(ctx, types.KeyObservedVolumeNode("pgdata")); err == nil && string(nodeFact.Value) == "node-1" {
+		t.Fatal("pgdata attached on node-1 although it lives on node-2")
+	}
+	if homeNodeFact, _ := factStore.Get(ctx, types.KeyObservedVolumeHomeNode("pgdata")); string(homeNodeFact.Value) != "node-2" {
+		t.Fatalf("home node rewritten to %q", homeNodeFact.Value)
+	}
+}

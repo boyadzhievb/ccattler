@@ -393,6 +393,7 @@ func reconcileVolumeCleanup(desiredVolumes map[string]desiredVolumeInfo, observe
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeInstance(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeMountPath(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeMigrationSource(volumeName)},
+			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeHomeNode(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeLastSnapshot(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeUsedBytes(volumeName)},
 			Change{Type: store.OpDelete, Key: types.KeyObservedVolumeCapacityBytes(volumeName)},

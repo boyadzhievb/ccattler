@@ -53,4 +53,9 @@ type StorageProvider interface {
 	// nodes at once (ReadWriteMany). Agents use it to decide whether an
 	// instance must wait for another node to release the volume.
 	SupportsSharedAttach() bool
+
+	// NodeLocal reports whether a volume's data lives only on the node that
+	// created it (a host directory). Instances mounting a node-local volume
+	// must run on that node (Flow 26).
+	NodeLocal() bool
 }

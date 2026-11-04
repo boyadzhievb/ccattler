@@ -904,6 +904,43 @@ The debug API can run commands in any container, so users never reach it directl
 
 ---
 
+## Flow 26: Node-Local Volume Home Node
+
+**Problem**: A `type local` volume is a directory on one node
+(`LocalPathStorageProvider`). Nothing kept its instances on that node. After a
+replacement, node failure or rebalance, the agent on the new node attached its
+own directory of the same name: empty (the database started fresh, silent data
+loss) or a stale copy left by an earlier run there (run 41838979669: Postgres
+`PANIC: could not locate a valid checkpoint record`). Volume "migration" and
+"replication" only change facts; no data is copied.
+
+**Invariant**: A node-local volume's data exists on exactly one node, its home
+node. Once recorded, an instance that mounts the volume runs only on the home
+node. If the home node is down, the instance stays unplaced; it never starts
+on another node's directory. Network volumes (NFS, simulator) are unchanged.
+
+```
+observed/volume/{name}/home_node = nodeID   ← agent, first node-local attach;
+                                              never rewritten by agents
+
+agent: instance placed, exclusive volume
+  → provider.NodeLocal() and home_node set and home_node != this node
+        → do not attach, do not start; log "volume lives on {home_node}"
+  → provider.NodeLocal() and home_node absent
+        → AttachVolume, write home_node = this node (create-only)
+  → otherwise unchanged (Flow 14)
+
+scheduler (placement, every path; rebalance already skips volume services):
+  → service mounts volume V with home_node H
+        → candidates = alive nodes ∩ {H} (hard; no fallback to other nodes)
+        → H down or not a candidate → unplaced, reason volume_home_node_unavailable
+  → a service mounting two node-local volumes with different home nodes
+        → no candidate (unplaced)
+```
+
+Moving a node-local volume's data to another node is an operator action (copy
+the directory, then clear `home_node`); there is no `cca` command for it yet.
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:

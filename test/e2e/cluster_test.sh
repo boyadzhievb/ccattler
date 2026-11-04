@@ -464,6 +464,15 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
             ssh_vm "$vm" "for t in \$(sudo ctr -n ccattler tasks list -q 2>/dev/null); do sudo ctr -n ccattler tasks kill \$t 2>/dev/null; sudo ctr -n ccattler tasks delete \$t 2>/dev/null; done; for c in \$(sudo ctr -n ccattler containers list -q 2>/dev/null); do sudo ctr -n ccattler containers delete \$c 2>/dev/null; done; sudo ctr -n ccattler images list -q 2>/dev/null | xargs -r sudo ctr -n ccattler images rm >/dev/null 2>&1; for s in \$(sudo ctr -n ccattler snapshots list 2>/dev/null | awk 'NR>1{print \$1}'); do sudo ctr -n ccattler snapshots delete \$s >/dev/null 2>&1; done; true" &
         done
         wait
+        # etcd was wiped above, so no volume facts (home_node, Flow 26) survive;
+        # node-local volume directories from the previous cluster would be
+        # reused as stale data by the new one (run 41838979669). Same as the
+        # Ansible cleanup role.
+        log "Removing node-local volume data from the previous cluster..."
+        for vm in "${VM_NAMES[@]}"; do
+            ssh_vm "$vm" "sudo rm -rf /var/lib/cca/volumes" &
+        done
+        wait
     else
         log "Keeping existing data (--keep-data) — stopping tasks only..."
         for vm in "${VM_NAMES[@]}"; do

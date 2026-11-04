@@ -369,6 +369,7 @@ RemoveNode(nodeID)                                               [cache.go:93]
 | `desired/service/{svc}/stateful` | compiler | `extractStatefulServices` :347 |
 | `desired/service/{svc}/volume/{vol}` | compiler | `extractRebalancePinnedServices` :371 |
 | `observed/volume/{vol}/access` | node agent | `extractSharedVolumeNames` :392 |
+| `observed/volume/{vol}/home_node` | node agent | `applyVolumeHomeNodeConstraints` (Flow 26: hard placement pin; `filterByConstraints`, `countConstraintMatchingNodes`, `placeOneGroup`) |
 | `desired/service/{svc}/probe/startup/method` | compiler | `extractServicesWithStartupProbe` |
 | `observed/instance/{id}/probe/startup` | node agent | `extractInstanceInfoFromFacts` |
 | `desired/group/{grp}/process/{svc}` | compiler | `extractServiceGroupMemberships` :1615 |

@@ -1293,6 +1293,13 @@ func KeyObservedVolumeType(volumeName string) string {
 	return fmt.Sprintf("%s/volume/%s/type", PrefixObserved, volumeName)
 }
 
+// KeyObservedVolumeHomeNode returns the store path for the node that holds a
+// node-local volume's data. Written once by the agent on first attach (Flow 26).
+// Path: observed/volume/{name}/home_node
+func KeyObservedVolumeHomeNode(volumeName string) string {
+	return fmt.Sprintf("%s/volume/%s/home_node", PrefixObserved, volumeName)
+}
+
 // KeyObservedVolumeMigrationSource returns the store path for the node a volume
 // was force-detached from during migration.
 // Path: observed/volume/{name}/migration_source

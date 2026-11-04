@@ -96,6 +96,7 @@ func (placementScheduler *Scheduler) Reconcile(_ context.Context, facts []store.
 	placements := extractPlacementsFromFacts(facts)
 	serviceResources := extractServiceResourcesFromFacts(facts)
 	placementConstraints := extractPlacementConstraints(facts)
+	applyVolumeHomeNodeConstraints(placementConstraints, facts)
 	serviceToGroup := extractServiceGroupMemberships(facts)
 	servicePriorities := extractServicePriorities(facts)
 	statefulServices := extractStatefulServices(facts)
@@ -832,6 +833,9 @@ func classifyUnplacedReason(
 		return types.UnplacedInsufficientCapacity
 	}
 	matchCount := countConstraintMatchingNodes(nodes, constraint)
+	if matchCount == 0 && len(constraint.volumeHomeNodes) > 0 {
+		return types.UnplacedVolumeHomeNodeUnavailable
+	}
 	if matchCount == 0 {
 		return types.UnplacedUnsatisfiableConstraint
 	}
@@ -856,6 +860,9 @@ func countConstraintMatchingNodes(
 			continue
 		}
 		if !toleratesRestrictionsForNode(node, constraint.accept) {
+			continue
+		}
+		if len(constraint.volumeHomeNodes) > 0 && !isHomeOfAllVolumes(node.id, constraint.volumeHomeNodes) {
 			continue
 		}
 		matchCount++
@@ -1502,6 +1509,10 @@ type servicePlacementConstraint struct {
 	colocate []string
 	// separate holds service names this service prefers to be placed away from (soft hint).
 	separate []string
+	// volumeHomeNodes holds the home nodes of node-local volumes the service
+	// mounts (Flow 26). Hard: the instance may run only on a node that is the
+	// home of every such volume, so two different home nodes allow none.
+	volumeHomeNodes map[string]bool
 }
 
 // extractPlacementConstraints parses placement constraint facts per service.
@@ -1595,6 +1606,12 @@ func filterByConstraints(candidates []candidateNode, serviceName string, constra
 	if constraint == nil {
 		return filterByRestrictions(candidates, nil)
 	}
+	if len(constraint.volumeHomeNodes) > 0 {
+		candidates = filterByVolumeHomeNodes(candidates, constraint.volumeHomeNodes)
+		if len(candidates) == 0 {
+			return nil
+		}
+	}
 
 	var filtered []candidateNode
 	for _, candidate := range candidates {
@@ -1617,6 +1634,92 @@ func filterByConstraints(candidates []candidateNode, serviceName string, constra
 		return candidates
 	}
 	return filtered
+}
+
+// volumeHomeNodeKeySuffix is the path of observed/volume/{name}/home_node
+// relative to the volume.
+const volumeHomeNodeKeySuffix = "home_node"
+
+// applyVolumeHomeNodeConstraints adds the home node of every node-local volume
+// a service mounts (observed/volume/{name}/home_node) to that service's
+// placement constraint, creating the constraint when needed (Flow 26).
+func applyVolumeHomeNodeConstraints(constraints map[string]*servicePlacementConstraint, facts []store.Fact) {
+	volumeHomeNodes := make(map[string]string)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedVolumes) {
+		parts := strings.SplitN(strings.TrimPrefix(fact.Key, types.ScanObservedVolumes), "/", 2)
+		if len(parts) == 2 && parts[1] == volumeHomeNodeKeySuffix && len(fact.Value) > 0 {
+			volumeHomeNodes[parts[0]] = string(fact.Value)
+		}
+	}
+	if len(volumeHomeNodes) == 0 {
+		return
+	}
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredServices) {
+		parts := strings.SplitN(strings.TrimPrefix(fact.Key, types.ScanDesiredServices), "/", 3)
+		if len(parts) != 3 || parts[1] != serviceVolumeKeySegment {
+			continue
+		}
+		homeNode, isNodeLocal := volumeHomeNodes[parts[2]]
+		if !isNodeLocal {
+			continue
+		}
+		constraint := constraints[parts[0]]
+		if constraint == nil {
+			constraint = &servicePlacementConstraint{}
+			constraints[parts[0]] = constraint
+		}
+		if constraint.volumeHomeNodes == nil {
+			constraint.volumeHomeNodes = make(map[string]bool)
+		}
+		constraint.volumeHomeNodes[homeNode] = true
+	}
+}
+
+// isHomeOfAllVolumes reports whether nodeID is the home node of every
+// node-local volume; false when the volumes have different home nodes.
+func isHomeOfAllVolumes(nodeID string, volumeHomeNodes map[string]bool) bool {
+	return len(volumeHomeNodes) == 1 && volumeHomeNodes[nodeID]
+}
+
+// filterByVolumeHomeNodes keeps only candidates that are the home node of
+// every node-local volume the service mounts.
+func filterByVolumeHomeNodes(candidates []candidateNode, volumeHomeNodes map[string]bool) []candidateNode {
+	var filtered []candidateNode
+	for _, candidate := range candidates {
+		if isHomeOfAllVolumes(candidate.id, volumeHomeNodes) {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
+}
+
+// collectGroupVolumeHomeNodes returns the union of volume home nodes over the
+// services of a group's instances.
+func collectGroupVolumeHomeNodes(instanceIDs []string, state *placementState) map[string]bool {
+	groupHomeNodes := make(map[string]bool)
+	for _, instanceID := range instanceIDs {
+		instanceInfo := state.instances[instanceID]
+		if instanceInfo == nil {
+			continue
+		}
+		if constraint := state.placementConstraints[instanceInfo.service]; constraint != nil {
+			for homeNode := range constraint.volumeHomeNodes {
+				groupHomeNodes[homeNode] = true
+			}
+		}
+	}
+	return groupHomeNodes
+}
+
+// selectGroupVolumeHomeNode returns the single home node of a group's volumes
+// when it is alive, or "" when it is down or the volumes disagree.
+func selectGroupVolumeHomeNode(groupHomeNodes map[string]bool, state *placementState) string {
+	for homeNode := range groupHomeNodes {
+		if _, isAlive := state.nodeIndexMap[homeNode]; isAlive && isHomeOfAllVolumes(homeNode, groupHomeNodes) {
+			return homeNode
+		}
+	}
+	return ""
 }
 
 // satisfiesRequireLabels checks whether a candidate node has all the required
@@ -1841,12 +1944,16 @@ func placeOneGroup(
 	state *placementState,
 ) []controllers.Change {
 	targetNode := findExistingGroupNode(groupName, state)
+	groupHomeNodes := collectGroupVolumeHomeNodes(instanceIDs, state)
 
+	if targetNode == "" && len(groupHomeNodes) > 0 {
+		targetNode = selectGroupVolumeHomeNode(groupHomeNodes, state)
+	}
 	if targetNode == "" {
 		totalCPU, totalMemory := computeGroupResourceTotal(instanceIDs, state)
 		targetNode = selectLeastLoadedNode(state.alive, state.loadPerNode, totalCPU, totalMemory)
 	}
-	if targetNode == "" {
+	if targetNode == "" || (len(groupHomeNodes) > 0 && !isHomeOfAllVolumes(targetNode, groupHomeNodes)) {
 		return nil
 	}
 
