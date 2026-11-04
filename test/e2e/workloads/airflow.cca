@@ -144,7 +144,7 @@ service scheduler {
     liveness {
         exec "airflow jobs check --job-type SchedulerJob --local"
         every 60s
-        timeout 20s
+        timeout 60s
         failure_threshold 5
         initial_delay 10s
     }
@@ -194,14 +194,14 @@ service worker {
     startup {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 10s
-        timeout 30s
+        timeout 60s
         failure_threshold 60
         initial_delay 60s
     }
     liveness {
         exec "celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d celery@$(hostname)"
         every 60s
-        timeout 20s
+        timeout 60s
         failure_threshold 5
         initial_delay 30s
     }
