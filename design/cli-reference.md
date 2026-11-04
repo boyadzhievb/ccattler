@@ -29,6 +29,7 @@ cca role check <principal> [flags]   # check if principal has capability
 
 # cluster management
 cca status                     # show cluster status
+cca health                     # control-plane health: store + controller leader, exit 1 if unhealthy
 cca describe <type> <name>     # detailed view (service, node, instance, gate)
 cca get <resource>             # services, instances, nodes, volumes, networking, secrets, config, endpoints, gates
 cca scale <service> <count>

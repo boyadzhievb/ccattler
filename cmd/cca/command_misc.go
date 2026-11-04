@@ -994,6 +994,7 @@ func buildZshCompletionScript() string {
 		{"chaos", "random failure injection"},
 		{"top", "resource utilization overview"},
 		{"status", "show cluster status"},
+		{"health", "control-plane health (store, controllers)"},
 		{"describe", "detailed resource view"},
 		{"get", "list resources"},
 		{"diff", "dry-run apply showing fact changes"},

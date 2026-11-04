@@ -108,6 +108,8 @@ func main() {
 		executeTopCommand(os.Args[2], os.Args[3:])
 	case "status":
 		executeStatusCommand()
+	case "health":
+		executeHealthCommand()
 	case "logs":
 		parsedLogsConfig := parseLogsCommandArgs(os.Args[2:])
 		executeLogsCommand(parsedLogsConfig)
@@ -317,6 +319,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "cluster management:")
 	fmt.Fprintln(os.Stderr, "  status                       show cluster status (queries running instance)")
+	fmt.Fprintln(os.Stderr, "  health                       control-plane health: store + controllers (exit 1 if unhealthy)")
 	fmt.Fprintln(os.Stderr, "  describe <type> <name>       detailed view (service, node, instance, gate)")
 	fmt.Fprintln(os.Stderr, "  top <nodes|workloads>        resource utilization overview")
 	fmt.Fprintln(os.Stderr, "  get <resource>               services, instances, nodes, volumes, networking, secrets, config, endpoints, gates")

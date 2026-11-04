@@ -212,6 +212,7 @@ First end-to-end validation of HA control plane on vmherd: 3-node etcd raft clus
 - [ ] vmherd Herdfile: 3 ctrl (4GB) + 1 worker (2GB) on 192.168.125.0/24
 - [ ] Ansible inventory mapping vmherd VMs to HA groups (etcd, controlplane, workers)
 - [ ] Test workload: whoami (3 instances) + whoami-multiport (2 instances)
+- [x] `cca health`: control-plane health from the API server's `/healthz` (store reachable, controller leader lease), non-zero exit when unhealthy or unreachable; replaces `etcdctl endpoint health` in scripts and agents (no etcdctl)
 - [ ] HA validation script: 9 checks (reachability, etcd health, API, leader election, nodes, workload, VIP, failover, etcd failure)
 - [ ] Deploy cluster via `ha-deploy.yml` with existing HA Ansible roles
 - [ ] Verify etcd 3-member quorum, leader election, workload placement
