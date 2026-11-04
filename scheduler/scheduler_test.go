@@ -1597,6 +1597,54 @@ func TestRebalanceSkipsPinnedServices(t *testing.T) {
 	}
 }
 
+// TestRebalanceSkipsInstancesStillStarting checks that rebalance never moves an
+// instance whose startup probe has not succeeded yet, while instances with a
+// succeeded startup probe or no startup probe are still moved.
+func TestRebalanceSkipsInstancesStillStarting(t *testing.T) {
+	placementScheduler := newTestScheduler()
+	facts := buildFacts(
+		// 5 running web instances on node-1, node-2 and node-3 empty
+		kv(types.KeyObservedInstanceService("aaa"), "web"),
+		kv(types.KeyObservedInstanceState("aaa"), "running"),
+		kv(types.KeyPlacementInstance("aaa"), "node-1"),
+		kv(types.KeyObservedInstanceProbeState("aaa", types.ProbeStartup), string(types.StartupProbePending)),
+		kv(types.KeyObservedInstanceService("bbb"), "web"),
+		kv(types.KeyObservedInstanceState("bbb"), "running"),
+		kv(types.KeyPlacementInstance("bbb"), "node-1"),
+		kv(types.KeyObservedInstanceProbeState("bbb", types.ProbeStartup), string(types.StartupProbeFailed)),
+		kv(types.KeyObservedInstanceService("ccc"), "api"),
+		kv(types.KeyObservedInstanceState("ccc"), "running"),
+		kv(types.KeyPlacementInstance("ccc"), "node-1"),
+		kv(types.KeyObservedInstanceProbeState("ccc", types.ProbeStartup), string(types.StartupProbeSucceeded)),
+		kv(types.KeyObservedInstanceService("ddd"), "worker"),
+		kv(types.KeyObservedInstanceState("ddd"), "running"),
+		kv(types.KeyPlacementInstance("ddd"), "node-1"),
+		kv(types.KeyObservedInstanceService("eee"), "cron"),
+		kv(types.KeyObservedInstanceState("eee"), "running"),
+		kv(types.KeyPlacementInstance("eee"), "node-1"),
+		kv(types.KeyObservedNodeState("node-1"), "alive"),
+		kv(types.KeyObservedNodeState("node-2"), "alive"),
+		kv(types.KeyObservedNodeState("node-3"), "alive"),
+	)
+	changes, err := placementScheduler.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	movedInstanceIDs := make(map[string]bool)
+	for _, change := range changes {
+		if change.Type == store.OpPut && strings.HasPrefix(change.Key, types.ScanPlacements) &&
+			strings.HasPrefix(change.Group, "rebalance/") {
+			movedInstanceIDs[strings.TrimPrefix(change.Group, "rebalance/")] = true
+		}
+	}
+	if movedInstanceIDs["aaa"] || movedInstanceIDs["bbb"] {
+		t.Errorf("instances still starting were rebalanced: %v", movedInstanceIDs)
+	}
+	if !movedInstanceIDs["ccc"] || !movedInstanceIDs["ddd"] {
+		t.Errorf("expected ccc (startup succeeded) and ddd (no startup probe) to move, moved %v", movedInstanceIDs)
+	}
+}
+
 func TestRebalanceRespectsConstraints(t *testing.T) {
 	placementScheduler := newTestScheduler()
 	facts := buildFacts(

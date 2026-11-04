@@ -197,7 +197,9 @@ rebalancePlacedInstances(nodes, instances, placements, ..., pinned)  :130/:409
     └── FOR EACH overloaded node:
         ├── findMovableInstances(sourceNode, placements, ..., pinned)  :469/:575
         │   └── filter: running, not in group, not placedInThisCycle,
-        │              not pinned (stateful / non-shared volume) :599,
+        │              not pinned (stateful / non-shared volume),
+        │              startup probe absent or succeeded
+        │              (observed/instance/{id}/probe/startup),
         │              not per-node, no colocate/separate hints
         │
         └── FOR EACH movable instance:

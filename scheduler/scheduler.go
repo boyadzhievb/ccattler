@@ -359,6 +359,10 @@ func extractStatefulServices(facts []store.Fact) map[string]bool {
 	return stateful
 }
 
+// startupProbeStateKeySuffix is the path of observed/instance/{id}/probe/startup
+// relative to the instance.
+const startupProbeStateKeySuffix = "probe/" + string(types.ProbeStartup)
+
 // serviceVolumeKeySegment is the path segment of desired/service/{name}/volume/{volume}.
 const serviceVolumeKeySegment = "volume"
 
@@ -597,6 +601,9 @@ func findMovableInstances(
 			continue
 		}
 		if pinnedServices[instanceInfo.service] {
+			continue
+		}
+		if instanceInfo.startupProbeState != "" && instanceInfo.startupProbeState != types.StartupProbeSucceeded {
 			continue
 		}
 		if constraint := placementConstraints[instanceInfo.service]; constraint != nil {
@@ -1316,6 +1323,9 @@ type schedulerInstanceInfo struct {
 	service string
 	// state is the current lifecycle state (e.g. pending, running, failed).
 	state types.InstanceState
+	// startupProbeState is observed/instance/{id}/probe/startup; empty when
+	// the service has no startup probe.
+	startupProbeState types.StartupProbeState
 }
 
 // schedulerNodeInfo captures the identity, health state, and available resource
@@ -1360,6 +1370,8 @@ func extractInstanceInfoFromFacts(facts []store.Fact) map[string]*schedulerInsta
 			instances[instanceID].service = string(fact.Value)
 		case "state":
 			instances[instanceID].state = types.InstanceState(fact.Value)
+		case startupProbeStateKeySuffix:
+			instances[instanceID].startupProbeState = types.StartupProbeState(fact.Value)
 		}
 	}
 	return instances
