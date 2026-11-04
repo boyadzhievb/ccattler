@@ -17,10 +17,10 @@ Before running, verify required services:
 ```bash
 cd /Users/boyadboz/REPOS/ccattler
 
-# Check if etcd is available
+# Check if etcd is available (never use etcdctl)
 which etcd 2>/dev/null && etcd --version
-# Or check if it's running
-etcdctl endpoint health 2>/dev/null
+# With a running cca server: store + controller health (exit 1 if unhealthy)
+cca health 2>/dev/null
 
 # Check if project builds
 go build ./...
