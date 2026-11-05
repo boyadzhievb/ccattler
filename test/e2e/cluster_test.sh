@@ -392,6 +392,12 @@ if [[ "$BAREMETAL" != "true" ]]; then
 fi
 
 # ---- Step 0: Obtain binary ----
+# The eBPF data plane is behind a build tag; without it the agent refuses
+# --dataplane ebpf at startup ("not compiled in").
+GO_BUILD_TAGS=""
+if [[ "$DATAPLANE_OVERRIDE" == "ebpf" ]]; then
+    GO_BUILD_TAGS="-tags ebpf"
+fi
 if [[ "$BINARY_SOURCE" == "release" ]]; then
     log "Downloading latest release binary..."
     GITHUB_REPO="boyadzhievb/ccattler"
@@ -411,7 +417,8 @@ elif [[ "$BINARY_SOURCE" == "skip" ]]; then
     log "Using pre-built binary: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 elif [[ "$BINARY_SOURCE" == "cross" ]]; then
     log "Cross-compiling cca binary for linux/amd64..."
-    (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build $GO_BUILD_TAGS \
+        -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 else
     # Default: build from local source tree on the testbed.
@@ -420,7 +427,8 @@ else
     # Then: ssh testbed 'cd ~/ccattler && test/e2e/cluster_test.sh'
     log "Building cca binary from local source tree..."
     TESTBED_GO="${TESTBED_GO:-go}"
-    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build $GO_BUILD_TAGS \
+        -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 fi
 
@@ -1844,7 +1852,8 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     # Build current binary from source.
     log "Building local binary..."
     TESTBED_GO="${TESTBED_GO:-go}"
-    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
+    (cd "$REPO_DIR" && CGO_ENABLED=0 "${TESTBED_GO}" build $GO_BUILD_TAGS \
+        -o "$ANSIBLE_DIR/cca-linux-amd64" ./cmd/cca/)
     log "Local binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 
     # Record pre-upgrade state for comparison.
