@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M171 — Phase 171 Enrollment Identity Hardening. M1–M171 complete. Gates A–I resolved.
+**Completed through:** M172 — Phase 172 Agent Debug API Lockdown. M1–M172 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

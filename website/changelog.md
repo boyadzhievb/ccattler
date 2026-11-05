@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.70.0-beta <Badge type="tip" text="latest" /> {#v1-70-0-beta}
+## v1.71.0-beta <Badge type="tip" text="latest" /> {#v1-71-0-beta}
+
+**2026-11-05** — Agent Debug API Lockdown.
+
+- **Agent Debug API Lockdown** (M172) — The agent debug API (`/debug/exec`, `/debug/images/pull`) requires an mTLS client certificate from the cluster CA and an admin principal. Ansible binds it to loopback until then.
+
+---
+
+## v1.70.0-beta {#v1-70-0-beta}
 
 **2026-11-05** — Enrollment Identity Hardening.
 
