@@ -47,7 +47,7 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [x] Green on the deploy cluster 3 consecutive runs (beea1ae: 41652626638, 41655543117, 41656173560, workloads whoami, whoami-multiport, gate-tls)
-- [ ] One-off run on the bare-metal eBPF cluster
+- [x] One-off run on the bare-metal eBPF cluster: run 42054575640 (3e080ff, eBPF, whoami + whoami-multiport + gate-tls) green, T1–T15 passed, 10/10 instances stable. Needed first: `e2e.yml` `dataplane` input and a gate-tls workload option; `cluster_test.sh` builds with `-tags ebpf` for `--dataplane ebpf`; bare-metal node-1 is control plane only (no agent), so the multi-port cross-node sender and the gate TLS checks now target agent nodes (`vm_has_active_agent`, `GATE_TLS_NODE`); the multi-port VIP backend bug (M178) fixed
 - [x] `gate-tls` added to deploy-testbed workflow default workloads (`airflow,whoami,whoami-multiport,gate-tls`)
 - [x] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
 
