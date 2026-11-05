@@ -7,8 +7,10 @@
 # GATE_TLS_CERT_DIR and gate_tls_generate_manual_cert.
 #
 # All HTTPS requests run on the control node against a node's :443 listener
-# with --resolve, so SNI and Host match the gate host. Plan and test IDs:
-# design/milestones/m170-gate-tls-e2e.md.
+# with --resolve, so SNI and Host match the gate host. Single-node checks
+# target GATE_TLS_NODE: the control node when it runs an agent (deploy
+# cluster), else the first agent node (bare metal: control plane only, no
+# gate listener). Plan and test IDs: design/milestones/m170-gate-tls-e2e.md.
 
 GATE_TLS_CA="/etc/ccattler/pki/ca.pem"        # cluster CA that signs auto gate certs
 GATE_TLS_PORT=443                              # agent --proxy-tls-listen port
@@ -20,6 +22,25 @@ GATE_TLS_ROTATION_LOOP_TIMEOUT=$((GATE_TLS_ROTATION_REQUESTS * 4 + 10))  # each 
 GATE_TLS_RECOVERY_TIMEOUT=90                   # seconds to recover after restarts/failures
 GATE_TLS_AUTO_GATES=("tls-auto" "tls-auto-alt" "tls-sticky")
 GATE_TLS_APPLIED_CCA="/tmp/gate-tls.cca"       # where cluster_test.sh copied the workload
+GATE_TLS_NODE=""                               # agent node whose gate listener single-node checks target
+GATE_TLS_NODE_IP=""                            # its IP (set by gate_tls_select_node)
+GATE_TLS_AGENT_NODES=()                        # nodes running cca-agent, i.e. serving gates (T2)
+
+# gate_tls_select_node fills GATE_TLS_AGENT_NODES and picks GATE_TLS_NODE,
+# preferring the control node so the deploy cluster keeps its old target.
+gate_tls_select_node() {
+    local vm
+    for vm in "${VM_NAMES[@]}"; do
+        vm_has_active_agent "$vm" && GATE_TLS_AGENT_NODES+=("$vm")
+    done
+    [[ ${#GATE_TLS_AGENT_NODES[@]} -gt 0 ]] || fail "gate-tls: no node runs cca-agent"
+    GATE_TLS_NODE="${GATE_TLS_AGENT_NODES[0]}"
+    for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
+        [[ "$vm" == "$CTRL_NODE" ]] && GATE_TLS_NODE="$vm"
+    done
+    GATE_TLS_NODE_IP="${NODE_IPS[$GATE_TLS_NODE]}"
+    log "  Gate listener under test: $GATE_TLS_NODE ($GATE_TLS_NODE_IP); agent nodes: ${GATE_TLS_AGENT_NODES[*]}"
+}
 
 # gate_tls_wait_until retries a command until it succeeds or timeout seconds pass.
 gate_tls_wait_until() {
@@ -109,22 +130,22 @@ gate_tls_check_issuance() {
     log "  T1 PASS: auto certificates issued, ~90 days validity"
 }
 
-# gate_tls_check_https_every_node covers T2: HTTPS 200 through every node.
+# gate_tls_check_https_every_node covers T2: HTTPS 200 through every agent node.
 gate_tls_check_https_every_node() {
     local vm
-    for vm in "${VM_NAMES[@]}"; do
+    for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
         gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "HTTPS tls-auto via $vm" \
             gate_tls_https_ok "${NODE_IPS[$vm]}" "tls-auto.home.arpa"
     done
-    log "  T2 PASS: https://tls-auto.home.arpa answers on all ${#VM_NAMES[@]} nodes (cluster CA trusted)"
+    log "  T2 PASS: https://tls-auto.home.arpa answers on all ${#GATE_TLS_AGENT_NODES[@]} agent nodes (cluster CA trusted)"
 }
 
 # gate_tls_check_identity covers T3: SAN, CA chain, and describe agree.
 gate_tls_check_identity() {
     local s_client_output describe_output
-    s_client_output=$(ssh_vm "$CTRL_NODE" "echo | openssl s_client -connect ${CTRL_IP}:${GATE_TLS_PORT} \
+    s_client_output=$(ssh_vm "$CTRL_NODE" "echo | openssl s_client -connect ${GATE_TLS_NODE_IP}:${GATE_TLS_PORT} \
         -servername tls-auto.home.arpa -CAfile $GATE_TLS_CA 2>/dev/null; echo | openssl s_client \
-        -connect ${CTRL_IP}:${GATE_TLS_PORT} -servername tls-auto.home.arpa 2>/dev/null \
+        -connect ${GATE_TLS_NODE_IP}:${GATE_TLS_PORT} -servername tls-auto.home.arpa 2>/dev/null \
         | openssl x509 -noout -ext subjectAltName 2>/dev/null" 2>/dev/null || true)
     echo "$s_client_output" | grep -q "Verify return code: 0" || fail "gate-tls T3: certificate does not verify against the cluster CA"
     echo "$s_client_output" | grep -q "DNS:tls-auto.home.arpa" || fail "gate-tls T3: SAN does not contain tls-auto.home.arpa"
@@ -138,7 +159,7 @@ gate_tls_check_manual_cert() {
     local expected_fingerprint
     expected_fingerprint=$(gate_tls_file_fingerprint)
     gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "manual certificate served" \
-        gate_tls_fingerprint_is "$CTRL_IP" "tls-manual.home.arpa" "$expected_fingerprint"
+        gate_tls_fingerprint_is "$GATE_TLS_NODE_IP" "tls-manual.home.arpa" "$expected_fingerprint"
     log "  T4 PASS: tls-manual serves the generated certificate"
 }
 
@@ -146,7 +167,7 @@ gate_tls_check_manual_cert() {
 gate_tls_check_round_robin() {
     local distinct_backends
     distinct_backends=$(ssh_vm "$CTRL_NODE" "for i in \$(seq 1 20); do curl -s --max-time 5 --cacert $GATE_TLS_CA \
-        --resolve tls-auto.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} https://tls-auto.home.arpa/ | grep '^Hostname:'; done \
+        --resolve tls-auto.home.arpa:${GATE_TLS_PORT}:${GATE_TLS_NODE_IP} https://tls-auto.home.arpa/ | grep '^Hostname:'; done \
         | sort -u | wc -l" 2>/dev/null | tr -d ' \r' || true)
     [[ "$distinct_backends" -ge 2 ]] || fail "gate-tls T6: 20 requests reached $distinct_backends backend(s), expected 2"
     log "  T6 PASS: requests spread across $distinct_backends instances"
@@ -156,9 +177,9 @@ gate_tls_check_round_robin() {
 gate_tls_check_sticky() {
     local sticky_output
     sticky_output=$(ssh_vm "$CTRL_NODE" "rm -f /tmp/gate-tls-jar; curl -s --max-time 5 --cacert $GATE_TLS_CA \
-        --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} -c /tmp/gate-tls-jar -D - -o /dev/null \
+        --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${GATE_TLS_NODE_IP} -c /tmp/gate-tls-jar -D - -o /dev/null \
         https://tls-sticky.home.arpa/ | grep -i '^set-cookie:'; for i in \$(seq 1 10); do curl -s --max-time 5 \
-        --cacert $GATE_TLS_CA --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} -b /tmp/gate-tls-jar \
+        --cacert $GATE_TLS_CA --resolve tls-sticky.home.arpa:${GATE_TLS_PORT}:${GATE_TLS_NODE_IP} -b /tmp/gate-tls-jar \
         https://tls-sticky.home.arpa/ | grep '^Hostname:'; done | sort -u | sed 's/^/HOST /'" 2>/dev/null || true)
     echo "$sticky_output" | grep -qi "set-cookie: __CCA_STICKY_tls-sticky=.*Secure" \
         || fail "gate-tls T7: expected Secure __CCA_STICKY_tls-sticky cookie, got: $(echo "$sticky_output" | head -1)"
@@ -169,9 +190,9 @@ gate_tls_check_sticky() {
 # gate_tls_check_two_gates covers T8: two gates on one service port, own cert each.
 gate_tls_check_two_gates() {
     local primary_fingerprint alternate_fingerprint
-    gate_tls_https_ok "$CTRL_IP" "tls-auto-alt.home.arpa" || fail "gate-tls T8: tls-auto-alt.home.arpa does not answer"
-    primary_fingerprint=$(gate_tls_fingerprint "$CTRL_IP" "tls-auto.home.arpa")
-    alternate_fingerprint=$(gate_tls_fingerprint "$CTRL_IP" "tls-auto-alt.home.arpa")
+    gate_tls_https_ok "$GATE_TLS_NODE_IP" "tls-auto-alt.home.arpa" || fail "gate-tls T8: tls-auto-alt.home.arpa does not answer"
+    primary_fingerprint=$(gate_tls_fingerprint "$GATE_TLS_NODE_IP" "tls-auto.home.arpa")
+    alternate_fingerprint=$(gate_tls_fingerprint "$GATE_TLS_NODE_IP" "tls-auto-alt.home.arpa")
     [[ -n "$primary_fingerprint" && "$primary_fingerprint" != "$alternate_fingerprint" ]] \
         || fail "gate-tls T8: both gates served the same certificate"
     log "  T8 PASS: tls-auto and tls-auto-alt each serve their own certificate"
@@ -183,7 +204,7 @@ gate_tls_check_service_vip() {
     service_vip=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
         | jq -r '.networking[] | select(.service == "tls-auto") | .vip' 2>/dev/null || true)
     [[ -n "$service_vip" && "$service_vip" != "null" ]] || fail "gate-tls T9: no VIP for tls-auto"
-    vip_status=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${service_vip}:80/" 2>/dev/null || true)
+    vip_status=$(ssh_vm "$GATE_TLS_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${service_vip}:80/" 2>/dev/null || true)
     [[ "$vip_status" == "200" ]] || fail "gate-tls T9: plain HTTP to service VIP returned $vip_status, expected 200"
     log "  T9 PASS: service VIP ${service_vip}:80 still serves plain HTTP"
 }
@@ -192,7 +213,7 @@ gate_tls_check_service_vip() {
 gate_tls_check_redirect() {
     local redirect_result
     redirect_result=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 5 \
-        -H 'Host: tls-auto.home.arpa' 'http://${CTRL_IP}:${GATE_HTTP_PORT}/path?query=1'" 2>/dev/null || true)
+        -H 'Host: tls-auto.home.arpa' 'http://${GATE_TLS_NODE_IP}:${GATE_HTTP_PORT}/path?query=1'" 2>/dev/null || true)
     [[ "$redirect_result" == "308 https://tls-auto.home.arpa/path?query=1" ]] \
         || fail "gate-tls T10: expected 308 to https://tls-auto.home.arpa/path?query=1, got '$redirect_result'"
     log "  T10 PASS: plain listener 308-redirects to https"
@@ -201,9 +222,9 @@ gate_tls_check_redirect() {
 # gate_tls_check_rejections covers T11: unknown SNI fails, SNI/Host mismatch is 421.
 gate_tls_check_rejections() {
     local unknown_status mismatch_status
-    unknown_status=$(gate_tls_status "$CTRL_IP" "unknown.home.arpa" -k)
+    unknown_status=$(gate_tls_status "$GATE_TLS_NODE_IP" "unknown.home.arpa" -k)
     [[ "$unknown_status" == "000" ]] || fail "gate-tls T11: unknown SNI got HTTP $unknown_status, expected handshake failure"
-    mismatch_status=$(gate_tls_status "$CTRL_IP" "tls-auto.home.arpa" --cacert "$GATE_TLS_CA" -H "'Host: tls-manual.home.arpa'")
+    mismatch_status=$(gate_tls_status "$GATE_TLS_NODE_IP" "tls-auto.home.arpa" --cacert "$GATE_TLS_CA" -H "'Host: tls-manual.home.arpa'")
     [[ "$mismatch_status" == "421" ]] || fail "gate-tls T11: SNI/Host mismatch got $mismatch_status, expected 421"
     log "  T11 PASS: unknown SNI rejected at handshake, SNI/Host mismatch → 421"
 }
@@ -232,9 +253,9 @@ gate_tls_rotation_loop_finished() {
 # gate_tls_check_rotation covers T5: manual cert rotation without failed requests.
 gate_tls_check_rotation() {
     local old_fingerprint new_fingerprint total_requests failed_requests
-    old_fingerprint=$(gate_tls_fingerprint "$CTRL_IP" "tls-manual.home.arpa")
+    old_fingerprint=$(gate_tls_fingerprint "$GATE_TLS_NODE_IP" "tls-manual.home.arpa")
     ssh_vm "$CTRL_NODE" "rm -f /tmp/gate-tls-rotation.log; nohup bash -c 'for i in \$(seq 1 $GATE_TLS_ROTATION_REQUESTS); do curl -sk -o /dev/null \
-        -w \"%{http_code}\n\" --max-time 3 --resolve tls-manual.home.arpa:${GATE_TLS_PORT}:${CTRL_IP} \
+        -w \"%{http_code}\n\" --max-time 3 --resolve tls-manual.home.arpa:${GATE_TLS_PORT}:${GATE_TLS_NODE_IP} \
         https://tls-manual.home.arpa/ >> /tmp/gate-tls-rotation.log; sleep 1; done' >/dev/null 2>&1 &" 2>/dev/null
     gate_tls_generate_manual_cert
     new_fingerprint=$(gate_tls_file_fingerprint)
@@ -242,7 +263,7 @@ gate_tls_check_rotation() {
     ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv $GATE_TLS_APPLIED_CCA" >/dev/null \
         || fail "gate-tls T5: re-apply after rotation failed"
     gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "rotated certificate served" \
-        gate_tls_fingerprint_is "$CTRL_IP" "tls-manual.home.arpa" "$new_fingerprint"
+        gate_tls_fingerprint_is "$GATE_TLS_NODE_IP" "tls-manual.home.arpa" "$new_fingerprint"
     # Wait for the whole loop instead of a fixed sleep: on a loaded cluster
     # each request takes longer (run 41673229739 logged 39 of 45 after 47s).
     gate_tls_wait_until "$GATE_TLS_ROTATION_LOOP_TIMEOUT" "all $GATE_TLS_ROTATION_REQUESTS rotation requests logged" \
@@ -256,7 +277,7 @@ gate_tls_check_rotation() {
 # gate_tls_check_restart_stability covers T12: restarts keep the same auto cert.
 gate_tls_check_restart_stability() {
     local fingerprint_before worker_ip="${NODE_IPS[$WORKER1_NODE]}"
-    fingerprint_before=$(gate_tls_fingerprint "$CTRL_IP" "tls-auto.home.arpa")
+    fingerprint_before=$(gate_tls_fingerprint "$GATE_TLS_NODE_IP" "tls-auto.home.arpa")
     ssh_vm "$CTRL_NODE" "sudo systemctl restart cca-server" || fail "gate-tls T12: cca-server restart failed"
     ssh_vm "$WORKER1_NODE" "sudo systemctl restart cca-agent" || fail "gate-tls T12: cca-agent restart failed"
     gate_tls_wait_until "$GATE_TLS_RECOVERY_TIMEOUT" "HTTPS via restarted $WORKER1_NODE" \
@@ -290,7 +311,7 @@ gate_tls_check_backend_failure() {
     ssh_vm "$victim_node" "sudo ctr -n ccattler tasks kill -s SIGKILL tls-auto-${victim_id}" \
         || fail "gate-tls T13: could not kill tls-auto-${victim_id} on $victim_node"
     gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "HTTPS after killing an instance" \
-        gate_tls_https_ok "$CTRL_IP" "tls-auto.home.arpa"
+        gate_tls_https_ok "$GATE_TLS_NODE_IP" "tls-auto.home.arpa"
     gate_tls_wait_until "$GATE_TLS_RECOVERY_TIMEOUT" "tls-auto back to 2 running instances" \
         gate_tls_running_at_least tls-auto 2
     log "  T13 PASS: HTTPS kept answering after killing tls-auto-${victim_id}; instance replaced"
@@ -298,7 +319,7 @@ gate_tls_check_backend_failure() {
 
 # gate_tls_manual_handshake_fails succeeds when the tls-manual handshake fails.
 gate_tls_manual_handshake_fails() {
-    [[ "$(gate_tls_status "$CTRL_IP" "tls-manual.home.arpa" -k)" == "000" ]]
+    [[ "$(gate_tls_status "$GATE_TLS_NODE_IP" "tls-manual.home.arpa" -k)" == "000" ]]
 }
 
 # gate_tls_check_removal covers T14: removing tls stops HTTPS, plain HTTP serves.
@@ -313,7 +334,7 @@ gate_tls_check_removal() {
     [[ "$(gate_tls_gates_json | jq '.[] | select(.name == "tls-manual") | .tls')" == "null" ]] \
         || fail "gate-tls T14: cca get gates still shows TLS for tls-manual"
     plain_status=$(ssh_vm "$CTRL_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
-        -H 'Host: tls-manual.home.arpa' http://${CTRL_IP}:${GATE_HTTP_PORT}/" 2>/dev/null || true)
+        -H 'Host: tls-manual.home.arpa' http://${GATE_TLS_NODE_IP}:${GATE_HTTP_PORT}/" 2>/dev/null || true)
     [[ "$plain_status" == "200" ]] || fail "gate-tls T14: plain HTTP for tls-manual returned $plain_status, expected 200"
     gate_tls_reapply "$WORKLOADS_DIR/gate-tls.cca"
     rm -f "$without_tls_cca"
@@ -323,6 +344,7 @@ gate_tls_check_removal() {
 # run_gate_tls_checks runs T1–T15, read-only checks first, disruptive ones last.
 run_gate_tls_checks() {
     log "Validating gate TLS (M170, node :${GATE_TLS_PORT} listener)..."
+    gate_tls_select_node
     gate_tls_check_issuance
     gate_tls_check_https_every_node
     gate_tls_check_identity
