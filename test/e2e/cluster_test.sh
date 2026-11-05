@@ -313,6 +313,15 @@ ssh_vm() {
     fi
 }
 
+# Succeeds when cca-agent is active on the node. Only agent nodes program the
+# VIP data plane; the bare-metal control-plane node runs no agent.
+vm_has_active_agent() {
+    local vm_name="$1"
+    local agent_state
+    agent_state=$(ssh_vm "$vm_name" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
+    [[ "$agent_state" == "active" ]]
+}
+
 count_containers() {
     local vm_name="$1"
     ssh_vm "$vm_name" "sudo ctr -n ccattler containers list -q 2>/dev/null | wc -l" | tr -d ' '
@@ -1071,8 +1080,7 @@ if [[ -n "$VIP_SERVICES" ]]; then
 
         # Test VIP connectivity from nodes running an agent (agents install DNAT rules).
         for vm in "${VM_NAMES[@]}"; do
-            agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
-            if [[ "$agent_active" != "active" ]]; then
+            if ! vm_has_active_agent "$vm"; then
                 log "  VIP $svc_vip:$svc_port ($svc_name) skipped on $vm (no agent)"
                 continue
             fi
@@ -1164,8 +1172,7 @@ if [[ -n "$VIP_SERVICES" ]]; then
 
         http_test_count=0
         for vm in "${VM_NAMES[@]}"; do
-            agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
-            if [[ "$agent_active" != "active" ]]; then
+            if ! vm_has_active_agent "$vm"; then
                 log "  HTTP $svc_name skipped on $vm (no agent)"
                 continue
             fi
@@ -1187,8 +1194,7 @@ if [[ -n "$VIP_SERVICES" ]]; then
         if [[ "$svc_name" == "whoami" ]]; then
             WHOAMI_CHECK_NODE=""
             for vm in "${VM_NAMES[@]}"; do
-                agent_active=$(ssh_vm "$vm" "systemctl is-active cca-agent 2>/dev/null" || echo "inactive")
-                if [[ "$agent_active" == "active" ]]; then
+                if vm_has_active_agent "$vm"; then
                     WHOAMI_CHECK_NODE="$vm"
                     break
                 fi
@@ -1630,8 +1636,9 @@ else
 fi
 
 # ---- Step 5.15: Multi-port cross-node traffic assertion ----
-# Verify that whoami-multiport VIP traffic crosses nodes: find a node that does
-# NOT host an instance, curl port 80 from there, confirm a response arrives.
+# Verify that whoami-multiport VIP traffic crosses nodes: find an agent node
+# that does NOT host an instance, curl port 80 from there, confirm a response
+# arrives. Nodes without an agent have no VIP data plane and cannot send.
 # This proves DNAT routes multi-port traffic across the overlay, not just locally.
 
 if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
@@ -1644,7 +1651,8 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
 
     CROSS_NODE_SENDER=""
     for vm in "${VM_NAMES[@]}"; do
-        if ! echo "$MULTIPORT_INSTANCE_NODES" | grep -qw "$vm"; then
+        echo "$MULTIPORT_INSTANCE_NODES" | grep -qw "$vm" && continue
+        if vm_has_active_agent "$vm"; then
             CROSS_NODE_SENDER="$vm"
             break
         fi
@@ -1674,7 +1682,7 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
             fail "Multi-port cross-node traffic FAILED — $CROSS_NODE_SENDER could not reach whoami-multiport:80 via VIP ($MULTIPORT_PORT80_VIP)"
         fi
     else
-        log "  All nodes host a whoami-multiport backend — cross-node assertion not possible, validating from worker instead..."
+        log "  Every agent node hosts a whoami-multiport backend — cross-node assertion not possible, validating from worker instead..."
         MULTIPORT_CTRL_BODY=$(ssh_vm "$WORKER2_NODE" "curl -sf --connect-timeout 10 http://${MULTIPORT_PORT80_VIP}:80/ 2>/dev/null" || echo "")
         if echo "$MULTIPORT_CTRL_BODY" | grep -qi "hostname"; then
             log "  Response from $WORKER2_NODE: $(echo "$MULTIPORT_CTRL_BODY" | grep -i hostname | head -1)"
