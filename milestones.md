@@ -105,13 +105,19 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 
 ### Phase 174 — Secrets Architecture (M174)
 
-- [ ] Design in `design/config-secrets.md` (draft 2026-11-03, "M174 design" section, awaiting review): implementation-vs-doc audit, key hierarchy (root key → keyring in etcd → DEK), envelope v2 with KEK version and AAD, crash-safe rotation controller, node delivery endpoint, tmpfs materialization, sealed gate TLS keys, enrollment and Ansible changes, migration order
-- [ ] Enrollment response no longer contains the master key
-- [ ] Agents fetch only secrets granted to instances placed on their node
-- [ ] Envelope records key version; keyring persisted before re-wrap; restart test after rotation
-- [ ] Rotation lock on the API server key field; replicas reload the keyring
-- [ ] Tenant-scoped secret names and capability scope
-- [ ] Gate TLS private keys (`desired/route/*/tls/key`, `derived/route/*/tls/key`) stored encrypted, not as plain facts (found during M173)
+- [x] Design direction reviewed 2026-11-05: points 1–4, 6, 7 approved; connection secrets as files only (point 5); control plane decrypts, agents receive authorized plaintext over mTLS
+- [ ] Second review: `design/config-secrets.md` "M174 design" (tenant names, availability, cutover gate, open questions A–C) together with Flow 27 in `design/runtime-invariant-flows.md`
+- [ ] Root key separate from the CA key, control-plane only, `0400`; startup error when missing/invalid; `keyring/root_check` on every replica
+- [ ] Keyring in etcd and envelope v2 (KEK version, canonical store key as AAD); v1 readable until rotated
+- [ ] Rotation as `intent/keyring/rotation` + leader-elected keyring controller (create-only KEK, CAS re-wrap in bounded batches, idempotent resume, grace-period retirement)
+- [ ] Tenant-scoped canonical names (`secrets/tenant/{t}/…`, `secrets/cluster/…`), shares, compiler resolution; `cca secret migrate-names --plan/--apply` with explicit mapping
+- [ ] Node delivery endpoints (`/api/node/secrets`, `/api/node/gate-keys`) under a narrow `secret-delivery` store principal, audited; `api-server` role keeps no `secrets/` access; `node-agent` role loses `credentials/`
+- [ ] Agent: no key, no `secrets/` reads; tmpfs materialization (`0700`/`0400`), secret API serves from tmpfs, token as file
+- [ ] `waiting-for-secrets` instance state with reason and retry; not a failure (no replacement, no crash-loop count)
+- [ ] Agent restart keeps material of running instances; node reboot re-fetches before start
+- [ ] Enrollment response no longer contains the master key; join/Ansible changes
+- [ ] Gate TLS private keys (`desired/route/*/tls/key`, `derived/route/*/tls/key`) sealed under `secrets/route/…`; `tls { key secret "…" }` (found during M173)
+- [ ] Cutover gate before the first v2 rotation (replicas, agents, no v1 readers, `--confirm-backup`)
 
 ### Phase 175 — HA Correctness (M175)
 

@@ -50,6 +50,8 @@ Init containers (temporary `nerdctl run --rm` containers for `init { exec "..." 
 
 ## 3. Secret Master Key Distribution
 
+> Current behavior. Replaced by [Flow 27](#flow-27-secret-delivery-m174) in M174: nodes no longer receive the key.
+
 **Chain:** `cca server` (generates/loads key) → `cca join` (receives in enrollment response) → `cca agent` (loads from disk) → `SecretStore` envelope decryption
 
 **What must match:** The exact same 32-byte key must exist at `/etc/ccattler/secret-master.key` on every node.
@@ -579,6 +581,8 @@ Node-pressure eviction protects the cluster from out-of-memory cascades. When a 
 
 ## 20. Secret Key Rotation
 
+> Current behavior. M174 replaces it with the keyring controller ([config-secrets.md](config-secrets.md#rotation-crash-safe), Flow 27).
+
 **Chain:** `cca secret rotate` CLI → POST `/api/secret/rotate` → `SecretStore.RotateKeyProvider()` re-wraps DEKs → new master key distributed to agents via enrollment refresh
 
 Secret rotation re-wraps all stored secrets' data encryption keys (DEKs) under a new master key without decrypting the secret payloads themselves. This is envelope encryption rotation.
@@ -941,13 +945,120 @@ scheduler (placement, every path; rebalance already skips volume services):
 Moving a node-local volume's data to another node is an operator action (copy
 the directory, then clear `home_node`); there is no `cca` command for it yet.
 
+## Flow 27: Secret Delivery (M174)
+
+**Status:** design, not implemented. Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
+
+**Problem**: every node holds the cluster master key and decrypts locally, so one compromised node can read every secret of every tenant from etcd.
+
+**Invariant**: only control-plane processes decrypt. A node receives plaintext only for instances placed on it whose service is granted the secret (and, for another tenant's secret, shared). An instance never starts without its required secrets, and losing the API never stops a running container.
+
+```
+1. Declaration (DSL, apply)
+   secret database.password                          owner tenant: payments
+   service checkout { secret database.password }     owner tenant: payments
+   connection db { secret database.password ... }    auto-grant (Flow 9)
+   gate web { tls { key secret "platform/web-gate-key" } }
+
+2. Compilation (lang/compiler.go)
+   resolve each reference to its canonical name:
+     unqualified        → secrets/tenant/{service tenant}/{name}
+     cluster/{name}     → secrets/cluster/{name}       (needs cluster grant)
+     tenant/{t}/{name}  → needs desired/secret_share/{t}/{name}/{service tenant}
+   unresolvable / unshared reference → apply error naming the secret
+   facts: desired/service/{svc}/secret/{canonical} = mount path
+   inline gate PEM key → sealed by the apply path, never a fact
+
+3. Encryption and store (API server, secret write)
+   DEK = random; ciphertext = AES-GCM(DEK, value, AAD = canonical key)
+   envelope v2 = magic | 2 | kek_version(keyring/active) | wrap(KEK, DEK) | nonce | ciphertext
+   put secrets/tenant/payments/database.password = envelope
+
+4. Placement (scheduler, unchanged)
+   placement/instance/{id} = node-3
+
+5. Agent start path (node-3)
+   instance placed here, needs secrets?
+     material in /run/ccattler/secrets/{id}/ from this boot → reuse (step 8)
+     else → state waiting-for-secrets, POST /api/node/secrets {instance_id} (mTLS)
+
+6. Authorization (API server, secret-delivery store principal)
+   caller = node:node-3, enrolled, not disabled
+   placement/instance/{id} == node-3
+   for each secret of the service: grant exists; foreign tenant → share exists
+   any check fails → 403 with secret names, audit refusal
+
+7. Decryption and response
+   KEK = unwrap(root key, keyring/kek/{version}); DEK = unwrap(KEK)
+   plaintext = AES-GCM open(DEK, ciphertext, AAD = canonical key)
+   audit: node, instance, service, secret names (never values)
+   response over TLS 1.3
+
+8. Materialization (agent)
+   /run/ccattler/secrets/{id}/ (tmpfs, 0700), files 0400
+   secret files, connection URLs (agent assembles from password + definition),
+   secret API token file; bind-mount read-only at declared paths
+
+9. Container starts; state running.
+   secret API (:9772) answers from /run/ccattler/secrets/{id}/
+
+10. Cleanup
+    container stopped and not restarting here (stopped, removed, re-placed)
+      → remove /run/ccattler/secrets/{id}/
+```
+
+**Failure and recovery paths:**
+
+```
+API unreachable at step 5
+  → waiting-for-secrets, reason api_unreachable, retry 2s … 30s backoff
+  → not a crash: no crash-loop count, no replacement, no reschedule
+
+delivery refused at step 6
+  → waiting-for-secrets, reason not_authorized (names listed)
+  → retried when desired/service, desired/secret_share or placement facts change
+
+container crash / liveness restart
+  → material present (same boot) → restart without fetching
+
+API unreachable while running
+  → nothing happens; container keeps running
+
+agent process restart (same boot)
+  → for each /run/ccattler/secrets/{id}/:
+       instance running and placed here → keep
+       otherwise → remove
+  → running containers untouched
+
+node reboot
+  → tmpfs empty → every instance goes through step 5 before starting
+
+instance re-placed node-3 → node-5
+  → node-5: step 5 (own copy); node-3: step 10 after its container stopped
+
+node disconnected
+  → keeps already delivered plaintext until it can clean up (documented limit)
+
+rotation in progress (keyring controller)
+  → envelopes carry kek_version; step 7 unwraps with that version; no reader waits
+
+gate keys
+  → agent: POST /api/node/gate-keys at start and on gate change; memory only
+```
+
+**What must match:**
+- The canonical name used as AAD at encryption (step 3) is the name the grant fact references (step 2) and the name delivery looks up (step 7).
+- Every API replica opens `keyring/root_check` with its root key; a replica that cannot does not start.
+- The agent's state machine treats `waiting-for-secrets` like `pulling`: in progress, not failed.
+- No secret value is written outside `/run/ccattler/secrets/` on a node, or into logs, events or `cca` output.
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
 
 1. **Does the main container get it?** If yes, check if init containers need it too (Flow 1).
 2. **Does it need DNS?** If yes, verify the chain from dnsmasq to container `--dns` (Flow 2).
-3. **Does it use secrets?** If yes, verify master key distribution via `cca join` (Flow 3).
+3. **Does it use secrets?** If yes, verify master key distribution via `cca join` (Flow 3). After M174: secrets reach nodes only through delivery (Flow 27); never read `secrets/` on an agent.
 4. **Does it use advertise address?** If yes, ensure it's propagated consistently (Flow 6).
 5. **Does it need cross-host networking?** If yes, verify all three endpoint facts exist (Flow 7).
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
