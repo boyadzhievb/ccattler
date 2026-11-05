@@ -13,6 +13,7 @@ on:
         options:
           - "whoami"
           - "whoami,whoami-multiport"
+          - "whoami,whoami-multiport,gate-tls"
           - "all"
       clear_first:
         description: "Clear existing workloads before deploying"
@@ -27,6 +28,15 @@ on:
         options:
           - "build"
           - "release"
+      dataplane:
+        description: "Data plane backend"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - "auto"
+          - "nftables"
+          - "ebpf"
 
 concurrency:
   group: baremetal-e2e
@@ -51,11 +61,13 @@ jobs:
       - name: Run e2e cluster test
         run: |
           WORKLOAD="${{ inputs.workload || 'whoami' }}"
+          DATAPLANE="${{ inputs.dataplane || 'auto' }}"
           BINARY_FLAG=""
           if [[ "${{ inputs.binary_source }}" == "release" ]]; then
             BINARY_FLAG="--from-release"
           fi
-          ./test/e2e/cluster_test.sh --workload "$WORKLOAD" $BINARY_FLAG
+          ./test/e2e/cluster_test.sh --workload "$WORKLOAD" \
+            --dataplane "$DATAPLANE" $BINARY_FLAG
 
       - name: Collect logs on failure
         if: failure()
