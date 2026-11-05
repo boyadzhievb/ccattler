@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M169 — Phase 169 Gate TLS Termination. M1–M169 complete. Gates A–I resolved.
+**Completed through:** M170 — Phase 170 Gate HTTPS Listener & End-to-End Validation. M1–M170 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

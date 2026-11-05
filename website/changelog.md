@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.68.0-beta <Badge type="tip" text="latest" /> {#v1-68-0-beta}
+## v1.69.0-beta <Badge type="tip" text="latest" /> {#v1-69-0-beta}
+
+**2026-11-05** — Gate HTTPS Listener & End-to-End Validation.
+
+- **Gate HTTPS Listener & End-to-End Validation** (M170) — Gate TLS moves from the service VIP to a node `:443` listener on the agent gate proxy: SNI selects the gate cert, Host routes to the service, service ports stay plain HTTP for in-cluster callers, multiple gates per service, works on every data plane. Then validate on the deploy cluster (15 e2e cases). Fixes M169 gaps: TLS-only gates not dispatched on nftables, eBPF ignored TLS. Depends: M169.
+
+---
+
+## v1.68.0-beta {#v1-68-0-beta}
 
 **2026-11-02** — Gate TLS Termination.
 
