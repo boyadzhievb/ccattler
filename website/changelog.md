@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.69.0-beta <Badge type="tip" text="latest" /> {#v1-69-0-beta}
+## v1.70.0-beta <Badge type="tip" text="latest" /> {#v1-70-0-beta}
+
+**2026-11-05** — Enrollment Identity Hardening.
+
+- **Enrollment Identity Hardening** (M171) — The CA sets the node certificate identity itself instead of copying the CSR subject, so a join token can no longer produce a `ccattler-server` (cluster-admin) certificate. Node certs are client-auth only with no CSR-chosen SANs. Node IDs are validated and reserved names refused. A join token is consumed atomically.
+
+---
+
+## v1.69.0-beta {#v1-69-0-beta}
 
 **2026-11-05** — Gate HTTPS Listener & End-to-End Validation.
 

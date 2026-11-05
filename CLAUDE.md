@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M170 — Phase 170 Gate HTTPS Listener & End-to-End Validation. M1–M170 complete. Gates A–I resolved.
+**Completed through:** M171 — Phase 171 Enrollment Identity Hardening. M1–M171 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
