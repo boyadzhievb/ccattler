@@ -91,22 +91,23 @@ buildServiceVIPConfigs(ctx)                          [agent/dataplane.go:92]
 │   └── parse: serviceName → VIP address
 │   └── factStore.Get(KeyNetworkVIPServicePort(name))
 │       └── parse: port number
-├── identifyStaleNodes(ctx)                          [agent/dataplane.go:156]
+├── identifyStaleNodes(ctx)                          [agent/dataplane.go:157]
 │   ├── factStore.Scan(ScanLeaseNodes)               [lease/node/]
 │   ├── skip self (nodeID == local)
 │   └── IF now - heartbeat > 30s → staleNodeSet[nodeID] = true
 ├── sort serviceNames                                [deterministic order]
 └── FOR EACH service:
-    └── resolveServiceBackends(ctx, name, staleNodeSet)
-                                                     [agent/dataplane.go:367]
+    └── resolveServiceBackends(ctx, name, vipPort, staleNodeSet)
+                                                     [agent/dataplane.go:366]
         ├── factStore.Scan(PrefixEndpoint + "/service/" + name + "/")
         │   └── parse: instanceID, containerPort, endpointIP:port
         ├── FOR EACH endpoint:
+        │   ├── IF containerPort != vipPort → SKIP   [multi-port: VIP = first exposed port]
         │   ├── factStore.Get(KeyObservedInstanceNode(id)) → nodeID
         │   ├── IF staleNodeSet[nodeID] → SKIP
         │   ├── IF nodeID == local:
         │   │   └── resolveLocalBackend(ctx, id, containerPort, ...)
-        │   │                                        [agent/dataplane.go:449]
+        │   │                                        [agent/dataplane.go:451]
         │   │       ├── factStore.Get(KeyObservedInstanceIP(id))
         │   │       │   └── → container bridge IP
         │   │       └── → DataPlaneBackend{containerIP, containerPort}

@@ -140,7 +140,7 @@ func (dataPlaneReconciler *DataPlaneReconciler) buildServiceVIPConfigs(ctx conte
 	for _, serviceName := range sortedServiceNames {
 		vipConfig := serviceVIPMap[serviceName]
 
-		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName, staleNodeSet)
+		backends, resolveError := dataPlaneReconciler.resolveServiceBackends(ctx, serviceName, vipConfig.Port, staleNodeSet)
 		if resolveError != nil {
 			logging.Default().Error("dataplane: failed to resolve backends", "agent", dataPlaneReconciler.nodeID, "service", serviceName, "error", resolveError.Error())
 		}
@@ -359,13 +359,11 @@ func parseRouteFactsForDataPlane(desiredFacts []store.Fact, derivedFacts []store
 	return sortedEntries
 }
 
-// resolveServiceBackends reads endpoint facts for a service and resolves
-// each endpoint to a routable backend address. Local instances use the
-// container IP:port via the bridge. Remote instances prefer the overlay
-// IP:port (routed via VXLAN), falling back to node address + host port.
-// Backends on nodes with stale heartbeats are excluded so traffic shifts
-// to healthy nodes within seconds of a node failure.
-func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx context.Context, serviceName string, staleNodeSet map[string]bool) ([]network.DataPlaneBackend, error) {
+// resolveServiceBackends resolves a service's endpoints for the VIP's container
+// port (multi-port services have one endpoint per instance per port) to routable
+// backends: local via container IP, remote via overlay IP or node host port.
+// Backends on stale-heartbeat nodes are excluded so traffic shifts quickly.
+func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx context.Context, serviceName string, vipPort int, staleNodeSet map[string]bool) ([]network.DataPlaneBackend, error) {
 	endpointPrefix := fmt.Sprintf("%s/service/%s/", types.PrefixEndpoint, serviceName)
 	endpointFacts, err := dataPlaneReconciler.factStore.Scan(ctx, endpointPrefix)
 	if err != nil {
@@ -380,6 +378,9 @@ func (dataPlaneReconciler *DataPlaneReconciler) resolveServiceBackends(ctx conte
 		containerPort := 0
 		if len(suffixParts) > 1 {
 			containerPort, _ = strconv.Atoi(suffixParts[1])
+		}
+		if vipPort > 0 && containerPort > 0 && containerPort != vipPort {
+			continue
 		}
 		endpointValue := string(endpointFact.Value)
 

@@ -826,3 +826,46 @@ func TestDataPlaneReconcilesRoutesWhenNoneRemain(t *testing.T) {
 		t.Fatalf("expected no routes, got %+v", simulatorDataPlane.LastReconciledRoutes())
 	}
 }
+
+// TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints covers M178: a service
+// exposing 80 and 8081 has one endpoint per instance per port, but its VIP
+// (port 80) must only balance across the port-80 endpoints. Before the fix
+// half of the backend slots pointed at :8081 and VIP:80 failed ~50%.
+func TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	simulatorDataPlane := network.NewSimulatorDataPlane()
+	ctx := context.Background()
+
+	nodeAgent := New("node-1", factStore, runtime.NewSimulatorRuntime())
+	nodeAgent.SetDataPlaneProvider(simulatorDataPlane)
+
+	types.WriteServiceVIP(ctx, factStore, types.ServiceVIP{
+		Service: "multiport", VIP: "10.200.0.2", Port: 80,
+	})
+	instanceContainerIPs := map[string]string{"inst-a": "10.100.1.3", "inst-b": "10.100.1.4"}
+	for instanceID, containerIP := range instanceContainerIPs {
+		factStore.Put(ctx, types.KeyObservedInstanceNode(instanceID), []byte("node-1"))
+		factStore.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte(containerIP))
+		for _, containerPort := range []int{80, 8081} {
+			factStore.Put(ctx, types.KeyEndpoint("multiport", instanceID, containerPort),
+				[]byte(fmt.Sprintf("%s:%d", containerIP, containerPort)))
+		}
+	}
+
+	nodeAgent.dataPlaneReconciler.Reconcile(ctx)
+
+	lastReconciled := simulatorDataPlane.LastReconciled()
+	if len(lastReconciled) != 1 {
+		t.Fatalf("expected 1 VIP config, got %d", len(lastReconciled))
+	}
+	backends := lastReconciled[0].Backends
+	if len(backends) != 2 {
+		t.Fatalf("expected 2 backends (one per instance, port 80), got %d: %+v", len(backends), backends)
+	}
+	for _, backend := range backends {
+		if backend.Port != 80 {
+			t.Errorf("backend %s:%d targets a non-VIP port, want port 80", backend.Address, backend.Port)
+		}
+	}
+}
