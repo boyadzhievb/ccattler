@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M172 — Phase 172 Agent Debug API Lockdown. M1–M172 complete. Gates A–I resolved.
+**Completed through:** M173 — Phase 173 API Authorization Correctness. M1–M173 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

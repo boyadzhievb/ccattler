@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.71.0-beta <Badge type="tip" text="latest" /> {#v1-71-0-beta}
+## v1.72.0-beta <Badge type="tip" text="latest" /> {#v1-72-0-beta}
+
+**2026-11-05** — API Authorization Correctness.
+
+- **API Authorization Correctness** (M173) — Store grants and ABAC policies reach the API authorizer in every API process (AuthController was never wired). `/api/state` and `/api/watch` use a prefix allowlist instead of the bypassable denylist. Authenticators skip tokens from other issuers instead of aborting the chain. The watch limit is enforced atomically.
+
+---
+
+## v1.71.0-beta {#v1-71-0-beta}
 
 **2026-11-05** — Agent Debug API Lockdown.
 
