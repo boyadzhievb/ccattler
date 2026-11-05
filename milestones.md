@@ -106,7 +106,9 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 ### Phase 174 — Secrets Architecture (M174)
 
 - [x] Design direction reviewed 2026-11-05: points 1–4, 6, 7 approved; connection secrets as files only (point 5); control plane decrypts, agents receive authorized plaintext over mTLS
-- [ ] Second review: `design/config-secrets.md` "M174 design" (tenant names, availability, cutover gate, open questions A–C) together with Flow 27 in `design/runtime-invariant-flows.md`
+- [x] Open questions decided 2026-11-05: A built-in `default` tenant for unowned services; B every gate-serving agent gets the gate keys (residual risk documented); C `CCA_SECRET_TOKEN` one release as per-service opt-in via control-plane delivery
+- [ ] Second review: `design/config-secrets.md` "M174 design" together with Flow 27 in `design/runtime-invariant-flows.md`
+- [ ] Legacy secret API (`legacy_secret_api true`) served from delivered material, deprecation warnings; removal tracked for the release after M174
 - [ ] Root key separate from the CA key, control-plane only, `0400`; startup error when missing/invalid; `keyring/root_check` on every replica
 - [ ] Keyring in etcd and envelope v2 (KEK version, canonical store key as AAD); v1 readable until rotated
 - [ ] Rotation as `intent/keyring/rotation` + leader-elected keyring controller (create-only KEK, CAS re-wrap in bounded batches, idempotent resume, grace-period retirement)

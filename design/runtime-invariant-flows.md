@@ -961,6 +961,7 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    gate web { tls { key secret "platform/web-gate-key" } }
 
 2. Compilation (lang/compiler.go)
+   tenant of a service/secret: explicit owner → hierarchical name → built-in default
    resolve each reference to its canonical name:
      unqualified        → secrets/tenant/{service tenant}/{name}
      cluster/{name}     → secrets/cluster/{name}       (needs cluster grant)
@@ -996,11 +997,13 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 
 8. Materialization (agent)
    /run/ccattler/secrets/{id}/ (tmpfs, 0700), files 0400
-   secret files, connection URLs (agent assembles from password + definition),
-   secret API token file; bind-mount read-only at declared paths
+   secret files, connection URLs (agent assembles from password + definition);
+   bind-mount read-only at declared paths
 
 9. Container starts; state running.
-   secret API (:9772) answers from /run/ccattler/secrets/{id}/
+   only if the service sets legacy_secret_api true (deprecated, removed after M174):
+     per-instance CCA_SECRET_TOKEN/CCA_SECRET_URL env; secret API (:9772)
+     answers from /run/ccattler/secrets/{id}/; token revoked at stop; no decryption
 
 10. Cleanup
     container stopped and not restarting here (stopped, removed, re-placed)
@@ -1043,7 +1046,9 @@ rotation in progress (keyring controller)
   → envelopes carry kek_version; step 7 unwraps with that version; no reader waits
 
 gate keys
-  → agent: POST /api/node/gate-keys at start and on gate change; memory only
+  → every gate-serving agent: POST /api/node/gate-keys at start and on gate change;
+    memory only; separately authorized and audited
+  → a node without a local backend still terminates TLS (proxies to the VIP)
 ```
 
 **What must match:**

@@ -128,7 +128,7 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 
 ## M174 design: secrets architecture
 
-**Status:** direction approved 2026-11-05 (decisions below). Tenant-scoped names, the cross-component flow ([Flow 27](runtime-invariant-flows.md#flow-27-secret-delivery-m174)) and agent restart/node reboot are written; this section and Flow 27 are reviewed together before implementation starts.
+**Status:** direction approved 2026-11-05, open questions A–C decided the same day (decisions below). This section and [Flow 27](runtime-invariant-flows.md#flow-27-secret-delivery-m174) are reviewed together before implementation starts.
 
 ### Review decisions (2026-11-05)
 
@@ -141,6 +141,9 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 | 5 | Passwords in environment variables | Changed: files are the only delivery mechanism. Environment delivery is not added; if ever added, only as an explicit opt-in with a documented warning. |
 | 6 | `tls { key secret "name" }` | Approved. Inline PEM stays for compatibility and is sealed on apply; Git-managed configs use secret references. |
 | 7 | Control plane → agents → rotation → remove worker keys | Approved, with a strict cutover gate before rotation (step 3 is the rollback boundary). |
+| A | Services without an owner | Built-in, reserved tenant `default`; not a global namespace. |
+| B | Gate TLS key distribution | Every current gate-serving agent node receives the keys of the gates it serves; documented residual risk. |
+| C | Legacy secret API token (`CCA_SECRET_TOKEN`) | Kept for one release as a per-service opt-in, deprecated, served through control-plane delivery; removed in the release after M174. |
 
 ### Goals
 
@@ -154,7 +157,7 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 
 Non-goals: protecting secrets from a compromised control plane (it holds the keys by design); store access isolation for agents (M176); per-node envelope encryption (a possible later availability improvement). M174 makes secrets confidential even while agents can still read etcd, because ciphertext without a key is useless.
 
-**Security boundary.** A compromised node can obtain the plaintext currently authorized for instances placed on it (and the gate keys it serves, see below). It cannot decrypt other secrets in etcd, and its node certificate does not give it another tenant's secrets.
+**Security boundary.** A compromised node can obtain the plaintext currently authorized for instances placed on it, and the private keys of the gates it serves (decision B). It cannot decrypt other secrets in etcd, and its node certificate does not give it another tenant's secrets or any key-encryption key.
 
 ### Key hierarchy
 
@@ -182,11 +185,11 @@ secrets/route/{gate}/tls/key       sealed gate TLS key (written by the system, n
 
 Rules:
 
-- **Ownership:** a secret belongs to the tenant of the configuration that declares it (the same owner resolution as services: `owner`, else the hierarchical name). Writing a tenant secret needs `secret.write` at `team/{tenant}`; a cluster secret needs it at `cluster`.
+- **Ownership (decision A):** services and secrets resolve their tenant in this order: (1) explicit `owner`; (2) the tenant inferred from a hierarchical name such as `payments/api`; (3) the built-in tenant `default`. `default` is reserved (no user-declared `tenant default`) and is an ordinary tenant for isolation: flat, unowned services use `secrets/tenant/default/…` and cannot reach other tenants' secrets. Writing a tenant secret needs `secret.write` at `team/{tenant}`; a cluster secret needs it at `cluster`.
+- **Enforcing ownership:** a production cluster can require an explicit owner (or hierarchical name) for every service through an admission policy ([multi-tenancy.md](multi-tenancy.md) "Policy Gates"), rejecting services that would fall into `default`. Off by default, so existing configurations keep working.
 - **Resolution:** in a service, an unqualified reference (`secret database.password`) resolves to the service's own tenant: `secrets/tenant/{service tenant}/database.password`. Qualified references are explicit: `secret cluster/registry-credentials`, `secret tenant/platform/web-gate-key`.
 - **No implicit visibility:** a reference to another tenant's secret is valid only if the owner declared a share (`secret database.password { share tenant frontend }` → `desired/secret_share/payments/database.password/frontend`). Applying a share needs `secret.write` in the owner's scope; applying the consuming reference needs `secret.use` in the consumer's scope. Cluster secrets need a grant at `cluster` scope for the applying user.
 - **Checks in two places:** the compiler/apply path rejects unresolvable or unshared references with a clear error; the delivery endpoint re-checks the grant and share on every request, so a removed share stops delivery on the next start.
-- **Services without an owner** belong to the built-in tenant `default` (open question A below).
 - **Grant facts** carry the canonical name: `desired/service/{svc}/secret/{canonical name}`; connection auto-grants (Flow 9) do the same.
 
 **Migrating unqualified names.** Existing `secrets/{name}` keys are not reinterpreted as tenant or cluster secrets. `cca secret migrate-names --plan` lists every legacy secret with the services and tenants that use it and writes a mapping file; the operator edits it and runs `cca secret migrate-names --apply mapping.ccv`. Every legacy secret must have an explicit target (`tenant/{t}/{name}` or `cluster/{name}`); apply refuses while any is unmapped. Apply re-encrypts each value under its new key (AAD changes) and rewrites grants and connection references in one transaction per secret. Until mapped, a legacy secret keeps today's behavior (only services with an existing grant can use it) and no new grant may reference it.
@@ -208,7 +211,9 @@ Every envelope names its KEK version, so after a crash at any step every secret 
 - **Authorization per request:** the instance is placed on the calling node (`placement/instance/{id}` = caller's node ID); the node is enrolled and not disabled; for each secret the instance's service holds the grant, and for another tenant's secret the share exists. Partial results are not returned: any missing grant fails the request with the names that failed (values never).
 - **Audit:** each delivery and each refusal is recorded (node, instance, service, secret names, outcome; never values).
 - **Narrow store access:** delivery runs in the API server process but through its own store principal `service:secret-delivery`, not the generic `api-server` role (which keeps having no rule for `secrets/`, `credentials/` or `keyring/`). The `secret-delivery` role reads `secrets/`, `credentials/`, `keyring/`, `placement/instance/`, `desired/service/`, `desired/secret_share/`, `desired/connection/` and node state, and writes only its audit stream. The `keyring` controller gets its own role (`keyring/`, `secrets/` re-wrap, `intent/keyring/`).
-- **Gate keys:** `POST /api/node/gate-keys` returns the sealed keys of gates the calling node serves. Today every agent's gate proxy serves every gate, so every agent node receives every gate key; restricting gate serving to selected nodes would narrow this later (documented limitation).
+- **Gate keys (decision B):** `POST /api/node/gate-keys` returns the private keys of the gates the calling node serves. Every agent's gate proxy serves every gate, and an external connection can arrive at a node with no local instance of the gate's service, so every gate-serving agent needs every gate key. Restricting keys to nodes running the service would break TLS on the others; narrowing it needs an explicit set of ingress-serving nodes, which is outside M174.
+  - Residual risk (accepted for M174): compromising an agent exposes the TLS identities of the gates it serves, not application secrets, not the keyring, not the root key.
+  - Gate-key delivery is authorized (enrolled, non-disabled node with the gate proxy enabled) and audited separately from application secret delivery.
 - **Cloud credentials** (`credentials/`) go through the same endpoint and checks; the `node-agent` store role loses its `credentials/` read.
 - **The agent never reads `secrets/`, `credentials/` or `keyring/`**, holds no key and does not decrypt. Connection URLs are still assembled on the agent from the delivered password and the (non-secret) connection definition.
 
@@ -216,7 +221,11 @@ Every envelope names its KEK version, so after a crash at any step every secret 
 
 - All delivered material is written to `/run/ccattler/secrets/{instance}/` (tmpfs; directory `0700`, files `0400`, owned by the container's user where the runtime supports it, else root) and bind-mounted read-only at the declared paths (`/run/secrets/...`, `/run/connections/...`). Nothing secret is written under `/var/lib/ccattler/logs/` or any other disk path.
 - Connection URLs with embedded passwords are files only (decision 5). Secret values never appear in logs, `cca` status/describe output, events or traces.
-- The agent secret API (`:9772`) serves from the instance's tmpfs directory instead of decrypting; its bearer token is delivered as a file in the same directory (`/run/ccattler/token`) instead of `CCA_SECRET_TOKEN` (the environment variable is kept for one release as a deprecated compatibility path).
+- **Legacy secret API (decision C):** file delivery is the default. The agent secret API (`:9772`, `GET /v1/secrets/…`) and its `CCA_SECRET_TOKEN` / `CCA_SECRET_URL` environment variables are given only to instances of services that opt in (`legacy_secret_api true` in the service block). For those:
+  - the token stays per instance, is revoked when the instance stops, and only authorizes that instance's granted secrets;
+  - the API answers from the instance's delivered material in tmpfs, which came through `POST /api/node/secrets`; the agent never decrypts and holds no key, so keeping the token does not keep the old master-key architecture;
+  - the agent logs a deprecation warning once per service at start, and `cca apply` warns on `legacy_secret_api`.
+  The opt-in, the API and the environment variables are removed in the release after M174.
 - Cleanup: the instance's directory is removed after its container has stopped and will not be restarted on this node (stopped, removed or re-placed elsewhere).
 
 ### Availability and failure behavior
@@ -280,13 +289,15 @@ The control plane must be reachable to deliver a secret. Required behavior:
 
 After step 3 there is no binary rollback: recovery is a forward fix, or a coordinated restore of the pre-rotation etcd snapshot together with the previous binaries.
 
-### Open questions
-
-- **A. Services without an owner** (all current e2e workloads): built-in tenant `default` as proposed, or require an owner for any service that uses secrets?
-- **B. Gate key exposure:** accept "every agent node receives every gate key" for M174, or restrict gate keys to nodes that host an instance of the gate's service?
-- **C. Secret API token:** keep `CCA_SECRET_TOKEN` for one release (proposed) or remove it in M174?
-
 ### Tests
+
+Acceptance (from the A–C decisions):
+
+- An unowned service retrieves a secret from `default` and is refused one from `payments`.
+- A node with no local instance of a gate's service terminates TLS for that gate.
+- A workload using the legacy token retrieves an authorized secret through control-plane delivery, on a node with no key file and no keyring access.
+
+Further:
 
 - Envelope v2: AAD binding (an envelope moved to another key fails to open), v1 still readable, version recorded; rename re-encrypts.
 - Root key: missing, wrong size, wrong mode, wrong key (`root_check`) → startup error.
