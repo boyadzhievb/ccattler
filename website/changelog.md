@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.72.0-beta <Badge type="tip" text="latest" /> {#v1-72-0-beta}
+## v1.73.0-beta <Badge type="tip" text="latest" /> {#v1-73-0-beta}
+
+**2026-11-06** — Secret Delivery to Agents.
+
+- **Secret Delivery to Agents** (M174) — Agents stop decrypting: `POST /api/node/secrets` delivers only the secrets granted to instances placed on the calling node, through a narrow `secret-delivery` store principal, audited. Material lives in tmpfs and is bind-mounted read-only. New `waiting-for-secrets` state before `pulling` (not a failure). Enrollment no longer sends the master key. Legacy secret API only as a deprecated opt-in.
+
+---
+
+## v1.72.0-beta {#v1-72-0-beta}
 
 **2026-11-05** — API Authorization Correctness.
 

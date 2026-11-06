@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M173 — Phase 173 API Authorization Correctness. M1–M173 complete. Gates A–I resolved.
+**Completed through:** M174 — Phase 174 Secret Delivery to Agents. M1–M174 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
