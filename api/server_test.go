@@ -450,8 +450,12 @@ func TestEnrollNodeSuccess(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(body))
 	}
 
+	rawResponse, _ := io.ReadAll(resp.Body)
+	if strings.Contains(string(rawResponse), "secret_master_key") || strings.Contains(string(rawResponse), "private_key_pem") {
+		t.Fatalf("enrollment response must carry no key material (M174): %s", rawResponse)
+	}
 	var enrollResponse enrollmentResponseBody
-	json.NewDecoder(resp.Body).Decode(&enrollResponse)
+	json.Unmarshal(rawResponse, &enrollResponse)
 
 	if enrollResponse.Error != "" {
 		t.Fatalf("unexpected error: %s", enrollResponse.Error)

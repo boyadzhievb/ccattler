@@ -33,6 +33,11 @@ const (
 	// via the pull-status/{instanceID} fact.
 	InstanceImagePullBackoff InstanceState = "image-pull-backoff"
 
+	// InstanceWaitingForSecrets means the instance needs secrets that have not
+	// been delivered yet (Flow 27). Not a failure: no replacement, no crash-loop
+	// count. The reason is in observed/instance/{id}/secret-wait.
+	InstanceWaitingForSecrets InstanceState = "waiting-for-secrets"
+
 	// InstanceFailed means the instance encountered an error and is no longer
 	// running. The failure controller will create a replacement instance.
 	InstanceFailed InstanceState = "failed"

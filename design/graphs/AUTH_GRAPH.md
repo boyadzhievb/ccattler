@@ -120,7 +120,7 @@ BuiltinRoles() → []Role                                       [:141]
 | Role             | Key Prefixes             | Permissions              |
 |------------------|--------------------------|--------------------------|
 | cluster-admin    | "" (everything)          | read, write, delete, watch |
-| node-agent       | observed/instance/, observed/node/, observed/volume/, lease/node/, desired/, effective/, placement/, credentials/, observed/credential/, derived/instance/, derived/credential/ | mixed |
+| node-agent       | observed/instance/, observed/node/, observed/volume/, lease/node/, desired/, effective/, placement/, observed/credential/, derived/instance/, derived/credential/ | mixed |
 | scheduler        | placement/, observed/, desired/, effective/ | mixed |
 | controller       | desired/, effective/, observed/, derived/, intent/, placement/, endpoint/, network/ | mixed |
 | credential-broker| desired/cloud_identity/, desired/service/, desired/credential_broker/, observed/instance/, observed/credential/, derived/credential/, credentials/ | mixed |

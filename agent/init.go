@@ -134,9 +134,9 @@ func (nodeAgent *Agent) executeInitStep(ctx context.Context, instanceInfo placed
 
 	var stepError error
 	if stepDefinition.connection != "" {
-		stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo.service)
+		stepError = nodeAgent.runConnectionProbe(ctx, stepDefinition, instanceInfo)
 	} else {
-		stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo.service, stepDefinition)
+		stepError = nodeAgent.runInitCommand(ctx, image, instanceInfo, stepDefinition)
 	}
 
 	if stepError == nil {
@@ -211,7 +211,7 @@ func (nodeAgent *Agent) clearInitProgress(ctx context.Context, instanceID string
 // from the service image. The service's config env vars are passed so init steps
 // can access the same configuration as the main workload (e.g. DB connection
 // strings). Applies a timeout if configured.
-func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, serviceName string, stepDefinition initStepDefinition) error {
+func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, instanceInfo placedInstanceInfo, stepDefinition initStepDefinition) error {
 	execCtx := ctx
 	var cancelFunc context.CancelFunc
 	if stepDefinition.timeout > 0 {
@@ -223,12 +223,12 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, servic
 		return fmt.Errorf("empty init exec command for step %d", stepDefinition.index)
 	}
 
-	serviceEnvVars := nodeAgent.resolveServiceConfigEnvVars(execCtx, serviceName)
+	serviceEnvVars := nodeAgent.resolveServiceConfigEnvVars(execCtx, instanceInfo.service)
 	initSpec := goruntime.ExecSpec{
 		Command: stepDefinition.exec,
 		Env:     serviceEnvVars,
 	}
-	nodeAgent.materializeInitConfigFiles(execCtx, serviceName, &initSpec)
+	nodeAgent.materializeInitConfigFiles(execCtx, instanceInfo, &initSpec)
 	return nodeAgent.runtime.ExecInit(execCtx, image, initSpec)
 }
 
@@ -312,7 +312,7 @@ func (nodeAgent *Agent) readInitStepState(ctx context.Context, instanceID string
 // TCP dial to host:port. The connection definition is read from the store and
 // the URL is assembled (including secret resolution) to verify the full chain.
 // Applies the step timeout if configured.
-func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition initStepDefinition, serviceName string) error {
+func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition initStepDefinition, instanceInfo placedInstanceInfo) error {
 	probeCtx := ctx
 	var cancelFunc context.CancelFunc
 	if stepDefinition.timeout > 0 {
@@ -320,7 +320,7 @@ func (nodeAgent *Agent) runConnectionProbe(ctx context.Context, stepDefinition i
 		defer cancelFunc()
 	}
 
-	connectionURL := nodeAgent.assembleConnectionURL(probeCtx, stepDefinition.connection, serviceName)
+	connectionURL := nodeAgent.assembleConnectionURL(probeCtx, stepDefinition.connection, nodeAgent.readDeliveredSecretValues(instanceInfo.id))
 	if connectionURL == "" {
 		return fmt.Errorf("connection %q: failed to assemble URL", stepDefinition.connection)
 	}
@@ -419,67 +419,13 @@ func (nodeAgent *Agent) hasInitSteps(ctx context.Context, serviceName string) bo
 	return false
 }
 
-// materializeInitConfigFiles resolves secrets and connection files for an init
-// container so it has the same file mounts as the main workload container.
-func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, serviceName string, initSpec *goruntime.ExecSpec) {
-	if initSpec.ConfigFiles == nil {
-		initSpec.ConfigFiles = make(map[string]string)
-	}
-
-	if nodeAgent.secretProvider != nil {
-		grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
-		grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
-		if scanError == nil {
-			for _, grantFact := range grantFacts {
-				secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
-				if secretName == "" {
-					continue
-				}
-				explicitMountPath := string(grantFact.Value)
-				plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, secretName)
-				if decryptError != nil {
-					logging.Default().Error("init: failed to decrypt secret",
-						"agent", nodeAgent.nodeID, "service", serviceName,
-						"secret", secretName, "error", decryptError.Error())
-					continue
-				}
-				secretValue := string(plaintext)
-				initSpec.ConfigFiles[ccaSecretMountPrefix+secretName] = secretValue
-				if explicitMountPath != "" && strings.HasPrefix(explicitMountPath, "/") {
-					initSpec.ConfigFiles[explicitMountPath] = secretValue
-				}
-			}
-		}
-	}
-
-	connectionRefs, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConnections(serviceName))
-	if scanError == nil {
-		for _, connectionRef := range connectionRefs {
-			connectionName := strings.TrimPrefix(connectionRef.Key, types.ScanDesiredServiceConnections(serviceName))
-			if connectionName == "" {
-				continue
-			}
-			mountPath := string(connectionRef.Value)
-			connectionURL := nodeAgent.assembleConnectionURL(ctx, connectionName, serviceName)
-			if connectionURL == "" {
-				continue
-			}
-			initSpec.ConfigFiles[mountPath] = connectionURL
-		}
-	}
-
-	hasSecrets := false
-	for path := range initSpec.ConfigFiles {
-		if strings.HasPrefix(path, ccaSecretMountPrefix) {
-			hasSecrets = true
-			break
-		}
-	}
-	if hasSecrets {
-		initSpec.ConfigFiles[ccaSecretHelperPath] = ccaSecretHelperScript
-	}
-
-	if len(initSpec.ConfigFiles) == 0 {
-		initSpec.ConfigFiles = nil
+// materializeInitConfigFiles gives an init container the same read-only secret
+// and connection mounts as the main container (architectural rule 6). The
+// material was delivered before the image pull, so it is read from tmpfs.
+func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, instanceInfo placedInstanceInfo, initSpec *goruntime.ExecSpec) {
+	initSpec.SecretMounts = nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, nodeAgent.readDeliveredSecretValues(instanceInfo.id))
+	initSpec.ConfigFiles = addSecretHelperIfMounted(initSpec.SecretMounts, initSpec.ConfigFiles)
+	if len(initSpec.SecretMounts) == 0 {
+		initSpec.SecretMounts = nil
 	}
 }

@@ -10,7 +10,7 @@ import (
 )
 
 func TestBuildAgentDebugClientTLSConfigWithoutTLS(testContext *testing.T) {
-	if buildAgentDebugClientTLSConfig(nil) != nil {
+	if buildMTLSClientTLSConfig(nil) != nil {
 		testContext.Fatal("no server TLS must mean no agent debug client TLS")
 	}
 }
@@ -18,7 +18,7 @@ func TestBuildAgentDebugClientTLSConfigWithoutTLS(testContext *testing.T) {
 func TestBuildAgentDebugClientTLSConfigStaticCertificate(testContext *testing.T) {
 	clusterRoots := x509.NewCertPool()
 	staticCertificate := tls.Certificate{Certificate: [][]byte{{0x01}}}
-	clientTLSConfig := buildAgentDebugClientTLSConfig(&tls.Config{
+	clientTLSConfig := buildMTLSClientTLSConfig(&tls.Config{
 		Certificates: []tls.Certificate{staticCertificate},
 		ClientCAs:    clusterRoots,
 	})
@@ -32,7 +32,7 @@ func TestBuildAgentDebugClientTLSConfigStaticCertificate(testContext *testing.T)
 
 func TestBuildAgentDebugClientTLSConfigRotatedCertificate(testContext *testing.T) {
 	rotatedCertificate := &tls.Certificate{Certificate: [][]byte{{0x02}}}
-	clientTLSConfig := buildAgentDebugClientTLSConfig(&tls.Config{
+	clientTLSConfig := buildMTLSClientTLSConfig(&tls.Config{
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return rotatedCertificate, nil },
 	})
 	presentedCertificate, getError := clientTLSConfig.GetClientCertificate(&tls.CertificateRequestInfo{})

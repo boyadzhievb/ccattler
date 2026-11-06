@@ -357,6 +357,10 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 		})
 	}
 
+	if serviceDecl.LegacySecretAPI {
+		facts = append(facts, Fact{Key: types.KeyDesiredServiceLegacySecretAPI(serviceDecl.Name), Value: "true"})
+	}
+
 	if serviceDecl.Stateful {
 		facts = append(facts,
 			Fact{Key: types.KeyDesiredServiceStateful(serviceDecl.Name), Value: "true"},

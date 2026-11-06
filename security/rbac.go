@@ -156,7 +156,6 @@ func BuiltinRoles() []Role {
 				{KeyPrefix: "desired/", Operations: []Permission{PermissionRead, PermissionWatch}},
 				{KeyPrefix: "effective/", Operations: []Permission{PermissionRead, PermissionWatch}},
 				{KeyPrefix: "placement/", Operations: []Permission{PermissionRead, PermissionWatch}},
-				{KeyPrefix: "credentials/", Operations: []Permission{PermissionRead}},
 				{KeyPrefix: "observed/credential/", Operations: []Permission{PermissionRead}},
 				{KeyPrefix: "derived/instance/", Operations: []Permission{PermissionRead}},
 				{KeyPrefix: "derived/credential/", Operations: []Permission{PermissionRead}},

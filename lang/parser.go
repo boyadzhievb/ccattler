@@ -304,6 +304,8 @@ func (parser *Parser) parseServiceField(serviceDecl *ServiceDecl, fieldName stri
 		return nil
 	case "stateful":
 		serviceDecl.Stateful = true
+	case "legacy_secret_api":
+		serviceDecl.LegacySecretAPI, err = parser.expectBooleanValue()
 	case "disruption":
 		serviceDecl.Disruption, err = parser.parseDisruptionBlock()
 	case "tags":

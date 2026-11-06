@@ -115,16 +115,17 @@ Specification: `design/config-secrets.md` "M174 design" (decisions 1–7, A–C,
 
 Control plane decrypts with the existing key (unchanged envelope format); agents stop decrypting.
 
-- [ ] `POST /api/node/secrets {instance_id}`: mTLS `node:` principals only; placed on caller, enrolled, not disabled, every grant present; all-or-nothing; audited (names, never values); refusal audit rate-limited per (node, instance, reason)
-- [ ] `service:secret-delivery` store principal and role (reads `secrets/`, `credentials/`, placement, desired service/connection, node state; writes only its audit stream); `api-server` role still has no `secrets/`; `node-agent` role loses `credentials/`
-- [ ] Agent: no `secrets/` or `credentials/` reads, no decryption; tmpfs materialization `/run/ccattler/secrets/{instance}/` (`0700`/`0400`), read-only bind mounts, connection URLs as files only
-- [ ] `waiting-for-secrets` typed state with `reason`/`next_retry`; before `pulling` also with a cached image (Flows 14/22: pull credential from delivered material); not a failure (no replacement, no crash-loop count, ignored by node-failure controller); shown by `cca get instances`
-- [ ] Retry: API unreachable 2s…30s backoff; refused → on placement/grant change and every 5 min fallback; agent watches metadata only
-- [ ] Agent restart keeps material of running placed instances, removes orphans, leaves containers alone; node reboot re-fetches; cleanup after stop/re-placement
-- [ ] Legacy secret API only for `legacy_secret_api true`, served from tmpfs, per-instance token revoked at stop, deprecation warnings (agent + `cca apply`)
-- [ ] Agents report `observed/node/{id}/secret_delivery = v2` and `legacy_key_file = present | absent`
-- [ ] Enrollment response without `SecretMasterKey`; `cca join` writes no key; agent ignores the file (logs once); Ansible join task `creates: /etc/ccattler/pki/node.pem`
-- [ ] Tests: delivery refusals (wrong node, unplaced, missing grant, disabled node, user principal); availability table cases; no secret value under the logs directory, in events or `cca` output; acceptance C (legacy token on a node with no key file); deploy cluster: Airflow secrets and connection strings still delivered
+- [x] `POST /api/node/secrets {instance_id}`: mTLS `node:` principals only; placed on caller, enrolled, not disabled, every grant present; all-or-nothing; audited (names, never values); refusal audit rate-limited per (node, instance, reason)
+- [x] `service:secret-delivery` store principal and role (reads `secrets/`, placement, instance service, desired service/connection, node state, enrollment; writes nothing through the store; `credentials/` not needed: agents never used cloud credentials); `api-server` role still has no `secrets/`; `node-agent` role loses `credentials/`
+- [x] Agent: no `secrets/` or `credentials/` reads, no decryption (agent KMS provider and `--kms-provider`/`--kms-key` removed); tmpfs materialization `/run/ccattler/secrets/{instance}/` (dir `0700`, files `0444` so non-root containers can read them), read-only bind mounts via `Spec.SecretMounts` (runtimes no longer copy secrets under the logs directory or `/tmp`), connection URLs as files only; `--api-server` flag
+- [x] `waiting-for-secrets` typed state with `observed/instance/{id}/secret-wait` (reason incl. `delivery_not_configured`, secrets, next_retry); before `pulling` also with a cached image (Flows 14/22: pull credential from delivered material); not a failure (no replacement, no crash-loop count, ignored by node-failure controller); shown by `cca get instances`
+- [x] Retry: API unreachable 2s…30s backoff; refused → on placement/grant change and every 5 min fallback; agent watches metadata only
+- [x] Agent restart keeps material of running placed instances, removes orphans, leaves containers alone; node reboot re-fetches; cleanup after stop/re-placement
+- [x] Legacy secret API only for `legacy_secret_api true`, served from tmpfs, per-instance token revoked at stop, deprecation warnings (agent + `cca apply`)
+- [x] Agents report `observed/node/{id}/secret_delivery = v2` and `legacy_key_file = present | absent`
+- [x] Enrollment response without `SecretMasterKey`; `cca join` writes no key; agent ignores the file (logs once); Ansible join task `creates: /etc/ccattler/pki/node.pem`; agent unit passes `--api-server`
+- [x] Unit tests: delivery refusals (wrong node, unplaced, missing grant, disabled node, unenrolled, user/service/non-mTLS principal); availability cases (unreachable, refused, restart reuse, sweep, cached image waits); secrets only as read-only mounts; legacy API from tmpfs material only; enrollment response without key material
+- [ ] Deploy cluster: Airflow secrets and connection strings delivered (non-root uid 50000), `observed/node/*/secret_delivery = v2`, no `cca-config-*` secret copies under `/tmp` or the logs directory; bare-metal e2e green
 
 ### Phase 175 — Gate Key Sealing & Delivery (M175)
 
@@ -138,6 +139,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 ### Phase 176 — Root Key, Keyring & Key Migration (M176)
 
 - [ ] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; Ansible generates once and provisions every control-plane replica
+- [ ] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
 - [ ] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key, `keyring/root_check` fails to open
 - [ ] Keyring in etcd (`keyring/kek/{v}`, `keyring/active`, `keyring/root_check`); replicas watch it and report `observed/keyring/replica/{id}`
 - [ ] Envelope v2 (magic, KEK version, wrapped DEK, AAD = store key); legacy key opens v1 only and never wraps anything new; writes stay v1 until migration starts
@@ -174,6 +176,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
 - [ ] Agents limited to their node's keys and read-only desired state
+- [ ] Secret delivery checks binding (found during M174): agents can no longer write placements, grants or `observed/instance/{id}/service`; instance → service mapping from a control-plane-only fact
 - [ ] Short-lived node certificates with rotation; removed nodes rejected by etcd and API
 - [ ] Threat model T5 updated with the real residual risk
 

@@ -2311,3 +2311,34 @@ func KeyDerivedCronJobLastScheduled(name string) string {
 func KeyDerivedCronJobLastStatus(name string) string {
 	return fmt.Sprintf("%s/cronjob/%s/last_status", PrefixDerived, name)
 }
+
+// Secret delivery keys (Flow 27, M174).
+
+// KeyObservedInstanceSecretWait returns the store path for why an instance is
+// waiting for secrets. Value is JSON: {"reason":"...","secrets":[...],"next_retry":"RFC3339"}.
+// Path: observed/instance/{instanceID}/secret-wait
+func KeyObservedInstanceSecretWait(instanceID string) string {
+	return fmt.Sprintf("%s/instance/%s/secret-wait", PrefixObserved, instanceID)
+}
+
+// KeyObservedNodeSecretDelivery returns the store path for the node's secret
+// delivery protocol version ("v2" once the agent receives secrets from the
+// control plane instead of decrypting locally).
+// Path: observed/node/{nodeID}/secret_delivery
+func KeyObservedNodeSecretDelivery(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/secret_delivery", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeLegacyKeyFile returns the store path for whether the old
+// secret master key file is still present on the node ("present" | "absent").
+// Path: observed/node/{nodeID}/legacy_key_file
+func KeyObservedNodeLegacyKeyFile(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/legacy_key_file", PrefixObserved, nodeID)
+}
+
+// KeyDesiredServiceLegacySecretAPI returns the store path for a service's
+// opt-in to the deprecated per-instance secret API (CCA_SECRET_TOKEN).
+// Path: desired/service/{name}/legacy_secret_api
+func KeyDesiredServiceLegacySecretAPI(name string) string {
+	return fmt.Sprintf("%s/service/%s/legacy_secret_api", PrefixDesired, name)
+}

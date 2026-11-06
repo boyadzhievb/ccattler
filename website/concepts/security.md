@@ -145,31 +145,15 @@ cca secret delete database-password
 
 ### Encryption
 
-By default, the server generates a 32-byte master key at `.ccattler/secret-master.key`. Each secret is encrypted with a unique data encryption key (DEK), which is itself wrapped by the master key — standard envelope encryption.
-
-For production, delegate key management to a cloud KMS by configuring the agent:
-
-```bash
-# AWS KMS
-cca agent --node-id worker-1 \
-  --kms-provider aws-kms \
-  --kms-key arn:aws:kms:us-east-1:123456789:key/abcd-1234
-
-# GCP Cloud KMS
-cca agent --node-id worker-1 \
-  --kms-provider gcp-kms \
-  --kms-key projects/my-project/locations/global/keyRings/my-ring/cryptoKeys/my-key
-```
-
-With cloud KMS, the master key never exists in plaintext on disk — it is unwrapped by the KMS at agent startup.
+The control-plane server holds a 32-byte key at `/etc/ccattler/secret-master.key`. Each secret is encrypted with a unique data encryption key (DEK), which is itself wrapped by that key — standard envelope encryption. Worker nodes never receive the key and never decrypt.
 
 ### Secret lifecycle
 
 Secret access is tied to container lifecycle:
 
-1. Instance assigned to node → node obtains authorized secret copy
-2. Agent decrypts the secret using the local master key or cloud KMS
-3. Secret materialized as a file on the host → bind-mounted read-only into the container
+1. Instance assigned to node → the agent requests the instance's secrets from the API server over mTLS (`POST /api/node/secrets`)
+2. The API server checks that the instance is placed on that node and that its service is granted each secret, decrypts, and returns only those; every delivery is audited
+3. The agent writes them to tmpfs (`/run/ccattler/secrets/`) and bind-mounts them read-only into the container; until then the instance shows `waiting-for-secrets`
 4. Container stops → secret material removed from the host
 5. Instance moves to another node → new node gets fresh copy, old node removes its copy
 

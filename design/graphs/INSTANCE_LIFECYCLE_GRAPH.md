@@ -125,10 +125,22 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   └── store.Get(desired/service/{svc}/image)
 │       → BAIL if empty (silent return, no state change)
 │
-├── resolveImagePullCredentials(ctx, service)                :1116
-│   ├── lookupImagePullSecretFromStore(ctx, service)         :1105
+├── prepareInstanceSecretMaterial(ctx, instanceInfo)          [agent/secret_delivery.go, M174]
+│   ├── no grants / connection secrets / pull secret → proceed
+│   ├── material in /run/ccattler/secrets/{id}/ with all grants → reuse (container restart)
+│   ├── waiting and before retryAfter (and requirements unchanged) → BAIL
+│   ├── POST /api/node/secrets {instance_id}  (node mTLS)
+│   │   ├── OK → WriteInstanceSecrets (dir 0700, files 0444) → proceed
+│   │   └── error → PUT observed/instance/{id}/state = "waiting-for-secrets"
+│   │              PUT observed/instance/{id}/secret-wait = {reason, secrets, next_retry}
+│   │              reasons: api_unreachable (2s…30s) | not_authorized | secret_missing (5min fallback)
+│   │                       | delivery_not_configured → BAIL
+│   └── never pulls or starts without material; not a failure (no replacement)
+│
+├── resolveImagePullCredentials(ctx, service, secretValues)
+│   ├── lookupImagePullSecretFromStore(ctx, service)
 │   │   └── store.Get(desired/service/{svc}/image_pull_secret)
-│   └── secretProvider.ResolveSecretValue(ctx, secretName)
+│   └── secretValues[name] → "user:pass"                     [delivered material]
 │
 ├── ensureImageAvailable(ctx, instanceInfo, image, creds)    :792
 │   ├── lookupServicePullPolicyFromStore(ctx, service)       :1095
@@ -219,8 +231,9 @@ reconcileDesiredInstance(instanceInfo)                        :726
 │   ├── resolveServiceConfigEnvVars(ctx, service)            :1222
 │   └── resolveServiceConfigFiles(ctx, service)              :1243
 │
-├── materializeSecretFiles(ctx, service, spec)               :1427
-├── materializeConnectionFiles(ctx, service, spec)           :1463
+├── buildInstanceSecretMounts(ctx, instanceInfo, secretValues)  [Spec.SecretMounts: read-only binds from tmpfs]
+│   └── addConnectionFileMounts → WriteConnectionFile         [connection URLs as files only]
+├── addSecretHelperIfMounted                                 [cca-secret helper, not secret]
 │
 └── startInstanceAndPublishState(ctx, instanceInfo, ...)     :956
     ├── runtime.Start(spec)
@@ -520,6 +533,7 @@ InstanceGCController.Reconcile(ctx, facts)                   :74
 | `InstancePending` | `"pending"` | InstanceController |
 | `InstancePulling` | `"pulling"` | Agent (ensureImageAvailable) |
 | `InstanceImagePullBackoff` | `"image-pull-backoff"` | Agent (recordImagePullFailure) |
+| `InstanceWaitingForSecrets` | `"waiting-for-secrets"` | Agent (recordSecretDeliveryWait, M174) |
 | `InstanceStarting` | `"starting"` | Agent (observeInstanceState) |
 | `InstanceRunning` | `"running"` | Agent (observeInstanceState) |
 | `InstanceFailed` | `"failed"` | Agent (observeInstanceState / start error) |
@@ -638,6 +652,13 @@ ELSE                            → observed/instance/{id}/state value
 1. Check `observed/instance/{id}/pull-status` JSON
 2. Bad image reference — typo or missing tag
 3. Expired registry auth
+
+### Stuck in `waiting-for-secrets`
+1. Check `observed/instance/{id}/secret-wait` JSON (reason, secrets, next_retry)
+2. `api_unreachable` — agent cannot reach `--api-server` (retry 2s…30s)
+3. `not_authorized` — missing grant for a mounted, connection or pull secret; wrong node; node disabled or not enrolled
+4. `secret_missing` — granted secret has no value (`cca secret set`)
+5. `delivery_not_configured` — agent has no node certificate or API address
 
 ### Stuck in `starting`
 1. runtime.Status() returning error — container may be running

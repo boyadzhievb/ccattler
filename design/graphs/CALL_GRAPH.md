@@ -56,6 +56,8 @@ executeReconciliationCycle
 ├── cleanup: stop running instances not in desired set
 │   └── cleanupUndesiredInstance
 │
+├── sweepSecretMaterial                          [M174: remove tmpfs material of instances neither placed nor running]
+│
 ├── cleanup: imagePullBackoffs for unplaced
 │   └── clearPullStatusFromStore
 │
@@ -66,14 +68,21 @@ executeReconciliationCycle
 ```
 reconcileDesiredInstance(instanceInfo)
 ├── lookupServiceImageFromStore                  [BAIL if empty]
-├── resolveImagePullCredentials
+├── prepareInstanceSecretMaterial                [M174, Flow 27; BAIL → waiting-for-secrets]
+│   ├── loadServiceSecretRequirements            [desired grants, connection secrets, image_pull_secret; never secrets/]
+│   ├── SecretMaterialStore.ReadInstanceSecrets  [material from this boot → reuse, no fetch]
+│   ├── secretDeliveryWaits retryAfter           [unreachable 2s…30s; refused 5min unless requirements changed]
+│   ├── secretDeliveryClient.FetchInstanceSecrets [POST /api/node/secrets over node mTLS]
+│   ├── SecretMaterialStore.WriteInstanceSecrets [/run/ccattler/secrets/{id}/values/, staging + rename]
+│   └── recordSecretDeliveryWait / clearSecretDeliveryWait [observed/instance/{id}/secret-wait]
+├── resolveImagePullCredentials(secretValues)    [from delivered material]
 ├── ensureImageAvailable                         [BAIL if false]
 │   ├── lookupServicePullPolicyFromStore
 │   ├── IsImageCached                            [return true if cached]
 │   ├── PullImage                                [5min timeout]
 │   └── recordImagePullFailure                   [backoff 10s–5min]
 │
-├── IF secretAPIServer:
+├── registerLegacySecretAPIToken                 [only desired/service/{svc}/legacy_secret_api = true]
 │   └── RegisterInstanceToken
 │
 ├── IF hasInitSteps:
@@ -88,7 +97,7 @@ reconcileDesiredInstance(instanceInfo)
 │   │   │       ├── publishInitProgress
 │   │   │       ├── IF connection type:
 │   │   │       │   └── runConnectionProbe
-│   │   │       │       ├── assembleConnectionURL
+│   │   │       │       ├── assembleConnectionURL(readDeliveredSecretValues)
 │   │   │       │       ├── parseConnectionJSON
 │   │   │       │       ├── buildCCattlerResolver
 │   │   │       │       │   ├── IF advertiseAddress set:
@@ -98,6 +107,7 @@ reconcileDesiredInstance(instanceInfo)
 │   │   │       │       └── net.Dialer{Timeout: 10s}.DialContext("tcp", host:port)
 │   │   │       └── IF exec type:
 │   │   │           └── runInitCommand
+│   │   │               ├── materializeInitConfigFiles → buildInstanceSecretMounts [same mounts as main]
 │   │   │               └── runtime.ExecInit(image, initSpec)
 │   │   └── clearInitProgress                    [all passed]
 │
@@ -135,8 +145,9 @@ reconcileDesiredInstance(instanceInfo)
 │   ├── lookupServiceResourcesFromStore
 │   ├── lookupServiceCommandFromStore
 │   └── networkProvider.AllocateIP
-├── materializeSecretFiles
-├── materializeConnectionFiles
+├── buildInstanceSecretMounts                    [→ Spec.SecretMounts, read-only binds from tmpfs]
+│   └── addConnectionFileMounts → assembleConnectionURL → WriteConnectionFile
+├── addSecretHelperIfMounted                     [cca-secret helper script in ConfigFiles]
 ├── IF secretAPIToken:
 │   └── injectSecretAPIIntoSpec
 └── startInstanceAndPublishState
@@ -197,7 +208,10 @@ executeReconciliationCycle(controller, deltaEvents)
 | `derived/drain/{nodeID}/{instanceID}` | findInstancesPlacedOnThisNode |
 | `desired/service/{name}/image` | lookupServiceImageFromStore |
 | `desired/service/{name}/pull_policy` | lookupServicePullPolicyFromStore |
-| `desired/service/{name}/pull_credentials` | resolveImagePullCredentials |
+| `desired/service/{name}/image_pull_secret` | loadServiceSecretRequirements, resolveImagePullCredentials |
+| `observed/instance/{id}/secret-wait` | recordSecretDeliveryWait (write), clearSecretDeliveryWait (delete) |
+| `observed/node/{id}/secret_delivery`, `legacy_key_file` | publishSecretDeliveryCapability (agent start) |
+| `desired/service/{name}/legacy_secret_api` | registerLegacySecretAPIToken |
 | `desired/service/{name}/init/{step}/*` | loadInitStepDefinitions |
 | `desired/connection/{name}` | runConnectionProbe |
 | `derived/instance/{id}/init_phase` | readCurrentInitPhase |
@@ -247,8 +261,9 @@ executeReconciliationCycle(controller, deltaEvents)
 | `detectConfigChange` | `executeReconciliationCycle` (if running) |
 | `cleanupUndesiredInstance` | `executeReconciliationCycle` (stale instances) |
 | `clearPullStatusFromStore` | `executeReconciliationCycle` (unplaced backoffs) |
-| `materializeSecretFiles` | `reconcileDesiredInstance` |
-| `materializeConnectionFiles` | `reconcileDesiredInstance` |
+| `prepareInstanceSecretMaterial` | `reconcileDesiredInstance` (before image pull) |
+| `buildInstanceSecretMounts` | `reconcileDesiredInstance`, `materializeInitConfigFiles` |
+| `sweepSecretMaterial` | `executeReconciliationCycle` (after stale cleanup) |
 | `lookupServiceImageFromStore` | `reconcileDesiredInstance` |
 | `resolveImagePullCredentials` | `reconcileDesiredInstance` |
 | `hasInitSteps` | `reconcileDesiredInstance` |

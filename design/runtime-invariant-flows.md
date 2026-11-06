@@ -50,7 +50,7 @@ Init containers (temporary `nerdctl run --rm` containers for `init { exec "..." 
 
 ## 3. Secret Master Key Distribution
 
-> Current behavior. Replaced by [Flow 27](#flow-27-secret-delivery-m174) in M174: nodes no longer receive the key.
+> Replaced by [Flow 27](#flow-27-secret-delivery-m174) in M174: nodes no longer receive the key and agents do not decrypt. The control plane still loads `/etc/ccattler/secret-master.key` until M176 replaces it with a fresh root key.
 
 **Chain:** `cca server` (generates/loads key) → `cca join` (receives in enrollment response) → `cca agent` (loads from disk) → `SecretStore` envelope decryption
 
@@ -960,7 +960,7 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 
 ## Flow 27: Secret Delivery (M174)
 
-**Status:** design, not implemented (second review 2026-11-06: fresh root key, CLI ownership/shares, gate-key tmpfs cache, retry fallback, delivery before pull). Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
+**Status:** steps 1 (mounts, connections, pull secret), 5–10 and the failure paths implemented in M174 (2026-11-06); gate keys M175, keyring and v2 envelopes M176, tenant names M178 (second review 2026-11-06: fresh root key, CLI ownership/shares, gate-key tmpfs cache, retry fallback, delivery before pull). Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
 
 **Problem**: every node holds the cluster master key and decrypts locally, so one compromised node can read every secret of every tenant from etcd.
 
@@ -1020,7 +1020,7 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    response over TLS 1.3
 
 8. Materialization (agent)
-   /run/ccattler/secrets/{id}/ (tmpfs, 0700), files 0400
+   /run/ccattler/secrets/{id}/ (tmpfs, dir 0700 root), files 0444, Spec.SecretMounts
    secret files, connection URLs (agent assembles from password + definition);
    bind-mount read-only at declared paths
 

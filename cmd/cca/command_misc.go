@@ -565,7 +565,6 @@ func executeJoinCommand(parsedConfig joinCommandConfig) {
 	writeEnrollmentCredentials(parsedConfig.dataDirectory,
 		enrollmentResponse.CertificatePEM, nodePrivateKeyPEM, enrollmentResponse.CACertPEM)
 
-	saveSecretMasterKey(enrollmentResponse.SecretMasterKey)
 	saveEtcdEndpointsConfig(parsedConfig.serverAddress)
 	saveServerAddressConfig(parsedConfig.serverAddress)
 
@@ -620,12 +619,11 @@ func generateNodeKeypairAndCSR(nodeID string, localIPAddresses []net.IP) (*ecdsa
 
 // enrollmentResponsePayload is the parsed JSON response from POST /api/enroll.
 type enrollmentResponsePayload struct {
-	CertificatePEM  string `json:"certificate_pem"`
-	PrivateKeyPEM   string `json:"private_key_pem"`
-	CACertPEM       string `json:"ca_cert_pem"`
-	SecretMasterKey string `json:"secret_master_key"`
-	Principal       string `json:"principal"`
-	Error           string `json:"error"`
+	CertificatePEM string `json:"certificate_pem"`
+	PrivateKeyPEM  string `json:"private_key_pem"`
+	CACertPEM      string `json:"ca_cert_pem"`
+	Principal      string `json:"principal"`
+	Error          string `json:"error"`
 }
 
 // sendEnrollmentRequest posts the enrollment payload to the server and returns
@@ -667,24 +665,6 @@ func marshalECPrivateKeyToPEM(privateKey *ecdsa.PrivateKey) string {
 		Type:  "EC PRIVATE KEY",
 		Bytes: keyDERBytes,
 	}))
-}
-
-// saveSecretMasterKey decodes and writes the secret master key from the
-// enrollment response, if present.
-func saveSecretMasterKey(secretMasterKeyHex string) {
-	if secretMasterKeyHex == "" {
-		return
-	}
-	decodedKey, decodeError := hex.DecodeString(secretMasterKeyHex)
-	if decodeError != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not decode secret master key: %v\n", decodeError)
-		return
-	}
-	if writeError := os.WriteFile(secretMasterKeyPath, decodedKey, 0600); writeError != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not write %s: %v\n", secretMasterKeyPath, writeError)
-	} else {
-		fmt.Printf("  Secret key:  %s\n", secretMasterKeyPath)
-	}
 }
 
 // saveEtcdEndpointsConfig extracts the host from the server address and writes

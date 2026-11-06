@@ -89,26 +89,42 @@ func (delayed *delayedStartRuntime) Resize(ctx context.Context, instanceID strin
 	return delayed.inner.Resize(ctx, instanceID, cpuMillicores, memoryBytes)
 }
 
-// mockSecretProvider is a test double that serves secrets from an in-memory map.
-type mockSecretProvider struct {
-	mutex   sync.Mutex
-	secrets map[string][]byte // secretName → plaintext
-	grants  map[string]string // "service/secret" → mountPath
+// fakeSecretDeliveryClient is a test double for control-plane secret delivery
+// (Flow 27). It returns the same values for every instance.
+type fakeSecretDeliveryClient struct {
+	mutex         sync.Mutex        // mutex guards all fields.
+	secretValues  map[string][]byte // secretValues is the delivered material.
+	deliveryError error             // deliveryError, when set, is returned instead of material.
+	fetchCount    int               // fetchCount counts FetchInstanceSecrets calls.
 }
 
-func (mockProvider *mockSecretProvider) GetSecretForService(_ context.Context, serviceName, secretName string) ([]byte, string, error) {
-	mockProvider.mutex.Lock()
-	defer mockProvider.mutex.Unlock()
-	grantKey := serviceName + "/" + secretName
-	mountPath, hasGrant := mockProvider.grants[grantKey]
-	if !hasGrant {
-		return nil, "", fmt.Errorf("no grant for %s/%s", serviceName, secretName)
+// FetchInstanceSecrets returns the configured values or error and counts the call.
+func (fakeClient *fakeSecretDeliveryClient) FetchInstanceSecrets(_ context.Context, _ string) (map[string][]byte, error) {
+	fakeClient.mutex.Lock()
+	defer fakeClient.mutex.Unlock()
+	fakeClient.fetchCount++
+	if fakeClient.deliveryError != nil {
+		return nil, fakeClient.deliveryError
 	}
-	plaintext, exists := mockProvider.secrets[secretName]
-	if !exists {
-		return nil, "", fmt.Errorf("secret %s not found", secretName)
+	valuesCopy := make(map[string][]byte, len(fakeClient.secretValues))
+	for secretName, secretValue := range fakeClient.secretValues {
+		valuesCopy[secretName] = secretValue
 	}
-	return plaintext, mountPath, nil
+	return valuesCopy, nil
+}
+
+// setDeliveryError makes later fetches fail with deliveryError (nil clears it).
+func (fakeClient *fakeSecretDeliveryClient) setDeliveryError(deliveryError error) {
+	fakeClient.mutex.Lock()
+	defer fakeClient.mutex.Unlock()
+	fakeClient.deliveryError = deliveryError
+}
+
+// fetches returns how many deliveries were requested.
+func (fakeClient *fakeSecretDeliveryClient) fetches() int {
+	fakeClient.mutex.Lock()
+	defer fakeClient.mutex.Unlock()
+	return fakeClient.fetchCount
 }
 
 func waitFor(t *testing.T, timeout time.Duration, desc string, check func() bool) {
@@ -1363,14 +1379,7 @@ func TestInitContainerGetsCCASecretHelper(t *testing.T) {
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
-	nodeAgent.SetSecretProvider(&mockSecretProvider{
-		secrets: map[string][]byte{
-			"db-password": []byte("s3cret"),
-		},
-		grants: map[string]string{
-			serviceName + "/db-password": "/run/secrets/db-password",
-		},
-	})
+	nodeAgent.SetSecretDelivery(&fakeSecretDeliveryClient{secretValues: map[string][]byte{"db-password": []byte("s3cret")}}, NewSecretMaterialStore(t.TempDir()))
 
 	go nodeAgent.Run(ctx)
 
@@ -1391,12 +1400,16 @@ func TestInitContainerGetsCCASecretHelper(t *testing.T) {
 	if helperContent != ccaSecretHelperScript {
 		t.Errorf("cca-secret helper content: got %q, want %q", helperContent, ccaSecretHelperScript)
 	}
-	secretContent, hasSecret := initCall.ConfigFiles[ccaSecretMountPrefix+"db-password"]
-	if !hasSecret {
-		t.Fatal("init container ConfigFiles missing secret at /run/cca-secrets/db-password")
+	if _, copiedIntoConfigFiles := initCall.ConfigFiles[ccaSecretMountPrefix+"db-password"]; copiedIntoConfigFiles {
+		t.Fatal("secret value must not be passed as ConfigFiles content")
 	}
-	if secretContent != "s3cret" {
-		t.Errorf("secret content: got %q, want %q", secretContent, "s3cret")
+	secretHostPath, hasSecret := initCall.SecretMounts[ccaSecretMountPrefix+"db-password"]
+	if !hasSecret || initCall.SecretMounts["/run/secrets/db-password"] != secretHostPath {
+		t.Fatalf("init container SecretMounts missing db-password: %v", initCall.SecretMounts)
+	}
+	secretContent, readError := os.ReadFile(secretHostPath) //nolint:gosec // G304: path from the test material store
+	if readError != nil || string(secretContent) != "s3cret" {
+		t.Errorf("secret file content: got %q (%v), want %q", secretContent, readError, "s3cret")
 	}
 }
 
@@ -2188,14 +2201,7 @@ func TestAgentImagePullSecretPassesCredentials(t *testing.T) {
 
 	nodeAgent := New("node-1", factStore, simulatorRuntime)
 	nodeAgent.SetInterval(50 * time.Millisecond)
-	nodeAgent.SetSecretProvider(&mockSecretProvider{
-		secrets: map[string][]byte{
-			"registry-creds": []byte(`{"username":"bot","password":"token123"}`),
-		},
-		grants: map[string]string{ //nolint:gosec // test fixture, not real credentials
-			"api/registry-creds": "/run/secrets/registry-creds",
-		},
-	})
+	nodeAgent.SetSecretDelivery(&fakeSecretDeliveryClient{secretValues: map[string][]byte{"registry-creds": []byte(`{"username":"bot","password":"token123"}`)}}, NewSecretMaterialStore(t.TempDir()))
 
 	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("registry.example.com/api:v1"))
 	factStore.Put(ctx, types.KeyDesiredServiceImagePullSecret("api"), []byte("registry-creds"))

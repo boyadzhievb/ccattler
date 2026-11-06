@@ -456,6 +456,9 @@ func formatServiceIdentityFields(builder *strings.Builder, serviceDecl ServiceDe
 	if serviceDecl.Stateful {
 		fmt.Fprintf(builder, "%sstateful\n", indentUnit)
 	}
+	if serviceDecl.LegacySecretAPI {
+		fmt.Fprintf(builder, "%slegacy_secret_api true\n", indentUnit)
+	}
 }
 
 // formatServiceNetworkFields emits expose and expose external declarations.

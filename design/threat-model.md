@@ -125,7 +125,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Controller write domain enforcement in runner (Phase 43)
 - Node agents are bound to specific key prefixes via RBAC roles
 
-**Residual risk (corrected 2026-11-03):** Agents connect to etcd directly with a CA-signed certificate and do not use `AuthorizedStore`, and etcd has no roles configured. Every agent therefore has full read/write access to every key in all modes, not just development mode. A compromised node can rewrite desired state, grants and enrollment records. Fix: M180.
+**Residual risk (corrected 2026-11-03):** Agents connect to etcd directly with a CA-signed certificate and do not use `AuthorizedStore`, and etcd has no roles configured. Every agent therefore has full read/write access to every key in all modes, not just development mode. A compromised node can rewrite desired state, grants and enrollment records. Fix: M180. Since M174 agents hold no secret key, so etcd read access alone no longer exposes secret values; but because delivery (`POST /api/node/secrets`) authorizes from placement, instance-service and grant facts, a node that can write those facts can still obtain any secret until M180.
 
 ### T6: Denial of Service (MEDIUM)
 

@@ -28,6 +28,7 @@ func Lint(file *File) []LintDiagnostic {
 	diagnostics = append(diagnostics, lintPortRanges(file)...)
 	diagnostics = append(diagnostics, lintUndefinedReferences(file)...)
 	diagnostics = append(diagnostics, lintTCPHealthWithoutExpose(file)...)
+	diagnostics = append(diagnostics, DeprecationWarnings(file)...)
 	return diagnostics
 }
 
@@ -377,4 +378,21 @@ func FormatDiagnostics(diagnostics []LintDiagnostic) string {
 		}
 	}
 	return result
+}
+
+// DeprecationWarnings returns warnings for deprecated constructs. cca lint
+// and cca apply both print them. Today: legacy_secret_api (decision C, M174),
+// which is removed in the release after M174.
+func DeprecationWarnings(file *File) []LintDiagnostic {
+	var diagnostics []LintDiagnostic
+	for _, serviceDecl := range file.Services {
+		if serviceDecl.LegacySecretAPI {
+			diagnostics = append(diagnostics, LintDiagnostic{
+				Severity: "warning",
+				Message:  fmt.Sprintf("service %q: legacy_secret_api is deprecated and will be removed in the next release; read secrets from the mounted files", serviceDecl.Name),
+				Line:     serviceDecl.Line,
+			})
+		}
+	}
+	return diagnostics
 }

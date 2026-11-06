@@ -126,8 +126,7 @@ cca agent --node-id worker-1 --advertise-address 192.168.1.11
 | `--runtime` | `container` | Runtime adapter: `container` or `process` |
 | `--proxy` | off | Enable HTTP reverse proxy on this node |
 | `--advertise-address` | | LAN IP for cross-host traffic resolution |
-| `--kms-provider` | | KMS backend for secret decryption: `aws-kms` or `gcp-kms` |
-| `--kms-key` | | KMS key ARN (AWS) or resource name (GCP) |
+| `--api-server` | `/etc/ccattler/server-address` | Control-plane API (`host:port`) the agent requests instance secrets from over mTLS. Agents hold no secret key. |
 | `--cert` | | Path to PEM client certificate |
 | `--key` | | Path to PEM client private key |
 | `--ca` | | Path to PEM CA certificate |
@@ -208,7 +207,7 @@ cca secret set database-password 'hunter2'
 cca secret set fernet-key "$(openssl rand -base64 32)"
 ```
 
-The value is encrypted at rest using AES-256-GCM envelope encryption. The master key is stored at `.ccattler/secret-master.key` on the server, or delegated to cloud KMS (see [agent KMS flags](#cca-agent)).
+The value is encrypted at rest using AES-256-GCM envelope encryption. The key stays on the control plane (`/etc/ccattler/secret-master.key`); agents never receive it and get only the secrets granted to instances placed on them.
 
 ### `cca secret get <name>`
 

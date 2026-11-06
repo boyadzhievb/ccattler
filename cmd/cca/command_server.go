@@ -618,7 +618,7 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetAuditStore(factStore)
 	statusAPIServer.SetWatchMultiplexer(api.NewWatchMultiplexer(factStore))
 	statusAPIServer.SetAPIAuthorizer(apiAuthorizer)
-	statusAPIServer.SetAgentDebugClientTLS(buildAgentDebugClientTLSConfig(serverTLSConfig))
+	statusAPIServer.SetAgentDebugClientTLS(buildMTLSClientTLSConfig(serverTLSConfig))
 	statusAPIServer.SetWorkloadTokenIssuer(workloadTokenIssuer)
 	statusAPIServer.SetUserTokenIssuer(userTokenIssuer)
 
@@ -660,7 +660,6 @@ func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore stor
 	}
 	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
 	statusAPIServer.SetSecretStore(secretStore)
-	statusAPIServer.SetSecretMasterKey(secretMasterKey)
 
 	deliveryStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
 	deliveryStore.SetServicePrincipal(security.SecretDeliveryPrincipal)
@@ -935,10 +934,11 @@ func startAPIAuthorizationSync(ctx context.Context, factStore store.StateStore, 
 	fmt.Println("Authorization sync started (auth/ grants and policies)")
 }
 
-// buildAgentDebugClientTLSConfig derives the mTLS client config the API server
-// uses to reach agent debug APIs: the server certificate (static or rotated)
-// as client certificate and the cluster CA as roots. Returns nil without TLS.
-func buildAgentDebugClientTLSConfig(serverTLSConfig *tls.Config) *tls.Config {
+// buildMTLSClientTLSConfig derives an mTLS client config from a server config:
+// its certificate (static or rotated) as client certificate and its client CA
+// as roots. Used for the API → agent debug proxy and agent → API secret
+// delivery. Returns nil without TLS.
+func buildMTLSClientTLSConfig(serverTLSConfig *tls.Config) *tls.Config {
 	if serverTLSConfig == nil {
 		return nil
 	}

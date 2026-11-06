@@ -13,6 +13,7 @@ ExecStart=/usr/local/bin/cca agent \
   --proxy-tls-listen {{ ansible_host }}:{{ proxy_tls_port | default(443) }} \
   --debug-listen {{ ansible_host }}:9771 \
   --secret-api-listen {{ ansible_host }}:9772 \
+  --api-server {{ hostvars[groups['controlplane'][0]].ansible_host }}:9770 \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
   --ca {{ cca_cert_dir }}/ca.pem \

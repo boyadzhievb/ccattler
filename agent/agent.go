@@ -106,7 +106,10 @@ type Agent struct {
 	networkProvider          network.NetworkProvider              // networkProvider allocates IPs for instances; nil means legacy 127.0.0.1 behavior.
 	storageProvider          storage.StorageProvider              // storageProvider manages volume attach/detach; nil means no volume support.
 	localStorageProvider     storage.StorageProvider              // localStorageProvider handles volumes with type=local; nil when no local path configured.
-	secretProvider           SecretProvider                       // secretProvider retrieves decrypted secrets; nil means no secret support.
+	secretDeliveryClient     SecretDeliveryClient                 // secretDeliveryClient requests instance secrets from the control plane (Flow 27); nil means delivery is not configured.
+	secretMaterialStore      *SecretMaterialStore                 // secretMaterialStore keeps delivered secrets on tmpfs; nil means no secret support.
+	secretDeliveryWaits      map[string]*secretDeliveryWaitEntry  // secretDeliveryWaits tracks per-instance waiting-for-secrets retry state.
+	legacyKeyFilePath        string                               // legacyKeyFilePath is the old master key file whose presence is reported.
 	advertiseAddress         string                               // advertiseAddress is this node's LAN-routable IP for cross-host data plane.
 	interval                 time.Duration                        // interval is the period between periodic reconciliation cycles.
 	heartbeatFrequency       time.Duration                        // heartbeatFrequency is the period between independent heartbeat writes.
@@ -138,6 +141,8 @@ func New(nodeID string, stateStore store.StateStore, runtimeAdapter runtime.Runt
 		appliedInstanceResources: make(map[string]appliedResourceAllocation),
 		imagePullBackoffs:        make(map[string]*imagePullBackoffEntry),
 		initStepBackoffs:         make(map[string]*initStepBackoffEntry),
+		secretDeliveryWaits:      make(map[string]*secretDeliveryWaitEntry),
+		legacyKeyFilePath:        LegacySecretMasterKeyPath,
 		probeScheduler:           NewProbeScheduler(nodeID, stateStore, runtimeAdapter, defaultAgentReconcileInterval),
 		nodeReporter:             NewNodeReporter(nodeID, stateStore, runtimeAdapter, ""),
 		dataPlaneReconciler:      NewDataPlaneReconciler(nodeID, stateStore, nil, ""),
@@ -163,19 +168,6 @@ func (nodeAgent *Agent) SetStorageProvider(storageProvider storage.StorageProvid
 // so databases can use local disk while shared data uses NFS.
 func (nodeAgent *Agent) SetLocalStorageProvider(localProvider storage.StorageProvider) {
 	nodeAgent.localStorageProvider = localProvider
-}
-
-// SetSecretProvider configures the agent to materialize secrets for instances.
-// When set, the agent writes secret files before starting instances and removes
-// them when instances stop.
-func (nodeAgent *Agent) SetSecretProvider(secretProvider SecretProvider) {
-	nodeAgent.secretProvider = secretProvider
-}
-
-// SecretProvider returns the agent's configured secret provider, or nil if
-// secret support is not enabled.
-func (nodeAgent *Agent) SecretProvider() SecretProvider {
-	return nodeAgent.secretProvider
 }
 
 // SetSecretAPIServer configures the agent to use an HTTP-based secret API
@@ -302,6 +294,7 @@ func (nodeAgent *Agent) Run(ctx context.Context) error {
 	nodeAgent.nodeReporter.PublishAliveState(ctx)
 	nodeAgent.nodeReporter.WriteHeartbeat(ctx)
 	nodeAgent.nodeReporter.PublishAdvertiseAddress(ctx)
+	nodeAgent.publishSecretDeliveryCapability(ctx)
 
 	if nodeAgent.vxlanReconciler != nil {
 		nodeAgent.vxlanReconciler.EnsureSubnetPublished(ctx)
@@ -609,6 +602,8 @@ func (nodeAgent *Agent) executeReconciliationCycle(ctx context.Context) error {
 		}
 	}
 
+	nodeAgent.sweepSecretMaterial(ctx, desiredByID, running)
+
 	// Clean up pull-backoff state for instances no longer placed on this node.
 	for backoffInstanceID := range nodeAgent.imagePullBackoffs {
 		if !desiredByID[backoffInstanceID] {
@@ -725,35 +720,28 @@ func (nodeAgent *Agent) findInstancesPlacedOnThisNode(ctx context.Context) ([]pl
 }
 
 // reconcileDesiredInstance brings up a single instance that should be running
-// but isn't. Handles init steps, volume attachment, config/env resolution,
-// network allocation, container start, host port publishing, and state
-// observation. If any prerequisite fails (image lookup, init, volumes), the
-// instance is skipped for this cycle. When the secret API is configured, a
-// bearer token is registered before init steps so both init containers and the
-// main container can fetch secrets via the cca-secret helper.
+// but isn't. Secrets are delivered first (waiting-for-secrets, Flow 27), then
+// the image is pulled with the delivered credentials, then init steps, volumes,
+// spec with read-only secret mounts, and start. Any unmet prerequisite skips
+// the instance for this cycle. Only services with legacy_secret_api get a
+// secret API token.
 func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceInfo placedInstanceInfo) {
 	image := nodeAgent.lookupServiceImageFromStore(ctx, instanceInfo.service)
 	if image == "" {
 		return
 	}
 
-	credentials := nodeAgent.resolveImagePullCredentials(ctx, instanceInfo.service)
+	secretValues, secretsReady := nodeAgent.prepareInstanceSecretMaterial(ctx, instanceInfo)
+	if !secretsReady {
+		return
+	}
+	credentials := nodeAgent.resolveImagePullCredentials(ctx, instanceInfo.service, secretValues)
 
 	if !nodeAgent.ensureImageAvailable(ctx, instanceInfo, image, credentials) {
 		return
 	}
 
-	var secretAPIToken string
-	var secretAPIBaseURL string
-	if nodeAgent.secretAPIServer != nil {
-		var registerError error
-		secretAPIToken, registerError = nodeAgent.secretAPIServer.RegisterInstanceToken(instanceInfo.id, instanceInfo.service)
-		if registerError != nil {
-			logging.Default().Error("failed to register secret token", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", registerError.Error())
-		} else {
-			secretAPIBaseURL = nodeAgent.resolveSecretAPIBaseURL()
-		}
-	}
+	secretAPIToken, secretAPIBaseURL := nodeAgent.registerLegacySecretAPIToken(ctx, instanceInfo)
 
 	if nodeAgent.hasInitSteps(ctx, instanceInfo.service) {
 		initSucceeded := nodeAgent.executeInitializationSteps(ctx, instanceInfo, image)
@@ -782,8 +770,8 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "starting")
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
-	nodeAgent.materializeSecretFiles(ctx, instanceInfo.service, &runtimeSpec)
-	nodeAgent.materializeConnectionFiles(ctx, instanceInfo.service, &runtimeSpec)
+	runtimeSpec.SecretMounts = nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, secretValues)
+	runtimeSpec.ConfigFiles = addSecretHelperIfMounted(runtimeSpec.SecretMounts, runtimeSpec.ConfigFiles)
 	if nodeAgent.storageProvider != nil {
 		nodeAgent.resolveVolumeMountsForSpec(ctx, instanceInfo, &runtimeSpec)
 	}
@@ -1121,21 +1109,17 @@ func (nodeAgent *Agent) lookupImagePullSecretFromStore(ctx context.Context, serv
 	return string(factEntry.Value)
 }
 
-// resolveImagePullCredentials looks up the image pull secret name for a service,
-// fetches the secret value via the secret provider, and returns "user:pass" for
-// nerdctl --creds. Returns empty string if no secret is configured or resolution fails.
-func (nodeAgent *Agent) resolveImagePullCredentials(ctx context.Context, service string) string {
+// resolveImagePullCredentials returns "user:pass" for the runtime from the
+// delivered image pull secret (Flow 22 after M174). Returns empty string if no
+// secret is configured or the delivered value is not valid credentials JSON.
+func (nodeAgent *Agent) resolveImagePullCredentials(ctx context.Context, service string, secretValues map[string][]byte) string {
 	secretName := nodeAgent.lookupImagePullSecretFromStore(ctx, service)
 	if secretName == "" {
 		return ""
 	}
-	if nodeAgent.secretProvider == nil {
-		logging.Default().Warn("image_pull_secret requires secret provider", "agent", nodeAgent.nodeID, "service", service, "secret", secretName)
-		return ""
-	}
-	plaintext, _, resolveError := nodeAgent.secretProvider.GetSecretForService(ctx, service, secretName)
-	if resolveError != nil {
-		logging.Default().Error("failed to resolve image pull secret", "agent", nodeAgent.nodeID, "service", service, "secret", secretName, "error", resolveError.Error())
+	plaintext, delivered := secretValues[secretName]
+	if !delivered {
+		logging.Default().Error("image pull secret was not delivered", "agent", nodeAgent.nodeID, "service", service, "secret", secretName)
 		return ""
 	}
 	var registryCredentials struct {
@@ -1431,72 +1415,10 @@ func (nodeAgent *Agent) injectSecretAPIIntoSpec(secretAPIToken string, secretAPI
 	runtimeSpec.ConfigFiles[ccaSecretHelperPath] = ccaSecretHelperScript
 }
 
-// materializeSecretFiles decrypts all granted secrets for a service and adds
-// them to the runtime spec as bind-mounted files. Each secret is materialized
-// at /run/cca-secrets/{name} (for the cca-secret helper) and at the explicit
-// mount path from the secret directive (for apps like POSTGRES_PASSWORD_FILE).
-func (nodeAgent *Agent) materializeSecretFiles(ctx context.Context, serviceName string, runtimeSpec *runtime.Spec) {
-	if nodeAgent.secretProvider == nil {
-		return
-	}
-	grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
-	grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
-	if scanError != nil || len(grantFacts) == 0 {
-		return
-	}
-	if runtimeSpec.ConfigFiles == nil {
-		runtimeSpec.ConfigFiles = make(map[string]string)
-	}
-	for _, grantFact := range grantFacts {
-		secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
-		if secretName == "" {
-			continue
-		}
-		explicitMountPath := string(grantFact.Value)
-		plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, secretName)
-		if decryptError != nil {
-			logging.Default().Error("failed to decrypt secret for materialization",
-				"agent", nodeAgent.nodeID, "service", serviceName,
-				"secret", secretName, "error", decryptError.Error())
-			continue
-		}
-		secretValue := string(plaintext)
-		runtimeSpec.ConfigFiles[ccaSecretMountPrefix+secretName] = secretValue
-		if explicitMountPath != "" && strings.HasPrefix(explicitMountPath, "/") {
-			runtimeSpec.ConfigFiles[explicitMountPath] = secretValue
-		}
-	}
-}
-
-// materializeConnectionFiles reads all connection references for a service,
-// looks up each connection definition, retrieves the password from the secret
-// store, assembles the connection URL, and writes it to the mount path.
-func (nodeAgent *Agent) materializeConnectionFiles(ctx context.Context, serviceName string, runtimeSpec *runtime.Spec) {
-	connectionRefs, scanError := nodeAgent.store.Scan(ctx, types.ScanDesiredServiceConnections(serviceName))
-	if scanError != nil || len(connectionRefs) == 0 {
-		return
-	}
-	if runtimeSpec.ConfigFiles == nil {
-		runtimeSpec.ConfigFiles = make(map[string]string)
-	}
-	for _, connectionRef := range connectionRefs {
-		connectionName := strings.TrimPrefix(connectionRef.Key, types.ScanDesiredServiceConnections(serviceName))
-		if connectionName == "" {
-			continue
-		}
-		mountPath := string(connectionRef.Value)
-		connectionURL := nodeAgent.assembleConnectionURL(ctx, connectionName, serviceName)
-		if connectionURL == "" {
-			continue
-		}
-		runtimeSpec.ConfigFiles[mountPath] = connectionURL
-	}
-}
-
-// assembleConnectionURL reads a connection definition from the store, retrieves
-// the password from the secret provider, and builds a standard connection URL:
-// driver://user:password@host:port/database
-func (nodeAgent *Agent) assembleConnectionURL(ctx context.Context, connectionName string, serviceName string) string {
+// assembleConnectionURL reads a connection definition from the store, takes
+// the password from the delivered secret values, and builds a standard
+// connection URL: driver://user:password@host:port/database
+func (nodeAgent *Agent) assembleConnectionURL(ctx context.Context, connectionName string, secretValues map[string][]byte) string {
 	connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName))
 	if getError != nil {
 		logging.Default().Error("connection definition not found",
@@ -1511,15 +1433,14 @@ func (nodeAgent *Agent) assembleConnectionURL(ctx context.Context, connectionNam
 	}
 
 	password := ""
-	if connectionDef.secret != "" && nodeAgent.secretProvider != nil {
-		plaintext, _, decryptError := nodeAgent.secretProvider.GetSecretForService(ctx, serviceName, connectionDef.secret)
-		if decryptError != nil {
-			logging.Default().Error("failed to decrypt connection secret",
-				"agent", nodeAgent.nodeID, "connection", connectionName,
-				"secret", connectionDef.secret, "error", decryptError.Error())
+	if connectionDef.secret != "" {
+		deliveredPassword, delivered := secretValues[connectionDef.secret]
+		if !delivered {
+			logging.Default().Error("connection secret was not delivered",
+				"agent", nodeAgent.nodeID, "connection", connectionName, "secret", connectionDef.secret)
 			return ""
 		}
-		password = string(plaintext)
+		password = string(deliveredPassword)
 	}
 
 	return buildConnectionURL(connectionDef, password)

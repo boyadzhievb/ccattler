@@ -172,6 +172,8 @@ Non-goals: protecting secrets from a compromised control plane (it holds the key
 
 **Security boundary.** A compromised node can obtain the plaintext currently authorized for instances placed on it, and the private keys of the gates it serves (decision B). It cannot decrypt other secrets in etcd, and its node certificate does not give it another tenant's secrets or any key-encryption key.
 
+**Limit until M180 (found during implementation, 2026-11-06).** Delivery authorizes from store facts (placement, `observed/instance/{id}/service`, grants). Agents still have unrestricted etcd write access until store access isolation (M180, threat model T5), so a compromised node can forge those facts and obtain any secret through delivery. M174 removes the key from workers (stolen key files, etcd read access and etcd backups no longer expose secrets); the delivery checks become binding once M180 restricts agent writes. M180 must also make the instance → service mapping a control-plane-only fact.
+
 ### Key hierarchy
 
 ```
@@ -245,7 +247,7 @@ Every envelope names its KEK version, so after a crash at any step every secret 
 
 ### Scoped delivery to agents
 
-- **Endpoint:** `POST /api/node/secrets` with body `{instance_id}` on the API server, mTLS only, `node:` principals only (users and service tokens are refused). It returns every secret the instance needs: mounted secrets, connection passwords and the image pull secret.
+- **Endpoint:** `POST /api/node/secrets` with body `{instance_id}` on the API server, mTLS only, `node:` principals only (users and service tokens are refused). It returns every secret the instance needs: mounted secrets, connection passwords and the image pull secret. Connection and image pull secrets need a grant like mounted ones (an `image_pull_secret` without a grant refuses delivery, the instance waits with `not_authorized`). Agents reach the endpoint at `--api-server` (default: the address `cca join` saved in `/etc/ccattler/server-address`).
 - **Authorization per request:** the instance is placed on the calling node (`placement/instance/{id}` = caller's node ID); the node is enrolled and not disabled; for each secret the instance's service holds the grant, and for another tenant's secret the share exists. Partial results are not returned: any missing grant fails the request with the names that failed (values never).
 - **Audit:** each delivery and each refusal is recorded (node, instance, service, secret names, outcome; never values).
 - **Narrow store access:** delivery runs in the API server process but through its own store principal `service:secret-delivery`, not the generic `api-server` role (which keeps having no rule for `secrets/`, `credentials/` or `keyring/`). The `secret-delivery` role reads `secrets/`, `credentials/`, `keyring/`, `placement/instance/`, `desired/service/`, `desired/secret_share/`, `desired/connection/` and node state, and writes only its audit stream. The `keyring` controller gets its own role (`keyring/`, `secrets/` re-wrap, `intent/keyring/`).
@@ -258,7 +260,7 @@ Every envelope names its KEK version, so after a crash at any step every secret 
 
 ### Materialization on the node
 
-- All delivered material is written to `/run/ccattler/secrets/{instance}/` (tmpfs; directory `0700`, files `0400`, owned by the container's user where the runtime supports it, else root) and bind-mounted read-only at the declared paths (`/run/secrets/...`, `/run/connections/...`). Nothing secret is written under `/var/lib/ccattler/logs/` or any other disk path.
+- All delivered material is written to `/run/ccattler/secrets/{instance}/` (tmpfs; directory `0700` owned by root, files `0444`) and bind-mounted read-only at the declared paths (`/run/secrets/...`, `/run/connections/...`). Nothing secret is written under `/var/lib/ccattler/logs/` or any other disk path. Files are `0444` rather than `0400` because the agent cannot know the image's user (Airflow runs as uid 50000); host users still cannot reach them through the root-only directory, and inside the container they are reachable only at their read-only mount. The runtimes bind-mount these files (`Spec.SecretMounts`); they never copy secret values (the former `ConfigFiles` path wrote them under the logs directory or `/tmp`, mode `0755`).
 - **Gate keys (R4)** are cached separately at `/run/ccattler/gate-keys/{gate}/certificate.pem` and `private-key.pem` (tmpfs; directories `0700`, private key `0400`, root). Only the agent's gate proxy reads them; they are never mounted into containers. The agent reconciles the directory against the delivered set: a removed gate's directory is deleted, a rotated key is replaced (write new file, rename over the old one).
 - Connection URLs with embedded passwords are files only (decision 5). Secret values never appear in logs, `cca` status/describe output, events or traces.
 - **Legacy secret API (decision C):** file delivery is the default. The agent secret API (`:9772`, `GET /v1/secrets/…`) and its `CCA_SECRET_TOKEN` / `CCA_SECRET_URL` environment variables are given only to instances of services that opt in (`legacy_secret_api true` in the service block). For those:
@@ -286,7 +288,7 @@ The control plane must be reachable to deliver a secret. Required behavior:
 | Node reboots, API unreachable | No gate keys; TLS gates stay unavailable on this node until delivery succeeds. |
 | Gate removed or its key rotated | Next gate-key reconcile removes or replaces the cached material. |
 
-`waiting-for-secrets` is a new typed instance state (`types.InstanceWaitingForSecrets`), published with `observed/instance/{id}/reason` (`api_unreachable | not_authorized | secret_missing`) and `observed/instance/{id}/next_retry`. It is not a failure: it does not count toward crash-loop backoff, the instance is not replaced or rescheduled because of it, and the node-failure controller ignores it. `cca get instances` shows it with the reason. Lifecycle: `placed → waiting-for-secrets → pulling → starting → running` (instances that need no secrets skip the state).
+`waiting-for-secrets` is a new typed instance state (`types.InstanceWaitingForSecrets`), published with `observed/instance/{id}/secret-wait` = `{reason, secrets, next_retry}` (reason `api_unreachable | not_authorized | secret_missing | delivery_not_configured`; the last one means the agent has no node certificate or API address) and a human-readable status reason.| not_authorized | secret_missing`) and `observed/instance/{id}/next_retry`. It is not a failure: it does not count toward crash-loop backoff, the instance is not replaced or rescheduled because of it, and the node-failure controller ignores it. `cca get instances` shows it with the reason. Lifecycle: `placed → waiting-for-secrets → pulling → starting → running` (instances that need no secrets skip the state).
 
 Gate-key readiness is reported separately from agent health: `observed/node/{id}/gate_keys = ready | waiting` with reason, so a node that runs workloads but cannot terminate TLS is visible.
 

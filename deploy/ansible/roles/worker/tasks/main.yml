@@ -37,7 +37,7 @@
     {{ join_token_value }}
     --node-id {{ node_id | default(inventory_hostname) }}
   args:
-    creates: /etc/ccattler/secret-master.key
+    creates: /etc/ccattler/pki/node.pem
 
 - name: Remove stale cca0 interface from previous deployment
   shell: |

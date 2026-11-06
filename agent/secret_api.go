@@ -12,12 +12,13 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
-	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // defaultSecretAPIReadTimeout is the HTTP read timeout for the secret API.
@@ -30,20 +31,21 @@ const defaultSecretAPIWriteTimeout = 10 * time.Second
 // 64 hex characters). Tokens are compared in constant time.
 const secretTokenLength = 32
 
-// SecretAPIServer serves per-instance secret retrieval over HTTP. Containers
-// fetch secrets at runtime from the local agent, authenticated by per-instance
-// bearer tokens. No files on host disk, no bind-mounts, no permission issues.
+// SecretAPIServer is the deprecated per-instance secret API (decision C, M174):
+// only instances of services with legacy_secret_api true get a token. It answers
+// from the instance's delivered material on tmpfs; the agent holds no key and
+// never decrypts. Removed in the release after M174.
 //
 // Endpoints:
 //   - GET /v1/secrets/{name} — returns a single secret value (JSON)
 //   - GET /v1/secrets        — lists granted secret names for the caller's service
 type SecretAPIServer struct {
 	nodeID         string                   // nodeID identifies this node in log messages.
-	secretProvider SecretProvider           // secretProvider retrieves decrypted secrets.
-	factStore      store.StateStore         // factStore is used to scan secret grants for listing.
+	materialStore  *SecretMaterialStore     // materialStore holds each instance's delivered secrets.
 	httpServer     *http.Server             // httpServer is the underlying HTTP server.
 	tokenMutex     sync.RWMutex             // tokenMutex protects the instanceTokens map.
 	instanceTokens map[string]tokenMetadata // instanceTokens maps hex-encoded bearer token → instance metadata.
+	warnedServices map[string]bool          // warnedServices records services whose deprecation warning was logged.
 }
 
 // tokenMetadata stores the instance and service associated with a bearer token.
@@ -54,12 +56,12 @@ type tokenMetadata struct {
 
 // NewSecretAPIServer creates a SecretAPIServer bound to the given address.
 // The server is not started until Start is called.
-func NewSecretAPIServer(nodeID string, listenAddress string, secretProvider SecretProvider, factStore store.StateStore) *SecretAPIServer {
+func NewSecretAPIServer(nodeID string, listenAddress string, materialStore *SecretMaterialStore) *SecretAPIServer {
 	secretAPIServer := &SecretAPIServer{
 		nodeID:         nodeID,
-		secretProvider: secretProvider,
-		factStore:      factStore,
+		materialStore:  materialStore,
 		instanceTokens: make(map[string]tokenMetadata),
+		warnedServices: make(map[string]bool),
 	}
 
 	serveMux := http.NewServeMux()
@@ -179,14 +181,9 @@ func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.Resp
 		return
 	}
 
-	plaintext, _, retrievalError := secretAPIServer.secretProvider.GetSecretForService(request.Context(), callerMetadata.serviceName, secretName)
+	plaintext, retrievalError := secretAPIServer.materialStore.ReadInstanceSecret(callerMetadata.instanceID, secretName)
 	if retrievalError != nil {
-		if strings.Contains(retrievalError.Error(), "no grant") {
-			writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
-			return
-		}
-		logging.Default().Error("secret retrieval failed", "node", secretAPIServer.nodeID, "secret", secretName, "service", callerMetadata.serviceName, "error", retrievalError.Error())
-		writeDebugJSONError(responseWriter, "internal error", http.StatusInternalServerError)
+		writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -221,12 +218,7 @@ func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.Re
 		return
 	}
 
-	grantedSecretNames, scanError := secretAPIServer.listGrantedSecrets(request.Context(), callerMetadata.serviceName)
-	if scanError != nil {
-		logging.Default().Error("list secrets failed", "node", secretAPIServer.nodeID, "service", callerMetadata.serviceName, "error", scanError.Error())
-		writeDebugJSONError(responseWriter, "internal error", http.StatusInternalServerError)
-		return
-	}
+	grantedSecretNames := secretAPIServer.listDeliveredSecretNames(callerMetadata.instanceID)
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(secretListResponse{
@@ -235,21 +227,16 @@ func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.Re
 	})
 }
 
-// listGrantedSecrets scans the fact store for secret grants belonging to the
-// given service and returns the secret names (without plaintext values).
-func (secretAPIServer *SecretAPIServer) listGrantedSecrets(ctx context.Context, serviceName string) ([]string, error) {
-	grantPrefix := fmt.Sprintf("desired/service/%s/secret/", serviceName)
-	grantFacts, scanError := secretAPIServer.factStore.Scan(ctx, grantPrefix)
-	if scanError != nil {
-		return nil, scanError
-	}
-
-	secretNames := make([]string, 0, len(grantFacts))
-	for _, grantFact := range grantFacts {
-		secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
+// listDeliveredSecretNames returns the sorted names of the secrets delivered
+// to the instance (exactly its granted secrets), never values.
+func (secretAPIServer *SecretAPIServer) listDeliveredSecretNames(instanceID string) []string {
+	secretValues, _ := secretAPIServer.materialStore.ReadInstanceSecrets(instanceID)
+	secretNames := make([]string, 0, len(secretValues))
+	for secretName := range secretValues {
 		secretNames = append(secretNames, secretName)
 	}
-	return secretNames, nil
+	sort.Strings(secretNames)
+	return secretNames
 }
 
 // secretAPIResponse is the JSON response for GET /v1/secrets/{name}.
@@ -262,4 +249,37 @@ type secretAPIResponse struct {
 type secretListResponse struct {
 	Service string   `json:"service"`
 	Secrets []string `json:"secrets"`
+}
+
+// registerLegacySecretAPIToken issues a per-instance token only when the
+// service sets legacy_secret_api true and the secret API runs. It logs the
+// deprecation once per service. Returns the token and API base URL, or "".
+func (nodeAgent *Agent) registerLegacySecretAPIToken(ctx context.Context, instanceInfo placedInstanceInfo) (string, string) {
+	if nodeAgent.secretAPIServer == nil {
+		return "", ""
+	}
+	optInFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceLegacySecretAPI(instanceInfo.service))
+	if getError != nil || string(optInFact.Value) != "true" {
+		return "", ""
+	}
+	nodeAgent.secretAPIServer.warnDeprecatedOncePerService(instanceInfo.service)
+	secretAPIToken, registerError := nodeAgent.secretAPIServer.RegisterInstanceToken(instanceInfo.id, instanceInfo.service)
+	if registerError != nil {
+		logging.Default().Error("failed to register secret token", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", registerError.Error())
+		return "", ""
+	}
+	return secretAPIToken, nodeAgent.resolveSecretAPIBaseURL()
+}
+
+// warnDeprecatedOncePerService logs the legacy secret API deprecation the first
+// time a service's instance receives a token on this agent.
+func (secretAPIServer *SecretAPIServer) warnDeprecatedOncePerService(serviceName string) {
+	secretAPIServer.tokenMutex.Lock()
+	defer secretAPIServer.tokenMutex.Unlock()
+	if secretAPIServer.warnedServices[serviceName] {
+		return
+	}
+	secretAPIServer.warnedServices[serviceName] = true
+	logging.Default().Warn("legacy_secret_api is deprecated and will be removed in the next release; read secrets from the mounted files instead",
+		"node", secretAPIServer.nodeID, "service", serviceName)
 }

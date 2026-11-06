@@ -2015,9 +2015,9 @@ func TestRBACNodeAgentCredentialAccess(t *testing.T) {
 	}
 	authorizer.BindRole(RoleBinding{Principal: "node:n1", RoleName: "node-agent"})
 
-	// Node agent can read credentials.
-	if err := authorizer.Authorize("node:n1", PermissionRead, "credentials/inst-1/payments_s3"); err != nil {
-		t.Fatalf("node agent should read credentials: %v", err)
+	// Node agent cannot read credentials (M174: delivered by the control plane).
+	if err := authorizer.Authorize("node:n1", PermissionRead, "credentials/inst-1/payments_s3"); err == nil {
+		t.Fatal("node agent must not read credentials/")
 	}
 
 	// Node agent can read derived credential state.
