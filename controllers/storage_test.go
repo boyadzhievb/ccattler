@@ -926,3 +926,28 @@ func TestStorageControllerPostCommitSkipsDeletedVolume(testHandle *testing.T) {
 		testHandle.Fatal("expected pending resize to be cleaned up for deleted volume")
 	}
 }
+
+// TestStorageControllerRecordsTypeMissedAtCreation reproduces deploy run
+// 42263460802: the observed volume was created before the desired type fact
+// arrived. The next cycle must record the type; a conflicting recorded type
+// stays unchanged.
+func TestStorageControllerRecordsTypeMissedAtCreation(t *testing.T) {
+	stateStore := store.NewMemoryStore()
+	defer stateStore.Close()
+	ctx := context.Background()
+
+	types.WriteDesiredVolume(ctx, stateStore, "pgdata", "10Gi", true)
+	types.WriteObservedVolume(ctx, stateStore, types.Volume{Name: "pgdata", Size: "10Gi", State: types.VolumeAvailable})
+	_, _ = stateStore.Put(ctx, types.KeyDesiredVolumeType("pgdata"), []byte("local"))
+
+	changeMap := changesByKey(helperCollectStorageControllerChanges(t, stateStore))
+	if string(changeMap[types.KeyObservedVolumeType("pgdata")].Value) != "local" {
+		t.Fatal("expected the missed type to be recorded as local")
+	}
+
+	_, _ = stateStore.Put(ctx, types.KeyObservedVolumeType("pgdata"), []byte("nfs"))
+	changeMap = changesByKey(helperCollectStorageControllerChanges(t, stateStore))
+	if _, changed := changeMap[types.KeyObservedVolumeType("pgdata")]; changed {
+		t.Fatal("a recorded conflicting type must not be switched silently")
+	}
+}

@@ -99,7 +99,8 @@ StorageController.Reconcile(ctx, facts)              [controllers/storage.go:66]
 ├── collectDesiredVolumes(facts)          :97
 ├── collectObservedVolumes(facts)         :133       [incl. access, attachment/{node}/{instance}]
 ├── collectNodeStates(facts)              :180
-├── reconcileVolumeCreation               :196       [PUT observed/volume/{name}, state=available, size]
+├── reconcileVolumeCreation               :196       [PUT observed/volume/{name}, state=available, size, type]
+├── reconcileMissingVolumeType                       [PUT observed/volume/{name}/type when desired type set and none recorded (apply race); conflicting type left alone]
 ├── reconcileVolumeResize                 :222       [PUT derived/volume/{name}/pending_resize]
 ├── reconcileVolumeReplication            :262
 ├── reconcileVolumeMigration              :291       [exclusive only: node unreachable →

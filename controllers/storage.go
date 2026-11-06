@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -72,6 +73,7 @@ func (storageController *StorageController) Reconcile(ctx context.Context, facts
 
 	creationChanges := reconcileVolumeCreation(desiredVolumes, observedVolumes)
 	allChanges = append(allChanges, creationChanges...)
+	allChanges = append(allChanges, reconcileMissingVolumeType(desiredVolumes, observedVolumes)...)
 
 	resizeChanges := storageController.reconcileVolumeResize(ctx, desiredVolumes, observedVolumes)
 	allChanges = append(allChanges, resizeChanges...)
@@ -164,6 +166,8 @@ func collectObservedVolumes(facts []store.Fact) map[string]observedVolumeInfo {
 				info.replicaState = types.ReplicaState(fact.Value)
 			case "access":
 				info.access = types.VolumeAccessMode(fact.Value)
+			case "type":
+				info.storageType = string(fact.Value)
 			default:
 				if attachment, isAttachment := types.ParseVolumeAttachmentSuffix(pathParts[1], string(fact.Value)); isAttachment {
 					info.attachments = append(info.attachments, attachment)
@@ -187,6 +191,29 @@ func collectNodeStates(facts []store.Fact) map[string]types.NodeState {
 		}
 	}
 	return nodeStates
+}
+
+// reconcileMissingVolumeType records the desired storage type on an observed
+// volume that has none. cca apply writes a volume's facts one by one, so the
+// volume can be created from a view that lacked its type; without this the
+// agent would use the default backend forever. A conflicting recorded type is
+// left unchanged (changing a backend needs data migration, M189).
+func reconcileMissingVolumeType(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
+	volumeNames := make([]string, 0, len(desiredVolumes))
+	for volumeName := range desiredVolumes {
+		volumeNames = append(volumeNames, volumeName)
+	}
+	sort.Strings(volumeNames)
+	var changes []Change
+	for _, volumeName := range volumeNames {
+		observedInfo, observed := observedVolumes[volumeName]
+		desiredType := desiredVolumes[volumeName].storageType
+		if !observed || desiredType == "" || observedInfo.storageType != "" {
+			continue
+		}
+		changes = append(changes, Change{Type: store.OpPut, Key: types.KeyObservedVolumeType(volumeName), Value: []byte(desiredType)})
+	}
+	return changes
 }
 
 // reconcileVolumeCreation returns changes that create observed volume entries
@@ -426,6 +453,7 @@ type observedVolumeInfo struct {
 	replicaState    types.ReplicaState       // replicaState is the replication sync state.
 	access          types.VolumeAccessMode   // access is "shared" for ReadWriteMany volumes, empty for exclusive.
 	attachments     []types.VolumeAttachment // attachments lists per-instance attachments of a shared volume.
+	storageType     string                   // storageType is the recorded backend type ("local", "nfs", or empty).
 }
 
 // parseSizeToBytes converts a human-readable size string like "100Gi" or "10Mi"

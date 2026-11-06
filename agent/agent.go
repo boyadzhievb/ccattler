@@ -1567,6 +1567,11 @@ func (nodeAgent *Agent) lookupServiceVolumeMountsFromStore(ctx context.Context, 
 func (nodeAgent *Agent) storageProviderForVolume(ctx context.Context, volumeName string) storage.StorageProvider {
 	if nodeAgent.localStorageProvider != nil {
 		typeFact, readErr := nodeAgent.store.Get(ctx, types.KeyObservedVolumeType(volumeName))
+		if readErr != nil {
+			// Not recorded yet (volume created before its type fact was applied):
+			// the desired type decides, never the default backend.
+			typeFact, readErr = nodeAgent.store.Get(ctx, types.KeyDesiredVolumeType(volumeName))
+		}
 		if readErr == nil && string(typeFact.Value) == "local" {
 			return nodeAgent.localStorageProvider
 		}
