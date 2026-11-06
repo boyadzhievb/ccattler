@@ -69,8 +69,8 @@ executeReconciliationCycle
 reconcileDesiredInstance(instanceInfo)
 ├── lookupServiceImageFromStore                  [BAIL if empty]
 ├── prepareInstanceSecretMaterial                [M174, Flow 27; BAIL → waiting-for-secrets]
-│   ├── loadServiceSecretRequirements            [desired grants, connection secrets, image_pull_secret; never secrets/]
-│   ├── SecretMaterialStore.ReadInstanceSecrets  [material from this boot → reuse, no fetch]
+│   ├── loadServiceSecretRequirements            [desired grants, connection secrets (collectConnectionSecretNames), image_pull_secret; never secrets/; store error → BAIL, retry]
+│   ├── SecretMaterialStore.ReadInstanceSecrets  [material from this boot → reuse if materialMatchesRequirements]
 │   ├── secretDeliveryWaits retryAfter           [unreachable 2s…30s; refused 5min unless requirements changed]
 │   ├── secretDeliveryClient.FetchInstanceSecrets [POST /api/node/secrets over node mTLS]
 │   ├── SecretMaterialStore.WriteInstanceSecrets [/run/ccattler/secrets/{id}/values/, staging + rename]
@@ -145,7 +145,7 @@ reconcileDesiredInstance(instanceInfo)
 │   ├── lookupServiceResourcesFromStore
 │   ├── lookupServiceCommandFromStore
 │   └── networkProvider.AllocateIP
-├── buildInstanceSecretMounts                    [→ Spec.SecretMounts, read-only binds from tmpfs]
+├── buildInstanceSecretMounts                    [→ Spec.SecretMounts, read-only binds from tmpfs; sorted names; resolveExplicitSecretMountPath; error → BAIL]
 │   └── addConnectionFileMounts → assembleConnectionURL → WriteConnectionFile
 ├── addSecretHelperIfMounted                     [cca-secret helper script in ConfigFiles]
 ├── IF secretAPIToken:

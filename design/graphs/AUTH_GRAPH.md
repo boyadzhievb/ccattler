@@ -678,6 +678,7 @@ Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
 ├── principal.Kind == node AND auth method == mtls AND request.TLS != nil   [else 403]
 ├── SecretDeliveryService.DeliverInstanceSecrets(ctx, nodeID=cert CN, instanceID)
 │   ├── authorizeNodeForInstance
+│   │   ├── getDeliveryFact                                   [missing → refusal; other store error → 500, not audited]
 │   │   ├── Get("enrollment/node/{node}")                      [not enrolled → not_authorized]
 │   │   ├── Get("observed/node/{node}/state") == disabled      [→ not_authorized]
 │   │   ├── Get("placement/instance/{id}") == node             [→ not_authorized]
