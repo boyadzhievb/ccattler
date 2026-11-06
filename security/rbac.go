@@ -224,6 +224,7 @@ func BuiltinRoles() []Role {
 			},
 		},
 		apiServerRole(),
+		secretDeliveryRole(),
 	}
 }
 

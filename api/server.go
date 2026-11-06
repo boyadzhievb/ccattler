@@ -102,12 +102,13 @@ type Server struct {
 	workloadTokenIssuer        *security.WorkloadTokenIssuer // workloadTokenIssuer signs workload identity JWTs and serves OIDC discovery.
 	userTokenIssuer            *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
 	watchMultiplexer           *WatchMultiplexer
-	secretStore                *security.SecretStore        // secretStore handles encrypted secret CRUD.
-	policyGate                 *tenant.PolicyGate           // policyGate is the optional admission pipeline for /api/apply.
-	authenticatorChain         *security.AuthenticatorChain // authenticatorChain maps requests to principals.
-	apiAuthorizer              *security.APIAuthorizer      // apiAuthorizer checks capability-based API permissions.
-	tenantAuditView            *tenant.TenantAuditView      // tenantAuditView provides scoped audit log views per tenant.
-	auditStore                 store.StateStore             // auditStore is the raw store for querying persisted audit entries.
+	secretStore                *security.SecretStore           // secretStore handles encrypted secret CRUD.
+	secretDeliveryService      *security.SecretDeliveryService // secretDeliveryService serves POST /api/node/secrets (Flow 27); nil disables it.
+	policyGate                 *tenant.PolicyGate              // policyGate is the optional admission pipeline for /api/apply.
+	authenticatorChain         *security.AuthenticatorChain    // authenticatorChain maps requests to principals.
+	apiAuthorizer              *security.APIAuthorizer         // apiAuthorizer checks capability-based API permissions.
+	tenantAuditView            *tenant.TenantAuditView         // tenantAuditView provides scoped audit log views per tenant.
+	auditStore                 store.StateStore                // auditStore is the raw store for querying persisted audit entries.
 	serverMode                 ServerMode
 	secretMasterKey            []byte // secretMasterKey is the 32-byte key distributed to joining nodes.
 	requirePrincipal           bool   // requirePrincipal enables 401 on requests without a principal in context.
@@ -385,6 +386,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
 	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))
 	apiServer.mux.HandleFunc("/api/node/enable", apiServer.instrumentedHandler("node-enable", apiServer.handleNodeEnable))
+	apiServer.mux.HandleFunc(NodeSecretDeliveryPath, apiServer.instrumentedHandler("node-secrets", apiServer.handleNodeSecretDelivery))
 	apiServer.mux.HandleFunc(nodeDebugPathPrefix, apiServer.handleNodeDebugProxy)
 	apiServer.mux.HandleFunc("/api/user", apiServer.instrumentedHandler("user", apiServer.handleUser))
 	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))

@@ -128,6 +128,7 @@ BuiltinRoles() → []Role                                       [:141]
 | api-reader       | "" (everything)          | read, watch              |
 | api-writer       | desired/, intent/user/, observed/metric/, "" | mixed |
 | api-server       | read/watch: orchestration roots, auth, leader, lease, policy; write: desired/, effective/, intent/, policy/network/, derived/service/, derived/node/, observed/node/, observed/metric/; write+delete: auth/, observed/instance/, derived/instance/, placement/; nothing on secrets/, credentials/, enrollment/, bootstrap/, audit/ | mixed (bound to `service:api-server`) |
+| secret-delivery  | read only: secrets/, desired/service/, desired/connection/, placement/instance/, observed/instance/, observed/node/, enrollment/node/ | read (bound to `service:secret-delivery`, M174) |
 
 ### ABACAuthorizer (security/abac.go)
 
@@ -637,9 +638,12 @@ SecretStore.PutSecret(ctx, name, plaintext)                    [:58]
 └── factStore.Put("secrets/<name>", encoded)
 
 SecretStore.GetSecret(ctx, name)                               [:77]
-├── factStore.Get("secrets/<name>")
+└── GetSecretThroughStore(ctx, factStore, name)
+
+SecretStore.GetSecretThroughStore(ctx, readStore, name)        [:84, M174]
+├── readStore.Get("secrets/<name>")                            [e.g. store bound to service:secret-delivery]
 ├── base64.StdEncoding.DecodeString(value)
-└── OpenEnvelope(ctx, keyProvider, envelope)
+└── OpenEnvelope(ctx, keyProvider, envelope)                   [current provider, shared with rotation]
 
 SecretStore.DeleteSecret(ctx, name)                            [:101]
 └── factStore.Delete("secrets/<name>")
@@ -659,6 +663,29 @@ SecretStore.RotateKeyProvider(ctx, newKeyProvider)             [:162]
 ├── factStore.Scan("secrets/")
 ├── for each: RewrapEnvelope(oldProvider, newProvider, blob)   [DEK re-wrap only]
 └── secretStore.keyProvider = newKeyProvider
+```
+
+### Node Secret Delivery (security/secret_delivery.go, api/node_secret_delivery.go; Flow 27, M174)
+
+Wired by `configureSecretStoreAndDelivery` (cmd/cca/command_server.go): `AuthorizedStore`
+with service principal `service:secret-delivery` (role `secret-delivery`, read-only).
+
+```
+Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
+├── principal.Kind == node AND auth method == mtls AND request.TLS != nil   [else 403]
+├── SecretDeliveryService.DeliverInstanceSecrets(ctx, nodeID=cert CN, instanceID)
+│   ├── authorizeNodeForInstance
+│   │   ├── Get("enrollment/node/{node}")                      [not enrolled → not_authorized]
+│   │   ├── Get("observed/node/{node}/state") == disabled      [→ not_authorized]
+│   │   ├── Get("placement/instance/{id}") == node             [→ not_authorized]
+│   │   └── Get("observed/instance/{id}/service") → service    [agent-writable until M180]
+│   ├── resolveRequiredSecretNames(service)
+│   │   ├── Scan("desired/service/{svc}/secret/") → granted names
+│   │   ├── collectReferencedSecretNames                       [connection secrets, image_pull_secret]
+│   │   └── referenced but not granted → not_authorized (names)
+│   ├── SecretStore.GetSecretThroughStore(deliveryStore, name)  [missing → secret_missing, all-or-nothing]
+│   └── auditDecision / auditRefusal                           [names only; refusals rate-limited 1/min per node|instance|reason]
+└── writeSecretDeliveryRefusal                                 [403 not_authorized, 409 secret_missing]
 ```
 
 ---

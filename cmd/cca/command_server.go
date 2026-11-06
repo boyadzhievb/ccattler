@@ -631,16 +631,7 @@ func configureAndStartAPIServer(
 	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, security.NewCapabilityFactAuthorizer(apiAuthorizer), auditLog)
 	statusAPIServer.SetPolicyGate(policyGate)
 
-	secretMasterKey := loadOrGenerateSecretMasterKey()
-	secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(secretMasterKey)
-	if keyProviderError != nil {
-		fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
-		os.Exit(1)
-	}
-	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
-	statusAPIServer.SetSecretStore(secretStore)
-	statusAPIServer.SetSecretMasterKey(secretMasterKey)
-	fmt.Println("Secret store initialized (envelope encryption, local key)")
+	configureSecretStoreAndDelivery(statusAPIServer, factStore, rbacAuthorizer, auditLog)
 
 	if parsedConfig.apiOnly {
 		statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
@@ -655,6 +646,27 @@ func configureAndStartAPIServer(
 	if parsedConfig.dnsEnabled {
 		startDNSServer(ctx, factStore, parsedConfig.dnsListenAddress)
 	}
+}
+
+// configureSecretStoreAndDelivery loads the secret key, attaches the secret
+// store, and enables node secret delivery (Flow 27) through a store bound to
+// the secret-delivery principal, so the api-server role never reads secrets/.
+func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore store.StateStore, rbacAuthorizer *security.RBACAuthorizer, auditLog security.AuditLogger) {
+	secretMasterKey := loadOrGenerateSecretMasterKey()
+	secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(secretMasterKey)
+	if keyProviderError != nil {
+		fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
+		os.Exit(1)
+	}
+	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
+	statusAPIServer.SetSecretStore(secretStore)
+	statusAPIServer.SetSecretMasterKey(secretMasterKey)
+
+	deliveryStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)
+	deliveryStore.SetServicePrincipal(security.SecretDeliveryPrincipal)
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.SecretDeliveryPrincipal, RoleName: "secret-delivery"})
+	statusAPIServer.SetSecretDeliveryService(security.NewSecretDeliveryService(deliveryStore, secretStore, auditLog))
+	fmt.Println("Secret store initialized (envelope encryption, local key); node secret delivery enabled")
 }
 
 // startDNSServer launches the built-in DNS server in a background goroutine.

@@ -75,11 +75,18 @@ func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string
 
 // GetSecret retrieves and decrypts a secret value using envelope encryption.
 func (secretStore *SecretStore) GetSecret(ctx context.Context, secretName string) ([]byte, error) {
+	return secretStore.GetSecretThroughStore(ctx, secretStore.factStore, secretName)
+}
+
+// GetSecretThroughStore reads the envelope through readStore (e.g. a store
+// bound to the secret-delivery principal) and decrypts it with this store's
+// current KeyProvider, so a rotation applies to every reader at once.
+func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readStore store.StateStore, secretName string) ([]byte, error) {
 	secretStore.mutex.RLock()
 	defer secretStore.mutex.RUnlock()
 
 	secretKey := SecretStorePrefix + secretName
-	fact, err := secretStore.factStore.Get(ctx, secretKey)
+	fact, err := readStore.Get(ctx, secretKey)
 	if err != nil {
 		return nil, fmt.Errorf("secret %q not found", secretName)
 	}
