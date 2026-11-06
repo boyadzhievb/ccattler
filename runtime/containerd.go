@@ -349,6 +349,9 @@ func safeUint64ToInt64(value uint64) int64 {
 // and task. Sets up CNI networking with an isolated network namespace when
 // networkCIDR is configured. Idempotent — returns nil if already running.
 func (containerdRuntime *ContainerdRuntime) Start(ctx context.Context, spec Spec) error {
+	if _, mountError := sortedSecretMountBindings(spec.SecretMounts); mountError != nil {
+		return &StartError{ID: spec.ID, Reason: mountError.Error()}
+	}
 	containerdRuntime.mutex.Lock()
 	if containerdRuntime.trackedContainers[spec.ID] != "" {
 		containerdRuntime.mutex.Unlock()
@@ -523,6 +526,8 @@ func (containerdRuntime *ContainerdRuntime) buildOCISpecOptions(spec Spec, image
 			Options:     []string{"rbind", "ro"},
 		})
 	}
+
+	bindMounts = append(bindMounts, buildSecretOCIMounts(spec.SecretMounts)...)
 
 	for hostPath, containerPath := range spec.VolumeMounts {
 		bindMounts = append(bindMounts, specs.Mount{
@@ -945,6 +950,9 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 		return fmt.Errorf("init image not found: %s: %w", imageRef, getImageError)
 	}
 
+	if _, mountError := sortedSecretMountBindings(execSpec.SecretMounts); mountError != nil {
+		return mountError
+	}
 	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
 
 	envVars := make([]string, 0, len(execSpec.Env))
@@ -976,6 +984,7 @@ func (containerdRuntime *ContainerdRuntime) ExecInit(ctx context.Context, imageR
 			Options:     []string{"rbind", "ro"},
 		})
 	}
+	bindMounts = append(bindMounts, buildSecretOCIMounts(execSpec.SecretMounts)...)
 	for containerPath, fileContent := range execSpec.ConfigFiles {
 		hostPath := filepath.Join(ContainerdLogBaseDir, initContainerName, "config", filepath.Base(containerPath))
 		_ = os.MkdirAll(filepath.Dir(hostPath), 0750)
@@ -1392,4 +1401,24 @@ func splitImageReference(reference string) (string, string) {
 		return reference, "latest"
 	}
 	return reference[:atIndex], reference[atIndex+1:]
+}
+
+// buildSecretOCIMounts returns read-only bind mounts for validated secret
+// mounts (Flow 27). Invalid entries are skipped; callers validate first with
+// sortedSecretMountBindings and fail the start instead.
+func buildSecretOCIMounts(secretMounts map[string]string) []specs.Mount {
+	bindings, validationError := sortedSecretMountBindings(secretMounts)
+	if validationError != nil {
+		return nil
+	}
+	ociMounts := make([]specs.Mount, 0, len(bindings))
+	for _, binding := range bindings {
+		ociMounts = append(ociMounts, specs.Mount{
+			Destination: binding.containerPath,
+			Type:        "bind",
+			Source:      binding.hostPath,
+			Options:     []string{"rbind", "ro", "nosuid", "nodev", "noexec"},
+		})
+	}
+	return ociMounts
 }

@@ -37,6 +37,7 @@ type Spec struct {
 	Command      []string          // Command overrides the container CMD. Empty means use the image default.
 	Env          map[string]string // Env holds environment variables to inject into the workload.
 	ConfigFiles  map[string]string // ConfigFiles maps container-absolute paths to file content. The runtime materializes and bind-mounts them.
+	SecretMounts map[string]string // SecretMounts maps container-absolute paths to host files on tmpfs (Flow 27). Bind-mounted read-only, never copied.
 	Ports        []int             // Ports to map from container to host (each port is mapped to a random host port).
 	CPUm         int64             // CPUm is the CPU allocation in millicores (informational, not enforced by process runtime).
 	MemoryB      int64             // MemoryB is the memory allocation in bytes (informational, not enforced by process runtime).
@@ -190,8 +191,9 @@ func execProcessArgs(execSpec ExecSpec) []string {
 
 // ExecSpec describes a command to execute inside or alongside a workload.
 type ExecSpec struct {
-	Command     string            // Command is the shell command to execute (via sh -c) when Args is empty.
-	Args        []string          // Args, when set, is executed as given without a shell (debug exec); Command is ignored.
-	Env         map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
-	ConfigFiles map[string]string // ConfigFiles maps container-absolute paths to file content. Init containers get the same secret/connection mounts as the main container.
+	Command      string            // Command is the shell command to execute (via sh -c) when Args is empty.
+	Args         []string          // Args, when set, is executed as given without a shell (debug exec); Command is ignored.
+	Env          map[string]string // Env holds environment variables to inject into the exec context (used by init containers for secret API access).
+	ConfigFiles  map[string]string // ConfigFiles maps container-absolute paths to file content. Init containers get the same secret/connection mounts as the main container.
+	SecretMounts map[string]string // SecretMounts maps container-absolute paths to host files on tmpfs; same secret mounts as the main container, read-only.
 }

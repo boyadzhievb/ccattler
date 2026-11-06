@@ -310,6 +310,11 @@ func (containerRuntime *ContainerRuntime) buildRunArguments(spec Spec, container
 	}
 
 	args = append(args, volumeMountArgs...)
+	secretMountArgs, secretMountError := buildSecretMountArguments(spec.SecretMounts)
+	if secretMountError != nil {
+		return nil, nil, secretMountError
+	}
+	args = append(args, secretMountArgs...)
 
 	for hostPath, containerPath := range spec.VolumeMounts {
 		args = append(args, "-v", fmt.Sprintf("%s:%s", hostPath, containerPath))
@@ -572,6 +577,11 @@ func (containerRuntime *ContainerRuntime) ExecInit(ctx context.Context, image st
 		}
 		args = append(args, "-e", fmt.Sprintf("%s=%s", envKey, envValue))
 	}
+	secretMountArgs, secretMountError := buildSecretMountArguments(execSpec.SecretMounts)
+	if secretMountError != nil {
+		return secretMountError
+	}
+	args = append(args, secretMountArgs...)
 	initContainerName := fmt.Sprintf("cca-init-%d", time.Now().UnixNano())
 	initHostDir := filepath.Join(ContainerdLogBaseDir, initContainerName)
 	for containerPath, fileContent := range execSpec.ConfigFiles {

@@ -233,7 +233,7 @@ func (simulator *SimulatorRuntime) IsImageCached(_ context.Context, imageReferen
 func (simulator *SimulatorRuntime) ExecInit(_ context.Context, image string, execSpec ExecSpec) error {
 	simulator.mutex.Lock()
 	defer simulator.mutex.Unlock()
-	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command, Env: execSpec.Env, ConfigFiles: execSpec.ConfigFiles})
+	simulator.ExecInitCalls = append(simulator.ExecInitCalls, ExecInitCall{Image: image, Command: execSpec.Command, Env: execSpec.Env, ConfigFiles: execSpec.ConfigFiles, SecretMounts: execSpec.SecretMounts})
 	if remaining, shouldFail := simulator.ExecInitFailures[execSpec.Command]; shouldFail && remaining > 0 {
 		simulator.ExecInitFailures[execSpec.Command] = remaining - 1
 		return fmt.Errorf("simulated init failure for %q", execSpec.Command)
@@ -258,10 +258,11 @@ func (simulator *SimulatorRuntime) GetExecCalls() []ExecCall {
 
 // ExecInitCall records a call to ExecInit for test verification.
 type ExecInitCall struct {
-	Image       string            // Image is the OCI image reference passed to ExecInit.
-	Command     string            // Command is the shell command passed to ExecInit.
-	Env         map[string]string // Env holds the environment variables passed to ExecInit.
-	ConfigFiles map[string]string // ConfigFiles holds the secret/connection file mounts passed to ExecInit.
+	Image        string            // Image is the OCI image reference passed to ExecInit.
+	Command      string            // Command is the shell command passed to ExecInit.
+	Env          map[string]string // Env holds the environment variables passed to ExecInit.
+	ConfigFiles  map[string]string // ConfigFiles holds the secret/connection file mounts passed to ExecInit.
+	SecretMounts map[string]string // SecretMounts holds the read-only secret mounts passed to ExecInit.
 }
 
 // Stats returns simulated resource usage for the workload. For running
