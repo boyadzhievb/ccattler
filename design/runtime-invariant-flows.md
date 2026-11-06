@@ -203,6 +203,7 @@ Enrollment is the trust bootstrap between a new node and the cluster. The node g
 
 **What must NOT happen:**
 - Private key PEM in the enrollment HTTP response (the old flow — removed)
+- Secret key material in the enrollment response (after M174: no `SecretMasterKey`, `cca join` writes no key file; [Flow 27](#flow-27-secret-delivery-m174))
 - CSR accepted without signature verification
 - A CSR-chosen CN or SAN in the issued certificate (a CN of `ccattler-server` or a control-plane node ID would map to a cluster-admin principal)
 - Enrollment without `--ca-cert` or CA fingerprint (unless `--insecure` explicitly set)
@@ -297,6 +298,12 @@ placed → pulling → running
                 ↘ image-pull-backoff → pulling (retry)
 ```
 
+After M174 ([Flow 27](#flow-27-secret-delivery-m174)), an instance that needs secrets (mounted secrets, connection passwords or an image pull secret) passes `waiting-for-secrets` first, also when its image is cached:
+
+```
+placed → waiting-for-secrets → pulling → starting → running
+```
+
 - **`pulling`**: Agent is actively pulling the image. Visible via `cca get instances` with pull progress.
 - **`image-pull-backoff`**: Pull failed, waiting for retry. Shows reason (timeout, auth failure, not found) and next retry time.
 
@@ -305,6 +312,10 @@ Neither state triggers replacement by the failure controller — the instance is
 ### Agent reconcile flow
 
 ```
+0. (M174) Instance needs secrets and has no material from this boot?
+   → Write instance state: waiting-for-secrets; deliver (Flow 27 step 5–8)
+   → Continue only after materialization succeeded
+
 1. Instance placed on this node and image not cached locally?
    → Write instance state: pulling
    → Call runtime.PullImage(ctx, imageReference)
@@ -672,8 +683,10 @@ Image pull secrets let services and jobs authenticate against private container 
 7. Agent calls secret API: GET /secrets/registry-creds → {"username":"bot","password":"token123"}
 8. Agent calls runtime.PullImage("registry.example.com/api:v1", credentials="bot:token123")
 9. Container runtime: nerdctl pull --creds bot:token123 registry.example.com/api:v1
-10. Pull succeeds → agent starts container with --pull=never (standard Flow 11)
+10. Pull succeeds → agent starts container with --pull=never (standard Flow 14)
 ```
+
+After M174, steps 6–7 change ([Flow 27](#flow-27-secret-delivery-m174)): the pull credential is part of the instance's delivered material from `POST /api/node/secrets`, fetched in `waiting-for-secrets` before `pulling`, and read from `/run/ccattler/secrets/{instance}/`. The agent no longer calls a local secret API or decrypts. A rotated credential takes effect on the next delivery (next instance start after the material is gone, or a new instance), not on every pull.
 
 ### Pull flow without credentials
 
@@ -686,7 +699,7 @@ Image pull secrets let services and jobs authenticate against private container 
 
 ### What must match
 
-- Image pull secrets use the existing secret infrastructure (Flow 3) — same encryption, same API, same key distribution via `cca join`.
+- Image pull secrets use the existing secret infrastructure (Flow 3) — same encryption, same API, same key distribution via `cca join`. After M174: Flow 27 delivery, no key on the node.
 - Credentials are resolved per-pull, not cached — a rotated secret takes effect on the next pull without restarting the agent.
 - Job instances follow the same pull path as service instances — `image_pull_secret` on `JobDecl` emits `desired/job/{name}/image_pull_secret`.
 - The secret value is opaque JSON. The agent parses `username` and `password` fields and joins them as `user:pass` for `--creds`.
@@ -947,21 +960,27 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 
 ## Flow 27: Secret Delivery (M174)
 
-**Status:** design, not implemented. Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
+**Status:** design, not implemented (second review 2026-11-06: fresh root key, CLI ownership/shares, gate-key tmpfs cache, retry fallback, delivery before pull). Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
 
 **Problem**: every node holds the cluster master key and decrypts locally, so one compromised node can read every secret of every tenant from etcd.
 
-**Invariant**: only control-plane processes decrypt. A node receives plaintext only for instances placed on it whose service is granted the secret (and, for another tenant's secret, shared). An instance never starts without its required secrets, and losing the API never stops a running container.
+**Invariant**: only control-plane processes decrypt, using a root key that was never on a worker (the old `secret-master.key` is a legacy key that only opens v1 envelopes until migration). A node receives plaintext only for instances placed on it whose service is granted the secret (and, for another tenant's secret, shared). An instance is never pulled or started without its required secrets, and losing the API never stops a running container.
 
 ```
+0. Secret administration (CLI, not DSL)
+   cca secret set database.password --tenant payments     (secret.write at team/payments)
+   cca secret set registry.credentials --cluster          (secret.write at cluster)
+   cca secret set legacy-app.password                     (default tenant, team/default)
+   cca secret share database.password --tenant payments --with-tenant frontend
+     → desired/secret_share/payments/database.password/frontend
+
 1. Declaration (DSL, apply)
-   secret database.password                          owner tenant: payments
-   service checkout { secret database.password }     owner tenant: payments
+   service checkout { owner payments  secret database.password }
    connection db { secret database.password ... }    auto-grant (Flow 9)
    gate web { tls { key secret "platform/web-gate-key" } }
 
 2. Compilation (lang/compiler.go)
-   tenant of a service/secret: explicit owner → hierarchical name → built-in default
+   tenant of a service: explicit owner → hierarchical name → built-in default
    resolve each reference to its canonical name:
      unqualified        → secrets/tenant/{service tenant}/{name}
      cluster/{name}     → secrets/cluster/{name}       (needs cluster grant)
@@ -974,6 +993,8 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    DEK = random; ciphertext = AES-GCM(DEK, value, AAD = canonical key)
    envelope v2 = magic | 2 | kek_version(keyring/active) | wrap(KEK, DEK) | nonce | ciphertext
    put secrets/tenant/payments/database.password = envelope
+   (before key migration, while old agents still decrypt locally: writes stay v1;
+    the legacy key never wraps a KEK, a v2 DEK or root_check)
 
 4. Placement (scheduler, unchanged)
    placement/instance/{id} = node-3
@@ -982,6 +1003,9 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    instance placed here, needs secrets?
      material in /run/ccattler/secrets/{id}/ from this boot → reuse (step 8)
      else → state waiting-for-secrets, POST /api/node/secrets {instance_id} (mTLS)
+   this happens before pulling, also when the image is cached:
+     placed → waiting-for-secrets → pulling → starting → running   (Flow 14)
+   the image pull secret is part of the delivered material (Flow 22)
 
 6. Authorization (API server, secret-delivery store principal)
    caller = node:node-3, enrolled, not disabled
@@ -1000,7 +1024,7 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
    secret files, connection URLs (agent assembles from password + definition);
    bind-mount read-only at declared paths
 
-9. Container starts; state running.
+9. Image pull (Flow 14, credentials from step 8), container starts; state running.
    only if the service sets legacy_secret_api true (deprecated, removed after M174):
      per-instance CCA_SECRET_TOKEN/CCA_SECRET_URL env; secret API (:9772)
      answers from /run/ccattler/secrets/{id}/; token revoked at stop; no decryption
@@ -1019,7 +1043,10 @@ API unreachable at step 5
 
 delivery refused at step 6
   → waiting-for-secrets, reason not_authorized (names listed)
-  → retried when desired/service, desired/secret_share or placement facts change
+  → retried immediately when the instance's placement, its service's grant facts
+    or a relevant desired/secret_share fact change (agent watches metadata only,
+    never secrets/), and at the latest every 5 minutes as a fallback
+  → refusal audit records rate-limited per (node, instance, reason)
 
 container crash / liveness restart
   → material present (same boot) → restart without fetching
@@ -1045,17 +1072,28 @@ node disconnected
 rotation in progress (keyring controller)
   → envelopes carry kek_version; step 7 unwraps with that version; no reader waits
 
+key migration in progress (cca secret migrate-keys, after the migration gate)
+  → v1 envelopes opened with the legacy key, re-encrypted as v2 (AAD = current key)
+    in batches; observed/keyring/migration persists legacy_v1_envelope_count
+  → step 7 reads v1 or v2; every new write is v2
+  → after count = 0 and the retirement gate: legacy key retired, v1 refused
+
 gate keys
   → every gate-serving agent: POST /api/node/gate-keys at start and on gate change;
-    memory only; separately authorized and audited
+    separately authorized and audited
+  → cached in /run/ccattler/gate-keys/{gate}/ (tmpfs, private key 0400),
+    never mounted into containers; removed/replaced on gate removal or key rotation
+  → agent restart (same boot): reload from tmpfs, keep serving TLS
+  → API unreachable: keep serving with cached keys
+  → reboot with API unreachable: no TLS on this node, gate_keys = waiting
   → a node without a local backend still terminates TLS (proxies to the VIP)
 ```
 
 **What must match:**
 - The canonical name used as AAD at encryption (step 3) is the name the grant fact references (step 2) and the name delivery looks up (step 7).
-- Every API replica opens `keyring/root_check` with its root key; a replica that cannot does not start.
-- The agent's state machine treats `waiting-for-secrets` like `pulling`: in progress, not failed.
-- No secret value is written outside `/run/ccattler/secrets/` on a node, or into logs, events or `cca` output.
+- Every API replica opens `keyring/root_check` with its root key; a replica that cannot does not start. The root key is not the legacy key.
+- The agent's state machine treats `waiting-for-secrets` like `pulling`: in progress, not failed. It always precedes `pulling`.
+- No secret value is written outside `/run/ccattler/secrets/` and `/run/ccattler/gate-keys/` on a node, or into logs, events or `cca` output.
 
 ## Checklist for New Features
 
@@ -1068,6 +1106,6 @@ When adding a new feature that touches the runtime:
 5. **Does it need cross-host networking?** If yes, verify all three endpoint facts exist (Flow 7).
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
 7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
-8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 11) — pull first, start with `--pull=never`. Never assume the image is cached.
+8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 14) — secrets delivered first when needed (Flow 27), then pull, start with `--pull=never`. Never assume the image is cached.
 9. **Does it expose external HTTPS?** If yes, verify TLS material flows from controller to agent via fact store (Flow 13). The agent never issues certs.
 10. **Does it mount volumes from several instances?** If yes, check whether the provider supports shared attach (Flow 14); exclusive volumes need all instances on one node.

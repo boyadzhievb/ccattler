@@ -46,7 +46,7 @@ cca exec <id> -- <command> [args...]   # no shell; -- sh -c '…' for shell synt
 cca images list/pull
 cca top [nodes|workloads]
 cca metric set <svc> <m> <v>
-cca secret create/get/list     # secret management
+cca secret set/get/list/delete/rotate   # secret management (M174 changes: see "Secrets (M174)")
 cca gc instances               # garbage-collect stopped instance facts
 cca audit [flags]              # query/stream audit log (--principal, --action, --since, --follow)
 
@@ -60,6 +60,43 @@ cca lint <file>
 cca readiness [--json]         # run 16-area readiness report
 cca benchmark [--json] [flags] # chaos benchmark with recovery metrics
 cca chaos                      # random failure injection
+```
+
+## Secrets (M174)
+
+Planned for M174 ([config-secrets.md](config-secrets.md#m174-design-secrets-architecture)). Secret values, ownership and shares are administered here; the DSL only declares references (`secret database.password { mount "…" }`) and consumption.
+
+```
+cca secret set <name> [--tenant <t> | --cluster] [--from-file <path>]   # value from stdin or file
+cca secret get <name> [--tenant <t> | --cluster]
+cca secret list [--tenant <t> | --cluster]
+cca secret delete <name> [--tenant <t> | --cluster]
+cca secret share <name> --tenant <owner> --with-tenant <consumer>
+cca secret unshare <name> --tenant <owner> --with-tenant <consumer>
+cca secret migrate-names --plan | --apply <mapping.ccv>
+cca secret migrate-keys --confirm-backup     # re-encrypt v1 envelopes (after migration gate)
+cca secret retire-legacy-key                 # stop using the old master key (after retirement gate)
+cca secret rotate                            # new KEK version, re-wrap (refused until migration completed)
+```
+
+| Target | Store key | Required permission |
+|---|---|---|
+| no flag (built-in `default` tenant) | `secrets/tenant/default/{name}` | `secret.write` at `team/default` |
+| `--tenant payments` | `secrets/tenant/payments/{name}` | `secret.write` at `team/payments` |
+| `--cluster` | `secrets/cluster/{name}` | `secret.write` at `cluster` |
+
+- `--tenant` and `--cluster` are mutually exclusive; omitting both means `default`.
+- The value is never a command-line argument (it would land in shell history and the process list).
+- `share` writes `desired/secret_share/{owner}/{name}/{consumer}` and needs `secret.write` in the owner's scope; `unshare` deletes it. A consuming service still needs `secret.use` in its own scope at apply. Delivery re-checks the share on every request, so `unshare` stops delivery at the next instance start.
+- `get` prints the value (as today) and needs `secret.read` in the secret's scope; `list` shows metadata only (name, tenant, KEK version, shares).
+- `migrate-keys`, `retire-legacy-key` and `rotate` need `cluster.admin` and return `409` with the unmet gate conditions.
+
+Examples:
+
+```
+printf '%s' "$DB_PASSWORD" | cca secret set database.password --tenant payments
+cca secret set registry.credentials --cluster --from-file ./registry.json
+cca secret share database.password --tenant payments --with-tenant frontend
 ```
 
 

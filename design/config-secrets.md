@@ -128,7 +128,7 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 
 ## M174 design: secrets architecture
 
-**Status:** direction approved 2026-11-05, open questions A–C decided the same day (decisions below). This section and [Flow 27](runtime-invariant-flows.md#flow-27-secret-delivery-m174) are reviewed together before implementation starts.
+**Status:** direction approved 2026-11-05, open questions A–C decided the same day. Second review 2026-11-06 (decisions R1–R8 below) changed the root key and the migration. This section, [Flow 27](runtime-invariant-flows.md#flow-27-secret-delivery-m174) and the image pull flows ([14](runtime-invariant-flows.md#14-image-pull-lifecycle), [22](runtime-invariant-flows.md#22-image-pull-secrets)) are the specification for M174.
 
 ### Review decisions (2026-11-05)
 
@@ -144,6 +144,19 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 | A | Services without an owner | Built-in, reserved tenant `default`; not a global namespace. |
 | B | Gate TLS key distribution | Every current gate-serving agent node receives the keys of the gates it serves; documented residual risk. |
 | C | Legacy secret API token (`CCA_SECRET_TOKEN`) | Kept for one release as a per-service opt-in, deprecated, served through control-plane delivery; removed in the release after M174. |
+
+### Second review decisions (2026-11-06)
+
+| # | Item | Decision |
+|---|---|---|
+| R1 | Root key | Freshly generated. The existing `secret-master.key` was copied to every worker and is treated as compromised: it becomes the **legacy key**, used only on the control plane to read v1 envelopes during migration, and never wraps a KEK or a v2 envelope. |
+| R2 | Secret ownership and shares | CLI operations, not a new DSL construct: `cca secret set --tenant/--cluster`, `cca secret share/unshare`. The DSL keeps declaring references. |
+| R3 | Write scope of `default` | `secret.write` at `team/default` (cluster admins have it through their cluster grant). |
+| R4 | Gate keys during API outages | Cached in tmpfs (`/run/ccattler/gate-keys/`), not process memory only. |
+| R5 | Retry after refused delivery | Event-driven on placement/grant/share changes, plus a 5-minute fallback; refusal audit records rate-limited. |
+| R6 | Image pull ordering | Secret delivery precedes `pulling`, also when the image is cached. |
+| R7 | Cutover verification | Measurable conditions only (version reports, persisted `legacy_v1_envelope_count = 0`, migration status, no plaintext gate key facts, no legacy key file on workers). |
+| R8 | Naming sequence | v2 envelopes first bound to the legacy store key, later re-encrypted under the canonical name by `migrate-names`. |
 
 ### Goals
 
@@ -162,16 +175,21 @@ Non-goals: protecting secrets from a compromised control plane (it holds the key
 ### Key hierarchy
 
 ```
-root key (control-plane nodes only: /etc/ccattler/secret-root.key, or a KMS key)
+root key (fresh, control-plane only: /etc/ccattler/secret-root.key, or a KMS key)
   └── wraps KEK versions, stored in etcd: keyring/kek/{version}
-        └── wraps a per-secret DEK, stored in the envelope
-              └── encrypts the secret value (AES-256-GCM)
+        └── wraps a per-secret DEK, stored in the envelope (v2)
+              └── encrypts the secret value (AES-256-GCM, AAD = store key)
+
+legacy key (old secret-master.key, control-plane only, migration only)
+  └── opens v1 envelopes; wraps nothing new
 ```
 
-- **Root key:** a 32-byte key on control-plane nodes only, cryptographically separate from the CA key, file mode `0400` owned by root. Ansible's control-plane role provisions it through the same trusted path as the CA material (HA replicas get the same file). It is never sent to agents. With `--kms-provider`, the root key is a KMS key and never touches disk. The existing `secret-master.key` becomes the root key during migration.
-- **Startup checks:** a missing, unreadable, wrongly sized or group/world-readable root key file is a startup error (no silent generation). Each replica opens `keyring/root_check` (a fixed value sealed with the root key, written when the keyring is created); failing to open it is a startup error, so a replica with a different root key never serves.
+- **Root key (R1):** a fresh, cryptographically random 32-byte key generated on the control plane, independent of the CA key and of the legacy key. File `/etc/ccattler/secret-root.key`, mode `0400`, owned by root. Ansible's control-plane role provisions the same file to every HA replica through the same trusted path as the CA material. It is never sent to agents. With `--kms-provider`, the root key is a KMS key and never touches disk.
+- **Legacy key (R1):** the existing `secret-master.key` is copied to every worker today, and agents can still read etcd until M176, so it must never protect anything new. On the control plane it is loaded only to open v1 envelopes; it never wraps a KEK, a DEK of a v2 envelope or `keyring/root_check`. It is deleted from the control plane once the migration reports `legacy_v1_envelope_count = 0` (see "Migration").
+- **Startup checks:** a missing, unreadable, wrongly sized or group/world-readable root key file is a startup error (no silent generation). Each replica opens `keyring/root_check` (a fixed value sealed with the root key, written when the keyring is created); failing to open it is a startup error, so a replica with a different root key never serves. A root key byte-identical to the legacy key is a startup error.
+- **Limitation:** whoever copied the legacy key and v1 ciphertext before migration can still decrypt those historical copies. Migration makes the legacy key useless against the current store; it cannot revoke what was already exfiltrated.
 - **Keyring in etcd:** `keyring/kek/{version}` = KEK wrapped by the root key, `keyring/active` = active version, `keyring/kek/{version}/state` = `active | retiring | retired`. Every API replica reads and watches it, so all replicas use the same versions without copying files.
-- **Envelope v2:** `magic | format=2 | kek_version | wrapped_dek | nonce | ciphertext`. The AES-GCM additional data is the canonical store key (e.g. `secrets/tenant/payments/database.password`), so an envelope only opens under its own name. Moving or renaming a secret is a re-encryption with a new DEK, not a re-wrap. Envelopes without the magic are v1 (DEK wrapped directly by the root key) and stay readable until migrated.
+- **Envelope v2:** `magic | format=2 | kek_version | wrapped_dek | nonce | ciphertext`. The AES-GCM additional data is the canonical store key (e.g. `secrets/tenant/payments/database.password`), so an envelope only opens under its own name. Moving or renaming a secret is a re-encryption with a new DEK, not a re-wrap. Envelopes without the magic are v1 (DEK wrapped directly by the legacy key, no AAD); the control plane reads them until migration re-encrypts them, and never writes a new one.
 
 ### Tenant-scoped secret names
 
@@ -185,14 +203,34 @@ secrets/route/{gate}/tls/key       sealed gate TLS key (written by the system, n
 
 Rules:
 
-- **Ownership (decision A):** services and secrets resolve their tenant in this order: (1) explicit `owner`; (2) the tenant inferred from a hierarchical name such as `payments/api`; (3) the built-in tenant `default`. `default` is reserved (no user-declared `tenant default`) and is an ordinary tenant for isolation: flat, unowned services use `secrets/tenant/default/…` and cannot reach other tenants' secrets. Writing a tenant secret needs `secret.write` at `team/{tenant}`; a cluster secret needs it at `cluster`.
+- **Ownership (decision A):** services and secrets resolve their tenant in this order: (1) explicit `owner`; (2) the tenant inferred from a hierarchical name such as `payments/api`; (3) the built-in tenant `default`. `default` is reserved (no user-declared `tenant default`) and is an ordinary tenant for isolation, not a global namespace: flat, unowned services use `secrets/tenant/default/…` and cannot reach other tenants' secrets.
+- **Secret ownership is set by the CLI (R2).** The DSL declares references and consumption; values, ownership and shares are administered with `cca secret` (full syntax in [cli-reference.md](cli-reference.md#secrets-m174)):
+  ```
+  cca secret set database.password --tenant payments     # secrets/tenant/payments/database.password
+  cca secret set registry.credentials --cluster          # secrets/cluster/registry.credentials
+  cca secret set legacy-app.password                     # secrets/tenant/default/legacy-app.password
+  cca secret share database.password --tenant payments --with-tenant frontend
+  cca secret unshare database.password --tenant payments --with-tenant frontend
+  ```
+  Omitting both flags means `default`; `--tenant` and `--cluster` are mutually exclusive. The value is read from stdin or `--from-file`, never from the command line.
+- **Write permissions (R3):**
+
+  | Secret | Create, update, delete, share, unshare |
+  |---|---|
+  | `default` tenant | `secret.write` at `team/default` |
+  | tenant `payments` | `secret.write` at `team/payments` |
+  | cluster | `secret.write` at `cluster` |
+
+  A cluster admin holds all of these through the cluster grant.
 - **Enforcing ownership:** a production cluster can require an explicit owner (or hierarchical name) for every service through an admission policy ([multi-tenancy.md](multi-tenancy.md) "Policy Gates"), rejecting services that would fall into `default`. Off by default, so existing configurations keep working.
 - **Resolution:** in a service, an unqualified reference (`secret database.password`) resolves to the service's own tenant: `secrets/tenant/{service tenant}/database.password`. Qualified references are explicit: `secret cluster/registry-credentials`, `secret tenant/platform/web-gate-key`.
-- **No implicit visibility:** a reference to another tenant's secret is valid only if the owner declared a share (`secret database.password { share tenant frontend }` → `desired/secret_share/payments/database.password/frontend`). Applying a share needs `secret.write` in the owner's scope; applying the consuming reference needs `secret.use` in the consumer's scope. Cluster secrets need a grant at `cluster` scope for the applying user.
+- **No implicit visibility:** a reference to another tenant's secret is valid only if the owner created a share (`cca secret share` → `desired/secret_share/payments/database.password/frontend`; `unshare` deletes it). Creating a share needs `secret.write` in the owner's scope; applying the consuming reference needs `secret.use` in the consumer's scope. Cluster secrets need a grant at `cluster` scope for the applying user.
 - **Checks in two places:** the compiler/apply path rejects unresolvable or unshared references with a clear error; the delivery endpoint re-checks the grant and share on every request, so a removed share stops delivery on the next start.
 - **Grant facts** carry the canonical name: `desired/service/{svc}/secret/{canonical name}`; connection auto-grants (Flow 9) do the same.
 
 **Migrating unqualified names.** Existing `secrets/{name}` keys are not reinterpreted as tenant or cluster secrets. `cca secret migrate-names --plan` lists every legacy secret with the services and tenants that use it and writes a mapping file; the operator edits it and runs `cca secret migrate-names --apply mapping.ccv`. Every legacy secret must have an explicit target (`tenant/{t}/{name}` or `cluster/{name}`); apply refuses while any is unmapped. Apply re-encrypts each value under its new key (AAD changes) and rewrites grants and connection references in one transaction per secret. Until mapped, a legacy secret keeps today's behavior (only services with an existing grant can use it) and no new grant may reference it.
+
+**Naming sequence (R8).** Before `migrate-names` runs, a legacy-named secret is still re-encrypted to v2 by the key migration: its DEK is wrapped through the fresh keyring and its AAD is the legacy store key (`secrets/database.password`). `migrate-names` later, per secret: opens the current envelope, creates a new DEK, encrypts under the canonical key as AAD (`secrets/tenant/payments/database.password`), writes the new envelope and updates grants and connection references in one transaction, and removes the legacy key in that same commit. It is a re-encryption, never an etcd key move.
 
 ### Rotation (crash-safe)
 
@@ -214,12 +252,14 @@ Every envelope names its KEK version, so after a crash at any step every secret 
 - **Gate keys (decision B):** `POST /api/node/gate-keys` returns the private keys of the gates the calling node serves. Every agent's gate proxy serves every gate, and an external connection can arrive at a node with no local instance of the gate's service, so every gate-serving agent needs every gate key. Restricting keys to nodes running the service would break TLS on the others; narrowing it needs an explicit set of ingress-serving nodes, which is outside M174.
   - Residual risk (accepted for M174): compromising an agent exposes the TLS identities of the gates it serves, not application secrets, not the keyring, not the root key.
   - Gate-key delivery is authorized (enrolled, non-disabled node with the gate proxy enabled) and audited separately from application secret delivery.
+  - Cached on the node in tmpfs (R4), see "Materialization".
 - **Cloud credentials** (`credentials/`) go through the same endpoint and checks; the `node-agent` store role loses its `credentials/` read.
 - **The agent never reads `secrets/`, `credentials/` or `keyring/`**, holds no key and does not decrypt. Connection URLs are still assembled on the agent from the delivered password and the (non-secret) connection definition.
 
 ### Materialization on the node
 
 - All delivered material is written to `/run/ccattler/secrets/{instance}/` (tmpfs; directory `0700`, files `0400`, owned by the container's user where the runtime supports it, else root) and bind-mounted read-only at the declared paths (`/run/secrets/...`, `/run/connections/...`). Nothing secret is written under `/var/lib/ccattler/logs/` or any other disk path.
+- **Gate keys (R4)** are cached separately at `/run/ccattler/gate-keys/{gate}/certificate.pem` and `private-key.pem` (tmpfs; directories `0700`, private key `0400`, root). Only the agent's gate proxy reads them; they are never mounted into containers. The agent reconciles the directory against the delivered set: a removed gate's directory is deleted, a rotated key is replaced (write new file, rename over the old one).
 - Connection URLs with embedded passwords are files only (decision 5). Secret values never appear in logs, `cca` status/describe output, events or traces.
 - **Legacy secret API (decision C):** file delivery is the default. The agent secret API (`:9772`, `GET /v1/secrets/…`) and its `CCA_SECRET_TOKEN` / `CCA_SECRET_URL` environment variables are given only to instances of services that opt in (`legacy_secret_api true` in the service block). For those:
   - the token stays per instance, is revoked when the instance stops, and only authorizes that instance's granted secrets;
@@ -235,14 +275,20 @@ The control plane must be reachable to deliver a secret. Required behavior:
 | Situation | Behavior |
 |---|---|
 | Container running, API becomes unreachable | Keep running; nothing is removed or restarted. |
-| New instance needs secrets | State `waiting-for-secrets` until delivery succeeds; never start without them. |
+| New instance needs secrets | State `waiting-for-secrets` until delivery succeeds; never pull or start without them (R6: delivery precedes `pulling`, also when the image is cached). |
 | Container restarts (crash or liveness) and needs secrets | Material still in tmpfs from this boot → reuse it, no fetch needed. Missing → fetch first. |
 | Agent process restarts, same boot | Reconcile (below); do not delete valid material, do not stop healthy containers. |
 | Node reboots | tmpfs is empty; every instance fetches again before starting. |
 | API stays unreachable | Retry with backoff (`secretDeliveryRetryInitial` 2s, capped at `secretDeliveryRetryMax` 30s); stay `waiting-for-secrets`. |
-| Delivery refused (no grant, no share, not placed here) | `waiting-for-secrets` with reason `not_authorized` and the secret names; retried when the relevant desired/placement facts change, not on a timer. |
+| Delivery refused (no grant, no share, not placed here) | `waiting-for-secrets` with reason `not_authorized` and the secret names. Retried immediately when the instance's placement, its service's grant facts or a relevant share change, and at the latest every `secretDeliveryRefusedRetry` (5 min) as a fallback (R5). The agent watches only those metadata facts, never `secrets/`. The API rate-limits refusal audit records per (node, instance, reason). |
+| Agent process restarts, same boot, gates configured | Reload gate keys from `/run/ccattler/gate-keys/` and serve TLS; refresh through `/api/node/gate-keys` when the API is reachable. |
+| API unreachable, gate keys cached | Keep serving gates with the cached keys. |
+| Node reboots, API unreachable | No gate keys; TLS gates stay unavailable on this node until delivery succeeds. |
+| Gate removed or its key rotated | Next gate-key reconcile removes or replaces the cached material. |
 
-`waiting-for-secrets` is a new typed instance state (`types.InstanceWaitingForSecrets`), published with `observed/instance/{id}/reason` (`api_unreachable | not_authorized | secret_missing`) and `observed/instance/{id}/next_retry`. It is not a failure: it does not count toward crash-loop backoff, the instance is not replaced or rescheduled because of it, and the node-failure controller ignores it. `cca get instances` shows it with the reason.
+`waiting-for-secrets` is a new typed instance state (`types.InstanceWaitingForSecrets`), published with `observed/instance/{id}/reason` (`api_unreachable | not_authorized | secret_missing`) and `observed/instance/{id}/next_retry`. It is not a failure: it does not count toward crash-loop backoff, the instance is not replaced or rescheduled because of it, and the node-failure controller ignores it. `cca get instances` shows it with the reason. Lifecycle: `placed → waiting-for-secrets → pulling → starting → running` (instances that need no secrets skip the state).
+
+Gate-key readiness is reported separately from agent health: `observed/node/{id}/gate_keys = ready | waiting` with reason, so a node that runs workloads but cannot terminate TLS is visible.
 
 **Agent restart on the same boot:** the agent lists `/run/ccattler/secrets/*` and its running containers. A directory whose instance is still running and still placed on this node is kept as is. A directory with no running instance and no placement on this node is removed. Running containers are not touched; their material is refreshed only when they next start.
 
@@ -265,29 +311,35 @@ The control plane must be reachable to deliver a secret. Required behavior:
   }
   ```
   An inline PEM key is still accepted and is sealed by the apply path before anything is written, so no `desired/route/*/tls/key` fact exists. Encrypting on apply does not make a key safe to commit: configurations kept in Git (M202) must use `key secret`, and `cca apply` warns when a file with an inline key comes from a Git source.
-- Agents fetch gate keys through `POST /api/node/gate-keys` and keep them in memory only (the gate proxy needs them, containers do not). Existing plaintext key facts are migrated: sealed, then deleted.
+- Agents fetch gate keys through `POST /api/node/gate-keys` and cache them in tmpfs (`/run/ccattler/gate-keys/`, R4); the gate proxy needs them, containers do not. Existing plaintext key facts are migrated: sealed, then deleted.
 
 ### Enrollment and Ansible
 
 - `handleEnroll` drops `SecretMasterKey`; `cca join` no longer writes a key file; agents ignore `/etc/ccattler/secret-master.key` and log once that the file is unused. Removing existing copies from workers is an explicit migration step (Ansible task), not done silently by the agent.
 - The worker role's join task uses `creates: /etc/ccattler/pki/node.pem` instead of `secret-master.key`.
-- The control-plane role provisions `secret-root.key` (`0400`, root) on every control-plane node.
+- The control-plane role generates `secret-root.key` once (fresh random bytes, never derived from or copied from `secret-master.key`) and provisions it (`0400`, root) to every control-plane node.
+- A migration task removes `secret-master.key` from workers and asserts it is absent; after retirement, the same for control-plane nodes.
 
-### Migration (upgrade order) and cutover gate
+### Migration (upgrade order) and cutover gates
 
-1. Upgrade the control plane: keyring created from the existing master key (v1 envelopes readable), `root_check` written, delivery endpoints available, keyring controller running.
-2. Upgrade agents: they switch to delivery; each reports `observed/node/{id}/secret_delivery = v2`. Plaintext gate key facts are sealed and deleted.
-3. Cutover gate, then one rotation: all envelopes move to v2 under a fresh KEK. **This is the rollback boundary.**
-4. Verify reads and delivery, then remove the key file from workers (Ansible). From here a leaked worker key file is useless.
+1. **Upgrade the control plane.** Ansible generates a fresh root key once and provisions it to every replica (R1). The keyring is created under it (`keyring/kek/1`, `keyring/active`, `keyring/root_check`); the legacy key is loaded only to open v1 envelopes. Delivery endpoints and the keyring controller run. Secret writes stay v1 for now, because agents that are not yet upgraded still decrypt locally.
+2. **Upgrade agents.** They switch to delivery and report `observed/node/{id}/secret_delivery = v2` and `observed/node/{id}/legacy_key_file = present | absent`. Plaintext gate key facts are sealed and deleted.
+3. **Migration gate, then key migration.** `cca secret migrate-keys --confirm-backup` writes `intent/keyring/legacy_migration`. From then on every write is v2. The keyring controller opens each v1 envelope with the legacy key and re-encrypts it as v2 (new DEK under the active KEK, AAD = its current store key, R8) in bounded batches with revision guards, and persists `observed/keyring/migration` = `{state, legacy_v1_envelope_count, migrated, started, completed}` after every batch. Interrupted migration resumes from the remaining v1 envelopes. **This is the rollback boundary.**
+4. **Retire the legacy key.** Ansible deletes `secret-master.key` from workers and asserts its absence; once the retirement gate passes, `cca secret retire-legacy-key` writes `keyring/legacy = retired`, replicas stop loading the legacy key and refuse to open v1 envelopes, and Ansible deletes the file from the control plane. From here the old worker copies cannot decrypt anything in the store.
 
-`cca secret rotate` refuses the first v2 rotation (`409`, listing what is missing) unless all of these hold:
+**Migration gate** — `migrate-keys` is refused (`409`, listing what is missing) unless all hold:
 
-- every API replica reports `observed/keyring/replica/{id}` with the active version and a passed `root_check`;
+- every API replica reports `observed/keyring/replica/{id}` with the M174 version, the active KEK version and a passed `root_check`;
 - every enrolled, non-disabled node reports `secret_delivery = v2`, and no agent of an older version is registered;
-- no component reads v1 envelopes (all readers are v2-capable binaries);
-- the operator passes `--confirm-backup`, stating that a verified etcd snapshot exists and the restore procedure has been tested (runbook in `design/TESTING.md`).
+- `--confirm-backup` is passed, stating that a verified etcd snapshot exists and the restore procedure has been tested (runbook in `design/TESTING.md`).
 
-After step 3 there is no binary rollback: recovery is a forward fix, or a coordinated restore of the pre-rotation etcd snapshot together with the previous binaries.
+**Retirement gate (R7)** — `retire-legacy-key` is refused (`409`) unless all hold:
+
+- `observed/keyring/migration` has `state = completed` and `legacy_v1_envelope_count = 0` (persisted by the controller, recomputed by a full scan before the gate passes);
+- no plaintext `desired/route/*/tls/key` or `derived/route/*/tls/key` fact exists;
+- every enrolled node reports `legacy_key_file = absent` (Ansible removed the file and verified it).
+
+`cca secret rotate` is refused until the migration has completed. After step 3 there is no binary rollback: recovery is a forward fix, or a coordinated restore of the pre-migration etcd snapshot together with the previous binaries. Neither gate claims that previously copied keys or historical ciphertext are erased.
 
 ### Tests
 
@@ -300,13 +352,16 @@ Acceptance (from the A–C decisions):
 Further:
 
 - Envelope v2: AAD binding (an envelope moved to another key fails to open), v1 still readable, version recorded; rename re-encrypts.
-- Root key: missing, wrong size, wrong mode, wrong key (`root_check`) → startup error.
+- Root key: missing, wrong size, wrong mode, wrong key (`root_check`), identical to the legacy key → startup error.
+- Legacy key (R1): the legacy key cannot unwrap any `keyring/kek/*`, cannot open `root_check` and cannot open any v2 envelope; every legacy secret's value is unchanged after migration; after retirement a v1 envelope is refused.
+- Migration: kill mid-batch and restart → resumes, `legacy_v1_envelope_count` persisted and reaches 0; writes during migration are v2; `migrate-keys` refused without `--confirm-backup` or with one agent not on delivery; `retire-legacy-key` refused while one v1 envelope, one plaintext gate key fact or one node reporting `legacy_key_file = present` remains.
 - Rotation: kill at each step and restart; every secret readable; resume completes; batches bounded; CAS conflict retried; referenced versions never deleted; replicas read the same versions.
-- Tenants: unqualified name resolves to own tenant; another tenant's secret refused without share, delivered with share, refused again after the share is removed; cluster secret needs cluster grant; `migrate-names --apply` refuses unmapped secrets.
+- Tenants: unqualified name resolves to own tenant; another tenant's secret refused without share, delivered with share, refused again after `unshare`; cluster secret needs cluster grant; `secret set` without flags writes to `default` and needs `secret.write` at `team/default`; `--tenant` with `--cluster` is rejected; `migrate-names --apply` refuses unmapped secrets and leaves no legacy key behind.
 - Delivery: wrong node, unplaced instance, missing grant, disabled node, user principal: refused and audited; correct case returns only granted secrets; `secret-delivery` role cannot write outside its audit stream; `api-server` role still cannot read `secrets/`.
-- Availability: API down with running container → keeps running; new instance → `waiting-for-secrets`, no replacement, starts when API returns; agent restart keeps material of running instances and removes orphans; node reboot re-fetches before start.
+- Availability: API down with running container → keeps running; new instance → `waiting-for-secrets`, no replacement, starts when API returns; agent restart keeps material of running instances and removes orphans; node reboot re-fetches before start; refused delivery retried on a share/grant change and by the 5-minute fallback, refusal audit rate-limited.
+- Ordering: an instance with a cached image and an image pull secret still passes `waiting-for-secrets` before `pulling`/`starting`.
+- Gate keys during outages: agent restart with the API down keeps serving TLS from `/run/ccattler/gate-keys/`; reboot with the API down reports `gate_keys = waiting`; a removed gate's directory is deleted.
 - Materialization: tmpfs, `0700`/`0400`, removed after stop; nothing under the logs directory; no secret value in logs, events or `cca` output.
 - Enrollment response has no key; a joined worker has no key file.
 - Gate keys: no plaintext key fact after reconcile and after apply of an inline PEM; gate TLS e2e (T1–T15) unchanged.
-- Cutover gate: rotation refused while one agent reports v1 or `--confirm-backup` is missing.
-- Deploy cluster: secrets and connection strings still reach Airflow; rotation during traffic.
+- Deploy cluster: secrets and connection strings still reach Airflow through migration and retirement; rotation during traffic.
