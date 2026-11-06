@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,7 +238,7 @@ func TestPublishSecretDeliveryCapabilityReportsLegacyKeyFile(testContext *testin
 
 func TestSecretMaterialStoreRejectsUnsafeNamesAndCleansStaging(testContext *testing.T) {
 	materialStore := NewSecretMaterialStore(testContext.TempDir())
-	for _, unsafeName := range []string{"", "..", "a/b", secretMaterialStagingMarker + "x"} {
+	for _, unsafeName := range []string{"", "..", "../x", "a//b", secretMaterialStagingMarker + "x"} {
 		if writeError := materialStore.WriteInstanceSecrets("inst-1", map[string][]byte{unsafeName: []byte("x")}); writeError == nil {
 			testContext.Fatalf("expected rejection of secret name %q", unsafeName)
 		}
@@ -289,5 +290,107 @@ func TestHTTPSecretDeliveryClientMapsResponses(testContext *testing.T) {
 		if !isDeliveryError || deliveryError.Reason != testCase.expectedReason {
 			testContext.Fatalf("status %d: error %v, want reason %s", testCase.statusCode, fetchError, testCase.expectedReason)
 		}
+	}
+}
+
+// failingScanStore fails every Scan, simulating an etcd outage for reads.
+type failingScanStore struct {
+	store.StateStore
+}
+
+// Scan always fails.
+func (failingStore failingScanStore) Scan(context.Context, string) ([]store.Fact, error) {
+	return nil, errors.New("etcd unavailable")
+}
+
+func TestStoreErrorNeverStartsWithoutSecrets(testContext *testing.T) {
+	_, deliveryClient, _, memoryStore, materialStore := newDeliveryTestAgent(testContext)
+	recordingRuntime := newSpecRecordingRuntime()
+	nodeAgent := New("node-1", failingScanStore{StateStore: memoryStore}, recordingRuntime)
+	nodeAgent.SetSecretDelivery(deliveryClient, materialStore)
+	nodeAgent.reconcileDesiredInstance(context.Background(), placedInstanceInfo{id: "inst-1", service: "web"})
+	if _, started := recordingRuntime.startedSpec("inst-1"); started || len(recordingRuntime.PulledImages) != 0 {
+		testContext.Fatal("a store error must not be treated as 'no secrets needed'")
+	}
+}
+
+func TestRemovedGrantOrUngrantedConnectionForcesNewDelivery(testContext *testing.T) {
+	nodeAgent, deliveryClient, _, memoryStore, materialStore := newDeliveryTestAgent(testContext)
+	ctx := context.Background()
+	_ = materialStore.WriteInstanceSecrets("inst-1", map[string][]byte{deliveryTestSecretName: []byte("old"), "revoked": []byte("x")})
+	nodeAgent.reconcileDesiredInstance(ctx, placedInstanceInfo{id: "inst-1", service: "web"})
+	if deliveryClient.fetches() != 1 {
+		testContext.Fatalf("material with a revoked secret must be re-delivered, fetches = %d", deliveryClient.fetches())
+	}
+	if values, _ := materialStore.ReadInstanceSecrets("inst-1"); len(values) != 1 || string(values[deliveryTestSecretName]) != "s3cret" {
+		testContext.Fatalf("material after re-delivery = %v", values)
+	}
+
+	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImagePullSecret("web"), []byte("registry-creds"))
+	deliveryClient.setDeliveryError(&SecretDeliveryError{Reason: SecretWaitNotAuthorized, SecretNames: []string{"registry-creds"}, Detail: "no grant"})
+	nodeAgent.reconcileDesiredInstance(ctx, placedInstanceInfo{id: "inst-1", service: "web"})
+	if deliveryClient.fetches() != 2 || readInstanceState(memoryStore, "inst-1") != types.InstanceWaitingForSecrets {
+		testContext.Fatalf("an ungranted pull secret must not reuse material, fetches = %d", deliveryClient.fetches())
+	}
+}
+
+func TestExplicitSecretMountPathsAreCleanedAndRestricted(testContext *testing.T) {
+	for _, testCase := range []struct {
+		mountPath    string // mountPath is the grant's mount path.
+		expectedPath string // expectedPath is the cleaned path ("" = unusable).
+	}{
+		{"/run/secrets//db/", "/run/secrets/db"},
+		{"/proc/self/environ", ""},
+		{"/run/cca-secrets/other", ""},
+		{"relative", ""},
+		{"/", ""},
+	} {
+		cleanedPath, usable := resolveExplicitSecretMountPath(testCase.mountPath)
+		if (testCase.expectedPath == "") == usable || cleanedPath != testCase.expectedPath {
+			testContext.Fatalf("%q → %q (%v), want %q", testCase.mountPath, cleanedPath, usable, testCase.expectedPath)
+		}
+	}
+}
+
+func TestHierarchicalSecretNamesRoundTripOnDisk(testContext *testing.T) {
+	materialStore := NewSecretMaterialStore(testContext.TempDir())
+	if writeError := materialStore.WriteInstanceSecrets("inst-1", map[string][]byte{"payments/db-password": []byte("p")}); writeError != nil {
+		testContext.Fatal(writeError)
+	}
+	values, _ := materialStore.ReadInstanceSecrets("inst-1")
+	if string(values["payments/db-password"]) != "p" || filepath.Base(materialStore.SecretValuePath("inst-1", "payments/db-password")) != "payments%2Fdb-password" {
+		testContext.Fatalf("round trip failed: %v", values)
+	}
+}
+
+func TestConfigChangeRestartDropsMaterialAndMissingSecretRetriesSooner(testContext *testing.T) {
+	nodeAgent, _, _, memoryStore, materialStore := newDeliveryTestAgent(testContext)
+	ctx := context.Background()
+	instance := placedInstanceInfo{id: "inst-1", service: "web"}
+	nodeAgent.reconcileDesiredInstance(ctx, instance)
+	_, _ = memoryStore.Put(ctx, types.KeyObservedInstanceConfigHash("inst-1"), []byte("stale-hash"))
+	if !nodeAgent.detectConfigChange(ctx, instance) {
+		testContext.Fatal("expected a config change")
+	}
+	if _, hasMaterial := materialStore.ReadInstanceSecrets("inst-1"); hasMaterial {
+		testContext.Fatal("config-change restart must re-fetch current secret values")
+	}
+	if delay := secretDeliveryRetryDelay(SecretWaitSecretMissing, 1); delay != secretDeliveryRetryMax {
+		testContext.Fatalf("secret_missing retry = %v", delay)
+	}
+}
+
+func TestMaterialStoreRefusesDiskBackedDirectoryWhenRequired(testContext *testing.T) {
+	baseDirectory := testContext.TempDir()
+	if memoryBacked, _ := isMemoryFilesystem(baseDirectory); memoryBacked {
+		testContext.Skip("temporary directory is memory-backed on this host")
+	}
+	materialStore := NewSecretMaterialStore(baseDirectory)
+	materialStore.RequireMemoryFilesystem()
+	if writeError := materialStore.WriteInstanceSecrets("inst-1", map[string][]byte{"a": []byte("x")}); writeError == nil {
+		testContext.Fatal("writing secrets to a disk-backed directory must be refused")
+	}
+	if remaining := materialStore.ListInstances(); len(remaining) != 0 {
+		testContext.Fatalf("nothing may be written: %v", remaining)
 	}
 }

@@ -88,7 +88,7 @@ func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readS
 	secretKey := SecretStorePrefix + secretName
 	fact, err := readStore.Get(ctx, secretKey)
 	if err != nil {
-		return nil, fmt.Errorf("secret %q not found", secretName)
+		return nil, fmt.Errorf("secret %q not found: %w", secretName, err)
 	}
 
 	envelopeBlob, err := base64.StdEncoding.DecodeString(string(fact.Value))

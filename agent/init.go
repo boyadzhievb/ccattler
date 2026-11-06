@@ -228,7 +228,9 @@ func (nodeAgent *Agent) runInitCommand(ctx context.Context, image string, instan
 		Command: stepDefinition.exec,
 		Env:     serviceEnvVars,
 	}
-	nodeAgent.materializeInitConfigFiles(execCtx, instanceInfo, &initSpec)
+	if mountError := nodeAgent.materializeInitConfigFiles(execCtx, instanceInfo, &initSpec); mountError != nil {
+		return mountError
+	}
 	return nodeAgent.runtime.ExecInit(execCtx, image, initSpec)
 }
 
@@ -422,10 +424,15 @@ func (nodeAgent *Agent) hasInitSteps(ctx context.Context, serviceName string) bo
 // materializeInitConfigFiles gives an init container the same read-only secret
 // and connection mounts as the main container (architectural rule 6). The
 // material was delivered before the image pull, so it is read from tmpfs.
-func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, instanceInfo placedInstanceInfo, initSpec *goruntime.ExecSpec) {
-	initSpec.SecretMounts = nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, nodeAgent.readDeliveredSecretValues(instanceInfo.id))
-	initSpec.ConfigFiles = addSecretHelperIfMounted(initSpec.SecretMounts, initSpec.ConfigFiles)
-	if len(initSpec.SecretMounts) == 0 {
-		initSpec.SecretMounts = nil
+// An error means the step must not run without its mounts.
+func (nodeAgent *Agent) materializeInitConfigFiles(ctx context.Context, instanceInfo placedInstanceInfo, initSpec *goruntime.ExecSpec) error {
+	secretMounts, mountError := nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, nodeAgent.readDeliveredSecretValues(instanceInfo.id))
+	if mountError != nil {
+		return mountError
 	}
+	if len(secretMounts) > 0 {
+		initSpec.SecretMounts = secretMounts
+	}
+	initSpec.ConfigFiles = addSecretHelperIfMounted(initSpec.SecretMounts, initSpec.ConfigFiles)
+	return nil
 }

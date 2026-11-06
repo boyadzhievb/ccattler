@@ -770,7 +770,15 @@ func (nodeAgent *Agent) reconcileDesiredInstance(ctx context.Context, instanceIn
 
 	nodeAgent.publishStatusReason(ctx, instanceInfo.id, "starting")
 	runtimeSpec := nodeAgent.buildRuntimeSpecForInstance(ctx, instanceInfo, image)
-	runtimeSpec.SecretMounts = nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, secretValues)
+	secretMounts, mountError := nodeAgent.buildInstanceSecretMounts(ctx, instanceInfo, secretValues)
+	if mountError != nil {
+		logging.Default().Warn("cannot build secret mounts, retrying next cycle", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", mountError.Error())
+		if secretAPIToken != "" {
+			nodeAgent.secretAPIServer.RevokeInstanceToken(instanceInfo.id)
+		}
+		return
+	}
+	runtimeSpec.SecretMounts = secretMounts
 	runtimeSpec.ConfigFiles = addSecretHelperIfMounted(runtimeSpec.SecretMounts, runtimeSpec.ConfigFiles)
 	if nodeAgent.storageProvider != nil {
 		nodeAgent.resolveVolumeMountsForSpec(ctx, instanceInfo, &runtimeSpec)
@@ -1273,6 +1281,9 @@ func (nodeAgent *Agent) detectConfigChange(ctx context.Context, instanceInfo pla
 	if stopError := nodeAgent.stopInstanceWithGracePeriod(ctx, instanceInfo.id, instanceInfo.service); stopError != nil {
 		logging.Default().Error("failed to stop instance for config reload",
 			"instance", instanceInfo.id, "error", stopError.Error())
+	}
+	if nodeAgent.secretMaterialStore != nil {
+		nodeAgent.secretMaterialStore.RemoveInstance(instanceInfo.id) // config restart re-fetches current secret values
 	}
 	return true
 }

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/boyadzhievb/ccattler/types"
 )
 
 // DefaultSecretMaterialDirectory is where delivered secret material lives on a
@@ -33,6 +35,9 @@ const secretValuesSubdirectory = "values"
 // secretConnectionsSubdirectory holds assembled connection URL files.
 const secretConnectionsSubdirectory = "connections"
 
+// secretFileNameSlashEncoding replaces "/" in hierarchical secret names on disk.
+const secretFileNameSlashEncoding = "%2F"
+
 // secretMaterialStagingMarker marks a directory being written; it is renamed
 // into place only when complete, so a crash never leaves partial material.
 const secretMaterialStagingMarker = ".staging-"
@@ -40,12 +45,35 @@ const secretMaterialStagingMarker = ".staging-"
 // SecretMaterialStore manages per-instance secret material on tmpfs. The agent
 // writes delivered values once per boot and reuses them for container restarts.
 type SecretMaterialStore struct {
-	baseDirectory string // baseDirectory is the tmpfs root, e.g. /run/ccattler/secrets.
+	baseDirectory           string // baseDirectory is the tmpfs root, e.g. /run/ccattler/secrets.
+	requireMemoryFilesystem bool   // requireMemoryFilesystem refuses to write unless baseDirectory is tmpfs or ramfs.
 }
 
 // NewSecretMaterialStore creates a store rooted at baseDirectory.
 func NewSecretMaterialStore(baseDirectory string) *SecretMaterialStore {
 	return &SecretMaterialStore{baseDirectory: baseDirectory}
+}
+
+// RequireMemoryFilesystem makes every write fail unless the base directory is
+// on tmpfs or ramfs, so plaintext never reaches disk on a host where /run is
+// disk-backed. cca agent enables it; tests use a plain temporary directory.
+func (materialStore *SecretMaterialStore) RequireMemoryFilesystem() {
+	materialStore.requireMemoryFilesystem = true
+}
+
+// encodeSecretFileName maps a validated secret name to one file name: "/"
+// (hierarchical names such as "payments/db-password") becomes "%2F". Valid
+// names never contain "%", so the mapping is reversible.
+func encodeSecretFileName(secretName string) (string, error) {
+	if validationError := types.ValidateSecretName(secretName); validationError != nil {
+		return "", validationError
+	}
+	return strings.ReplaceAll(secretName, "/", secretFileNameSlashEncoding), nil
+}
+
+// decodeSecretFileName reverses encodeSecretFileName.
+func decodeSecretFileName(fileName string) string {
+	return strings.ReplaceAll(fileName, secretFileNameSlashEncoding, "/")
 }
 
 // validateMaterialPathSegment rejects names that could escape the instance
@@ -64,7 +92,8 @@ func (materialStore *SecretMaterialStore) instanceDirectory(instanceID string) s
 
 // SecretValuePath returns the host path of one delivered secret value.
 func (materialStore *SecretMaterialStore) SecretValuePath(instanceID string, secretName string) string {
-	return filepath.Join(materialStore.instanceDirectory(instanceID), secretValuesSubdirectory, secretName)
+	fileName, _ := encodeSecretFileName(secretName)
+	return filepath.Join(materialStore.instanceDirectory(instanceID), secretValuesSubdirectory, fileName)
 }
 
 // WriteInstanceSecrets replaces the instance's material with the delivered
@@ -73,8 +102,8 @@ func (materialStore *SecretMaterialStore) WriteInstanceSecrets(instanceID string
 	if validationError := validateMaterialPathSegment(instanceID); validationError != nil {
 		return validationError
 	}
-	if mkdirError := os.MkdirAll(materialStore.baseDirectory, secretMaterialDirectoryMode); mkdirError != nil {
-		return fmt.Errorf("create secret material directory: %w", mkdirError)
+	if prepareError := materialStore.prepareBaseDirectory(); prepareError != nil {
+		return prepareError
 	}
 	randomSuffix := make([]byte, 4)
 	_, _ = rand.Read(randomSuffix)
@@ -102,10 +131,11 @@ func writeSecretValuesDirectory(directory string, secretValues map[string][]byte
 		return fmt.Errorf("restrict secret material directory: %w", chmodError)
 	}
 	for secretName, secretValue := range secretValues {
-		if validationError := validateMaterialPathSegment(secretName); validationError != nil {
+		fileName, validationError := encodeSecretFileName(secretName)
+		if validationError != nil {
 			return validationError
 		}
-		if writeError := os.WriteFile(filepath.Join(valuesDirectory, secretName), secretValue, secretMaterialFileMode); writeError != nil {
+		if writeError := os.WriteFile(filepath.Join(valuesDirectory, fileName), secretValue, secretMaterialFileMode); writeError != nil {
 			return fmt.Errorf("write secret %s: %w", secretName, writeError)
 		}
 	}
@@ -129,14 +159,14 @@ func (materialStore *SecretMaterialStore) ReadInstanceSecrets(instanceID string)
 		if fileError != nil {
 			return nil, false
 		}
-		secretValues[directoryEntry.Name()] = secretValue
+		secretValues[decodeSecretFileName(directoryEntry.Name())] = secretValue
 	}
 	return secretValues, true
 }
 
 // ReadInstanceSecret returns one delivered value; used by the legacy secret API.
 func (materialStore *SecretMaterialStore) ReadInstanceSecret(instanceID string, secretName string) ([]byte, error) {
-	if validateMaterialPathSegment(instanceID) != nil || validateMaterialPathSegment(secretName) != nil {
+	if validateMaterialPathSegment(instanceID) != nil || types.ValidateSecretName(secretName) != nil {
 		return nil, errors.New("invalid secret name")
 	}
 	return os.ReadFile(materialStore.SecretValuePath(instanceID, secretName)) //nolint:gosec // G304: path built from validated names under the material root
@@ -158,6 +188,24 @@ func (materialStore *SecretMaterialStore) WriteConnectionFile(instanceID string,
 		return "", fmt.Errorf("write connection %s: %w", connectionName, writeError)
 	}
 	return connectionPath, nil
+}
+
+// prepareBaseDirectory creates the base directory, restricts it to root
+// (0700), and verifies it is memory-backed when that is required.
+func (materialStore *SecretMaterialStore) prepareBaseDirectory() error {
+	if mkdirError := os.MkdirAll(materialStore.baseDirectory, secretMaterialDirectoryMode); mkdirError != nil {
+		return fmt.Errorf("create secret material directory: %w", mkdirError)
+	}
+	if chmodError := os.Chmod(materialStore.baseDirectory, secretMaterialDirectoryMode); chmodError != nil {
+		return fmt.Errorf("restrict secret material directory: %w", chmodError)
+	}
+	if !materialStore.requireMemoryFilesystem {
+		return nil
+	}
+	if memoryBacked, checkError := isMemoryFilesystem(materialStore.baseDirectory); checkError != nil || !memoryBacked {
+		return fmt.Errorf("refusing to write secrets: %s is not on tmpfs or ramfs (%v)", materialStore.baseDirectory, checkError)
+	}
+	return nil
 }
 
 // RemoveInstance deletes the material of an instance.

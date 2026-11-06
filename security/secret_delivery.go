@@ -31,6 +31,11 @@ const SecretDeliveryAuditAction = "secret.deliver"
 // that retries does not flood the audit log.
 const secretDeliveryRefusalAuditInterval = time.Minute
 
+// secretDeliveryRefusalAuditMaxEntries caps the refusal rate-limit map; new
+// keys beyond it are not audited until expired entries are pruned, so a node
+// flooding random instance IDs cannot grow memory without bound.
+const secretDeliveryRefusalAuditMaxEntries = 10000
+
 // SecretDeliveryRefusalReason is the typed reason a delivery was refused. The
 // agent publishes it as the reason of the waiting-for-secrets state.
 type SecretDeliveryRefusalReason string
@@ -77,6 +82,7 @@ type SecretDeliveryService struct {
 	auditLog              AuditLogger          // auditLog records every decision; nil disables audit.
 	refusalAuditMutex     sync.Mutex           // refusalAuditMutex guards lastRefusalAuditTimes.
 	lastRefusalAuditTimes map[string]time.Time // lastRefusalAuditTimes maps node|instance|reason to the last refusal audit time.
+	lastRefusalAuditPrune time.Time            // lastRefusalAuditPrune is when expired rate-limit entries were last dropped.
 }
 
 // NewSecretDeliveryService creates a delivery service. deliveryStore must be
@@ -110,9 +116,12 @@ func (deliveryService *SecretDeliveryService) DeliverInstanceSecrets(ctx context
 	var missingSecretNames []string
 	for _, secretName := range requiredSecretNames {
 		plaintext, readError := deliveryService.secretStore.GetSecretThroughStore(ctx, deliveryService.deliveryStore, secretName)
-		if readError != nil {
+		if errors.Is(readError, store.ErrKeyNotFound) {
 			missingSecretNames = append(missingSecretNames, secretName)
 			continue
+		}
+		if readError != nil {
+			return nil, fmt.Errorf("read secret %s: %w", secretName, readError)
 		}
 		delivered.Secrets[secretName] = plaintext
 	}
@@ -125,28 +134,55 @@ func (deliveryService *SecretDeliveryService) DeliverInstanceSecrets(ctx context
 	return delivered, nil
 }
 
+// getDeliveryFact reads one fact for a delivery check. A missing key returns
+// (nil, nil) so callers refuse; any other store error is returned as is so
+// the request fails with a server error instead of a refusal.
+func (deliveryService *SecretDeliveryService) getDeliveryFact(ctx context.Context, key string) (*store.Fact, error) {
+	fact, getError := deliveryService.deliveryStore.Get(ctx, key)
+	if errors.Is(getError, store.ErrKeyNotFound) {
+		return nil, nil
+	}
+	if getError != nil {
+		return nil, fmt.Errorf("read %s: %w", key, getError)
+	}
+	return fact, nil
+}
+
 // authorizeNodeForInstance checks that the node is enrolled and not disabled
 // and that the instance is placed on it. Returns the instance's service.
+// Store errors are returned unwrapped from refusals (server error, retried).
 func (deliveryService *SecretDeliveryService) authorizeNodeForInstance(ctx context.Context, nodeID string, instanceID string) (string, error) {
-	if nodeID == "" || instanceID == "" || strings.Contains(instanceID, "/") {
+	if nodeID == "" || types.ValidateResourceName(instanceID) != nil {
 		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "invalid node or instance id"}
 	}
-	if _, enrolledError := deliveryService.deliveryStore.Get(ctx, EnrolledNodePrefix+nodeID); enrolledError != nil {
-		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is not enrolled"}
+	enrolledFact, enrolledError := deliveryService.getDeliveryFact(ctx, EnrolledNodePrefix+nodeID)
+	if enrolledError != nil || enrolledFact == nil {
+		return "", firstError(enrolledError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is not enrolled"})
 	}
-	if nodeStateFact, stateError := deliveryService.deliveryStore.Get(ctx, types.KeyObservedNodeState(nodeID)); stateError == nil &&
-		types.NodeState(nodeStateFact.Value) == types.NodeDisabled {
+	nodeStateFact, stateError := deliveryService.getDeliveryFact(ctx, types.KeyObservedNodeState(nodeID))
+	if stateError != nil {
+		return "", stateError
+	}
+	if nodeStateFact != nil && types.NodeState(nodeStateFact.Value) == types.NodeDisabled {
 		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is disabled"}
 	}
-	placementFact, placementError := deliveryService.deliveryStore.Get(ctx, types.KeyPlacementInstance(instanceID))
-	if placementError != nil || string(placementFact.Value) != nodeID {
-		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance is not placed on this node"}
+	placementFact, placementError := deliveryService.getDeliveryFact(ctx, types.KeyPlacementInstance(instanceID))
+	if placementError != nil || placementFact == nil || string(placementFact.Value) != nodeID {
+		return "", firstError(placementError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance is not placed on this node"})
 	}
-	serviceFact, serviceError := deliveryService.deliveryStore.Get(ctx, types.KeyObservedInstanceService(instanceID))
-	if serviceError != nil || len(serviceFact.Value) == 0 {
-		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance has no service"}
+	serviceFact, serviceError := deliveryService.getDeliveryFact(ctx, types.KeyObservedInstanceService(instanceID))
+	if serviceError != nil || serviceFact == nil || len(serviceFact.Value) == 0 {
+		return "", firstError(serviceError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance has no service"})
 	}
 	return string(serviceFact.Value), nil
+}
+
+// firstError returns storeError when set, otherwise refusal.
+func firstError(storeError error, refusal *SecretDeliveryRefusal) error {
+	if storeError != nil {
+		return storeError
+	}
+	return refusal
 }
 
 // resolveRequiredSecretNames returns the sorted names of every secret the
@@ -160,7 +196,7 @@ func (deliveryService *SecretDeliveryService) resolveRequiredSecretNames(ctx con
 	}
 	grantedSecretNames := make(map[string]bool, len(grantFacts))
 	for _, grantFact := range grantFacts {
-		if secretName := strings.TrimPrefix(grantFact.Key, grantPrefix); secretName != "" && !strings.Contains(secretName, "/") {
+		if secretName := strings.TrimPrefix(grantFact.Key, grantPrefix); types.ValidateSecretName(secretName) == nil {
 			grantedSecretNames[secretName] = true
 		}
 	}
@@ -224,25 +260,27 @@ func (deliveryService *SecretDeliveryService) collectReferencedSecretNames(ctx c
 // auditRefusal records a refused delivery at most once per
 // secretDeliveryRefusalAuditInterval for the same node, instance and reason.
 func (deliveryService *SecretDeliveryService) auditRefusal(nodeID string, instanceID string, serviceName string, refusalError error) {
-	reason := string(SecretDeliveryNotAuthorized)
-	var secretNames []string
 	var refusal *SecretDeliveryRefusal
-	if errors.As(refusalError, &refusal) {
-		reason = string(refusal.Reason) + ": " + refusal.Detail
-		secretNames = refusal.SecretNames
+	if !errors.As(refusalError, &refusal) {
+		return
 	}
+	reason := string(refusal.Reason) + ": " + refusal.Detail
 	rateLimitKey := nodeID + "|" + instanceID + "|" + reason
 	now := time.Now()
 	deliveryService.refusalAuditMutex.Lock()
+	if now.Sub(deliveryService.lastRefusalAuditPrune) >= secretDeliveryRefusalAuditInterval {
+		deliveryService.pruneRefusalAuditTimes(now)
+		deliveryService.lastRefusalAuditPrune = now
+	}
 	lastAuditTime, audited := deliveryService.lastRefusalAuditTimes[rateLimitKey]
-	if audited && now.Sub(lastAuditTime) < secretDeliveryRefusalAuditInterval {
+	if (audited && now.Sub(lastAuditTime) < secretDeliveryRefusalAuditInterval) ||
+		(!audited && len(deliveryService.lastRefusalAuditTimes) >= secretDeliveryRefusalAuditMaxEntries) {
 		deliveryService.refusalAuditMutex.Unlock()
 		return
 	}
 	deliveryService.lastRefusalAuditTimes[rateLimitKey] = now
-	deliveryService.pruneRefusalAuditTimes(now)
 	deliveryService.refusalAuditMutex.Unlock()
-	deliveryService.auditDecision(nodeID, instanceID, serviceName, secretNames, AuditDecisionDeny, reason)
+	deliveryService.auditDecision(nodeID, instanceID, serviceName, refusal.SecretNames, AuditDecisionDeny, reason)
 }
 
 // pruneRefusalAuditTimes drops rate-limit entries older than the interval so

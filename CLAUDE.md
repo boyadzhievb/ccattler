@@ -30,6 +30,12 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 - **Every exported type must be wired.** Show where it's instantiated in production.
 - **Integration test assertions must be inside `waitFor`.** Never assert async facts after a `waitFor` that checked a different fact.
 
+### Independent Review (from Phase 174)
+
+- **The implementer never reviews its own work.** Before a milestone is marked complete or released, a separate subagent reviews the milestone diff adversarially against its design doc and checklist: `code-reviewer` always, plus `security-audit` for auth, secrets, enrollment or network-facing changes.
+- **Verify every finding in the code before acting.** Fix real ones; reject hypothetical or out-of-scope ones. Record each as fixed/rejected with one line of reasoning in the milestone's checklist.
+- **Only executed things count.** Unit tests plus a deploy-cluster or e2e run; a review does not replace them.
+
 ### Data Structures & Algorithms
 
 - **Maps for O(1) lookups.** `map[string]T` for key-based lookups, never linear scans.

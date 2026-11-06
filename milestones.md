@@ -125,6 +125,24 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [x] Agents report `observed/node/{id}/secret_delivery = v2` and `legacy_key_file = present | absent`
 - [x] Enrollment response without `SecretMasterKey`; `cca join` writes no key; agent ignores the file (logs once); Ansible join task `creates: /etc/ccattler/pki/node.pem`; agent unit passes `--api-server`
 - [x] Unit tests: delivery refusals (wrong node, unplaced, missing grant, disabled node, unenrolled, user/service/non-mTLS principal); availability cases (unreachable, refused, restart reuse, sweep, cached image waits); secrets only as read-only mounts; legacy API from tmpfs material only; enrollment response without key material
+- [x] Deploy run 42240496869 found: the control-plane node's `cca init` certificate has no enrollment record, so its agent was refused → server records its own node as enrolled at start (create-only, 60eee55)
+- [x] Independent review 2026-11-06 (`code-reviewer` + `security-audit` on bf54400..60eee55; no critical/high). Outcome:
+  - fixed — store read errors on the agent counted as "needs no secrets" → instance could start without them; now not ready, retried
+  - fixed — material reuse checked grants only → now exactly the granted set and every connection/pull secret, so a removed grant or ungranted reference forces a new delivery
+  - fixed — config-change restart reused old values → material dropped on config restart (value rotation without a config change remains M177)
+  - fixed — server store/decrypt errors reported as `not_authorized`/`secret_missing` (5-min wait) → plain 500, agent backs off 2s…30s; not audited as refusals
+  - fixed — `secret_missing` waited 5 min after `cca secret set` → fixed 30s retry (agent cannot watch `secrets/`)
+  - fixed — map-order mount collisions and unclean/unsafe explicit paths → sorted names, cleaned paths, `/proc` `/sys` `/dev` `/run/cca-secrets` refused
+  - fixed — hierarchical names (`payments/db-password`) silently undeliverable → validated with `ValidateSecretName`, `/` encoded as `%2F` on disk
+  - fixed — no tmpfs check → `cca agent` refuses to write material unless `/run/ccattler/secrets` is tmpfs/ramfs; base dir forced to `0700`
+  - fixed — legacy API served revoked grants → checks the current grant on every read
+  - fixed — refusal-audit map unbounded / pruned on every request → instance IDs validated (`ValidateResourceName`), map capped at 10000, pruned once per minute
+  - fixed — delivery client followed redirects with the node certificate → redirects refused
+  - fixed — control-plane enrollment skipped with a rotating server certificate → uses `GetCertificate`
+  - rejected — legacy API read racing a material rewrite: rewrite happens only before the container (and its token) starts; transient 403 at worst
+  - rejected — audit is fire-and-forget: same for every audit path in the system, out of M174 scope
+  - rejected — `RootCAs` nil falls back to system pool: not insecure, server configs always carry the cluster CA
+  - rejected — `nerdctl --creds` on the command line: pre-existing (Flow 22), unchanged by M174; noted for M181
 - [ ] Deploy cluster: Airflow secrets and connection strings delivered (non-root uid 50000), `observed/node/*/secret_delivery = v2`, no `cca-config-*` secret copies under `/tmp` or the logs directory; bare-metal e2e green
 
 ### Phase 175 — Gate Key Sealing & Delivery (M175)

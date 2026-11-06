@@ -81,6 +81,9 @@ func NewHTTPSecretDeliveryClient(apiAddress string, nodeTLSConfig *tls.Config) *
 		httpClient: &http.Client{
 			Timeout:   secretDeliveryRequestTimeout,
 			Transport: &http.Transport{TLSClientConfig: nodeTLSConfig.Clone()},
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse // never follow a redirect with the node certificate
+			},
 		},
 		apiBaseURL: apiBaseURL,
 	}

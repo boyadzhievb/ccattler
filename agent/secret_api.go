@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/logging"
+	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -42,6 +43,7 @@ const secretTokenLength = 32
 type SecretAPIServer struct {
 	nodeID         string                   // nodeID identifies this node in log messages.
 	materialStore  *SecretMaterialStore     // materialStore holds each instance's delivered secrets.
+	grantStore     store.StateStore         // grantStore is read for the service's current grants, so a revoked grant stops being served at once.
 	httpServer     *http.Server             // httpServer is the underlying HTTP server.
 	tokenMutex     sync.RWMutex             // tokenMutex protects the instanceTokens map.
 	instanceTokens map[string]tokenMetadata // instanceTokens maps hex-encoded bearer token → instance metadata.
@@ -56,10 +58,11 @@ type tokenMetadata struct {
 
 // NewSecretAPIServer creates a SecretAPIServer bound to the given address.
 // The server is not started until Start is called.
-func NewSecretAPIServer(nodeID string, listenAddress string, materialStore *SecretMaterialStore) *SecretAPIServer {
+func NewSecretAPIServer(nodeID string, listenAddress string, materialStore *SecretMaterialStore, grantStore store.StateStore) *SecretAPIServer {
 	secretAPIServer := &SecretAPIServer{
 		nodeID:         nodeID,
 		materialStore:  materialStore,
+		grantStore:     grantStore,
 		instanceTokens: make(map[string]tokenMetadata),
 		warnedServices: make(map[string]bool),
 	}
@@ -181,6 +184,10 @@ func (secretAPIServer *SecretAPIServer) handleGetSecret(responseWriter http.Resp
 		return
 	}
 
+	if !secretAPIServer.isCurrentlyGranted(request.Context(), callerMetadata.serviceName, secretName) {
+		writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
+		return
+	}
 	plaintext, retrievalError := secretAPIServer.materialStore.ReadInstanceSecret(callerMetadata.instanceID, secretName)
 	if retrievalError != nil {
 		writeDebugJSONError(responseWriter, "forbidden", http.StatusForbidden)
@@ -218,7 +225,7 @@ func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.Re
 		return
 	}
 
-	grantedSecretNames := secretAPIServer.listDeliveredSecretNames(callerMetadata.instanceID)
+	grantedSecretNames := secretAPIServer.listDeliveredSecretNames(request.Context(), callerMetadata)
 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(secretListResponse{
@@ -228,15 +235,27 @@ func (secretAPIServer *SecretAPIServer) handleListSecrets(responseWriter http.Re
 }
 
 // listDeliveredSecretNames returns the sorted names of the secrets delivered
-// to the instance (exactly its granted secrets), never values.
-func (secretAPIServer *SecretAPIServer) listDeliveredSecretNames(instanceID string) []string {
-	secretValues, _ := secretAPIServer.materialStore.ReadInstanceSecrets(instanceID)
+// to the instance that are still granted, never values.
+func (secretAPIServer *SecretAPIServer) listDeliveredSecretNames(ctx context.Context, callerMetadata tokenMetadata) []string {
+	secretValues, _ := secretAPIServer.materialStore.ReadInstanceSecrets(callerMetadata.instanceID)
 	secretNames := make([]string, 0, len(secretValues))
 	for secretName := range secretValues {
-		secretNames = append(secretNames, secretName)
+		if secretAPIServer.isCurrentlyGranted(ctx, callerMetadata.serviceName, secretName) {
+			secretNames = append(secretNames, secretName)
+		}
 	}
 	sort.Strings(secretNames)
 	return secretNames
+}
+
+// isCurrentlyGranted reports whether the service still holds the grant; a
+// store error counts as not granted (fail closed).
+func (secretAPIServer *SecretAPIServer) isCurrentlyGranted(ctx context.Context, serviceName string, secretName string) bool {
+	if secretAPIServer.grantStore == nil {
+		return false
+	}
+	_, getError := secretAPIServer.grantStore.Get(ctx, types.KeyDesiredServiceSecret(serviceName, secretName))
+	return getError == nil
 }
 
 // secretAPIResponse is the JSON response for GET /v1/secrets/{name}.

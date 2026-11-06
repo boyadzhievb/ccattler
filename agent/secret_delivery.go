@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -56,9 +58,10 @@ type secretWaitStatus struct {
 // serviceSecretRequirements describes which secrets a service needs and where
 // they are mounted. It is built from desired facts only, never from secrets/.
 type serviceSecretRequirements struct {
-	grantMountPaths     map[string]string // grantMountPaths maps granted secret name to its explicit mount path ("" if none).
-	needsSecrets        bool              // needsSecrets is true when any grant, connection secret or pull secret exists.
-	requirementsVersion string            // requirementsVersion changes whenever any input above changes.
+	grantMountPaths       map[string]string // grantMountPaths maps granted secret name to its explicit mount path ("" if none).
+	referencedSecretNames map[string]bool   // referencedSecretNames are connection and image pull secrets; each must also be granted.
+	needsSecrets          bool              // needsSecrets is true when any grant, connection secret or pull secret exists.
+	requirementsVersion   string            // requirementsVersion changes whenever any input above changes.
 }
 
 // SetSecretDelivery configures how the agent obtains secret material: client
@@ -70,52 +73,84 @@ func (nodeAgent *Agent) SetSecretDelivery(client SecretDeliveryClient, materialS
 }
 
 // loadServiceSecretRequirements reads the service's grants, connection
-// references and image pull secret.
-func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, serviceName string) serviceSecretRequirements {
-	requirements := serviceSecretRequirements{grantMountPaths: make(map[string]string)}
+// references and image pull secret. A store error is returned so the caller
+// treats the instance as not ready instead of as needing no secrets.
+func (nodeAgent *Agent) loadServiceSecretRequirements(ctx context.Context, serviceName string) (serviceSecretRequirements, error) {
+	requirements := serviceSecretRequirements{grantMountPaths: make(map[string]string), referencedSecretNames: make(map[string]bool)}
 	var versionParts []string
 	grantPrefix := types.ScanDesiredServiceSecrets(serviceName)
-	grantFacts, _ := nodeAgent.store.Scan(ctx, grantPrefix)
+	grantFacts, scanError := nodeAgent.store.Scan(ctx, grantPrefix)
+	if scanError != nil {
+		return requirements, fmt.Errorf("read grants of %s: %w", serviceName, scanError)
+	}
 	for _, grantFact := range grantFacts {
 		secretName := strings.TrimPrefix(grantFact.Key, grantPrefix)
-		if secretName == "" || strings.Contains(secretName, "/") {
+		if types.ValidateSecretName(secretName) != nil {
 			continue
 		}
 		requirements.grantMountPaths[secretName] = string(grantFact.Value)
 		versionParts = append(versionParts, "grant="+secretName+"@"+string(grantFact.Value))
 	}
-	connectionPrefix := types.ScanDesiredServiceConnections(serviceName)
-	connectionRefs, _ := nodeAgent.store.Scan(ctx, connectionPrefix)
-	for _, connectionRef := range connectionRefs {
-		connectionName := strings.TrimPrefix(connectionRef.Key, connectionPrefix)
-		if connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName)); getError == nil {
-			if connectionSecret := parseConnectionJSON(string(connectionFact.Value)).secret; connectionSecret != "" {
-				requirements.needsSecrets = true
-				versionParts = append(versionParts, "connection="+connectionName+"@"+connectionSecret)
-			}
-		}
+	connectionVersionParts, connectionError := nodeAgent.collectConnectionSecretNames(ctx, serviceName, requirements.referencedSecretNames)
+	if connectionError != nil {
+		return requirements, connectionError
 	}
-	if pullSecretName := nodeAgent.lookupImagePullSecretFromStore(ctx, serviceName); pullSecretName != "" {
-		requirements.needsSecrets = true
-		versionParts = append(versionParts, "pull="+pullSecretName)
+	versionParts = append(versionParts, connectionVersionParts...)
+	pullSecretFact, pullError := nodeAgent.store.Get(ctx, types.KeyDesiredServiceImagePullSecret(serviceName))
+	if pullError != nil && !errors.Is(pullError, store.ErrKeyNotFound) {
+		return requirements, fmt.Errorf("read image pull secret of %s: %w", serviceName, pullError)
 	}
-	requirements.needsSecrets = requirements.needsSecrets || len(requirements.grantMountPaths) > 0
+	if pullError == nil && len(pullSecretFact.Value) > 0 {
+		requirements.referencedSecretNames[string(pullSecretFact.Value)] = true
+		versionParts = append(versionParts, "pull="+string(pullSecretFact.Value))
+	}
+	requirements.needsSecrets = len(requirements.grantMountPaths) > 0 || len(requirements.referencedSecretNames) > 0
 	sort.Strings(versionParts)
 	requirements.requirementsVersion = strings.Join(versionParts, ";")
-	return requirements
+	return requirements, nil
+}
+
+// collectConnectionSecretNames adds the password secret of every connection
+// the service uses to secretNames and returns their version parts.
+func (nodeAgent *Agent) collectConnectionSecretNames(ctx context.Context, serviceName string, secretNames map[string]bool) ([]string, error) {
+	connectionPrefix := types.ScanDesiredServiceConnections(serviceName)
+	connectionRefs, scanError := nodeAgent.store.Scan(ctx, connectionPrefix)
+	if scanError != nil {
+		return nil, fmt.Errorf("read connections of %s: %w", serviceName, scanError)
+	}
+	var versionParts []string
+	for _, connectionRef := range connectionRefs {
+		connectionName := strings.TrimPrefix(connectionRef.Key, connectionPrefix)
+		connectionFact, getError := nodeAgent.store.Get(ctx, types.KeyDesiredConnection(connectionName))
+		if errors.Is(getError, store.ErrKeyNotFound) {
+			continue
+		}
+		if getError != nil {
+			return nil, fmt.Errorf("read connection %s: %w", connectionName, getError)
+		}
+		if connectionSecret := parseConnectionJSON(string(connectionFact.Value)).secret; connectionSecret != "" {
+			secretNames[connectionSecret] = true
+			versionParts = append(versionParts, "connection="+connectionName+"@"+connectionSecret)
+		}
+	}
+	return versionParts, nil
 }
 
 // prepareInstanceSecretMaterial makes sure the instance's secrets are on tmpfs
 // before its image is pulled (Flow 27 step 5). Returns the values and true when
-// the instance may proceed; false keeps it in waiting-for-secrets.
+// the instance may proceed; false keeps it waiting (or retries a store error).
 func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, instanceInfo placedInstanceInfo) (map[string][]byte, bool) {
-	requirements := nodeAgent.loadServiceSecretRequirements(ctx, instanceInfo.service)
+	requirements, requirementsError := nodeAgent.loadServiceSecretRequirements(ctx, instanceInfo.service)
+	if requirementsError != nil {
+		logging.Default().Warn("cannot read secret requirements, retrying next cycle", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "error", requirementsError.Error())
+		return nil, false
+	}
 	if !requirements.needsSecrets {
 		nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
 		return nil, true
 	}
 	if nodeAgent.secretMaterialStore != nil {
-		if existingValues, hasMaterial := nodeAgent.secretMaterialStore.ReadInstanceSecrets(instanceInfo.id); hasMaterial && containsAllSecretNames(existingValues, requirements.grantMountPaths) {
+		if existingValues, hasMaterial := nodeAgent.secretMaterialStore.ReadInstanceSecrets(instanceInfo.id); hasMaterial && materialMatchesRequirements(existingValues, requirements) {
 			nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
 			return existingValues, true
 		}
@@ -143,9 +178,19 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 	return deliveredValues, true
 }
 
-// containsAllSecretNames reports whether material holds every granted secret.
-func containsAllSecretNames(secretValues map[string][]byte, grantMountPaths map[string]string) bool {
-	for secretName := range grantMountPaths {
+// materialMatchesRequirements reports whether existing material can be reused:
+// it holds exactly the granted secrets (a removed grant forces a new delivery)
+// and every connection or pull secret is among them (else delivery is refused).
+func materialMatchesRequirements(secretValues map[string][]byte, requirements serviceSecretRequirements) bool {
+	if len(secretValues) != len(requirements.grantMountPaths) {
+		return false
+	}
+	for secretName := range requirements.grantMountPaths {
+		if _, present := secretValues[secretName]; !present {
+			return false
+		}
+	}
+	for secretName := range requirements.referencedSecretNames {
 		if _, present := secretValues[secretName]; !present {
 			return false
 		}
@@ -187,8 +232,13 @@ func (nodeAgent *Agent) recordSecretDeliveryWait(ctx context.Context, instanceIn
 }
 
 // secretDeliveryRetryDelay returns exponential backoff (2s … 30s) for an
-// unreachable API and the 5-minute fallback for every other reason.
+// unreachable API, a fixed 30s for a missing secret (the agent cannot watch
+// secrets/, and setting the value after apply is common), and the 5-minute
+// fallback for refusals.
 func secretDeliveryRetryDelay(reason SecretWaitReason, attempts int) time.Duration {
+	if reason == SecretWaitSecretMissing {
+		return secretDeliveryRetryMax
+	}
 	if reason != SecretWaitAPIUnreachable {
 		return secretDeliveryRefusedRetry
 	}
@@ -217,48 +267,83 @@ func (nodeAgent *Agent) clearSecretDeliveryWait(ctx context.Context, instanceID 
 // buildInstanceSecretMounts writes connection files and returns the read-only
 // secret mounts (container path → tmpfs host path) for the instance. Every
 // granted secret appears at /run/cca-secrets/{name} and at its explicit mount.
-func (nodeAgent *Agent) buildInstanceSecretMounts(ctx context.Context, instanceInfo placedInstanceInfo, secretValues map[string][]byte) map[string]string {
+// Names are processed in sorted order so a path collision resolves the same
+// way every time. Any error means the instance must not start this cycle.
+func (nodeAgent *Agent) buildInstanceSecretMounts(ctx context.Context, instanceInfo placedInstanceInfo, secretValues map[string][]byte) (map[string]string, error) {
 	if nodeAgent.secretMaterialStore == nil || len(secretValues) == 0 {
-		return nil
+		return nil, nil
 	}
-	requirements := nodeAgent.loadServiceSecretRequirements(ctx, instanceInfo.service)
+	requirements, requirementsError := nodeAgent.loadServiceSecretRequirements(ctx, instanceInfo.service)
+	if requirementsError != nil {
+		return nil, requirementsError
+	}
+	grantedSecretNames := make([]string, 0, len(requirements.grantMountPaths))
+	for secretName := range requirements.grantMountPaths {
+		grantedSecretNames = append(grantedSecretNames, secretName)
+	}
+	sort.Strings(grantedSecretNames)
 	secretMounts := make(map[string]string)
-	for secretName, explicitMountPath := range requirements.grantMountPaths {
+	for _, secretName := range grantedSecretNames {
 		if _, delivered := secretValues[secretName]; !delivered {
 			continue
 		}
 		hostPath := nodeAgent.secretMaterialStore.SecretValuePath(instanceInfo.id, secretName)
 		secretMounts[ccaSecretMountPrefix+secretName] = hostPath
-		if strings.HasPrefix(explicitMountPath, "/") {
+		if explicitMountPath, usable := resolveExplicitSecretMountPath(requirements.grantMountPaths[secretName]); usable {
 			secretMounts[explicitMountPath] = hostPath
 		}
 	}
-	nodeAgent.addConnectionFileMounts(ctx, instanceInfo, secretValues, secretMounts)
-	return secretMounts
+	if connectionError := nodeAgent.addConnectionFileMounts(ctx, instanceInfo, secretValues, secretMounts); connectionError != nil {
+		return nil, connectionError
+	}
+	return secretMounts, nil
+}
+
+// forbiddenSecretMountPrefixes are container paths an explicit secret mount
+// may not cover: kernel filesystems and the cca-secret helper directory.
+var forbiddenSecretMountPrefixes = []string{"/proc", "/sys", "/dev", strings.TrimSuffix(ccaSecretMountPrefix, "/")}
+
+// resolveExplicitSecretMountPath cleans a grant's mount path and reports
+// whether it can be used: absolute and outside forbiddenSecretMountPrefixes.
+func resolveExplicitSecretMountPath(mountPath string) (string, bool) {
+	if !strings.HasPrefix(mountPath, "/") {
+		return "", false
+	}
+	cleanedPath := filepath.Clean(mountPath)
+	if cleanedPath == "/" {
+		return "", false
+	}
+	for _, forbiddenPrefix := range forbiddenSecretMountPrefixes {
+		if cleanedPath == forbiddenPrefix || strings.HasPrefix(cleanedPath, forbiddenPrefix+"/") {
+			return "", false
+		}
+	}
+	return cleanedPath, true
 }
 
 // addConnectionFileMounts assembles each connection URL from the delivered
 // password and the (non-secret) definition, writes it to tmpfs and mounts it.
-func (nodeAgent *Agent) addConnectionFileMounts(ctx context.Context, instanceInfo placedInstanceInfo, secretValues map[string][]byte, secretMounts map[string]string) {
+// Store and write errors are returned; an unusable definition is skipped (logged).
+func (nodeAgent *Agent) addConnectionFileMounts(ctx context.Context, instanceInfo placedInstanceInfo, secretValues map[string][]byte, secretMounts map[string]string) error {
 	connectionPrefix := types.ScanDesiredServiceConnections(instanceInfo.service)
 	connectionRefs, scanError := nodeAgent.store.Scan(ctx, connectionPrefix)
 	if scanError != nil {
-		return
+		return fmt.Errorf("read connections of %s: %w", instanceInfo.service, scanError)
 	}
 	for _, connectionRef := range connectionRefs {
 		connectionName := strings.TrimPrefix(connectionRef.Key, connectionPrefix)
-		mountPath := string(connectionRef.Value)
+		mountPath, usable := resolveExplicitSecretMountPath(string(connectionRef.Value))
 		connectionURL := nodeAgent.assembleConnectionURL(ctx, connectionName, secretValues)
-		if connectionName == "" || connectionURL == "" || !strings.HasPrefix(mountPath, "/") {
+		if connectionName == "" || connectionURL == "" || !usable {
 			continue
 		}
 		hostPath, writeError := nodeAgent.secretMaterialStore.WriteConnectionFile(instanceInfo.id, connectionName, connectionURL)
 		if writeError != nil {
-			logging.Default().Error("failed to write connection file", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "connection", connectionName, "error", writeError.Error())
-			continue
+			return writeError
 		}
 		secretMounts[mountPath] = hostPath
 	}
+	return nil
 }
 
 // addSecretHelperIfMounted adds the cca-secret helper script when secrets are

@@ -49,7 +49,7 @@ func (recordingRuntime *specRecordingRuntime) startedSpec(instanceID string) (ru
 
 // startTestSecretAPIServer creates a SecretAPIServer on a random port backed
 // by materialStore and returns it with its base URL and a cancel function.
-func startTestSecretAPIServer(testContext *testing.T, materialStore *SecretMaterialStore) (*SecretAPIServer, string, context.CancelFunc) {
+func startTestSecretAPIServer(testContext *testing.T, materialStore *SecretMaterialStore, grantStore store.StateStore) (*SecretAPIServer, string, context.CancelFunc) {
 	testContext.Helper()
 	listener, listenError := net.Listen("tcp", "127.0.0.1:0")
 	if listenError != nil {
@@ -59,7 +59,7 @@ func startTestSecretAPIServer(testContext *testing.T, materialStore *SecretMater
 	_ = listener.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	secretAPIServer := NewSecretAPIServer("test-node", listenAddress, materialStore)
+	secretAPIServer := NewSecretAPIServer("test-node", listenAddress, materialStore, grantStore)
 	go func() {
 		_ = secretAPIServer.Start(ctx)
 	}()
@@ -82,7 +82,7 @@ func getWithBearerToken(testContext *testing.T, requestURL string, bearerToken s
 }
 
 func TestSecretAPIServerRegistersAndRevokesTokens(testContext *testing.T) {
-	secretAPIServer := NewSecretAPIServer("test-node", "127.0.0.1:0", NewSecretMaterialStore(testContext.TempDir()))
+	secretAPIServer := NewSecretAPIServer("test-node", "127.0.0.1:0", NewSecretMaterialStore(testContext.TempDir()), nil)
 	tokenHex, registerError := secretAPIServer.RegisterInstanceToken("instance-1", "web")
 	if registerError != nil {
 		testContext.Fatal(registerError)
@@ -104,7 +104,11 @@ func TestSecretAPIServerServesOnlyDeliveredMaterial(testContext *testing.T) {
 	if writeError := materialStore.WriteInstanceSecrets("inst-1", map[string][]byte{"db-password": []byte("s3cret"), "api-key": []byte("k")}); writeError != nil {
 		testContext.Fatal(writeError)
 	}
-	secretAPIServer, baseURL, cancel := startTestSecretAPIServer(testContext, materialStore)
+	grantStore := store.NewMemoryStore()
+	for _, grantedName := range []string{"db-password", "api-key"} {
+		_, _ = grantStore.Put(context.Background(), types.KeyDesiredServiceSecret("web", grantedName), []byte(""))
+	}
+	secretAPIServer, baseURL, cancel := startTestSecretAPIServer(testContext, materialStore, grantStore)
 	defer cancel()
 	instanceToken, _ := secretAPIServer.RegisterInstanceToken("inst-1", "web")
 	otherToken, _ := secretAPIServer.RegisterInstanceToken("inst-2", "web")
@@ -118,13 +122,17 @@ func TestSecretAPIServerServesOnlyDeliveredMaterial(testContext *testing.T) {
 	if statusCode, _ := getWithBearerToken(testContext, baseURL+"/v1/secrets/db-password", otherToken); statusCode != http.StatusForbidden {
 		testContext.Fatalf("other instance's secret: status %d, want 403", statusCode)
 	}
+	_ = grantStore.Delete(context.Background(), types.KeyDesiredServiceSecret("web", "api-key"))
+	if statusCode, _ := getWithBearerToken(testContext, baseURL+"/v1/secrets/api-key", instanceToken); statusCode != http.StatusForbidden {
+		testContext.Fatalf("revoked grant: status %d, want 403", statusCode)
+	}
 	if statusCode, _ := getWithBearerToken(testContext, baseURL+"/v1/secrets/db-password", "invalid"); statusCode != http.StatusUnauthorized {
 		testContext.Fatalf("invalid token: status %d, want 401", statusCode)
 	}
 	statusCode, responseBody := getWithBearerToken(testContext, baseURL+"/v1/secrets", instanceToken)
 	var listResponse secretListResponse
 	_ = json.Unmarshal(responseBody, &listResponse)
-	if statusCode != http.StatusOK || len(listResponse.Secrets) != 2 || listResponse.Secrets[0] != "api-key" {
+	if statusCode != http.StatusOK || len(listResponse.Secrets) != 1 || listResponse.Secrets[0] != "db-password" {
 		testContext.Fatalf("list: status %d, %+v", statusCode, listResponse)
 	}
 }
@@ -138,7 +146,7 @@ func newLegacySecretAPITestAgent(testContext *testing.T) (*Agent, *SecretAPIServ
 	materialStore := NewSecretMaterialStore(testContext.TempDir())
 	nodeAgent := New("test-node", memoryStore, recordingRuntime)
 	nodeAgent.SetSecretDelivery(&fakeSecretDeliveryClient{secretValues: map[string][]byte{"db-password": []byte("s3cret")}}, materialStore)
-	secretAPIServer := NewSecretAPIServer("test-node", "127.0.0.1:0", materialStore)
+	secretAPIServer := NewSecretAPIServer("test-node", "127.0.0.1:0", materialStore, memoryStore)
 	nodeAgent.SetSecretAPIServer(secretAPIServer)
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceImage("web"), []byte("nginx:1.27"))
 	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceSecret("web", "db-password"), []byte("/run/secrets/db-password"))

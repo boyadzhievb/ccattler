@@ -524,7 +524,12 @@ func parseStaticServerLeafCertificate(serverTLSConfig *tls.Config) *x509.Certifi
 // that agent as "not enrolled" (Flow 27).
 func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config) {
 	serverLeafCert := parseStaticServerLeafCertificate(serverTLSConfig)
-	if serverLeafCert == nil {
+	if serverLeafCert == nil && serverTLSConfig != nil && serverTLSConfig.GetCertificate != nil {
+		if rotatingCertificate, getError := serverTLSConfig.GetCertificate(&tls.ClientHelloInfo{}); getError == nil && rotatingCertificate != nil && len(rotatingCertificate.Certificate) > 0 {
+			serverLeafCert, _ = x509.ParseCertificate(rotatingCertificate.Certificate[0])
+		}
+	}
+	if serverLeafCert == nil || serverLeafCert.Subject.CommonName == "" {
 		return
 	}
 	nodeID := serverLeafCert.Subject.CommonName

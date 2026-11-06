@@ -345,7 +345,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 	configureAgentStorageProvider(nodeAgent, parsedConfig)
 
 	if parsedConfig.secretAPIListenAddress != "" {
-		secretAPIServer := agent.NewSecretAPIServer(parsedConfig.nodeID, parsedConfig.secretAPIListenAddress, secretMaterialStore)
+		secretAPIServer := agent.NewSecretAPIServer(parsedConfig.nodeID, parsedConfig.secretAPIListenAddress, secretMaterialStore, factStore)
 		nodeAgent.SetSecretAPIServer(secretAPIServer)
 		go func() {
 			if secretAPIError := secretAPIServer.Start(ctx); secretAPIError != nil {
@@ -595,6 +595,7 @@ func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.
 // delivery_not_configured. Returns the tmpfs material store.
 func configureAgentSecretDelivery(nodeAgent *agent.Agent, parsedConfig agentCommandConfig, agentTLSConfig *tls.Config) *agent.SecretMaterialStore {
 	secretMaterialStore := agent.NewSecretMaterialStore(agent.DefaultSecretMaterialDirectory)
+	secretMaterialStore.RequireMemoryFilesystem()
 	apiServerAddress := parsedConfig.apiServerAddress
 	if apiServerAddress == "" {
 		if fileContent, readError := os.ReadFile(serverAddressConfigPath); readError == nil {

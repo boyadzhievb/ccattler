@@ -6,6 +6,7 @@ package security
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,5 +212,59 @@ func TestControlPlaneNodeEnrollmentEnablesDeliveryAndIsCreateOnly(testContext *t
 	}
 	if enrollError := EnsureControlPlaneNodeEnrolled(ctx, fixture.rawStore, "Bad/ID", time.Now()); enrollError == nil {
 		testContext.Fatal("invalid node ID must be refused")
+	}
+}
+
+// failingGetStore fails Get for one key prefix, simulating a store outage.
+type failingGetStore struct {
+	store.StateStore
+	failingPrefix string // failingPrefix is the key prefix whose reads fail.
+}
+
+// Get fails for keys under failingPrefix and delegates otherwise.
+func (failingStore failingGetStore) Get(ctx context.Context, key string) (*store.Fact, error) {
+	if strings.HasPrefix(key, failingStore.failingPrefix) {
+		return nil, errors.New("etcd unavailable")
+	}
+	return failingStore.StateStore.Get(ctx, key)
+}
+
+func TestSecretDeliveryStoreErrorsAreServerErrorsNotRefusals(testContext *testing.T) {
+	for _, failingPrefix := range []string{EnrolledNodePrefix, "placement/instance/", SecretStorePrefix} {
+		fixture := newDeliveryTestFixture(testContext)
+		failingService := NewSecretDeliveryService(failingGetStore{StateStore: fixture.rawStore, failingPrefix: failingPrefix}, fixture.secretStore, fixture.auditLog)
+		_, deliveryError := failingService.DeliverInstanceSecrets(context.Background(), "node-1", "inst-1")
+		var refusal *SecretDeliveryRefusal
+		if deliveryError == nil || errors.As(deliveryError, &refusal) {
+			testContext.Fatalf("%s outage: got %v, want a plain server error", failingPrefix, deliveryError)
+		}
+		if entryCount := len(fixture.auditLog.Entries()); entryCount != 0 {
+			testContext.Fatalf("%s outage must not be audited as a refusal, got %d entries", failingPrefix, entryCount)
+		}
+	}
+}
+
+func TestSecretDeliveryHierarchicalNamesAndInstanceIDValidation(testContext *testing.T) {
+	fixture := newDeliveryTestFixture(testContext)
+	ctx := context.Background()
+	putTestFact(testContext, fixture.rawStore, types.ScanDesiredServiceSecrets("checkout")+"payments/api-key", "")
+	if putError := fixture.secretStore.PutSecret(ctx, "payments/api-key", []byte("k")); putError != nil {
+		testContext.Fatal(putError)
+	}
+	delivered, deliveryError := fixture.deliveryService.DeliverInstanceSecrets(ctx, "node-1", "inst-1")
+	if deliveryError != nil || string(delivered.Secrets["payments/api-key"]) != "k" {
+		testContext.Fatalf("hierarchical grant not delivered: %v %v", delivered, deliveryError)
+	}
+	_, deliveryError = fixture.deliveryService.DeliverInstanceSecrets(ctx, "node-1", strings.Repeat("a", 300))
+	expectRefusal(testContext, deliveryError, SecretDeliveryNotAuthorized)
+}
+
+func TestSecretDeliveryRefusalAuditMapIsBounded(testContext *testing.T) {
+	fixture := newDeliveryTestFixture(testContext)
+	for attempt := 0; attempt < secretDeliveryRefusalAuditMaxEntries+50; attempt++ {
+		fixture.deliveryService.auditRefusal("node-1", "inst-"+strconv.Itoa(attempt), "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "x"})
+	}
+	if mapSize := len(fixture.deliveryService.lastRefusalAuditTimes); mapSize > secretDeliveryRefusalAuditMaxEntries {
+		testContext.Fatalf("rate-limit map grew to %d", mapSize)
 	}
 }
