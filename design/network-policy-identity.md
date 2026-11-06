@@ -1,4 +1,4 @@
-# Identity-Based Network Policy on eBPF (M192 design note)
+# Identity-Based Network Policy on eBPF (M196 design note)
 
 Status: draft for review (2026-11-04). Inspired by Cilium's identity model
 (cilium.io blog, 2026-08-28, "Zero-Trust Developer Platforms with Cilium
@@ -18,7 +18,7 @@ network {
 `NetworkPolicyController` resolves each rule to instance IPs and writes
 per-node `derived/network/rule/{node}/{index}` = `srcIP:dstIP:port:action`.
 Every reschedule, scale or restart rewrites rules on every node, and the rule
-count grows with sources × targets. M192 as planned ("allow/deny by source
+count grows with sources × targets. M196 as planned ("allow/deny by source
 CIDR") keeps that model in eBPF.
 
 ## Proposal
@@ -72,7 +72,7 @@ cannot drift from the declarations.
   drops are counted and logged with identities, not applied.
 - `cca get network-drops` (or `cca events`) shows `frontend/web → payments/database:5432 denied`,
   named by identity, not IP.
-- nftables path stays as fallback until the M192 elimination gate.
+- nftables path stays as fallback until the M196 elimination gate.
 
 ## Out of scope (later)
 
