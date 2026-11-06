@@ -413,3 +413,32 @@ func computeCAFingerprint(caCertificatePEM []byte) string {
 	fingerprintHash := sha256.Sum256(pemBlock.Bytes)
 	return hex.EncodeToString(fingerprintHash[:])
 }
+
+// EnsureControlPlaneNodeEnrolled records the control-plane node whose
+// certificate cca init issued directly (it never runs cca join), so an agent
+// on that node passes the enrolled-node check of secret delivery (Flow 27).
+// Create-only: an existing record is kept; invalid node IDs are refused.
+func EnsureControlPlaneNodeEnrolled(ctx context.Context, factStore store.StateStore, nodeID string, certExpiry time.Time) error {
+	if validationError := types.ValidateNodeID(nodeID); validationError != nil {
+		return validationError
+	}
+	enrolledJSON, marshalError := json.Marshal(EnrolledNode{
+		NodeID:     nodeID,
+		Principal:  string(PrincipalKindNode) + ":" + nodeID,
+		EnrolledAt: time.Now(),
+		CertExpiry: certExpiry,
+	})
+	if marshalError != nil {
+		return fmt.Errorf("marshal enrolled node: %w", marshalError)
+	}
+	enrolledKey := EnrolledNodePrefix + nodeID
+	_, transactionError := factStore.Transaction(ctx,
+		[]store.Compare{{Key: enrolledKey, Revision: 0}},
+		[]store.Op{{Type: store.OpPut, Key: enrolledKey, Value: enrolledJSON}},
+		nil,
+	)
+	if transactionError != nil {
+		return fmt.Errorf("record control-plane node enrollment: %w", transactionError)
+	}
+	return nil
+}

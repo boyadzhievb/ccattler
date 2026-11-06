@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -186,5 +187,29 @@ func TestSecretDeliveryRoleIsReadOnlyAndAPIServerRoleHasNoSecrets(testContext *t
 		if readError := rbacAuthorizer.Authorize(APIServerPrincipal, PermissionRead, deniedKey); readError == nil {
 			testContext.Fatalf("api-server must not read %s", deniedKey)
 		}
+	}
+}
+
+func TestControlPlaneNodeEnrollmentEnablesDeliveryAndIsCreateOnly(testContext *testing.T) {
+	fixture := newDeliveryTestFixture(testContext)
+	ctx := context.Background()
+	_ = fixture.rawStore.Delete(ctx, EnrolledNodePrefix+"node-1")
+	if _, deliveryError := fixture.deliveryService.DeliverInstanceSecrets(ctx, "node-1", "inst-1"); deliveryError == nil {
+		testContext.Fatal("unenrolled control-plane node must be refused")
+	}
+	if enrollError := EnsureControlPlaneNodeEnrolled(ctx, fixture.rawStore, "node-1", time.Now().Add(time.Hour)); enrollError != nil {
+		testContext.Fatalf("EnsureControlPlaneNodeEnrolled: %v", enrollError)
+	}
+	if _, deliveryError := fixture.deliveryService.DeliverInstanceSecrets(ctx, "node-1", "inst-1"); deliveryError != nil {
+		testContext.Fatalf("enrolled control-plane node must receive secrets: %v", deliveryError)
+	}
+	firstRecord, _ := fixture.rawStore.Get(ctx, EnrolledNodePrefix+"node-1")
+	_ = EnsureControlPlaneNodeEnrolled(ctx, fixture.rawStore, "node-1", time.Now().Add(2*time.Hour))
+	secondRecord, _ := fixture.rawStore.Get(ctx, EnrolledNodePrefix+"node-1")
+	if string(firstRecord.Value) != string(secondRecord.Value) {
+		testContext.Fatal("existing enrollment record must not be overwritten")
+	}
+	if enrollError := EnsureControlPlaneNodeEnrolled(ctx, fixture.rawStore, "Bad/ID", time.Now()); enrollError == nil {
+		testContext.Fatal("invalid node ID must be refused")
 	}
 }

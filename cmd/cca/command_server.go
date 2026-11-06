@@ -496,16 +496,41 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 // bindServerPrincipal binds "node:<server-cert-CN>" to cluster-admin in the
 // store-layer RBAC and returns it. Returns "" without TLS or a static cert.
 func bindServerPrincipal(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer) string {
-	if serverTLSConfig == nil || len(serverTLSConfig.Certificates) == 0 {
-		return ""
-	}
-	serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
-	if parseError != nil || serverLeafCert.Subject.CommonName == "" {
+	serverLeafCert := parseStaticServerLeafCertificate(serverTLSConfig)
+	if serverLeafCert == nil {
 		return ""
 	}
 	serverPrincipal := "node:" + serverLeafCert.Subject.CommonName
 	rbacAuthorizer.BindRole(security.RoleBinding{Principal: serverPrincipal, RoleName: "cluster-admin"})
 	return serverPrincipal
+}
+
+// parseStaticServerLeafCertificate returns the leaf of the static server
+// certificate, or nil without TLS, with a rotating certificate, or without a CN.
+func parseStaticServerLeafCertificate(serverTLSConfig *tls.Config) *x509.Certificate {
+	if serverTLSConfig == nil || len(serverTLSConfig.Certificates) == 0 || len(serverTLSConfig.Certificates[0].Certificate) == 0 {
+		return nil
+	}
+	serverLeafCert, parseError := x509.ParseCertificate(serverTLSConfig.Certificates[0].Certificate[0])
+	if parseError != nil || serverLeafCert.Subject.CommonName == "" {
+		return nil
+	}
+	return serverLeafCert
+}
+
+// bootstrapControlPlaneNodeEnrollment records this control-plane node as
+// enrolled (create-only). cca init issued its certificate without cca join, and
+// an agent on this node shares it; without the record secret delivery refuses
+// that agent as "not enrolled" (Flow 27).
+func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSConfig *tls.Config) {
+	serverLeafCert := parseStaticServerLeafCertificate(serverTLSConfig)
+	if serverLeafCert == nil {
+		return
+	}
+	nodeID := serverLeafCert.Subject.CommonName
+	if enrollError := security.EnsureControlPlaneNodeEnrolled(context.Background(), factStore, nodeID, serverLeafCert.NotAfter); enrollError != nil {
+		logging.Default().Warn("control-plane node not recorded as enrolled", "node", nodeID, "error", enrollError.Error())
+	}
 }
 
 // appendBearerTokenAuthenticators adds the JWT and webhook authenticators in
@@ -611,6 +636,7 @@ func configureAndStartAPIServer(
 	}
 
 	bootstrapAdminGrants(factStore, serverPrincipal)
+	bootstrapControlPlaneNodeEnrollment(factStore, serverTLSConfig)
 	startAPIAuthorizationSync(ctx, factStore, apiAuthorizer)
 
 	statusAPIServer := launchStatusAPIServer(authorizedStore, authenticatorChain, parsedConfig.listenAddress, serverTLSConfig, enrollmentEnabled)

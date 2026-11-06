@@ -669,6 +669,9 @@ SecretStore.RotateKeyProvider(ctx, newKeyProvider)             [:162]
 
 Wired by `configureSecretStoreAndDelivery` (cmd/cca/command_server.go): `AuthorizedStore`
 with service principal `service:secret-delivery` (role `secret-delivery`, read-only).
+`bootstrapControlPlaneNodeEnrollment` → `security.EnsureControlPlaneNodeEnrolled` writes
+`enrollment/node/{server cert CN}` create-only at startup: the control-plane node got its
+certificate from `cca init`, never ran `cca join`, and its agent shares that certificate.
 
 ```
 Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
