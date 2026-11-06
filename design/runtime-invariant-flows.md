@@ -50,7 +50,7 @@ Init containers (temporary `nerdctl run --rm` containers for `init { exec "..." 
 
 ## 3. Secret Master Key Distribution
 
-> Replaced by [Flow 27](#flow-27-secret-delivery-m174) in M174: nodes no longer receive the key and agents do not decrypt. The control plane still loads `/etc/ccattler/secret-master.key` until M176 replaces it with a fresh root key.
+> Replaced by [Flow 27](#flow-27-secret-delivery-m174) in M174: nodes no longer receive the key and agents do not decrypt. The control plane still loads `/etc/ccattler/secret-master.key` until M177 replaces it with a fresh root key.
 
 **Chain:** `cca server` (generates/loads key) → `cca join` (receives in enrollment response) → `cca agent` (loads from disk) → `SecretStore` envelope decryption
 
@@ -960,7 +960,7 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 
 ## Flow 27: Secret Delivery (M174)
 
-**Status:** steps 1 (mounts, connections, pull secret), 5–10 and the failure paths implemented in M174 (2026-11-06); gate keys M175, keyring and v2 envelopes M176, tenant names M178 (second review 2026-11-06: fresh root key, CLI ownership/shares, gate-key tmpfs cache, retry fallback, delivery before pull). Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
+**Status:** steps 1 (mounts, connections, pull secret), 5–10 and the failure paths implemented in M174 (2026-11-06); gate keys M176, keyring and v2 envelopes M177, tenant names M179 (second review 2026-11-06: fresh root key, CLI ownership/shares, gate-key tmpfs cache, retry fallback, delivery before pull). Replaces Flow 3 (master key on every node) and the rotation part of Flow 20 when M174 lands. Key hierarchy, envelope format and tenant naming: [config-secrets.md](config-secrets.md#m174-design-secrets-architecture).
 
 **Problem**: every node holds the cluster master key and decrypts locally, so one compromised node can read every secret of every tenant from etcd.
 

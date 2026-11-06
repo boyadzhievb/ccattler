@@ -42,16 +42,16 @@ Move gate TLS from the service VIP to a node HTTPS listener on the agent gate pr
 - [x] Airflow scheduler never passed its startup probe under load (run 41819704929, acc0914: `airflow jobs check` hit the 20s timeout or exit 120 twelve times in 11 min on worker-2 while etcd timed out; the rebalancer then moved it to worker-1, restarting its startup; after T12's server/agent restart a replacement was still starting at the stability check). Rebalance now skips instances whose startup probe has not succeeded (`observed/instance/{id}/probe/startup`); e2e Airflow scheduler startup probe timeout 20s → 60s. Run 41825857428 (0b40cf2): the scheduler was still moved 2s after init, during `initial_delay` before any probe result; an instance of a service that declares a startup probe now counts as starting until it records `succeeded`. Same run: startup probe failed with `exited with code 120` three times, while the same command run by hand passed (exit 0, 23s); a failing exec probe now logs the tail of its output in the agent log, never in etcd (agent `runExecProbe`); exec output copy waits at most 2s after exit. Run 41829957009 (56fca36) showed the cause: Airflow probe commands print success (`Found one alive job.`, `1 node online.`) but exit after the 20–30s timeout (by hand 23s idle), so liveness failures restarted scheduler and worker. All Airflow exec probe timeouts in the e2e workload are now 60s. Confirmed green 3 runs in a row on 23070d5: 41860670204, 41879580109, 41882395686
 - [x] Node-local volumes were not pinned to their node (run 41838979669, da026b6: metadata-db crash-looped on three nodes in turn; Postgres log `last known up at 2026-11-03 19:46:05 UTC ... PANIC: could not locate a valid checkpoint record`. `type local` pgdata is a per-node directory; "migration" and "replication" only change facts, so a moved instance attached the target node's own directory, either empty (silent data loss) or a stale copy from an earlier run there). Fix (Flow 26): `StorageProvider.NodeLocal()`; the agent records `observed/volume/{name}/home_node` on the first node-local attach and refuses to attach that volume on any other node; the scheduler places instances of services mounting it only on the home node (hard constraint, unplaced reason `volume_home_node_unavailable` while that node is down); `design/storage.md` no longer claims data replication/migration for local volumes. Trigger in the deploy test: `cluster_test.sh` wipes etcd every run (fresh cluster) but kept `/var/lib/cca/volumes`, so each new cluster reused the previous clusters' per-node pgdata directories; it now removes them in the same non-`--keep-data` cleanup (as the Ansible cleanup role already did) Confirmed green 3 runs in a row on 23070d5: 41860670204, 41879580109, 41882395686
 - [x] Rebalancing is opt-in, like Kubernetes (run 41851808529, e0c7bfe: the healthy single-instance Airflow scheduler was moved to even out instance counts; a move is a restart, a full outage for one instance, and Airflow needs minutes to start, so a replacement was still starting at the stability check). The scheduler now moves only services that declare `placement { rebalance true }` (`desired/service/{name}/placement/rebalance`); all other running instances stay where they were placed. e2e whoami opts in so rebalancing stays exercised Confirmed green 3 runs in a row on 23070d5: 41860670204, 41879580109, 41882395686
-- [x] e2e honesty: whoami-multiport port 8081 reported as KNOWN GAP (M190) instead of a passing check; nftables check matches real `vip_dispatch` entries and fails if port 80 is missing; step 5.9 no longer claims whoami is pinned
+- [x] e2e honesty: whoami-multiport port 8081 reported as KNOWN GAP (M191) instead of a passing check; nftables check matches real `vip_dispatch` entries and fails if port 80 is missing; step 5.9 no longer claims whoami is pinned
 
 **Deploy, run & ship:**
 - [x] Ansible worker template passes `--proxy-tls-listen` (port 443)
 - [x] Green on the deploy cluster 3 consecutive runs (beea1ae: 41652626638, 41655543117, 41656173560, workloads whoami, whoami-multiport, gate-tls)
-- [x] One-off run on the bare-metal eBPF cluster: run 42054575640 (3e080ff, eBPF, whoami + whoami-multiport + gate-tls) green, T1–T15 passed, 10/10 instances stable. Needed first: `e2e.yml` `dataplane` input and a gate-tls workload option; `cluster_test.sh` builds with `-tags ebpf` for `--dataplane ebpf`; bare-metal node-1 is control plane only (no agent), so the multi-port cross-node sender and the gate TLS checks now target agent nodes (`vm_has_active_agent`, `GATE_TLS_NODE`); the multi-port VIP backend bug (M182) fixed
+- [x] One-off run on the bare-metal eBPF cluster: run 42054575640 (3e080ff, eBPF, whoami + whoami-multiport + gate-tls) green, T1–T15 passed, 10/10 instances stable. Needed first: `e2e.yml` `dataplane` input and a gate-tls workload option; `cluster_test.sh` builds with `-tags ebpf` for `--dataplane ebpf`; bare-metal node-1 is control plane only (no agent), so the multi-port cross-node sender and the gate TLS checks now target agent nodes (`vm_has_active_agent`, `GATE_TLS_NODE`); the multi-port VIP backend bug (M183) fixed
 - [x] `gate-tls` added to deploy-testbed workflow default workloads (`airflow,whoami,whoami-multiport,gate-tls`)
 - [x] `design/dsl-reference.md` TLS section updated (node :443, service ports stay plain HTTP)
 
-### Security review (2026-11-03) — Phases 171–181
+### Security review (2026-11-03) — Phases 171–174, 176–182
 
 An architecture review found holes that the threat model did not list, plus features marked done that never ran in production (AuthController from M156/Phase 58, store RBAC for agents from Phase 52c). Ordered by severity.
 
@@ -103,7 +103,21 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 - [x] Visibility from grant scope (decision 2026-11-03, option a): `workload.read` at `cluster` sees every team, at `team/<name>` only that team; membership (`team` attribute, `platform` group) and principal kind add nothing; deeper scopes give no team visibility. Same rule for `/api/state` (scan, single key answers 404 outside the caller's teams), `/api/watch` and `/api/status`; team-scoped readers are no longer refused by a cluster-only check. `cca user create` does not require a team. The audit endpoint keeps its membership filter and `/api/events/stream` stays cluster-only (follow-up)
 - [x] Deploy cluster run: `cca role grant user:<name> --role api-reader` takes effect without a restart; caddy-sync still reads routes (run 41644990156: 403 → 200 → 403, all 6 route hosts in the Caddyfile)
 
-### Secrets architecture — Phases 174–178
+### Phase 175 — Status Snapshot & Bulk Reads (M175)
+
+Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21s (`cca top`, `cca get`, `cca status` all decode the full `ClusterStatus`); a cached hit within the 2s TTL takes 0.02s. `buildStatusFromStore` (`api/status.go`) issues ~330 sequential store reads for 16 instances / 3 nodes / ~10 services: 14 `Get`s per instance, a placement `Get` per instance × node, `ReadService` + tag scan + config scan per service, a grant `Get` per secret × service. etcd logged 41k "apply request took too long" (~110ms single-key reads) in 30 min on the memory-starved testbed host.
+
+- [ ] Benchmark first: status build against a store with injected 110ms per-call latency; count store round-trips; assert the count is constant in instance, node and service count
+- [ ] Status fact loader: a fixed set of prefix scans (observed instance/node, desired service, placements, derived instance, crash loops, network, volumes, secrets, endpoints) indexed into maps; per-item `Get`s removed from every `collect*StatusFromStore`
+- [ ] Error semantics: a failed required scan returns an API error, never a partial status that looks like an empty cluster; a missing optional fact stays a blank field (today several scan errors are dropped with `_`)
+- [ ] Authorization unchanged: loads go through the same API store; team visibility filtering applied as today; no new prefixes or sensitive values exposed (secret values and redacted config stay redacted)
+- [ ] Consistency stays eventually consistent: no claim of a single store revision (pinned-revision multi-prefix reads are M180)
+- [ ] Call graph `design/graphs/OBSERVABILITY_GRAPH.md` updated
+- [ ] Deploy cluster: uncached `cca get instances` well below 1s on the same environment
+- [ ] Follow-up audit (separate, no mechanical changes): controller read patterns with sequential `Get`s inside per-instance/per-node loops; any change keeps revision guards and CAS
+- [ ] Separately: measure etcd revision growth and telemetry write rate before attributing the 260 MB etcd DB size; compaction/defrag as operations, not this fix
+
+### Secrets architecture — Phases 174, 176–179
 
 Specification: `design/config-secrets.md` "M174 design" (decisions 1–7, A–C, R1–R8), Flow 27 and Flows 14/22 in `design/runtime-invariant-flows.md`, CLI in `design/cli-reference.md` "Secrets (M174)". Split 2026-11-06 into five releases. Order: delivery first (agents stop decrypting), then gate keys, then the fresh root key and key migration (needs every agent on delivery), then rotation, then tenant names (needs v2 envelopes for re-encryption).
 
@@ -129,7 +143,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [x] Independent review 2026-11-06 (`code-reviewer` + `security-audit` on bf54400..60eee55; no critical/high). Outcome:
   - fixed — store read errors on the agent counted as "needs no secrets" → instance could start without them; now not ready, retried
   - fixed — material reuse checked grants only → now exactly the granted set and every connection/pull secret, so a removed grant or ungranted reference forces a new delivery
-  - fixed — config-change restart reused old values → material dropped on config restart (value rotation without a config change remains M177)
+  - fixed — config-change restart reused old values → material dropped on config restart (value rotation without a config change remains M178)
   - fixed — server store/decrypt errors reported as `not_authorized`/`secret_missing` (5-min wait) → plain 500, agent backs off 2s…30s; not audited as refusals
   - fixed — `secret_missing` waited 5 min after `cca secret set` → fixed 30s retry (agent cannot watch `secrets/`)
   - fixed — map-order mount collisions and unclean/unsafe explicit paths → sorted names, cleaned paths, `/proc` `/sys` `/dev` `/run/cca-secrets` refused
@@ -142,19 +156,19 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
   - rejected — legacy API read racing a material rewrite: rewrite happens only before the container (and its token) starts; transient 403 at worst
   - rejected — audit is fire-and-forget: same for every audit path in the system, out of M174 scope
   - rejected — `RootCAs` nil falls back to system pool: not insecure, server configs always carry the cluster CA
-  - rejected — `nerdctl --creds` on the command line: pre-existing (Flow 22), unchanged by M174; noted for M181
+  - rejected — `nerdctl --creds` on the command line: pre-existing (Flow 22), unchanged by M174; noted for M182
 - [x] Deploy cluster run 42268165296 (98f639b) green: Airflow (uid 50000) reads its delivered connection and secret files (`0444` in `/run`), all nodes report `secret_delivery = v2`, workers have no `secret-master.key`, no `cca-config-*` copies in `/tmp`, no secret values under the logs directory, 0 refused deliveries; gate TLS T1–T15 and 16/16 stability passed; E2E Cluster Test green on 98f639b
 
-### Phase 175 — Gate Key Sealing & Delivery (M175)
+### Phase 176 — Gate Key Sealing & Delivery (M176)
 
 - [ ] `RouteTLSController` seals generated keys at `secrets/route/{gate}/tls/key`; cert and expiry stay plain facts
-- [ ] `tls { key secret "…" }` in the DSL; inline PEM sealed by the apply path, no `desired/route/*/tls/key` fact; warning for inline keys from Git sources (when M206 lands)
+- [ ] `tls { key secret "…" }` in the DSL; inline PEM sealed by the apply path, no `desired/route/*/tls/key` fact; warning for inline keys from Git sources (when M207 lands)
 - [ ] Existing plaintext `desired/route/*/tls/key` and `derived/route/*/tls/key` facts sealed, then deleted
 - [ ] `POST /api/node/gate-keys`: enrolled, non-disabled node with the gate proxy; audited separately
 - [ ] Agent cache `/run/ccattler/gate-keys/{gate}/` (tmpfs, private key `0400`), reload on agent restart, keep serving while the API is down, reconcile on gate removal/key rotation; `observed/node/{id}/gate_keys = ready | waiting`
 - [ ] Tests: no plaintext key fact after reconcile and after inline apply; acceptance B (node without a local backend terminates TLS); agent restart with API down keeps TLS; gate TLS e2e T1–T15 unchanged
 
-### Phase 176 — Root Key, Keyring & Key Migration (M176)
+### Phase 177 — Root Key, Keyring & Key Migration (M177)
 
 - [ ] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; Ansible generates once and provisions every control-plane replica
 - [ ] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
@@ -166,14 +180,14 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Etcd backup/restore runbook in `design/TESTING.md` (referenced by `--confirm-backup`)
 - [ ] Tests: legacy key cannot unwrap any KEK, open `root_check` or any v2 envelope; every legacy value unchanged after migration; kill mid-batch and resume; gates refuse with the unmet conditions; v1 refused after retirement; deploy cluster migration under traffic
 
-### Phase 177 — Keyring Rotation (M177)
+### Phase 178 — Keyring Rotation (M178)
 
 - [ ] `cca secret rotate` → `intent/keyring/rotation`; refused until migration completed
 - [ ] Keyring controller: create-only KEK write, `keyring/active` switch, CAS re-wrap of DEKs in bounded batches (`keyringRewrapBatchSize`), idempotent resume, `retiring` → deleted after `--keyring-retire-grace` (7d); referenced versions never deleted
 - [ ] Root key rotation as a separate operator command (re-wraps `keyring/kek/*` and `root_check` only)
 - [ ] Tests: kill at each step and restart; every secret readable; CAS conflict retried; replicas read the same versions; rotation during traffic on the deploy cluster
 
-### Phase 178 — Tenant-Scoped Secrets (M178)
+### Phase 179 — Tenant-Scoped Secrets (M179)
 
 - [ ] Canonical names `secrets/tenant/{t}/…`, `secrets/cluster/…`; tenant resolution owner → hierarchical name → reserved `default`
 - [ ] CLI: `cca secret set/get/list/delete --tenant/--cluster` (mutually exclusive, default tenant when omitted), value from stdin or `--from-file`; `share`/`unshare` → `desired/secret_share/{owner}/{name}/{consumer}`; write scope `team/{tenant}`, `team/default`, `cluster`
@@ -182,7 +196,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Optional admission policy rejecting services that fall into `default` (off by default)
 - [ ] Tests: acceptance A (unowned service gets `default`, refused `payments`); share → delivered, `unshare` → refused at next start; cluster secret needs cluster grant; `--tenant` with `--cluster` rejected
 
-### Phase 179 — HA Correctness (M179)
+### Phase 180 — HA Correctness (M180)
 
 - [ ] Leader election on an etcd lease (`GrantLease` exists) instead of wall-clock timestamps
 - [ ] Leader key revision compared in every controller transaction (fencing)
@@ -190,7 +204,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Persisted JWT signing keyring shared by API replicas; `token_use` claim separates user and workload tokens
 - [ ] Integration test: deposed leader's transaction is rejected
 
-### Phase 180 — Store Access Isolation (M180)
+### Phase 181 — Store Access Isolation (M181)
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
 - [ ] Agents limited to their node's keys and read-only desired state
@@ -198,7 +212,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Short-lived node certificates with rotation; removed nodes rejected by etcd and API
 - [ ] Threat model T5 updated with the real residual risk
 
-### Phase 181 — Security Defense in Depth (M181)
+### Phase 182 — Security Defense in Depth (M182)
 
 - [ ] Volume host path must be under the storage provider root
 - [ ] Secret API bound to the bridge gateway; caller IP must match the token's instance
@@ -208,7 +222,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Paginated store scans
 - [ ] CI check: every `controllers.New*` and API `Set*` has a production caller
 
-### OpenSpec pilot (unscheduled, before M205)
+### OpenSpec pilot (unscheduled, before M206)
 
 Decision in `design/chats/chat-03nov-2.md`: adopt OpenSpec, pilot on GitOps, migrate no existing documentation.
 
@@ -218,15 +232,15 @@ Roles: `CLAUDE.md` = engineering rules and invariants; `design/` = architecture 
 - [ ] `openspec init --tools claude` on a clean tree; review `git status` and `git diff -- .claude/` before committing; keep existing agents, skills and workflows unless a real conflict shows up
 - [ ] Workflow ownership: OpenSpec drives proposal → specs → tasks → implementation → archive for OpenSpec-managed capabilities; `.claude/workflows/feature-development.js` does not run a competing pipeline for the same change; project-manager and technical-writer agents stay; `release-pipeline.js` / `scripts/release.sh` keep release execution
 - [ ] Minimal `openspec/config.yaml`: `schema: spec-driven`, `context` points at CLAUDE.md and `design/` (no restated invariants), `rules` per artifact, `operations.apply.guidance` (inspect implementation and call graphs first, report real test results)
-- [ ] First change `git-backed-configuration-sources` drafted from M205/M206 and existing architecture, resolving: Git outage, invalid revision, source ownership, partial application, concurrent revisions (pin to commit), sync vs health, `cca scale` overrides, manual `cca apply` (`cli` owner, conflict/adoption), etcd transaction limits
+- [ ] First change `git-backed-configuration-sources` drafted from M206/M207 and existing architecture, resolving: Git outage, invalid revision, source ownership, partial application, concurrent revisions (pin to commit), sync vs health, `cca scale` overrides, manual `cca apply` (`cli` owner, conflict/adoption), etcd transaction limits
 - [ ] Review ownership, override, prune and transaction semantics before implementation starts
-- [ ] Release order per change: tasks done → tests pass → `openspec archive` → update M205/M206 links to `openspec/specs/...` and the dated `openspec/changes/archive/<date>-<change>/` → `scripts/release.sh`
+- [ ] Release order per change: tasks done → tests pass → `openspec archive` → update M206/M207 links to `openspec/specs/...` and the dated `openspec/changes/archive/<date>-<change>/` → `scripts/release.sh`
 
-### GitOps — Phases 205–206
+### GitOps — Phases 206–207
 
-Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; policy, scheduling, execution and observation stay with CCattler. Ownership and prune come first because they also fix `cca apply` today. Numbers are out of priority order (added 2026-11-03 at the end of the sequence, after M204); renumber in the next priority pass.
+Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; policy, scheduling, execution and observation stay with CCattler. Ownership and prune come first because they also fix `cca apply` today. Numbers are out of priority order (added 2026-11-03 at the end of the sequence, after M205); renumber in the next priority pass.
 
-### Phase 205 — Apply Ownership & Prune (M205)
+### Phase 206 — Apply Ownership & Prune (M206)
 
 - [ ] Design as OpenSpec change `git-backed-configuration-sources` (see OpenSpec pilot; `design/gitops.md` only if the pilot is dropped): owner model, ownership keys, prune rules, conflict rules; cross-component flow in `design/runtime-invariant-flows.md`
 - [ ] Decide how `intent/user/` overrides (`cca scale`) relate to an owner: kept as a separate layer or reverted by the owner
@@ -238,11 +252,11 @@ Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; polic
 - [ ] `cca diff` lists additions, changes, removals and ownership conflicts per resource
 - [ ] Integration tests: remove a service from a directory → deleted; another owner's service untouched; repeated apply is a no-op
 
-### Phase 206 — Git Configuration Sources (M206)
+### Phase 207 — Git Configuration Sources (M207)
 
 - [ ] Design in the same OpenSpec change: source facts, lifecycle, status model, Git client choice (`git` binary vs Go library: air-gap and supply-chain impact)
 - [ ] `cca source add/list/status/diff/sync/pause/resume/remove`; `design/cli-reference.md`
-- [ ] Source reconciler under controller leadership: poll, resolve branch to SHA, fetch only the path, render values, compile, validate, apply through M205 as the source's owner
+- [ ] Source reconciler under controller leadership: poll, resolve branch to SHA, fetch only the path, render values, compile, validate, apply through M206 as the source's owner
 - [ ] Source identity: one service principal per source, grants scope what it may manage (e.g. one tenant); compiled facts go through the policy gate
 - [ ] Safe fetch: allowed URL schemes and hosts, path traversal and symlink protection, size limits
 - [ ] Credentials stored as CCattler secrets, never in URLs (depends: M174)
@@ -250,7 +264,7 @@ Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; polic
 - [ ] Status API: fetched revision, applied revision, sync status, last error; health reported separately from workload observations
 - [ ] Integration tests with a local bare repository; e2e on the deploy cluster
 
-### Phase 182 — eBPF Data Plane Correctness (M182)
+### Phase 183 — eBPF Data Plane Correctness (M183)
 
 Harden the eBPF data plane (M128–M134) to the point where it can fully replace nftables for VIP, SNAT, and basic network policy — running a single data plane instead of two in parallel. Discovered during VXLAN CI investigation: tc SNAT was stateless and broke TCP reply packets; agent restart race deleted BPF pin directory; no TCP-level integration tests existed; packet flow matrix was undocumented.
 
@@ -265,7 +279,7 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 - [ ] Verify container-initiated egress (container → external) still works with SNAT
 
 **Agent restart BPF pin race:**
-- [x] Intermittent multi-port VIP failure on eBPF (run 41851786175, e0c7bfe): right after the node-failure test, `curl` from worker-2 to whoami-multiport port 80 failed for 30s (exit 7/28) while worker-1 got 200; both backends answered on their pod IPs. Reproduced on bare metal (run 42043261538, 479a717): `cca_backends` on node-2 held 4 slots for the port-80 VIP, `:80` and `:8081` of both instances; whoami only listens on 80, so ~half the connections failed (live curl `000 200 000`). Cause: endpoints are one per instance per exposed port and `resolveServiceBackends` took all of them regardless of the VIP port; nftables had the same backend list. Fix: only endpoints whose container port equals the VIP port become backends (`TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints`). Port 8081 still has no VIP (M190)
+- [x] Intermittent multi-port VIP failure on eBPF (run 41851786175, e0c7bfe): right after the node-failure test, `curl` from worker-2 to whoami-multiport port 80 failed for 30s (exit 7/28) while worker-1 got 200; both backends answered on their pod IPs. Reproduced on bare metal (run 42043261538, 479a717): `cca_backends` on node-2 held 4 slots for the port-80 VIP, `:80` and `:8081` of both instances; whoami only listens on 80, so ~half the connections failed (live curl `000 200 000`). Cause: endpoints are one per instance per exposed port and `resolveServiceBackends` took all of them regardless of the VIP port; nftables had the same backend list. Fix: only endpoints whose container port equals the VIP port become backends (`TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints`). Port 8081 still has no VIP (M191)
 - [ ] Investigate slow recovery after an agent restart on eBPF under load: run 41673229739 (eBPF, Airflow + whoami + gate-tls) took 64s until worker-1 reached the whoami VIP again, vs 9-11s on nftables without Airflow. eBPF programs attached and the whoami instance started within 2s of the restart; the delay is between endpoint publication, readiness and backend map programming. Collect eBPF map dumps and agent logs beyond the 200-line journal cap. Next run 41682266710 (same load, eBPF, real capacity, right-sized Airflow) recovered in 23s, so it varies with load or timing
 - [ ] `cca top nodes` shows 0% CPU/memory used on nodes running 5-6 workloads (run 41682266710): the usage column is not populated
 - [ ] Fix `removePinnedMaps()` to only remove pins created by THIS instance (PID-namespaced pin dir or flock)
@@ -279,9 +293,9 @@ Harden the eBPF data plane (M128–M134) to the point where it can fully replace
 - [ ] Add e2e test: verify `nc` TCP connectivity, not just ICMP ping, in cluster health check
 - [ ] Each test row from NETWORK_GRAPH.md packet flow matrix has a corresponding e2e assertion
 
-Policy and nftables elimination items moved to Phase 196.
+Policy and nftables elimination items moved to Phase 197.
 
-### Phase 183 — HA Etcd Cluster Validation (M183)
+### Phase 184 — HA Etcd Cluster Validation (M184)
 
 First end-to-end validation of HA control plane on vmherd: 3-node etcd raft cluster, leader-elected cca-server, control plane failover, and etcd member failure recovery.
 
@@ -296,9 +310,9 @@ First end-to-end validation of HA control plane on vmherd: 3-node etcd raft clus
 - [ ] etcd member failure: stop one member, verify quorum holds (2/3), API works
 - [ ] Recovery: restart failed components, verify they rejoin
 
-### Phase 196 — eBPF Policy & nftables Elimination (M196)
+### Phase 197 — eBPF Policy & nftables Elimination (M197)
 
-Second half of the original Phase 151 checklist. Depends: M182.
+Second half of the original Phase 151 checklist. Depends: M183.
 
 **eBPF network policy (basic):**
 - [ ] Review identity-based design draft [design/network-policy-identity.md](design/network-policy-identity.md) (identity maps instead of per-node IP rules; default-deny derived from team/export/gate declarations); the items below assume the CIDR model and change if the draft is accepted
@@ -308,13 +322,13 @@ Second half of the original Phase 151 checklist. Depends: M182.
 - [ ] Integration test: policy blocks cross-service traffic, allows permitted
 
 **nftables elimination gate:**
-- [ ] M182 complete and all items above done
+- [ ] M183 complete and all items above done
 - [ ] Remove nftables VIP chains when `--dataplane ebpf` (currently kept as fallback)
 - [ ] Remove nftables POSTROUTING masquerade per-container rules when eBPF SNAT active
 - [ ] `--dataplane ebpf` tested on all three targets: bare-metal, Vagrant, Lima
 - [ ] Document kernel version requirements (6.6+ for TCX, 5.18+ for conntrack kfuncs)
 
-### Phase 204 — Airflow Triggerer & Observability (M204)
+### Phase 205 — Airflow Triggerer & Observability (M205)
 
 Future placeholder: additional Airflow services for full Helm chart parity.
 
@@ -324,7 +338,7 @@ Future placeholder: additional Airflow services for full Helm chart parity.
 
 ## Milestones
 
-Ordered by priority. Renumbered 2026-11-03: the security review milestones were inserted as M171–M177, and the former M171–M193 became M178–M200. Renumbered 2026-11-06: M174 was split into M174–M178, and the former M175–M203 became M179–M207. Earlier plans in `design/plans/` use older numbers.
+Ordered by priority. Renumbered 2026-11-03: the security review milestones were inserted as M171–M177, and the former M171–M193 became M178–M200. Renumbered 2026-11-06: M174 was split into M174–M178, and the former M175–M203 became M179–M207. Renumbered again 2026-11-06: the status bulk-read milestone was inserted as M175 (blocker), and the former M175–M207 became M176–M208. Earlier plans in `design/plans/` use older numbers.
 
 | Milestone | Phases | Demo |
 |-----------|--------|------|
@@ -335,46 +349,47 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M172 — Agent Debug API Lockdown | 172 | The agent debug API (`/debug/exec`, `/debug/images/pull`) requires an mTLS client certificate from the cluster CA and an admin principal. Ansible binds it to loopback until then. |
 | M173 — API Authorization Correctness | 173 | Store grants and ABAC policies reach the API authorizer in every API process (AuthController was never wired). `/api/state` and `/api/watch` use a prefix allowlist instead of the bypassable denylist. Authenticators skip tokens from other issuers instead of aborting the chain. The watch limit is enforced atomically. |
 | M174 — Secret Delivery to Agents | 174 | Agents stop decrypting: `POST /api/node/secrets` delivers only the secrets granted to instances placed on the calling node, through a narrow `secret-delivery` store principal, audited. Material lives in tmpfs and is bind-mounted read-only. New `waiting-for-secrets` state before `pulling` (not a failure). Enrollment no longer sends the master key. Legacy secret API only as a deprecated opt-in. |
-| M175 — Gate Key Sealing & Delivery | 175 | Gate TLS private keys sealed under `secrets/route/…` instead of plain facts; `tls { key secret "…" }`; agents fetch them through `POST /api/node/gate-keys` and cache them in tmpfs so TLS survives an agent restart while the API is down. Depends: M174. |
-| M176 — Root Key, Keyring & Key Migration | 176 | Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M175. |
-| M177 — Keyring Rotation | 177 | `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M176. |
-| M178 — Tenant-Scoped Secrets | 178 | Secrets belong to a tenant (`secrets/tenant/{t}/…`, `secrets/cluster/…`, reserved `default`); `cca secret set --tenant/--cluster`, `share`/`unshare`; compiler resolution and delivery re-check shares; `cca secret migrate-names` re-encrypts legacy names. Depends: M176. |
-| M179 — HA Correctness | 179 | Leader election on an etcd lease instead of wall-clock timestamps, and the leader key revision is checked in every controller transaction. Multi-prefix scans read at one revision. Persisted JWT signing keyring shared by replicas, with a token-use claim. Before M183. |
-| M180 — Store Access Isolation | 180 | Agents can no longer read or write every etcd key. Near term: etcd roles mapped from certificate CN, or a separate etcd client CA for the control plane only. Target: agents go through an API gateway. Short-lived node certificates with rotation and revocation. Design doc first. |
-| M181 — Security Defense in Depth | 181 | Volume host paths checked against the storage root. Secret API bound to the container bridge with a source-IP check. Process runtime refused outside dev mode. nftables ruleset input validated. Scan pagination. A CI check that every controller constructor and API setter has a production caller. |
-| M182 — eBPF Data Plane Correctness | 182 | Correctness half of the original M151 (see checklist): tc SNAT conntrack fix validated over 10+ CI runs, egress SNAT verified, agent-restart BPF pin race fixed, TCP e2e tests for every packet-flow-matrix row. eBPF policy and nftables removal moved to M196. Depends: M128–M134. |
-| M183 — HA Control Plane Validation | 183 | First end-to-end HA validation on vmherd (see checklist): 3-node etcd quorum, leader-elected cca-server (`controllers/leader.go`, `ha_runner.go` already exist), control plane failover <30s, etcd member failure, recovery. Absorbs the former Control Plane HA milestone: also adds `cca server --join <existing>` if validation shows it is needed. Depends: M179. |
-| M184 — Etcd Backup & Restore | 184 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
+| M175 — Status Snapshot & Bulk Reads | 175 | Blocker for the next milestones (every `cca top`, `cca get`, `cca status` on the deploy cluster stalls). Uncached `GET /api/status` (behind `cca top`, `cca get`, `cca status`) takes 17–21s on the deploy cluster: ~330 sequential store reads per call. Build status from a fixed set of prefix scans indexed into maps, so round-trips do not grow with instances, nodes or services. Failed required scans return an error, not an empty-looking cluster; authorization and visibility unchanged; still eventually consistent (one-revision reads are M180). Benchmark with injected 110ms latency first. Target: well below 1s uncached. Controller read audit is a separate follow-up. |
+| M176 — Gate Key Sealing & Delivery | 176 | Gate TLS private keys sealed under `secrets/route/…` instead of plain facts; `tls { key secret "…" }`; agents fetch them through `POST /api/node/gate-keys` and cache them in tmpfs so TLS survives an agent restart while the API is down. Depends: M174. |
+| M177 — Root Key, Keyring & Key Migration | 177 | Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M176. |
+| M178 — Keyring Rotation | 178 | `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M177. |
+| M179 — Tenant-Scoped Secrets | 179 | Secrets belong to a tenant (`secrets/tenant/{t}/…`, `secrets/cluster/…`, reserved `default`); `cca secret set --tenant/--cluster`, `share`/`unshare`; compiler resolution and delivery re-check shares; `cca secret migrate-names` re-encrypts legacy names. Depends: M177. |
+| M180 — HA Correctness | 180 | Leader election on an etcd lease instead of wall-clock timestamps, and the leader key revision is checked in every controller transaction. Multi-prefix scans read at one revision. Persisted JWT signing keyring shared by replicas, with a token-use claim. Before M184. |
+| M181 — Store Access Isolation | 181 | Agents can no longer read or write every etcd key. Near term: etcd roles mapped from certificate CN, or a separate etcd client CA for the control plane only. Target: agents go through an API gateway. Short-lived node certificates with rotation and revocation. Design doc first. |
+| M182 — Security Defense in Depth | 182 | Volume host paths checked against the storage root. Secret API bound to the container bridge with a source-IP check. Process runtime refused outside dev mode. nftables ruleset input validated. Scan pagination. A CI check that every controller constructor and API setter has a production caller. |
+| M183 — eBPF Data Plane Correctness | 183 | Correctness half of the original M151 (see checklist): tc SNAT conntrack fix validated over 10+ CI runs, egress SNAT verified, agent-restart BPF pin race fixed, TCP e2e tests for every packet-flow-matrix row. eBPF policy and nftables removal moved to M197. Depends: M128–M134. |
+| M184 — HA Control Plane Validation | 184 | First end-to-end HA validation on vmherd (see checklist): 3-node etcd quorum, leader-elected cca-server (`controllers/leader.go`, `ha_runner.go` already exist), control plane failover <30s, etcd member failure, recovery. Absorbs the former Control Plane HA milestone: also adds `cca server --join <existing>` if validation shows it is needed. Depends: M180. |
+| M185 — Etcd Backup & Restore | 185 | `cca backup create/restore`. Scheduled automatic backups. Retention policy. Point-in-time restore. |
 | **Tier 1 — High value for effort** | | |
-| M185 — Debug & Explain CLI | 185 | Existing: `cca describe` (service/node/instance/gate), `cca diff`, `cca events`. Remaining: `cca debug <service>` (one-shot health report: instances, probes, recent events, placement failures) and `cca explain <service>` (scheduler placement reasoning per node). |
-| M186 — Network Policy Egress Rules | 186 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
-| M187 — Prometheus Metrics Gaps | 187 | Existing: `/metrics` in Prometheus format (`metrics/metrics.go`) with API, reconciliation (duration, changes, conflicts), activation, and node/service/instance gauges. Remaining: per-controller labels on reconciliation metrics, autoscaler decision metrics, instance counts by state, scrape config docs. |
-| M188 — Quota CLI | 188 | Existing: tenant `quota {}` DSL and `QuotaAdmission` (`tenant/quota.go`) blocking instance/volume admission, usage facts. Remaining: `cca quota list` / `cca quota describe <tenant>` showing limits vs usage. |
-| M189 — Persistent Volume Gaps | 189 | Existing: `volume` DSL (size, persistent, type, replicas), service volume mounts, per-ordinal stateful volumes (`controllers/stateful_volume.go`), LocalPath/NFS providers (M164). Remaining: scheduler volume locality (place instances on nodes holding their local volume), size enforcement/quota on local provisioner. Found 2026-11-06 (deploy runs 42254717859, 42263460802): the StorageController wrote `observed/volume/{name}/type` only when it created a volume, and `cca apply` writes facts one by one, so `pgdata` was created before its `type local` arrived and the agent used NFS; two Postgres instances shared one NFS data directory and corrupted it. Fixed: a missing observed type is now recorded from the desired type, and the agent falls back to the desired type until then. Still open: A desired/observed type mismatch must put the volume in an error state with the reason (data is not migrated), visible in `cca get volumes`. |
-| M190 — Multi-Port Service VIPs | 190 | Found during M170: `NetworkController` gives each service one VIP port (`servicePorts[svc][0]`), so `expose 8081` on a second port never reaches the data plane, although M124 claimed per-port VIPs. One VIP per service with every exposed port: `network/vip/service/{name}/port/{port}` (legacy single `port` key migrated), `ServiceVIPConfig.Ports`, nftables/iptables/eBPF dispatch per port, `/api/status` networking entry per port, cloud LB per-port config. E2E: whoami-multiport answers on 8081 through the VIP from every node (hard failure, not a warning). Design in `design/networking.md` first. Depends: M182 (eBPF data plane). |
+| M186 — Debug & Explain CLI | 186 | Existing: `cca describe` (service/node/instance/gate), `cca diff`, `cca events`. Remaining: `cca debug <service>` (one-shot health report: instances, probes, recent events, placement failures) and `cca explain <service>` (scheduler placement reasoning per node). |
+| M187 — Network Policy Egress Rules | 187 | `network_policy "name" { egress { to_cidr "10.0.0.0/8" port 443 } }`. nftables output chain. Default-deny egress when policy applies. DNS-based egress (`to_fqdn`). Depends: M168. |
+| M188 — Prometheus Metrics Gaps | 188 | Existing: `/metrics` in Prometheus format (`metrics/metrics.go`) with API, reconciliation (duration, changes, conflicts), activation, and node/service/instance gauges. Remaining: per-controller labels on reconciliation metrics, autoscaler decision metrics, instance counts by state, scrape config docs. |
+| M189 — Quota CLI | 189 | Existing: tenant `quota {}` DSL and `QuotaAdmission` (`tenant/quota.go`) blocking instance/volume admission, usage facts. Remaining: `cca quota list` / `cca quota describe <tenant>` showing limits vs usage. |
+| M190 — Persistent Volume Gaps | 190 | Existing: `volume` DSL (size, persistent, type, replicas), service volume mounts, per-ordinal stateful volumes (`controllers/stateful_volume.go`), LocalPath/NFS providers (M164). Remaining: scheduler volume locality (place instances on nodes holding their local volume), size enforcement/quota on local provisioner. Found 2026-11-06 (deploy runs 42254717859, 42263460802): the StorageController wrote `observed/volume/{name}/type` only when it created a volume, and `cca apply` writes facts one by one, so `pgdata` was created before its `type local` arrived and the agent used NFS; two Postgres instances shared one NFS data directory and corrupted it. Fixed: a missing observed type is now recorded from the desired type, and the agent falls back to the desired type until then. Still open: A desired/observed type mismatch must put the volume in an error state with the reason (data is not migrated), visible in `cca get volumes`. |
+| M191 — Multi-Port Service VIPs | 191 | Found during M170: `NetworkController` gives each service one VIP port (`servicePorts[svc][0]`), so `expose 8081` on a second port never reaches the data plane, although M124 claimed per-port VIPs. One VIP per service with every exposed port: `network/vip/service/{name}/port/{port}` (legacy single `port` key migrated), `ServiceVIPConfig.Ports`, nftables/iptables/eBPF dispatch per port, `/api/status` networking entry per port, cloud LB per-port config. E2E: whoami-multiport answers on 8081 through the VIP from every node (hard failure, not a warning). Design in `design/networking.md` first. Depends: M183 (eBPF data plane). |
 | **Tier 2 — Substantial features** | | |
-| M191 — Service Mesh via Groups | 191 | `mesh { mtls "strict" }` — compiler auto-adds proxy to service group. Proxy uses existing SPIFFE identity. Traffic metrics as derived facts. Uses group network sharing, not sidecar injection. Depends: M169. |
-| M192 — DSL Admission Policy Rules | 192 | `policy "no-latest" { on apply match { service where image =~ ":latest$" } deny "not allowed" }`. Mutating policies. Compiled into PolicyGate — no webhooks. Escape hatch: `validate_url` for external validation. |
-| M193 — Volume Snapshots | 193 | `cca volume snapshot create <service>`. Filesystem copy for local provisioner. Restore to new volume. Retention policy (count/age). Depends: M189. |
-| M194 — Distributed Tracing | 194 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M187. |
-| M195 — DSL Templates & Imports | 195 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. Reconsider first: Go templates + `.ccv` values already cover parameterization. |
-| M196 — eBPF Policy & nftables Elimination | 196 | Second half of the original M151 checklist: tc ingress policy program on cca0 from `derived/network/rule/` facts, default-deny, then remove nftables VIP/masquerade chains under `--dataplane ebpf`; test on bare-metal, Vagrant, Lima; document kernel requirements. Depends: M182. |
-| M205 — Apply Ownership & Prune | 205 | Foundation for GitOps, useful without Git: every resource in desired state has one owner (`cli` for `cca apply`, later a Git source), recorded per resource. `cca apply <dir>` of the same owner deletes resources removed from the files (today only gates are pruned, M170). Applying a resource owned by someone else is refused. Each resource's facts commit atomically; application is resumable and idempotent. `cca diff` shows removals and ownership conflicts in CCattler terms. Proposal: `design/chats/chat-03nov.md` (stage 2). |
-| M206 — Git Configuration Sources | 206 | `cca source add/list/status/diff/sync/pause/resume/remove`. A source = repository, revision, path, values files, sync mode, prune flag. Polls (webhook later), pins the branch to a commit SHA, fetches only the path, renders `.ccv` values, compiles and validates before writing; a failed fetch or compile keeps the last good desired state and never prunes. Applies through M205 ownership as the source's own service identity, scoped by grants (M173). Source status (Synced/OutOfSync/Applying/Failed, fetched vs applied revision) kept separate from workload health. Runs under controller leadership. Credentials as CCattler secrets (M174). Depends: M205, M173, M174. |
-| M207 — Cloud-Backed Cluster Autoscaling | 207 | Found in the 2026-11-03 external review: `ClusterAutoscaleController` exists but is wired only into `cca apply`/`cca run`, always with `infra.NewSimulatorInfraProvider`, and not into `cca server`. The real AWS/GCP/Azure adapters in `cloud/` implement `CloudProvider` (`CreateInstance`, `ListInstances`, ...), not the autoscaler's `infra.InfrastructureProvider` (`RequestNodeWithRequirements`, `RemoveNode`, `NodeCount`). Scope: adapter from `CloudProvider` to `InfrastructureProvider` (idempotent by request ID, instance template with join token and labels), wiring under controller leadership in `cca server` when `--cloud-provider` is set, scale-down only through drain, min/max node limits and cost guard, provider error and quota handling, simulator kept for tests. E2E against one real provider account. Depends: M171 (join token per node), M179 (leader fencing). |
+| M192 — Service Mesh via Groups | 192 | `mesh { mtls "strict" }` — compiler auto-adds proxy to service group. Proxy uses existing SPIFFE identity. Traffic metrics as derived facts. Uses group network sharing, not sidecar injection. Depends: M169. |
+| M193 — DSL Admission Policy Rules | 193 | `policy "no-latest" { on apply match { service where image =~ ":latest$" } deny "not allowed" }`. Mutating policies. Compiled into PolicyGate — no webhooks. Escape hatch: `validate_url` for external validation. |
+| M194 — Volume Snapshots | 194 | `cca volume snapshot create <service>`. Filesystem copy for local provisioner. Restore to new volume. Retention policy (count/age). Depends: M190. |
+| M195 — Distributed Tracing | 195 | OpenTelemetry trace propagation through controllers. OTLP export. Trace correlation: API request → controller → agent. `cca trace <request-id>`. Depends: M188. |
+| M196 — DSL Templates & Imports | 196 | `template "web-app" (image, port) { ... }`. `import "lib/common.cca"`. Pure substitution. Standard library at `stdlib/`. Reconsider first: Go templates + `.ccv` values already cover parameterization. |
+| M197 — eBPF Policy & nftables Elimination | 197 | Second half of the original M151 checklist: tc ingress policy program on cca0 from `derived/network/rule/` facts, default-deny, then remove nftables VIP/masquerade chains under `--dataplane ebpf`; test on bare-metal, Vagrant, Lima; document kernel requirements. Depends: M183. |
+| M206 — Apply Ownership & Prune | 206 | Foundation for GitOps, useful without Git: every resource in desired state has one owner (`cli` for `cca apply`, later a Git source), recorded per resource. `cca apply <dir>` of the same owner deletes resources removed from the files (today only gates are pruned, M170). Applying a resource owned by someone else is refused. Each resource's facts commit atomically; application is resumable and idempotent. `cca diff` shows removals and ownership conflicts in CCattler terms. Proposal: `design/chats/chat-03nov.md` (stage 2). |
+| M207 — Git Configuration Sources | 207 | `cca source add/list/status/diff/sync/pause/resume/remove`. A source = repository, revision, path, values files, sync mode, prune flag. Polls (webhook later), pins the branch to a commit SHA, fetches only the path, renders `.ccv` values, compiles and validates before writing; a failed fetch or compile keeps the last good desired state and never prunes. Applies through M206 ownership as the source's own service identity, scoped by grants (M173). Source status (Synced/OutOfSync/Applying/Failed, fetched vs applied revision) kept separate from workload health. Runs under controller leadership. Credentials as CCattler secrets (M174). Depends: M206, M173, M174. |
+| M208 — Cloud-Backed Cluster Autoscaling | 208 | Found in the 2026-11-03 external review: `ClusterAutoscaleController` exists but is wired only into `cca apply`/`cca run`, always with `infra.NewSimulatorInfraProvider`, and not into `cca server`. The real AWS/GCP/Azure adapters in `cloud/` implement `CloudProvider` (`CreateInstance`, `ListInstances`, ...), not the autoscaler's `infra.InfrastructureProvider` (`RequestNodeWithRequirements`, `RemoveNode`, `NodeCount`). Scope: adapter from `CloudProvider` to `InfrastructureProvider` (idempotent by request ID, instance template with join token and labels), wiring under controller leadership in `cca server` when `--cloud-provider` is set, scale-down only through drain, min/max node limits and cost guard, provider error and quota handling, simulator kept for tests. E2E against one real provider account. Depends: M171 (join token per node), M180 (leader fencing). |
 | **Tier 3 — Later / optional** | | |
-| M197 — Multi-Cluster Service Discovery | 197 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
-| M198 — Storage Plugin Interface | 198 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M189. |
-| M199 — Custom Fact Types with Schema Validation | 199 | Schema at `meta/fact-type/{name}`. PolicyGate validates writes to `custom/{type}/`. `cca get <type>` auto-discovers. `cca describe fact-type`. No API group versioning — facts with optional schema. |
-| M200 — Controller SDK gRPC Transport | 200 | gRPC streaming for out-of-process controllers. `cca controller register --name X --address host:port`. Health check + auto-deregister. Builds on existing CustomController interface (M81). |
-| M201 — Controller Scaffolding CLI | 201 | `cca controller init <name>` scaffolds Go/Python project with gRPC client, reconciler stub, test harness. Working example included. Not an operator lifecycle manager. Depends: M200. |
-| M202 — Cluster Upgrade Controller | 202 | `cca upgrade plan/apply`. Rolling control-plane + agent upgrade. Drain → upgrade → re-enable node. Rollback on failure. Depends: M183, M184. |
-| M203 — Conformance Test Suite | 203 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. Prefer growing it with each milestone over one big phase at the end. |
-| M204 — Airflow Triggerer & Observability | 204 | Placeholder: triggerer service, StatsD exporter, log groomer |
+| M198 — Multi-Cluster Service Discovery | 198 | `cca cluster register <remote>` links clusters. Services visible as `<svc>.<cluster>.svc.ccattler.global`. Cross-cluster health checking. Depends: M168, M154. |
+| M199 — Storage Plugin Interface | 199 | CSI-compatible plugin model. Driver registration and capability discovery. External provisioners (NFS, cloud block). Attach/detach lifecycle. Depends: M190. |
+| M200 — Custom Fact Types with Schema Validation | 200 | Schema at `meta/fact-type/{name}`. PolicyGate validates writes to `custom/{type}/`. `cca get <type>` auto-discovers. `cca describe fact-type`. No API group versioning — facts with optional schema. |
+| M201 — Controller SDK gRPC Transport | 201 | gRPC streaming for out-of-process controllers. `cca controller register --name X --address host:port`. Health check + auto-deregister. Builds on existing CustomController interface (M81). |
+| M202 — Controller Scaffolding CLI | 202 | `cca controller init <name>` scaffolds Go/Python project with gRPC client, reconciler stub, test harness. Working example included. Not an operator lifecycle manager. Depends: M201. |
+| M203 — Cluster Upgrade Controller | 203 | `cca upgrade plan/apply`. Rolling control-plane + agent upgrade. Drain → upgrade → re-enable node. Rollback on failure. Depends: M184, M185. |
+| M204 — Conformance Test Suite | 204 | 100+ e2e test cases across all phases. `cca conformance run`. Test matrix: single/multi-node, HA, multi-tenant. Depends: all previous. Prefer growing it with each milestone over one big phase at the end. |
+| M205 — Airflow Triggerer & Observability | 205 | Placeholder: triggerer service, StatsD exporter, log groomer |
 | **Future (unscheduled)** | | |
-| *(future)* OpenSpec Adoption (pilot) | — | Adopt OpenSpec 1.16.0 (pinned) for new capabilities, GitOps first; existing docs not migrated. Checklist under "OpenSpec pilot" above. Decision and config: `design/chats/chat-03nov-1.md`, `design/chats/chat-03nov-2.md`. Before M205. |
+| *(future)* OpenSpec Adoption (pilot) | — | Adopt OpenSpec 1.16.0 (pinned) for new capabilities, GitOps first; existing docs not migrated. Checklist under "OpenSpec pilot" above. Decision and config: `design/chats/chat-03nov-1.md`, `design/chats/chat-03nov-2.md`. Before M206. |
 | *(future)* Agent Stop & Restart Traffic Continuity | — | Found in the M170 deploy runs. (1) A deliberate agent stop (`systemctl stop`, upgrade) stops its containers but leaves their endpoints until the 30s heartbeat staleness threshold, so VIP requests reach dead backends for ~30s; the agent should withdraw its endpoints (observed instance state) before exiting, as `cca node drain` would. A crash keeps the Flow 13 fast path. (2) On restart the agent starts instances before re-creating `cca-vxlan0`, leaving cross-node traffic from that node broken for ~7s; reconcile the overlay and data plane before the first instance start. Flow 13 update and integration tests. |
-| *(future)* Production GitOps | — | Stage 3 of the GitOps proposal (`design/chats/chat-03nov.md`): signed commit verification, webhook-triggered fetches (a webhook only triggers a fetch, never carries config), approval policies, pull request previews (`cca source diff` against a branch), rollback by repinning a revision, declarative source definitions. Depends: M206. |
+| *(future)* Production GitOps | — | Stage 3 of the GitOps proposal (`design/chats/chat-03nov.md`): signed commit verification, webhook-triggered fetches (a webhook only triggers a fetch, never carries config), approval policies, pull request previews (`cca source diff` against a branch), rollback by repinning a revision, declarative source definitions. Depends: M207. |
 | *(future)* API TLS Rate Limiting | — | Rate-limit failed TLS handshakes per source IP on the `cca server` API listener. After N failed handshakes from the same IP within a sliding window (e.g. 10 failures in 60s), temporarily block that IP for a cooldown period. Prevents a misconfigured client (wrong certs, broken TLS) from flooding the server with handshake errors, which starves goroutines and causes etcd operation timeouts — leading to leadership loss and controller stall. Implementation: wrap `tls.Listener` with a rate-limiting accept loop that tracks per-IP failure counts. Log blocked IPs at WARN level. No configuration needed beyond sensible defaults. Discovered during M130 validation when a caddy-sync daemon with wrong certificates caused leadership loss on the deploy cluster. |
 | *(future)* Gate Traffic Splitting | — | Weighted backend routing for `gate` blocks. DSL: `gate canary { host app.example.com; backend api-v1 weight 90; backend api-v2 weight 10 }`. Compiler emits `desired/route/{name}/backend/{service}/weight` facts. Route controller distributes backends proportionally in `derived/route/{name}/backends` (e.g. 9 v1 entries + 1 v2 entry for round-robin). Data plane round-robin naturally approximates weights. For exact splitting, BPF `numgen` mod N with weighted slot assignment. Inspired by Kubernetes Gateway API HTTPRoute `backendRefs[].weight`. Enables canary deployments and A/B testing without a separate proxy. |
 | *(future)* WireGuard Node Encryption | — | Transparent encryption of all inter-node traffic using WireGuard tunnels. Agent creates `cca-wg0` WireGuard interface on startup, generates key pair, publishes public key as `observed/node/{id}/wireguard/pubkey` fact. WireGuardReconciler watches node facts, programs peer entries for every other node (`wg set cca-wg0 peer <pubkey> endpoint <ip>:51820 allowed-ips <subnet>`). VXLAN traffic routed over WireGuard by adjusting FDB entries to use `cca-wg0` as the outgoing device. DSL opt-in: `cluster { encryption wireguard }` in the cluster config. No third-party dependencies — uses standard Linux WireGuard kernel module (`ip link add cca-wg0 type wireguard`). Key rotation via periodic regeneration and fact update — peers converge within one reconciliation cycle. |

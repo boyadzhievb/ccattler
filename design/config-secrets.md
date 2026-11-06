@@ -168,11 +168,11 @@ Connection URLs are already delivered as files (`/run/connections/{name}`, Flow 
 6. Enrollment no longer distributes key material.
 7. Secrets belong to a tenant; another tenant's workloads cannot use them without an explicit share.
 
-Non-goals: protecting secrets from a compromised control plane (it holds the keys by design); store access isolation for agents (M180); per-node envelope encryption (a possible later availability improvement). M174 makes secrets confidential even while agents can still read etcd, because ciphertext without a key is useless.
+Non-goals: protecting secrets from a compromised control plane (it holds the keys by design); store access isolation for agents (M181); per-node envelope encryption (a possible later availability improvement). M174 makes secrets confidential even while agents can still read etcd, because ciphertext without a key is useless.
 
 **Security boundary.** A compromised node can obtain the plaintext currently authorized for instances placed on it, and the private keys of the gates it serves (decision B). It cannot decrypt other secrets in etcd, and its node certificate does not give it another tenant's secrets or any key-encryption key.
 
-**Limit until M180 (found during implementation, 2026-11-06).** Delivery authorizes from store facts (placement, `observed/instance/{id}/service`, grants). Agents still have unrestricted etcd write access until store access isolation (M180, threat model T5), so a compromised node can forge those facts and obtain any secret through delivery. M174 removes the key from workers (stolen key files, etcd read access and etcd backups no longer expose secrets); the delivery checks become binding once M180 restricts agent writes. M180 must also make the instance → service mapping a control-plane-only fact.
+**Limit until M181 (found during implementation, 2026-11-06).** Delivery authorizes from store facts (placement, `observed/instance/{id}/service`, grants). Agents still have unrestricted etcd write access until store access isolation (M181, threat model T5), so a compromised node can forge those facts and obtain any secret through delivery. M174 removes the key from workers (stolen key files, etcd read access and etcd backups no longer expose secrets); the delivery checks become binding once M181 restricts agent writes. M181 must also make the instance → service mapping a control-plane-only fact.
 
 ### Key hierarchy
 
@@ -187,7 +187,7 @@ legacy key (old secret-master.key, control-plane only, migration only)
 ```
 
 - **Root key (R1):** a fresh, cryptographically random 32-byte key generated on the control plane, independent of the CA key and of the legacy key. File `/etc/ccattler/secret-root.key`, mode `0400`, owned by root. Ansible's control-plane role provisions the same file to every HA replica through the same trusted path as the CA material. It is never sent to agents. With `--kms-provider`, the root key is a KMS key and never touches disk.
-- **Legacy key (R1):** the existing `secret-master.key` is copied to every worker today, and agents can still read etcd until M180, so it must never protect anything new. On the control plane it is loaded only to open v1 envelopes; it never wraps a KEK, a DEK of a v2 envelope or `keyring/root_check`. It is deleted from the control plane once the migration reports `legacy_v1_envelope_count = 0` (see "Migration").
+- **Legacy key (R1):** the existing `secret-master.key` is copied to every worker today, and agents can still read etcd until M181, so it must never protect anything new. On the control plane it is loaded only to open v1 envelopes; it never wraps a KEK, a DEK of a v2 envelope or `keyring/root_check`. It is deleted from the control plane once the migration reports `legacy_v1_envelope_count = 0` (see "Migration").
 - **Startup checks:** a missing, unreadable, wrongly sized or group/world-readable root key file is a startup error (no silent generation). Each replica opens `keyring/root_check` (a fixed value sealed with the root key, written when the keyring is created); failing to open it is a startup error, so a replica with a different root key never serves. A root key byte-identical to the legacy key is a startup error.
 - **Limitation:** whoever copied the legacy key and v1 ciphertext before migration can still decrypt those historical copies. Migration makes the legacy key useless against the current store; it cannot revoke what was already exfiltrated.
 - **Keyring in etcd:** `keyring/kek/{version}` = KEK wrapped by the root key, `keyring/active` = active version, `keyring/kek/{version}/state` = `active | retiring | retired`. Every API replica reads and watches it, so all replicas use the same versions without copying files.
@@ -315,7 +315,7 @@ Gate-key readiness is reported separately from agent health: `observed/node/{id}
       }
   }
   ```
-  An inline PEM key is still accepted and is sealed by the apply path before anything is written, so no `desired/route/*/tls/key` fact exists. Encrypting on apply does not make a key safe to commit: configurations kept in Git (M206) must use `key secret`, and `cca apply` warns when a file with an inline key comes from a Git source.
+  An inline PEM key is still accepted and is sealed by the apply path before anything is written, so no `desired/route/*/tls/key` fact exists. Encrypting on apply does not make a key safe to commit: configurations kept in Git (M207) must use `key secret`, and `cca apply` warns when a file with an inline key comes from a Git source.
 - Agents fetch gate keys through `POST /api/node/gate-keys` and cache them in tmpfs (`/run/ccattler/gate-keys/`, R4); the gate proxy needs them, containers do not. Existing plaintext key facts are migrated: sealed, then deleted.
 
 ### Enrollment and Ansible

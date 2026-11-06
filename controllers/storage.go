@@ -197,7 +197,7 @@ func collectNodeStates(facts []store.Fact) map[string]types.NodeState {
 // volume that has none. cca apply writes a volume's facts one by one, so the
 // volume can be created from a view that lacked its type; without this the
 // agent would use the default backend forever. A conflicting recorded type is
-// left unchanged (changing a backend needs data migration, M189).
+// left unchanged (changing a backend needs data migration, M190).
 func reconcileMissingVolumeType(desiredVolumes map[string]desiredVolumeInfo, observedVolumes map[string]observedVolumeInfo) []Change {
 	volumeNames := make([]string, 0, len(desiredVolumes))
 	for volumeName := range desiredVolumes {

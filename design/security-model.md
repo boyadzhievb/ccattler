@@ -145,7 +145,7 @@ against prefix rules before reaching etcd.
 **Status (2026-11-03):** only the API server uses `AuthorizedStore`, as its own
 principal `service:api-server` with the `api-server` role; users are not
 checked at this layer (Flow 25). Agents and controllers use the raw etcd client,
-so this layer is not enforced for them (see threat-model T5, fixed in M180).
+so this layer is not enforced for them (see threat-model T5, fixed in M181).
 
 ### Layer 2: API-Layer Capability Auth (users)
 

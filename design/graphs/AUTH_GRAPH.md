@@ -682,7 +682,7 @@ Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
 │   │   ├── Get("enrollment/node/{node}")                      [not enrolled → not_authorized]
 │   │   ├── Get("observed/node/{node}/state") == disabled      [→ not_authorized]
 │   │   ├── Get("placement/instance/{id}") == node             [→ not_authorized]
-│   │   └── Get("observed/instance/{id}/service") → service    [agent-writable until M180]
+│   │   └── Get("observed/instance/{id}/service") → service    [agent-writable until M181]
 │   ├── resolveRequiredSecretNames(service)
 │   │   ├── Scan("desired/service/{svc}/secret/") → granted names
 │   │   ├── collectReferencedSecretNames                       [connection secrets, image_pull_secret]

@@ -36,7 +36,7 @@ const secretDeliveryRefusedRetry = 5 * time.Minute
 const secretDeliveryProtocolVersion = "v2"
 
 // LegacySecretMasterKeyPath is the old per-node key file. Agents no longer use
-// it; they only report whether it is still present (migration gate, M176).
+// it; they only report whether it is still present (migration gate, M177).
 const LegacySecretMasterKeyPath = "/etc/ccattler/secret-master.key" //nolint:gosec // G101: file path, not a credential
 
 // secretDeliveryWaitEntry tracks why and until when an instance waits for secrets.
@@ -400,7 +400,7 @@ func (nodeAgent *Agent) publishSecretDeliveryCapability(ctx context.Context) {
 	legacyKeyFileState := "absent"
 	if _, statError := os.Stat(nodeAgent.legacyKeyFilePath); statError == nil {
 		legacyKeyFileState = "present"
-		logging.Default().Warn("legacy secret key file is unused by this agent; remove it during the M176 migration", "agent", nodeAgent.nodeID, "path", nodeAgent.legacyKeyFilePath)
+		logging.Default().Warn("legacy secret key file is unused by this agent; remove it during the M177 migration", "agent", nodeAgent.nodeID, "path", nodeAgent.legacyKeyFilePath)
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedNodeLegacyKeyFile(nodeAgent.nodeID), []byte(legacyKeyFileState)); putError != nil {
 		logging.Default().Error("failed to publish legacy key file state", "agent", nodeAgent.nodeID, "error", putError.Error())

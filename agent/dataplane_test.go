@@ -827,7 +827,7 @@ func TestDataPlaneReconcilesRoutesWhenNoneRemain(t *testing.T) {
 	}
 }
 
-// TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints covers M182: a service
+// TestDataPlaneMultiPortVIPUsesOnlyVIPPortEndpoints covers M183: a service
 // exposing 80 and 8081 has one endpoint per instance per port, but its VIP
 // (port 80) must only balance across the port-80 endpoints. Before the fix
 // half of the backend slots pointed at :8081 and VIP:80 failed ~50%.

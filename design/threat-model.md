@@ -125,7 +125,7 @@ User CLI ──→ API Server ──→ etcd (fact store)
 - Controller write domain enforcement in runner (Phase 43)
 - Node agents are bound to specific key prefixes via RBAC roles
 
-**Residual risk (corrected 2026-11-03):** Agents connect to etcd directly with a CA-signed certificate and do not use `AuthorizedStore`, and etcd has no roles configured. Every agent therefore has full read/write access to every key in all modes, not just development mode. A compromised node can rewrite desired state, grants and enrollment records. Fix: M180. Since M174 agents hold no secret key, so etcd read access alone no longer exposes secret values; but because delivery (`POST /api/node/secrets`) authorizes from placement, instance-service and grant facts, a node that can write those facts can still obtain any secret until M180.
+**Residual risk (corrected 2026-11-03):** Agents connect to etcd directly with a CA-signed certificate and do not use `AuthorizedStore`, and etcd has no roles configured. Every agent therefore has full read/write access to every key in all modes, not just development mode. A compromised node can rewrite desired state, grants and enrollment records. Fix: M181. Since M174 agents hold no secret key, so etcd read access alone no longer exposes secret values; but because delivery (`POST /api/node/secrets`) authorizes from placement, instance-service and grant facts, a node that can write those facts can still obtain any secret until M181.
 
 ### T6: Denial of Service (MEDIUM)
 
@@ -238,4 +238,4 @@ User CLI ──→ API Server ──→ etcd (fact store)
 | P0 | CA sets node cert identity; atomic join-token use | T11 | **FIXED (M171)** |
 | P0 | Authenticate the agent debug API | T12 | **FIXED (M172)** |
 | P0 | Stop distributing the master key to nodes | T13 | Open (M174) |
-| P0 | Restrict agent store access | T5 | Open (M180) |
+| P0 | Restrict agent store access | T5 | Open (M181) |
