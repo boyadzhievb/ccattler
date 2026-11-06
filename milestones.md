@@ -143,7 +143,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
   - rejected — audit is fire-and-forget: same for every audit path in the system, out of M174 scope
   - rejected — `RootCAs` nil falls back to system pool: not insecure, server configs always carry the cluster CA
   - rejected — `nerdctl --creds` on the command line: pre-existing (Flow 22), unchanged by M174; noted for M181
-- [ ] Deploy cluster: Airflow secrets and connection strings delivered (non-root uid 50000), `observed/node/*/secret_delivery = v2`, no `cca-config-*` secret copies under `/tmp` or the logs directory; bare-metal e2e green
+- [x] Deploy cluster run 42268165296 (98f639b) green: Airflow (uid 50000) reads its delivered connection and secret files (`0444` in `/run`), all nodes report `secret_delivery = v2`, workers have no `secret-master.key`, no `cca-config-*` copies in `/tmp`, no secret values under the logs directory, 0 refused deliveries; gate TLS T1–T15 and 16/16 stability passed; E2E Cluster Test green on 98f639b
 
 ### Phase 175 — Gate Key Sealing & Delivery (M175)
 
