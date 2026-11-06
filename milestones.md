@@ -254,6 +254,8 @@ Proposal: `design/chats/chat-03nov.md`. Git supplies desired-state inputs; polic
 
 Harden the eBPF data plane (M128–M134) to the point where it can fully replace nftables for VIP, SNAT, and basic network policy — running a single data plane instead of two in parallel. Discovered during VXLAN CI investigation: tc SNAT was stateless and broke TCP reply packets; agent restart race deleted BPF pin directory; no TCP-level integration tests existed; packet flow matrix was undocumented.
 
+- [x] Fresh nodes (deploy run 42258226406, kernel 7.0.0-38): `bpf_skb_ct_lookup` "not supported" because `nf_conntrack`/`nf_nat` were not loaded; the agent now loads both before creating the BPF collection
+
 **tc SNAT conntrack validation:**
 - [x] Make `cca_tc_snat` conntrack-aware via `bpf_skb_ct_lookup` — skip SNAT for reply-direction packets
 - [x] Add `IP_CT_DIR_ORIGINAL`/`IP_CT_DIR_REPLY` defines to `cca_ct_helpers.h`

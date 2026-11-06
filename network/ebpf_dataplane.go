@@ -153,6 +153,10 @@ func (ebpfDataPlane *EbpfDataPlane) Initialize(ctx context.Context) error {
 		return fmt.Errorf("creating BPF pin directory %s: %w", ebpfDataPlane.pinPath, directoryError)
 	}
 
+	if moduleError := ensureKernelModulesLoaded(ctx, ebpfRequiredKernelModules, runModprobe); moduleError != nil {
+		return moduleError
+	}
+
 	elfReader := bytes.NewReader(embeddedDataplaneELF)
 	collectionSpec, loadError := ebpf.LoadCollectionSpecFromReader(elfReader)
 	if loadError != nil {

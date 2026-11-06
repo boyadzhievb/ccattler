@@ -44,6 +44,7 @@ EbpfDataPlane.Initialize(ctx)                        [ebpf_dataplane.go:136]
 ├── rlimit.RemoveMemlock()                           [cilium/ebpf/rlimit]
 ├── ensurePinDirectory()                             [ebpf_dataplane.go:217]
 │   └── os.MkdirAll("/sys/fs/bpf/cca", 0700)
+├── ensureKernelModulesLoaded(nf_conntrack, nf_nat)  [ebpf_kernel_modules.go; modprobe, else error naming the module — conntrack kfuncs need them on a fresh boot]
 ├── ebpf.LoadCollectionSpecFromReader(embeddedDataplaneELF)
 │   └── embeddedDataplaneELF                         [ebpf_embed.go:16, go:embed]
 ├── ebpf.NewCollection(collectionSpec)               [loads 5 programs + 5 maps]
