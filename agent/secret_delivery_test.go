@@ -394,3 +394,22 @@ func TestMaterialStoreRefusesDiskBackedDirectoryWhenRequired(testContext *testin
 		testContext.Fatalf("nothing may be written: %v", remaining)
 	}
 }
+
+func TestStateLeavesWaitingForSecretsAfterLateDeliveryWithCachedImage(testContext *testing.T) {
+	nodeAgent, deliveryClient, recordingRuntime, memoryStore, _ := newDeliveryTestAgent(testContext)
+	ctx := context.Background()
+	recordingRuntime.PulledImages = []string{"nginx:1.27"}
+	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceInitStep("web", 0), []byte(""))
+	_, _ = memoryStore.Put(ctx, types.KeyDesiredServiceInitStepExec("web", 0), []byte("db-check"))
+	recordingRuntime.ExecInitFailures = map[string]int{"db-check": 100}
+	instance := placedInstanceInfo{id: "inst-1", service: "web"}
+	deliveryClient.setDeliveryError(&SecretDeliveryError{Reason: SecretWaitAPIUnreachable, Detail: "down"})
+	nodeAgent.reconcileDesiredInstance(ctx, instance)
+
+	deliveryClient.setDeliveryError(nil)
+	nodeAgent.secretDeliveryWaits["inst-1"].retryAfter = time.Now()
+	nodeAgent.reconcileDesiredInstance(ctx, instance)
+	if state := readInstanceState(memoryStore, "inst-1"); state == types.InstanceWaitingForSecrets {
+		testContext.Fatal("state must leave waiting-for-secrets once secrets are delivered, even while init steps fail")
+	}
+}

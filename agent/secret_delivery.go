@@ -173,6 +173,10 @@ func (nodeAgent *Agent) prepareInstanceSecretMaterial(ctx context.Context, insta
 		nodeAgent.recordSecretDeliveryWait(ctx, instanceInfo, requirements, deliveryError)
 		return nil, false
 	}
+	if _, wasWaiting := nodeAgent.secretDeliveryWaits[instanceInfo.id]; wasWaiting {
+		// Leave waiting-for-secrets; with a cached image nothing else would change the state before start.
+		nodeAgent.publishInstanceStateToStore(ctx, instanceInfo.id, instanceInfo.service, types.InstancePending, "")
+	}
 	nodeAgent.clearSecretDeliveryWait(ctx, instanceInfo.id)
 	logging.Default().Info("secrets delivered", "agent", nodeAgent.nodeID, "instance", instanceInfo.id, "count", strconv.Itoa(len(deliveredValues)))
 	return deliveredValues, true
