@@ -180,10 +180,15 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 
 ### Phase 176 — Gate Key Sealing & Delivery (M176)
 
+Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in `design/config-secrets.md` "Gate TLS private keys" (inline keys sealed through `PUT /api/gate-key`; plaintext deleted only after every agent reports `gate_key_delivery = v1`).
+
+- [x] Design flow written (Flow 28) and Flow 13 updated
+
 - [ ] `RouteTLSController` seals generated keys at `secrets/route/{gate}/tls/key`; cert and expiry stay plain facts
-- [ ] `tls { key secret "…" }` in the DSL; inline PEM sealed by the apply path, no `desired/route/*/tls/key` fact; warning for inline keys from Git sources (when M207 lands)
-- [ ] Existing plaintext `desired/route/*/tls/key` and `derived/route/*/tls/key` facts sealed, then deleted
-- [ ] `POST /api/node/gate-keys`: enrolled, non-disabled node with the gate proxy; audited separately
+- [ ] `tls { key secret "…" }` in the DSL (`desired/route/{gate}/tls/key_secret`); inline PEM kept out of the facts and sent by `cca apply` to `PUT /api/gate-key` (`secret.write`, cluster scope; key must match `tls/cert`) after the gate facts; failure exits non-zero naming the gate; warning for inline keys from Git sources (when M207 lands)
+- [ ] `gate-key-migration` controller: existing plaintext `desired/route/*/tls/key` and `derived/route/*/tls/key` facts sealed at once, deleted only when every enrolled, non-disabled node reports `gate_key_delivery = v1`; persists `observed/gate-keys/migration`
+- [ ] RouteTLSController owns `secrets/route/{gate}/tls/key`: deleted when the gate is gone, has no tls, or uses `key_secret`
+- [ ] `POST /api/node/gate-keys`: enrolled, non-disabled node reporting `gate_proxy = enabled`; returns certificate and key together per gate (pair validated), pending gates listed; audited separately, refusals rate-limited
 - [ ] Agent cache `/run/ccattler/gate-keys/{gate}/` (tmpfs, private key `0400`), reload on agent restart, keep serving while the API is down, reconcile on gate removal/key rotation; `observed/node/{id}/gate_keys = ready | waiting`
 - [ ] Tests: no plaintext key fact after reconcile and after inline apply; acceptance B (node without a local backend terminates TLS); agent restart with API down keeps TLS; gate TLS e2e T1–T15 unchanged
 

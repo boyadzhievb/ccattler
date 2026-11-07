@@ -317,6 +317,11 @@ Gate-key readiness is reported separately from agent health: `observed/node/{id}
   ```
   An inline PEM key is still accepted and is sealed by the apply path before anything is written, so no `desired/route/*/tls/key` fact exists. Encrypting on apply does not make a key safe to commit: configurations kept in Git (M207) must use `key secret`, and `cca apply` warns when a file with an inline key comes from a Git source.
 - Agents fetch gate keys through `POST /api/node/gate-keys` and cache them in tmpfs (`/run/ccattler/gate-keys/`, R4); the gate proxy needs them, containers do not. Existing plaintext key facts are migrated: sealed, then deleted.
+- **M176 decisions (2026-11-07):**
+  - Inline keys: `cca apply` writes the gate facts, then sends the key to `PUT /api/gate-key` (`secret.write`, cluster scope); the server seals it at `secrets/route/{gate}/tls/key`. The CLI never holds an encryption key.
+  - Cutover: existing plaintext key facts are sealed at once but deleted only when every enrolled, non-disabled node reports `observed/node/{id}/gate_key_delivery = v1`, so old agents keep TLS during a rolling upgrade. Keys issued, renewed or applied in that window reach upgraded agents only.
+  - Delivery returns certificate and key together; the agent never pairs a certificate fact with a cached key.
+  - Full flow: [runtime-invariant-flows.md Flow 28](runtime-invariant-flows.md#flow-28-gate-key-sealing--delivery-m176).
 
 ### Enrollment and Ansible
 

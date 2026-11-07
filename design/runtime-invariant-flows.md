@@ -774,10 +774,10 @@ cca apply (gate with tls auto)
   → if missing or within 30 days of expiry:
        CertificateAuthority.IssueCertificate(DNSNames: [host], TTL: 90d)
        → writes derived/route/{name}/tls/cert = <PEM>
-       → writes derived/route/{name}/tls/key  = <PEM>
+       → seals the key at secrets/route/{name}/tls/key (M176, Flow 28)
        → writes derived/route/{name}/tls/not-after = <timestamp>
-  → agent gate proxy refreshes host → certificate map (5 s TTL)
-       from derived/route/{name}/tls/cert + key
+  → agent fetches cert + key pairs via POST /api/node/gate-keys (Flow 28),
+       caches them in /run/ccattler/gate-keys/, builds host → certificate map
   → client connects to node:443 with SNI = host
        → GetCertificate(SNI) returns the gate cert (unknown SNI → handshake fails)
        → Host header → gate → service → healthy endpoint (plain HTTP)
@@ -790,9 +790,9 @@ cca apply (gate with tls { cert "path" key "path" })
   → compiler reads PEM files at compile time
   → writes desired/route/{name}/tls/mode = "manual"
   → writes desired/route/{name}/tls/cert = <PEM content>
-  → writes desired/route/{name}/tls/key  = <PEM content>
-  → agent gate proxy loads desired/route/{name}/tls/cert + key into its
-       host → certificate map (desired takes precedence over derived)
+  → key: inline PEM → PUT /api/gate-key, sealed at secrets/route/{name}/tls/key;
+         key secret "n" → desired/route/{name}/tls/key_secret = n (M176, Flow 28)
+  → agent gets the pair through gate-key delivery (manual takes precedence over auto)
   → same request path as auto mode on node:443
 ```
 
@@ -800,8 +800,8 @@ cca apply (gate with tls { cert "path" key "path" })
 
 - `tls` requires `host` — validation error at parse time if missing.
 - Auto mode cert issuance happens in the RouteTLSController, not in the compiler or agent.
-- The agent never generates certs — it only consumes them from the fact store.
-- For auto mode, the agent reads from `derived/route/`. For manual mode, from `desired/route/`.
+- The agent never generates certs — it only consumes delivered cert/key pairs (Flow 28).
+- Certificates stay plain facts (auto in `derived/route/`, manual in `desired/route/`); private keys exist only as envelopes under `secrets/` (M176).
 - If TLS material is missing, the gate has no entry in the certificate map: handshakes for its host fail until the cert appears (picked up within one refresh).
 - TLS terminates on the node HTTPS listener (`--proxy-tls-listen`, default :443), never via VIP dispatch. VIP data planes (nftables, iptables, eBPF) do not know about TLS.
 - The plain-HTTP listener answers requests for a TLS gate's host with a 308 redirect to `https://`.
@@ -1095,6 +1095,103 @@ gate keys
 - The agent's state machine treats `waiting-for-secrets` like `pulling`: in progress, not failed. It always precedes `pulling`.
 - No secret value is written outside `/run/ccattler/secrets/` and `/run/ccattler/gate-keys/` on a node, or into logs, events or `cca` output.
 
+---
+
+## Flow 28: Gate Key Sealing & Delivery (M176)
+
+**Status:** designed 2026-11-07 (decisions: inline keys sealed through the API, plaintext deleted only after every agent fetches gate keys). Replaces the key half of Flow 13; certificates stay plain facts. Spec: [config-secrets.md](config-secrets.md#gate-tls-private-keys).
+
+**Problem**: gate TLS private keys are plain facts (`derived/route/{gate}/tls/key` for auto, `desired/route/{gate}/tls/key` for inline manual keys). Anyone with etcd read access, including every agent, holds every gate's TLS identity.
+
+**Invariant**: a gate private key exists in etcd only as an envelope under `secrets/`. Only the API server decrypts it, and only for an enrolled, non-disabled node whose gate proxy is enabled (decision B: every such node serves every gate). The agent's gate proxy uses a certificate/key pair delivered together, never a certificate from facts with a key from elsewhere.
+
+```
+Where the key of a TLS gate lives
+  tls auto                         → secrets/route/{gate}/tls/key   (system key, route-tls)
+  tls { cert "…" key "…" }  inline → secrets/route/{gate}/tls/key   (system key, sealed via API)
+  tls { cert "…" key secret "n" }  → secrets/{n}                    (user secret, cca secret set)
+                                     desired/route/{gate}/tls/key_secret = n
+  certificate: derived/route/{gate}/tls/cert (auto) or desired/route/{gate}/tls/cert (manual)
+  expiry:      derived/route/{gate}/tls/not-after (auto); all plain facts
+
+1. Auto issuance (RouteTLSController, leader, holds the server's secret sealer)
+   mode=auto, not-after missing or within 30 days
+     → CA issues cert + key
+     → one change group (one transaction):
+         put derived/route/{gate}/tls/cert, derived/route/{gate}/tls/not-after
+         put secrets/route/{gate}/tls/key = seal(key PEM)
+     → no derived/route/{gate}/tls/key fact
+
+2. Inline manual key (cca apply, writes facts directly to etcd)
+   compiler: key PEM is kept out of the fact list
+   apply writes the gate facts first (tls/mode = manual, tls/cert), then
+     PUT /api/gate-key {gate, private_key_pem}   (capability secret.write, cluster scope)
+       → server validates the gate name and that the PEM is a private key matching tls/cert
+       → put secrets/route/{gate}/tls/key = seal(key PEM); audit (gate, principal)
+   PUT fails → apply exits non-zero naming the gate; the gate has no key until a
+     successful apply (handshakes for its host fail, as with a missing cert)
+   order matters: facts first, so step 4 never sees a sealed key without its gate
+
+3. key secret reference (compiler)
+   desired/route/{gate}/tls/key_secret = n   (ValidateSecretName; the secret itself
+     is created with cca secret set); no key material passes through apply
+
+4. Ownership and cleanup (RouteTLSController)
+   system key needed ⇔ gate exists ∧ tls set ∧ (mode = auto ∨ (manual ∧ no key_secret))
+   not needed → delete secrets/route/{gate}/tls/key (with the stale derived facts)
+   auto → manual inline: apply's PUT overwrites the system key; not deleted
+   manual → auto: not-after missing → step 1 issues and overwrites
+
+5. Delivery (agent → API, mTLS node principal)
+   POST /api/node/gate-keys  (no body)
+     → caller node:{id}, enrolled, not disabled, observed/node/{id}/gate_proxy = enabled
+     → for every gate with tls: read cert (fact) + key (secrets/…, opened here)
+       pair checked with tls.X509KeyPair; mismatch or missing → gate listed as pending
+     → response: [{gate, host, certificate_pem, private_key_pem}], pending: [gate]
+     → audit: node, gate names (never key material); refusals rate-limited
+   store principal: secret-delivery (reads secrets/, desired/route/, derived/route/)
+
+6. Agent cache (tmpfs) and gate proxy
+   /run/ccattler/gate-keys/{gate}/certificate.pem, private-key.pem
+     (dirs 0700, key 0400, root; write temp file + rename; gone gates removed)
+   gate proxy certificate map ← cache only (facts still give host/service/sticky)
+   fetch: at start; when the set of TLS gates or a certificate fact changes
+     (the proxy's 5 s route refresh compares them); every 5 min as fallback;
+     API unreachable → back off 2s…30s, keep serving from the cache
+   observed/node/{id}/gate_keys = ready | waiting (reason: unreachable, refused, pending)
+   written at agent start (new facts):
+     observed/node/{id}/gate_key_delivery = v1        (capability, every agent of this version)
+     observed/node/{id}/gate_proxy = enabled | disabled   (--proxy; disabled nodes never fetch)
+
+7. Cutover (gate-key-migration controller, leader, one-time and idempotent)
+   for each plaintext desired|derived/route/{gate}/tls/key:
+     secrets/route/{gate}/tls/key absent → seal it there (desired wins, as in the proxy)
+   when every enrolled, non-disabled node reports gate_key_delivery = v1:
+     delete the plaintext facts (the one sanctioned writer of desired/route/ besides
+     the compiler); until then old agents keep reading them
+   persists observed/gate-keys/migration = {plaintext_count, state}
+```
+
+**Failure and recovery paths:**
+
+```
+server upgraded, some agents not yet
+  → existing keys: plaintext kept until every agent reports v1 (step 7)
+  → keys issued, renewed or applied in this window reach upgraded agents only (documented)
+agent restart, same boot, API down → serve from /run/ccattler/gate-keys/
+node reboot, API down → no gate TLS on this node; gate_keys = waiting (unreachable)
+key rotated (renewal or re-apply) → certificate fact changes → agent re-fetches the pair
+gate removed → step 4 deletes the system key; agent removes /run/ccattler/gate-keys/{gate}/
+node disabled or unenrolled → delivery refused (403, audited); cached keys kept until
+  the next successful fetch replaces them (documented: no remote wipe)
+```
+
+**What must match:**
+- The key the delivery opens (step 5) is chosen by the same rule as ownership (step 4): `key_secret` if set, else the system key.
+- The agent never combines a certificate from facts with a key from the cache: both come from one delivery response.
+- `api/state_access.go` keeps hiding `/tls/key` facts from state and watch (defense in depth for the cutover window).
+- `gate_proxy` is self-reported by the agent; it narrows delivery to nodes that run a proxy, it is not an authorization boundary beyond decision B.
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
@@ -1107,5 +1204,5 @@ When adding a new feature that touches the runtime:
 6. **Does it add a new env var or config to containers?** If yes, ensure it's resolved at materialization time, not stored pre-rendered.
 7. **Does it use instance state to make decisions?** If yes, determine whether the decision is about runtime behavior (use `endpointEligibleState`) or scheduling intent (use `effectiveInstanceState`). Never use `node_failure` markers for runtime decisions (Flow 8).
 8. **Does it start containers?** If yes, verify it goes through the image pull lifecycle (Flow 14) — secrets delivered first when needed (Flow 27), then pull, start with `--pull=never`. Never assume the image is cached.
-9. **Does it expose external HTTPS?** If yes, verify TLS material flows from controller to agent via fact store (Flow 13). The agent never issues certs.
+9. **Does it expose external HTTPS?** If yes, verify certificates flow as facts and private keys only through sealed storage and gate-key delivery (Flows 13, 28). The agent never issues certs.
 10. **Does it mount volumes from several instances?** If yes, check whether the provider supports shared attach (Flow 14); exclusive volumes need all instances on one node.
