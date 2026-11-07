@@ -114,6 +114,15 @@ Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21
 - [x] Consistency stays eventually consistent: no claim of a single store revision (pinned-revision multi-prefix reads are M180)
 - [x] Call graph `design/graphs/OBSERVABILITY_GRAPH.md` updated
 - [x] Result: 15 concurrent scans per build, 0.116s with 110ms injected latency (was 615 reads / 68s); verified through the api-server store role
+- [x] Independent review 2026-11-07 (`code-reviewer` + `security-audit` on 3690fd8; approve, no regression, race-clean). Outcome:
+  - fixed — `buildStatusFromStore` doc comment over 4 lines → trimmed
+  - fixed — failed optional `secrets/` scan dropped silently → debug log with prefix and error
+  - fixed — round-trip test only compared small vs large → also asserts at most one read per scan prefix
+  - fixed — no end-to-end test for parent/child service names (`payments`, `payments/checkout`) → definition, tags, config and owner visibility kept apart
+  - rejected — re-sorting already-sorted per-prefix scans: negligible at status sizes
+  - rejected — `requireCoveredKey` panic in a handler path: only reachable by a coding error (keys come from fixed `types.Key*` builders), covered by tests, `net/http` recovers
+  - pending decision — pre-existing: a `?all=true` status body is written to the 2s cache that plain requests read (`api/server.go` `handleStatus`), so `cca get` can briefly show stopped instances
+  - pending decision — pre-existing: `/metrics` is unauthenticated, not rate-limited and builds the full status per scrape uncached; Networking, Volumes, CloudIdentities and Endpoints are not team-filtered; empty-valued keys such as `{svc}/resources/cpu` are discovered as services
 - [ ] Deploy cluster: uncached `cca get instances` well below 1s on the same environment
 - [ ] Follow-up audit (separate, no mechanical changes): controller read patterns with sequential `Get`s inside per-instance/per-node loops; any change keeps revision guards and CAS
 - [ ] Found while benchmarking (not fixed in M175, decide scope): every allowed read through the API's `AuthorizedStore` persists an audit entry (`StoreBackedAuditLog.Log` → `go persistEntry` → etcd Put), so each uncached status call wrote ~615 audit facts; `/metrics` builds the full status on every scrape; the status secret list is always empty in production because the api-server role has no `secrets/` rule (each call logs a denied scan)

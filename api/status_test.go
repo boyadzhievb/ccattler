@@ -331,3 +331,40 @@ func TestBuildStatusThroughAPIServerStoreRole(t *testing.T) {
 		t.Fatalf("expected 1 instance and no secrets, got %d instances, %d secrets", len(clusterStatus.Instances), len(clusterStatus.Secrets))
 	}
 }
+
+// TestBuildStatusHierarchicalServiceNames verifies parent and child services
+// ("payments" and "payments/checkout") keep their own definition, tags,
+// config and owner-based visibility when read from the snapshot.
+func TestBuildStatusHierarchicalServiceNames(t *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	for _, serviceName := range []string{"payments", "payments/checkout"} {
+		if writeError := types.WriteService(ctx, factStore, types.Service{Name: serviceName, Image: serviceName + ":v1", Instances: 1, CPU: "100m", Memory: "64Mi"}); writeError != nil {
+			t.Fatalf("seed service: %v", writeError)
+		}
+		factStore.Put(ctx, types.KeyDesiredServiceTagPrefix(serviceName)+"name", []byte(serviceName))
+		factStore.Put(ctx, types.KeyDesiredServiceConfigEnv(serviceName, "SERVICE"), []byte(serviceName))
+	}
+	factStore.Put(ctx, types.KeyDesiredServiceOwner("payments"), []byte("platform"))
+
+	clusterStatus := mustBuildClusterStatus(t, ctx, factStore)
+	if len(clusterStatus.Services) != 2 {
+		t.Fatalf("expected 2 services, got %+v", clusterStatus.Services)
+	}
+	for _, serviceStatus := range clusterStatus.Services {
+		if serviceStatus.Image != serviceStatus.Name+":v1" || len(serviceStatus.Tags) != 1 || serviceStatus.Tags["name"] != serviceStatus.Name {
+			t.Errorf("service %s mixed with another service's facts: %+v", serviceStatus.Name, serviceStatus)
+		}
+	}
+	if len(clusterStatus.Config) != 2 || clusterStatus.Config[0].Value != clusterStatus.Config[0].Service || clusterStatus.Config[1].Value != clusterStatus.Config[1].Service {
+		t.Errorf("config entries mixed between parent and child: %+v", clusterStatus.Config)
+	}
+
+	paymentsStatus, buildError := buildStatusFromStore(ctx, factStore, &workloadVisibility{teams: []string{"payments"}}, true)
+	if buildError != nil {
+		t.Fatalf("build status: %v", buildError)
+	}
+	if len(paymentsStatus.Services) != 1 || paymentsStatus.Services[0].Name != "payments/checkout" {
+		t.Errorf("payments team should see only payments/checkout (payments is owned by platform), got %+v", paymentsStatus.Services)
+	}
+}

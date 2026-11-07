@@ -170,13 +170,10 @@ type EndpointStatus struct {
 	ExternalAddress string `json:"external_address,omitempty"`
 }
 
-// buildStatusFromStore collects the full cluster state with a fixed number of
-// store scans (loadStatusFactSnapshot) and assembles it into a ClusterStatus
-// by delegating to per-section builders. A non-nil visibility limited to
-// teams keeps only those teams' services, instances and gates; nil or a
-// cluster-scope visibility sees everything (Flow 25). A failed required scan
-// is returned instead of an empty cluster, so a store outage or denial is
-// visible to the caller.
+// buildStatusFromStore assembles the ClusterStatus from a fixed set of store
+// scans (loadStatusFactSnapshot). Team visibility keeps only those teams'
+// services, instances and gates; nil or cluster scope sees all (Flow 25).
+// A failed required scan is an error, never an empty-looking cluster.
 func buildStatusFromStore(ctx context.Context, factStore store.StateStore, visibility *workloadVisibility, includeAllInstances bool) (ClusterStatus, error) {
 	snapshot, loadError := loadStatusFactSnapshot(ctx, factStore)
 	if loadError != nil {

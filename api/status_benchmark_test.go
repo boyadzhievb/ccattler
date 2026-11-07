@@ -142,6 +142,9 @@ func TestStatusBuildRoundTripsConstantInClusterSize(t *testing.T) {
 			if smallRoundTrips != largeRoundTrips {
 				t.Errorf("status build store reads grow with cluster size: small=%d large=%d", smallRoundTrips, largeRoundTrips)
 			}
+			if largeRoundTrips > int64(len(statusScanPrefixes)) {
+				t.Errorf("status build issued %d store reads, want at most one per scan prefix (%d)", largeRoundTrips, len(statusScanPrefixes))
+			}
 		})
 	}
 }

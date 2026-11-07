@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
@@ -75,6 +76,7 @@ func loadStatusFactSnapshot(ctx context.Context, factStore store.StateStore) (*s
 			if scanPrefix.required {
 				return nil, fmt.Errorf("scan %s: %w", scanPrefix.prefix, scanErrors[scanIndex])
 			}
+			logging.Default().Debug("status: optional scan skipped", "prefix", scanPrefix.prefix, "error", scanErrors[scanIndex].Error())
 			continue
 		}
 		for _, fact := range scanResults[scanIndex] {
