@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.73.0-beta <Badge type="tip" text="latest" /> {#v1-73-0-beta}
+## v1.74.0-beta <Badge type="tip" text="latest" /> {#v1-74-0-beta}
+
+**2026-11-07** — Status Snapshot & Bulk Reads.
+
+- **Status Snapshot & Bulk Reads** (M175) — Blocker for the next milestones (every `cca top`, `cca get`, `cca status` on the deploy cluster stalls). Uncached `GET /api/status` (behind `cca top`, `cca get`, `cca status`) takes 17–21s on the deploy cluster: ~330 sequential store reads per call. Build status from a fixed set of prefix scans indexed into maps, so round-trips do not grow with instances, nodes or services. Failed required scans return an error, not an empty-looking cluster; authorization and visibility unchanged; still eventually consistent (one-revision reads are M180). Benchmark with injected 110ms latency first. Target: well below 1s uncached. Controller read audit is a separate follow-up.
+
+---
+
+## v1.73.0-beta {#v1-73-0-beta}
 
 **2026-11-06** — Secret Delivery to Agents.
 

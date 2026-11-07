@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M174 — Phase 174 Secret Delivery to Agents. M1–M174 complete. Gates A–I resolved.
+**Completed through:** M175 — Phase 175 Status Snapshot & Bulk Reads. M1–M175 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
