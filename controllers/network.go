@@ -163,6 +163,13 @@ func collectExistingDNSMappings(facts []store.Fact) map[string]string {
 	existingDNS := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkDNS) {
 		serviceName := strings.TrimPrefix(fact.Key, types.ScanNetworkDNS)
+		// DNS sub-namespaces are owned by their respective controllers. The
+		// network controller owns only direct children of network/dns/.
+		// In particular, never treat hostname/ or instance/ records as
+		// service names or remove them as stale service DNS entries.
+		if serviceName == "" || strings.Contains(serviceName, "/") {
+			continue
+		}
 		existingDNS[serviceName] = string(fact.Value)
 	}
 	return existingDNS
