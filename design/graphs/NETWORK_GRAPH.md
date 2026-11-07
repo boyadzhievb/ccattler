@@ -22,8 +22,10 @@ NetworkController.Reconcile(ctx, facts)
 ├── collectExistingVIPAllocations(facts)                       :165
 │   └── store.FactsWithPrefix(facts, ScanNetworkVIPs)
 │       └── returns (existingVIPs map[svc]vipAddr, existingVIPPorts map[svc]port)
-├── collectExistingDNSMappings(facts)                          :182
+├── collectExistingDNSMappings(facts)                          :183
 │   └── store.FactsWithPrefix(facts, ScanNetworkDNS)
+│       ├── skips isControllerOwnedDNSKey (:171): network/dns/hostname/ (hostname-dns),
+│       │   network/dns/instance/ (stateful-dns) — never deleted as stale service DNS
 │       └── returns map[serviceName]vipAddr
 ├── determineNextVIPFourthOctet(existingVIPs)                  :193
 │   └── scans existing VIP addresses → returns next available fourth octet

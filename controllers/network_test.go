@@ -402,3 +402,68 @@ func TestNetworkControllerWatchPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// TestDNSControllersConvergeWithoutDeletingEachOther runs the network,
+// hostname-dns and stateful-dns controllers against one store until no
+// controller proposes a change. Before the fix the network controller deleted
+// the hostname and stateful records as stale service DNS, and the owners
+// re-created them forever (M175 write livelock).
+func TestDNSControllersConvergeWithoutDeletingEachOther(t *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	helperSetupServiceWithEndpoints(ctx, factStore, "worker", 8080, 1)
+	seedFacts := map[string]string{
+		types.KeyObservedInstanceService("abcdef1234567890"): "worker",
+		types.KeyObservedInstanceState("abcdef1234567890"):   string(types.InstanceRunning),
+		types.KeyObservedInstanceIP("abcdef1234567890"):      "10.100.1.5",
+		types.KeyEffectiveServiceStateful("postgres"):        "true",
+		types.KeyObservedInstanceService("postgres-0"):       "postgres",
+		types.KeyObservedInstanceState("postgres-0"):         string(types.InstanceRunning),
+		types.KeyObservedInstanceIP("postgres-0"):            "10.100.1.9",
+		types.KeyObservedInstanceOrdinal("postgres-0"):       "0",
+	}
+	for factKey, factValue := range seedFacts {
+		if _, putError := factStore.Put(ctx, factKey, []byte(factValue)); putError != nil {
+			t.Fatalf("seed %s: %v", factKey, putError)
+		}
+	}
+	dnsControllers := []Controller{NewNetworkController(), NewHostnameDNSController(), NewStatefulDNSController()}
+
+	const maximumConvergenceRounds = 5
+	converged := false
+	for round := 0; round < maximumConvergenceRounds && !converged; round++ {
+		converged = true
+		for _, dnsController := range dnsControllers {
+			var watchedFacts []store.Fact
+			for _, watchPrefix := range dnsController.Watch() {
+				scannedFacts, scanError := factStore.Scan(ctx, watchPrefix)
+				if scanError != nil {
+					t.Fatalf("scan %s: %v", watchPrefix, scanError)
+				}
+				watchedFacts = append(watchedFacts, scannedFacts...)
+			}
+			store.SortFacts(watchedFacts)
+			changes, reconcileError := dnsController.Reconcile(ctx, watchedFacts)
+			if reconcileError != nil {
+				t.Fatalf("%s reconcile: %v", dnsController.Name(), reconcileError)
+			}
+			if len(changes) > 0 {
+				converged = false
+				helperApplyChangesToStore(ctx, factStore, changes)
+			}
+		}
+	}
+	if !converged {
+		t.Fatalf("DNS controllers still proposing changes after %d rounds (write livelock)", maximumConvergenceRounds)
+	}
+	for _, expectedKey := range []string{
+		types.KeyNetworkDNS("worker"),
+		types.KeyNetworkDNSHostname("worker-abcdef1234"),
+		types.KeyNetworkDNSInstance("postgres-0"),
+	} {
+		if _, getError := factStore.Get(ctx, expectedKey); getError != nil {
+			t.Errorf("DNS record %s missing after convergence: %v", expectedKey, getError)
+		}
+	}
+}

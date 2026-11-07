@@ -351,8 +351,8 @@ NetworkController.Reconcile(ctx, facts)                      :88
 │   └── scans endpoint/service/ → set of service names
 ├── collectExistingVIPAllocations(facts)                     :165
 │   └── reads network/vip/service/{svc}, network/vip/service/{svc}/port
-├── collectExistingDNSMappings(facts)                        :182
-│   └── reads network/dns/{svc}
+├── collectExistingDNSMappings(facts)                        :183
+│   └── reads network/dns/{svc} (not hostname/ or instance/ sub-namespaces)
 ├── collectDefinedServiceNamesFromFacts(facts)               :210
 │   └── reads desired/service/ root markers
 ├── determineNextVIPFourthOctet(existingVIPs)                :193
