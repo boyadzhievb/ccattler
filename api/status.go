@@ -170,41 +170,65 @@ type EndpointStatus struct {
 	ExternalAddress string `json:"external_address,omitempty"`
 }
 
-// buildStatusFromStore collects the full cluster state from the fact store
-// and assembles it into a structured ClusterStatus by delegating to
-// per-section builder functions. A non-nil visibility limited to teams keeps
-// only those teams' services, instances and gates; nil or a cluster-scope
-// visibility sees everything (Flow 25). A failure to list
-// instances is returned instead of an empty cluster, so a store outage or
-// denial is visible to the caller.
+// buildStatusFromStore collects the full cluster state with a fixed number of
+// store scans (loadStatusFactSnapshot) and assembles it into a ClusterStatus
+// by delegating to per-section builders. A non-nil visibility limited to
+// teams keeps only those teams' services, instances and gates; nil or a
+// cluster-scope visibility sees everything (Flow 25). A failed required scan
+// is returned instead of an empty cluster, so a store outage or denial is
+// visible to the caller.
 func buildStatusFromStore(ctx context.Context, factStore store.StateStore, visibility *workloadVisibility, includeAllInstances bool) (ClusterStatus, error) {
-	allInstances, listError := types.ListInstances(ctx, factStore)
-	if listError != nil {
-		return ClusterStatus{}, fmt.Errorf("list instances: %w", listError)
+	snapshot, loadError := loadStatusFactSnapshot(ctx, factStore)
+	if loadError != nil {
+		return ClusterStatus{}, fmt.Errorf("load status facts: %w", loadError)
 	}
-	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
-
-	sortedServiceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
-	gateStatusList := collectGateStatusFromStore(ctx, factStore)
+	allInstances := listSortedInstancesFromSnapshot(snapshot)
+	sortedServiceNames := discoverSortedServiceNames(snapshot.factsUnder(types.ScanDesiredServices))
+	gateStatusList := buildGateStatusList(
+		groupGateFactAttributes(types.ScanDesiredRoutes, snapshot.factsUnder(types.ScanDesiredRoutes)),
+		groupGateFactAttributes(types.ScanDerivedRoutes, snapshot.factsUnder(types.ScanDerivedRoutes)))
 
 	if visibility != nil && !visibility.allTeams {
-		sortedServiceNames = tenant.FilterServiceNamesByTeams(ctx, factStore, sortedServiceNames, visibility.teams)
+		sortedServiceNames = tenant.FilterServiceNamesByTeams(sortedServiceNames, visibility.teams, collectServiceOwners(snapshot, sortedServiceNames))
 		allInstances = filterInstancesByServiceNames(allInstances, sortedServiceNames)
 		gateStatusList = filterGatesByServiceNames(gateStatusList, sortedServiceNames)
 	}
 
 	return ClusterStatus{
-		Services:        collectServiceStatusFromStore(ctx, factStore, sortedServiceNames, allInstances),
-		Instances:       collectInstanceStatusFromStore(ctx, factStore, allInstances, includeAllInstances),
-		Nodes:           collectNodeStatusFromStore(ctx, factStore, allInstances),
-		Networking:      collectNetworkingStatusFromStore(ctx, factStore),
-		Volumes:         collectVolumeStatusFromStore(ctx, factStore),
-		Secrets:         collectSecretStatusFromStore(ctx, factStore, sortedServiceNames),
-		Config:          collectConfigStatusFromStore(ctx, factStore, sortedServiceNames),
-		CloudIdentities: collectCloudIdentityStatusFromStore(ctx, factStore),
-		Endpoints:       collectEndpointStatusFromStore(ctx, factStore),
+		Services:        collectServiceStatus(snapshot, sortedServiceNames, allInstances),
+		Instances:       collectInstanceStatus(snapshot, allInstances, includeAllInstances),
+		Nodes:           collectNodeStatus(snapshot, allInstances),
+		Networking:      collectNetworkingStatus(snapshot),
+		Volumes:         collectVolumeStatus(snapshot),
+		Secrets:         collectSecretStatus(snapshot, sortedServiceNames),
+		Config:          collectConfigStatus(snapshot, sortedServiceNames),
+		CloudIdentities: collectCloudIdentityStatus(snapshot),
+		Endpoints:       collectEndpointStatus(snapshot),
 		Gates:           gateStatusList,
 	}, nil
+}
+
+// listSortedInstancesFromSnapshot builds every instance from its observed and
+// derived facts (derived markers such as controller_stopped override the
+// observed state, as in types.ListInstances), sorted by ID.
+func listSortedInstancesFromSnapshot(snapshot *statusFactSnapshot) []types.Instance {
+	groupedFields := types.GroupFactFieldsByID(types.ScanObservedInstances, snapshot.factsUnder(types.ScanObservedInstances), nil)
+	groupedFields = types.GroupFactFieldsByID(types.ScanDerivedInstances, snapshot.factsUnder(types.ScanDerivedInstances), groupedFields)
+	allInstances := types.InstancesFromFields(groupedFields)
+	sort.Slice(allInstances, func(i, j int) bool { return allInstances[i].ID < allInstances[j].ID })
+	return allInstances
+}
+
+// collectServiceOwners returns service name → explicit owner for services
+// that have a non-empty owner fact, for team visibility filtering.
+func collectServiceOwners(snapshot *statusFactSnapshot, serviceNames []string) map[string]string {
+	ownerByService := make(map[string]string)
+	for _, serviceName := range serviceNames {
+		if owner, exists := snapshot.value(types.KeyDesiredServiceOwner(serviceName)); exists && owner != "" {
+			ownerByService[serviceName] = owner
+		}
+	}
+	return ownerByService
 }
 
 // filterInstancesByServiceNames returns only instances whose service name
@@ -224,14 +248,13 @@ func filterInstancesByServiceNames(allInstances []types.Instance, visibleService
 	return visibleInstances
 }
 
-// discoverSortedServiceNamesFromStore scans the desired-services prefix in the
-// fact store and returns a deduplicated, alphabetically sorted list of service
-// names. Only root marker keys (empty value) are collected, which correctly
-// handles hierarchical names like "payments/checkout".
-func discoverSortedServiceNamesFromStore(ctx context.Context, factStore store.StateStore) []string {
-	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredServices)
+// discoverSortedServiceNames returns the deduplicated, alphabetically sorted
+// service names among desired-service facts. Only root marker keys (empty
+// value) are collected, which correctly handles hierarchical names like
+// "payments/checkout".
+func discoverSortedServiceNames(desiredServiceFacts []store.Fact) []string {
 	var serviceNames []string
-	for _, fact := range desiredFacts {
+	for _, fact := range desiredServiceFacts {
 		if string(fact.Value) != "" {
 			continue
 		}
@@ -258,26 +281,27 @@ func isServiceSubResourceKey(serviceName string) bool {
 	return false
 }
 
-// collectServiceStatusFromStore reads each service definition and counts
-// running instances to produce the service status list.
-func collectServiceStatusFromStore(ctx context.Context, factStore store.StateStore, sortedServiceNames []string, allInstances []types.Instance) []ServiceStatus {
-	crashLoopCounters := readCrashLoopCounters(ctx, factStore)
+// collectServiceStatus builds each service definition from its desired facts
+// and counts running instances to produce the service status list. A
+// service with a corrupt definition is skipped, as before.
+func collectServiceStatus(snapshot *statusFactSnapshot, sortedServiceNames []string, allInstances []types.Instance) []ServiceStatus {
+	crashLoopCounters := readCrashLoopCounters(snapshot)
+	runningCountByService := make(map[string]int)
+	for _, instance := range allInstances {
+		if instance.State == types.InstanceRunning {
+			runningCountByService[instance.Service]++
+		}
+	}
 	var serviceStatusList []ServiceStatus
 	for _, serviceName := range sortedServiceNames {
-		service, err := types.ReadService(ctx, factStore, serviceName)
-		if err != nil {
+		service, buildError := types.ServiceFromFacts(serviceName, snapshot.factsUnder(types.KeyDesiredService(serviceName)+"/"))
+		if buildError != nil {
 			continue
 		}
-		runningInstanceCount := 0
-		for _, instance := range allInstances {
-			if instance.Service == serviceName && instance.State == types.InstanceRunning {
-				runningInstanceCount++
-			}
-		}
-		serviceTags := collectServiceTagsFromStore(ctx, factStore, serviceName)
 		serviceStatus := ServiceStatus{
 			Name: service.Name, Image: service.Image, DesiredCount: service.Instances,
-			RunningCount: runningInstanceCount, ExposedPorts: service.Ports, Tags: serviceTags,
+			RunningCount: runningCountByService[serviceName], ExposedPorts: service.Ports,
+			Tags: collectServiceTags(snapshot, serviceName),
 		}
 		if counter, hasCounter := crashLoopCounters[serviceName]; hasCounter {
 			serviceStatus.CrashLoopCount = counter.count
@@ -292,18 +316,15 @@ func collectServiceStatusFromStore(ctx context.Context, factStore store.StateSto
 // CircuitBreakerThreshold for display purposes.
 const defaultCircuitBreakerDisplayThreshold = 10
 
+// crashLoopInfo is the parsed crash-loop counter of one service.
 type crashLoopInfo struct {
-	count int
+	count int // count is the number of consecutive crash-loop restarts
 }
 
-// readCrashLoopCounters scans all crash-loop counter facts from the store.
-func readCrashLoopCounters(ctx context.Context, factStore store.StateStore) map[string]*crashLoopInfo {
+// readCrashLoopCounters parses all crash-loop counter facts by service name.
+func readCrashLoopCounters(snapshot *statusFactSnapshot) map[string]*crashLoopInfo {
 	counters := make(map[string]*crashLoopInfo)
-	facts, scanError := factStore.Scan(ctx, types.ScanDerivedCrashLoops)
-	if scanError != nil {
-		return counters
-	}
-	for _, fact := range facts {
+	for _, fact := range snapshot.factsUnder(types.ScanDerivedCrashLoops) {
 		serviceName := strings.TrimPrefix(fact.Key, types.ScanDerivedCrashLoops)
 		var parsed struct {
 			Count int `json:"count"`
@@ -315,12 +336,12 @@ func readCrashLoopCounters(ctx context.Context, factStore store.StateStore) map[
 	return counters
 }
 
-// collectServiceTagsFromStore reads all tag facts for a service and returns
-// them as a key-value map. Returns nil if the service has no tags.
-func collectServiceTagsFromStore(ctx context.Context, factStore store.StateStore, serviceName string) map[string]string {
+// collectServiceTags returns a service's tag facts as a key-value map, or
+// nil if the service has no tags.
+func collectServiceTags(snapshot *statusFactSnapshot, serviceName string) map[string]string {
 	tagPrefix := types.KeyDesiredServiceTagPrefix(serviceName)
-	tagFacts, scanError := factStore.Scan(ctx, tagPrefix)
-	if scanError != nil || len(tagFacts) == 0 {
+	tagFacts := snapshot.factsUnder(tagPrefix)
+	if len(tagFacts) == 0 {
 		return nil
 	}
 	tags := make(map[string]string, len(tagFacts))
@@ -333,103 +354,59 @@ func collectServiceTagsFromStore(ctx context.Context, factStore store.StateStore
 	return tags
 }
 
-// collectInstanceStatusFromStore builds an InstanceStatus for every instance,
+// collectInstanceStatus builds an InstanceStatus for every instance,
 // enriching it with placement, health, resource usage, init phase, restart
-// count, and probe states read from the fact store. When includeAll is false,
-// stopped instances are excluded from the result.
-func collectInstanceStatusFromStore(ctx context.Context, factStore store.StateStore, allInstances []types.Instance, includeAll bool) []InstanceStatus {
+// count, and probe states. When includeAll is false, stopped instances are
+// excluded from the result.
+func collectInstanceStatus(snapshot *statusFactSnapshot, allInstances []types.Instance, includeAll bool) []InstanceStatus {
 	var instanceStatusList []InstanceStatus
 	for _, instance := range allInstances {
 		if !includeAll && instance.State == types.InstanceStopped {
 			continue
 		}
-		placedNodeID := ""
-		if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil {
-			placedNodeID = string(placementFact.Value)
-		}
-		healthDisplay := string(instance.Health)
-		if healthDisplay == "" {
-			healthDisplay = "-"
-		}
-		instanceIPAddress := instance.IP
-		if instanceIPAddress == "" {
-			instanceIPAddress = "-"
-		}
-		instanceCPU := ""
-		if cpuFact, cpuErr := factStore.Get(ctx, types.KeyObservedInstanceCPU(instance.ID)); cpuErr == nil {
-			instanceCPU = string(cpuFact.Value)
-		}
-		instanceMemory := ""
-		if memFact, memErr := factStore.Get(ctx, types.KeyObservedInstanceMemory(instance.ID)); memErr == nil {
-			instanceMemory = string(memFact.Value)
-		}
-		initPhase := ""
-		if initFact, initErr := factStore.Get(ctx, types.KeyDerivedInstanceInitPhase(instance.ID)); initErr == nil {
-			initPhase = string(initFact.Value)
-		}
-		restartCount := ""
-		if restartFact, restartErr := factStore.Get(ctx, types.KeyObservedInstanceRestarts(instance.ID)); restartErr == nil {
-			restartCount = string(restartFact.Value)
-		}
-		startupProbe := ""
-		if startupFact, startupErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, types.ProbeStartup)); startupErr == nil {
-			startupProbe = string(startupFact.Value)
-		}
-		livenessProbe := ""
-		if livenessFact, livenessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, types.ProbeLiveness)); livenessErr == nil {
-			livenessProbe = string(livenessFact.Value)
-		}
-		readinessProbe := ""
-		if readinessFact, readinessErr := factStore.Get(ctx, types.KeyObservedInstanceProbeState(instance.ID, types.ProbeReadiness)); readinessErr == nil {
-			readinessProbe = string(readinessFact.Value)
-		}
-		statusReason := ""
-		if reasonFact, reasonErr := factStore.Get(ctx, types.KeyObservedInstanceStatusReason(instance.ID)); reasonErr == nil {
-			statusReason = string(reasonFact.Value)
-		}
-		exitReason := ""
-		if exitFact, exitErr := factStore.Get(ctx, types.KeyObservedInstanceExitReason(instance.ID)); exitErr == nil {
-			exitReason = string(exitFact.Value)
-		}
-		initProgressJSON := ""
-		if progressFact, progressErr := factStore.Get(ctx, types.KeyObservedInstanceInitProgress(instance.ID)); progressErr == nil {
-			initProgressJSON = string(progressFact.Value)
-		}
-		probeProgressJSON := ""
-		if probeProgressFact, probeProgressErr := factStore.Get(ctx, types.KeyObservedInstanceProbeProgress(instance.ID)); probeProgressErr == nil {
-			probeProgressJSON = string(probeProgressFact.Value)
-		}
-		createdAtTimestamp := ""
-		if createdAtFact, createdAtErr := factStore.Get(ctx, types.KeyObservedInstanceCreatedAt(instance.ID)); createdAtErr == nil {
-			createdAtTimestamp = string(createdAtFact.Value)
-		}
-		instanceStatusList = append(instanceStatusList, InstanceStatus{
-			ID: instance.ID, ServiceName: instance.Service, State: string(instance.State),
-			NodeID: placedNodeID, IPAddress: instanceIPAddress, HealthState: healthDisplay,
-			CPUMillis: instanceCPU, MemoryBytes: instanceMemory,
-			InitPhase: initPhase, Restarts: restartCount,
-			Startup: startupProbe, Liveness: livenessProbe, Readiness: readinessProbe,
-			StatusReason: statusReason, ExitReason: exitReason, InitProgress: initProgressJSON, ProbeProgress: probeProgressJSON,
-			CreatedAt: createdAtTimestamp,
-		})
+		instanceStatusList = append(instanceStatusList, buildInstanceStatus(snapshot, instance))
 	}
 	return instanceStatusList
 }
 
-// collectNetworkingStatusFromStore reads VIP assignments and DNS mappings from
-// the fact store and assembles a sorted list of per-service network status
-// entries.
-func collectNetworkingStatusFromStore(ctx context.Context, factStore store.StateStore) []NetworkStatus {
-	vipFacts, _ := factStore.Scan(ctx, types.ScanNetworkVIPs)
-	dnsFacts, _ := factStore.Scan(ctx, types.ScanNetworkDNS)
-	dnsMapping := make(map[string]string)
-	for _, dnsFact := range dnsFacts {
-		serviceName := strings.TrimPrefix(dnsFact.Key, types.ScanNetworkDNS)
-		dnsMapping[serviceName] = string(dnsFact.Value)
+// buildInstanceStatus assembles one InstanceStatus from the instance and its
+// placement, telemetry, probe and progress facts. Missing facts stay blank.
+func buildInstanceStatus(snapshot *statusFactSnapshot, instance types.Instance) InstanceStatus {
+	healthDisplay := string(instance.Health)
+	if healthDisplay == "" {
+		healthDisplay = "-"
 	}
+	instanceIPAddress := instance.IP
+	if instanceIPAddress == "" {
+		instanceIPAddress = "-"
+	}
+	instanceID := instance.ID
+	return InstanceStatus{
+		ID: instanceID, ServiceName: instance.Service, State: string(instance.State),
+		NodeID:        snapshot.valueOrEmpty(types.KeyPlacementInstance(instanceID)),
+		IPAddress:     instanceIPAddress,
+		HealthState:   healthDisplay,
+		CPUMillis:     snapshot.valueOrEmpty(types.KeyObservedInstanceCPU(instanceID)),
+		MemoryBytes:   snapshot.valueOrEmpty(types.KeyObservedInstanceMemory(instanceID)),
+		InitPhase:     snapshot.valueOrEmpty(types.KeyDerivedInstanceInitPhase(instanceID)),
+		Restarts:      snapshot.valueOrEmpty(types.KeyObservedInstanceRestarts(instanceID)),
+		Startup:       snapshot.valueOrEmpty(types.KeyObservedInstanceProbeState(instanceID, types.ProbeStartup)),
+		Liveness:      snapshot.valueOrEmpty(types.KeyObservedInstanceProbeState(instanceID, types.ProbeLiveness)),
+		Readiness:     snapshot.valueOrEmpty(types.KeyObservedInstanceProbeState(instanceID, types.ProbeReadiness)),
+		StatusReason:  snapshot.valueOrEmpty(types.KeyObservedInstanceStatusReason(instanceID)),
+		ExitReason:    snapshot.valueOrEmpty(types.KeyObservedInstanceExitReason(instanceID)),
+		InitProgress:  snapshot.valueOrEmpty(types.KeyObservedInstanceInitProgress(instanceID)),
+		ProbeProgress: snapshot.valueOrEmpty(types.KeyObservedInstanceProbeProgress(instanceID)),
+		CreatedAt:     snapshot.valueOrEmpty(types.KeyObservedInstanceCreatedAt(instanceID)),
+	}
+}
+
+// collectNetworkingStatus reads VIP assignments and assembles a sorted list
+// of per-service network status entries.
+func collectNetworkingStatus(snapshot *statusFactSnapshot) []NetworkStatus {
 	vipByService := make(map[string]string)
 	vipPortByService := make(map[string]int)
-	for _, vipFact := range vipFacts {
+	for _, vipFact := range snapshot.factsUnder(types.ScanNetworkVIPs) {
 		relativePath := strings.TrimPrefix(vipFact.Key, types.ScanNetworkVIPs)
 		pathParts := strings.Split(relativePath, "/")
 		if len(pathParts) == 1 {
@@ -444,12 +421,11 @@ func collectNetworkingStatusFromStore(ctx context.Context, factStore store.State
 	}
 	var networkingStatusList []NetworkStatus
 	for serviceName, vipAddress := range vipByService {
-		dnsName := serviceName + "." + network.DefaultDNSDomain
 		networkingStatusList = append(networkingStatusList, NetworkStatus{
 			ServiceName: serviceName,
 			VIP:         vipAddress,
 			Port:        vipPortByService[serviceName],
-			DNS:         dnsName,
+			DNS:         serviceName + "." + network.DefaultDNSDomain,
 		})
 	}
 	sort.Slice(networkingStatusList, func(i, j int) bool {
@@ -458,10 +434,10 @@ func collectNetworkingStatusFromStore(ctx context.Context, factStore store.State
 	return networkingStatusList
 }
 
-// collectVolumeStatusFromStore reads observed volume facts from the store and
-// returns a sorted list of volume status entries.
-func collectVolumeStatusFromStore(ctx context.Context, factStore store.StateStore) []VolumeStatus {
-	allVolumes, _ := types.ListObservedVolumes(ctx, factStore)
+// collectVolumeStatus builds observed volumes and returns a sorted list of
+// volume status entries.
+func collectVolumeStatus(snapshot *statusFactSnapshot) []VolumeStatus {
+	allVolumes := types.VolumesFromFields(types.GroupFactFieldsByID(types.ScanObservedVolumes, snapshot.factsUnder(types.ScanObservedVolumes), nil))
 	sort.Slice(allVolumes, func(i, j int) bool { return allVolumes[i].Name < allVolumes[j].Name })
 	var volumeStatusList []VolumeStatus
 	for _, volume := range allVolumes {
@@ -484,10 +460,10 @@ func collectVolumeStatusFromStore(ctx context.Context, factStore store.StateStor
 	return volumeStatusList
 }
 
-// collectSecretStatusFromStore scans the encrypted secret store for secret
-// names and resolves per-secret service grants, returning a sorted list.
-func collectSecretStatusFromStore(ctx context.Context, factStore store.StateStore, sortedServiceNames []string) []SecretStatus {
-	secretFacts, _ := factStore.Scan(ctx, security.SecretStorePrefix)
+// collectSecretStatus lists secret names (never values) with the services
+// granted each one, sorted by name. Empty when secrets/ was not readable.
+func collectSecretStatus(snapshot *statusFactSnapshot, sortedServiceNames []string) []SecretStatus {
+	secretFacts := snapshot.factsUnder(security.SecretStorePrefix)
 	if len(secretFacts) == 0 {
 		return nil
 	}
@@ -496,8 +472,7 @@ func collectSecretStatusFromStore(ctx context.Context, factStore store.StateStor
 		secretName := strings.TrimPrefix(secretFact.Key, security.SecretStorePrefix)
 		var grantedServiceNames []string
 		for _, serviceName := range sortedServiceNames {
-			grantKey := types.KeyDesiredServiceSecret(serviceName, secretName)
-			if _, err := factStore.Get(ctx, grantKey); err == nil {
+			if _, granted := snapshot.value(types.KeyDesiredServiceSecret(serviceName, secretName)); granted {
 				grantedServiceNames = append(grantedServiceNames, serviceName)
 			}
 		}
@@ -512,15 +487,14 @@ func collectSecretStatusFromStore(ctx context.Context, factStore store.StateStor
 	return secretStatusList
 }
 
-// collectConfigStatusFromStore iterates over all known services and scans
-// their config prefixes to collect environment variable and file config
-// entries.
-func collectConfigStatusFromStore(ctx context.Context, factStore store.StateStore, sortedServiceNames []string) []ConfigStatus {
+// collectConfigStatus collects every service's environment variable and file
+// config entries, with sensitive values redacted.
+func collectConfigStatus(snapshot *statusFactSnapshot, sortedServiceNames []string) []ConfigStatus {
 	var configStatusList []ConfigStatus
 	for _, serviceName := range sortedServiceNames {
-		configFacts, _ := factStore.Scan(ctx, types.ScanDesiredServiceConfig(serviceName))
-		for _, configFact := range configFacts {
-			relativePath := strings.TrimPrefix(configFact.Key, types.ScanDesiredServiceConfig(serviceName))
+		configPrefix := types.ScanDesiredServiceConfig(serviceName)
+		for _, configFact := range snapshot.factsUnder(configPrefix) {
+			relativePath := strings.TrimPrefix(configFact.Key, configPrefix)
 			configType := "env"
 			configKey := relativePath
 			if strings.HasPrefix(relativePath, "env/") {
@@ -540,47 +514,38 @@ func collectConfigStatusFromStore(ctx context.Context, factStore store.StateStor
 	return configStatusList
 }
 
-// collectNodeStatusFromStore reads all registered nodes, counts their placed
-// instances, and enriches each node entry with CPU and memory utilization
-// from observed facts.
-func collectNodeStatusFromStore(ctx context.Context, factStore store.StateStore, allInstances []types.Instance) []NodeStatus {
-	allNodes, _ := types.ListNodes(ctx, factStore)
+// collectNodeStatus builds every registered node, counts the non-stopped
+// instances placed on it, and adds CPU and memory utilization.
+func collectNodeStatus(snapshot *statusFactSnapshot, allInstances []types.Instance) []NodeStatus {
+	allNodes := types.NodesFromFields(types.GroupFactFieldsByID(types.ScanObservedNodes, snapshot.factsUnder(types.ScanObservedNodes), nil))
 	sort.Slice(allNodes, func(i, j int) bool { return allNodes[i].ID < allNodes[j].ID })
+	placedCountByNode := make(map[string]int)
+	for _, instance := range allInstances {
+		if instance.State == types.InstanceStopped {
+			continue
+		}
+		if placedNodeID, placed := snapshot.value(types.KeyPlacementInstance(instance.ID)); placed {
+			placedCountByNode[placedNodeID]++
+		}
+	}
 	var nodeStatusList []NodeStatus
 	for _, node := range allNodes {
-		placedInstanceCount := 0
-		for _, instance := range allInstances {
-			if instance.State == types.InstanceStopped {
-				continue
-			}
-			if placementFact, err := factStore.Get(ctx, types.KeyPlacementInstance(instance.ID)); err == nil && string(placementFact.Value) == node.ID {
-				placedInstanceCount++
-			}
-		}
-		utilizationCPU := ""
-		if cpuUtilFact, cpuErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationCPU(node.ID)); cpuErr == nil {
-			utilizationCPU = string(cpuUtilFact.Value)
-		}
-		utilizationMemory := ""
-		if memUtilFact, memErr := factStore.Get(ctx, types.KeyObservedNodeUtilizationMemory(node.ID)); memErr == nil {
-			utilizationMemory = string(memUtilFact.Value)
-		}
 		nodeStatusList = append(nodeStatusList, NodeStatus{
-			ID: node.ID, State: string(node.State), PlacedInstances: placedInstanceCount,
+			ID: node.ID, State: string(node.State), PlacedInstances: placedCountByNode[node.ID],
 			AvailableCPU: node.AvailableCPU, CapacityCPU: node.CapacityCPU,
 			AvailableMemory: node.AvailableMemory, CapacityMemory: node.CapacityMemory,
-			UtilizationCPU: utilizationCPU, UtilizationMemory: utilizationMemory,
+			UtilizationCPU:    snapshot.valueOrEmpty(types.KeyObservedNodeUtilizationCPU(node.ID)),
+			UtilizationMemory: snapshot.valueOrEmpty(types.KeyObservedNodeUtilizationMemory(node.ID)),
 		})
 	}
 	return nodeStatusList
 }
 
-// collectCloudIdentityStatusFromStore scans cloud identity declarations and
-// resolves which services are bound to each identity, returning a sorted list.
-func collectCloudIdentityStatusFromStore(ctx context.Context, factStore store.StateStore) []CloudIdentityStatus {
-	identityFacts, _ := factStore.Scan(ctx, types.ScanDesiredCloudIdentities)
+// collectCloudIdentityStatus lists cloud identity declarations with the
+// services bound to each identity, sorted by name.
+func collectCloudIdentityStatus(snapshot *statusFactSnapshot) []CloudIdentityStatus {
 	identityMap := make(map[string]*CloudIdentityStatus)
-	for _, fact := range identityFacts {
+	for _, fact := range snapshot.factsUnder(types.ScanDesiredCloudIdentities) {
 		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredCloudIdentities)
 		parts := strings.SplitN(remainder, "/", 2)
 		identityName := parts[0]
@@ -591,9 +556,8 @@ func collectCloudIdentityStatusFromStore(ctx context.Context, factStore store.St
 			identityMap[identityName].Provider = string(fact.Value)
 		}
 	}
-	serviceFacts, _ := factStore.Scan(ctx, "desired/service/")
-	for _, fact := range serviceFacts {
-		remainder := strings.TrimPrefix(fact.Key, "desired/service/")
+	for _, fact := range snapshot.factsUnder(types.ScanDesiredServices) {
+		remainder := strings.TrimPrefix(fact.Key, types.ScanDesiredServices)
 		if cloudIdentityIndex := strings.Index(remainder, "/cloud_identity/"); cloudIdentityIndex > 0 {
 			serviceName := remainder[:cloudIdentityIndex]
 			identityPart := remainder[cloudIdentityIndex+len("/cloud_identity/"):]
@@ -614,19 +578,11 @@ func collectCloudIdentityStatusFromStore(ctx context.Context, factStore store.St
 	return cloudIdentityStatusList
 }
 
-// collectEndpointStatusFromStore scans endpoint facts and assembles a sorted
-// list of endpoint status entries for display via `cca get endpoints`.
-func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateStore) []EndpointStatus {
-	endpointFacts, scanError := factStore.Scan(ctx, types.ScanEndpoints)
-	if scanError != nil {
-		return nil
-	}
-	instanceOverlayIPs := collectInstanceOverlayIPs(ctx, factStore)
-	nodeAddresses := collectNodeAdvertiseAddresses(ctx, factStore)
-	instanceNodes := collectInstanceNodePlacements(ctx, factStore)
-
+// collectEndpointStatus assembles a sorted list of endpoint status entries
+// for display via `cca get endpoints`.
+func collectEndpointStatus(snapshot *statusFactSnapshot) []EndpointStatus {
 	var endpointStatusList []EndpointStatus
-	for _, endpointFact := range endpointFacts {
+	for _, endpointFact := range snapshot.factsUnder(types.ScanEndpoints) {
 		relativePath := strings.TrimPrefix(endpointFact.Key, types.ScanEndpoints)
 		pathParts := strings.SplitN(relativePath, "/", 3)
 		if len(pathParts) != 3 {
@@ -639,19 +595,20 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 		serviceName := pathParts[0]
 		instanceID := pathParts[1]
 		endpointAddress := string(endpointFact.Value)
-
-		hostname := serviceName + "." + network.DefaultDNSDomain
-		internalAddress := buildInternalAddress(instanceOverlayIPs[instanceID], portNumber)
-		externalAddress := buildExternalAddress(instanceID, instanceNodes, nodeAddresses, instanceOverlayIPs, endpointAddress)
-
+		overlayIP := snapshot.valueOrEmpty(types.KeyObservedInstanceIP(instanceID))
+		placedNodeID := snapshot.valueOrEmpty(types.KeyPlacementInstance(instanceID))
+		nodeAddress := ""
+		if placedNodeID != "" {
+			nodeAddress = snapshot.valueOrEmpty(types.KeyObservedNodeAddress(placedNodeID))
+		}
 		endpointStatusList = append(endpointStatusList, EndpointStatus{
 			Service:         serviceName,
 			InstanceID:      instanceID,
 			Port:            portNumber,
 			Address:         endpointAddress,
-			Hostname:        hostname,
-			InternalAddress: internalAddress,
-			ExternalAddress: externalAddress,
+			Hostname:        serviceName + "." + network.DefaultDNSDomain,
+			InternalAddress: buildInternalAddress(overlayIP, portNumber),
+			ExternalAddress: buildExternalAddress(overlayIP, nodeAddress, endpointAddress),
 		})
 	}
 	sort.Slice(endpointStatusList, func(i, j int) bool {
@@ -666,63 +623,6 @@ func collectEndpointStatusFromStore(ctx context.Context, factStore store.StateSt
 	return endpointStatusList
 }
 
-// collectInstanceOverlayIPs returns a map of instanceID → overlay IP by scanning
-// observed instance IP facts.
-func collectInstanceOverlayIPs(ctx context.Context, factStore store.StateStore) map[string]string {
-	overlayIPs := make(map[string]string)
-	ipFacts, scanError := factStore.Scan(ctx, types.PrefixObserved+"/instance/")
-	if scanError != nil {
-		return overlayIPs
-	}
-	for _, ipFact := range ipFacts {
-		if !strings.HasSuffix(ipFact.Key, "/ip") {
-			continue
-		}
-		trimmed := strings.TrimPrefix(ipFact.Key, types.PrefixObserved+"/instance/")
-		instanceID := strings.TrimSuffix(trimmed, "/ip")
-		if instanceID != "" {
-			overlayIPs[instanceID] = string(ipFact.Value)
-		}
-	}
-	return overlayIPs
-}
-
-// collectNodeAdvertiseAddresses returns a map of nodeID → advertise address.
-func collectNodeAdvertiseAddresses(ctx context.Context, factStore store.StateStore) map[string]string {
-	nodeAddresses := make(map[string]string)
-	addressFacts, scanError := factStore.Scan(ctx, types.PrefixObserved+"/node/")
-	if scanError != nil {
-		return nodeAddresses
-	}
-	for _, addressFact := range addressFacts {
-		if !strings.HasSuffix(addressFact.Key, "/address") {
-			continue
-		}
-		trimmed := strings.TrimPrefix(addressFact.Key, types.PrefixObserved+"/node/")
-		nodeID := strings.TrimSuffix(trimmed, "/address")
-		if nodeID != "" {
-			nodeAddresses[nodeID] = string(addressFact.Value)
-		}
-	}
-	return nodeAddresses
-}
-
-// collectInstanceNodePlacements returns a map of instanceID → nodeID.
-func collectInstanceNodePlacements(ctx context.Context, factStore store.StateStore) map[string]string {
-	placements := make(map[string]string)
-	placementFacts, scanError := factStore.Scan(ctx, types.ScanPlacements)
-	if scanError != nil {
-		return placements
-	}
-	for _, placementFact := range placementFacts {
-		instanceID := strings.TrimPrefix(placementFact.Key, types.ScanPlacements)
-		if instanceID != "" {
-			placements[instanceID] = string(placementFact.Value)
-		}
-	}
-	return placements
-}
-
 // buildInternalAddress formats the overlay IP:port string for an instance.
 func buildInternalAddress(overlayIP string, port int) string {
 	if overlayIP == "" {
@@ -733,20 +633,18 @@ func buildInternalAddress(overlayIP string, port int) string {
 
 // buildExternalAddress determines the external (node IP:host-port) address for
 // an endpoint. Returns empty when the endpoint already uses the overlay IP
-// (no host port mapping) or when node address lookup fails.
-func buildExternalAddress(instanceID string, instanceNodes map[string]string, nodeAddresses map[string]string, overlayIPs map[string]string, endpointAddress string) string {
-	overlayIP := overlayIPs[instanceID]
+// (no host port mapping) or when the node address is unknown.
+func buildExternalAddress(overlayIP string, nodeAddress string, endpointAddress string) string {
 	if overlayIP != "" && strings.HasPrefix(endpointAddress, overlayIP+":") {
 		return ""
 	}
-	nodeID := instanceNodes[instanceID]
-	nodeAddress := nodeAddresses[nodeID]
 	if nodeAddress != "" && strings.HasPrefix(endpointAddress, nodeAddress+":") {
 		return endpointAddress
 	}
 	return ""
 }
 
+// appendUniqueString appends value to slice unless it is already present.
 func appendUniqueString(slice []string, value string) []string {
 	for _, existing := range slice {
 		if existing == value {

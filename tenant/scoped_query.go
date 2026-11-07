@@ -39,13 +39,14 @@ func ResolvePrincipalTenant(principal security.Principal) string {
 }
 
 // FilterServiceNamesByTeams returns only the service names that belong to one
-// of the given teams, determined by explicit owner fact or hierarchical name.
-// No teams returns no services (deny by default).
-func FilterServiceNamesByTeams(ctx context.Context, factStore store.StateStore, serviceNames []string, teamNames []string) []string {
+// of the given teams, determined by the explicit owner (ownerByService, from
+// desired/service/{name}/owner) or else the hierarchical name. No teams
+// returns no services (deny by default).
+func FilterServiceNamesByTeams(serviceNames []string, teamNames []string, ownerByService map[string]string) []string {
 	var visibleServiceNames []string
 	for _, serviceName := range serviceNames {
 		for _, teamName := range teamNames {
-			if isServiceOwnedByTenant(ctx, factStore, serviceName, teamName) {
+			if isServiceOwnedByTenant(serviceName, ownerByService[serviceName], teamName) {
 				visibleServiceNames = append(visibleServiceNames, serviceName)
 				break
 			}
@@ -54,15 +55,12 @@ func FilterServiceNamesByTeams(ctx context.Context, factStore store.StateStore, 
 	return visibleServiceNames
 }
 
-// isServiceOwnedByTenant checks if a service belongs to the given tenant.
-// It first checks the explicit owner fact, then falls back to hierarchical
-// name derivation.
-func isServiceOwnedByTenant(ctx context.Context, factStore store.StateStore, serviceName string, tenantName string) bool {
-	ownerFact, err := factStore.Get(ctx, types.KeyDesiredServiceOwner(serviceName))
-	if err == nil && len(ownerFact.Value) > 0 {
-		return string(ownerFact.Value) == tenantName
+// isServiceOwnedByTenant checks if a service belongs to the given tenant: a
+// non-empty explicit owner decides, otherwise the hierarchical name does.
+func isServiceOwnedByTenant(serviceName string, explicitOwner string, tenantName string) bool {
+	if explicitOwner != "" {
+		return explicitOwner == tenantName
 	}
-
 	return ExtractTenantFromName(serviceName) == tenantName
 }
 

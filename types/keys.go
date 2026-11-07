@@ -451,6 +451,10 @@ const (
 	// (init phase, drain coordination).
 	ScanDerivedInstances = PrefixDerived + "/instance/"
 
+	// ScanObservedTelemetryInstances scans all per-instance telemetry (CPU,
+	// memory, OOM kills) reported by node agents.
+	ScanObservedTelemetryInstances = PrefixObservedTelemetry + "/instance/"
+
 	// ScanDerivedCredentials scans all controller-derived credential state
 	// (broker lifecycle, expiry, errors).
 	ScanDerivedCredentials = PrefixDerived + "/credential/"

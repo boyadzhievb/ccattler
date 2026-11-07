@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"github.com/boyadzhievb/ccattler/security"
 	"testing"
 
 	"github.com/boyadzhievb/ccattler/network"
@@ -19,7 +21,7 @@ func TestDiscoverSortedServiceNamesFlat(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredService("api"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("api"), []byte("my-api:v3"))
 
-	serviceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
+	serviceNames := discoverSortedServiceNames(mustLoadStatusFactSnapshot(t, ctx, factStore).factsUnder(types.ScanDesiredServices))
 
 	if len(serviceNames) != 2 {
 		t.Fatalf("expected 2 services, got %d: %v", len(serviceNames), serviceNames)
@@ -104,7 +106,7 @@ func TestDiscoverSortedServiceNamesHierarchical(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredService("frontend/web"), []byte(""))
 	factStore.Put(ctx, types.KeyDesiredServiceImage("frontend/web"), []byte("nginx:1.27"))
 
-	serviceNames := discoverSortedServiceNamesFromStore(ctx, factStore)
+	serviceNames := discoverSortedServiceNames(mustLoadStatusFactSnapshot(t, ctx, factStore).factsUnder(types.ScanDesiredServices))
 
 	if len(serviceNames) != 3 {
 		t.Fatalf("expected 3 services, got %d: %v", len(serviceNames), serviceNames)
@@ -135,7 +137,7 @@ func TestCollectEndpointStatusEnrichesFields(t *testing.T) {
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "ws-1", NodeID: "node-1"})
 	types.WritePlacement(ctx, factStore, types.Placement{InstanceID: "rd-1", NodeID: "node-2"})
 
-	endpoints := collectEndpointStatusFromStore(ctx, factStore)
+	endpoints := mustBuildClusterStatus(t, ctx, factStore).Endpoints
 
 	if len(endpoints) != 2 {
 		t.Fatalf("expected 2 endpoints, got %d", len(endpoints))
@@ -167,5 +169,165 @@ func TestCollectEndpointStatusEnrichesFields(t *testing.T) {
 	}
 	if webEndpoint.ExternalAddress != "192.168.124.10:8080" {
 		t.Errorf("webserver external: got %q, want %q", webEndpoint.ExternalAddress, "192.168.124.10:8080")
+	}
+}
+
+// mustLoadStatusFactSnapshot loads the status snapshot or fails the test.
+func mustLoadStatusFactSnapshot(t *testing.T, ctx context.Context, factStore store.StateStore) *statusFactSnapshot {
+	t.Helper()
+	snapshot, loadError := loadStatusFactSnapshot(ctx, factStore)
+	if loadError != nil {
+		t.Fatalf("load status snapshot: %v", loadError)
+	}
+	return snapshot
+}
+
+// mustBuildClusterStatus builds the cluster-scope status or fails the test.
+func mustBuildClusterStatus(t *testing.T, ctx context.Context, factStore store.StateStore) ClusterStatus {
+	t.Helper()
+	clusterStatus, buildError := buildStatusFromStore(ctx, factStore, nil, true)
+	if buildError != nil {
+		t.Fatalf("build status: %v", buildError)
+	}
+	return clusterStatus
+}
+
+// scanFailingStore wraps a StateStore and fails every Scan whose prefix is in
+// failingPrefixes, to exercise status error semantics.
+type scanFailingStore struct {
+	store.StateStore                 // StateStore is the wrapped in-memory store
+	failingPrefixes  map[string]bool // failingPrefixes lists the prefixes whose Scan returns an error
+}
+
+// Scan fails for configured prefixes and delegates otherwise.
+func (failingStore *scanFailingStore) Scan(ctx context.Context, prefix string) ([]store.Fact, error) {
+	if failingStore.failingPrefixes[prefix] {
+		return nil, errors.New("permission denied")
+	}
+	return failingStore.StateStore.Scan(ctx, prefix)
+}
+
+// TestBuildStatusFailsOnRequiredScanError verifies a failed required scan is
+// an error, never a partial status that looks like an empty cluster.
+func TestBuildStatusFailsOnRequiredScanError(t *testing.T) {
+	ctx := context.Background()
+	for _, scanPrefix := range statusScanPrefixes {
+		if !scanPrefix.required {
+			continue
+		}
+		failingStore := &scanFailingStore{StateStore: store.NewMemoryStore(), failingPrefixes: map[string]bool{scanPrefix.prefix: true}}
+		seedStatusFixture(t, ctx, failingStore, statusFixtureSize{serviceCount: 1, instancesPerService: 1, nodeCount: 1, secretCount: 1})
+		if _, buildError := buildStatusFromStore(ctx, failingStore, nil, false); buildError == nil {
+			t.Errorf("scan of %s failed but status build returned no error", scanPrefix.prefix)
+		}
+	}
+}
+
+// TestBuildStatusWithoutSecretAccess verifies the api-server case: secrets/
+// is denied by the store role, the rest of the status is still served and the
+// secret list is empty.
+func TestBuildStatusWithoutSecretAccess(t *testing.T) {
+	ctx := context.Background()
+	failingStore := &scanFailingStore{StateStore: store.NewMemoryStore(), failingPrefixes: map[string]bool{security.SecretStorePrefix: true}}
+	seedStatusFixture(t, ctx, failingStore, statusFixtureSize{serviceCount: 1, instancesPerService: 1, nodeCount: 1, secretCount: 1})
+	clusterStatus, buildError := buildStatusFromStore(ctx, failingStore, nil, false)
+	if buildError != nil {
+		t.Fatalf("build status: %v", buildError)
+	}
+	if len(clusterStatus.Secrets) != 0 || len(clusterStatus.Instances) != 1 {
+		t.Fatalf("expected no secrets and 1 instance, got %d secrets, %d instances", len(clusterStatus.Secrets), len(clusterStatus.Instances))
+	}
+}
+
+// TestBuildStatusSnapshotFields verifies every section built from the
+// snapshot carries the per-instance, per-node and per-service facts that the
+// per-item store reads used to provide.
+func TestBuildStatusSnapshotFields(t *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	seedStatusFixture(t, ctx, factStore, statusFixtureSize{serviceCount: 2, instancesPerService: 2, nodeCount: 2, secretCount: 1})
+	factStore.Put(ctx, types.KeyDerivedInstanceInitPhase("svc00-00"), []byte("done"))
+	factStore.Put(ctx, types.KeyDesiredServiceConfigEnv("svc00", "DB_PASSWORD"), []byte("hunter2"))
+	factStore.Put(ctx, types.KeyObservedInstanceState("svc01-01"), []byte(string(types.InstanceStopped)))
+
+	clusterStatus := mustBuildClusterStatus(t, ctx, factStore)
+
+	firstInstance := clusterStatus.Instances[0]
+	if firstInstance.ID != "svc00-00" || firstInstance.NodeID != "node00" || firstInstance.CPUMillis != "120" ||
+		firstInstance.MemoryBytes != "52428800" || firstInstance.Readiness != "passing" || firstInstance.InitPhase != "done" ||
+		firstInstance.Restarts != "0" || firstInstance.CreatedAt == "" {
+		t.Errorf("instance fields not filled from snapshot: %+v", firstInstance)
+	}
+	if clusterStatus.Nodes[0].PlacedInstances != 2 || clusterStatus.Nodes[1].PlacedInstances != 1 || clusterStatus.Nodes[0].UtilizationCPU != "25" {
+		t.Errorf("node placement counts (stopped excluded) or utilization wrong: %+v", clusterStatus.Nodes)
+	}
+	firstService := clusterStatus.Services[0]
+	if firstService.RunningCount != 2 || firstService.Tags["tier"] != "web" || len(firstService.ExposedPorts) != 1 {
+		t.Errorf("service fields wrong: %+v", firstService)
+	}
+	if len(clusterStatus.Secrets) != 1 || len(clusterStatus.Secrets[0].GrantedTo) != 2 {
+		t.Errorf("secret grants wrong: %+v", clusterStatus.Secrets)
+	}
+	for _, configEntry := range clusterStatus.Config {
+		if configEntry.Key == "DB_PASSWORD" && configEntry.Value != redactedConfigValuePlaceholder {
+			t.Errorf("sensitive config not redacted: %+v", configEntry)
+		}
+	}
+}
+
+// TestBuildStatusTeamVisibilityUsesOwnerFacts verifies team-scoped status
+// keeps only services owned by the team (explicit owner or hierarchical name)
+// and their instances.
+func TestBuildStatusTeamVisibilityUsesOwnerFacts(t *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	seedStatusFixture(t, ctx, factStore, statusFixtureSize{serviceCount: 2, instancesPerService: 1, nodeCount: 1, secretCount: 0})
+	factStore.Put(ctx, types.KeyDesiredServiceOwner("svc01"), []byte("platform"))
+
+	teamStatus, buildError := buildStatusFromStore(ctx, factStore, &workloadVisibility{teams: []string{"payments"}}, true)
+	if buildError != nil {
+		t.Fatalf("build status: %v", buildError)
+	}
+	if len(teamStatus.Services) != 1 || teamStatus.Services[0].Name != "svc00" {
+		t.Fatalf("payments should see only svc00, got %+v", teamStatus.Services)
+	}
+	if len(teamStatus.Instances) != 1 || teamStatus.Instances[0].ServiceName != "svc00" {
+		t.Fatalf("payments should see only svc00 instances, got %+v", teamStatus.Instances)
+	}
+}
+
+// TestStatusSnapshotRejectsUnloadedPrefix verifies a lookup outside every
+// loaded prefix panics instead of silently returning nothing.
+func TestStatusSnapshotRejectsUnloadedPrefix(t *testing.T) {
+	snapshot := mustLoadStatusFactSnapshot(t, context.Background(), store.NewMemoryStore())
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic for a prefix the snapshot never loaded")
+		}
+	}()
+	snapshot.factsUnder("audit/")
+}
+
+// TestBuildStatusThroughAPIServerStoreRole verifies the production path: the
+// API server's store is limited by the api-server role, which must allow every
+// required status prefix; secrets/ stays denied and the secret list empty.
+func TestBuildStatusThroughAPIServerStoreRole(t *testing.T) {
+	ctx := context.Background()
+	rawStore := store.NewMemoryStore()
+	seedStatusFixture(t, ctx, rawStore, statusFixtureSize{serviceCount: 1, instancesPerService: 1, nodeCount: 1, secretCount: 1})
+	rbacAuthorizer := security.NewRBACAuthorizer()
+	for _, builtinRole := range security.BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.APIServerPrincipal, RoleName: "api-server"})
+	apiServerStore := security.NewAuthorizedStore(rawStore, rbacAuthorizer, nil)
+	apiServerStore.SetServicePrincipal(security.APIServerPrincipal)
+
+	clusterStatus, buildError := buildStatusFromStore(ctx, apiServerStore, nil, false)
+	if buildError != nil {
+		t.Fatalf("api-server role must read every required status prefix: %v", buildError)
+	}
+	if len(clusterStatus.Instances) != 1 || len(clusterStatus.Secrets) != 0 {
+		t.Fatalf("expected 1 instance and no secrets, got %d instances, %d secrets", len(clusterStatus.Instances), len(clusterStatus.Secrets))
 	}
 }

@@ -1669,16 +1669,13 @@ func TestScanVisibleToTeams(t *testing.T) {
 }
 
 func TestFilterServiceNamesByTeams(t *testing.T) {
-	memoryStore := store.NewMemoryStore()
-	defer memoryStore.Close()
-	ctx := context.Background()
-	memoryStore.Put(ctx, types.KeyDesiredServiceOwner("api"), []byte("payments"))
+	ownerByService := map[string]string{"api": "payments", "payments/billing": "platform"}
 
-	visibleNames := FilterServiceNamesByTeams(ctx, memoryStore, []string{"api", "payments/checkout", "frontend/web"}, []string{"payments"})
+	visibleNames := FilterServiceNamesByTeams([]string{"api", "payments/billing", "payments/checkout", "frontend/web"}, []string{"payments"}, ownerByService)
 	if len(visibleNames) != 2 || visibleNames[0] != "api" || visibleNames[1] != "payments/checkout" {
 		t.Fatalf("expected owner fact and hierarchical name to match payments, got %v", visibleNames)
 	}
-	if FilterServiceNamesByTeams(ctx, memoryStore, []string{"api"}, nil) != nil {
+	if FilterServiceNamesByTeams([]string{"api"}, nil, ownerByService) != nil {
 		t.Fatal("no teams must see no services")
 	}
 }

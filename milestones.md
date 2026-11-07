@@ -107,14 +107,16 @@ Design: Flow 25 in `design/runtime-invariant-flows.md`.
 
 Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21s (`cca top`, `cca get`, `cca status` all decode the full `ClusterStatus`); a cached hit within the 2s TTL takes 0.02s. `buildStatusFromStore` (`api/status.go`) issues ~330 sequential store reads for 16 instances / 3 nodes / ~10 services: 14 `Get`s per instance, a placement `Get` per instance × node, `ReadService` + tag scan + config scan per service, a grant `Get` per secret × service. etcd logged 41k "apply request took too long" (~110ms single-key reads) in 30 min on the memory-starved testbed host.
 
-- [ ] Benchmark first: status build against a store with injected 110ms per-call latency; count store round-trips; assert the count is constant in instance, node and service count
-- [ ] Status fact loader: a fixed set of prefix scans (observed instance/node, desired service, placements, derived instance, crash loops, network, volumes, secrets, endpoints) indexed into maps; per-item `Get`s removed from every `collect*StatusFromStore`
-- [ ] Error semantics: a failed required scan returns an API error, never a partial status that looks like an empty cluster; a missing optional fact stays a blank field (today several scan errors are dropped with `_`)
-- [ ] Authorization unchanged: loads go through the same API store; team visibility filtering applied as today; no new prefixes or sensitive values exposed (secret values and redacted config stay redacted)
-- [ ] Consistency stays eventually consistent: no claim of a single store revision (pinned-revision multi-prefix reads are M180)
-- [ ] Call graph `design/graphs/OBSERVABILITY_GRAPH.md` updated
+- [x] Benchmark first: status build against a store with injected 110ms per-call latency; count store round-trips; assert the count is constant in instance, node and service count — baseline 615 reads / 68s (16 instances, 3 nodes, 8 services); `TestStatusBuildRoundTripsConstantInClusterSize` (cluster and team scope)
+- [x] Status fact loader: a fixed set of prefix scans (observed instance/node, desired service, placements, derived instance, crash loops, network, volumes, secrets, endpoints) indexed into maps; per-item `Get`s removed from every `collect*StatusFromStore`
+- [x] Error semantics: a failed required scan returns an API error, never a partial status that looks like an empty cluster; a missing optional fact stays a blank field (today several scan errors are dropped with `_`)
+- [x] Authorization unchanged: loads go through the same API store; team visibility filtering applied as today; no new prefixes or sensitive values exposed (secret values and redacted config stay redacted)
+- [x] Consistency stays eventually consistent: no claim of a single store revision (pinned-revision multi-prefix reads are M180)
+- [x] Call graph `design/graphs/OBSERVABILITY_GRAPH.md` updated
+- [x] Result: 15 concurrent scans per build, 0.116s with 110ms injected latency (was 615 reads / 68s); verified through the api-server store role
 - [ ] Deploy cluster: uncached `cca get instances` well below 1s on the same environment
 - [ ] Follow-up audit (separate, no mechanical changes): controller read patterns with sequential `Get`s inside per-instance/per-node loops; any change keeps revision guards and CAS
+- [ ] Found while benchmarking (not fixed in M175, decide scope): every allowed read through the API's `AuthorizedStore` persists an audit entry (`StoreBackedAuditLog.Log` → `go persistEntry` → etcd Put), so each uncached status call wrote ~615 audit facts; `/metrics` builds the full status on every scrape; the status secret list is always empty in production because the api-server role has no `secrets/` rule (each call logs a denied scan)
 - [ ] Separately: measure etcd revision growth and telemetry write rate before attributing the 260 MB etcd DB size; compaction/defrag as operations, not this fix
 
 ### Secrets architecture — Phases 174, 176–179

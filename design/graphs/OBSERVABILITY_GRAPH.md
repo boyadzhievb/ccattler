@@ -565,6 +565,33 @@ handleHealthz(w, r)                                  (api/server.go:426)
 └── JSON {"status":"healthy","mode":"full","checks":[...]}
 ```
 
+### buildStatusFromStore → cluster status (M175 bulk reads)
+
+Called by `handleStatus` (`api/server.go:1157`, 2s cache for cluster scope) and `handleMetrics` (`api/server.go:399`). Store round-trips are constant (15) in instance, node and service count; `TestStatusBuildRoundTripsConstantInClusterSize` and `BenchmarkStatusBuildWithDeployClusterLatency` (api/status_benchmark_test.go) guard it.
+```
+buildStatusFromStore(ctx, factStore, visibility, includeAll)   (api/status.go:180)
+├── loadStatusFactSnapshot(ctx, factStore)                       (api/status_snapshot.go:59)
+│   ├── concurrent Scan per statusScanPrefixes entry:
+│   │   observed/instance/, derived/instance/, observed/telemetry/instance/,
+│   │   observed/node/, observed/volume/, desired/service/, desired/cloud_identity/,
+│   │   desired/route/, derived/route/, derived/crash-loop/, placement/instance/,
+│   │   network/vip/service/, network/dns/, endpoint/service/  (required → error)
+│   │   secrets/  (optional: api-server role denies it → empty secret list)
+│   └── index: sortedFacts (prefix ranges via factsUnder), factValueByKey (value)
+├── listSortedInstancesFromSnapshot → types.GroupFactFieldsByID + InstancesFromFields
+├── discoverSortedServiceNames(factsUnder(desired/service/))
+├── buildGateStatusList(groupGateFactAttributes(desired/route/), groupGateFactAttributes(derived/route/))   (api/gate.go:58, :117)
+├── IF team visibility:
+│   └── tenant.FilterServiceNamesByTeams(names, teams, collectServiceOwners) → filter instances, gates
+└── collectServiceStatus (types.ServiceFromFacts, tags, crash loops)   :287
+    collectInstanceStatus → buildInstanceStatus (placement, telemetry, probes, progress)   :361, :374
+    collectNodeStatus (types.NodesFromFields, placed counts, utilization)   :519
+    collectNetworkingStatus :406 · collectVolumeStatus (types.VolumesFromFields) :439
+    collectSecretStatus (names + grants, never values) :465 · collectConfigStatus (redacted) :492
+    collectCloudIdentityStatus :546 · collectEndpointStatus (overlay IP, node address) :583
+```
+A lookup outside every loaded prefix panics (`requireCoveredKey`): add the prefix to `statusScanPrefixes` when a builder needs a new fact.
+
 ### API routes (api/server.go:364–393)
 
 | Endpoint | Method | Handler | Auth | Line |
@@ -720,7 +747,7 @@ Agent crashes → no more heartbeats
 Agent.CollectAndReportTelemetry (every 1s)
   → runtime.List → count running → PUT workload_count
   → runtime.Stats → CPU/memory → PUT telemetry/instance/{id}/cpu,memory
-    → cca top → GET /api/status → Scan observed/telemetry/ → display
+    → cca top → GET /api/status → buildStatusFromStore → Scan observed/telemetry/instance/ → display
 ```
 
 ---

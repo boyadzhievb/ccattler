@@ -64,7 +64,7 @@ func TestCollectGateStatusPlainHTTP(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredRouteSticky("web"), []byte("cookie"))
 	factStore.Put(ctx, types.KeyDerivedRouteBackends("web"), []byte("10.100.1.2:8080,10.100.2.3:8080"))
 
-	gates := collectGateStatusFromStore(ctx, factStore)
+	gates := mustBuildClusterStatus(t, ctx, factStore).Gates
 
 	if len(gates) != 1 {
 		t.Fatalf("expected 1 gate, got %d", len(gates))
@@ -93,7 +93,7 @@ func TestCollectGateStatusAutoTLSPending(t *testing.T) {
 	writeTestGate(ctx, factStore, "api", "api.example.com", "backend")
 	factStore.Put(ctx, types.KeyDesiredRouteTLSMode("api"), []byte("auto"))
 
-	gates := collectGateStatusFromStore(ctx, factStore)
+	gates := mustBuildClusterStatus(t, ctx, factStore).Gates
 
 	if len(gates) != 1 || gates[0].TLS == nil {
 		t.Fatalf("expected 1 gate with TLS, got %+v", gates)
@@ -116,7 +116,7 @@ func TestCollectGateStatusAutoTLSIssued(t *testing.T) {
 	factStore.Put(ctx, types.KeyDerivedRouteTLSKey("api"), []byte("secret-key-material"))
 	factStore.Put(ctx, types.KeyDerivedRouteTLSNotAfter("api"), []byte(certificateExpiry.Format(time.RFC3339)))
 
-	gates := collectGateStatusFromStore(ctx, factStore)
+	gates := mustBuildClusterStatus(t, ctx, factStore).Gates
 
 	gateTLS := gates[0].TLS
 	if gateTLS == nil || !gateTLS.CertificateSet {
@@ -147,7 +147,7 @@ func TestCollectGateStatusManualTLSPrecedence(t *testing.T) {
 	factStore.Put(ctx, types.KeyDesiredRouteTLSCert("shop"), []byte(generateTestGateCertificatePEM(t, "shop.example.com", manualExpiry)))
 	factStore.Put(ctx, types.KeyDerivedRouteTLSCert("shop"), []byte(generateTestGateCertificatePEM(t, "stale.example.com", derivedExpiry)))
 
-	gates := collectGateStatusFromStore(ctx, factStore)
+	gates := mustBuildClusterStatus(t, ctx, factStore).Gates
 
 	gateTLS := gates[0].TLS
 	if gateTLS == nil || gateTLS.Mode != "manual" || !gateTLS.CertificateSet {

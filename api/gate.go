@@ -53,12 +53,9 @@ type GateTLS struct {
 // gateFactAttributes maps gate name → attribute path → fact value.
 type gateFactAttributes map[string]map[string]string
 
-// collectGateStatusFromStore scans desired and derived route facts and
-// assembles a sorted list of gates for display via `cca get gates`.
-func collectGateStatusFromStore(ctx context.Context, factStore store.StateStore) []GateStatus {
-	desiredAttributes := scanGateFactAttributes(ctx, factStore, types.ScanDesiredRoutes)
-	derivedAttributes := scanGateFactAttributes(ctx, factStore, types.ScanDerivedRoutes)
-
+// buildGateStatusList assembles a sorted list of gates for display via
+// `cca get gates` from desired and derived route attributes grouped by gate.
+func buildGateStatusList(desiredAttributes, derivedAttributes gateFactAttributes) []GateStatus {
 	gateNames := make([]string, 0, len(desiredAttributes))
 	for gateName := range desiredAttributes {
 		gateNames = append(gateNames, gateName)
@@ -102,17 +99,23 @@ func buildGateDescribe(ctx context.Context, factStore store.StateStore, gateName
 }
 
 // scanGateFactAttributes scans route facts under scanPrefix and groups them by
-// gate name. The root marker key (desired/route/{name}) maps to attribute "".
+// gate name. A scan error yields no attributes (the gate is reported missing).
 func scanGateFactAttributes(ctx context.Context, factStore store.StateStore, scanPrefix string) gateFactAttributes {
-	groupedAttributes := make(gateFactAttributes)
 	routeFacts, scanError := factStore.Scan(ctx, scanPrefix)
 	if scanError != nil {
-		return groupedAttributes
+		return make(gateFactAttributes)
 	}
 	routeRootPrefix := types.ScanDesiredRoutes
 	if strings.HasPrefix(scanPrefix, types.ScanDerivedRoutes) {
 		routeRootPrefix = types.ScanDerivedRoutes
 	}
+	return groupGateFactAttributes(routeRootPrefix, routeFacts)
+}
+
+// groupGateFactAttributes groups route facts under routeRootPrefix (desired or
+// derived routes) by gate name. The root marker key maps to attribute "".
+func groupGateFactAttributes(routeRootPrefix string, routeFacts []store.Fact) gateFactAttributes {
+	groupedAttributes := make(gateFactAttributes)
 	for _, routeFact := range routeFacts {
 		relativePath := strings.TrimPrefix(routeFact.Key, routeRootPrefix)
 		gateName, attributePath, _ := strings.Cut(relativePath, "/")

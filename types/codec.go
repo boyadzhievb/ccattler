@@ -76,7 +76,13 @@ func ReadService(ctx context.Context, stateStore store.StateStore, name string) 
 	if _, err := stateStore.Get(ctx, KeyDesiredService(name)); err != nil {
 		return nil, err
 	}
+	return ServiceFromFacts(name, facts)
+}
 
+// ServiceFromFacts assembles a Service from the facts under
+// desired/service/{name}/ (the root marker excluded). It returns an error for a
+// corrupt instances value. Used by ReadService and the bulk status loader.
+func ServiceFromFacts(name string, facts []store.Fact) (*Service, error) {
 	service := &Service{Name: name}
 	for _, factEntry := range facts {
 		suffix := strings.TrimPrefix(factEntry.Key, KeyDesiredService(name)+"/")
@@ -193,28 +199,34 @@ func ListInstances(ctx context.Context, stateStore store.StateStore) ([]Instance
 		return nil, derivedErr
 	}
 
-	grouped := make(map[string]map[string]string)
-	scanPrefixes := []struct {
-		prefix string
-		facts  []store.Fact
-	}{
-		{ScanObservedInstances, observedFacts},
-		{ScanDerivedInstances, derivedFacts},
+	grouped := GroupFactFieldsByID(ScanObservedInstances, observedFacts, nil)
+	grouped = GroupFactFieldsByID(ScanDerivedInstances, derivedFacts, grouped)
+	return InstancesFromFields(grouped), nil
+}
+
+// GroupFactFieldsByID groups facts under scanPrefix by their first path
+// segment (the object ID) into ID → field suffix → value, merging into grouped
+// (created when nil). A root marker key yields an ID with no fields.
+func GroupFactFieldsByID(scanPrefix string, facts []store.Fact, grouped map[string]map[string]string) map[string]map[string]string {
+	if grouped == nil {
+		grouped = make(map[string]map[string]string)
 	}
-	for _, scan := range scanPrefixes {
-		for _, factEntry := range scan.facts {
-			relativePath := strings.TrimPrefix(factEntry.Key, scan.prefix)
-			parts := strings.SplitN(relativePath, "/", 2)
-			id := parts[0]
-			if grouped[id] == nil {
-				grouped[id] = make(map[string]string)
-			}
-			if len(parts) == 2 {
-				grouped[id][parts[1]] = string(factEntry.Value)
-			}
+	for _, factEntry := range facts {
+		relativePath := strings.TrimPrefix(factEntry.Key, scanPrefix)
+		objectID, fieldSuffix, hasField := strings.Cut(relativePath, "/")
+		if grouped[objectID] == nil {
+			grouped[objectID] = make(map[string]string)
+		}
+		if hasField {
+			grouped[objectID][fieldSuffix] = string(factEntry.Value)
 		}
 	}
+	return grouped
+}
 
+// InstancesFromFields builds instances from observed and derived instance
+// fields grouped by GroupFactFieldsByID, in unspecified order.
+func InstancesFromFields(grouped map[string]map[string]string) []Instance {
 	instances := make([]Instance, 0, len(grouped))
 	for id, fields := range grouped {
 		instance := Instance{ID: id}
@@ -226,7 +238,7 @@ func ListInstances(ctx context.Context, stateStore store.StateStore) ([]Instance
 		instance.Health = HealthStatus(fields["health"])
 		instances = append(instances, instance)
 	}
-	return instances, nil
+	return instances
 }
 
 // effectiveInstanceStateFromFields merges observed state with derived markers.
@@ -321,20 +333,13 @@ func ListNodes(ctx context.Context, stateStore store.StateStore) ([]Node, error)
 	if err != nil {
 		return nil, err
 	}
+	return NodesFromFields(GroupFactFieldsByID(ScanObservedNodes, facts, nil)), nil
+}
 
-	grouped := make(map[string]map[string]string)
-	for _, factEntry := range facts {
-		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedNodes)
-		parts := strings.SplitN(relativePath, "/", 2)
-		id := parts[0]
-		if _, ok := grouped[id]; !ok {
-			grouped[id] = make(map[string]string)
-		}
-		if len(parts) == 2 {
-			grouped[id][parts[1]] = string(factEntry.Value)
-		}
-	}
-
+// NodesFromFields builds nodes from observed node fields grouped by
+// GroupFactFieldsByID, in unspecified order. Corrupt numbers are logged and
+// left zero.
+func NodesFromFields(grouped map[string]map[string]string) []Node {
 	nodes := make([]Node, 0, len(grouped))
 	for id, fields := range grouped {
 		node := Node{ID: id}
@@ -363,7 +368,7 @@ func ListNodes(ctx context.Context, stateStore store.StateStore) ([]Node, error)
 		node.Zone = fields["zone"]
 		nodes = append(nodes, node)
 	}
-	return nodes, nil
+	return nodes
 }
 
 // WritePlacement writes a scheduler placement decision to the fact store.
@@ -595,20 +600,13 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 	if err != nil {
 		return nil, err
 	}
+	return VolumesFromFields(GroupFactFieldsByID(ScanObservedVolumes, facts, nil)), nil
+}
 
-	grouped := make(map[string]map[string]string)
-	for _, factEntry := range facts {
-		relativePath := strings.TrimPrefix(factEntry.Key, ScanObservedVolumes)
-		pathParts := strings.SplitN(relativePath, "/", 2)
-		volumeName := pathParts[0]
-		if _, exists := grouped[volumeName]; !exists {
-			grouped[volumeName] = make(map[string]string)
-		}
-		if len(pathParts) == 2 {
-			grouped[volumeName][pathParts[1]] = string(factEntry.Value)
-		}
-	}
-
+// VolumesFromFields builds observed volumes from fields grouped by
+// GroupFactFieldsByID, in unspecified order. Corrupt numbers are logged and
+// left zero.
+func VolumesFromFields(grouped map[string]map[string]string) []Volume {
 	volumes := make([]Volume, 0, len(grouped))
 	for volumeName, fields := range grouped {
 		volume := Volume{Name: volumeName}
@@ -643,7 +641,7 @@ func ListObservedVolumes(ctx context.Context, stateStore store.StateStore) ([]Vo
 		finalizeVolumeAccess(&volume)
 		volumes = append(volumes, volume)
 	}
-	return volumes, nil
+	return volumes
 }
 
 // ParseVolumeAttachmentSuffix parses a key suffix "attachment/{node}/{instance}"
