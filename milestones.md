@@ -121,7 +121,7 @@ Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21
   - fixed — no end-to-end test for parent/child service names (`payments`, `payments/checkout`) → definition, tags, config and owner visibility kept apart
   - rejected — re-sorting already-sorted per-prefix scans: negligible at status sizes
   - rejected — `requireCoveredKey` panic in a handler path: only reachable by a coding error (keys come from fixed `types.Key*` builders), covered by tests, `net/http` recovers
-  - pending decision — pre-existing: a `?all=true` status body is written to the 2s cache that plain requests read (`api/server.go` `handleStatus`), so `cca get` can briefly show stopped instances
+  - moved to M182 — pre-existing: a `?all=true` status body is written to the 2s cache that plain requests read (`api/server.go` `handleStatus`), so `cca get` can briefly show stopped instances
   - moved to M182 — pre-existing: `/metrics` is unauthenticated, not rate-limited and builds the full status per scrape uncached; Networking, Volumes, CloudIdentities and Endpoints are not team-filtered; empty-valued keys such as `{svc}/resources/cpu` are discovered as services
 - [x] Found 2026-11-07 measuring etcd writes on the deploy cluster (60s window): ~89 changes/s, of which ~83/s were 6 `network/dns/hostname/*` keys deleted and re-created (put ≈ delete ≈ 49/s, 35 WAL fsyncs/s at 15ms, 645 reads/s, etcd never compacted, revision 174k for 744 keys). Cause: since M168 the network controller treated `network/dns/hostname/` (hostname-dns) and `network/dns/instance/` (stateful-dns) records as stale service DNS and deleted them; the owners re-created them → write livelock. Fixed: network controller skips those sub-namespaces; `TestDNSControllersConvergeWithoutDeletingEachOther` fails on the old code. Draft PR #13 (same issue, not compiling, and skipped hierarchical service DNS) superseded
 - [ ] Open from the same investigation: service DNS keys share `network/dns/` with the sub-namespaces, so a service named `hostname/x` collides (needs a `network/dns/service/` key migration); hierarchical services (`payments/checkout`) get no VIP or service DNS (`extractServiceExposedPorts` only parses `{name}/expose/{port}`); etcd has no auto-compaction; deploy VM disks live on the HDD
@@ -133,7 +133,7 @@ Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21
   - not audited — `storage.go` (22 deletes) and `clusterscale.go` for other cross-controller stale-deletion loops
 - [x] Deploy cluster: uncached `cca get instances` well below 1s on the same environment — run 42370890022 (58fce68, fresh VMs) green: 16/16 stable, gate TLS T1–T15, 0 etcd timeouts; uncached `cca get instances` 0.02–0.06s (16 instances; was 17–21s). etcd over 60s after the livelock fix: 7 revisions/s (was 21), 7 puts/s (was 49), 10 deletes/s (was 50; remainder outside watchable prefixes, likely audit trim), no `network/dns/` churn (was 83/s), 25 WAL fsyncs/s (was 35), 496 reads/s (was 645 — controller polling, see the read audit below)
 - [ ] Follow-up audit (separate, no mechanical changes): controller read patterns with sequential `Get`s inside per-instance/per-node loops; any change keeps revision guards and CAS
-- [ ] Found while benchmarking (not fixed in M175, decide scope): every allowed read through the API's `AuthorizedStore` persists an audit entry (`StoreBackedAuditLog.Log` → `go persistEntry` → etcd Put), so each uncached status call wrote ~615 audit facts; `/metrics` builds the full status on every scrape; the status secret list is always empty in production because the api-server role has no `secrets/` rule (each call logs a denied scan)
+- [x] Found while benchmarking (moved: audit writes → M181, `/metrics` and secret list → M182): every allowed read through the API's `AuthorizedStore` persists an audit entry (`StoreBackedAuditLog.Log` → `go persistEntry` → etcd Put), so each uncached status call wrote ~615 audit facts; `/metrics` builds the full status on every scrape; the status secret list is always empty in production because the api-server role has no `secrets/` rule (each call logs a denied scan)
 - [ ] Separately: measure etcd revision growth and telemetry write rate before attributing the 260 MB etcd DB size; compaction/defrag as operations, not this fix
 
 ### Secrets architecture — Phases 174, 176–179
@@ -230,6 +230,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] Secret delivery checks binding (found during M174): agents can no longer write placements, grants or `observed/instance/{id}/service`; instance → service mapping from a control-plane-only fact
 - [ ] Short-lived node certificates with rotation; removed nodes rejected by etcd and API
 - [ ] Threat model T5 updated with the real residual risk
+- [ ] Store-layer audit writes (found during M175): `AuthorizedStore` persists an audit entry to etcd (`StoreBackedAuditLog.Log` → `persistEntry` → Put) for every allowed Get/Scan/Watch, so reads become etcd writes (an uncached status call wrote ~615 before M175, still one per scan); persist denies and writes, keep allowed reads in memory or aggregated per request; measure etcd puts/s before and after
 
 ### Phase 182 — Security Defense in Depth (M182)
 
@@ -243,6 +244,7 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] `/metrics`: requires authentication (or a dedicated scrape token) and goes through the rate limiter; builds counts from a cached or counts-only path instead of a full status build per scrape (found during M175)
 - [ ] Team-scoped status: filter Networking, Volumes, CloudIdentities and Endpoints by visible services, as Services/Instances/Gates already are; filter secret names, not only grants (found during M175)
 - [ ] Status discovery treats empty-valued keys such as `{svc}/resources/cpu` as services: discover only root markers (found during M175)
+- [ ] Status cache (found during M175): `handleStatus` writes `?all=true` responses (stopped instances included) to the 2s cluster-scope cache that plain requests read, so `cca get` can briefly show stopped instances; cache only the plain view or key the cache by the `all` flag
 
 ### OpenSpec pilot (unscheduled, before M206)
 
