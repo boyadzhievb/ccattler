@@ -159,8 +159,7 @@ func collectExistingVIPAllocations(facts []store.Fact) (existingVIPs map[string]
 
 // controllerOwnedDNSSubPrefixes lists network/dns/ sub-namespaces written by
 // other controllers (hostname-dns, stateful-dns). They are not service DNS
-// records; deleting them as stale made those controllers re-create them in a
-// write livelock (M175, ~83 changes/s on the deploy cluster).
+// records; deleting them as stale made their owners re-create them forever.
 var controllerOwnedDNSSubPrefixes = []string{
 	types.ScanNetworkDNSHostnames,
 	types.ScanNetworkDNSInstances,
@@ -178,8 +177,8 @@ func isControllerOwnedDNSKey(factKey string) bool {
 }
 
 // collectExistingDNSMappings scans service DNS facts and returns a map of
-// service names (hierarchical names included) to their VIP addresses,
-// skipping the hostname and stateful-instance sub-namespaces.
+// service names to their VIP addresses, skipping the hostname and
+// stateful-instance sub-namespaces owned by other controllers.
 func collectExistingDNSMappings(facts []store.Fact) map[string]string {
 	existingDNS := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanNetworkDNS) {

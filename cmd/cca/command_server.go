@@ -1378,16 +1378,10 @@ func collectInstanceStatusEntries(ctx context.Context, factStore store.StateStor
 	return instanceEntries
 }
 
-// collectNetworkingStatusEntries reads VIP and DNS facts from the store and
-// builds networking status entries with service name, VIP address, port, and DNS.
+// collectNetworkingStatusEntries reads VIP facts from the store and builds
+// networking status entries with service name, VIP address, port, and DNS name.
 func collectNetworkingStatusEntries(ctx context.Context, factStore store.StateStore) []networkStatusEntry {
 	vipFacts, _ := factStore.Scan(ctx, types.ScanNetworkVIPs)
-	dnsFacts, _ := factStore.Scan(ctx, types.ScanNetworkDNS)
-	dnsMapping := make(map[string]string)
-	for _, dnsFact := range dnsFacts {
-		serviceName := strings.TrimPrefix(dnsFact.Key, types.ScanNetworkDNS)
-		dnsMapping[serviceName] = string(dnsFact.Value)
-	}
 	vipByService := make(map[string]string)
 	vipPortByService := make(map[string]int)
 	for _, vipFact := range vipFacts {

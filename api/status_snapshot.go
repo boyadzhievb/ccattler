@@ -39,7 +39,6 @@ var statusScanPrefixes = []statusScanPrefix{
 	{prefix: types.ScanDerivedCrashLoops, required: true},
 	{prefix: types.ScanPlacements, required: true},
 	{prefix: types.ScanNetworkVIPs, required: true},
-	{prefix: types.ScanNetworkDNS, required: true},
 	{prefix: types.ScanEndpoints, required: true},
 	{prefix: security.SecretStorePrefix, required: false},
 }
