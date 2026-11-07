@@ -122,7 +122,7 @@ Found 2026-11-06 on the deploy cluster: uncached `GET /api/status` takes 17–21
   - rejected — re-sorting already-sorted per-prefix scans: negligible at status sizes
   - rejected — `requireCoveredKey` panic in a handler path: only reachable by a coding error (keys come from fixed `types.Key*` builders), covered by tests, `net/http` recovers
   - pending decision — pre-existing: a `?all=true` status body is written to the 2s cache that plain requests read (`api/server.go` `handleStatus`), so `cca get` can briefly show stopped instances
-  - pending decision — pre-existing: `/metrics` is unauthenticated, not rate-limited and builds the full status per scrape uncached; Networking, Volumes, CloudIdentities and Endpoints are not team-filtered; empty-valued keys such as `{svc}/resources/cpu` are discovered as services
+  - moved to M182 — pre-existing: `/metrics` is unauthenticated, not rate-limited and builds the full status per scrape uncached; Networking, Volumes, CloudIdentities and Endpoints are not team-filtered; empty-valued keys such as `{svc}/resources/cpu` are discovered as services
 - [x] Found 2026-11-07 measuring etcd writes on the deploy cluster (60s window): ~89 changes/s, of which ~83/s were 6 `network/dns/hostname/*` keys deleted and re-created (put ≈ delete ≈ 49/s, 35 WAL fsyncs/s at 15ms, 645 reads/s, etcd never compacted, revision 174k for 744 keys). Cause: since M168 the network controller treated `network/dns/hostname/` (hostname-dns) and `network/dns/instance/` (stateful-dns) records as stale service DNS and deleted them; the owners re-created them → write livelock. Fixed: network controller skips those sub-namespaces; `TestDNSControllersConvergeWithoutDeletingEachOther` fails on the old code. Draft PR #13 (same issue, not compiling, and skipped hierarchical service DNS) superseded
 - [ ] Open from the same investigation: service DNS keys share `network/dns/` with the sub-namespaces, so a service named `hostname/x` collides (needs a `network/dns/service/` key migration); hierarchical services (`payments/checkout`) get no VIP or service DNS (`extractServiceExposedPorts` only parses `{name}/expose/{port}`); etcd has no auto-compaction; deploy VM disks live on the HDD
 - [x] Independent review of e0f0647 (`code-reviewer`; approve, livelock fix correct and sufficient). Outcome:
@@ -240,6 +240,9 @@ Control plane decrypts with the existing key (unchanged envelope format); agents
 - [ ] `/api/state` returns raw desired config values: apply the describe/status sensitive-key redaction there too (found during M173)
 - [ ] Paginated store scans
 - [ ] CI check: every `controllers.New*` and API `Set*` has a production caller
+- [ ] `/metrics`: requires authentication (or a dedicated scrape token) and goes through the rate limiter; builds counts from a cached or counts-only path instead of a full status build per scrape (found during M175)
+- [ ] Team-scoped status: filter Networking, Volumes, CloudIdentities and Endpoints by visible services, as Services/Instances/Gates already are; filter secret names, not only grants (found during M175)
+- [ ] Status discovery treats empty-valued keys such as `{svc}/resources/cpu` as services: discover only root markers (found during M175)
 
 ### OpenSpec pilot (unscheduled, before M206)
 
