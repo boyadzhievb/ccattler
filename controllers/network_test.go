@@ -402,3 +402,81 @@ func TestNetworkControllerWatchPrefixes(t *testing.T) {
 		}
 	}
 }
+
+// helperCollectControllerFacts reads the prefixes watched by a controller,
+// matching the runner's input shape for a reconciliation cycle.
+func helperCollectControllerFacts(t *testing.T, ctx context.Context, factStore store.StateStore, prefixes []string) []store.Fact {
+	t.Helper()
+	var allFacts []store.Fact
+	for _, prefix := range prefixes {
+		facts, err := factStore.Scan(ctx, prefix)
+		if err != nil {
+			t.Fatalf("scan %q: %v", prefix, err)
+		}
+		allFacts = append(allFacts, facts...)
+	}
+	store.SortFacts(allFacts)
+	return allFacts
+}
+
+// TestNetworkAndHostnameDNSControllersConverge verifies that the network
+// controller does not delete DNS records owned by the hostname or stateful
+// DNS controllers. Both controllers reconcile against the same store and
+// settle without further writes.
+func TestNetworkAndHostnameDNSControllersConverge(t *testing.T) {
+	ctx := context.Background()
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+
+	helperSetupServiceWithEndpoints(ctx, factStore, "worker", 8080, 1)
+	instanceID := "abcdef1234567890"
+	if err := factStore.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte("worker")); err != nil {
+		t.Fatal(err)
+	}
+	if err := factStore.Put(ctx, types.KeyObservedInstanceState(instanceID), []byte(types.InstanceRunning)); err != nil {
+		t.Fatal(err)
+	}
+	if err := factStore.Put(ctx, types.KeyObservedInstanceIP(instanceID), []byte("10.100.1.5")); err != nil {
+		t.Fatal(err)
+	}
+
+	// A stateful DNS record is also outside the network controller's ownership.
+	statefulDNSKey := types.KeyNetworkDNSInstance("postgres-0")
+	if err := factStore.Put(ctx, statefulDNSKey, []byte("postgres-0.cca.local=10.100.1.9")); err != nil {
+		t.Fatal(err)
+	}
+
+	networkController := NewNetworkController()
+	hostnameController := NewHostnameDNSController()
+
+	for iteration := 0; iteration < 4; iteration++ {
+		networkFacts := helperCollectControllerFacts(t, ctx, factStore, networkController.Watch())
+		networkChanges, err := networkController.Reconcile(ctx, networkFacts)
+		if err != nil {
+			t.Fatalf("network reconcile %d: %v", iteration, err)
+		}
+		helperApplyChangesToStore(ctx, factStore, networkChanges)
+
+		hostnameFacts := helperCollectControllerFacts(t, ctx, factStore, hostnameController.Watch())
+		hostnameChanges, err := hostnameController.Reconcile(ctx, hostnameFacts)
+		if err != nil {
+			t.Fatalf("hostname reconcile %d: %v", iteration, err)
+		}
+		helperApplyChangesToStore(ctx, factStore, hostnameChanges)
+
+		if iteration == 1 && (len(networkChanges) != 0 || len(hostnameChanges) != 0) {
+			t.Fatalf("controllers did not settle after initial writes: network=%d hostname=%d",
+				len(networkChanges), len(hostnameChanges))
+		}
+	}
+
+	for _, key := range []string{
+		types.KeyNetworkDNS("worker"),
+		types.KeyNetworkDNSHostname("worker-abcdef1234"),
+		statefulDNSKey,
+	} {
+		if _, err := factStore.Get(ctx, key); err != nil {
+			t.Errorf("controller-owned DNS fact %q was removed: %v", key, err)
+		}
+	}
+}
