@@ -1,0 +1,77 @@
+name: Deploy Testbed Cluster
+
+on:
+  workflow_dispatch:
+    inputs:
+      workload:
+        description: "Workloads to deploy (comma-separated or 'all')"
+        required: false
+        default: "airflow,whoami,whoami-multiport,gate-tls"
+        type: choice
+        options:
+          - "airflow,whoami,whoami-multiport,gate-tls"
+          - "airflow,whoami,whoami-multiport"
+          - "airflow,whoami"
+          - "airflow"
+          - "all"
+          - "whoami,whoami-multiport"
+          - "whoami,whoami-multiport,gate-tls"
+          - "zabbix"
+          - "zabbix,whoami"
+      clear_first:
+        description: "Clear existing workloads before deploying"
+        required: false
+        default: false
+        type: boolean
+      dataplane:
+        description: "Data plane backend"
+        required: false
+        default: "ebpf"
+        type: choice
+        options:
+          - "ebpf"
+          - "nftables"
+          - "auto"
+
+concurrency:
+  group: testbed-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, m4800]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Clear existing workloads
+        if: ${{ inputs.clear_first == true }}
+        run: ./test/e2e/cluster_test.sh --env deploy --clear-workloads
+
+      - name: Install vmherd
+        run: |
+          VMHERD_VERSION=$(curl -sS "https://api.github.com/repos/boyadzhievb/vmherd/releases/latest" | jq -r '.tag_name')
+          curl -sSL "https://github.com/boyadzhievb/vmherd/releases/download/${VMHERD_VERSION}/vmherd-${VMHERD_VERSION}-linux-amd64.tar.gz" -o /tmp/vmherd.tar.gz
+          sudo tar xzf /tmp/vmherd.tar.gz -C /usr/local/bin/ vmherd
+          sudo chmod +x /usr/local/bin/vmherd
+          vmherd version
+
+      - name: Build binary from source
+        run: GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -tags ebpf -o deploy/ansible/cca-linux-amd64 ./cmd/cca/
+
+      - name: Deploy cluster (3-node, no teardown, source-built binary)
+        run: |
+          WORKLOAD="${{ inputs.workload || 'airflow,whoami,whoami-multiport,gate-tls' }}"
+          DATAPLANE="${{ inputs.dataplane || 'ebpf' }}"
+          ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" --dataplane "$DATAPLANE"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          cd test/e2e/vm-deploy
+          for vm in cca-deploy-ctrl cca-deploy-worker-1 cca-deploy-worker-2; do
+            echo "=== $vm cca-server journal ==="
+            vmherd ssh "$vm" -- "sudo journalctl -u cca-server --no-pager -n 200 2>/dev/null || true" || true
+            echo "=== $vm cca-agent journal ==="
+            vmherd ssh "$vm" -- "sudo journalctl -u cca-agent --no-pager -n 200 2>/dev/null || true" || true
+          done
