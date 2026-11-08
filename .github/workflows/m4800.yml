@@ -1,4 +1,4 @@
-name: Deploy Testbed Cluster
+name: m4800 Testbed Cluster
 
 on:
   workflow_dispatch:
