@@ -1166,7 +1166,8 @@ Where the key of a TLS gate lives
 7. Cutover (gate-key-migration controller, leader, one-time and idempotent)
    for each plaintext desired|derived/route/{gate}/tls/key:
      secrets/route/{gate}/tls/key absent → seal it there (desired wins, as in the proxy)
-   when every enrolled, non-disabled node reports gate_key_delivery = v1:
+   when every enrolled or registered, non-disabled node reports gate_key_delivery = v1
+   (registered nodes count too, so a cluster without enrollment never completes early):
      delete the plaintext facts (the one sanctioned writer of desired/route/ besides
      the compiler); until then old agents keep reading them
    persists observed/gate-keys/migration = {plaintext_count, state}

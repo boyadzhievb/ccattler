@@ -386,7 +386,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		networkController,
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController(),
-		controllers.NewStorageController(factStore))
+		controllers.NewStorageController(factStore),
+		controllers.NewGateKeyMigrationController(secretKeyProvider))
 
 	if clusterCertificateAuthority != nil {
 		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretKeyProvider))

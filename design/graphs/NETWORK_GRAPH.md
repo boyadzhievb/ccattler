@@ -703,6 +703,19 @@ RouteTLSController.Reconcile(ctx, facts)                       :62
 Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provider from loadSecretKeyProvider (:687), shared with the secret store.
 ```
 
+### GateKeyMigrationController (controllers/gate_key_migration.go) — plaintext key cutover (Flow 28 step 7)
+```
+GateKeyMigrationController.Reconcile(ctx, facts)
+├── Watch: desired/route/, derived/route/, secrets/route/, observed/node/, enrollment/node/, observed/gate-keys/migration
+├── collectPlaintextGateKeys        → gate → desired|derived tls/key facts (desired PEM wins)
+├── collectTLSGateNames, collectSealedGateKeyNames
+├── collectNodesWithoutGateKeyDelivery → enrolled ∪ registered, not disabled, gate_key_delivery != v1
+├── tls gate, no sealed key → PUT secrets/route/{gate}/tls/key = SealSecretValue(plaintext)
+├── no pending nodes ∧ (sealed in an earlier cycle ∨ gate has no tls) → DELETE plaintext facts
+└── migrationStatusChange → PUT observed/gate-keys/migration {state, plaintext_count, pending_nodes} only when changed
+Wired in startControllersWithLeaderElection (cmd/cca/command_server.go) with the shared secret key provider.
+```
+
 ### Store keys (gate proxy / gate TLS)
 | Key | Writer | Reader |
 |---|---|---|
@@ -713,10 +726,11 @@ Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provid
 | `desired/route/{name}/tls/key` (pre-M176 plaintext) | none since M176; `cca apply` deletes it (`collectRemovedGateFacts`) | pre-M176 agents only |
 | `secrets/route/{name}/tls/key` (manual inline, sealed) | `PUT /api/gate-key` → `StoreInlineGateKey` (after `lang.ApplyWithBaseDir` → `writeInlineGateKeys` → `apiGateKeyWriter`) | GateKeyDeliveryService |
 | `derived/route/{name}/tls/cert`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
-| `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176 (kept until gate-key migration) | pre-M176 agents only |
+| `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176; deleted by GateKeyMigrationController | pre-M176 agents only; sealed by GateKeyMigrationController |
 | `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | GateKeyDeliveryService |
 | `observed/node/{id}/gate_proxy`, `/gate_key_delivery` | agent at start (`PublishGateProxyCapability`) | GateKeyDeliveryService; gate-key migration |
 | `observed/node/{id}/gate_keys` | agent `GateKeySyncer` | operators |
+| `observed/gate-keys/migration` | GateKeyMigrationController | operators |
 | `derived/route/{name}/backends` | RouteController (staleness check limited to `/backends` keys, so it never deletes `tls/*`) | agent `parseRouteFactsForDataPlane` (cookie proxy) |
 
 ---
