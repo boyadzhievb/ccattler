@@ -212,16 +212,37 @@ gate custom-tls {
 }
 ```
 
-The files are read when you run `cca apply`, and their contents
-are stored in the fact store. Relative paths are resolved from the `.cca`
-file's directory. To rotate a manual certificate, replace the files and
-re-apply.
+The files are read when you run `cca apply`. The certificate is stored as a
+fact. The private key is never a fact: after writing the gate, `cca apply`
+sends it to the API server (`PUT /api/gate-key`, needs `secret.write` at
+cluster scope), which checks that it matches the certificate and stores it
+encrypted. If that fails, `cca apply` exits with an error naming the gate.
+Relative paths are resolved from the `.cca` file's directory. To rotate a
+manual certificate, replace the files and re-apply.
+
+Instead of a key file, the key can be a secret created with `cca secret set`:
+
+```
+gate custom-tls {
+    host "api.example.com"
+    service api port 3000
+    tls {
+        cert "/etc/cca/certs/api.pem"
+        key secret "platform/api-gate-key"
+    }
+}
+```
+
+Use `key secret` for configurations kept in Git: encrypting an inline key on
+apply does not make the key file safe to commit. `POST /api/apply` accepts
+only `key secret` (it cannot seal a key read from the client's files).
 
 Rules (enforced by the parser and `cca lint`):
 
 - `tls` requires `host`.
 - `cert` and `key` must be given together.
 - `mode auto` cannot be combined with `cert` or `key`.
+- `key secret "name"` takes a valid secret name; `key` is given once.
 
 ### Inspecting gates
 

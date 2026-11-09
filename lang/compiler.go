@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -966,32 +967,8 @@ func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []
 	}
 
 	if routeDecl.TLS != nil {
-		if routeDecl.TLS.Mode == types.RouteTLSModeManual && routeDecl.TLS.CertPEM == "" {
-			certPath := routeDecl.TLS.CertFile
-			if baseDir != "" && !filepath.IsAbs(certPath) {
-				certPath = filepath.Join(baseDir, certPath)
-			}
-			certBytes, certReadError := os.ReadFile(certPath) //nolint:gosec // intentional: user-specified TLS cert file
-			if certReadError != nil {
-				return nil, &ParseError{
-					Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls cert %q: %v", routeDecl.Name, routeDecl.TLS.CertFile, certReadError),
-					SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
-				}
-			}
-			routeDecl.TLS.CertPEM = string(certBytes)
-
-			keyPath := routeDecl.TLS.KeyFile
-			if baseDir != "" && !filepath.IsAbs(keyPath) {
-				keyPath = filepath.Join(baseDir, keyPath)
-			}
-			keyBytes, keyReadError := os.ReadFile(keyPath) //nolint:gosec // intentional: user-specified TLS key file
-			if keyReadError != nil {
-				return nil, &ParseError{
-					Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls key %q: %v", routeDecl.Name, routeDecl.TLS.KeyFile, keyReadError),
-					SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
-				}
-			}
-			routeDecl.TLS.KeyPEM = string(keyBytes)
+		if loadError := loadRouteTLSFiles(routeDecl, baseDir, sourceLines); loadError != nil {
+			return nil, loadError
 		}
 
 		tlsFacts, tlsError := compileTLSFacts(routeDecl.Name, routeDecl.TLS, routeDecl.Line, sourceLines)
@@ -1002,6 +979,47 @@ func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []
 	}
 
 	return routeFacts, nil
+}
+
+// loadRouteTLSFiles reads a manual gate's certificate file and, unless the
+// key is a key secret, its key file (relative paths resolve against baseDir).
+// Content already set (CertPEM, KeyPEM) is kept.
+func loadRouteTLSFiles(routeDecl RouteDecl, baseDir string, sourceLines []string) error {
+	if routeDecl.TLS.Mode != types.RouteTLSModeManual {
+		return nil
+	}
+	if routeDecl.TLS.CertPEM == "" {
+		certificateBytes, readError := readRouteTLSFile(routeDecl, "cert", routeDecl.TLS.CertFile, baseDir, sourceLines)
+		if readError != nil {
+			return readError
+		}
+		routeDecl.TLS.CertPEM = certificateBytes
+	}
+	if routeDecl.TLS.KeySecret == "" && routeDecl.TLS.KeyPEM == "" {
+		keyBytes, readError := readRouteTLSFile(routeDecl, "key", routeDecl.TLS.KeyFile, baseDir, sourceLines)
+		if readError != nil {
+			return readError
+		}
+		routeDecl.TLS.KeyPEM = keyBytes
+	}
+	return nil
+}
+
+// readRouteTLSFile reads one gate TLS file, returning a ParseError naming the
+// gate and the declared path on failure.
+func readRouteTLSFile(routeDecl RouteDecl, fieldName string, declaredPath string, baseDir string, sourceLines []string) (string, error) {
+	resolvedPath := declaredPath
+	if baseDir != "" && !filepath.IsAbs(resolvedPath) {
+		resolvedPath = filepath.Join(baseDir, resolvedPath)
+	}
+	fileBytes, readError := os.ReadFile(resolvedPath) //nolint:gosec // intentional: user-specified TLS cert/key file
+	if readError != nil {
+		return "", &ParseError{
+			Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls %s %q: %v", routeDecl.Name, fieldName, declaredPath, readError),
+			SourceLine: sourceLineAt(sourceLines, routeDecl.Line),
+		}
+	}
+	return string(fileBytes), nil
 }
 
 // compileStickyFacts produces facts for a route's sticky session configuration.
@@ -1050,13 +1068,45 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 				SourceLine: sourceLineAt(sourceLines, line),
 			}
 		}
-		tlsFacts = append(tlsFacts,
-			Fact{Key: types.KeyDesiredRouteTLSCert(routeName), Value: tlsDecl.CertPEM},
-			Fact{Key: types.KeyDesiredRouteTLSKey(routeName), Value: tlsDecl.KeyPEM},
-		)
+		// The private key is never a fact (Flow 28): an inline key is sent by
+		// cca apply to PUT /api/gate-key (InlineGateKeys), a key secret is referenced.
+		tlsFacts = append(tlsFacts, Fact{Key: types.KeyDesiredRouteTLSCert(routeName), Value: tlsDecl.CertPEM})
+		if tlsDecl.KeySecret != "" {
+			tlsFacts = append(tlsFacts, Fact{Key: types.KeyDesiredRouteTLSKeySecret(routeName), Value: tlsDecl.KeySecret})
+		}
 	}
 
 	return tlsFacts, nil
+}
+
+// ValidateNoInlineGateKeys returns an error naming the first gate (sorted)
+// with an inline TLS key. Server-side apply paths call it after compiling:
+// they cannot seal a key the CLI read from a local file, and dropping it
+// silently would leave the gate without TLS.
+func ValidateNoInlineGateKeys(file *File) error {
+	inlineGateNames := make([]string, 0)
+	for gateName := range InlineGateKeys(file) {
+		inlineGateNames = append(inlineGateNames, gateName)
+	}
+	if len(inlineGateNames) == 0 {
+		return nil
+	}
+	sort.Strings(inlineGateNames)
+	return fmt.Errorf("gate %q: inline tls key is only accepted by cca apply; use `key secret \"name\"` here", inlineGateNames[0])
+}
+
+// InlineGateKeys returns gate name → inline private key PEM for every manual
+// TLS gate of a compiled file that declares a key file rather than a key
+// secret. The keys are not part of the facts; apply seals them through the
+// API server after writing the gate facts.
+func InlineGateKeys(file *File) map[string]string {
+	inlineKeys := make(map[string]string)
+	for _, routeDecl := range file.Routes {
+		if routeDecl.TLS != nil && routeDecl.TLS.Mode == types.RouteTLSModeManual && routeDecl.TLS.KeySecret == "" && routeDecl.TLS.KeyPEM != "" {
+			inlineKeys[routeDecl.Name] = routeDecl.TLS.KeyPEM
+		}
+	}
+	return inlineKeys
 }
 
 // compileServiceCloudIdentityFacts produces cloud identity binding facts for a
@@ -1542,14 +1592,23 @@ func sanitizeRuleName(serviceName string) string {
 	return strings.ReplaceAll(serviceName, "/", "-")
 }
 
+// GateKeyWriter seals an inline gate private key after the gate facts are
+// written (cca apply → PUT /api/gate-key, Flow 28). The key never becomes a fact.
+type GateKeyWriter interface {
+	// PutGateKey stores the key of gateName; an error fails the apply.
+	PutGateKey(ctx context.Context, gateName string, privateKeyPEM string) error
+}
+
 // Apply parses a DSL string and writes all resulting facts to the store.
+// Inline gate keys are refused (no GateKeyWriter).
 func Apply(ctx context.Context, stateStore store.StateStore, input string) error {
-	return ApplyWithBaseDir(ctx, stateStore, input, "")
+	return ApplyWithBaseDir(ctx, stateStore, input, "", nil)
 }
 
 // ApplyWithBaseDir parses a DSL string and writes all resulting facts to the
 // store. The baseDir is used to resolve relative "from" paths in config blocks.
-func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input string, baseDir string) error {
+// Inline gate keys go to gateKeyWriter after the facts; nil refuses them.
+func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input string, baseDir string, gateKeyWriter GateKeyWriter) error {
 	file, parseError := Parse(input)
 	if parseError != nil {
 		return parseError
@@ -1572,6 +1631,30 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 	for _, removedFact := range removedGateFacts {
 		if deleteError := stateStore.Delete(ctx, removedFact.Key); deleteError != nil {
 			return fmt.Errorf("deleting %s: %w", removedFact.Key, deleteError)
+		}
+	}
+	return writeInlineGateKeys(ctx, file, gateKeyWriter)
+}
+
+// writeInlineGateKeys sends each inline gate key (sorted by gate) to the
+// writer. Runs after the gate facts exist, so the server can check the key
+// against the gate certificate. Errors name the gate.
+func writeInlineGateKeys(ctx context.Context, file *File, gateKeyWriter GateKeyWriter) error {
+	inlineGateKeys := InlineGateKeys(file)
+	if len(inlineGateKeys) == 0 {
+		return nil
+	}
+	if gateKeyWriter == nil {
+		return ValidateNoInlineGateKeys(file)
+	}
+	gateNames := make([]string, 0, len(inlineGateKeys))
+	for gateName := range inlineGateKeys {
+		gateNames = append(gateNames, gateName)
+	}
+	sort.Strings(gateNames)
+	for _, gateName := range gateNames {
+		if putError := gateKeyWriter.PutGateKey(ctx, gateName, inlineGateKeys[gateName]); putError != nil {
+			return fmt.Errorf("gate %q: storing tls key: %w", gateName, putError)
 		}
 	}
 	return nil

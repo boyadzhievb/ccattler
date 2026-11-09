@@ -7,8 +7,11 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,5 +177,70 @@ func TestNodeGateKeyDeliveryHandlerServesGateProxyNodeOnly(testContext *testing.
 	otherResponse := postNodeDeliveryRequest(apiServer.handleNodeGateKeyDelivery, NodeGateKeyDeliveryPath, otherNode, "mtls", true, "")
 	if otherResponse.Code != http.StatusForbidden || strings.Contains(otherResponse.Body.String(), "PRIVATE KEY") {
 		testContext.Fatalf("unenrolled node: status = %d", otherResponse.Code)
+	}
+}
+
+// putGateKeyRequest sends PUT /api/gate-key as principal through the handler.
+func putGateKeyRequest(apiServer *Server, principal security.Principal, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPut, GateKeyPath, strings.NewReader(body))
+	request = request.WithContext(security.WithPrincipalStruct(request.Context(), principal))
+	responseRecorder := httptest.NewRecorder()
+	apiServer.handleGateKey(responseRecorder, request)
+	return responseRecorder
+}
+
+func TestGateKeyHandlerRequiresSecretWriteAndRejectsMismatch(testContext *testing.T) {
+	apiServer := newSecretDeliveryTestServer(testContext)
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:admin", security.CapabilitySecretWrite, security.ScopeCluster)
+	apiAuthorizer.Grant("user:deployer", security.CapabilityWorkloadCreate, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "admin"}
+
+	certificateAuthority, _ := security.NewCertificateAuthority(time.Hour)
+	issued, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
+	other, _ := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "manual.example.com", DNSNames: []string{"manual.example.com"}, TTL: time.Hour})
+	ctx := context.Background()
+	_, _ = apiServer.factStore.Put(ctx, types.KeyDesiredRouteTLSMode("manual"), []byte(types.RouteTLSModeManual))
+	_, _ = apiServer.factStore.Put(ctx, types.KeyDesiredRouteTLSCert("manual"), issued.CertificatePEM)
+
+	requestBody := func(privateKeyPEM []byte) string {
+		encoded, _ := json.Marshal(GateKeyRequest{Gate: "manual", PrivateKeyPEM: string(privateKeyPEM)})
+		return string(encoded)
+	}
+	deployerResponse := putGateKeyRequest(apiServer, security.Principal{Kind: security.PrincipalKindUser, Name: "deployer"}, requestBody(issued.PrivateKeyPEM))
+	if deployerResponse.Code != http.StatusForbidden {
+		testContext.Fatalf("workload.create only: status = %d", deployerResponse.Code)
+	}
+	if mismatchResponse := putGateKeyRequest(apiServer, adminPrincipal, requestBody(other.PrivateKeyPEM)); mismatchResponse.Code != http.StatusConflict {
+		testContext.Fatalf("mismatch: status = %d, body %s", mismatchResponse.Code, mismatchResponse.Body.String())
+	}
+	if emptyResponse := putGateKeyRequest(apiServer, adminPrincipal, `{"gate":"manual"}`); emptyResponse.Code != http.StatusBadRequest {
+		testContext.Fatalf("missing key: status = %d", emptyResponse.Code)
+	}
+	if okResponse := putGateKeyRequest(apiServer, adminPrincipal, requestBody(issued.PrivateKeyPEM)); okResponse.Code != http.StatusOK {
+		testContext.Fatalf("matching key: status = %d, body %s", okResponse.Code, okResponse.Body.String())
+	}
+	sealedFact, getError := apiServer.factStore.Get(ctx, "secrets/"+types.SecretNameRouteTLSKey("manual"))
+	if getError != nil || strings.Contains(string(sealedFact.Value), "PRIVATE KEY") {
+		testContext.Fatalf("sealed key missing or plaintext: %v", getError)
+	}
+}
+
+func TestApplyEndpointRejectsInlineGateKeys(testContext *testing.T) {
+	keyDirectory := testContext.TempDir()
+	certificatePath := filepath.Join(keyDirectory, "cert.pem")
+	keyPath := filepath.Join(keyDirectory, "key.pem")
+	_ = os.WriteFile(certificatePath, []byte("-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"), 0o600)
+	_ = os.WriteFile(keyPath, []byte("-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----\n"), 0o600)
+	apiServer := NewServer(store.NewMemoryStore())
+	dslConfig := fmt.Sprintf("gate web {\n    host \"a.example.com\"\n    service web port 80\n    tls {\n        cert %q\n        key %q\n    }\n}\n", certificatePath, keyPath)
+	responseRecorder := httptest.NewRecorder()
+	apiServer.applyDirect(responseRecorder, context.Background(), dslConfig)
+	if responseRecorder.Code != http.StatusBadRequest || !strings.Contains(responseRecorder.Body.String(), "inline tls key") {
+		testContext.Fatalf("status = %d, body %s", responseRecorder.Code, responseRecorder.Body.String())
+	}
+	if facts, _ := apiServer.factStore.Scan(context.Background(), types.ScanDesiredRoutes); len(facts) != 0 {
+		testContext.Fatalf("facts written despite rejection: %d", len(facts))
 	}
 }

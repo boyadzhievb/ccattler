@@ -524,9 +524,10 @@ type RouteCookieSettings struct {
 // RouteTLSDecl holds TLS termination configuration for a gate.
 // Mode is "auto" (cluster CA issues cert for host) or "manual" (user PEM files).
 type RouteTLSDecl struct {
-	Mode     types.RouteTLSMode // auto or manual (inferred from cert/key presence)
-	CertFile string             // PEM certificate file path (manual mode, read at compile time)
-	KeyFile  string             // PEM private key file path (manual mode, read at compile time)
-	CertPEM  string             // PEM certificate content (populated by compiler for manual mode)
-	KeyPEM   string             // PEM private key content (populated by compiler for manual mode)
+	Mode      types.RouteTLSMode // auto or manual (inferred from cert/key presence)
+	CertFile  string             // PEM certificate file path (manual mode, read at compile time)
+	KeyFile   string             // PEM private key file path (manual mode, read at compile time)
+	KeySecret string             // KeySecret names the user secret holding the key (`key secret "n"`), instead of KeyFile
+	CertPEM   string             // PEM certificate content (populated by compiler for manual mode)
+	KeyPEM    string             // PEM private key content (inline key; never a fact, sent by cca apply to PUT /api/gate-key)
 }

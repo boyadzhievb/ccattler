@@ -382,6 +382,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/node/enable", apiServer.instrumentedHandler("node-enable", apiServer.handleNodeEnable))
 	apiServer.mux.HandleFunc(NodeSecretDeliveryPath, apiServer.instrumentedHandler("node-secrets", apiServer.handleNodeSecretDelivery))
 	apiServer.mux.HandleFunc(NodeGateKeyDeliveryPath, apiServer.instrumentedHandler("node-gate-keys", apiServer.handleNodeGateKeyDelivery))
+	apiServer.mux.HandleFunc(GateKeyPath, apiServer.instrumentedHandler("gate-key", apiServer.handleGateKey))
 	apiServer.mux.HandleFunc(nodeDebugPathPrefix, apiServer.handleNodeDebugProxy)
 	apiServer.mux.HandleFunc("/api/user", apiServer.instrumentedHandler("user", apiServer.handleUser))
 	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))
@@ -678,6 +679,9 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		return
 	}
 	facts, err := lang.Compile(file)
+	if err == nil {
+		err = lang.ValidateNoInlineGateKeys(file)
+	}
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})

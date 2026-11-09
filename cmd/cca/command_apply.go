@@ -143,7 +143,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		defer func() { _ = factStore.Close() }()
 
 		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
-		applyRenderedFilesToStore(ctx, factStore, renderedFiles)
+		applyRenderedFilesToStore(ctx, factStore, renderedFiles, newAPIGateKeyWriter())
 		fmt.Println("Facts written to store. Controllers will reconcile.")
 		return
 	}
@@ -158,7 +158,7 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		}
 	}()
 
-	applyRenderedFilesToStore(ctx, factStore, renderedFiles)
+	applyRenderedFilesToStore(ctx, factStore, renderedFiles, localSimulationGateKeyWriter{})
 
 	// Wait for reconciliation to settle before printing status.
 	time.Sleep(applyConvergenceSettleTime)
@@ -166,13 +166,13 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 }
 
 // applyRenderedFilesToStore applies each rendered DSL file to the given store,
-// printing progress and exiting on the first error.
-func applyRenderedFilesToStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent) {
+// sending inline gate keys to gateKeyWriter, and exits on the first error.
+func applyRenderedFilesToStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent, gateKeyWriter lang.GateKeyWriter) {
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
 		printDeprecationWarnings(rendered)
 		baseDir := filepath.Dir(rendered.filePath)
-		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir); applyError != nil {
+		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir, gateKeyWriter); applyError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(applyError, rendered.filePath))
 			os.Exit(1)
 		}

@@ -705,7 +705,10 @@ Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provid
 |---|---|---|
 | `desired/route/{name}/host`, `/service`, `/sticky`, `/cookie/*` | compiler | gate proxy |
 | `desired/route/{name}/tls/mode` | compiler | RouteTLSController, gate proxy |
-| `desired/route/{name}/tls/cert`, `/tls/key` (manual) | compiler | gate proxy |
+| `desired/route/{name}/tls/cert` (manual) | compiler | GateKeyDeliveryService, `StoreInlineGateKey` |
+| `desired/route/{name}/tls/key_secret` (manual, `key secret "n"`) | compiler | GateKeyDeliveryService (`GateKeySecretName`) |
+| `desired/route/{name}/tls/key` (pre-M176 plaintext) | none since M176; `cca apply` deletes it (`collectRemovedGateFacts`) | pre-M176 agents only |
+| `secrets/route/{name}/tls/key` (manual inline, sealed) | `PUT /api/gate-key` → `StoreInlineGateKey` (after `lang.ApplyWithBaseDir` → `writeInlineGateKeys` → `apiGateKeyWriter`) | GateKeyDeliveryService |
 | `derived/route/{name}/tls/cert`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
 | `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176 (kept until gate-key migration) | pre-M176 agents only |
 | `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | GateKeyDeliveryService |

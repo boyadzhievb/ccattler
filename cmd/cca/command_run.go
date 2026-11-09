@@ -174,7 +174,7 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 
 	fmt.Printf("Applying %s...\n", parsedRunConfig.configFilePath)
 	configBaseDir := filepath.Dir(parsedRunConfig.configFilePath)
-	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), configBaseDir); err != nil {
+	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), configBaseDir, localSimulationGateKeyWriter{}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}
@@ -240,7 +240,7 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 
 	fmt.Printf("Applying %s (runtime: %s)...\n", parsedRunConfig.configFilePath, parsedRunConfig.runtimeBackend)
 	containerConfigBaseDir := filepath.Dir(parsedRunConfig.configFilePath)
-	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), containerConfigBaseDir); err != nil {
+	if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileData), containerConfigBaseDir, localSimulationGateKeyWriter{}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(err, parsedRunConfig.configFilePath))
 		os.Exit(1)
 	}

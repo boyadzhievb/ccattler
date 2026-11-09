@@ -21,6 +21,22 @@ import (
 // delivery decision (allowed or refused).
 const GateKeyDeliveryAuditAction = "gate-key.deliver"
 
+// GateKeyStoreAuditAction is the audit action recorded when an inline gate key
+// is sealed through PUT /api/gate-key (or rejected).
+const GateKeyStoreAuditAction = "gate-key.store"
+
+// GateKeyRejection is returned when an inline gate key is not accepted: the
+// gate has no manual TLS, uses a key secret, or the key does not match its
+// certificate. It never contains key material.
+type GateKeyRejection struct {
+	Detail string // Detail explains why the key was rejected.
+}
+
+// Error formats the rejection.
+func (rejection *GateKeyRejection) Error() string {
+	return "gate key rejected: " + rejection.Detail
+}
+
 // Gate attributes read by gate-key delivery, relative to {desired,derived}/route/{gate}/.
 const (
 	gateAttributeHost      = "host"           // gateAttributeHost is the gate's Host match.
@@ -182,6 +198,69 @@ func (gateKeyDeliveryService *GateKeyDeliveryService) resolveGatePair(ctx contex
 		CertificatePEM: certificatePEM,
 		PrivateKeyPEM:  string(privateKeyPEM),
 	}, nil
+}
+
+// StoreInlineGateKey seals a manual gate's inline private key at
+// secrets/route/{gate}/tls/key after checking the gate exists with manual TLS
+// and no key secret, and that the key matches desired/route/{gate}/tls/cert.
+// Returns *GateKeyRejection for invalid requests; the caller authorizes.
+func (gateKeyDeliveryService *GateKeyDeliveryService) StoreInlineGateKey(ctx context.Context, principalName string, gateName string, privateKeyPEM []byte) error {
+	rejection, readError := gateKeyDeliveryService.checkInlineGateKey(ctx, gateName, privateKeyPEM)
+	if readError != nil {
+		return readError
+	}
+	if rejection != nil {
+		gateKeyDeliveryService.writeStoreAuditEntry(principalName, gateName, AuditDecisionDeny, rejection.Detail)
+		return rejection
+	}
+	if putError := gateKeyDeliveryService.secretStore.PutSecret(ctx, types.SecretNameRouteTLSKey(gateName), privateKeyPEM); putError != nil {
+		return fmt.Errorf("seal key of gate %s: %w", gateName, putError)
+	}
+	gateKeyDeliveryService.writeStoreAuditEntry(principalName, gateName, AuditDecisionAllow, "")
+	return nil
+}
+
+// checkInlineGateKey returns a rejection when the gate cannot take an inline
+// key; store failures other than a missing key are returned as errors.
+func (gateKeyDeliveryService *GateKeyDeliveryService) checkInlineGateKey(ctx context.Context, gateName string, privateKeyPEM []byte) (*GateKeyRejection, error) {
+	if types.ValidateResourceName(gateName) != nil || strings.Contains(gateName, "/") {
+		return &GateKeyRejection{Detail: "invalid gate name"}, nil
+	}
+	gateFacts := make(map[string]string, 3)
+	for _, attributeKey := range []string{types.KeyDesiredRouteTLSMode(gateName), types.KeyDesiredRouteTLSKeySecret(gateName), types.KeyDesiredRouteTLSCert(gateName)} {
+		attributeFact, getError := getOptionalDeliveryFact(ctx, gateKeyDeliveryService.deliveryStore, attributeKey)
+		if getError != nil {
+			return nil, getError
+		}
+		if attributeFact != nil {
+			gateFacts[attributeKey] = string(attributeFact.Value)
+		}
+	}
+	switch {
+	case types.RouteTLSMode(gateFacts[types.KeyDesiredRouteTLSMode(gateName)]) != types.RouteTLSModeManual:
+		return &GateKeyRejection{Detail: fmt.Sprintf("gate %s has no manual tls (apply the gate first)", gateName)}, nil
+	case gateFacts[types.KeyDesiredRouteTLSKeySecret(gateName)] != "":
+		return &GateKeyRejection{Detail: fmt.Sprintf("gate %s uses a key secret", gateName)}, nil
+	}
+	if _, pairError := tls.X509KeyPair([]byte(gateFacts[types.KeyDesiredRouteTLSCert(gateName)]), privateKeyPEM); pairError != nil {
+		return &GateKeyRejection{Detail: fmt.Sprintf("key does not match the certificate of gate %s", gateName)}, nil
+	}
+	return nil, nil
+}
+
+// writeStoreAuditEntry records an inline gate-key store decision (gate and
+// principal, never key material).
+func (gateKeyDeliveryService *GateKeyDeliveryService) writeStoreAuditEntry(principalName string, gateName string, decision string, reason string) {
+	if gateKeyDeliveryService.auditLog == nil {
+		return
+	}
+	gateKeyDeliveryService.auditLog.Log(AuditEntry{
+		Principal: principalName,
+		Action:    GateKeyStoreAuditAction,
+		Target:    "gate/" + gateName,
+		Decision:  decision,
+		Policy:    reason,
+	})
 }
 
 // GateKeySecretName returns the secret name (relative to secrets/) holding a

@@ -927,5 +927,8 @@ func formatRouteTLSDecl(builder *strings.Builder, tlsDecl RouteTLSDecl) {
 	if tlsDecl.KeyFile != "" {
 		fmt.Fprintf(builder, "%skey %s\n", indent2, quoteIfNeeded(tlsDecl.KeyFile))
 	}
+	if tlsDecl.KeySecret != "" {
+		fmt.Fprintf(builder, "%skey secret %q\n", indent2, tlsDecl.KeySecret)
+	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }

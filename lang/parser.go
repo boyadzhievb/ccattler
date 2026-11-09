@@ -2543,7 +2543,7 @@ func (parser *Parser) parseRouteCookieSettings() (*RouteCookieSettings, error) {
 }
 
 // parseRouteTLSDeclaration parses "tls auto" or "tls { mode auto }" or
-// "tls { cert "path" key "path" }".
+// "tls { cert "path" key "path" }" or "tls { cert "path" key secret "name" }".
 func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 	tlsDecl := &RouteTLSDecl{}
 
@@ -2577,7 +2577,7 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 		case "cert":
 			tlsDecl.CertFile, err = parser.expectStringOrIdentifier()
 		case "key":
-			tlsDecl.KeyFile, err = parser.expectStringOrIdentifier()
+			err = parser.parseRouteTLSKeyField(tlsDecl)
 		default:
 			return nil, parser.parserErrorf("unknown tls field %q", fieldName)
 		}
@@ -2591,16 +2591,17 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 		return nil, err
 	}
 
-	if tlsDecl.Mode == types.RouteTLSModeAuto && (tlsDecl.CertFile != "" || tlsDecl.KeyFile != "") {
+	hasKey := tlsDecl.KeyFile != "" || tlsDecl.KeySecret != ""
+	if tlsDecl.Mode == types.RouteTLSModeAuto && (tlsDecl.CertFile != "" || hasKey) {
 		return nil, parser.parserErrorf("tls mode auto cannot specify cert or key files")
 	}
-	if tlsDecl.Mode == "" && tlsDecl.CertFile == "" && tlsDecl.KeyFile == "" {
+	if tlsDecl.Mode == "" && tlsDecl.CertFile == "" && !hasKey {
 		return nil, parser.parserErrorf("tls block requires mode auto or cert/key file paths")
 	}
-	if tlsDecl.CertFile != "" && tlsDecl.KeyFile == "" {
+	if tlsDecl.CertFile != "" && !hasKey {
 		return nil, parser.parserErrorf("tls cert requires a corresponding key")
 	}
-	if tlsDecl.KeyFile != "" && tlsDecl.CertFile == "" {
+	if hasKey && tlsDecl.CertFile == "" {
 		return nil, parser.parserErrorf("tls key requires a corresponding cert")
 	}
 
@@ -2609,6 +2610,31 @@ func (parser *Parser) parseRouteTLSDeclaration() (*RouteTLSDecl, error) {
 	}
 
 	return tlsDecl, nil
+}
+
+// parseRouteTLSKeyField parses the value of a tls "key" field: a key file path,
+// or `secret "name"` naming a user secret (a validated secret name). Only
+// `secret` followed by a quoted string is a reference; `key secret` alone
+// stays a file named "secret".
+func (parser *Parser) parseRouteTLSKeyField(tlsDecl *RouteTLSDecl) error {
+	if tlsDecl.KeyFile != "" || tlsDecl.KeySecret != "" {
+		return parser.parserErrorf("tls key specified more than once")
+	}
+	isSecretReference := parser.currentTokenIs(TokenIdent) && parser.currentToken().Value == "secret" &&
+		parser.position+1 < len(parser.tokens) && parser.tokens[parser.position+1].Type == TokenString
+	if !isSecretReference {
+		keyFile, keyError := parser.expectStringOrIdentifier()
+		tlsDecl.KeyFile = keyFile
+		return keyError
+	}
+	parser.advanceToken()
+	secretName := parser.currentToken().Value
+	parser.advanceToken()
+	if validationError := types.ValidateSecretName(secretName); validationError != nil {
+		return parser.parserErrorf("tls key secret %q: %v", secretName, validationError)
+	}
+	tlsDecl.KeySecret = secretName
+	return nil
 }
 
 // expectBooleanValue consumes a "true" or "false" identifier and returns its value.

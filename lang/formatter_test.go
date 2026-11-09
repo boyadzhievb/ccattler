@@ -980,3 +980,19 @@ func TestFormatTerminationGracePeriodRoundTrip(t *testing.T) {
 		t.Errorf("round-trip lost termination_grace_period: got %q", reparsed.Services[0].TerminationGracePeriod)
 	}
 }
+
+func TestFormatRouteTLSKeySecretRoundTrip(t *testing.T) {
+	input := "gate web {\n    host \"app.example.com\"\n    service web port 8080\n    tls {\n        cert \"web.pem\"\n        key secret \"platform/web-gate-key\"\n    }\n}\n"
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	formatted := Format(file)
+	if !strings.Contains(formatted, `key secret "platform/web-gate-key"`) {
+		t.Fatalf("formatted output lost the key secret:\n%s", formatted)
+	}
+	reparsed, reparseErr := Parse(formatted)
+	if reparseErr != nil || reparsed.Routes[0].TLS.KeySecret != "platform/web-gate-key" {
+		t.Fatalf("round trip failed: %v", reparseErr)
+	}
+}

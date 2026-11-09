@@ -426,7 +426,7 @@ func TestAPIVersioning_BackwardsCompatibility(t *testing.T) {
 				ctx := context.Background()
 
 				fileBaseDir := prepareManualTLSFixtures(t, dslContent, filepath.Dir(ccaFilePath))
-				if applyError := lang.ApplyWithBaseDir(ctx, factStore, dslContent, fileBaseDir); applyError != nil {
+				if applyError := lang.ApplyWithBaseDir(ctx, factStore, dslContent, fileBaseDir, acceptingGateKeyWriter{}); applyError != nil {
 					t.Fatalf("backwards compatibility broken for %s: %v", fileName, applyError)
 				}
 
@@ -765,3 +765,10 @@ func TestEcosystem_WatchIntegration(t *testing.T) {
 		t.Error("missed watch event for desired/service/api/image")
 	}
 }
+
+// acceptingGateKeyWriter accepts inline gate keys without storing them; the
+// compatibility test checks that configurations still apply, not TLS.
+type acceptingGateKeyWriter struct{}
+
+// PutGateKey accepts the key.
+func (acceptingGateKeyWriter) PutGateKey(context.Context, string, string) error { return nil }

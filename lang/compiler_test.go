@@ -5,8 +5,10 @@ package lang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1531,8 +1533,65 @@ func TestCompileRouteTLSManual(t *testing.T) {
 	if !strings.Contains(compiledFactMap[types.KeyDesiredRouteTLSCert("internal-api")], "test-cert") {
 		t.Errorf("tls cert: expected to contain test-cert, got %q", compiledFactMap[types.KeyDesiredRouteTLSCert("internal-api")])
 	}
-	if !strings.Contains(compiledFactMap[types.KeyDesiredRouteTLSKey("internal-api")], "test-key") {
-		t.Errorf("tls key: expected to contain test-key, got %q", compiledFactMap[types.KeyDesiredRouteTLSKey("internal-api")])
+	for _, fact := range facts {
+		if strings.Contains(fact.Value, "test-key") {
+			t.Errorf("private key compiled into fact %s", fact.Key)
+		}
+	}
+	if !strings.Contains(InlineGateKeys(file)["internal-api"], "test-key") {
+		t.Errorf("inline key not returned by InlineGateKeys: %v", InlineGateKeys(file))
+	}
+}
+
+func TestCompileRouteTLSKeySecretReference(t *testing.T) {
+	certPath := filepath.Join(t.TempDir(), "cert.pem")
+	if writeError := os.WriteFile(certPath, []byte("-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----\n"), 0o600); writeError != nil {
+		t.Fatal(writeError)
+	}
+	input := fmt.Sprintf(`gate web-public {
+    host "app.example.com"
+    service web port 8080
+    tls {
+        cert %q
+        key secret "platform/web-gate-key"
+    }
+}`, certPath)
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	facts, compileErr := Compile(file)
+	if compileErr != nil {
+		t.Fatal(compileErr)
+	}
+	compiledFactMap := factMap(facts)
+	if compiledFactMap[types.KeyDesiredRouteTLSKeySecret("web-public")] != "platform/web-gate-key" {
+		t.Errorf("key_secret fact = %q", compiledFactMap[types.KeyDesiredRouteTLSKeySecret("web-public")])
+	}
+	if compiledFactMap[types.KeyDesiredRouteTLSMode("web-public")] != "manual" {
+		t.Errorf("tls mode = %q", compiledFactMap[types.KeyDesiredRouteTLSMode("web-public")])
+	}
+	if len(InlineGateKeys(file)) != 0 {
+		t.Errorf("key secret gate reported as inline key: %v", InlineGateKeys(file))
+	}
+}
+
+func TestParseRouteTLSKeySecretValidation(t *testing.T) {
+	testCases := map[string]string{ //nolint:gosec // G101: DSL snippets naming secrets, not credentials
+		"invalid secret name": `tls { cert "c.pem" key secret "../x" }`,
+		"key twice":           `tls { cert "c.pem" key "k.pem" key secret "n" }`,
+		"secret without cert": `tls { key secret "n" }`,
+	}
+	for caseName, tlsBlock := range testCases {
+		input := "gate g {\n    host \"a.example.com\"\n    service web port 80\n    " + tlsBlock + "\n}"
+		if _, parseErr := Parse(input); parseErr == nil {
+			t.Errorf("%s: expected a parse error", caseName)
+		}
+	}
+	// `key secret` without a quoted name is a key file named "secret".
+	file, parseErr := Parse("gate g {\n    host \"a.example.com\"\n    service web port 80\n    tls { cert \"c.pem\" key secret }\n}")
+	if parseErr != nil || file.Routes[0].TLS.KeyFile != "secret" || file.Routes[0].TLS.KeySecret != "" {
+		t.Errorf("bare `key secret` should be a file path: %v %+v", parseErr, file)
 	}
 }
 
@@ -1911,5 +1970,59 @@ service db {
 	formatted := Format(file)
 	if !strings.Contains(formatted, "        rebalance true") {
 		t.Errorf("formatter dropped rebalance:\n%s", formatted)
+	}
+}
+
+// recordingGateKeyWriter records PutGateKey calls and whether the gate's
+// certificate fact existed at that moment.
+type recordingGateKeyWriter struct {
+	factStore      store.StateStore  // factStore is checked for the gate certificate at call time.
+	storedKeys     map[string]string // storedKeys maps gate name to the received key.
+	certificateSet map[string]bool   // certificateSet records whether tls/cert existed when the key arrived.
+	failWith       error             // failWith is returned by every call when set.
+}
+
+// PutGateKey records the key and the certificate fact's presence.
+func (gateKeyWriter *recordingGateKeyWriter) PutGateKey(ctx context.Context, gateName string, privateKeyPEM string) error {
+	if gateKeyWriter.failWith != nil {
+		return gateKeyWriter.failWith
+	}
+	_, getError := gateKeyWriter.factStore.Get(ctx, types.KeyDesiredRouteTLSCert(gateName))
+	gateKeyWriter.certificateSet[gateName] = getError == nil
+	gateKeyWriter.storedKeys[gateName] = privateKeyPEM
+	return nil
+}
+
+func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
+	keyDirectory := t.TempDir()
+	certPath := filepath.Join(keyDirectory, "cert.pem")
+	keyPath := filepath.Join(keyDirectory, "key.pem")
+	_ = os.WriteFile(certPath, []byte("-----BEGIN CERTIFICATE-----\ntest-cert\n-----END CERTIFICATE-----\n"), 0o600)
+	_ = os.WriteFile(keyPath, []byte("-----BEGIN PRIVATE KEY-----\ntest-key\n-----END PRIVATE KEY-----\n"), 0o600)
+	input := fmt.Sprintf("gate web {\n    host \"a.example.com\"\n    service web port 80\n    tls {\n        cert %q\n        key %q\n    }\n}\n", certPath, keyPath)
+	ctx := context.Background()
+
+	factStore := store.NewMemoryStore()
+	_, _ = factStore.Put(ctx, types.KeyDesiredRouteTLSKey("web"), []byte("pre-M176 plaintext"))
+	gateKeyWriter := &recordingGateKeyWriter{factStore: factStore, storedKeys: map[string]string{}, certificateSet: map[string]bool{}}
+	if applyError := ApplyWithBaseDir(ctx, factStore, input, "", gateKeyWriter); applyError != nil {
+		t.Fatalf("apply: %v", applyError)
+	}
+	if !strings.Contains(gateKeyWriter.storedKeys["web"], "test-key") || !gateKeyWriter.certificateSet["web"] {
+		t.Fatalf("key not sent after the certificate fact: %+v", gateKeyWriter)
+	}
+	allFacts, _ := factStore.Scan(ctx, "")
+	for _, fact := range allFacts {
+		if strings.Contains(string(fact.Value), "test-key") || strings.Contains(string(fact.Value), "pre-M176 plaintext") {
+			t.Errorf("plaintext key present at %s", fact.Key)
+		}
+	}
+
+	failingWriter := &recordingGateKeyWriter{failWith: errors.New("HTTP 409"), storedKeys: map[string]string{}, certificateSet: map[string]bool{}}
+	if applyError := ApplyWithBaseDir(ctx, store.NewMemoryStore(), input, "", failingWriter); applyError == nil || !strings.Contains(applyError.Error(), `gate "web"`) {
+		t.Errorf("writer failure should fail the apply naming the gate, got %v", applyError)
+	}
+	if applyError := ApplyWithBaseDir(ctx, store.NewMemoryStore(), input, "", nil); applyError == nil || !strings.Contains(applyError.Error(), "inline tls key") {
+		t.Errorf("nil writer should refuse inline keys, got %v", applyError)
 	}
 }

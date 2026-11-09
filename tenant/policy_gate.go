@@ -70,8 +70,12 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 		}, nil
 	}
 
-	// Stage 2: Schema validation (compile AST to facts).
+	// Stage 2: Schema validation (compile AST to facts). Inline gate keys
+	// cannot be sealed on this path (Flow 28), so they are a schema error.
 	facts, err := lang.Compile(file)
+	if err == nil {
+		err = lang.ValidateNoInlineGateKeys(file)
+	}
 	if err != nil {
 		gate.logAudit(principal, "apply", "dsl", "DENY", "schema")
 		return &GateResult{

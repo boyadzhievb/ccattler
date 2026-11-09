@@ -6,6 +6,7 @@ package security
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -159,5 +160,58 @@ func TestGateKeySecretNamePrefersKeySecret(testContext *testing.T) {
 	}
 	if name := GateKeySecretName("web", "platform/web-gate-key"); name != "platform/web-gate-key" {
 		testContext.Errorf("key_secret name = %q", name)
+	}
+}
+
+func TestStoreInlineGateKeySealsMatchingKeyAndRejectsOthers(testContext *testing.T) {
+	ctx := context.Background()
+	fixture, gateKeyService := newGateKeyDeliveryTestFixture(testContext)
+	manualPair := issueTestGatePair(testContext, "manual.example.com")
+	otherPair := issueTestGatePair(testContext, "manual.example.com")
+	putTestGate(testContext, fixture, "manual-gate", "manual.example.com", types.RouteTLSModeManual)
+	putTestFact(testContext, fixture.rawStore, types.KeyDesiredRouteTLSCert("manual-gate"), string(manualPair.CertificatePEM))
+
+	if storeError := gateKeyService.StoreInlineGateKey(ctx, "user:admin", "manual-gate", manualPair.PrivateKeyPEM); storeError != nil {
+		testContext.Fatalf("StoreInlineGateKey: %v", storeError)
+	}
+	sealedKey, openError := fixture.secretStore.GetSecret(ctx, types.SecretNameRouteTLSKey("manual-gate"))
+	if openError != nil || string(sealedKey) != string(manualPair.PrivateKeyPEM) {
+		testContext.Fatalf("sealed key not stored: %v", openError)
+	}
+	rawSealed, _ := fixture.rawStore.Get(ctx, "secrets/"+types.SecretNameRouteTLSKey("manual-gate"))
+	if strings.Contains(string(rawSealed.Value), "PRIVATE KEY") {
+		testContext.Fatal("stored value is plaintext")
+	}
+
+	putTestGate(testContext, fixture, "auto-gate", "auto.example.com", types.RouteTLSModeAuto)
+	putTestGate(testContext, fixture, "secret-gate", "secret.example.com", types.RouteTLSModeManual)
+	putTestFact(testContext, fixture.rawStore, types.KeyDesiredRouteTLSCert("secret-gate"), string(manualPair.CertificatePEM))
+	putTestFact(testContext, fixture.rawStore, types.KeyDesiredRouteTLSKeySecret("secret-gate"), "platform/key")
+	rejectedCases := map[string][]byte{
+		"manual-gate": otherPair.PrivateKeyPEM,  // key does not match the certificate
+		"auto-gate":   manualPair.PrivateKeyPEM, // not manual tls
+		"secret-gate": manualPair.PrivateKeyPEM, // uses a key secret
+		"absent-gate": manualPair.PrivateKeyPEM, // not applied
+		"../escape":   manualPair.PrivateKeyPEM, // invalid name
+	}
+	for gateName, privateKeyPEM := range rejectedCases {
+		storeError := gateKeyService.StoreInlineGateKey(ctx, "user:admin", gateName, privateKeyPEM)
+		var rejection *GateKeyRejection
+		if !errors.As(storeError, &rejection) || strings.Contains(rejection.Error(), "PRIVATE KEY") {
+			testContext.Errorf("%s: expected rejection, got %v", gateName, storeError)
+		}
+	}
+	sealedKey, _ = fixture.secretStore.GetSecret(ctx, types.SecretNameRouteTLSKey("manual-gate"))
+	if string(sealedKey) != string(manualPair.PrivateKeyPEM) {
+		testContext.Error("a rejected key overwrote the sealed key")
+	}
+	storeAuditCount := 0
+	for _, auditEntry := range fixture.auditLog.Entries() {
+		if auditEntry.Action == GateKeyStoreAuditAction {
+			storeAuditCount++
+		}
+	}
+	if storeAuditCount != 1+len(rejectedCases) {
+		testContext.Errorf("gate-key.store audit entries = %d, want %d", storeAuditCount, 1+len(rejectedCases))
 	}
 }
