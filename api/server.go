@@ -1807,6 +1807,10 @@ func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, reques
 			writeJSONError(responseWriter, "invalid secret name: "+validateError.Error(), http.StatusBadRequest)
 			return
 		}
+		if types.IsSystemOwnedSecretName(secretName) {
+			writeJSONError(responseWriter, "forbidden: "+secretName+" is a system-owned gate TLS key (managed through gates)", http.StatusForbidden)
+			return
+		}
 	}
 
 	switch request.Method {
@@ -1833,8 +1837,14 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 			writeJSONError(responseWriter, listErr.Error(), http.StatusInternalServerError)
 			return
 		}
+		userSecretNames := make([]string, 0, len(secretNames))
+		for _, listedName := range secretNames {
+			if !types.IsSystemOwnedSecretName(listedName) {
+				userSecretNames = append(userSecretNames, listedName)
+			}
+		}
 		responseWriter.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"secrets": secretNames})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"secrets": userSecretNames})
 		return
 	}
 

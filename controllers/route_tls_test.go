@@ -283,3 +283,44 @@ func TestRouteTLSControllerRenewalOverwritesSealedKeyThroughRunner(t *testing.T)
 		t.Error("derived plaintext key fact must not exist")
 	}
 }
+
+func TestRouteTLSControllerDeletesSealedKeysNoGateNeeds(t *testing.T) {
+	routeTLSController, _ := newTestRouteTLSController(t)
+	futureExpiry := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	sealedKey := func(gateName string) string { return "secrets/" + types.SecretNameRouteTLSKey(gateName) }
+
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteHost("auto-gate"), "auto.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("auto-gate"), "auto"),
+		kv(types.KeyDerivedRouteTLSCert("auto-gate"), "cert"),
+		kv(types.KeyDerivedRouteTLSNotAfter("auto-gate"), futureExpiry),
+		kv(sealedKey("auto-gate"), "sealed"),
+		kv(types.KeyDesiredRouteHost("inline-gate"), "inline.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("inline-gate"), "manual"),
+		kv(sealedKey("inline-gate"), "sealed"),
+		kv(types.KeyDesiredRouteHost("secret-gate"), "secret.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("secret-gate"), "manual"),
+		kv(types.KeyDesiredRouteTLSKeySecret("secret-gate"), "platform/key"),
+		kv(sealedKey("secret-gate"), "sealed"),
+		kv(types.KeyDesiredRouteHost("plain-gate"), "plain.example.com"),
+		kv(sealedKey("plain-gate"), "sealed"),
+		kv(sealedKey("deleted-gate"), "sealed"),
+	)
+
+	changes, err := routeTLSController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletedKeys := make([]string, 0, len(changes))
+	for _, change := range changes {
+		if change.Type != store.OpDelete {
+			t.Errorf("unexpected put of %s", change.Key)
+			continue
+		}
+		deletedKeys = append(deletedKeys, change.Key)
+	}
+	expectedDeletions := []string{sealedKey("deleted-gate"), sealedKey("plain-gate"), sealedKey("secret-gate")}
+	if strings.Join(deletedKeys, ",") != strings.Join(expectedDeletions, ",") {
+		t.Errorf("deleted %v, want %v", deletedKeys, expectedDeletions)
+	}
+}

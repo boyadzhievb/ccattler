@@ -210,9 +210,16 @@ func (deliveryService *SecretDeliveryService) resolveRequiredSecretNames(ctx con
 			ungrantedSecretNames = append(ungrantedSecretNames, secretName)
 		}
 	}
+	// System-owned gate TLS keys (route/…) are never delivered to an
+	// instance, whatever grants say (Flow 28): only gate-key delivery serves them.
+	for secretName := range grantedSecretNames {
+		if types.IsSystemOwnedSecretName(secretName) {
+			ungrantedSecretNames = append(ungrantedSecretNames, secretName)
+		}
+	}
 	if len(ungrantedSecretNames) > 0 {
 		sort.Strings(ungrantedSecretNames)
-		return nil, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "service has no grant", SecretNames: ungrantedSecretNames}
+		return nil, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "service has no grant (or names a system-owned secret)", SecretNames: ungrantedSecretNames}
 	}
 	requiredSecretNames := make([]string, 0, len(grantedSecretNames))
 	for secretName := range grantedSecretNames {

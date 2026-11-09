@@ -215,3 +215,19 @@ func TestStoreInlineGateKeySealsMatchingKeyAndRejectsOthers(testContext *testing
 		testContext.Errorf("gate-key.store audit entries = %d, want %d", storeAuditCount, 1+len(rejectedCases))
 	}
 }
+
+func TestSecretDeliveryNeverDeliversSystemOwnedGateKeys(testContext *testing.T) {
+	ctx := context.Background()
+	fixture, _ := newGateKeyDeliveryTestFixture(testContext)
+	gatePair := issueTestGatePair(testContext, "web.example.com")
+	if putError := fixture.secretStore.PutSecret(ctx, types.SecretNameRouteTLSKey("web"), gatePair.PrivateKeyPEM); putError != nil {
+		testContext.Fatal(putError)
+	}
+	// A service granting itself the gate key (forged or declared) is refused.
+	putTestFact(testContext, fixture.rawStore, types.ScanDesiredServiceSecrets("checkout")+types.SecretNameRouteTLSKey("web"), "/run/secrets/key")
+	delivered, deliveryError := fixture.deliveryService.DeliverInstanceSecrets(ctx, "node-1", "inst-1")
+	refusal := expectRefusal(testContext, deliveryError, SecretDeliveryNotAuthorized)
+	if delivered != nil || strings.Join(refusal.SecretNames, ",") != types.SecretNameRouteTLSKey("web") {
+		testContext.Fatalf("refusal names = %v", refusal.SecretNames)
+	}
+}

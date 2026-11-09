@@ -688,6 +688,7 @@ Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
 │   │   ├── Scan("desired/service/{svc}/secret/") → granted names
 │   │   ├── collectReferencedSecretNames                       [connection secrets, image_pull_secret]
 │   │   └── referenced but not granted → not_authorized (names)
+│   │   └── granted name is system-owned (route/…, types.IsSystemOwnedSecretName) → not_authorized
 │   ├── SecretStore.GetSecretThroughStore(deliveryStore, name)  [missing → secret_missing, all-or-nothing]
 │   └── auditDecision / auditRefusal                           [names only; refusals rate-limited 1/min per node|instance|reason]
 └── writeSecretDeliveryRefusal                                 [403 not_authorized, 409 secret_missing]
@@ -697,6 +698,8 @@ Gate-key delivery (`POST /api/node/gate-keys`, Flow 28, M176) uses the same stor
 (role `secret-delivery` also reads `desired/route/`, `derived/route/`), `requireNodeMTLSCaller`,
 `checkDeliveryNode` and `refusalAuditLimiter`; it additionally requires
 `observed/node/{id}/gate_proxy = enabled`. Call tree: NETWORK_GRAPH.md "Gate-key delivery to agents".
+`/api/secret` refuses get/set/delete of system-owned `route/…` names (403) and hides them from the
+list; secret rotation still re-wraps them. The compiler rejects services and `key secret` referencing them.
 
 ---
 

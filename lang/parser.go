@@ -2633,6 +2633,9 @@ func (parser *Parser) parseRouteTLSKeyField(tlsDecl *RouteTLSDecl) error {
 	if validationError := types.ValidateSecretName(secretName); validationError != nil {
 		return parser.parserErrorf("tls key secret %q: %v", secretName, validationError)
 	}
+	if types.IsSystemOwnedSecretName(secretName) {
+		return parser.parserErrorf("tls key secret %q: route/ secrets are system-owned", secretName)
+	}
 	tlsDecl.KeySecret = secretName
 	return nil
 }

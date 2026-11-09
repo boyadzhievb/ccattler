@@ -49,6 +49,9 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 
 	connectionDeclsByName := buildConnectionDeclMap(file.Connections)
 	for _, serviceDecl := range file.Services {
+		if referenceErr := validateServiceSecretReferences(serviceDecl, connectionDeclsByName, sourceLines); referenceErr != nil {
+			return nil, referenceErr
+		}
 		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir, connectionDeclsByName)
 		if serviceErr != nil {
 			return nil, serviceErr
@@ -834,6 +837,28 @@ func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, baseD
 		})
 	}
 	return configFacts, nil
+}
+
+// validateServiceSecretReferences rejects a service whose secrets, image pull
+// secret or connection secrets name a system-owned gate TLS key (route/…);
+// delivery refuses them as well, this reports it at apply time.
+func validateServiceSecretReferences(serviceDecl ServiceDecl, connectionDeclsByName map[string]ConnectionDecl, sourceLines []string) error {
+	referencedSecretNames := []string{serviceDecl.ImagePullSecret}
+	for _, secretDecl := range serviceDecl.Secrets {
+		referencedSecretNames = append(referencedSecretNames, secretDecl.Name)
+	}
+	for _, connectionRef := range serviceDecl.Connections {
+		referencedSecretNames = append(referencedSecretNames, connectionDeclsByName[connectionRef.ConnectionName].Secret)
+	}
+	for _, secretName := range referencedSecretNames {
+		if types.IsSystemOwnedSecretName(secretName) {
+			return &ParseError{
+				Line: serviceDecl.Line, Message: fmt.Sprintf("service %q: secret %q is a system-owned gate TLS key", serviceDecl.Name, secretName),
+				SourceLine: sourceLineAt(sourceLines, serviceDecl.Line),
+			}
+		}
+	}
+	return nil
 }
 
 // compileServiceSecretFacts produces secret mount path facts for each secret

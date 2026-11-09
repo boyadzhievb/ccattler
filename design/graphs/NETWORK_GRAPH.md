@@ -696,7 +696,10 @@ RouteTLSController.Reconcile(ctx, facts)                       :62
 │           └── one change group "route-tls-issue/{name}":
 │               PUT derived/route/{name}/tls/{cert,not-after}, PUT secrets/route/{name}/tls/key
 │               (no derived tls/key; a pre-M176 one is kept while the gate is auto, Flow 28 step 7)
-└── cleanupStaleDerivedTLSFacts                                :196  (gates no longer auto)
+├── cleanupStaleDerivedTLSFacts                                (gates no longer auto)
+└── cleanupUnneededSealedGateKeys(facts, parseSystemKeyGateNames(facts))
+    → DELETE secrets/route/{gate}/tls/key unless the gate exists with tls auto,
+      or manual without tls/key_secret (same rule as GateKeySecretName)
 Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provider from loadSecretKeyProvider (:687), shared with the secret store.
 ```
 

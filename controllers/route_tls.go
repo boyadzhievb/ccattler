@@ -57,8 +57,9 @@ func (routeTLSController *RouteTLSController) Watch() []string {
 }
 
 // Reconcile scans desired routes for tls/mode=auto, checks derived cert
-// expiry, issues new certs when missing or near expiry, and cleans up stale
-// derived TLS facts for routes that no longer request auto TLS.
+// expiry, issues new certs when missing or near expiry, cleans up stale
+// derived TLS facts for routes that no longer request auto TLS, and deletes
+// sealed system keys no gate needs any more (Flow 28 step 4).
 func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	autoTLSRoutes := parseAutoTLSRoutes(facts)
 	existingDerivedTLS := parseExistingDerivedTLSFacts(facts)
@@ -95,8 +96,58 @@ func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, fac
 	}
 
 	changes = append(changes, cleanupStaleDerivedTLSFacts(existingDerivedTLS, desiredDerivedTLSKeys)...)
+	changes = append(changes, cleanupUnneededSealedGateKeys(facts, parseSystemKeyGateNames(facts))...)
 
 	return changes, nil
+}
+
+// routeTLSSealedKeySuffix ends the store key of a sealed system gate key,
+// secrets/route/{gate}/tls/key.
+const routeTLSSealedKeySuffix = "/tls/key"
+
+// parseSystemKeyGateNames returns the gates that need a system-owned sealed
+// key: the gate exists with tls mode auto, or manual without key_secret.
+// Ownership and delivery choose the key by the same rule (GateKeySecretName).
+func parseSystemKeyGateNames(facts []store.Fact) map[string]bool {
+	routeTLSModes := make(map[string]types.RouteTLSMode)
+	routesWithKeySecret := make(map[string]bool)
+	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredRoutes) {
+		routeName, fieldPath, hasField := strings.Cut(strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes), "/")
+		switch {
+		case !hasField:
+		case fieldPath == "tls/mode":
+			routeTLSModes[routeName] = types.RouteTLSMode(fact.Value)
+		case fieldPath == "tls/key_secret" && len(fact.Value) > 0:
+			routesWithKeySecret[routeName] = true
+		}
+	}
+	systemKeyGates := make(map[string]bool, len(routeTLSModes))
+	for routeName, tlsMode := range routeTLSModes {
+		if tlsMode == types.RouteTLSModeAuto || (tlsMode == types.RouteTLSModeManual && !routesWithKeySecret[routeName]) {
+			systemKeyGates[routeName] = true
+		}
+	}
+	return systemKeyGates
+}
+
+// cleanupUnneededSealedGateKeys deletes secrets/route/{gate}/tls/key when the
+// gate is gone, has no tls, or uses a key secret. Sorted for determinism.
+func cleanupUnneededSealedGateKeys(facts []store.Fact, systemKeyGates map[string]bool) []Change {
+	sealedKeyPrefix := security.SecretStorePrefix + types.SecretNameRouteTLSKeyPrefix
+	var deletedKeys []string
+	for _, fact := range store.FactsWithPrefix(facts, sealedKeyPrefix) {
+		gateName, isSealedKey := strings.CutSuffix(strings.TrimPrefix(fact.Key, sealedKeyPrefix), routeTLSSealedKeySuffix)
+		if isSealedKey && !strings.Contains(gateName, "/") && !systemKeyGates[gateName] {
+			deletedKeys = append(deletedKeys, fact.Key)
+		}
+	}
+	sort.Strings(deletedKeys)
+	changes := make([]Change, 0, len(deletedKeys))
+	for _, deletedKey := range deletedKeys {
+		logging.Default().Info("route-tls: removing sealed key of a gate that no longer needs it", "key", deletedKey)
+		changes = append(changes, Change{Type: store.OpDelete, Key: deletedKey})
+	}
+	return changes
 }
 
 // issueSealedGateCertificate issues a certificate for the gate's host and

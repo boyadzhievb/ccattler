@@ -1581,6 +1581,7 @@ func TestParseRouteTLSKeySecretValidation(t *testing.T) {
 		"invalid secret name": `tls { cert "c.pem" key secret "../x" }`,
 		"key twice":           `tls { cert "c.pem" key "k.pem" key secret "n" }`,
 		"secret without cert": `tls { key secret "n" }`,
+		"system-owned secret": `tls { cert "c.pem" key secret "route/other/tls/key" }`,
 	}
 	for caseName, tlsBlock := range testCases {
 		input := "gate g {\n    host \"a.example.com\"\n    service web port 80\n    " + tlsBlock + "\n}"
@@ -2024,5 +2025,16 @@ func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
 	}
 	if applyError := ApplyWithBaseDir(ctx, store.NewMemoryStore(), input, "", nil); applyError == nil || !strings.Contains(applyError.Error(), "inline tls key") {
 		t.Errorf("nil writer should refuse inline keys, got %v", applyError)
+	}
+}
+
+func TestCompileRejectsServiceReferencingSystemOwnedSecret(t *testing.T) {
+	input := "service web {\n    image nginx:1.28\n    image_pull_secret \"route/gate/tls/key\"\n}\n"
+	file, parseErr := Parse(input)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if _, compileErr := Compile(file); compileErr == nil || !strings.Contains(compileErr.Error(), "system-owned") {
+		t.Fatalf("expected system-owned secret error, got %v", compileErr)
 	}
 }

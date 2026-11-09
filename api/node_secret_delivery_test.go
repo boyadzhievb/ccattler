@@ -244,3 +244,39 @@ func TestApplyEndpointRejectsInlineGateKeys(testContext *testing.T) {
 		testContext.Fatalf("facts written despite rejection: %d", len(facts))
 	}
 }
+
+func TestSecretAPIProtectsSystemOwnedGateKeys(testContext *testing.T) {
+	rawStore := store.NewMemoryStore()
+	masterKey, _ := security.GenerateMasterKey()
+	secretStore, _ := security.NewSecretStoreWithMasterKey(rawStore, masterKey)
+	ctx := context.Background()
+	_ = secretStore.PutSecret(ctx, types.SecretNameRouteTLSKey("web"), []byte("-----BEGIN EC PRIVATE KEY-----"))
+	_ = secretStore.PutSecret(ctx, "db.password", []byte("s3cret"))
+	apiServer := NewServer(rawStore)
+	apiServer.SetSecretStore(secretStore)
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "admin"}
+
+	sendSecretRequest := func(method string, target string, body string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, target, strings.NewReader(body))
+		request = request.WithContext(security.WithPrincipalStruct(request.Context(), adminPrincipal))
+		responseRecorder := httptest.NewRecorder()
+		apiServer.handleSecret(responseRecorder, request)
+		return responseRecorder
+	}
+	systemKeyTarget := "/api/secret?name=" + types.SecretNameRouteTLSKey("web")
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		if response := sendSecretRequest(method, systemKeyTarget, "x"); response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "PRIVATE KEY") {
+			testContext.Errorf("%s system key: status = %d", method, response.Code)
+		}
+	}
+	listResponse := sendSecretRequest(http.MethodGet, "/api/secret", "")
+	if listResponse.Code != http.StatusOK || strings.Contains(listResponse.Body.String(), "route/") || !strings.Contains(listResponse.Body.String(), "db.password") {
+		testContext.Errorf("list: status = %d, body %s", listResponse.Code, listResponse.Body.String())
+	}
+	if stillSealed, getError := secretStore.GetSecret(ctx, types.SecretNameRouteTLSKey("web")); getError != nil || len(stillSealed) == 0 {
+		testContext.Error("system key was modified or deleted")
+	}
+}

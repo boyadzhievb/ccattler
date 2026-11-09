@@ -98,3 +98,10 @@ func ParseDurationSeconds(durationString string) int {
 	seconds, _ := strconv.Atoi(durationString)
 	return seconds
 }
+
+// IsSystemOwnedSecretName reports whether a secret name (relative to
+// secrets/) is system-owned (gate TLS keys under route/): users cannot read,
+// write, delete or reference it, and it is hidden from secret listings.
+func IsSystemOwnedSecretName(secretName string) bool {
+	return strings.HasPrefix(secretName, SecretNameRouteTLSKeyPrefix)
+}
