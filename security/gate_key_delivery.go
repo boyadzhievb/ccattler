@@ -176,7 +176,7 @@ func (gateKeyDeliveryService *GateKeyDeliveryService) resolveGatePair(ctx contex
 	if certificatePEM == "" {
 		return nil, nil
 	}
-	keySecretName := GateKeySecretName(gateName, desiredAttributes[gateAttributeKeySecret])
+	keySecretName := GateKeySecretName(gateName, types.RouteTLSMode(desiredAttributes[gateAttributeTLSMode]), desiredAttributes[gateAttributeKeySecret])
 	if types.ValidateSecretName(keySecretName) != nil {
 		logging.Default().Warn("gate-key delivery: invalid key secret name", "gate", gateName)
 		return nil, nil
@@ -239,7 +239,7 @@ func (gateKeyDeliveryService *GateKeyDeliveryService) checkInlineGateKey(ctx con
 	switch {
 	case types.RouteTLSMode(gateFacts[types.KeyDesiredRouteTLSMode(gateName)]) != types.RouteTLSModeManual:
 		return &GateKeyRejection{Detail: fmt.Sprintf("gate %s has no manual tls (apply the gate first)", gateName)}, nil
-	case gateFacts[types.KeyDesiredRouteTLSKeySecret(gateName)] != "":
+	case types.GateUsesKeySecret(types.RouteTLSModeManual, gateFacts[types.KeyDesiredRouteTLSKeySecret(gateName)]):
 		return &GateKeyRejection{Detail: fmt.Sprintf("gate %s uses a key secret", gateName)}, nil
 	}
 	if _, pairError := tls.X509KeyPair([]byte(gateFacts[types.KeyDesiredRouteTLSCert(gateName)]), privateKeyPEM); pairError != nil {
@@ -264,10 +264,10 @@ func (gateKeyDeliveryService *GateKeyDeliveryService) writeStoreAuditEntry(princ
 }
 
 // GateKeySecretName returns the secret name (relative to secrets/) holding a
-// gate's private key: the user secret named by key_secret when set, otherwise
-// the system key route/{gate}/tls/key. Ownership and delivery share this rule.
-func GateKeySecretName(gateName string, keySecretName string) string {
-	if keySecretName != "" {
+// gate's private key: the user secret named by key_secret when the gate uses
+// it (types.GateUsesKeySecret), otherwise the system key route/{gate}/tls/key.
+func GateKeySecretName(gateName string, tlsMode types.RouteTLSMode, keySecretName string) string {
+	if types.GateUsesKeySecret(tlsMode, keySecretName) {
 		return keySecretName
 	}
 	return types.SecretNameRouteTLSKey(gateName)

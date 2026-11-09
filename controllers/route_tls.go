@@ -31,14 +31,14 @@ const (
 // at secrets/route/{gate}/tls/key (Flow 28) and never written as a fact.
 type RouteTLSController struct {
 	certificateAuthority *security.CertificateAuthority // certificateAuthority issues gate certificates.
-	secretKeyProvider    security.KeyProvider           // secretKeyProvider seals gate private keys.
+	keyProviderSource    security.KeyProviderSource     // keyProviderSource supplies the current key that seals gate private keys.
 }
 
 // NewRouteTLSController creates a controller that auto-issues TLS certificates
 // for gates using the given cluster certificate authority and seals their
-// private keys with the server's secret key provider.
-func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, secretKeyProvider security.KeyProvider) *RouteTLSController {
-	return &RouteTLSController{certificateAuthority: certificateAuthority, secretKeyProvider: secretKeyProvider}
+// private keys with the current key of the server's secret store.
+func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, keyProviderSource security.KeyProviderSource) *RouteTLSController {
+	return &RouteTLSController{certificateAuthority: certificateAuthority, keyProviderSource: keyProviderSource}
 }
 
 // Name returns "route-tls", identifying this controller in logs.
@@ -63,6 +63,7 @@ func (routeTLSController *RouteTLSController) Watch() []string {
 func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	autoTLSRoutes := parseAutoTLSRoutes(facts)
 	existingDerivedTLS := parseExistingDerivedTLSFacts(facts)
+	sealedGates := collectSealedGateKeyNames(facts)
 
 	var changes []Change
 	desiredDerivedTLSKeys := make(map[string]bool)
@@ -82,7 +83,10 @@ func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, fac
 		// gate-key-migration controller deletes it (Flow 28 step 7).
 		desiredDerivedTLSKeys[types.KeyDerivedRouteTLSKey(routeName)] = true
 
-		if !needsCertificateIssuance(existingDerivedTLS[notAfterKey]) {
+		// A valid certificate whose sealed key is gone (and no pre-M176 plaintext
+		// key waits for migration) can never be delivered: issue a new pair.
+		sealedKeyMissing := !sealedGates[routeName] && existingDerivedTLS[types.KeyDerivedRouteTLSKey(routeName)] == ""
+		if !needsCertificateIssuance(existingDerivedTLS[notAfterKey]) && !sealedKeyMissing {
 			continue
 		}
 
@@ -106,24 +110,25 @@ func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, fac
 const routeTLSSealedKeySuffix = "/tls/key"
 
 // parseSystemKeyGateNames returns the gates that need a system-owned sealed
-// key: the gate exists with tls mode auto, or manual without key_secret.
-// Ownership and delivery choose the key by the same rule (GateKeySecretName).
+// key: tls auto or manual, unless the gate uses a key secret
+// (types.GateUsesKeySecret, the rule delivery uses too).
 func parseSystemKeyGateNames(facts []store.Fact) map[string]bool {
 	routeTLSModes := make(map[string]types.RouteTLSMode)
-	routesWithKeySecret := make(map[string]bool)
+	routeKeySecrets := make(map[string]string)
 	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredRoutes) {
 		routeName, fieldPath, hasField := strings.Cut(strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes), "/")
 		switch {
 		case !hasField:
 		case fieldPath == "tls/mode":
 			routeTLSModes[routeName] = types.RouteTLSMode(fact.Value)
-		case fieldPath == "tls/key_secret" && len(fact.Value) > 0:
-			routesWithKeySecret[routeName] = true
+		case fieldPath == "tls/key_secret":
+			routeKeySecrets[routeName] = string(fact.Value)
 		}
 	}
 	systemKeyGates := make(map[string]bool, len(routeTLSModes))
 	for routeName, tlsMode := range routeTLSModes {
-		if tlsMode == types.RouteTLSModeAuto || (tlsMode == types.RouteTLSModeManual && !routesWithKeySecret[routeName]) {
+		isTLSMode := tlsMode == types.RouteTLSModeAuto || tlsMode == types.RouteTLSModeManual
+		if isTLSMode && !types.GateUsesKeySecret(tlsMode, routeKeySecrets[routeName]) {
 			systemKeyGates[routeName] = true
 		}
 	}
@@ -163,7 +168,7 @@ func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx con
 		return nil, issueError
 	}
 
-	sealedPrivateKey, sealError := security.SealSecretValue(ctx, routeTLSController.secretKeyProvider, issuedCertificate.PrivateKeyPEM)
+	sealedPrivateKey, sealError := security.SealSecretValue(ctx, routeTLSController.keyProviderSource.CurrentKeyProvider(), issuedCertificate.PrivateKeyPEM)
 	if sealError != nil {
 		return nil, fmt.Errorf("seal private key: %w", sealError)
 	}

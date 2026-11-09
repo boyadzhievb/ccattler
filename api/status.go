@@ -457,8 +457,9 @@ func collectVolumeStatus(snapshot *statusFactSnapshot) []VolumeStatus {
 	return volumeStatusList
 }
 
-// collectSecretStatus lists secret names (never values) with the services
-// granted each one, sorted by name. Empty when secrets/ was not readable.
+// collectSecretStatus lists user secret names (never values) with the services
+// granted each one, sorted by name. System-owned route/ keys are left out.
+// Empty when secrets/ was not readable.
 func collectSecretStatus(snapshot *statusFactSnapshot, sortedServiceNames []string) []SecretStatus {
 	secretFacts := snapshot.factsUnder(security.SecretStorePrefix)
 	if len(secretFacts) == 0 {
@@ -467,6 +468,9 @@ func collectSecretStatus(snapshot *statusFactSnapshot, sortedServiceNames []stri
 	var secretStatusList []SecretStatus
 	for _, secretFact := range secretFacts {
 		secretName := strings.TrimPrefix(secretFact.Key, security.SecretStorePrefix)
+		if types.IsSystemOwnedSecretName(secretName) {
+			continue // gate TLS keys are system-owned, hidden like in GET /api/secret
+		}
 		var grantedServiceNames []string
 		for _, serviceName := range sortedServiceNames {
 			if _, granted := snapshot.value(types.KeyDesiredServiceSecret(serviceName, secretName)); granted {

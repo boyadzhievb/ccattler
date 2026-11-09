@@ -135,7 +135,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		}
 		defer func() { _ = factStore.Close() }()
 
-		changes, diffError := lang.Diff(ctx, factStore, dslContent)
+		changes, diffError := lang.Diff(ctx, factStore, dslContent, true)
 		if diffError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)
@@ -150,7 +150,7 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		factStore := store.NewMemoryStore()
 		defer func() { _ = factStore.Close() }()
 
-		changes, diffError := lang.Diff(ctx, factStore, dslContent)
+		changes, diffError := lang.Diff(ctx, factStore, dslContent, true)
 		if diffError != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
 			os.Exit(1)

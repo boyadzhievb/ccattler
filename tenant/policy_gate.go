@@ -70,11 +70,13 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 		}, nil
 	}
 
-	// Stage 2: Schema validation (compile AST to facts). Inline gate keys
-	// cannot be sealed on this path (Flow 28), so they are a schema error.
-	facts, err := lang.Compile(file)
+	// Stage 2: Schema validation (compile AST to facts). Local file paths
+	// (gate tls files, config "from") are a schema error: the server never
+	// reads the client's paths, which also keeps inline gate keys out (Flow 28).
+	err = lang.ValidateNoLocalFileReferences(file)
+	var facts []lang.Fact
 	if err == nil {
-		err = lang.ValidateNoInlineGateKeys(file)
+		facts, err = lang.Compile(file)
 	}
 	if err != nil {
 		gate.logAudit(principal, "apply", "dsl", "DENY", "schema")

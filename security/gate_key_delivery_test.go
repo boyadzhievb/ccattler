@@ -154,12 +154,30 @@ func TestGateKeyDeliveryRefusalAuditIsRateLimited(testContext *testing.T) {
 	}
 }
 
-func TestGateKeySecretNamePrefersKeySecret(testContext *testing.T) {
-	if name := GateKeySecretName("web", ""); name != "route/web/tls/key" {
-		testContext.Errorf("system key name = %q", name)
+func TestGateKeySecretNameUsesKeySecretOnlyForManualUserSecrets(testContext *testing.T) {
+	testCases := []struct {
+		tlsMode       types.RouteTLSMode // tlsMode is the gate's tls mode.
+		keySecretName string             // keySecretName is desired tls/key_secret.
+		expectedName  string             // expectedName is the secret delivery opens.
+	}{
+		{types.RouteTLSModeManual, "", "route/web/tls/key"},
+		{types.RouteTLSModeManual, "platform/web-gate-key", "platform/web-gate-key"},
+		{types.RouteTLSModeAuto, "platform/web-gate-key", "route/web/tls/key"}, // stale key_secret after manual → auto
+		{types.RouteTLSModeManual, "route/other/tls/key", "route/web/tls/key"}, // never another gate's system key
 	}
-	if name := GateKeySecretName("web", "platform/web-gate-key"); name != "platform/web-gate-key" {
-		testContext.Errorf("key_secret name = %q", name)
+	for _, testCase := range testCases {
+		if name := GateKeySecretName("web", testCase.tlsMode, testCase.keySecretName); name != testCase.expectedName {
+			testContext.Errorf("mode %s key_secret %q: got %q, want %q", testCase.tlsMode, testCase.keySecretName, name, testCase.expectedName)
+		}
+	}
+}
+
+func TestGateKeySecretFactNeedsSecretUse(testContext *testing.T) {
+	if capability := RequiredCapabilityForFactWrite(types.KeyDesiredRouteTLSKeySecret("web")); capability != CapabilitySecretUse {
+		testContext.Errorf("tls/key_secret needs %s, want %s", capability, CapabilitySecretUse)
+	}
+	if capability := RequiredCapabilityForFactWrite(types.KeyDesiredRouteTLSCert("web")); capability != CapabilityWorkloadCreate {
+		testContext.Errorf("tls/cert needs %s, want %s", capability, CapabilityWorkloadCreate)
 	}
 }
 

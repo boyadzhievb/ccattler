@@ -807,7 +807,7 @@ cca apply (gate with tls { cert "path" key "path" })
 - The plain-HTTP listener answers requests for a TLS gate's host with a 308 redirect to `https://`.
 - A request whose Host belongs to a different gate than its SNI gets 421 Misdirected Request.
 - Cert renewal happens server-side. The agent picks up new certs on its next reconcile cycle.
-- `cca apply` replaces each declared gate (`collectRemovedGateFacts`): stale `desired/route/{name}/` keys such as a removed `tls` block are deleted after the new facts are written. Only the compiler writes `desired/route/`, so no controller-owned key is lost.
+- `cca apply` replaces each declared gate (`collectRemovedGateFacts`): stale `desired/route/{name}/` keys such as a removed `tls` block are deleted after the new facts are written. Only the compiler writes `desired/route/`, so no controller-owned key is lost. Exception: a pre-M176 plaintext `tls/key` is left to the gate-key migration (Flow 28 step 7).
 
 ---
 
@@ -1133,11 +1133,16 @@ Where the key of a TLS gate lives
    order matters: facts first, so step 4 never sees a sealed key without its gate
 
 3. key secret reference (compiler)
-   desired/route/{gate}/tls/key_secret = n   (ValidateSecretName; the secret itself
+   desired/route/{gate}/tls/key_secret = n   (ValidateSecretName, never a route/
+     name; writing it needs secret.use like any secret binding; the secret itself
      is created with cca secret set); no key material passes through apply
+   the key secret counts only in manual mode (types.GateUsesKeySecret: delivery,
+     route-tls and the migration share this rule)
 
 4. Ownership and cleanup (RouteTLSController)
-   system key needed ⇔ gate exists ∧ tls set ∧ (mode = auto ∨ (manual ∧ no key_secret))
+   system key needed ⇔ gate exists ∧ tls set ∧ ¬GateUsesKeySecret(mode, key_secret)
+   auto gate with a valid certificate but no sealed key (and no plaintext key
+     waiting for migration) → issue a new pair
    not needed → delete secrets/route/{gate}/tls/key (with the stale derived facts)
    auto → manual inline: apply's PUT overwrites the system key; not deleted
    manual → auto: not-after missing → step 1 issues and overwrites
@@ -1156,8 +1161,10 @@ Where the key of a TLS gate lives
      (dirs 0700, key 0400, root; write temp file + rename; gone gates removed)
    gate proxy certificate map ← cache only (facts still give host/service/sticky)
    fetch: at start; when the set of TLS gates or a certificate fact changes
-     (the proxy's 5 s route refresh compares them); every 5 min as fallback;
-     API unreachable → back off 2s…30s, keep serving from the cache
+     (store watch on desired|derived/route/*/tls/*); every 5 min as fallback;
+     API unreachable or a gate pending → back off 2s…30s, keep serving from the cache
+   cache loaded before the gate proxy starts; capability facts below are
+     retried with backoff until written
    observed/node/{id}/gate_keys = ready | waiting (reason: unreachable, refused, pending)
    written at agent start (new facts):
      observed/node/{id}/gate_key_delivery = v1        (capability, every agent of this version)
@@ -1169,7 +1176,11 @@ Where the key of a TLS gate lives
    when every enrolled or registered, non-disabled node reports gate_key_delivery = v1
    (registered nodes count too, so a cluster without enrollment never completes early):
      delete the plaintext facts (the one sanctioned writer of desired/route/ besides
-     the compiler); until then old agents keep reading them
+     the compiler; cca apply never removes desired/route/{gate}/tls/key and Diff
+     never shows it); until then old agents keep reading them
+   only gates that use a system key are sealed (a key_secret gate's leftover
+     plaintext is just deleted); deleting facts leaves old etcd revisions:
+     compact and defragment etcd after the migration completes
    persists observed/gate-keys/migration = {plaintext_count, state}
 ```
 
@@ -1192,6 +1203,9 @@ node disabled or unenrolled → delivery refused (403, audited); cached keys kep
 - The agent never combines a certificate from facts with a key from the cache: both come from one delivery response.
 - `api/state_access.go` keeps hiding `/tls/key` facts from state and watch (defense in depth for the cutover window).
 - `gate_proxy` is self-reported by the agent; it narrows delivery to nodes that run a proxy, it is not an authorization boundary beyond decision B.
+- Server-side compiles (`/api/apply`, `/api/diff`, the policy gate) never read local files: gate `tls` cert/key paths and config `from` files are refused (`ValidateNoLocalFileReferences`), so inline keys reach the server only through `PUT /api/gate-key`, which the CLI refuses to send over plain HTTP to a non-loopback server.
+- Controllers seal with the secret store's current key provider (`KeyProviderSource`), so a key rotation applies to new envelopes at once.
+- The delivery response is capped at 4 MiB on the agent (about 1000 gates); beyond that the agent reports `unreachable` (known limit).
 
 ## Checklist for New Features
 

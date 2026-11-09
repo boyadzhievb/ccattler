@@ -678,9 +678,12 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "parse: " + err.Error()})
 		return
 	}
-	facts, err := lang.Compile(file)
+	// The server never reads the client's file paths (gate tls files, config
+	// "from"); this also refuses inline gate keys, which come from key files.
+	err = lang.ValidateNoLocalFileReferences(file)
+	var facts []lang.Fact
 	if err == nil {
-		err = lang.ValidateNoInlineGateKeys(file)
+		facts, err = lang.Compile(file)
 	}
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
@@ -1580,7 +1583,7 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 		return
 	}
 
-	changes, diffError := lang.Diff(requestContext, apiServer.factStore, dslContent)
+	changes, diffError := lang.Diff(requestContext, apiServer.factStore, dslContent, false)
 	if diffError != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": diffError.Error()})

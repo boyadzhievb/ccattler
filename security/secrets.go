@@ -206,6 +206,21 @@ func (secretStore *SecretStore) RotateKeyProvider(ctx context.Context, newKeyPro
 	return nil
 }
 
+// KeyProviderSource supplies the current secret key provider. Controllers
+// that seal system-owned secrets read it on every use, so a key provider
+// rotation (RotateKeyProvider) applies to them as well.
+type KeyProviderSource interface {
+	// CurrentKeyProvider returns the provider new envelopes are sealed with.
+	CurrentKeyProvider() KeyProvider
+}
+
+// CurrentKeyProvider returns the store's current key provider.
+func (secretStore *SecretStore) CurrentKeyProvider() KeyProvider {
+	secretStore.mutex.RLock()
+	defer secretStore.mutex.RUnlock()
+	return secretStore.keyProvider
+}
+
 // KeyProviderName returns the name of the active KeyProvider.
 func (secretStore *SecretStore) KeyProviderName() string {
 	return secretStore.keyProvider.ProviderName()

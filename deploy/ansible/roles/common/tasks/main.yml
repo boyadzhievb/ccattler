@@ -120,14 +120,17 @@
     chain: FORWARD
     policy: ACCEPT
 
+# Chains are absent on fresh nodes; only an existing chain is flushed and deleted,
+# so the task succeeds instead of failing and being ignored.
 - name: Remove stale CNI iptables chains
   shell: |
     for chain in CNI-ISOLATION-STAGE-1 CNI-ISOLATION-STAGE-2 CNI-FORWARD; do
-      iptables -F "$chain" 2>/dev/null
-      iptables -X "$chain" 2>/dev/null
+      if iptables -nL "$chain" >/dev/null 2>&1; then
+        iptables -F "$chain"
+        iptables -X "$chain" || true
+      fi
     done
   changed_when: false
-  ignore_errors: true
 
 - name: Install base packages
   apt:

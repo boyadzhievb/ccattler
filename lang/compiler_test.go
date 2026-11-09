@@ -473,7 +473,7 @@ func TestDiffAllNew(t *testing.T) {
 	changes, err := Diff(context.Background(), factStore, `service web {
     image nginx:1.28
     instances 3
-}`)
+}`, true)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestDiffDetectsModified(t *testing.T) {
 	changes, err := Diff(ctx, factStore, `service web {
     image nginx:1.28
     instances 3
-}`)
+}`, true)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestDiffDetectsUnchanged(t *testing.T) {
 }`
 	Apply(ctx, factStore, dslContent)
 
-	changes, err := Diff(ctx, factStore, dslContent)
+	changes, err := Diff(ctx, factStore, dslContent, true)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -2014,8 +2014,23 @@ func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
 	}
 	allFacts, _ := factStore.Scan(ctx, "")
 	for _, fact := range allFacts {
-		if strings.Contains(string(fact.Value), "test-key") || strings.Contains(string(fact.Value), "pre-M176 plaintext") {
-			t.Errorf("plaintext key present at %s", fact.Key)
+		if strings.Contains(string(fact.Value), "test-key") {
+			t.Errorf("inline key stored at %s", fact.Key)
+		}
+	}
+	// The pre-M176 plaintext key stays for old agents: only the gate-key
+	// migration controller deletes it (Flow 28 step 7)...
+	if legacyFact, getError := factStore.Get(ctx, types.KeyDesiredRouteTLSKey("web")); getError != nil || string(legacyFact.Value) != "pre-M176 plaintext" {
+		t.Errorf("apply removed the legacy plaintext key: %v", getError)
+	}
+	// ...and Diff never returns its value.
+	changes, diffError := Diff(ctx, factStore, input, true)
+	if diffError != nil {
+		t.Fatal(diffError)
+	}
+	for _, change := range changes {
+		if strings.Contains(change.OldValue+change.NewValue, "pre-M176 plaintext") || strings.Contains(change.OldValue+change.NewValue, "test-key") {
+			t.Errorf("diff leaks key material in %s", change.Key)
 		}
 	}
 
@@ -2023,8 +2038,37 @@ func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
 	if applyError := ApplyWithBaseDir(ctx, store.NewMemoryStore(), input, "", failingWriter); applyError == nil || !strings.Contains(applyError.Error(), `gate "web"`) {
 		t.Errorf("writer failure should fail the apply naming the gate, got %v", applyError)
 	}
-	if applyError := ApplyWithBaseDir(ctx, store.NewMemoryStore(), input, "", nil); applyError == nil || !strings.Contains(applyError.Error(), "inline tls key") {
+	refusingStore := store.NewMemoryStore()
+	if applyError := ApplyWithBaseDir(ctx, refusingStore, input, "", nil); applyError == nil || !strings.Contains(applyError.Error(), "inline tls key") {
 		t.Errorf("nil writer should refuse inline keys, got %v", applyError)
+	}
+	if partialFacts, _ := refusingStore.Scan(ctx, ""); len(partialFacts) != 0 {
+		t.Errorf("refused apply left %d facts behind", len(partialFacts))
+	}
+	if _, diffError := Diff(ctx, refusingStore, input, false); diffError == nil || !strings.Contains(diffError.Error(), "does not read local files") {
+		t.Errorf("server-side diff must refuse local file paths, got %v", diffError)
+	}
+}
+
+func TestCompileRejectsEmptyKeyFileAndServerFileReferences(t *testing.T) {
+	keyDirectory := t.TempDir()
+	certPath := filepath.Join(keyDirectory, "cert.pem")
+	keyPath := filepath.Join(keyDirectory, "key.pem")
+	_ = os.WriteFile(certPath, []byte("-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"), 0o600)
+	_ = os.WriteFile(keyPath, []byte("\n"), 0o600)
+	file, parseErr := Parse(fmt.Sprintf("gate web {\n    host \"a.example.com\"\n    service web port 80\n    tls {\n        cert %q\n        key %q\n    }\n}\n", certPath, keyPath))
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if _, compileErr := Compile(file); compileErr == nil || !strings.Contains(compileErr.Error(), "key file content is empty") {
+		t.Errorf("empty key file: got %v", compileErr)
+	}
+	configFile, parseErr := Parse("service web {\n    image nginx:1.28\n    config {\n        file \"/etc/app.conf\" from \"/etc/ccattler/local-token\"\n    }\n}\n")
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	if fileError := ValidateNoLocalFileReferences(configFile); fileError == nil {
+		t.Error("config from file must be refused on the server")
 	}
 }
 

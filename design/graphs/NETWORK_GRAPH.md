@@ -652,23 +652,22 @@ tls.Config.GetCertificate = getGateCertificate(clientHello)    gate_proxy.go:139
 ### Gate-key delivery to agents (Flow 28, M176)
 ```
 cca agent start (cmd/cca/command_agent.go)
-├── agent.PublishGateProxyCapability(nodeID, proxyEnabled)
+├── go agent.PublishGateProxyCapabilityUntilDone(nodeID, proxyEnabled)   [retries 2s…30s until written]
 │   → PUT observed/node/{id}/gate_proxy = enabled|disabled, observed/node/{id}/gate_key_delivery = v1
 └── proxy enabled → startAgentGateKeySync
-    ├── NewGateKeyCache(/run/ccattler/gate-keys).RequireMemoryFilesystem()
+    ├── NewGateKeyCache(/run/ccattler/gate-keys).RequireMemoryFilesystem(); Load() before the proxy starts
     ├── NewHTTPGateKeyClient(resolveAgentAPIServerAddress, node mTLS)   [nil without cert/API address]
     └── go GateKeySyncer.Run(ctx)                              agent/gate_key_syncer.go
-        ├── GateKeyCache.Load()                                [pairs from this boot; invalid pairs and staging dirs removed]
         ├── no fetcher → gate_keys = waiting(not_configured), return
         ├── go watchGateTLSFacts → Watch(desired/route/, derived/route/), key contains "/tls/" → signal
-        └── loop: timer (0 at start; 5 min fallback; 2s…30s backoff on failure; 1s debounce on change)
+        └── loop: timer (0 at start; 5 min fallback; 2s…30s backoff on failure or pending gates; 1s debounce on change)
             └── syncOnce
                 ├── HTTPGateKeyClient.FetchGateKeys → POST /api/node/gate-keys  [403 → refused, other → unreachable]
                 ├── GateKeyCache.Apply(delivery)
                 │   ├── installPair: X509KeyPair check, staging dir + rename ({gate}/certificate.pem 0444, private-key.pem 0400, dirs 0700)
                 │   ├── pending gates keep their cached pair
                 │   └── gates in neither list → removeGate
-                └── publishStatus → PUT observed/node/{id}/gate_keys {state, reason, pending} (only when changed)
+                └── publishStatus → PUT observed/node/{id}/gate_keys {state, reason, pending} (when changed, or every 30 min)
 
 Server.handleNodeGateKeyDelivery  POST /api/node/gate-keys   api/node_gate_key_delivery.go
 ├── requireNodeMTLSCaller                                      [node principal, mtls, TLS; else 403]
@@ -677,7 +676,8 @@ Server.handleNodeGateKeyDelivery  POST /api/node/gate-keys   api/node_gate_key_d
     ├── scanGateAttributes(desired/route/), scanGateAttributes(derived/route/)
     ├── per gate with tls/mode and host: resolveGatePair
     │   ├── cert: manual → desired tls/cert, auto → derived tls/cert
-    │   ├── key: GateKeySecretName(gate, tls/key_secret) → secrets/{key_secret} or secrets/route/{gate}/tls/key
+    │   ├── key: GateKeySecretName(gate, tls/mode, tls/key_secret) → secrets/{key_secret} when
+    │   │        types.GateUsesKeySecret (manual, not route/), else secrets/route/{gate}/tls/key
     │   └── X509KeyPair mismatch / missing → pending
     └── audit gate-key.deliver (gate names only; refusals rate-limited by refusalAuditLimiter)
 ```
@@ -689,10 +689,10 @@ RouteTLSController.Reconcile(ctx, facts)                       :62
 ├── parseAutoTLSRoutes(facts)                                  :136  → routes with tls/mode=auto and a host
 ├── parseExistingDerivedTLSFacts(facts)                        :171
 ├── FOR EACH auto route:
-│   └── needsCertificateIssuance(not-after)                    :183  (missing or within 30 days)
+│   └── needsCertificateIssuance(not-after) (missing or within 30 days) ∨ sealed key missing with no plaintext key
 │       └── issueSealedGateCertificate(ctx, route, host)       :105
 │           ├── CertificateAuthority.IssueCertificate(DNSNames=[host], TTL=90d)
-│           ├── security.SealSecretValue(keyProvider, key PEM)  (envelope, base64)
+│           ├── security.SealSecretValue(keyProviderSource.CurrentKeyProvider(), key PEM)  (envelope, base64)
 │           └── one change group "route-tls-issue/{name}":
 │               PUT derived/route/{name}/tls/{cert,not-after}, PUT secrets/route/{name}/tls/key
 │               (no derived tls/key; a pre-M176 one is kept while the gate is auto, Flow 28 step 7)
@@ -708,12 +708,13 @@ Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provid
 GateKeyMigrationController.Reconcile(ctx, facts)
 ├── Watch: desired/route/, derived/route/, secrets/route/, observed/node/, enrollment/node/, observed/gate-keys/migration
 ├── collectPlaintextGateKeys        → gate → desired|derived tls/key facts (desired PEM wins)
-├── collectTLSGateNames, collectSealedGateKeyNames
+├── parseSystemKeyGateNames (route_tls.go), collectSealedGateKeyNames
 ├── collectNodesWithoutGateKeyDelivery → enrolled ∪ registered, not disabled, gate_key_delivery != v1
-├── tls gate, no sealed key → PUT secrets/route/{gate}/tls/key = SealSecretValue(plaintext)
-├── no pending nodes ∧ (sealed in an earlier cycle ∨ gate has no tls) → DELETE plaintext facts
+├── system-key gate, no sealed key → PUT secrets/route/{gate}/tls/key = SealSecretValue(current provider, plaintext)
+├── no pending nodes ∧ (sealed in an earlier cycle ∨ gate needs no system key) → DELETE plaintext facts
 └── migrationStatusChange → PUT observed/gate-keys/migration {state, plaintext_count, pending_nodes} only when changed
-Wired in startControllersWithLeaderElection (cmd/cca/command_server.go) with the shared secret key provider.
+Wired in startControllersWithLeaderElection (cmd/cca/command_server.go) with the server's SecretStore as KeyProviderSource.
+Write domains (controllers/topological_sort.go): route-tls {derived/route/, secrets/route/}; gate-key-migration {desired/route/, derived/route/, secrets/route/, observed/gate-keys/}.
 ```
 
 ### Store keys (gate proxy / gate TLS)

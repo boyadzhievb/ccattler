@@ -1093,6 +1093,12 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 				SourceLine: sourceLineAt(sourceLines, line),
 			}
 		}
+		if tlsDecl.KeySecret == "" && strings.TrimSpace(tlsDecl.KeyPEM) == "" {
+			return nil, &ParseError{
+				Line: line, Message: fmt.Sprintf("gate %q: tls key file content is empty", routeName),
+				SourceLine: sourceLineAt(sourceLines, line),
+			}
+		}
 		// The private key is never a fact (Flow 28): an inline key is sent by
 		// cca apply to PUT /api/gate-key (InlineGateKeys), a key secret is referenced.
 		tlsFacts = append(tlsFacts, Fact{Key: types.KeyDesiredRouteTLSCert(routeName), Value: tlsDecl.CertPEM})
@@ -1102,6 +1108,29 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 	}
 
 	return tlsFacts, nil
+}
+
+// ValidateNoLocalFileReferences rejects a file that names local files (gate
+// tls cert/key paths, config "from" files). Server-side parse paths (/api/apply,
+// /api/diff, the policy gate) call it before compiling: the paths are the
+// client's, and reading them on the server would expose server files.
+func ValidateNoLocalFileReferences(file *File) error {
+	for _, routeDecl := range file.Routes {
+		if routeDecl.TLS != nil && (routeDecl.TLS.CertFile != "" || routeDecl.TLS.KeyFile != "") {
+			return fmt.Errorf("gate %q: tls cert/key files are read only by cca apply; the server does not read local files", routeDecl.Name)
+		}
+	}
+	for _, serviceDecl := range file.Services {
+		if serviceDecl.Config == nil {
+			continue
+		}
+		for _, configFile := range serviceDecl.Config.ConfigFiles {
+			if configFile.FromFile != "" {
+				return fmt.Errorf("service %q: config file %q uses from %q; the server does not read local files (use cca apply)", serviceDecl.Name, configFile.Path, configFile.FromFile)
+			}
+		}
+	}
+	return nil
 }
 
 // ValidateNoInlineGateKeys returns an error naming the first gate (sorted)
@@ -1644,6 +1673,12 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 	if compileError != nil {
 		return compileError
 	}
+	if gateKeyWriter == nil {
+		// Refuse inline keys before writing anything, so no partial apply remains.
+		if inlineKeyError := ValidateNoInlineGateKeys(file); inlineKeyError != nil {
+			return inlineKeyError
+		}
+	}
 	for _, fact := range facts {
 		if _, putError := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); putError != nil {
 			return fmt.Errorf("writing %s: %w", fact.Key, putError)
@@ -1670,7 +1705,7 @@ func writeInlineGateKeys(ctx context.Context, file *File, gateKeyWriter GateKeyW
 		return nil
 	}
 	if gateKeyWriter == nil {
-		return ValidateNoInlineGateKeys(file)
+		return ValidateNoInlineGateKeys(file) // unreachable after ApplyWithBaseDir's check; kept for direct callers
 	}
 	gateNames := make([]string, 0, len(inlineGateKeys))
 	for gateName := range inlineGateKeys {
@@ -1684,6 +1719,10 @@ func writeInlineGateKeys(ctx context.Context, file *File, gateKeyWriter GateKeyW
 	}
 	return nil
 }
+
+// legacyPlaintextGateKeySuffix ends a pre-M176 plaintext gate key fact,
+// desired/route/{gate}/tls/key.
+const legacyPlaintextGateKeySuffix = "/tls/key"
 
 // collectRemovedGateFacts returns stored desired/route/{name}/ facts of gates
 // declared in this file that the new compile no longer produces (e.g. a removed
@@ -1701,6 +1740,12 @@ func collectRemovedGateFacts(ctx context.Context, stateStore store.StateStore, f
 			return nil, fmt.Errorf("scanning gate %s: %w", routeDecl.Name, scanError)
 		}
 		for _, storedFact := range storedFacts {
+			// A pre-M176 plaintext tls/key belongs to the gate-key migration
+			// controller (Flow 28 step 7): old agents may still read it, and
+			// Diff must never return its value.
+			if strings.HasSuffix(storedFact.Key, legacyPlaintextGateKeySuffix) {
+				continue
+			}
 			if !compiledKeys[storedFact.Key] {
 				removedFacts = append(removedFacts, storedFact)
 			}
@@ -1722,10 +1767,17 @@ type FactChange struct {
 // writing anything. Stored facts missing from the compiled output are reported
 // as "delete" only for gates declared in the file (see collectRemovedGateFacts);
 // other stale facts are not touched by apply and so are not reported.
-func Diff(ctx context.Context, stateStore store.StateStore, input string) ([]FactChange, error) {
+// allowLocalFiles is false for the API server, which must not read the
+// client's file paths (ValidateNoLocalFileReferences).
+func Diff(ctx context.Context, stateStore store.StateStore, input string, allowLocalFiles bool) ([]FactChange, error) {
 	file, parseError := Parse(input)
 	if parseError != nil {
 		return nil, parseError
+	}
+	if !allowLocalFiles {
+		if fileError := ValidateNoLocalFileReferences(file); fileError != nil {
+			return nil, fileError
+		}
 	}
 	sourceLines := splitSourceLines(input)
 	facts, compileError := CompileWithSource(file, sourceLines)

@@ -38,7 +38,13 @@ func newTestRouteTLSController(t *testing.T) (*RouteTLSController, security.KeyP
 	if providerError != nil {
 		t.Fatal(providerError)
 	}
-	return NewRouteTLSController(newTestCertificateAuthority(t), secretKeyProvider), secretKeyProvider
+	return NewRouteTLSController(newTestCertificateAuthority(t), newTestKeyProviderSource(secretKeyProvider)), secretKeyProvider
+}
+
+// newTestKeyProviderSource wraps a key provider in a secret store, the
+// KeyProviderSource the server passes to the controllers.
+func newTestKeyProviderSource(secretKeyProvider security.KeyProvider) *security.SecretStore {
+	return security.NewSecretStore(store.NewMemoryStore(), secretKeyProvider)
 }
 
 // openSealedTestSecret decodes and opens a value written by SealSecretValue.
@@ -322,5 +328,40 @@ func TestRouteTLSControllerDeletesSealedKeysNoGateNeeds(t *testing.T) {
 	expectedDeletions := []string{sealedKey("deleted-gate"), sealedKey("plain-gate"), sealedKey("secret-gate")}
 	if strings.Join(deletedKeys, ",") != strings.Join(expectedDeletions, ",") {
 		t.Errorf("deleted %v, want %v", deletedKeys, expectedDeletions)
+	}
+}
+
+func TestRouteTLSControllerSealsWithRotatedKeyAndReissuesLostSealedKey(t *testing.T) {
+	_, originalProvider := newTestRouteTLSController(t)
+	secretStore := newTestKeyProviderSource(originalProvider)
+	routeTLSController := NewRouteTLSController(newTestCertificateAuthority(t), secretStore)
+	rotatedMasterKey, _ := security.GenerateMasterKey()
+	rotatedProvider, _ := security.NewLocalKeyProvider(rotatedMasterKey)
+	if rotateError := secretStore.RotateKeyProvider(context.Background(), rotatedProvider); rotateError != nil {
+		t.Fatal(rotateError)
+	}
+	futureExpiry := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
+	// Valid certificate, but the sealed key is gone and no plaintext key waits.
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteHost("web-public"), "app.example.com"),
+		kv(types.KeyDesiredRouteTLSMode("web-public"), "auto"),
+		kv(types.KeyDerivedRouteTLSCert("web-public"), "existing-cert"),
+		kv(types.KeyDerivedRouteTLSNotAfter("web-public"), futureExpiry),
+	)
+	changes, err := routeTLSController.Reconcile(context.Background(), facts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sealedValue string
+	for _, change := range changes {
+		if change.Key == "secrets/"+types.SecretNameRouteTLSKey("web-public") {
+			sealedValue = string(change.Value)
+		}
+	}
+	if sealedValue == "" {
+		t.Fatalf("lost sealed key not re-issued: %d changes", len(changes))
+	}
+	if opened := openSealedTestSecret(t, rotatedProvider, sealedValue); !strings.Contains(string(opened), "PRIVATE KEY") {
+		t.Error("key not sealed with the rotated provider")
 	}
 }

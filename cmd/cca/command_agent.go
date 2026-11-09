@@ -365,9 +365,7 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		startAgentDebugServer(ctx, factStore, runtimeAdapter, parsedConfig, agentTLSConfig)
 	}
 
-	if capabilityError := agent.PublishGateProxyCapability(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyEnabled); capabilityError != nil {
-		logging.Default().Error("gate-key capability not published", "node", parsedConfig.nodeID, "error", capabilityError.Error())
-	}
+	go agent.PublishGateProxyCapabilityUntilDone(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyEnabled)
 	if parsedConfig.proxyEnabled {
 		gateKeyCache := startAgentGateKeySync(ctx, factStore, parsedConfig, agentTLSConfig)
 		startAgentHTTPProxy(ctx, factStore, gateKeyCache, parsedConfig.nodeID, parsedConfig.proxyListenAddress, parsedConfig.proxyTLSListenAddress)
@@ -555,6 +553,9 @@ func deriveGateHTTPSListenAddress(proxyListenAddress string) string {
 func startAgentGateKeySync(ctx context.Context, factStore store.StateStore, parsedConfig agentCommandConfig, agentTLSConfig *tls.Config) *agent.GateKeyCache {
 	gateKeyCache := agent.NewGateKeyCache(agent.DefaultGateKeyCacheDirectory)
 	gateKeyCache.RequireMemoryFilesystem()
+	// Load before the proxy starts, so the first handshakes after a restart
+	// already find the cached pairs.
+	fmt.Printf("Agent %s: gate-key cache loaded (%d gates)\n", parsedConfig.nodeID, gateKeyCache.Load())
 	var gateKeyFetcher agent.GateKeyFetcher
 	if apiServerAddress := resolveAgentAPIServerAddress(parsedConfig); agentTLSConfig != nil && apiServerAddress != "" {
 		gateKeyFetcher = agent.NewHTTPGateKeyClient(apiServerAddress, buildMTLSClientTLSConfig(agentTLSConfig))

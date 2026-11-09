@@ -193,7 +193,30 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
 - [ ] Tests: no plaintext key fact after reconcile and after inline apply; acceptance B (node without a local backend terminates TLS); agent restart with API down keeps TLS; gate TLS e2e T1–T15 unchanged
   - [x] Unit/integration: route-tls seals and never writes a key fact; apply never stores the inline key and deletes the pre-M176 plaintext fact; migration seals then deletes; delivery, cache, syncer, handlers, system-owned secrets
   - [x] Manual on m4800 (2026-11-09, fa8c0a4): 4 gates by SNI, cache survives agent restart with cca-server down, migration completed (design/deploy-host.md)
-  - [ ] e2e T16 (keys delivered, migration completed), T17 (acceptance B), T18 (agent restart with API down) added to `gate_tls_checks.sh`; need a green Deploy Testbed run on m4800 with T1–T18
+  - [x] e2e T16 (keys delivered, migration completed), T17 (acceptance B), T18 (agent restart with API down) added to `gate_tls_checks.sh`; Deploy Testbed run 42689347389 on m4800 (e12cf27, eBPF, airflow + whoami + whoami-multiport + gate-tls) green: 16 containers, T1–T18 passed. Known gap: on a fresh cluster T16 cannot exercise sealing/cutover of pre-M176 plaintext keys (covered by unit tests and the manual run)
+- [x] Independent review 2026-11-09 (`code-reviewer` + `security-audit`, 444f87c..e12cf27), each finding verified in the code:
+  - security 1 (HIGH, fixed): `/api/diff` returned a stored pre-M176 plaintext key as `OldValue` — `collectRemovedGateFacts` no longer touches `desired/route/*/tls/key` (migration owns it), so neither apply nor diff reads it
+  - security 2 (HIGH, fixed): `tls/key_secret` was writable with `workload.create` — now needs `secret.use`; `GateKeySecretName` ignores `route/` names
+  - security 3 (HIGH, fixed; existed since M169): server-side compile read client file paths (`tls cert`, config `from`) → arbitrary server file read via `/api/diff`/apply — `ValidateNoLocalFileReferences` on `/api/apply`, `/api/diff` and the policy gate
+  - security 4 (MEDIUM, fixed): controllers kept the startup key provider after `/api/secret/rotate` — they seal with the shared `SecretStore`'s current provider (`KeyProviderSource`); rotation persistence stays M178
+  - security 5 (MEDIUM, fixed): `PutGateKey` could send the key over plain HTTP — refused unless https or loopback
+  - security 6 (MEDIUM, fixed): `key_secret` honoured in auto mode — shared rule `types.GateUsesKeySecret` (manual only) in delivery, route-tls and migration
+  - security 7 (rejected): purge cache on 403 — Flow 28 decided "no remote wipe"; a transient refusal would cut TLS on an honest node
+  - security 8 (fixed/recorded): `/api/status` listed `route/` names → filtered; migration/route-tls flapping on key_secret gates → migration seals only system-key gates; etcd history → compaction note in Flow 28; 4 MiB delivery cap → documented known limit; delivery role reading legacy facts → harmless, no change
+  - review 1 (MEDIUM, fixed): pending gates waited 5 min → retried with 2–30 s backoff
+  - review 2 (MEDIUM, fixed): capability publish not retried → `PublishGateProxyCapabilityUntilDone`; `gate_keys` rewritten every 30 min
+  - review 3 (MEDIUM, fixed): re-apply deleted the legacy plaintext key during a rolling upgrade → same fix as security 1
+  - review 4 (fixed): empty key file accepted → compile error
+  - review 5 (fixed): refused inline key left a partial apply → checked before writing facts
+  - review 6 (fixed): write domains declared for `route-tls` and `gate-key-migration` (the dependency sort that would cycle has no production caller)
+  - review 7 (fixed): lost sealed key never repaired → route-tls re-issues when sealed key and plaintext key are both absent
+  - review 8 (fixed): cache loaded inside the syncer goroutine → loaded before the proxy starts
+  - review 9 (open, user decision): `route/` prefix now reserved for gate keys; existing user secrets named `route/…` become unreachable
+  - review 10 (fixed): staging suffix length → `stagingSuffixRandomBytes`
+  - review 11 (fixed): T18 could exit with cca-server stopped → `gate_tls_fail_with_server_started`
+  - review 12 (fixed): T17 could pass on an empty status query → fails instead
+  - review 13 (recorded): T16 cannot exercise the cutover on a fresh cluster (known gap above)
+- [ ] Deploy Testbed green on the review fixes
 
 ### Phase 177 — Root Key, Keyring & Key Migration (M177)
 

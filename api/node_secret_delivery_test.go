@@ -237,7 +237,7 @@ func TestApplyEndpointRejectsInlineGateKeys(testContext *testing.T) {
 	dslConfig := fmt.Sprintf("gate web {\n    host \"a.example.com\"\n    service web port 80\n    tls {\n        cert %q\n        key %q\n    }\n}\n", certificatePath, keyPath)
 	responseRecorder := httptest.NewRecorder()
 	apiServer.applyDirect(responseRecorder, context.Background(), dslConfig)
-	if responseRecorder.Code != http.StatusBadRequest || !strings.Contains(responseRecorder.Body.String(), "inline tls key") {
+	if responseRecorder.Code != http.StatusBadRequest || !strings.Contains(responseRecorder.Body.String(), "does not read local files") {
 		testContext.Fatalf("status = %d, body %s", responseRecorder.Code, responseRecorder.Body.String())
 	}
 	if facts, _ := apiServer.factStore.Scan(context.Background(), types.ScanDesiredRoutes); len(facts) != 0 {

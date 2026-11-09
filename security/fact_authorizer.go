@@ -68,6 +68,10 @@ func RequiredCapabilityForFactWrite(factKey string) Capability {
 			return CapabilitySecretUse
 		}
 	}
+	// A gate key secret binds a user secret as a TLS private key (Flow 28).
+	if strings.HasPrefix(factKey, "desired/route/") && strings.HasSuffix(factKey, "/tls/key_secret") {
+		return CapabilitySecretUse
+	}
 	for _, workloadPrefix := range workloadFactPrefixes {
 		if strings.HasPrefix(factKey, workloadPrefix) {
 			return CapabilityWorkloadCreate

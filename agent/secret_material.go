@@ -38,6 +38,10 @@ const secretConnectionsSubdirectory = "connections"
 // secretFileNameSlashEncoding replaces "/" in hierarchical secret names on disk.
 const secretFileNameSlashEncoding = "%2F"
 
+// stagingSuffixRandomBytes is the number of random bytes (hex-encoded) that make
+// a staging directory name unique.
+const stagingSuffixRandomBytes = 4
+
 // secretMaterialStagingMarker marks a directory being written; it is renamed
 // into place only when complete, so a crash never leaves partial material.
 const secretMaterialStagingMarker = ".staging-"
@@ -105,7 +109,7 @@ func (materialStore *SecretMaterialStore) WriteInstanceSecrets(instanceID string
 	if prepareError := materialStore.prepareBaseDirectory(); prepareError != nil {
 		return prepareError
 	}
-	randomSuffix := make([]byte, 4)
+	randomSuffix := make([]byte, stagingSuffixRandomBytes)
 	_, _ = rand.Read(randomSuffix)
 	stagingDirectory := filepath.Join(materialStore.baseDirectory, secretMaterialStagingMarker+instanceID+"-"+hex.EncodeToString(randomSuffix))
 	if writeError := writeSecretValuesDirectory(stagingDirectory, secretValues); writeError != nil {

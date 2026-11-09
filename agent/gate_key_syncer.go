@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +25,7 @@ const (
 	gateKeyRetryMaxDelay         = 30 * time.Second // gateKeyRetryMaxDelay caps the retry backoff.
 	gateKeyChangeDebounce        = time.Second      // gateKeyChangeDebounce groups bursts of gate TLS fact changes into one fetch.
 	gateKeyWatchRestartDelay     = 5 * time.Second  // gateKeyWatchRestartDelay is the wait before re-establishing a closed watch.
+	gateKeyStatusRefreshInterval = 30 * time.Minute // gateKeyStatusRefreshInterval rewrites an unchanged gate_keys fact, restoring it if the node's facts were deleted.
 )
 
 // gateTLSFactMarker selects route fact changes that can change a gate's pair
@@ -147,6 +147,26 @@ func PublishGateProxyCapability(ctx context.Context, factStore store.StateStore,
 	return nil
 }
 
+// PublishGateProxyCapabilityUntilDone retries PublishGateProxyCapability with
+// the gate-key backoff until it succeeds or ctx ends: without these facts the
+// server refuses delivery and the migration waits on this node forever.
+func PublishGateProxyCapabilityUntilDone(ctx context.Context, factStore store.StateStore, nodeID string, gateProxyEnabled bool) {
+	retryDelay := time.Duration(0)
+	for {
+		publishError := PublishGateProxyCapability(ctx, factStore, nodeID, gateProxyEnabled)
+		if publishError == nil {
+			return
+		}
+		retryDelay = nextGateKeyRetryDelay(retryDelay)
+		logging.Default().Warn("gate-key capability not published; retrying", "node", nodeID, "error", publishError.Error(), "retry_in", retryDelay.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(retryDelay):
+		}
+	}
+}
+
 // GateKeySyncer keeps the gate-key cache in line with the control plane: it
 // fetches at start, after gate TLS fact changes, every 5 minutes, and retries
 // failures with backoff while the cache keeps serving (Flow 28 step 6).
@@ -156,18 +176,19 @@ type GateKeySyncer struct {
 	gateKeyFetcher      GateKeyFetcher   // gateKeyFetcher calls the API; nil means delivery is not configured.
 	gateKeyCache        *GateKeyCache    // gateKeyCache holds the delivered pairs.
 	lastPublishedStatus string           // lastPublishedStatus is the last gate_keys value written, to skip unchanged writes.
+	lastPublishedAt     time.Time        // lastPublishedAt is when gate_keys was last written.
 }
 
-// NewGateKeySyncer creates a syncer. A nil fetcher only loads the cache and
+// NewGateKeySyncer creates a syncer for a cache the caller has already loaded
+// (GateKeyCache.Load, before the gate proxy starts). A nil fetcher only
 // reports gate_keys = waiting (not_configured).
 func NewGateKeySyncer(nodeID string, factStore store.StateStore, gateKeyFetcher GateKeyFetcher, gateKeyCache *GateKeyCache) *GateKeySyncer {
 	return &GateKeySyncer{nodeID: nodeID, factStore: factStore, gateKeyFetcher: gateKeyFetcher, gateKeyCache: gateKeyCache}
 }
 
-// Run loads the cache, then fetches until ctx is cancelled.
+// Run fetches until ctx is cancelled: retries (2s…30s) while a fetch fails or
+// gates are pending, otherwise refetches on change or every 5 minutes.
 func (gateKeySyncer *GateKeySyncer) Run(ctx context.Context) {
-	loadedCount := gateKeySyncer.gateKeyCache.Load()
-	logging.Default().Info("gate-key cache loaded", "node", gateKeySyncer.nodeID, "gates", strconv.Itoa(loadedCount))
 	if gateKeySyncer.gateKeyFetcher == nil {
 		gateKeySyncer.publishStatus(ctx, gateKeysStatus{State: GateKeysWaiting, Reason: GateKeysNotConfigured})
 		return
@@ -205,7 +226,8 @@ func nextGateKeyRetryDelay(previousDelay time.Duration) time.Duration {
 }
 
 // syncOnce fetches the delivery, applies it to the cache and publishes
-// gate_keys. Returns false when the fetch or a cache write failed (retry).
+// gate_keys. Returns false (retry with backoff) when the fetch or a cache write
+// failed or a gate is pending, e.g. its key arrives after its certificate.
 func (gateKeySyncer *GateKeySyncer) syncOnce(ctx context.Context) bool {
 	delivery, fetchError := gateKeySyncer.gateKeyFetcher.FetchGateKeys(ctx)
 	if fetchError != nil {
@@ -224,16 +246,17 @@ func (gateKeySyncer *GateKeySyncer) syncOnce(ctx context.Context) bool {
 	}
 	if len(delivery.Pending) > 0 {
 		gateKeySyncer.publishStatus(ctx, gateKeysStatus{State: GateKeysWaiting, Reason: GateKeysPending, Pending: delivery.Pending})
-		return true
+		return false
 	}
 	gateKeySyncer.publishStatus(ctx, gateKeysStatus{State: GateKeysReady})
 	return true
 }
 
-// publishStatus writes observed/node/{id}/gate_keys when the value changed.
+// publishStatus writes observed/node/{id}/gate_keys when the value changed or
+// gateKeyStatusRefreshInterval passed since the last write.
 func (gateKeySyncer *GateKeySyncer) publishStatus(ctx context.Context, status gateKeysStatus) {
 	encodedStatus, _ := json.Marshal(status)
-	if string(encodedStatus) == gateKeySyncer.lastPublishedStatus {
+	if string(encodedStatus) == gateKeySyncer.lastPublishedStatus && time.Since(gateKeySyncer.lastPublishedAt) < gateKeyStatusRefreshInterval {
 		return
 	}
 	if _, putError := gateKeySyncer.factStore.Put(ctx, types.KeyObservedNodeGateKeys(gateKeySyncer.nodeID), encodedStatus); putError != nil {
@@ -241,6 +264,7 @@ func (gateKeySyncer *GateKeySyncer) publishStatus(ctx context.Context, status ga
 		return
 	}
 	gateKeySyncer.lastPublishedStatus = string(encodedStatus)
+	gateKeySyncer.lastPublishedAt = time.Now()
 }
 
 // watchGateTLSFacts signals changeSignal on every desired or derived route

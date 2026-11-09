@@ -339,15 +339,17 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	runControllers := !parsedConfig.apiOnly
 	runAPIServer := !parsedConfig.controllersOnly
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
-	secretKeyProvider := loadSecretKeyProvider()
+	// One secret store for controllers and API, so a key rotation reaches the
+	// controllers that seal system-owned secrets (route-tls, gate-key-migration).
+	secretStore := security.NewSecretStore(factStore, loadSecretKeyProvider())
 
 	if runControllers {
-		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, secretKeyProvider)
+		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, secretStore)
 	}
 
 	if runAPIServer {
 		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig,
-			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretKeyProvider)
+			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore)
 	}
 
 	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
@@ -375,7 +377,7 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 // controllers plus optional cloud controllers) and starts them inside an HA
 // runner with leader election. The runner goroutine runs until the context is
 // cancelled.
-func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority, secretKeyProvider security.KeyProvider) {
+func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority, secretStore *security.SecretStore) {
 	networkController := controllers.NewNetworkController()
 	if parsedConfig.vipCIDR != "" {
 		networkController = controllers.NewNetworkControllerWithCIDR(parsedConfig.vipCIDR)
@@ -387,10 +389,10 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController(),
 		controllers.NewStorageController(factStore),
-		controllers.NewGateKeyMigrationController(secretKeyProvider))
+		controllers.NewGateKeyMigrationController(secretStore))
 
 	if clusterCertificateAuthority != nil {
-		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretKeyProvider))
+		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretStore))
 	}
 
 	metricsCollector := controllers.NewMetricsCollector()
@@ -622,7 +624,7 @@ func configureAndStartAPIServer(
 	serverTLSConfig *tls.Config,
 	clusterCertificateAuthority *security.CertificateAuthority,
 	enrollmentEnabled bool,
-	secretKeyProvider security.KeyProvider,
+	secretStore *security.SecretStore,
 ) {
 
 	issuerURL := resolveServerIssuerURL(parsedConfig)
@@ -665,7 +667,7 @@ func configureAndStartAPIServer(
 	policyGate := tenant.NewPolicyGate(factStore, tenantRegistry, quotaAdmission, security.NewCapabilityFactAuthorizer(apiAuthorizer), auditLog)
 	statusAPIServer.SetPolicyGate(policyGate)
 
-	configureSecretStoreAndDelivery(statusAPIServer, factStore, rbacAuthorizer, auditLog, secretKeyProvider)
+	configureSecretStoreAndDelivery(statusAPIServer, factStore, rbacAuthorizer, auditLog, secretStore)
 
 	if parsedConfig.apiOnly {
 		statusAPIServer.SetServerMode(api.ServerModeAPIOnly)
@@ -697,8 +699,7 @@ func loadSecretKeyProvider() security.KeyProvider {
 // configureSecretStoreAndDelivery attaches the secret store and enables node
 // secret delivery (Flow 27) and gate-key delivery (Flow 28) through a store
 // bound to the secret-delivery principal, so the api-server role never reads secrets/.
-func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore store.StateStore, rbacAuthorizer *security.RBACAuthorizer, auditLog security.AuditLogger, secretKeyProvider security.KeyProvider) {
-	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
+func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore store.StateStore, rbacAuthorizer *security.RBACAuthorizer, auditLog security.AuditLogger, secretStore *security.SecretStore) {
 	statusAPIServer.SetSecretStore(secretStore)
 
 	deliveryStore := security.NewAuthorizedStore(factStore, rbacAuthorizer, auditLog)

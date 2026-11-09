@@ -287,10 +287,13 @@ gate_tls_check_key_delivery() {
 
 # gate_tls_node_without_instance prints an agent node that runs no instance of
 # the service (empty when every agent node runs one).
+# Fails the test when the status query fails or lists no instance of the
+# service, so the check never passes on an empty answer.
 gate_tls_node_without_instance() {
     local service="$1" vm hosting_nodes
     hosting_nodes=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
         | jq -r --arg service "$service" '.instances[] | select(.service == $service) | .node' 2>/dev/null)
+    [[ -n "$hosting_nodes" ]] || fail "gate-tls T17: status lists no $service instance (query failed?)"
     for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
         grep -qx "$vm" <<<"$hosting_nodes" || { echo "$vm"; return; }
     done
@@ -300,7 +303,7 @@ gate_tls_node_without_instance() {
 # local instance of the gate's service still terminates TLS for it.
 gate_tls_check_remote_backend() {
     local remote_node
-    remote_node=$(gate_tls_node_without_instance "tls-manual")
+    remote_node=$(gate_tls_node_without_instance "tls-manual") || exit 1
     if [[ -z "$remote_node" ]]; then
         log "  T17 SKIP: every agent node runs a tls-manual instance"
         return
@@ -314,16 +317,21 @@ gate_tls_check_remote_backend() {
 # a restarted agent serves gate TLS from its tmpfs gate-key cache.
 gate_tls_check_cache_without_api() {
     local worker_ip="${NODE_IPS[$WORKER1_NODE]}"
-    ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server" || fail "gate-tls T18: cca-server stop failed"
-    ssh_vm "$WORKER1_NODE" "sudo systemctl restart cca-agent" || fail "gate-tls T18: cca-agent restart failed"
-    if ! gate_tls_wait_until_quiet "$GATE_TLS_RECOVERY_TIMEOUT" gate_tls_https_ok "$worker_ip" "tls-auto.home.arpa"; then
-        ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server" || true
-        fail "gate-tls T18: $WORKER1_NODE stopped serving TLS after an agent restart with the API down"
-    fi
+    ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server" || gate_tls_fail_with_server_started "cca-server stop failed"
+    ssh_vm "$WORKER1_NODE" "sudo systemctl restart cca-agent" || gate_tls_fail_with_server_started "cca-agent restart failed"
+    gate_tls_wait_until_quiet "$GATE_TLS_RECOVERY_TIMEOUT" gate_tls_https_ok "$worker_ip" "tls-auto.home.arpa" \
+        || gate_tls_fail_with_server_started "$WORKER1_NODE stopped serving TLS after an agent restart with the API down"
     ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server" || fail "gate-tls T18: cca-server start failed"
     gate_tls_wait_until "$GATE_TLS_RECOVERY_TIMEOUT" "gate keys ready on $WORKER1_NODE after API recovery" \
         gate_tls_node_keys_ready "$WORKER1_NODE"
     log "  T18 PASS: restarted agent served TLS from its gate-key cache while cca-server was down"
+}
+
+# gate_tls_fail_with_server_started starts cca-server again (T18 stops it)
+# and then fails T18, so a failing check never leaves the cluster without an API.
+gate_tls_fail_with_server_started() {
+    ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server" || true
+    fail "gate-tls T18: $1"
 }
 
 # gate_tls_wait_until_quiet retries a command until it succeeds or timeout

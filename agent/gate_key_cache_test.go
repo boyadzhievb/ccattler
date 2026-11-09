@@ -181,6 +181,9 @@ func TestGateKeySyncerServesCacheWhileAPIIsDownAndRefetchesOnChange(testContext 
 		{delivery: &GateKeyDelivery{Gates: []DeliveredGateKeyPair{webPair}, Pending: []string{"shop"}}},
 	}}
 	gateKeyCache := NewGateKeyCache(cacheDirectory)
+	if loadedCount := gateKeyCache.Load(); loadedCount != 1 {
+		testContext.Fatalf("loaded %d cached pairs, want 1", loadedCount)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go NewGateKeySyncer("node-1", factStore, fetcher, gateKeyCache).Run(ctx)
@@ -251,4 +254,48 @@ func TestHTTPGateKeyClientMapsResponses(testContext *testing.T) {
 			testContext.Errorf("HTTP %d: error %v, want reason %s", responseStatus, fetchError, expectedReason)
 		}
 	}
+}
+
+func TestGateKeySyncerRetriesPendingGatesWithBackoff(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	webPair := issueTestGateKeyPair(t, "web", "web.example.com")
+	fetcher := &scriptedGateKeyFetcher{results: []scriptedGateKeys{
+		{delivery: &GateKeyDelivery{Gates: []DeliveredGateKeyPair{}, Pending: []string{"web"}}},
+		{delivery: &GateKeyDelivery{Gates: []DeliveredGateKeyPair{webPair}, Pending: []string{}}},
+	}}
+	gateKeyCache := NewGateKeyCache(t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go NewGateKeySyncer("node-1", factStore, fetcher, gateKeyCache).Run(ctx)
+	// The second fetch comes after the 2s retry, not the 5 min fallback.
+	waitForGateKeysState(t, factStore, "node-1", GateKeysReady, "")
+	if gateKeyCache.GateCertificate("web") == nil {
+		t.Error("pair delivered on retry is not served")
+	}
+}
+
+func TestPublishGateProxyCapabilityUntilDoneRetries(t *testing.T) {
+	factStore := &failingPutStore{StateStore: store.NewMemoryStore(), failuresLeft: 1}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	PublishGateProxyCapabilityUntilDone(ctx, factStore, "node-1", true)
+	if fact, getError := factStore.Get(ctx, types.KeyObservedNodeGateKeyDelivery("node-1")); getError != nil || string(fact.Value) != types.GateKeyDeliveryVersion {
+		t.Fatalf("capability not published after a failed first attempt: %v", getError)
+	}
+}
+
+// failingPutStore fails the first failuresLeft Put calls.
+type failingPutStore struct {
+	store.StateStore     // StateStore handles every other call.
+	failuresLeft     int // failuresLeft is the number of Puts still to fail.
+}
+
+// Put fails while failuresLeft > 0, then delegates.
+func (failingStore *failingPutStore) Put(ctx context.Context, key string, value []byte) (int64, error) {
+	if failingStore.failuresLeft > 0 {
+		failingStore.failuresLeft--
+		return 0, errors.New("etcd unavailable")
+	}
+	return failingStore.StateStore.Put(ctx, key, value)
 }

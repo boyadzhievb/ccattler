@@ -179,7 +179,7 @@ func (gateKeyCache *GateKeyCache) installPair(deliveredPair DeliveredGateKeyPair
 // writePairFiles writes both files into a staging directory and renames it
 // into place, so a crash never leaves a certificate without its key.
 func (gateKeyCache *GateKeyCache) writePairFiles(deliveredPair DeliveredGateKeyPair) error {
-	randomSuffix := make([]byte, 4)
+	randomSuffix := make([]byte, stagingSuffixRandomBytes)
 	_, _ = rand.Read(randomSuffix)
 	stagingDirectory := filepath.Join(gateKeyCache.baseDirectory, secretMaterialStagingMarker+deliveredPair.Gate+"-"+hex.EncodeToString(randomSuffix))
 	if mkdirError := os.Mkdir(stagingDirectory, secretMaterialDirectoryMode); mkdirError != nil {

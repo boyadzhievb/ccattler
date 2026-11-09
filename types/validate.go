@@ -105,3 +105,11 @@ func ParseDurationSeconds(durationString string) int {
 func IsSystemOwnedSecretName(secretName string) bool {
 	return strings.HasPrefix(secretName, SecretNameRouteTLSKeyPrefix)
 }
+
+// GateUsesKeySecret reports whether a gate's private key is the user secret
+// named by tls/key_secret: only in manual mode, and never a system-owned name.
+// Otherwise a TLS gate uses its system key (secrets/route/{gate}/tls/key).
+// Delivery, RouteTLSController and the gate-key migration share this rule.
+func GateUsesKeySecret(tlsMode RouteTLSMode, keySecretName string) bool {
+	return tlsMode == RouteTLSModeManual && keySecretName != "" && !IsSystemOwnedSecretName(keySecretName)
+}

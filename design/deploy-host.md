@@ -94,8 +94,9 @@ Things to know when checking by hand:
 
 - The gate listeners bind the node IP (`192.168.124.20:443`), not loopback:
   `curl --resolve host:443:192.168.124.20 https://host/`.
-- The playbook's CNI chain cleanup prints `fatal: ... ignoring` on fresh VMs;
-  the task is `ignore_errors` and harmless.
+- The playbook's CNI chain cleanup used to print `fatal: ... ignoring`
+  (`[ERROR]` with the Ansible on Debian 13) on fresh VMs; it now only touches
+  chains that exist and succeeds.
 - The CLI has no command to read a single fact; use the state API on the
   control node: `curl --cacert /etc/ccattler/pki/ca.pem -H "Authorization: Bearer $(sudo cat /etc/ccattler/local-token)" "https://127.0.0.1:9770/api/state?key=observed/gate-keys/migration"`.
 
@@ -110,3 +111,4 @@ Things to know when checking by hand:
 | New group membership does not reach a running GitHub runner | restart the runner service after setup |
 | A separate `m4800.yml` workflow duplicated `deploy-testbed.yml` | removed; the host gets the `deploy` label instead |
 | No CLI to read one fact | documented the state API call above (candidate for a `cca` command) |
+| CNI chain cleanup "failed and was ignored" on every fresh VM (`[ERROR]` on newer Ansible) | task only touches existing chains |

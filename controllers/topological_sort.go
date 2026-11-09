@@ -105,6 +105,8 @@ func controllerOutputPrefixes() map[string][]string {
 		"drain":                {"derived/node/"},
 		"cluster-autoscale":    {"derived/capacity/request/"},
 		"route":                {"derived/route/"},
+		"route-tls":            {"derived/route/", "secrets/route/"},
+		"gate-key-migration":   {"desired/route/", "derived/route/", "secrets/route/", "observed/gate-keys/"},
 		"auth":                 {},
 	}
 }

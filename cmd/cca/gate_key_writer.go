@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,8 +37,12 @@ func newAPIGateKeyWriter() *apiGateKeyWriter {
 }
 
 // PutGateKey sends the key of gateName; any non-200 answer is an error with
-// the server's message (never the key).
+// the server's message (never the key). A private key never travels over plain
+// HTTP except to a loopback server.
 func (gateKeyWriter *apiGateKeyWriter) PutGateKey(ctx context.Context, gateName string, privateKeyPEM string) error {
+	if transportError := requireSecureKeyTransport(gateKeyWriter.apiBaseURL); transportError != nil {
+		return transportError
+	}
 	requestBody, _ := json.Marshal(api.GateKeyRequest{Gate: gateName, PrivateKeyPEM: privateKeyPEM})
 	requestContext, cancelRequest := context.WithTimeout(ctx, gateKeyRequestTimeout)
 	defer cancelRequest()
@@ -55,6 +61,23 @@ func (gateKeyWriter *apiGateKeyWriter) PutGateKey(ctx context.Context, gateName 
 	}
 	errorBody, _ := io.ReadAll(io.LimitReader(response.Body, gateKeyErrorBodyLimit))
 	return fmt.Errorf("API returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(errorBody)))
+}
+
+// requireSecureKeyTransport refuses an http:// API URL unless its host is a
+// loopback address (no CA certificate found means the CLI falls back to http).
+func requireSecureKeyTransport(apiBaseURL string) error {
+	parsedURL, parseError := url.Parse(apiBaseURL)
+	if parseError != nil {
+		return fmt.Errorf("invalid API address %q: %w", apiBaseURL, parseError)
+	}
+	if parsedURL.Scheme == "https" {
+		return nil
+	}
+	hostName := parsedURL.Hostname()
+	if hostIP := net.ParseIP(hostName); hostName == "localhost" || (hostIP != nil && hostIP.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("refusing to send a TLS private key over plain HTTP to %s (no cluster CA certificate found; use https or key secret)", apiBaseURL)
 }
 
 // localSimulationGateKeyWriter accepts inline gate keys in local in-memory

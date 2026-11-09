@@ -699,7 +699,9 @@ Gate-key delivery (`POST /api/node/gate-keys`, Flow 28, M176) uses the same stor
 `checkDeliveryNode` and `refusalAuditLimiter`; it additionally requires
 `observed/node/{id}/gate_proxy = enabled`. Call tree: NETWORK_GRAPH.md "Gate-key delivery to agents".
 `/api/secret` refuses get/set/delete of system-owned `route/…` names (403) and hides them from the
-list; secret rotation still re-wraps them. The compiler rejects services and `key secret` referencing them.
+list and from `/api/status`; secret rotation still re-wraps them. The compiler rejects services and `key secret` referencing them.
+`RequiredCapabilityForFactWrite`: `desired/route/{gate}/tls/key_secret` needs `secret.use` (like service secret grants).
+Server-side `lang.Diff(..., allowLocalFiles=false)`, `applyDirect` and the policy gate call `lang.ValidateNoLocalFileReferences` before compiling (no server file reads).
 
 ---
 

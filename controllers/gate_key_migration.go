@@ -38,16 +38,16 @@ type gateKeyMigrationStatus struct {
 
 // GateKeyMigrationController performs the one-time cutover of plaintext gate
 // TLS keys (Flow 28 step 7): it seals every desired|derived/route/{gate}/tls/key
-// fact that has no sealed copy, and deletes the plaintext facts only when every
+// fact of a gate that uses a system key and has no sealed copy, and deletes the plaintext facts only when every
 // non-disabled node reports gate_key_delivery = v1, so old agents keep TLS.
 type GateKeyMigrationController struct {
-	secretKeyProvider security.KeyProvider // secretKeyProvider seals plaintext keys.
+	keyProviderSource security.KeyProviderSource // keyProviderSource supplies the current key that seals plaintext keys.
 }
 
-// NewGateKeyMigrationController creates the migration controller with the
-// server's secret key provider.
-func NewGateKeyMigrationController(secretKeyProvider security.KeyProvider) *GateKeyMigrationController {
-	return &GateKeyMigrationController{secretKeyProvider: secretKeyProvider}
+// NewGateKeyMigrationController creates the migration controller sealing with
+// the current key of the server's secret store.
+func NewGateKeyMigrationController(keyProviderSource security.KeyProviderSource) *GateKeyMigrationController {
+	return &GateKeyMigrationController{keyProviderSource: keyProviderSource}
 }
 
 // Name returns "gate-key-migration", identifying this controller in logs.
@@ -68,22 +68,22 @@ func (gateKeyMigrationController *GateKeyMigrationController) Watch() []string {
 	}
 }
 
-// Reconcile seals plaintext keys that have no sealed copy, deletes plaintext
-// keys once every node is upgraded and the key is sealed (or its gate has no
-// tls), and publishes the migration status when it changed.
+// Reconcile seals plaintext keys of system-key gates that have no sealed copy,
+// deletes plaintext keys once every node is upgraded and the key is sealed (or
+// the gate needs no system key), and publishes the migration status when changed.
 func (gateKeyMigrationController *GateKeyMigrationController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	plaintextKeys := collectPlaintextGateKeys(facts)
-	tlsGates := collectTLSGateNames(facts)
+	systemKeyGates := parseSystemKeyGateNames(facts)
 	sealedGates := collectSealedGateKeyNames(facts)
 	pendingNodes := collectNodesWithoutGateKeyDelivery(facts)
 
 	var changes []Change
 	sealedNow := make(map[string]bool)
 	for _, gateName := range sortedPlaintextGateNames(plaintextKeys) {
-		if sealedGates[gateName] || !tlsGates[gateName] {
+		if sealedGates[gateName] || !systemKeyGates[gateName] {
 			continue
 		}
-		sealedKey, sealError := security.SealSecretValue(ctx, gateKeyMigrationController.secretKeyProvider, []byte(plaintextKeys[gateName].privateKeyPEM))
+		sealedKey, sealError := security.SealSecretValue(ctx, gateKeyMigrationController.keyProviderSource.CurrentKeyProvider(), []byte(plaintextKeys[gateName].privateKeyPEM))
 		if sealError != nil {
 			return nil, fmt.Errorf("seal plaintext key of gate %s: %w", gateName, sealError)
 		}
@@ -94,7 +94,7 @@ func (gateKeyMigrationController *GateKeyMigrationController) Reconcile(ctx cont
 
 	remainingPlaintextCount := 0
 	for _, gateName := range sortedPlaintextGateNames(plaintextKeys) {
-		deletable := len(pendingNodes) == 0 && !sealedNow[gateName] && (sealedGates[gateName] || !tlsGates[gateName])
+		deletable := len(pendingNodes) == 0 && !sealedNow[gateName] && (sealedGates[gateName] || !systemKeyGates[gateName])
 		if !deletable {
 			remainingPlaintextCount += len(plaintextKeys[gateName].factKeys)
 			continue
@@ -142,17 +142,6 @@ func collectPlaintextGateKeys(facts []store.Fact) map[string]*plaintextGateKey {
 		sort.Strings(plaintextKey.factKeys)
 	}
 	return plaintextKeys
-}
-
-// collectTLSGateNames returns the gates that declare tls (desired tls/mode).
-func collectTLSGateNames(facts []store.Fact) map[string]bool {
-	tlsGates := make(map[string]bool)
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanDesiredRoutes) {
-		if gateName, isModeFact := strings.CutSuffix(strings.TrimPrefix(fact.Key, types.ScanDesiredRoutes), "/tls/mode"); isModeFact && len(fact.Value) > 0 {
-			tlsGates[gateName] = true
-		}
-	}
-	return tlsGates
 }
 
 // collectSealedGateKeyNames returns the gates with a sealed system key.

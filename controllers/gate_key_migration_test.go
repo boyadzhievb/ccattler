@@ -19,7 +19,7 @@ import (
 func newTestGateKeyMigrationController(t *testing.T) (*GateKeyMigrationController, security.KeyProvider) {
 	t.Helper()
 	_, secretKeyProvider := newTestRouteTLSController(t)
-	return NewGateKeyMigrationController(secretKeyProvider), secretKeyProvider
+	return NewGateKeyMigrationController(newTestKeyProviderSource(secretKeyProvider)), secretKeyProvider
 }
 
 // sealedGateKeyPath returns secrets/route/{gate}/tls/key.
@@ -150,5 +150,29 @@ func TestGateKeyMigrationThroughRunnerCompletesWithUpgradedNodes(t *testing.T) {
 	}
 	if _, getError := factStore.Get(ctx, sealedGateKeyPath("auto-gate")); getError != nil {
 		t.Errorf("sealed key missing: %v", getError)
+	}
+}
+
+func TestGateKeyMigrationNeverSealsKeysOfKeySecretGates(t *testing.T) {
+	migrationController, _ := newTestGateKeyMigrationController(t)
+	facts := buildFacts(
+		kv(types.KeyDesiredRouteTLSMode("secret-gate"), "manual"),
+		kv(types.KeyDesiredRouteTLSKeySecret("secret-gate"), "platform/key"),
+		kv(types.KeyDesiredRouteTLSKey("secret-gate"), "LEFTOVER-PEM"),
+		kv(types.KeyObservedNodeState("node-1"), string(types.NodeAlive)),
+		kv(types.KeyObservedNodeGateKeyDelivery("node-1"), types.GateKeyDeliveryVersion),
+	)
+	changes, _ := migrationController.Reconcile(context.Background(), facts)
+	for _, change := range changes {
+		if change.Key == sealedGateKeyPath("secret-gate") {
+			t.Fatal("sealed a system key for a gate that uses a key secret (route-tls would delete it again)")
+		}
+	}
+	deleted := false
+	for _, change := range changes {
+		deleted = deleted || (change.Type == store.OpDelete && change.Key == types.KeyDesiredRouteTLSKey("secret-gate"))
+	}
+	if !deleted {
+		t.Error("leftover plaintext key of a key-secret gate not deleted once all nodes are upgraded")
 	}
 }
