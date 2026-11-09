@@ -373,5 +373,5 @@ Further:
 - Gate keys during outages: agent restart with the API down keeps serving TLS from `/run/ccattler/gate-keys/`; reboot with the API down reports `gate_keys = waiting`; a removed gate's directory is deleted.
 - Materialization: tmpfs, `0700`/`0400`, removed after stop; nothing under the logs directory; no secret value in logs, events or `cca` output.
 - Enrollment response has no key; a joined worker has no key file.
-- Gate keys: no plaintext key fact after reconcile and after apply of an inline PEM; gate TLS e2e (T1–T15) unchanged.
+- Gate keys: no plaintext key fact after reconcile and after apply of an inline PEM; gate TLS e2e (T1–T15) unchanged; M176 e2e T16 (keys delivered to every agent node, migration completed, no plaintext facts), T17 (acceptance B: a node without a local backend terminates TLS), T18 (agent restart with cca-server down keeps TLS from the tmpfs cache).
 - Deploy cluster: secrets and connection strings still reach Airflow through migration and retirement; rotation during traffic.

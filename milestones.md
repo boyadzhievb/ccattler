@@ -191,6 +191,9 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
 - [x] `POST /api/node/gate-keys`: enrolled, non-disabled node reporting `gate_proxy = enabled`; returns certificate and key together per gate (pair validated), pending gates listed; audited separately, refusals rate-limited (`GateKeyDeliveryService`, store principal `secret-delivery` now also reads `desired/route/`, `derived/route/`; refusal rate limiter shared with Flow 27)
 - [x] Agent cache `/run/ccattler/gate-keys/{gate}/` (tmpfs, private key `0400`), reload on agent restart, keep serving while the API is down, reconcile on gate removal/key rotation; `observed/node/{id}/gate_keys = ready | waiting` (`GateKeyCache` + `GateKeySyncer`; refetch on `/tls/` watch events, 5 min fallback, 2–30 s backoff; pending gates keep their cached pair; gate proxy reads pairs only from the cache, never key facts)
 - [ ] Tests: no plaintext key fact after reconcile and after inline apply; acceptance B (node without a local backend terminates TLS); agent restart with API down keeps TLS; gate TLS e2e T1–T15 unchanged
+  - [x] Unit/integration: route-tls seals and never writes a key fact; apply never stores the inline key and deletes the pre-M176 plaintext fact; migration seals then deletes; delivery, cache, syncer, handlers, system-owned secrets
+  - [x] Manual on m4800 (2026-11-09, fa8c0a4): 4 gates by SNI, cache survives agent restart with cca-server down, migration completed (design/deploy-host.md)
+  - [ ] e2e T16 (keys delivered, migration completed), T17 (acceptance B), T18 (agent restart with API down) added to `gate_tls_checks.sh`; need a green Deploy Testbed run on m4800 with T1–T18
 
 ### Phase 177 — Root Key, Keyring & Key Migration (M177)
 

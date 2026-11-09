@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# gate_tls_checks.sh — M170 gate TLS end-to-end checks (T1–T15).
+# gate_tls_checks.sh — gate TLS end-to-end checks: M170 (T1–T15) and
+# M176 gate-key sealing and delivery (T16–T18).
 #
 # Sourced by cluster_test.sh after the gate-tls workload converges. Uses its
 # helpers (log, fail, ssh_vm, scp_to_vm) and variables (CTRL_NODE, VM_NAMES,
@@ -250,6 +251,93 @@ gate_tls_rotation_loop_finished() {
     [[ "${logged_requests:-0}" -ge "$GATE_TLS_ROTATION_REQUESTS" ]]
 }
 
+# gate_tls_fact_value prints the value of one store fact via the state API
+# (empty when missing or unreadable).
+gate_tls_fact_value() {
+    curl -sf $CURL_TLS "${CCA_API}/api/state?key=$1" 2>/dev/null | jq -r '.value // empty' 2>/dev/null || true
+}
+
+# gate_tls_node_keys_ready succeeds when a node reports gate_key_delivery = v1
+# and gate_keys state ready.
+gate_tls_node_keys_ready() {
+    local vm="$1"
+    [[ "$(gate_tls_fact_value "observed/node/${vm}/gate_key_delivery")" == "v1" ]] \
+        && [[ "$(gate_tls_fact_value "observed/node/${vm}/gate_keys" | jq -r '.state' 2>/dev/null)" == "ready" ]]
+}
+
+# gate_tls_migration_completed succeeds when the plaintext gate-key migration
+# reports completed with no plaintext key fact left.
+gate_tls_migration_completed() {
+    local migration_status
+    migration_status=$(gate_tls_fact_value "observed/gate-keys/migration")
+    [[ "$(echo "$migration_status" | jq -r '.state' 2>/dev/null)" == "completed" ]] \
+        && [[ "$(echo "$migration_status" | jq -r '.plaintext_count' 2>/dev/null)" == "0" ]]
+}
+
+# gate_tls_check_key_delivery covers T16 (M176): every agent node fetched the
+# gate keys through the API, and no plaintext gate key fact is left.
+gate_tls_check_key_delivery() {
+    local vm
+    for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
+        gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "gate keys ready on $vm" gate_tls_node_keys_ready "$vm"
+    done
+    gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "gate-key migration completed" gate_tls_migration_completed
+    log "  T16 PASS: gate keys delivered to all ${#GATE_TLS_AGENT_NODES[@]} agent nodes, no plaintext key facts"
+}
+
+# gate_tls_node_without_instance prints an agent node that runs no instance of
+# the service (empty when every agent node runs one).
+gate_tls_node_without_instance() {
+    local service="$1" vm hosting_nodes
+    hosting_nodes=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+        | jq -r --arg service "$service" '.instances[] | select(.service == $service) | .node' 2>/dev/null)
+    for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
+        grep -qx "$vm" <<<"$hosting_nodes" || { echo "$vm"; return; }
+    done
+}
+
+# gate_tls_check_remote_backend covers T17 (M176 acceptance B): a node with no
+# local instance of the gate's service still terminates TLS for it.
+gate_tls_check_remote_backend() {
+    local remote_node
+    remote_node=$(gate_tls_node_without_instance "tls-manual")
+    if [[ -z "$remote_node" ]]; then
+        log "  T17 SKIP: every agent node runs a tls-manual instance"
+        return
+    fi
+    gate_tls_wait_until "$GATE_TLS_CONVERGE_TIMEOUT" "tls-manual HTTPS via $remote_node (no local backend)" \
+        gate_tls_fingerprint_is "${NODE_IPS[$remote_node]}" "tls-manual.home.arpa" "$(gate_tls_file_fingerprint)"
+    log "  T17 PASS: $remote_node (no local tls-manual instance) serves the manual certificate"
+}
+
+# gate_tls_check_cache_without_api covers T18 (M176): with cca-server stopped,
+# a restarted agent serves gate TLS from its tmpfs gate-key cache.
+gate_tls_check_cache_without_api() {
+    local worker_ip="${NODE_IPS[$WORKER1_NODE]}"
+    ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server" || fail "gate-tls T18: cca-server stop failed"
+    ssh_vm "$WORKER1_NODE" "sudo systemctl restart cca-agent" || fail "gate-tls T18: cca-agent restart failed"
+    if ! gate_tls_wait_until_quiet "$GATE_TLS_RECOVERY_TIMEOUT" gate_tls_https_ok "$worker_ip" "tls-auto.home.arpa"; then
+        ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server" || true
+        fail "gate-tls T18: $WORKER1_NODE stopped serving TLS after an agent restart with the API down"
+    fi
+    ssh_vm "$CTRL_NODE" "sudo systemctl start cca-server" || fail "gate-tls T18: cca-server start failed"
+    gate_tls_wait_until "$GATE_TLS_RECOVERY_TIMEOUT" "gate keys ready on $WORKER1_NODE after API recovery" \
+        gate_tls_node_keys_ready "$WORKER1_NODE"
+    log "  T18 PASS: restarted agent served TLS from its gate-key cache while cca-server was down"
+}
+
+# gate_tls_wait_until_quiet retries a command until it succeeds or timeout
+# seconds pass; returns non-zero instead of failing the test.
+gate_tls_wait_until_quiet() {
+    local timeout="$1"; shift
+    local deadline=$((SECONDS + timeout))
+    while [[ $SECONDS -lt $deadline ]]; do
+        "$@" && return 0
+        sleep 3
+    done
+    return 1
+}
+
 # gate_tls_check_rotation covers T5: manual cert rotation without failed requests.
 gate_tls_check_rotation() {
     local old_fingerprint new_fingerprint total_requests failed_requests
@@ -341,14 +429,16 @@ gate_tls_check_removal() {
     log "  T14 PASS: removing tls stops HTTPS, plain HTTP serves without redirect (original re-applied)"
 }
 
-# run_gate_tls_checks runs T1–T15, read-only checks first, disruptive ones last.
+# run_gate_tls_checks runs T1–T18, read-only checks first, disruptive ones last.
 run_gate_tls_checks() {
     log "Validating gate TLS (M170, node :${GATE_TLS_PORT} listener)..."
     gate_tls_select_node
     gate_tls_check_issuance
     gate_tls_check_https_every_node
+    gate_tls_check_key_delivery
     gate_tls_check_identity
     gate_tls_check_manual_cert
+    gate_tls_check_remote_backend
     gate_tls_check_round_robin
     gate_tls_check_sticky
     gate_tls_check_two_gates
@@ -358,7 +448,8 @@ run_gate_tls_checks() {
     gate_tls_check_no_key_leakage
     gate_tls_check_rotation
     gate_tls_check_restart_stability
+    gate_tls_check_cache_without_api
     gate_tls_check_backend_failure
     gate_tls_check_removal
-    log "Gate TLS checks PASSED (T1–T15)"
+    log "Gate TLS checks PASSED (T1–T18)"
 }

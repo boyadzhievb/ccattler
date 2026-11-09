@@ -1813,7 +1813,8 @@ else
 fi
 
 # ---- Step 5.17: Gate TLS end-to-end checks (M170) ----
-# T1–T15 from design/milestones/m170-gate-tls-e2e.md: certificate issuance,
+# T1–T15 from design/milestones/m170-gate-tls-e2e.md, T16–T18 for M176 gate-key
+# delivery (Flow 28): certificate issuance,
 # HTTPS on every node's :443 gate listener, SNI selection, rotation, restarts,
 # backend failure, and TLS removal.
 
