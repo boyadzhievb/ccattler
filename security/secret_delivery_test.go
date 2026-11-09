@@ -24,6 +24,7 @@ type deliveryTestFixture struct {
 	rawStore        *store.MemoryStore     // rawStore is the unrestricted store used to set up facts.
 	secretStore     *SecretStore           // secretStore writes encrypted secrets.
 	auditLog        *InMemoryAuditLog      // auditLog captures delivery decisions.
+	deliveryStore   *AuthorizedStore       // deliveryStore is bound to SecretDeliveryPrincipal.
 	deliveryService *SecretDeliveryService // deliveryService is the system under test.
 }
 
@@ -62,6 +63,7 @@ func newDeliveryTestFixture(testContext *testing.T) *deliveryTestFixture {
 		rawStore:        rawStore,
 		secretStore:     secretStore,
 		auditLog:        auditLog,
+		deliveryStore:   deliveryStore,
 		deliveryService: NewSecretDeliveryService(deliveryStore, secretStore, auditLog),
 	}
 }
@@ -261,10 +263,18 @@ func TestSecretDeliveryHierarchicalNamesAndInstanceIDValidation(testContext *tes
 
 func TestSecretDeliveryRefusalAuditMapIsBounded(testContext *testing.T) {
 	fixture := newDeliveryTestFixture(testContext)
-	for attempt := 0; attempt < secretDeliveryRefusalAuditMaxEntries+50; attempt++ {
+	for attempt := 0; attempt < refusalAuditMaxEntries+50; attempt++ {
 		fixture.deliveryService.auditRefusal("node-1", "inst-"+strconv.Itoa(attempt), "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "x"})
 	}
-	if mapSize := len(fixture.deliveryService.lastRefusalAuditTimes); mapSize > secretDeliveryRefusalAuditMaxEntries {
+	if mapSize := fixture.deliveryService.refusalAuditLimiter.trackedKeyCount(); mapSize > refusalAuditMaxEntries {
 		testContext.Fatalf("rate-limit map grew to %d", mapSize)
 	}
+}
+
+// trackedKeyCount returns the number of rate-limit entries (bounded by
+// refusalAuditMaxEntries).
+func (auditLimiter *refusalAuditLimiter) trackedKeyCount() int {
+	auditLimiter.mutex.Lock()
+	defer auditLimiter.mutex.Unlock()
+	return len(auditLimiter.lastAuditTimes)
 }

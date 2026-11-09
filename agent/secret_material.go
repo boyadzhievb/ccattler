@@ -193,17 +193,24 @@ func (materialStore *SecretMaterialStore) WriteConnectionFile(instanceID string,
 // prepareBaseDirectory creates the base directory, restricts it to root
 // (0700), and verifies it is memory-backed when that is required.
 func (materialStore *SecretMaterialStore) prepareBaseDirectory() error {
-	if mkdirError := os.MkdirAll(materialStore.baseDirectory, secretMaterialDirectoryMode); mkdirError != nil {
+	return prepareMaterialDirectory(materialStore.baseDirectory, materialStore.requireMemoryFilesystem)
+}
+
+// prepareMaterialDirectory creates a root-only (0700) directory for secret
+// material and, when requireMemory is set, verifies it is on tmpfs or ramfs.
+// Shared by instance secrets (Flow 27) and the gate-key cache (Flow 28).
+func prepareMaterialDirectory(directory string, requireMemory bool) error {
+	if mkdirError := os.MkdirAll(directory, secretMaterialDirectoryMode); mkdirError != nil {
 		return fmt.Errorf("create secret material directory: %w", mkdirError)
 	}
-	if chmodError := os.Chmod(materialStore.baseDirectory, secretMaterialDirectoryMode); chmodError != nil {
+	if chmodError := os.Chmod(directory, secretMaterialDirectoryMode); chmodError != nil {
 		return fmt.Errorf("restrict secret material directory: %w", chmodError)
 	}
-	if !materialStore.requireMemoryFilesystem {
+	if !requireMemory {
 		return nil
 	}
-	if memoryBacked, checkError := isMemoryFilesystem(materialStore.baseDirectory); checkError != nil || !memoryBacked {
-		return fmt.Errorf("refusing to write secrets: %s is not on tmpfs or ramfs (%v)", materialStore.baseDirectory, checkError)
+	if memoryBacked, checkError := isMemoryFilesystem(directory); checkError != nil || !memoryBacked {
+		return fmt.Errorf("refusing to write secrets: %s is not on tmpfs or ramfs (%v)", directory, checkError)
 	}
 	return nil
 }

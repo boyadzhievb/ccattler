@@ -675,12 +675,13 @@ certificate from `cca init`, never ran `cca join`, and its agent shares that cer
 
 ```
 Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
-├── principal.Kind == node AND auth method == mtls AND request.TLS != nil   [else 403]
+├── requireNodeMTLSCaller: node principal AND auth method == mtls AND request.TLS != nil   [else 403]
 ├── SecretDeliveryService.DeliverInstanceSecrets(ctx, nodeID=cert CN, instanceID)
 │   ├── authorizeNodeForInstance
-│   │   ├── getDeliveryFact                                   [missing → refusal; other store error → 500, not audited]
-│   │   ├── Get("enrollment/node/{node}")                      [not enrolled → not_authorized]
-│   │   ├── Get("observed/node/{node}/state") == disabled      [→ not_authorized]
+│   │   ├── getOptionalDeliveryFact                           [missing → refusal; other store error → 500, not audited]
+│   │   ├── checkDeliveryNode (shared with gate-key delivery)
+│   │   │   ├── Get("enrollment/node/{node}")                  [not enrolled → not_authorized]
+│   │   │   └── Get("observed/node/{node}/state") == disabled  [→ not_authorized]
 │   │   ├── Get("placement/instance/{id}") == node             [→ not_authorized]
 │   │   └── Get("observed/instance/{id}/service") → service    [agent-writable until M181]
 │   ├── resolveRequiredSecretNames(service)
@@ -691,6 +692,11 @@ Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
 │   └── auditDecision / auditRefusal                           [names only; refusals rate-limited 1/min per node|instance|reason]
 └── writeSecretDeliveryRefusal                                 [403 not_authorized, 409 secret_missing]
 ```
+
+Gate-key delivery (`POST /api/node/gate-keys`, Flow 28, M176) uses the same store principal
+(role `secret-delivery` also reads `desired/route/`, `derived/route/`), `requireNodeMTLSCaller`,
+`checkDeliveryNode` and `refusalAuditLimiter`; it additionally requires
+`observed/node/{id}/gate_proxy = enabled`. Call tree: NETWORK_GRAPH.md "Gate-key delivery to agents".
 
 ---
 

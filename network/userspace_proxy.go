@@ -83,6 +83,8 @@ type UserSpaceProxy struct {
 	// "airflow.home.arpa"): target service, sticky cookie settings, and TLS
 	// certificate. Built from desired/route/* and derived/route/* facts.
 	gateHosts map[string]*gateHostEntry
+	// gateCertificateSource supplies delivered gate TLS pairs (Flow 28); nil means no gate TLS.
+	gateCertificateSource GateCertificateSource
 	// gateHostsMutex protects gateHosts.
 	gateHostsMutex sync.RWMutex
 	// gateHostsExpiresAt tracks when the cached gate table expires.
@@ -561,19 +563,15 @@ func (userSpaceProxy *UserSpaceProxy) lookupGateHost(ctx context.Context, hostna
 	return refreshedGateHosts[hostname]
 }
 
-// refreshGateHosts scans desired and derived route facts and rebuilds the
-// gate table. Returns the new table, or nil on store error.
+// refreshGateHosts scans desired route facts and rebuilds the gate table.
+// Returns the new table, or nil on store error.
 func (userSpaceProxy *UserSpaceProxy) refreshGateHosts(ctx context.Context) map[string]*gateHostEntry {
 	desiredRouteFacts, desiredScanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDesiredRoutes)
 	if desiredScanError != nil {
 		return nil
 	}
-	derivedRouteFacts, derivedScanError := userSpaceProxy.factStore.Scan(ctx, types.ScanDerivedRoutes)
-	if derivedScanError != nil {
-		return nil
-	}
 
-	refreshedGateHosts := buildGateHostEntries(desiredRouteFacts, derivedRouteFacts)
+	refreshedGateHosts := buildGateHostEntries(desiredRouteFacts)
 
 	userSpaceProxy.gateHostsMutex.Lock()
 	userSpaceProxy.gateHosts = refreshedGateHosts

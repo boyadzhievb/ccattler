@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -46,15 +47,50 @@ func newSecretDeliveryTestServer(testContext *testing.T) *Server {
 	if putError := secretStore.PutSecret(ctx, "db.password", []byte("s3cret")); putError != nil {
 		testContext.Fatalf("PutSecret: %v", putError)
 	}
+	putGateKeyHandlerTestFacts(testContext, rawStore, secretStore)
 	apiServer := NewServer(rawStore)
-	apiServer.SetSecretDeliveryService(security.NewSecretDeliveryService(deliveryStore, secretStore, security.NewInMemoryAuditLog(deliveryHandlerAuditCapacity)))
+	auditLog := security.NewInMemoryAuditLog(deliveryHandlerAuditCapacity)
+	apiServer.SetSecretDeliveryService(security.NewSecretDeliveryService(deliveryStore, secretStore, auditLog))
+	apiServer.SetGateKeyDeliveryService(security.NewGateKeyDeliveryService(deliveryStore, secretStore, auditLog))
 	return apiServer
+}
+
+// putGateKeyHandlerTestFacts makes node-1 a gate proxy node and adds the auto
+// TLS gate "web" with a certificate fact and its sealed system key.
+func putGateKeyHandlerTestFacts(testContext *testing.T, rawStore store.StateStore, secretStore *security.SecretStore) {
+	testContext.Helper()
+	ctx := context.Background()
+	certificateAuthority, caError := security.NewCertificateAuthority(time.Hour)
+	if caError != nil {
+		testContext.Fatal(caError)
+	}
+	issued, issueError := certificateAuthority.IssueCertificate(security.IssueCertificateRequest{CommonName: "web.example.com", DNSNames: []string{"web.example.com"}, TTL: time.Hour})
+	if issueError != nil {
+		testContext.Fatal(issueError)
+	}
+	for factKey, factValue := range map[string]string{
+		types.KeyObservedNodeGateProxy("node-1"): string(types.GateProxyEnabled),
+		types.KeyDesiredRouteHost("web"):         "web.example.com",
+		types.KeyDesiredRouteTLSMode("web"):      string(types.RouteTLSModeAuto),
+		types.KeyDerivedRouteTLSCert("web"):      string(issued.CertificatePEM),
+	} {
+		_, _ = rawStore.Put(ctx, factKey, []byte(factValue))
+	}
+	if putError := secretStore.PutSecret(ctx, types.SecretNameRouteTLSKey("web"), issued.PrivateKeyPEM); putError != nil {
+		testContext.Fatal(putError)
+	}
 }
 
 // postNodeSecretDelivery sends a delivery request as the given principal and
 // auth method; withTLS simulates an mTLS connection.
 func postNodeSecretDelivery(apiServer *Server, principal security.Principal, authMethod string, withTLS bool, body string) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, NodeSecretDeliveryPath, strings.NewReader(body))
+	return postNodeDeliveryRequest(apiServer.handleNodeSecretDelivery, NodeSecretDeliveryPath, principal, authMethod, withTLS, body)
+}
+
+// postNodeDeliveryRequest sends a POST to a node delivery handler as the given
+// principal and auth method; withTLS simulates an mTLS connection.
+func postNodeDeliveryRequest(handler http.HandlerFunc, path string, principal security.Principal, authMethod string, withTLS bool, body string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	requestContext := security.WithPrincipalStruct(request.Context(), principal)
 	requestContext = security.WithAuthMethod(requestContext, authMethod)
 	request = request.WithContext(requestContext)
@@ -62,7 +98,7 @@ func postNodeSecretDelivery(apiServer *Server, principal security.Principal, aut
 		request.TLS = &tls.ConnectionState{}
 	}
 	responseRecorder := httptest.NewRecorder()
-	apiServer.handleNodeSecretDelivery(responseRecorder, request)
+	handler(responseRecorder, request)
 	return responseRecorder
 }
 
@@ -111,5 +147,32 @@ func TestNodeSecretDeliveryHandlerRefusesOtherNodesInstance(testContext *testing
 	_ = json.Unmarshal(responseRecorder.Body.Bytes(), &refusal)
 	if responseRecorder.Code != http.StatusForbidden || refusal.Reason != string(security.SecretDeliveryNotAuthorized) {
 		testContext.Fatalf("status = %d, refusal %+v", responseRecorder.Code, refusal)
+	}
+}
+
+func TestNodeGateKeyDeliveryHandlerServesGateProxyNodeOnly(testContext *testing.T) {
+	apiServer := newSecretDeliveryTestServer(testContext)
+	nodePrincipal := security.Principal{Kind: security.PrincipalKindNode, Name: "node-1"}
+	responseRecorder := postNodeDeliveryRequest(apiServer.handleNodeGateKeyDelivery, NodeGateKeyDeliveryPath, nodePrincipal, "mtls", true, "")
+	if responseRecorder.Code != http.StatusOK || responseRecorder.Header().Get("Cache-Control") != "no-store" {
+		testContext.Fatalf("status = %d, body %s", responseRecorder.Code, responseRecorder.Body.String())
+	}
+	var delivered security.DeliveredGateKeys
+	if decodeError := json.Unmarshal(responseRecorder.Body.Bytes(), &delivered); decodeError != nil {
+		testContext.Fatalf("decode: %v", decodeError)
+	}
+	if len(delivered.Gates) != 1 || delivered.Gates[0].Gate != "web" || !strings.Contains(delivered.Gates[0].PrivateKeyPEM, "PRIVATE KEY") {
+		testContext.Fatalf("unexpected delivery %+v", delivered)
+	}
+
+	userPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "local-admin"}
+	userResponse := postNodeDeliveryRequest(apiServer.handleNodeGateKeyDelivery, NodeGateKeyDeliveryPath, userPrincipal, "local-token", true, "")
+	if userResponse.Code != http.StatusForbidden || strings.Contains(userResponse.Body.String(), "PRIVATE KEY") {
+		testContext.Fatalf("user: status = %d", userResponse.Code)
+	}
+	otherNode := security.Principal{Kind: security.PrincipalKindNode, Name: "node-2"}
+	otherResponse := postNodeDeliveryRequest(apiServer.handleNodeGateKeyDelivery, NodeGateKeyDeliveryPath, otherNode, "mtls", true, "")
+	if otherResponse.Code != http.StatusForbidden || strings.Contains(otherResponse.Body.String(), "PRIVATE KEY") {
+		testContext.Fatalf("unenrolled node: status = %d", otherResponse.Code)
 	}
 }

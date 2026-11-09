@@ -694,8 +694,8 @@ func loadSecretKeyProvider() security.KeyProvider {
 }
 
 // configureSecretStoreAndDelivery attaches the secret store and enables node
-// secret delivery (Flow 27) through a store bound to the secret-delivery
-// principal, so the api-server role never reads secrets/.
+// secret delivery (Flow 27) and gate-key delivery (Flow 28) through a store
+// bound to the secret-delivery principal, so the api-server role never reads secrets/.
 func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore store.StateStore, rbacAuthorizer *security.RBACAuthorizer, auditLog security.AuditLogger, secretKeyProvider security.KeyProvider) {
 	secretStore := security.NewSecretStore(factStore, secretKeyProvider)
 	statusAPIServer.SetSecretStore(secretStore)
@@ -704,7 +704,8 @@ func configureSecretStoreAndDelivery(statusAPIServer *api.Server, factStore stor
 	deliveryStore.SetServicePrincipal(security.SecretDeliveryPrincipal)
 	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.SecretDeliveryPrincipal, RoleName: "secret-delivery"})
 	statusAPIServer.SetSecretDeliveryService(security.NewSecretDeliveryService(deliveryStore, secretStore, auditLog))
-	fmt.Println("Secret store initialized (envelope encryption, local key); node secret delivery enabled")
+	statusAPIServer.SetGateKeyDeliveryService(security.NewGateKeyDeliveryService(deliveryStore, secretStore, auditLog))
+	fmt.Println("Secret store initialized (envelope encryption, local key); node secret and gate-key delivery enabled")
 }
 
 // startDNSServer launches the built-in DNS server in a background goroutine.

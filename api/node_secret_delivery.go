@@ -46,9 +46,8 @@ func (apiServer *Server) handleNodeSecretDelivery(responseWriter http.ResponseWr
 		writeJSONError(responseWriter, "secret delivery not configured", http.StatusServiceUnavailable)
 		return
 	}
-	callerPrincipal := security.PrincipalStructFromContext(request.Context())
-	if callerPrincipal.Kind != security.PrincipalKindNode || security.AuthMethodFromContext(request.Context()) != "mtls" || request.TLS == nil {
-		writeJSONError(responseWriter, "forbidden: node mTLS certificate required", http.StatusForbidden)
+	callerPrincipal, isNodeCaller := requireNodeMTLSCaller(responseWriter, request)
+	if !isNodeCaller {
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
@@ -59,7 +58,7 @@ func (apiServer *Server) handleNodeSecretDelivery(responseWriter http.ResponseWr
 	}
 	delivered, deliveryError := apiServer.secretDeliveryService.DeliverInstanceSecrets(request.Context(), callerPrincipal.Name, deliveryRequest.InstanceID)
 	if deliveryError != nil {
-		writeSecretDeliveryRefusal(responseWriter, callerPrincipal.Name, deliveryRequest.InstanceID, deliveryError)
+		writeSecretDeliveryRefusal(responseWriter, callerPrincipal.Name, "instance/"+deliveryRequest.InstanceID, deliveryError)
 		return
 	}
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -67,13 +66,26 @@ func (apiServer *Server) handleNodeSecretDelivery(responseWriter http.ResponseWr
 	_ = json.NewEncoder(responseWriter).Encode(delivered)
 }
 
+// requireNodeMTLSCaller accepts only node principals authenticated by mTLS
+// (users and tokens are refused with 403). The node ID is the certificate's
+// principal name, never request input. Shared by Flows 27 and 28.
+func requireNodeMTLSCaller(responseWriter http.ResponseWriter, request *http.Request) (security.Principal, bool) {
+	callerPrincipal := security.PrincipalStructFromContext(request.Context())
+	if callerPrincipal.Kind != security.PrincipalKindNode || security.AuthMethodFromContext(request.Context()) != "mtls" || request.TLS == nil {
+		writeJSONError(responseWriter, "forbidden: node mTLS certificate required", http.StatusForbidden)
+		return security.Principal{}, false
+	}
+	return callerPrincipal, true
+}
+
 // writeSecretDeliveryRefusal maps a refusal to 403 (not authorized) or 409
 // (granted secret missing); any other error is a 500 without detail.
-func writeSecretDeliveryRefusal(responseWriter http.ResponseWriter, nodeID string, instanceID string, deliveryError error) {
+// deliveryTarget names what was requested (instance/{id} or gates) for the log.
+func writeSecretDeliveryRefusal(responseWriter http.ResponseWriter, nodeID string, deliveryTarget string, deliveryError error) {
 	var refusal *security.SecretDeliveryRefusal
 	if !errors.As(deliveryError, &refusal) {
-		logging.Default().Error("secret delivery failed", "node", nodeID, "instance", instanceID, "error", deliveryError.Error())
-		writeJSONError(responseWriter, "secret delivery failed", http.StatusInternalServerError)
+		logging.Default().Error("delivery failed", "node", nodeID, "target", deliveryTarget, "error", deliveryError.Error())
+		writeJSONError(responseWriter, "delivery failed", http.StatusInternalServerError)
 		return
 	}
 	statusCode := http.StatusForbidden

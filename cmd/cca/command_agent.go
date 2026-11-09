@@ -365,8 +365,12 @@ func executeAgentCommand(parsedConfig agentCommandConfig) {
 		startAgentDebugServer(ctx, factStore, runtimeAdapter, parsedConfig, agentTLSConfig)
 	}
 
+	if capabilityError := agent.PublishGateProxyCapability(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyEnabled); capabilityError != nil {
+		logging.Default().Error("gate-key capability not published", "node", parsedConfig.nodeID, "error", capabilityError.Error())
+	}
 	if parsedConfig.proxyEnabled {
-		startAgentHTTPProxy(ctx, factStore, parsedConfig.nodeID, parsedConfig.proxyListenAddress, parsedConfig.proxyTLSListenAddress)
+		gateKeyCache := startAgentGateKeySync(ctx, factStore, parsedConfig, agentTLSConfig)
+		startAgentHTTPProxy(ctx, factStore, gateKeyCache, parsedConfig.nodeID, parsedConfig.proxyListenAddress, parsedConfig.proxyTLSListenAddress)
 	}
 
 	fmt.Printf("Agent %s running (runtime: %s). Watching for placements. Press Ctrl+C to stop.\n",
@@ -545,12 +549,29 @@ func deriveGateHTTPSListenAddress(proxyListenAddress string) string {
 	return net.JoinHostPort(proxyHost, defaultGateHTTPSPort)
 }
 
+// startAgentGateKeySync creates the tmpfs gate-key cache and starts the
+// syncer that fills it from POST /api/node/gate-keys (Flow 28). Without a node
+// certificate or API address it only serves pairs cached earlier this boot.
+func startAgentGateKeySync(ctx context.Context, factStore store.StateStore, parsedConfig agentCommandConfig, agentTLSConfig *tls.Config) *agent.GateKeyCache {
+	gateKeyCache := agent.NewGateKeyCache(agent.DefaultGateKeyCacheDirectory)
+	gateKeyCache.RequireMemoryFilesystem()
+	var gateKeyFetcher agent.GateKeyFetcher
+	if apiServerAddress := resolveAgentAPIServerAddress(parsedConfig); agentTLSConfig != nil && apiServerAddress != "" {
+		gateKeyFetcher = agent.NewHTTPGateKeyClient(apiServerAddress, buildMTLSClientTLSConfig(agentTLSConfig))
+	} else {
+		fmt.Fprintf(os.Stderr, "Agent %s: gate-key delivery not configured (needs node certificate and --api-server); gate TLS unavailable\n", parsedConfig.nodeID)
+	}
+	go agent.NewGateKeySyncer(parsedConfig.nodeID, factStore, gateKeyFetcher, gateKeyCache).Run(ctx)
+	return gateKeyCache
+}
+
 // startAgentHTTPProxy starts the gate proxy: plain HTTP with Host header
-// routing on proxyListenAddress, and gate HTTPS (certificate by SNI) on
-// proxyTLSListenAddress.
-func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, nodeID, proxyListenAddress, proxyTLSListenAddress string) {
+// routing on proxyListenAddress, and gate HTTPS (certificate by SNI from the
+// delivered gate-key cache) on proxyTLSListenAddress.
+func startAgentHTTPProxy(ctx context.Context, factStore store.StateStore, gateCertificateSource network.GateCertificateSource, nodeID, proxyListenAddress, proxyTLSListenAddress string) {
 	serviceResolver := network.NewStoreBackedResolver(factStore)
 	serviceProxy := network.NewUserSpaceProxy(serviceResolver, proxyListenAddress, factStore)
+	serviceProxy.SetGateCertificateSource(gateCertificateSource)
 	go func() {
 		if proxyStartError := serviceProxy.Start(ctx); proxyStartError != nil && ctx.Err() == nil {
 			fmt.Fprintf(os.Stderr, "Proxy error: %v\n", proxyStartError)
@@ -596,12 +617,7 @@ func performAgentShutdownCleanup(nodeAgent *agent.Agent, runtimeAdapter runtime.
 func configureAgentSecretDelivery(nodeAgent *agent.Agent, parsedConfig agentCommandConfig, agentTLSConfig *tls.Config) *agent.SecretMaterialStore {
 	secretMaterialStore := agent.NewSecretMaterialStore(agent.DefaultSecretMaterialDirectory)
 	secretMaterialStore.RequireMemoryFilesystem()
-	apiServerAddress := parsedConfig.apiServerAddress
-	if apiServerAddress == "" {
-		if fileContent, readError := os.ReadFile(serverAddressConfigPath); readError == nil {
-			apiServerAddress = strings.TrimSpace(string(fileContent))
-		}
-	}
+	apiServerAddress := resolveAgentAPIServerAddress(parsedConfig)
 	if agentTLSConfig == nil || apiServerAddress == "" {
 		nodeAgent.SetSecretDelivery(nil, secretMaterialStore)
 		fmt.Fprintf(os.Stderr, "Agent %s: secret delivery not configured (needs node certificate and --api-server); instances that need secrets will wait\n", parsedConfig.nodeID)
@@ -611,6 +627,18 @@ func configureAgentSecretDelivery(nodeAgent *agent.Agent, parsedConfig agentComm
 	nodeAgent.SetSecretDelivery(deliveryClient, secretMaterialStore)
 	fmt.Printf("Agent %s: secret delivery from %s (material on %s)\n", parsedConfig.nodeID, apiServerAddress, agent.DefaultSecretMaterialDirectory)
 	return secretMaterialStore
+}
+
+// resolveAgentAPIServerAddress returns --api-server, else the address saved by
+// cca join, else "" (delivery not configured).
+func resolveAgentAPIServerAddress(parsedConfig agentCommandConfig) string {
+	if parsedConfig.apiServerAddress != "" {
+		return parsedConfig.apiServerAddress
+	}
+	if fileContent, readError := os.ReadFile(serverAddressConfigPath); readError == nil {
+		return strings.TrimSpace(string(fileContent))
+	}
+	return ""
 }
 
 // configureAgentStorageProvider sets up the agent's storage provider based on

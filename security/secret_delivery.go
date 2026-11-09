@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/store"
@@ -25,16 +24,6 @@ const SecretDeliveryPrincipal = "service:secret-delivery"
 // SecretDeliveryAuditAction is the audit action recorded for every delivery
 // decision (allowed or refused).
 const SecretDeliveryAuditAction = "secret.deliver"
-
-// secretDeliveryRefusalAuditInterval is the minimum time between two refusal
-// audit records for the same (node, instance, reason), so a waiting instance
-// that retries does not flood the audit log.
-const secretDeliveryRefusalAuditInterval = time.Minute
-
-// secretDeliveryRefusalAuditMaxEntries caps the refusal rate-limit map; new
-// keys beyond it are not audited until expired entries are pruned, so a node
-// flooding random instance IDs cannot grow memory without bound.
-const secretDeliveryRefusalAuditMaxEntries = 10000
 
 // SecretDeliveryRefusalReason is the typed reason a delivery was refused. The
 // agent publishes it as the reason of the waiting-for-secrets state.
@@ -77,12 +66,10 @@ type DeliveredInstanceSecrets struct {
 // It reads through a store bound to SecretDeliveryPrincipal and decrypts with
 // the API server's SecretStore key provider.
 type SecretDeliveryService struct {
-	deliveryStore         store.StateStore     // deliveryStore is the AuthorizedStore bound to SecretDeliveryPrincipal.
-	secretStore           *SecretStore         // secretStore is the API server's secret store; it decrypts envelopes read through deliveryStore.
-	auditLog              AuditLogger          // auditLog records every decision; nil disables audit.
-	refusalAuditMutex     sync.Mutex           // refusalAuditMutex guards lastRefusalAuditTimes.
-	lastRefusalAuditTimes map[string]time.Time // lastRefusalAuditTimes maps node|instance|reason to the last refusal audit time.
-	lastRefusalAuditPrune time.Time            // lastRefusalAuditPrune is when expired rate-limit entries were last dropped.
+	deliveryStore       store.StateStore     // deliveryStore is the AuthorizedStore bound to SecretDeliveryPrincipal.
+	secretStore         *SecretStore         // secretStore is the API server's secret store; it decrypts envelopes read through deliveryStore.
+	auditLog            AuditLogger          // auditLog records every decision; nil disables audit.
+	refusalAuditLimiter *refusalAuditLimiter // refusalAuditLimiter rate-limits refusal audits per node|instance|reason.
 }
 
 // NewSecretDeliveryService creates a delivery service. deliveryStore must be
@@ -90,10 +77,10 @@ type SecretDeliveryService struct {
 // secretStore supplies the current KeyProvider (shared with rotation).
 func NewSecretDeliveryService(deliveryStore store.StateStore, secretStore *SecretStore, auditLog AuditLogger) *SecretDeliveryService {
 	return &SecretDeliveryService{
-		deliveryStore:         deliveryStore,
-		secretStore:           secretStore,
-		auditLog:              auditLog,
-		lastRefusalAuditTimes: make(map[string]time.Time),
+		deliveryStore:       deliveryStore,
+		secretStore:         secretStore,
+		auditLog:            auditLog,
+		refusalAuditLimiter: newRefusalAuditLimiter(),
 	}
 }
 
@@ -134,11 +121,11 @@ func (deliveryService *SecretDeliveryService) DeliverInstanceSecrets(ctx context
 	return delivered, nil
 }
 
-// getDeliveryFact reads one fact for a delivery check. A missing key returns
-// (nil, nil) so callers refuse; any other store error is returned as is so
+// getOptionalDeliveryFact reads one fact for a delivery check. A missing key
+// returns (nil, nil) so callers refuse; any other store error is returned so
 // the request fails with a server error instead of a refusal.
-func (deliveryService *SecretDeliveryService) getDeliveryFact(ctx context.Context, key string) (*store.Fact, error) {
-	fact, getError := deliveryService.deliveryStore.Get(ctx, key)
+func getOptionalDeliveryFact(ctx context.Context, readStore store.StateStore, key string) (*store.Fact, error) {
+	fact, getError := readStore.Get(ctx, key)
 	if errors.Is(getError, store.ErrKeyNotFound) {
 		return nil, nil
 	}
@@ -152,29 +139,42 @@ func (deliveryService *SecretDeliveryService) getDeliveryFact(ctx context.Contex
 // and that the instance is placed on it. Returns the instance's service.
 // Store errors are returned unwrapped from refusals (server error, retried).
 func (deliveryService *SecretDeliveryService) authorizeNodeForInstance(ctx context.Context, nodeID string, instanceID string) (string, error) {
-	if nodeID == "" || types.ValidateResourceName(instanceID) != nil {
+	if types.ValidateResourceName(instanceID) != nil {
 		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "invalid node or instance id"}
 	}
-	enrolledFact, enrolledError := deliveryService.getDeliveryFact(ctx, EnrolledNodePrefix+nodeID)
-	if enrolledError != nil || enrolledFact == nil {
-		return "", firstError(enrolledError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is not enrolled"})
+	if nodeError := checkDeliveryNode(ctx, deliveryService.deliveryStore, nodeID); nodeError != nil {
+		return "", nodeError
 	}
-	nodeStateFact, stateError := deliveryService.getDeliveryFact(ctx, types.KeyObservedNodeState(nodeID))
-	if stateError != nil {
-		return "", stateError
-	}
-	if nodeStateFact != nil && types.NodeState(nodeStateFact.Value) == types.NodeDisabled {
-		return "", &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is disabled"}
-	}
-	placementFact, placementError := deliveryService.getDeliveryFact(ctx, types.KeyPlacementInstance(instanceID))
+	placementFact, placementError := getOptionalDeliveryFact(ctx, deliveryService.deliveryStore, types.KeyPlacementInstance(instanceID))
 	if placementError != nil || placementFact == nil || string(placementFact.Value) != nodeID {
 		return "", firstError(placementError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance is not placed on this node"})
 	}
-	serviceFact, serviceError := deliveryService.getDeliveryFact(ctx, types.KeyObservedInstanceService(instanceID))
+	serviceFact, serviceError := getOptionalDeliveryFact(ctx, deliveryService.deliveryStore, types.KeyObservedInstanceService(instanceID))
 	if serviceError != nil || serviceFact == nil || len(serviceFact.Value) == 0 {
 		return "", firstError(serviceError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance has no service"})
 	}
 	return string(serviceFact.Value), nil
+}
+
+// checkDeliveryNode refuses a delivery to a node that is not enrolled or is
+// disabled (Flows 27 and 28). Store errors are returned unwrapped so the
+// request fails with a server error instead of a refusal.
+func checkDeliveryNode(ctx context.Context, readStore store.StateStore, nodeID string) error {
+	if nodeID == "" {
+		return &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "invalid node or instance id"}
+	}
+	enrolledFact, enrolledError := getOptionalDeliveryFact(ctx, readStore, EnrolledNodePrefix+nodeID)
+	if enrolledError != nil || enrolledFact == nil {
+		return firstError(enrolledError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is not enrolled"})
+	}
+	nodeStateFact, stateError := getOptionalDeliveryFact(ctx, readStore, types.KeyObservedNodeState(nodeID))
+	if stateError != nil {
+		return stateError
+	}
+	if nodeStateFact != nil && types.NodeState(nodeStateFact.Value) == types.NodeDisabled {
+		return &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "node is disabled"}
+	}
+	return nil
 }
 
 // firstError returns storeError when set, otherwise refusal.
@@ -258,39 +258,17 @@ func (deliveryService *SecretDeliveryService) collectReferencedSecretNames(ctx c
 }
 
 // auditRefusal records a refused delivery at most once per
-// secretDeliveryRefusalAuditInterval for the same node, instance and reason.
+// refusalAuditInterval for the same node, instance and reason.
 func (deliveryService *SecretDeliveryService) auditRefusal(nodeID string, instanceID string, serviceName string, refusalError error) {
 	var refusal *SecretDeliveryRefusal
 	if !errors.As(refusalError, &refusal) {
 		return
 	}
 	reason := string(refusal.Reason) + ": " + refusal.Detail
-	rateLimitKey := nodeID + "|" + instanceID + "|" + reason
-	now := time.Now()
-	deliveryService.refusalAuditMutex.Lock()
-	if now.Sub(deliveryService.lastRefusalAuditPrune) >= secretDeliveryRefusalAuditInterval {
-		deliveryService.pruneRefusalAuditTimes(now)
-		deliveryService.lastRefusalAuditPrune = now
-	}
-	lastAuditTime, audited := deliveryService.lastRefusalAuditTimes[rateLimitKey]
-	if (audited && now.Sub(lastAuditTime) < secretDeliveryRefusalAuditInterval) ||
-		(!audited && len(deliveryService.lastRefusalAuditTimes) >= secretDeliveryRefusalAuditMaxEntries) {
-		deliveryService.refusalAuditMutex.Unlock()
+	if !deliveryService.refusalAuditLimiter.shouldAudit(nodeID+"|"+instanceID+"|"+reason, time.Now()) {
 		return
 	}
-	deliveryService.lastRefusalAuditTimes[rateLimitKey] = now
-	deliveryService.refusalAuditMutex.Unlock()
 	deliveryService.auditDecision(nodeID, instanceID, serviceName, refusal.SecretNames, AuditDecisionDeny, reason)
-}
-
-// pruneRefusalAuditTimes drops rate-limit entries older than the interval so
-// the map stays bounded. Caller holds refusalAuditMutex.
-func (deliveryService *SecretDeliveryService) pruneRefusalAuditTimes(now time.Time) {
-	for rateLimitKey, lastAuditTime := range deliveryService.lastRefusalAuditTimes {
-		if now.Sub(lastAuditTime) >= secretDeliveryRefusalAuditInterval {
-			delete(deliveryService.lastRefusalAuditTimes, rateLimitKey)
-		}
-	}
 }
 
 // auditDecision writes one audit entry with node, instance, service and secret
@@ -310,8 +288,8 @@ func (deliveryService *SecretDeliveryService) auditDecision(nodeID string, insta
 }
 
 // secretDeliveryRole is the store role of SecretDeliveryPrincipal: read-only
-// access to the secrets, grants, connections, placements and node facts that
-// delivery checks. It writes nothing through the store (audit is separate).
+// access to the secrets, grants, connections, gates, placements and node
+// facts that secret and gate-key delivery check. It writes nothing through the store (audit is separate).
 func secretDeliveryRole() Role {
 	readOnly := []Permission{PermissionRead}
 	return Role{
@@ -320,6 +298,8 @@ func secretDeliveryRole() Role {
 			{KeyPrefix: SecretStorePrefix, Operations: readOnly},
 			{KeyPrefix: "desired/service/", Operations: readOnly},
 			{KeyPrefix: "desired/connection/", Operations: readOnly},
+			{KeyPrefix: types.ScanDesiredRoutes, Operations: readOnly},
+			{KeyPrefix: types.ScanDerivedRoutes, Operations: readOnly},
 			{KeyPrefix: "placement/instance/", Operations: readOnly},
 			{KeyPrefix: "observed/instance/", Operations: readOnly},
 			{KeyPrefix: "observed/node/", Operations: readOnly},

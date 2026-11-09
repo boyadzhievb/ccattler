@@ -14,7 +14,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -30,9 +29,15 @@ const (
 	gateFactCookieHTTPOnly = "cookie/httponly" // gateFactCookieHTTPOnly is the HttpOnly flag.
 	gateFactCookieSameSite = "cookie/samesite" // gateFactCookieSameSite is the SameSite value.
 	gateFactTLSMode        = "tls/mode"        // gateFactTLSMode is the TLS mode (auto or manual).
-	gateFactTLSCert        = "tls/cert"        // gateFactTLSCert is the certificate PEM.
-	gateFactTLSKey         = "tls/key"         // gateFactTLSKey is the private key PEM.
 )
+
+// GateCertificateSource supplies delivered gate certificate/key pairs by gate
+// name (Flow 28). The agent's gate-key cache implements it; the proxy never
+// reads key material from facts.
+type GateCertificateSource interface {
+	// GateCertificate returns the gate's pair, or nil when none is available.
+	GateCertificate(gateName string) *tls.Certificate
+}
 
 // stickyMethodCookie is the gate sticky method that pins clients by cookie.
 const stickyMethodCookie = "cookie"
@@ -48,15 +53,13 @@ type gateHostEntry struct {
 	serviceName  string             // serviceName is the gate's target service.
 	cookieConfig *RouteCookieConfig // cookieConfig is non-nil for sticky cookie gates.
 	tlsEnabled   bool               // tlsEnabled is true when the gate declares tls.
-	certificate  *tls.Certificate   // certificate is the parsed gate cert; nil until available.
 }
 
-// buildGateHostEntries converts desired and derived route facts into gate
-// entries keyed by host. A desired (manual) certificate takes precedence over
-// a derived (auto) one. Gates without a host or service are skipped.
-func buildGateHostEntries(desiredFacts, derivedFacts []store.Fact) map[string]*gateHostEntry {
+// buildGateHostEntries converts desired route facts into gate entries keyed
+// by host. Certificates are not part of the entry: they come from the
+// GateCertificateSource at handshake time. Gates without a host or service are skipped.
+func buildGateHostEntries(desiredFacts []store.Fact) map[string]*gateHostEntry {
 	desiredAttributes := groupRouteFactAttributes(desiredFacts, types.ScanDesiredRoutes)
-	derivedAttributes := groupRouteFactAttributes(derivedFacts, types.ScanDerivedRoutes)
 
 	routeNames := make([]string, 0, len(desiredAttributes))
 	for routeName := range desiredAttributes {
@@ -77,7 +80,6 @@ func buildGateHostEntries(desiredFacts, derivedFacts []store.Fact) map[string]*g
 			serviceName:  serviceName,
 			cookieConfig: buildGateCookieConfig(attributes),
 			tlsEnabled:   attributes[gateFactTLSMode] != "",
-			certificate:  parseGateCertificate(routeName, attributes, derivedAttributes[routeName]),
 		}
 	}
 	return gateHosts
@@ -116,34 +118,30 @@ func buildGateCookieConfig(attributes map[string]string) *RouteCookieConfig {
 	}
 }
 
-// parseGateCertificate returns the gate's effective TLS certificate: the
-// desired (manual) pair if present, otherwise the derived (auto) pair. Invalid
-// PEM is logged by gate name only, never by content, and yields nil.
-func parseGateCertificate(routeName string, desiredAttributes, derivedAttributes map[string]string) *tls.Certificate {
-	certificatePEM, keyPEM := desiredAttributes[gateFactTLSCert], desiredAttributes[gateFactTLSKey]
-	if certificatePEM == "" || keyPEM == "" {
-		certificatePEM, keyPEM = derivedAttributes[gateFactTLSCert], derivedAttributes[gateFactTLSKey]
-	}
-	if certificatePEM == "" || keyPEM == "" {
+// SetGateCertificateSource sets where the proxy gets gate TLS pairs. Without
+// a source no gate has a certificate: HTTPS handshakes fail and plain HTTP is
+// served without redirect.
+func (userSpaceProxy *UserSpaceProxy) SetGateCertificateSource(certificateSource GateCertificateSource) {
+	userSpaceProxy.gateCertificateSource = certificateSource
+}
+
+// gateCertificate returns the delivered pair of a TLS gate, or nil.
+func (userSpaceProxy *UserSpaceProxy) gateCertificate(gateEntry *gateHostEntry) *tls.Certificate {
+	if gateEntry == nil || !gateEntry.tlsEnabled || userSpaceProxy.gateCertificateSource == nil {
 		return nil
 	}
-	certificate, parseError := tls.X509KeyPair([]byte(certificatePEM), []byte(keyPEM))
-	if parseError != nil {
-		logging.Default().Warn("gate proxy: invalid TLS certificate", "gate", routeName)
-		return nil
-	}
-	return &certificate
+	return userSpaceProxy.gateCertificateSource.GateCertificate(gateEntry.routeName)
 }
 
 // getGateCertificate is the tls.Config GetCertificate callback: it returns the
 // certificate of the gate named by the client's SNI. There is no default
 // certificate, so unknown or missing SNI fails the handshake.
 func (userSpaceProxy *UserSpaceProxy) getGateCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	gateEntry := userSpaceProxy.lookupGateHost(clientHello.Context(), clientHello.ServerName)
-	if gateEntry == nil || gateEntry.certificate == nil {
+	gateCertificate := userSpaceProxy.gateCertificate(userSpaceProxy.lookupGateHost(clientHello.Context(), clientHello.ServerName))
+	if gateCertificate == nil {
 		return nil, errNoGateCertificate
 	}
-	return gateEntry.certificate, nil
+	return gateCertificate, nil
 }
 
 // StartTLS begins serving HTTPS for gates on tlsListenAddress, selecting each
@@ -183,7 +181,7 @@ func (userSpaceProxy *UserSpaceProxy) handleGateRequestPolicy(
 	responseWriter http.ResponseWriter, incomingRequest *http.Request, gateEntry *gateHostEntry,
 ) bool {
 	if incomingRequest.TLS == nil {
-		if gateEntry != nil && gateEntry.certificate != nil {
+		if userSpaceProxy.gateCertificate(gateEntry) != nil {
 			// The target host is the gate's declared host, never the request's
 			// Host header, so the redirect cannot point anywhere but the gate.
 			redirectURL := url.URL{Scheme: "https", Host: gateEntry.hostname, Path: incomingRequest.URL.Path, RawQuery: incomingRequest.URL.RawQuery}

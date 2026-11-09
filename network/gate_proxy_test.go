@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -72,12 +73,37 @@ func writeTestGateFacts(factStore store.StateStore, gateName, hostname, serviceN
 	factStore.Put(ctx, types.KeyDesiredRouteService(gateName), []byte(serviceName))
 }
 
-// writeTestGateCertificate stores a gate certificate as derived (auto) facts.
-func writeTestGateCertificate(factStore store.StateStore, gateName string, gateCertificate testGateCertificate) {
-	ctx := context.Background()
-	factStore.Put(ctx, types.KeyDesiredRouteTLSMode(gateName), []byte(types.RouteTLSModeAuto))
-	factStore.Put(ctx, types.KeyDerivedRouteTLSCert(gateName), []byte(gateCertificate.certificatePEM))
-	factStore.Put(ctx, types.KeyDerivedRouteTLSKey(gateName), []byte(gateCertificate.keyPEM))
+// testGateCertificateSource is an in-memory GateCertificateSource standing in
+// for the agent's gate-key cache.
+type testGateCertificateSource struct {
+	mutex        sync.Mutex                  // mutex guards certificates.
+	certificates map[string]*tls.Certificate // certificates maps gate name to its pair.
+}
+
+// GateCertificate returns the gate's pair, or nil.
+func (certificateSource *testGateCertificateSource) GateCertificate(gateName string) *tls.Certificate {
+	certificateSource.mutex.Lock()
+	defer certificateSource.mutex.Unlock()
+	return certificateSource.certificates[gateName]
+}
+
+// newTestGateCertificateSource returns an empty test certificate source.
+func newTestGateCertificateSource() *testGateCertificateSource {
+	return &testGateCertificateSource{certificates: make(map[string]*tls.Certificate)}
+}
+
+// writeTestGateCertificate marks the gate as auto TLS and installs the pair in
+// the certificate source, as a gate-key delivery would.
+func writeTestGateCertificate(t *testing.T, factStore store.StateStore, certificateSource *testGateCertificateSource, gateName string, gateCertificate testGateCertificate) {
+	t.Helper()
+	factStore.Put(context.Background(), types.KeyDesiredRouteTLSMode(gateName), []byte(types.RouteTLSModeAuto))
+	certificate, pairError := tls.X509KeyPair([]byte(gateCertificate.certificatePEM), []byte(gateCertificate.keyPEM))
+	if pairError != nil {
+		t.Fatalf("test pair: %v", pairError)
+	}
+	certificateSource.mutex.Lock()
+	certificateSource.certificates[gateName] = &certificate
+	certificateSource.mutex.Unlock()
 }
 
 // startTestBackends starts HTTP backends that echo their index, and returns
@@ -142,52 +168,52 @@ func sendGateRequest(t *testing.T, client *http.Client, httpsServer *httptest.Se
 	return response
 }
 
-// TestBuildGateHostEntriesCertificatePrecedence verifies a manual (desired)
-// certificate wins over a derived one, and pending TLS has no certificate.
-func TestBuildGateHostEntriesCertificatePrecedence(t *testing.T) {
+// TestBuildGateHostEntriesSkipsIncompleteGates verifies gates without a host
+// are skipped and TLS gates are flagged even before a pair is delivered.
+func TestBuildGateHostEntriesSkipsIncompleteGates(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	ctx := context.Background()
-	manualCertificate := generateTestGateCertificate(t, "shop.example.com")
-	staleCertificate := generateTestGateCertificate(t, "stale.example.com")
-
-	writeTestGateFacts(factStore, "shop", "shop.example.com", "store")
-	writeTestGateCertificate(factStore, "shop", staleCertificate)
-	factStore.Put(ctx, types.KeyDesiredRouteTLSCert("shop"), []byte(manualCertificate.certificatePEM))
-	factStore.Put(ctx, types.KeyDesiredRouteTLSKey("shop"), []byte(manualCertificate.keyPEM))
 	writeTestGateFacts(factStore, "pending", "pending.example.com", "store")
 	factStore.Put(ctx, types.KeyDesiredRouteTLSMode("pending"), []byte(types.RouteTLSModeAuto))
+	writeTestGateFacts(factStore, "plain", "plain.example.com", "store")
 	factStore.Put(ctx, types.KeyDesiredRouteService("no-host"), []byte("store"))
 
 	desiredFacts, _ := factStore.Scan(ctx, types.ScanDesiredRoutes)
-	derivedFacts, _ := factStore.Scan(ctx, types.ScanDerivedRoutes)
-	gateHosts := buildGateHostEntries(desiredFacts, derivedFacts)
+	gateHosts := buildGateHostEntries(desiredFacts)
 
 	if len(gateHosts) != 2 {
 		t.Fatalf("expected 2 gate hosts (no-host skipped), got %d", len(gateHosts))
 	}
-	shopCertificate := gateHosts["shop.example.com"].certificate
-	if shopCertificate == nil || shopCertificate.Leaf == nil || shopCertificate.Leaf.DNSNames[0] != "shop.example.com" {
-		t.Errorf("expected manual certificate for shop.example.com, got %+v", shopCertificate)
-	}
-	pendingGate := gateHosts["pending.example.com"]
-	if !pendingGate.tlsEnabled || pendingGate.certificate != nil {
-		t.Errorf("expected pending TLS gate without certificate, got %+v", pendingGate)
+	if !gateHosts["pending.example.com"].tlsEnabled || gateHosts["plain.example.com"].tlsEnabled {
+		t.Errorf("unexpected tls flags: %+v %+v", gateHosts["pending.example.com"], gateHosts["plain.example.com"])
 	}
 }
 
-// TestBuildGateHostEntriesInvalidCertificate verifies malformed PEM yields no
-// certificate instead of an error or panic.
-func TestBuildGateHostEntriesInvalidCertificate(t *testing.T) {
+// TestGateCertificateIgnoresKeyFactsAndNeedsSource verifies the proxy never
+// pairs a certificate fact with a key fact: without a delivered pair (or
+// without a source) the handshake has no certificate.
+func TestGateCertificateIgnoresKeyFactsAndNeedsSource(t *testing.T) {
 	factStore := store.NewMemoryStore()
-	writeTestGateFacts(factStore, "broken", "broken.example.com", "web")
-	writeTestGateCertificate(factStore, "broken", testGateCertificate{certificatePEM: "not pem", keyPEM: "not pem"})
+	ctx := context.Background()
+	plaintextCertificate := generateTestGateCertificate(t, "shop.example.com")
+	writeTestGateFacts(factStore, "shop", "shop.example.com", "store")
+	factStore.Put(ctx, types.KeyDesiredRouteTLSMode("shop"), []byte(types.RouteTLSModeManual))
+	factStore.Put(ctx, types.KeyDesiredRouteTLSCert("shop"), []byte(plaintextCertificate.certificatePEM))
+	factStore.Put(ctx, types.KeyDesiredRouteTLSKey("shop"), []byte(plaintextCertificate.keyPEM))
+	clientHello := &tls.ClientHelloInfo{ServerName: "shop.example.com"}
 
-	desiredFacts, _ := factStore.Scan(context.Background(), types.ScanDesiredRoutes)
-	derivedFacts, _ := factStore.Scan(context.Background(), types.ScanDerivedRoutes)
-	gateHosts := buildGateHostEntries(desiredFacts, derivedFacts)
-
-	if gateHosts["broken.example.com"].certificate != nil {
-		t.Error("expected nil certificate for malformed PEM")
+	proxy := NewUserSpaceProxy(&mockResolver{}, ":0", factStore)
+	if served, _ := proxy.getGateCertificate(clientHello); served != nil {
+		t.Fatal("served a certificate without a certificate source")
+	}
+	certificateSource := newTestGateCertificateSource()
+	proxy.SetGateCertificateSource(certificateSource)
+	if served, _ := proxy.getGateCertificate(clientHello); served != nil {
+		t.Fatal("served a certificate built from key facts")
+	}
+	writeTestGateCertificate(t, factStore, certificateSource, "shop", plaintextCertificate)
+	if served, _ := proxy.getGateCertificate(clientHello); served == nil {
+		t.Fatal("delivered pair not served")
 	}
 }
 
@@ -197,14 +223,16 @@ func TestGateHTTPSServesCertificateBySNI(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "web", 1)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	primaryCertificate := generateTestGateCertificate(t, "web.example.com")
 	alternateCertificate := generateTestGateCertificate(t, "web-alt.example.com")
 	writeTestGateFacts(factStore, "web", "web.example.com", "web")
-	writeTestGateCertificate(factStore, "web", primaryCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "web", primaryCertificate)
 	writeTestGateFacts(factStore, "web-alt", "web-alt.example.com", "web")
-	writeTestGateCertificate(factStore, "web-alt", alternateCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "web-alt", alternateCertificate)
 
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.SetGateCertificateSource(certificateSource)
 	httpsServer := startTestGateHTTPSServer(proxy)
 	defer httpsServer.Close()
 
@@ -229,11 +257,13 @@ func TestGateHTTPSRejectsUnknownServerName(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "web", 1)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	gateCertificate := generateTestGateCertificate(t, "web.example.com")
 	writeTestGateFacts(factStore, "web", "web.example.com", "web")
-	writeTestGateCertificate(factStore, "web", gateCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "web", gateCertificate)
 
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.SetGateCertificateSource(certificateSource)
 	httpsServer := startTestGateHTTPSServer(proxy)
 	defer httpsServer.Close()
 
@@ -251,13 +281,15 @@ func TestGateHTTPSMisdirectedRequest(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "web", 1)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	webCertificate := generateTestGateCertificate(t, "web.example.com")
 	writeTestGateFacts(factStore, "web", "web.example.com", "web")
-	writeTestGateCertificate(factStore, "web", webCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "web", webCertificate)
 	writeTestGateFacts(factStore, "admin", "admin.example.com", "web")
-	writeTestGateCertificate(factStore, "admin", generateTestGateCertificate(t, "admin.example.com"))
+	writeTestGateCertificate(t, factStore, certificateSource, "admin", generateTestGateCertificate(t, "admin.example.com"))
 
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.SetGateCertificateSource(certificateSource)
 	httpsServer := startTestGateHTTPSServer(proxy)
 	defer httpsServer.Close()
 
@@ -277,11 +309,13 @@ func TestGateHTTPRedirectsToHTTPS(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "web", 1)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	writeTestGateFacts(factStore, "web", "web.example.com", "web")
-	writeTestGateCertificate(factStore, "web", generateTestGateCertificate(t, "web.example.com"))
+	writeTestGateCertificate(t, factStore, certificateSource, "web", generateTestGateCertificate(t, "web.example.com"))
 	writeTestGateFacts(factStore, "pending", "pending.example.com", "web")
 	factStore.Put(context.Background(), types.KeyDesiredRouteTLSMode("pending"), []byte(types.RouteTLSModeAuto))
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.SetGateCertificateSource(certificateSource)
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/path?query=1", nil)
@@ -306,12 +340,14 @@ func TestGateHTTPSStickyCookie(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "api", 3)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	gateCertificate := generateTestGateCertificate(t, "api.example.com")
 	writeTestGateFacts(factStore, "api", "api.example.com", "api")
-	writeTestGateCertificate(factStore, "api", gateCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "api", gateCertificate)
 	factStore.Put(context.Background(), types.KeyDesiredRouteSticky("api"), []byte("cookie"))
 
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
+	proxy.SetGateCertificateSource(certificateSource)
 	httpsServer := startTestGateHTTPSServer(proxy)
 	defer httpsServer.Close()
 	client := newTestGateClient(httpsServer, "api.example.com", gateCertificate)
@@ -335,20 +371,21 @@ func TestGateHTTPSStickyCookie(t *testing.T) {
 	}
 }
 
-// TestGateCertificateRotationAfterCacheExpiry verifies a rotated certificate
-// is served once the gate table cache expires.
-func TestGateCertificateRotationAfterCacheExpiry(t *testing.T) {
+// TestGateCertificateRotationIsServedImmediately verifies a pair replaced in
+// the certificate source is served on the next handshake, without waiting for
+// the gate table cache to expire.
+func TestGateCertificateRotationIsServedImmediately(t *testing.T) {
 	resolver, cleanupBackends := startTestBackends(t, "web", 1)
 	defer cleanupBackends()
 	factStore := store.NewMemoryStore()
+	certificateSource := newTestGateCertificateSource()
 	originalCertificate := generateTestGateCertificate(t, "web.example.com")
 	rotatedCertificate := generateTestGateCertificate(t, "web.example.com")
 	writeTestGateFacts(factStore, "web", "web.example.com", "web")
-	writeTestGateCertificate(factStore, "web", originalCertificate)
+	writeTestGateCertificate(t, factStore, certificateSource, "web", originalCertificate)
 
-	currentTime := time.Now()
 	proxy := NewUserSpaceProxy(resolver, ":0", factStore)
-	proxy.timeNow = func() time.Time { return currentTime }
+	proxy.SetGateCertificateSource(certificateSource)
 	clientHello := &tls.ClientHelloInfo{ServerName: "web.example.com"}
 
 	servedCertificate, _ := proxy.getGateCertificate(clientHello)
@@ -356,11 +393,10 @@ func TestGateCertificateRotationAfterCacheExpiry(t *testing.T) {
 		t.Fatal("expected original certificate before rotation")
 	}
 
-	writeTestGateCertificate(factStore, "web", rotatedCertificate)
-	currentTime = currentTime.Add(routeHostCacheTTL + time.Second)
+	writeTestGateCertificate(t, factStore, certificateSource, "web", rotatedCertificate)
 
 	servedCertificate, _ = proxy.getGateCertificate(clientHello)
 	if servedCertificate == nil || !servedCertificate.Leaf.Equal(rotatedCertificate.parsed) {
-		t.Error("expected rotated certificate after cache expiry")
+		t.Error("expected rotated certificate on the next handshake")
 	}
 }

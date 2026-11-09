@@ -617,16 +617,15 @@ listeners share `ServeHTTP`. Gate TLS terminates only here, never on a VIP
 UserSpaceProxy.ServeHTTP(w, r)                                 :176
 ├── lookupGateHost(ctx, hostWithoutPort(r.Host))               :540
 │   ├── cache hit, not expired → entry (or nil; misses are cached too)
-│   └── expired → refreshGateHosts(ctx)                         :566
-│       ├── store.Scan(desired/route/) + store.Scan(derived/route/)
-│       └── buildGateHostEntries(desired, derived)              gate_proxy.go:57
+│   └── expired → refreshGateHosts(ctx)                         :568
+│       ├── store.Scan(desired/route/)                          (no key facts read since M176)
+│       └── buildGateHostEntries(desired)                       gate_proxy.go:61
 │           ├── groupRouteFactAttributes → route → attribute → value
 │           ├── skip routes without host or service
 │           ├── buildGateCookieConfig   → *RouteCookieConfig if sticky=cookie
-│           └── parseGateCertificate    → desired tls/cert+key, else derived; tls.X509KeyPair
-│               (invalid PEM → nil cert, warning logs gate name only)
-├── handleGateRequestPolicy(w, r, gateEntry)                   gate_proxy.go:182
-│   ├── plain HTTP + gate has certificate → 308 https://{gate host}{path}?{query}
+│           └── tlsEnabled = tls/mode set (certificate is not part of the entry)
+├── handleGateRequestPolicy(w, r, gateEntry)                   gate_proxy.go
+│   ├── plain HTTP + gateCertificate(entry) != nil → 308 https://{gate host}{path}?{query}
 │   └── HTTPS + Host's gate ≠ SNI's gate (or no gate) → 421
 ├── serviceName = gateEntry.serviceName, else extractServiceName(r.Host)  :620
 │   └── ValidateResourceName fails → 400
@@ -642,9 +641,45 @@ UserSpaceProxy.ServeHTTP(w, r)                                 :176
         └── ModifyResponse: addGateStickyCookie (Secure forced over HTTPS)
 
 TLS handshake (StartTLS listener):
-tls.Config.GetCertificate = getGateCertificate(clientHello)    gate_proxy.go:141
+tls.Config.GetCertificate = getGateCertificate(clientHello)    gate_proxy.go:139
 ├── lookupGateHost(ctx, clientHello.ServerName)
-└── no gate / no certificate → errNoGateCertificate (handshake fails; no default cert)
+├── gateCertificate(entry)                                     gate_proxy.go:129
+│   └── tlsEnabled ∧ source set → GateCertificateSource.GateCertificate(gate name)
+│       (agent.GateKeyCache; set by SetGateCertificateSource :124 in startAgentHTTPProxy)
+└── no gate / no delivered pair → errNoGateCertificate (handshake fails; no default cert)
+```
+
+### Gate-key delivery to agents (Flow 28, M176)
+```
+cca agent start (cmd/cca/command_agent.go)
+├── agent.PublishGateProxyCapability(nodeID, proxyEnabled)
+│   → PUT observed/node/{id}/gate_proxy = enabled|disabled, observed/node/{id}/gate_key_delivery = v1
+└── proxy enabled → startAgentGateKeySync
+    ├── NewGateKeyCache(/run/ccattler/gate-keys).RequireMemoryFilesystem()
+    ├── NewHTTPGateKeyClient(resolveAgentAPIServerAddress, node mTLS)   [nil without cert/API address]
+    └── go GateKeySyncer.Run(ctx)                              agent/gate_key_syncer.go
+        ├── GateKeyCache.Load()                                [pairs from this boot; invalid pairs and staging dirs removed]
+        ├── no fetcher → gate_keys = waiting(not_configured), return
+        ├── go watchGateTLSFacts → Watch(desired/route/, derived/route/), key contains "/tls/" → signal
+        └── loop: timer (0 at start; 5 min fallback; 2s…30s backoff on failure; 1s debounce on change)
+            └── syncOnce
+                ├── HTTPGateKeyClient.FetchGateKeys → POST /api/node/gate-keys  [403 → refused, other → unreachable]
+                ├── GateKeyCache.Apply(delivery)
+                │   ├── installPair: X509KeyPair check, staging dir + rename ({gate}/certificate.pem 0444, private-key.pem 0400, dirs 0700)
+                │   ├── pending gates keep their cached pair
+                │   └── gates in neither list → removeGate
+                └── publishStatus → PUT observed/node/{id}/gate_keys {state, reason, pending} (only when changed)
+
+Server.handleNodeGateKeyDelivery  POST /api/node/gate-keys   api/node_gate_key_delivery.go
+├── requireNodeMTLSCaller                                      [node principal, mtls, TLS; else 403]
+└── GateKeyDeliveryService.DeliverGateKeys(ctx, nodeID)       security/gate_key_delivery.go
+    ├── authorizeGateProxyNode → checkDeliveryNode (enrolled, not disabled) + gate_proxy == enabled
+    ├── scanGateAttributes(desired/route/), scanGateAttributes(derived/route/)
+    ├── per gate with tls/mode and host: resolveGatePair
+    │   ├── cert: manual → desired tls/cert, auto → derived tls/cert
+    │   ├── key: GateKeySecretName(gate, tls/key_secret) → secrets/{key_secret} or secrets/route/{gate}/tls/key
+    │   └── X509KeyPair mismatch / missing → pending
+    └── audit gate-key.deliver (gate names only; refusals rate-limited by refusalAuditLimiter)
 ```
 
 ### RouteTLSController (controllers/route_tls.go) — auto gate certificates
@@ -672,8 +707,10 @@ Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provid
 | `desired/route/{name}/tls/mode` | compiler | RouteTLSController, gate proxy |
 | `desired/route/{name}/tls/cert`, `/tls/key` (manual) | compiler | gate proxy |
 | `derived/route/{name}/tls/cert`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
-| `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176 (kept until gate-key migration) | gate proxy (until gate-key delivery) |
-| `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | — (gate-key delivery, M176) |
+| `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176 (kept until gate-key migration) | pre-M176 agents only |
+| `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | GateKeyDeliveryService |
+| `observed/node/{id}/gate_proxy`, `/gate_key_delivery` | agent at start (`PublishGateProxyCapability`) | GateKeyDeliveryService; gate-key migration |
+| `observed/node/{id}/gate_keys` | agent `GateKeySyncer` | operators |
 | `derived/route/{name}/backends` | RouteController (staleness check limited to `/backends` keys, so it never deletes `tls/*`) | agent `parseRouteFactsForDataPlane` (cookie proxy) |
 
 ---

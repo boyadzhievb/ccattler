@@ -73,20 +73,25 @@ type HTTPSecretDeliveryClient struct {
 // NewHTTPSecretDeliveryClient creates a client for the API server at
 // apiAddress (host:port or https URL) using the node's mTLS configuration.
 func NewHTTPSecretDeliveryClient(apiAddress string, nodeTLSConfig *tls.Config) *HTTPSecretDeliveryClient {
+	httpClient, apiBaseURL := newNodeAPIHTTPClient(apiAddress, nodeTLSConfig)
+	return &HTTPSecretDeliveryClient{httpClient: httpClient, apiBaseURL: apiBaseURL}
+}
+
+// newNodeAPIHTTPClient returns an HTTPS client presenting the node certificate
+// that never follows redirects, and the normalized API base URL. Shared by
+// secret delivery (Flow 27) and gate-key delivery (Flow 28).
+func newNodeAPIHTTPClient(apiAddress string, nodeTLSConfig *tls.Config) (*http.Client, string) {
 	apiBaseURL := strings.TrimRight(apiAddress, "/")
 	if !strings.HasPrefix(apiBaseURL, "https://") {
 		apiBaseURL = "https://" + strings.TrimPrefix(apiBaseURL, "http://")
 	}
-	return &HTTPSecretDeliveryClient{
-		httpClient: &http.Client{
-			Timeout:   secretDeliveryRequestTimeout,
-			Transport: &http.Transport{TLSClientConfig: nodeTLSConfig.Clone()},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse // never follow a redirect with the node certificate
-			},
+	return &http.Client{
+		Timeout:   secretDeliveryRequestTimeout,
+		Transport: &http.Transport{TLSClientConfig: nodeTLSConfig.Clone()},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse // never follow a redirect with the node certificate
 		},
-		apiBaseURL: apiBaseURL,
-	}
+	}, apiBaseURL
 }
 
 // FetchInstanceSecrets requests the instance's material. Network failures,
