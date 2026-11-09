@@ -8,7 +8,7 @@
 #
 # Two environments:
 #   --env test     (default): bare-metal 3-node cluster on 100.215/30/31 (always-on)
-#   --env deploy:             3 libvirt VMs on 192.168.124.x (testbed-100.49), long-lived
+#   --env deploy:             3 libvirt VMs on 192.168.124.x (deploy host, design/deploy-host.md), long-lived
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload whoami,airflow   deploy specific workloads (comma-separated)
@@ -47,7 +47,7 @@
 #   ./test/e2e/cluster_test.sh --env deploy --from-release     # 3-node deploy cluster
 #
 # Caddy reverse proxy: after deployment, Caddy on the testbed host
-# (192.168.100.49) is configured to proxy traffic to deployed services.
+# (the deploy host, design/deploy-host.md) is configured to proxy traffic to deployed services.
 # Each workload manifest declares WORKLOAD_EXPOSE entries mapping
 # external_port → service VIP:internal_port.
 
@@ -193,7 +193,7 @@ log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 
 # Environment-specific configuration
 #   test:      bare-metal 3-node cluster on 100.215/30/31 (default, always-on nodes)
-#   deploy:    long-lived VMs on testbed-100.49 via vmherd (Caddy reverse proxy)
+#   deploy:    long-lived VMs on the deploy host via vmherd (Caddy reverse proxy)
 declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)
@@ -642,7 +642,8 @@ done
 log "DNS resolution OK"
 
 # ---- Step 3.6: Image pull skipped — cca agent pulls from local registry ----
-# Images are served by the Docker registry at 192.168.100.49:5000.
+# Images are served by the Docker registry on the deploy host (192.168.124.1:5000,
+# seeded by scripts/setup-deploy-host.sh).
 # Containerd on each node is configured via hosts.toml to use HTTP for that registry.
 # The cca agent pulls images on demand during instance reconciliation.
 declare -A UNIQUE_IMAGES

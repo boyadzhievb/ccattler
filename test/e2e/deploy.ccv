@@ -1,4 +1,7 @@
 # Values for VM-based deployments (--env deploy, --env vagrant).
-# Registry runs on 192.168.100.49 (testbed host), reachable from VMs.
+# Registry runs on the deploy host (docker registry:2 on port 5000) and is
+# reached from the VMs through the libvirt gateway of the cca-deploy network,
+# so the value does not depend on the host's LAN address. Seed it with
+# scripts/setup-deploy-host.sh (design/deploy-host.md).
 
-registry: 192.168.100.49:5000
+registry: 192.168.124.1:5000
