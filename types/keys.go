@@ -2346,3 +2346,62 @@ func KeyObservedNodeLegacyKeyFile(nodeID string) string {
 func KeyDesiredServiceLegacySecretAPI(name string) string {
 	return fmt.Sprintf("%s/service/%s/legacy_secret_api", PrefixDesired, name)
 }
+
+// SecretNameRouteTLSKeyPrefix is the secret-name prefix of system-owned gate
+// TLS private keys (secrets/route/{gate}/tls/key), written by the route-tls
+// controller and the gate-key API, never by `cca secret set` (M176).
+const SecretNameRouteTLSKeyPrefix = "route/"
+
+// SecretNameRouteTLSKey returns the secret name (relative to secrets/) of a
+// gate's system-owned TLS private key envelope.
+// Path: secrets/route/{gate}/tls/key
+func SecretNameRouteTLSKey(routeName string) string {
+	return SecretNameRouteTLSKeyPrefix + routeName + "/tls/key"
+}
+
+// KeyDesiredRouteTLSKeySecret returns the store path naming the user secret
+// that holds a manual gate's private key (`tls { key secret "…" }`).
+// Path: desired/route/{name}/tls/key_secret
+func KeyDesiredRouteTLSKeySecret(routeName string) string {
+	return fmt.Sprintf("%s/route/%s/tls/key_secret", PrefixDesired, routeName)
+}
+
+// KeyObservedNodeGateKeyDelivery returns the store path for the node's
+// gate-key delivery capability ("v1" once the agent fetches gate keys through
+// the API instead of reading key facts).
+// Path: observed/node/{nodeID}/gate_key_delivery
+func KeyObservedNodeGateKeyDelivery(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/gate_key_delivery", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeGateProxy returns the store path for whether the node runs
+// the gate proxy ("enabled" | "disabled").
+// Path: observed/node/{nodeID}/gate_proxy
+func KeyObservedNodeGateProxy(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/gate_proxy", PrefixObserved, nodeID)
+}
+
+// KeyObservedNodeGateKeys returns the store path for the node's gate-key
+// readiness. Value is JSON: {"state":"ready|waiting","reason":"...","pending":[...]}.
+// Path: observed/node/{nodeID}/gate_keys
+func KeyObservedNodeGateKeys(nodeID string) string {
+	return fmt.Sprintf("%s/node/%s/gate_keys", PrefixObserved, nodeID)
+}
+
+// KeyObservedGateKeyMigration is the store path of the plaintext gate-key
+// cutover status. Value is JSON: {"state":"sealing|waiting-for-agents|completed","plaintext_count":N}.
+const KeyObservedGateKeyMigration = PrefixObserved + "/gate-keys/migration"
+
+// GateKeyDeliveryVersion is the gate_key_delivery value reported by agents
+// that fetch gate keys through POST /api/node/gate-keys.
+const GateKeyDeliveryVersion = "v1"
+
+// GateProxyState reports whether a node runs the gate proxy.
+type GateProxyState string
+
+const (
+	// GateProxyEnabled means the agent runs the HTTP/HTTPS gate proxy.
+	GateProxyEnabled GateProxyState = "enabled"
+	// GateProxyDisabled means the agent runs no gate proxy and fetches no gate keys.
+	GateProxyDisabled GateProxyState = "disabled"
+)

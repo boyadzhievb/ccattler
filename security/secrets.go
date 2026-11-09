@@ -59,18 +59,28 @@ func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string
 	secretStore.mutex.Lock()
 	defer secretStore.mutex.Unlock()
 
-	envelopeBlob, err := SealEnvelope(ctx, secretStore.keyProvider, plaintext)
+	encodedEnvelope, err := SealSecretValue(ctx, secretStore.keyProvider, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt secret %q: %w", secretName, err)
 	}
 
-	encodedEnvelope := base64.StdEncoding.EncodeToString(envelopeBlob)
 	secretKey := SecretStorePrefix + secretName
-	if _, err := secretStore.factStore.Put(ctx, secretKey, []byte(encodedEnvelope)); err != nil {
+	if _, err := secretStore.factStore.Put(ctx, secretKey, encodedEnvelope); err != nil {
 		return fmt.Errorf("store secret %q: %w", secretName, err)
 	}
 
 	return nil
+}
+
+// SealSecretValue seals plaintext into the stored secret format: an envelope
+// (SealEnvelope) encoded as base64, the value kept at secrets/{name}. Used by
+// PutSecret and by controllers that write system-owned secrets directly.
+func SealSecretValue(ctx context.Context, keyProvider KeyProvider, plaintext []byte) ([]byte, error) {
+	envelopeBlob, err := SealEnvelope(ctx, keyProvider, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(base64.StdEncoding.EncodeToString(envelopeBlob)), nil
 }
 
 // GetSecret retrieves and decrypts a secret value using envelope encryption.

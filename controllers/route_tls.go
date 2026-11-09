@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -25,35 +26,40 @@ const (
 )
 
 // RouteTLSController watches desired route TLS facts and issues or renews
-// certificates via the cluster CA for gates with tls mode "auto". For manual
-// mode, cert material is stored directly in desired facts by the compiler.
+// certificates via the cluster CA for gates with tls mode "auto". The
+// certificate and expiry are plain derived facts; the private key is sealed
+// at secrets/route/{gate}/tls/key (Flow 28) and never written as a fact.
 type RouteTLSController struct {
-	certificateAuthority *security.CertificateAuthority
+	certificateAuthority *security.CertificateAuthority // certificateAuthority issues gate certificates.
+	secretKeyProvider    security.KeyProvider           // secretKeyProvider seals gate private keys.
 }
 
 // NewRouteTLSController creates a controller that auto-issues TLS certificates
-// for gates using the given cluster certificate authority.
-func NewRouteTLSController(certificateAuthority *security.CertificateAuthority) *RouteTLSController {
-	return &RouteTLSController{certificateAuthority: certificateAuthority}
+// for gates using the given cluster certificate authority and seals their
+// private keys with the server's secret key provider.
+func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, secretKeyProvider security.KeyProvider) *RouteTLSController {
+	return &RouteTLSController{certificateAuthority: certificateAuthority, secretKeyProvider: secretKeyProvider}
 }
 
 // Name returns "route-tls", identifying this controller in logs.
 func (routeTLSController *RouteTLSController) Name() string { return "route-tls" }
 
 // Watch returns the fact prefixes the controller monitors: desired route
-// definitions (for TLS mode and host) and derived route facts (for existing
-// cert expiry and staleness detection).
+// definitions (for TLS mode and host), derived route facts (for existing cert
+// expiry and staleness detection) and the sealed gate keys, so a renewal's
+// put of an existing key carries its revision guard instead of create-only.
 func (routeTLSController *RouteTLSController) Watch() []string {
 	return []string{
 		types.ScanDesiredRoutes,
 		types.ScanDerivedRoutes,
+		security.SecretStorePrefix + types.SecretNameRouteTLSKeyPrefix,
 	}
 }
 
 // Reconcile scans desired routes for tls/mode=auto, checks derived cert
 // expiry, issues new certs when missing or near expiry, and cleans up stale
 // derived TLS facts for routes that no longer request auto TLS.
-func (routeTLSController *RouteTLSController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
+func (routeTLSController *RouteTLSController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	autoTLSRoutes := parseAutoTLSRoutes(facts)
 	existingDerivedTLS := parseExistingDerivedTLSFacts(facts)
 
@@ -67,44 +73,59 @@ func (routeTLSController *RouteTLSController) Reconcile(_ context.Context, facts
 	sort.Strings(sortedRouteNames)
 
 	for _, routeName := range sortedRouteNames {
-		hostname := autoTLSRoutes[routeName]
-
-		certKey := types.KeyDerivedRouteTLSCert(routeName)
-		keyKey := types.KeyDerivedRouteTLSKey(routeName)
 		notAfterKey := types.KeyDerivedRouteTLSNotAfter(routeName)
-		desiredDerivedTLSKeys[certKey] = true
-		desiredDerivedTLSKeys[keyKey] = true
+		desiredDerivedTLSKeys[types.KeyDerivedRouteTLSCert(routeName)] = true
 		desiredDerivedTLSKeys[notAfterKey] = true
+		// A plaintext key fact left from before M176 stays while the gate is
+		// auto: agents without gate-key delivery still read it, and only the
+		// gate-key-migration controller deletes it (Flow 28 step 7).
+		desiredDerivedTLSKeys[types.KeyDerivedRouteTLSKey(routeName)] = true
 
 		if !needsCertificateIssuance(existingDerivedTLS[notAfterKey]) {
 			continue
 		}
 
-		issuedCertificate, issueError := routeTLSController.certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
-			CommonName: hostname,
-			DNSNames:   []string{hostname},
-			TTL:        gateCertificateTTL,
-		})
-		if issueError != nil {
+		issuanceChanges, issuanceError := routeTLSController.issueSealedGateCertificate(ctx, routeName, autoTLSRoutes[routeName])
+		if issuanceError != nil {
 			logging.Default().Error("route-tls: failed to issue certificate",
-				"route", routeName, "host", hostname, "error", issueError.Error())
+				"route", routeName, "host", autoTLSRoutes[routeName], "error", issuanceError.Error())
 			continue
 		}
-
-		logging.Default().Info("route-tls: issued certificate",
-			"route", routeName, "host", hostname,
-			"notAfter", issuedCertificate.NotAfter.Format(time.RFC3339))
-
-		changes = append(changes,
-			Change{Type: store.OpPut, Key: certKey, Value: issuedCertificate.CertificatePEM},
-			Change{Type: store.OpPut, Key: keyKey, Value: issuedCertificate.PrivateKeyPEM},
-			Change{Type: store.OpPut, Key: notAfterKey, Value: []byte(issuedCertificate.NotAfter.Format(time.RFC3339))},
-		)
+		changes = append(changes, issuanceChanges...)
 	}
 
 	changes = append(changes, cleanupStaleDerivedTLSFacts(existingDerivedTLS, desiredDerivedTLSKeys)...)
 
 	return changes, nil
+}
+
+// issueSealedGateCertificate issues a certificate for the gate's host and
+// returns one change group: the certificate and expiry facts plus the sealed
+// private key at secrets/route/{gate}/tls/key, committed in one transaction.
+func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx context.Context, routeName string, hostname string) ([]Change, error) {
+	issuedCertificate, issueError := routeTLSController.certificateAuthority.IssueCertificate(security.IssueCertificateRequest{
+		CommonName: hostname,
+		DNSNames:   []string{hostname},
+		TTL:        gateCertificateTTL,
+	})
+	if issueError != nil {
+		return nil, issueError
+	}
+
+	sealedPrivateKey, sealError := security.SealSecretValue(ctx, routeTLSController.secretKeyProvider, issuedCertificate.PrivateKeyPEM)
+	if sealError != nil {
+		return nil, fmt.Errorf("seal private key: %w", sealError)
+	}
+
+	logging.Default().Info("route-tls: issued certificate",
+		"route", routeName, "host", hostname,
+		"notAfter", issuedCertificate.NotAfter.Format(time.RFC3339))
+
+	return groupedChanges("route-tls-issue/"+routeName,
+		Change{Type: store.OpPut, Key: types.KeyDerivedRouteTLSCert(routeName), Value: issuedCertificate.CertificatePEM},
+		Change{Type: store.OpPut, Key: security.SecretStorePrefix + types.SecretNameRouteTLSKey(routeName), Value: sealedPrivateKey},
+		Change{Type: store.OpPut, Key: types.KeyDerivedRouteTLSNotAfter(routeName), Value: []byte(issuedCertificate.NotAfter.Format(time.RFC3339))},
+	), nil
 }
 
 // autoTLSRoute maps route name to its hostname for routes with tls mode "auto".

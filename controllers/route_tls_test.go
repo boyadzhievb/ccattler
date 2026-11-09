@@ -5,6 +5,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -24,9 +26,37 @@ func newTestCertificateAuthority(t *testing.T) *security.CertificateAuthority {
 	return certificateAuthority
 }
 
+// newTestRouteTLSController creates a route-tls controller with a test CA and
+// a local secret key provider, returning the provider to open sealed keys.
+func newTestRouteTLSController(t *testing.T) (*RouteTLSController, security.KeyProvider) {
+	t.Helper()
+	masterKey, keyError := security.GenerateMasterKey()
+	if keyError != nil {
+		t.Fatal(keyError)
+	}
+	secretKeyProvider, providerError := security.NewLocalKeyProvider(masterKey)
+	if providerError != nil {
+		t.Fatal(providerError)
+	}
+	return NewRouteTLSController(newTestCertificateAuthority(t), secretKeyProvider), secretKeyProvider
+}
+
+// openSealedTestSecret decodes and opens a value written by SealSecretValue.
+func openSealedTestSecret(t *testing.T, secretKeyProvider security.KeyProvider, sealedValue string) []byte {
+	t.Helper()
+	envelopeBlob, decodeError := base64.StdEncoding.DecodeString(sealedValue)
+	if decodeError != nil {
+		t.Fatalf("sealed key is not base64: %v", decodeError)
+	}
+	plaintext, openError := security.OpenEnvelope(context.Background(), secretKeyProvider, envelopeBlob)
+	if openError != nil {
+		t.Fatalf("open sealed key: %v", openError)
+	}
+	return plaintext
+}
+
 func TestRouteTLSControllerIssuesCertForAutoMode(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, secretKeyProvider := newTestRouteTLSController(t)
 
 	facts := buildFacts(
 		kv(types.KeyDesiredRoute("web-public"), ""),
@@ -41,12 +71,22 @@ func TestRouteTLSControllerIssuesCertForAutoMode(t *testing.T) {
 	}
 
 	if len(changes) != 3 {
-		t.Fatalf("expected 3 changes (cert, key, not-after), got %d", len(changes))
+		t.Fatalf("expected 3 changes (cert, sealed key, not-after), got %d", len(changes))
 	}
 
 	changeMap := make(map[string]string, len(changes))
 	for _, change := range changes {
 		changeMap[change.Key] = string(change.Value)
+		if change.Group != "route-tls-issue/web-public" {
+			t.Errorf("change %s not in the issuance group: %q", change.Key, change.Group)
+		}
+		if strings.Contains(string(change.Value), "PRIVATE KEY") {
+			t.Errorf("plaintext private key written at %s", change.Key)
+		}
+	}
+
+	if _, hasPlaintextKey := changeMap[types.KeyDerivedRouteTLSKey("web-public")]; hasPlaintextKey {
+		t.Error("derived plaintext key fact must not be written")
 	}
 
 	certPEM := changeMap[types.KeyDerivedRouteTLSCert("web-public")]
@@ -54,9 +94,13 @@ func TestRouteTLSControllerIssuesCertForAutoMode(t *testing.T) {
 		t.Errorf("expected PEM certificate, got %q", certPEM[:min(len(certPEM), 40)])
 	}
 
-	keyPEM := changeMap[types.KeyDerivedRouteTLSKey("web-public")]
-	if !strings.Contains(keyPEM, "BEGIN EC PRIVATE KEY") {
-		t.Errorf("expected PEM private key, got %q", keyPEM[:min(len(keyPEM), 40)])
+	sealedKey, hasSealedKey := changeMap["secrets/"+types.SecretNameRouteTLSKey("web-public")]
+	if !hasSealedKey {
+		t.Fatal("expected sealed key at secrets/route/web-public/tls/key")
+	}
+	keyPEM := openSealedTestSecret(t, secretKeyProvider, sealedKey)
+	if _, pairError := tls.X509KeyPair([]byte(certPEM), keyPEM); pairError != nil {
+		t.Errorf("sealed key does not match the certificate: %v", pairError)
 	}
 
 	notAfterValue := changeMap[types.KeyDerivedRouteTLSNotAfter("web-public")]
@@ -70,8 +114,7 @@ func TestRouteTLSControllerIssuesCertForAutoMode(t *testing.T) {
 }
 
 func TestRouteTLSControllerSkipsValidCert(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, _ := newTestRouteTLSController(t)
 
 	futureExpiry := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
 
@@ -96,8 +139,7 @@ func TestRouteTLSControllerSkipsValidCert(t *testing.T) {
 }
 
 func TestRouteTLSControllerRenewsExpiringSoon(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, _ := newTestRouteTLSController(t)
 
 	nearExpiry := time.Now().Add(15 * 24 * time.Hour).Format(time.RFC3339)
 
@@ -119,11 +161,15 @@ func TestRouteTLSControllerRenewsExpiringSoon(t *testing.T) {
 	if len(changes) != 3 {
 		t.Fatalf("expected 3 changes for renewal, got %d", len(changes))
 	}
+	for _, change := range changes {
+		if change.Key == types.KeyDerivedRouteTLSKey("web-public") {
+			t.Errorf("renewal must neither write nor delete the pre-M176 plaintext key (op %v)", change.Type)
+		}
+	}
 }
 
 func TestRouteTLSControllerIgnoresManualMode(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, _ := newTestRouteTLSController(t)
 
 	facts := buildFacts(
 		kv(types.KeyDesiredRoute("internal-api"), ""),
@@ -145,8 +191,7 @@ func TestRouteTLSControllerIgnoresManualMode(t *testing.T) {
 }
 
 func TestRouteTLSControllerCleansUpStaleDeriveds(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, _ := newTestRouteTLSController(t)
 
 	facts := buildFacts(
 		kv(types.KeyDerivedRouteTLSCert("deleted-gate"), "stale-cert"),
@@ -171,8 +216,7 @@ func TestRouteTLSControllerCleansUpStaleDeriveds(t *testing.T) {
 }
 
 func TestRouteTLSControllerNoTLSRoutesNoChanges(t *testing.T) {
-	certificateAuthority := newTestCertificateAuthority(t)
-	routeTLSController := NewRouteTLSController(certificateAuthority)
+	routeTLSController, _ := newTestRouteTLSController(t)
 
 	facts := buildFacts(
 		kv(types.KeyDesiredRoute("plain-gate"), ""),
@@ -187,5 +231,55 @@ func TestRouteTLSControllerNoTLSRoutesNoChanges(t *testing.T) {
 
 	if len(changes) != 0 {
 		t.Errorf("expected 0 changes for non-TLS gate, got %d", len(changes))
+	}
+}
+
+// waitForStoreValue polls the store until the key holds a value accepted by
+// the condition, failing the test after the timeout. Returns that value.
+func waitForStoreValue(t *testing.T, factStore store.StateStore, key string, condition func(string) bool) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if fact, getError := factStore.Get(context.Background(), key); getError == nil && condition(string(fact.Value)) {
+			return string(fact.Value)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", key)
+	return ""
+}
+
+func TestRouteTLSControllerRenewalOverwritesSealedKeyThroughRunner(t *testing.T) {
+	factStore := store.NewMemoryStore()
+	defer factStore.Close()
+	routeTLSController, secretKeyProvider := newTestRouteTLSController(t)
+	runner := NewRunner(factStore, routeTLSController)
+	runner.SetDebounce(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runner.Run(ctx)
+
+	factStore.Put(ctx, types.KeyDesiredRouteHost("web-public"), []byte("app.example.com"))
+	factStore.Put(ctx, types.KeyDesiredRouteTLSMode("web-public"), []byte("auto"))
+
+	sealedKeyPath := "secrets/" + types.SecretNameRouteTLSKey("web-public")
+	nonEmpty := func(value string) bool { return value != "" }
+	firstSealedKey := waitForStoreValue(t, factStore, sealedKeyPath, nonEmpty)
+
+	// Force renewal: the sealed key now exists, so its put must pass the CAS guard.
+	nearExpiry := time.Now().Add(15 * 24 * time.Hour).Format(time.RFC3339)
+	factStore.Put(ctx, types.KeyDerivedRouteTLSNotAfter("web-public"), []byte(nearExpiry))
+
+	renewedSealedKey := waitForStoreValue(t, factStore, sealedKeyPath, func(value string) bool {
+		return value != "" && value != firstSealedKey
+	})
+	renewedCertificate := waitForStoreValue(t, factStore, types.KeyDerivedRouteTLSCert("web-public"), nonEmpty)
+	keyPEM := openSealedTestSecret(t, secretKeyProvider, renewedSealedKey)
+	if _, pairError := tls.X509KeyPair([]byte(renewedCertificate), keyPEM); pairError != nil {
+		t.Errorf("renewed sealed key does not match the renewed certificate: %v", pairError)
+	}
+	if _, getError := factStore.Get(ctx, types.KeyDerivedRouteTLSKey("web-public")); getError == nil {
+		t.Error("derived plaintext key fact must not exist")
 	}
 }

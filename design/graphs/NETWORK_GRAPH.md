@@ -649,16 +649,20 @@ tls.Config.GetCertificate = getGateCertificate(clientHello)    gate_proxy.go:141
 
 ### RouteTLSController (controllers/route_tls.go) — auto gate certificates
 ```
-RouteTLSController.Reconcile(ctx, facts)                       :56
-├── Watch: desired/route/, derived/route/
-├── parseAutoTLSRoutes(facts)                                  :115  → routes with tls/mode=auto and a host
-├── parseExistingDerivedTLSFacts(facts)                        :150
+RouteTLSController.Reconcile(ctx, facts)                       :62
+├── Watch: desired/route/, derived/route/, secrets/route/ (sealed keys: renewal put gets a revision guard)
+├── parseAutoTLSRoutes(facts)                                  :136  → routes with tls/mode=auto and a host
+├── parseExistingDerivedTLSFacts(facts)                        :171
 ├── FOR EACH auto route:
-│   └── needsCertificateIssuance(not-after)                    :162  (missing or within 30 days)
-│       └── CertificateAuthority.IssueCertificate(DNSNames=[host], TTL=90d)
-│           → PUT derived/route/{name}/tls/{cert,key,not-after}
-└── cleanupStaleDerivedTLSFacts                                :175  (gates no longer auto)
-Wired in cmd/cca/command_server.go:387 when the cluster CA is loaded.
+│   └── needsCertificateIssuance(not-after)                    :183  (missing or within 30 days)
+│       └── issueSealedGateCertificate(ctx, route, host)       :105
+│           ├── CertificateAuthority.IssueCertificate(DNSNames=[host], TTL=90d)
+│           ├── security.SealSecretValue(keyProvider, key PEM)  (envelope, base64)
+│           └── one change group "route-tls-issue/{name}":
+│               PUT derived/route/{name}/tls/{cert,not-after}, PUT secrets/route/{name}/tls/key
+│               (no derived tls/key; a pre-M176 one is kept while the gate is auto, Flow 28 step 7)
+└── cleanupStaleDerivedTLSFacts                                :196  (gates no longer auto)
+Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provider from loadSecretKeyProvider (:687), shared with the secret store.
 ```
 
 ### Store keys (gate proxy / gate TLS)
@@ -667,7 +671,9 @@ Wired in cmd/cca/command_server.go:387 when the cluster CA is loaded.
 | `desired/route/{name}/host`, `/service`, `/sticky`, `/cookie/*` | compiler | gate proxy |
 | `desired/route/{name}/tls/mode` | compiler | RouteTLSController, gate proxy |
 | `desired/route/{name}/tls/cert`, `/tls/key` (manual) | compiler | gate proxy |
-| `derived/route/{name}/tls/cert`, `/tls/key`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
+| `derived/route/{name}/tls/cert`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
+| `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176 (kept until gate-key migration) | gate proxy (until gate-key delivery) |
+| `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | — (gate-key delivery, M176) |
 | `derived/route/{name}/backends` | RouteController (staleness check limited to `/backends` keys, so it never deletes `tls/*`) | agent `parseRouteFactsForDataPlane` (cookie proxy) |
 
 ---
