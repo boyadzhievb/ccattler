@@ -13,22 +13,36 @@ curl -fsSL https://github.com/boyadzhievb/ccattler/releases/latest/download/inst
 # See the reconciliation loop in action (simulated — no containers)
 cca demo
 
-# Run real OCI containers (requires docker, nerdctl, or lima)
-cca run-container examples/basic.cca
-
 # Run real OS processes (no container runtime needed)
 cca run examples/basic.cca
+
+# Run real OCI containers (requires nerdctl, docker, or lima)
+cca run-container examples/basic.cca
 ```
 
-CCattler has three runtime modes:
+Single-process modes:
 
 | Command | Runtime | What it does |
 |---|---|---|
 | `cca apply` / `cca demo` | Simulator | Shows reconciliation output — no real processes or containers |
 | `cca run` | Process | Starts real OS processes managed by the reconciler |
-| `cca run-container` | Container (docker/nerdctl/lima) | Pulls images, starts real OCI containers |
+| `cca run-container` | Container (nerdctl/docker/lima) | Pulls images, starts real OCI containers |
 
-The container runtime auto-detects **nerdctl**, **docker**, or **lima** (in that order) to pull images and manage containers.
+## Multi-node cluster
+
+A cluster is one control plane (`cca server` with etcd) and an agent (`cca agent`) on each machine. Nodes join with a short-lived token over mTLS:
+
+```bash
+cca init                                          # cluster CA and certificates (control plane)
+cca server --listen 0.0.0.0:9770 --tls --dns      # controllers + API
+cca token create --node-id worker-1 --ttl 15m     # join token
+cca join 192.168.1.10:9770 <token> --node-id worker-1   # on the worker
+cca agent --node-id worker-1                      # on the worker
+cca apply examples/web.cca                        # declare the workload
+cca status                                        # see it converge
+```
+
+The Ansible playbooks in [deploy/ansible](deploy/ansible) set this up end to end. See [installation](https://ccattler.org/installation) for details.
 
 ## Why?
 
@@ -41,7 +55,7 @@ Kubernetes is powerful, but its user-facing abstraction is its internal object m
           |
           v
   +---------------+
-  | DOMAIN LANG.  |    .ccl files
+  |  .cca CONFIG  |    domain language
   +-------+-------+
           |
           v
@@ -52,7 +66,7 @@ Kubernetes is powerful, but its user-facing abstraction is its internal object m
   +-------+--------+
   |       |        |
   v       v        v
-sched  network  storage    (controllers watch facts, derive actions)
+sched  network  storage    (controllers watch facts, derive changes)
   |       |        |
   +-------+--------+
           |
@@ -65,7 +79,7 @@ sched  network  storage    (controllers watch facts, derive actions)
       MACHINES
 ```
 
-The cluster stores **facts** (desired state, observed state, constraints), not objects. Controllers are rule engines that watch facts, compare desired vs actual, and derive actions. The reconciliation loop runs continuously:
+The cluster stores **facts** (desired state, observed state, constraints), not objects. Controllers are rule engines that watch facts, compare desired vs actual, and propose changes. Desired and observed state are always kept separate; the difference is the work. The reconciliation loop runs continuously:
 
 ```
 facts -> rules -> new facts -> actions -> reality -> observations -> facts
@@ -73,7 +87,7 @@ facts -> rules -> new facts -> actions -> reality -> observations -> facts
 
 ## Configuration language
 
-No YAML. A human-oriented declarative language:
+No YAML. A human-oriented declarative language (`.cca` files):
 
 ```
 service web {
@@ -105,9 +119,15 @@ service web {
         zone spread
     }
 }
+
+gate web-public {
+    host "app.example.com"
+    service web port 8080
+    tls auto                 # certificate issued and renewed by the cluster CA
+}
 ```
 
-Multi-tenancy, security, and network policies are also declarative:
+Multi-tenancy, access, and network policies are also declarative:
 
 ```
 tenant payments {
@@ -129,6 +149,8 @@ network {
 }
 ```
 
+`cca fmt` formats a file, `cca lint` validates it, and `cca diff` shows the fact changes an apply would make. Full syntax: [DSL reference](design/dsl-reference.md). Editor support: [VS Code extension](editor/vscode-cca).
+
 ## Key differences from Kubernetes
 
 | | Kubernetes | CCattler |
@@ -137,46 +159,58 @@ network {
 | **Config format** | YAML serializing internal objects | Domain language expressing intent |
 | **Extensibility** | CRDs + custom controllers | Typed facts + schemas + rules |
 | **Networking** | Label selectors | Identity-based policies |
+| **Ingress** | Ingress/Gateway objects + a separate controller | `gate` blocks served by every agent (HTTP and HTTPS by SNI) |
 | **Multi-tenancy** | Namespaces (one concept for everything) | Separate ownership, quotas, isolation |
 | **Autoscaling** | HPA/VPA/KEDA (separate systems) | Unified scaling engine |
-| **Security** | RBAC on API resources | RBAC + ABAC on fact prefixes |
+| **Security** | RBAC verbs on API resources | Capabilities on hierarchical scopes, deny by default |
 
 ## Architecture
 
-- **Fact Store** (etcd) — desired state, observed state, and constraints as key-value facts with transactions, watches, and revisions
-- **Controllers** — independent rule engines (instance, endpoint, failure, autoscale, network, storage) that communicate only through state, never through each other
-- **Scheduler** — pure function: `schedule(requirements, nodes) -> placement`
-- **Node Agents** — observer/reconciler/reporter on each machine, running containers via containerd
-- **Unified Scaling Engine** — horizontal, vertical, event-driven, and scheduled scaling through one mechanism
-- **Security** — mTLS everywhere, internal CA, RBAC + ABAC, per-controller least privilege, zero-trust
+- **Fact store** (etcd) — desired state, observed state, and constraints as key-value facts with transactions, watches, and revisions
+- **Controllers** — independent rule engines (instance, scheduler, endpoint, failure, autoscale, network, storage, rollout, gate TLS, …) that communicate only through facts and return proposed changes, committed with optimistic concurrency
+- **Scheduler** — pure function: `schedule(requirements, nodes) -> placement`, zone-aware spreading and bin packing
+- **Node agents** — observe, reconcile, and report on each machine; run containers through containerd/nerdctl
+- **Networking** — VXLAN overlay (`--cluster-cidr`, one /24 per node), service VIPs (`--vip-cidr`) with nftables, iptables, or eBPF data planes, built-in DNS, and the gate proxy for external HTTP/HTTPS
+- **Storage** — persistent volumes (local path and NFS, including shared read-write volumes), with volume migration on node failure
+- **Security** — mTLS between all components, internal CA, token-based node enrollment, users via local tokens, JWT, or OIDC, capability-based API authorization plus store-layer prefix RBAC, and a persistent audit log
+- **Secrets** — envelope-encrypted in etcd; only the control plane holds the key and delivers plaintext to the node running an instance (tmpfs, never on disk). Gate TLS private keys are sealed the same way
 - **Multi-tenancy** — tenant ownership, resource quotas, fair scheduling, identity-based network isolation
+- **Cloud** — node lifecycle, load balancers, and routes for AWS, GCP, and Azure
 
 ## Project structure
 
 ```
 ccattler/
-  lang/           DSL lexer, parser, AST, compiler
-  store/          StateStore interface + in-memory + etcd adapters
+  lang/           DSL lexer, parser, AST, compiler, formatter
+  store/          StateStore interface + in-memory and etcd adapters
   scheduler/      Pure scheduling function
-  controllers/    Instance, endpoint, failure, autoscale, network, storage
-  agent/          Node agent (observer, reconciler, reporter)
+  controllers/    Reconciliation controllers and the runner
+  agent/          Node agent (observer, reconciler, reporter, secret and gate-key delivery)
   runtime/        Pluggable runtimes (simulator, process, container)
-  api/            HTTP server and status endpoints
+  network/        Overlay, VIP data planes (nftables, iptables, eBPF), DNS, gate proxy
+  storage/        Volume providers (local, NFS, simulator)
+  security/       CA, mTLS, enrollment, authorization, secrets, audit
+  tenant/         Multi-tenancy, quotas, admission policy gate
+  api/            HTTP API server
   cmd/cca/        CLI commands
-  types/          Shared fact types, keys, and constants
-  infra/          Infrastructure provider interface (cloud node lifecycle)
-  cloud/          AWS and GCP cloud controller managers
-  network/        VIP data plane, DNS, proxy
-  security/       mTLS, RBAC, ABAC, credential broker
-  tenant/         Multi-tenancy, quotas, fair scheduling
-  storage/        Persistent volume controllers
+  types/          Shared fact types, store keys, and constants
+  infra/          Infrastructure provider interface (node lifecycle)
+  cloud/          AWS, GCP, and Azure cloud controllers
+  logging/        Structured logging
+  metrics/        Prometheus metrics
+  tracing/        W3C trace context propagation
   chaos/          Chaos testing and benchmarks
-  integration/    End-to-end integration tests
+  integration/    In-process integration tests
+  test/e2e/       Multi-VM end-to-end tests
+  deploy/         Ansible playbooks, Lima and Vagrant test clusters, Grafana dashboards
+  editor/         VS Code extension for .cca files
+  website/        Documentation site (ccattler.org)
+  design/         Design documents and call graphs
 ```
 
 ## Status
 
-80 milestones complete — from the core fact store through distributed state, multi-host deployment, authorization, cloud provider integration, stateful workloads, six correctness review passes, and cloud provider CI. 1602+ tests across 20 packages. Deployed and tested on real multi-host clusters with 3-VM E2E validation.
+Beta. 175 milestones complete (latest release `v1.74.0-beta`): from the core fact store through distributed state, multi-host deployment, authorization, cloud providers, stateful workloads, gate TLS termination, eBPF data plane, and encrypted secret delivery to nodes. About 2,000 Go test functions. CI runs unit, security, and authentication tests and a 3-VM end-to-end cluster test on every push; a deploy-cluster test runs real workloads (including Airflow) before releases. Work in progress and upcoming milestones: [milestones.md](milestones.md); release notes: [changelog](website/changelog.md).
 
 ## Documentation
 
@@ -184,8 +218,12 @@ Full documentation at **[ccattler.org](https://ccattler.org)** — getting start
 
 ## Design documents
 
-- [CLAUDE.md](CLAUDE.md) — Complete architecture, design philosophy, and phased implementation plan
+- [runtime-invariant-flows.md](design/runtime-invariant-flows.md) — end-to-end flows and the invariants each must keep
 - [etcd-schema.md](design/etcd-schema.md) — etcd key layout, consistency model, and worked examples
+- [controllers.md](design/controllers.md), [node-agent.md](design/node-agent.md), [networking.md](design/networking.md), [storage.md](design/storage.md)
+- [security-model.md](design/security-model.md), [threat-model.md](design/threat-model.md), [config-secrets.md](design/config-secrets.md), [multi-tenancy.md](design/multi-tenancy.md)
+- [cli-reference.md](design/cli-reference.md), [dsl-reference.md](design/dsl-reference.md), [TESTING.md](design/TESTING.md)
+- [design/graphs/](design/graphs) — function-level call graphs per subsystem
 
 ## License
 
