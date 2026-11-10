@@ -216,7 +216,7 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
   - review 11 (fixed): T18 could exit with cca-server stopped → `gate_tls_fail_with_server_started`
   - review 12 (fixed): T17 could pass on an empty status query → fails instead
   - review 13 (recorded): T16 cannot exercise the cutover on a fresh cluster (known gap above)
-- [ ] Deploy Testbed green on the review fixes
+- [x] Deploy Testbed green on the review fixes: run 42850695267 on m4800 (5679403, eBPF; includes HARunner post-commit fix f2600df and data plane startup check 5679403), T1–T18 passed
 
 ### Phase 177 — Root Key, Keyring & Key Migration (M177)
 
