@@ -11,6 +11,9 @@ vms:
     memory: 4096
     disk: 20G
     console_log: true
+    # No project share: vmherd's default /vagrant share uses 9p, which the
+    # Debian genericcloud kernel lacks; Ansible copies everything it needs.
+    shared_folders: []
     network:
       ip: 192.168.100.50
 
@@ -20,6 +23,7 @@ vms:
     memory: 3072
     disk: 20G
     console_log: true
+    shared_folders: []
     network:
       ip: 192.168.100.51
 
@@ -29,6 +33,7 @@ vms:
     memory: 3072
     disk: 20G
     console_log: true
+    shared_folders: []
     network:
       ip: 192.168.100.52
 
