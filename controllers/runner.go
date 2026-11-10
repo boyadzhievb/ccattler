@@ -133,6 +133,16 @@ type Runner struct {
 	// When set, the runner emits events for key state changes (instance
 	// creation, failure, placement, etc.) after each reconciliation cycle.
 	eventLog *types.EventLog
+	// metricsCollector optionally records per-controller reconciliation
+	// duration, change counts, and errors for the HA metrics API.
+	metricsCollector *MetricsCollector
+}
+
+// SetMetricsCollector attaches a metrics collector to the runner. When set,
+// every controller Reconcile/ReconcileDelta invocation records its duration,
+// change count, and error into the collector.
+func (controllerRunner *Runner) SetMetricsCollector(metricsCollector *MetricsCollector) {
+	controllerRunner.metricsCollector = metricsCollector
 }
 
 // SetEventLog attaches an event log to the runner. When set, the runner
@@ -513,9 +523,20 @@ func (controllerRunner *Runner) attemptSingleReconciliation(ctx context.Context,
 	return false, nil
 }
 
-// computeReconciliationChanges tries the delta reconciliation path first (if
-// applicable), falling back to full Reconcile. Returns the proposed changes.
+// computeReconciliationChanges invokes the controller's reconcile logic and
+// records the invocation in the optional metrics collector.
 func (controllerRunner *Runner) computeReconciliationChanges(ctx context.Context, controller Controller, allFacts []store.Fact, deltaEvents []store.Event) ([]Change, error) {
+	startTime := time.Now()
+	changes, computeError := controllerRunner.invokeControllerReconcile(ctx, controller, allFacts, deltaEvents)
+	if controllerRunner.metricsCollector != nil {
+		controllerRunner.metricsCollector.RecordReconciliation(controller.Name(), time.Since(startTime), len(changes), computeError)
+	}
+	return changes, computeError
+}
+
+// invokeControllerReconcile tries the delta reconciliation path first (if
+// applicable), falling back to full Reconcile. Returns the proposed changes.
+func (controllerRunner *Runner) invokeControllerReconcile(ctx context.Context, controller Controller, allFacts []store.Fact, deltaEvents []store.Event) ([]Change, error) {
 	if len(deltaEvents) > 0 {
 		if deltaController, isDelta := controller.(DeltaController); isDelta {
 			deltaChanges, deltaError := deltaController.ReconcileDelta(ctx, allFacts, deltaEvents)

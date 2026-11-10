@@ -129,9 +129,8 @@ startControllers()                                  [controllers/ha_runner.go:10
 ├── mutex.Lock
 ├── IF cancelRunner != nil → return                 [already running, guard]
 ├── context.WithCancel(context.Background())
-├── FOR EACH controller:
-│   └── wrap with metricsWrappedController{inner, metrics}
-├── NewRunner(factStore, wrappedControllers...)
+├── NewRunner(factStore, controllers...)
+├── runner.SetMetricsCollector(metrics)             [runner records per-controller metrics]
 ├── IF eventLog != nil:
 │   └── runner.SetEventLog(eventLog)
 ├── runnerDone = make(chan struct{})
@@ -142,7 +141,7 @@ startControllers()                                  [controllers/ha_runner.go:10
 
 ### stopControllers → called by OnLost callback
 ```
-stopControllers()                                   [controllers/ha_runner.go:140]
+stopControllers()                                   [controllers/ha_runner.go:133]
 ├── mutex.Lock
 ├── IF cancelRunner != nil:
 │   ├── cancelRunner()                              [cancel all controllers]
@@ -155,19 +154,23 @@ stopControllers()                                   [controllers/ha_runner.go:14
 └── mutex.Unlock
 ```
 
-### metricsWrappedController → reconciliation metrics
+### Runner metrics recording (replaces removed metricsWrappedController)
 ```
-metricsWrappedController.Reconcile(ctx, facts)      [controllers/ha_runner.go:171]
+Runner.computeReconciliationChanges(ctx, ...)       [controllers/runner.go:528]
 ├── startTime = time.Now()
-├── inner.Reconcile(ctx, facts)                     [delegate to wrapped controller]
-└── metrics.RecordReconciliation(name, duration, len(changes), err)
+├── invokeControllerReconcile(ctx, ...)             [delta path or full Reconcile]
+└── IF metricsCollector != nil:
+    └── metrics.RecordReconciliation(name, duration, len(changes), err)
 ```
+The wrapper was removed because it hid the optional PostCommitController and
+DeltaController interfaces from the runner's type assertions, so post-commit
+operations never executed under HARunner (production server mode).
 
 ## Controller Runner (controllers/runner.go)
 
 ### Runner.Run → starts all controllers
 ```
-Runner.Run(ctx)                                     [controllers/runner.go:196]
+Runner.Run(ctx)                                     [controllers/runner.go:206]
 ├── context.WithCancel(ctx)
 ├── IF eventLog != nil:
 │   ├── NewEventProjector(store, eventLog)
@@ -183,7 +186,7 @@ Runner.Run(ctx)                                     [controllers/runner.go:196]
 
 ### runSingleController → retry with backoff
 ```
-runSingleController(ctx, controller)                [controllers/runner.go:238]
+runSingleController(ctx, controller)                [controllers/runner.go:248]
 └── FOR attempt 0..∞:
     ├── runControllerLoop(ctx, controller)
     ├── IF ctx.Err() → return
@@ -194,7 +197,7 @@ runSingleController(ctx, controller)                [controllers/runner.go:238]
 
 ### runControllerLoop → watch + reconcile
 ```
-runControllerLoop(ctx, controller)                  [controllers/runner.go:274]
+runControllerLoop(ctx, controller)                  [controllers/runner.go:284]
 ├── setupControllerWatches(watchCtx, controller, trigger, watchLost, deltaBuffer)
 │   └── FOR EACH prefix in controller.Watch():
 │       ├── store.Watch(prefix, {Prefix: true})
@@ -209,7 +212,7 @@ runControllerLoop(ctx, controller)                  [controllers/runner.go:274]
 
 ### executeReconciliationCycle → optimistic concurrency retries
 ```
-executeReconciliationCycle(ctx, controller, deltaEvents) [controllers/runner.go:409]
+executeReconciliationCycle(ctx, controller, deltaEvents) [controllers/runner.go:419]
 └── FOR attempt 0..4:
     ├── attemptSingleReconciliation(ctx, controller, events)
     │   ├── scanFactsForController → allFacts[]
@@ -333,7 +336,8 @@ EventProjector.Run(ctx)                             [controllers/event_projector
 | `startControllers` | `LeaderElection.onAcquired` callback |
 | `stopControllers` | `LeaderElection.onLost` callback |
 | `awaitPendingOperation` | `HARunner.Run` (before election start) |
-| `metricsWrappedController.Reconcile` | `Runner.executeReconciliationCycle` via `attemptSingleReconciliation` |
+| `Runner.SetMetricsCollector` | `startControllers` (HARunner) |
+| `invokeControllerReconcile` | `computeReconciliationChanges` |
 | `Runner.Run` | `startControllers` (goroutine), `startControllerRunner` (non-HA path) |
 | `runSingleController` | `Runner.Run` (goroutine per controller) |
 | `runControllerLoop` | `runSingleController` |
@@ -455,7 +459,7 @@ release() CAS-deletes leader/controlplane + holder
 | `defaultControllerResyncInterval` | 30s | controllers/runner.go:30 | Forced full reconciliation period |
 | `reconcileRetryBaseDelayMs` | 10ms | controllers/runner.go:34 | CAS retry base backoff |
 | `reconcileRetryMaxDelayMs` | 500ms | controllers/runner.go:38 | CAS retry max backoff |
-| `defaultMaxReconciliationAttempts` | 5 | controllers/runner.go:402 | Max CAS retries per cycle |
+| `defaultMaxReconciliationAttempts` | 5 | controllers/runner.go:412 | Max CAS retries per cycle |
 | `maxTransactionChanges` | 60 | controllers/runner.go:55 | Max changes per etcd transaction |
 | `etcdTransactionOperationLimit` | 128 | controllers/runner.go:42 | etcd hard limit |
 | `defaultNodeFailureLeaseTimeout` | 30s | controllers/nodefailure.go:22 | Heartbeat expiry for node failure |

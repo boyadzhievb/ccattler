@@ -481,12 +481,12 @@ CustomController.Reconcile(ctx, facts)               (:152)
 
 ### Runner.Run → start controllers
 ```
-Runner.Run(ctx)                                      (controllers/runner.go:196)
+Runner.Run(ctx)                                      (controllers/runner.go:206)
 ├── EventProjector.Run(ctx)                          [goroutine, if eventLog set]
 └── FOR EACH controller:
-    └── go runSingleController(ctx, controller)      (:238) [goroutine]
+    └── go runSingleController(ctx, controller)      (:248) [goroutine]
         └── retry loop with backoff [100ms → 500ms → 1s → 2s → 5s → 30s]
-            └── runControllerLoop(ctx, controller)   (:274)
+            └── runControllerLoop(ctx, controller)   (:284)
                 ├── setupControllerWatches           (:300)
                 │   └── FOR EACH prefix in Watch():
                 │       ├── store.Watch(prefix, {Prefix: true})
@@ -502,28 +502,30 @@ Runner.Run(ctx)                                      (controllers/runner.go:196)
 ### executeReconciliationCycle → single reconcile pass
 ```
 executeReconciliationCycle(ctx, controller, deltaEvents)
-                                                     (controllers/runner.go:409)
+                                                     (controllers/runner.go:419)
 └── FOR attempt 0..maxAttempts:
-    └── attemptSingleReconciliation                  (:469)
-        ├── scanFactsForController(ctx, controller)  (:582)
+    └── attemptSingleReconciliation                  (:479)
+        ├── scanFactsForController(ctx, controller)  (:603)
         │   └── FOR EACH prefix: store.Scan(prefix) → merge all facts
-        ├── computeReconciliationChanges             (:518)
-        │   ├── IF deltaEvents AND controller is DeltaController:
-        │   │   └── controller.ReconcileDelta(ctx, allFacts, deltaEvents)
-        │   │       └── IF ErrDeltaFallback → fall through
-        │   └── controller.Reconcile(ctx, allFacts) → changes[]
-        ├── validateAndCapChanges(name, changes)     (:537)
+        ├── computeReconciliationChanges             (:528)
+        │   ├── invokeControllerReconcile            (:539)
+        │   │   ├── IF deltaEvents AND controller is DeltaController:
+        │   │   │   └── controller.ReconcileDelta(ctx, allFacts, deltaEvents)
+        │   │   │       └── IF ErrDeltaFallback → fall through
+        │   │   └── controller.Reconcile(ctx, allFacts) → changes[]
+        │   └── metricsCollector.RecordReconciliation(...) [if collector set]
+        ├── validateAndCapChanges(name, changes)     (:558)
         │   └── cap to maxTransactionChanges (60)
-        ├── buildReconciliationTransaction           (:599)
+        ├── buildReconciliationTransaction           (:620)
         │   ├── Compare: input key revisions [guard]
         │   ├── Then: put/delete change keys
-        │   └── appendInputKeyGuards                 (:637)
+        │   └── appendInputKeyGuards                 (:658)
         ├── store.Transaction(ctx, compares, onSuccess, nil)
         │   └── IF false → conflictDetected, retry
         ├── metricsCollector.RecordReconciliation(...)
         ├── reconciliationDuration.ObserveSince(...)
         ├── reconciliationTotal.Inc(controller, "success"/"error")
-        └── executePendingPostCommitOperations       (:568)
+        └── executePendingPostCommitOperations       (:589)
             └── IF controller is PostCommitController:
                 └── controller.ExecutePostCommitOperations(ctx)
 ```

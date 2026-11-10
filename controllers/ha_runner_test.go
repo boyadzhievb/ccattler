@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,22 +45,22 @@ func TestHARunnerStartsControllersOnLeadership(t *testing.T) {
 	}
 }
 
-func TestHARunnerMetricsWrapping(t *testing.T) {
+func TestRunnerRecordsMetricsViaCollector(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	defer memoryStore.Close()
 	ctx := context.Background()
 
 	metrics := NewMetricsCollector()
 
-	// Create a custom controller that produces changes.
+	// Create a custom controller that produces one change on first sight.
 	testController := NewCustomController("test", []string{"test/"}, func(ctx context.Context, facts *FactMap) ([]Change, error) {
-		return []Change{PutChange("output/done", "true")}, nil
+		return []Change{PutChange("test/output/done", "true")}, nil
 	})
 
-	// Wrap and reconcile directly.
-	wrapped := &metricsWrappedController{inner: testController, metrics: metrics}
+	testRunner := NewRunner(memoryStore, testController)
+	testRunner.SetMetricsCollector(metrics)
 	facts := []store.Fact{{Key: "test/item", Value: []byte("value")}}
-	changes, err := wrapped.Reconcile(ctx, facts)
+	changes, err := testRunner.computeReconciliationChanges(ctx, testController, facts, nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
@@ -77,6 +78,63 @@ func TestHARunnerMetricsWrapping(t *testing.T) {
 	if testMetrics.TotalChanges.Load() != 1 {
 		t.Errorf("changes = %d, want 1", testMetrics.TotalChanges.Load())
 	}
+}
+
+// postCommitProbeController is a minimal controller implementing
+// PostCommitController, used to verify the runner still discovers the
+// optional interface when the controller is managed by an HARunner.
+type postCommitProbeController struct {
+	// postCommitCalls counts ExecutePostCommitOperations invocations.
+	postCommitCalls atomic.Int64
+}
+
+// Name identifies the probe controller in logs and metrics.
+func (probeController *postCommitProbeController) Name() string { return "postcommit-probe" }
+
+// Watch declares the single test prefix the probe controller observes.
+func (probeController *postCommitProbeController) Watch() []string { return []string{"test/"} }
+
+// Reconcile emits one change until the output fact exists, then goes quiet.
+func (probeController *postCommitProbeController) Reconcile(_ context.Context, facts []store.Fact) ([]Change, error) {
+	for _, fact := range facts {
+		if fact.Key == "test/output/done" {
+			return nil, nil
+		}
+	}
+	return []Change{{Type: store.OpPut, Key: "test/output/done", Value: []byte("true")}}, nil
+}
+
+// ExecutePostCommitOperations records that the runner invoked the post-commit
+// hook, proving the optional interface survives HARunner management.
+func (probeController *postCommitProbeController) ExecutePostCommitOperations(_ context.Context) error {
+	probeController.postCommitCalls.Add(1)
+	return nil
+}
+
+// TestHARunnerPreservesPostCommitController is the regression test for the
+// metrics-wrapper bug where HARunner-managed controllers lost their
+// PostCommitController identity and post-commit operations never executed.
+func TestHARunnerPreservesPostCommitController(t *testing.T) {
+	memoryStore := store.NewMemoryStore()
+	defer memoryStore.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	memoryStore.Put(ctx, "test/input", []byte("value"))
+
+	probeController := &postCommitProbeController{}
+	haRunner := NewHARunner(memoryStore, "cp-1", NewMetricsCollector(), probeController)
+
+	go haRunner.Run(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if probeController.postCommitCalls.Load() >= 1 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("ExecutePostCommitOperations was never called for an HARunner-managed controller")
 }
 
 // TestHARunnerAwaitsShutdown verifies that stopControllers blocks until the

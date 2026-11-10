@@ -9,20 +9,20 @@ without reading controller source files.
 
 ### Runner.Run → entry point
 ```
-Runner.Run(ctx)                                              :196
+Runner.Run(ctx)                                              :206
 ├── IF eventLog != nil:
 │   └── EventProjector.Run(ctx)                              [goroutine]
 │
 └── FOR EACH controller:
-    └── runSingleController(ctx, controller)                 :238
+    └── runSingleController(ctx, controller)                 :248
         └── [retry loop with backoff: 100ms, 500ms, 1s, 2s, 5s, 30s]
-            └── runControllerLoop(ctx, controller)           :274
+            └── runControllerLoop(ctx, controller)           :284
                 ├── setupControllerWatches(ctx, ctrl, ...)   :300
                 │   └── FOR EACH prefix in ctrl.Watch():
                 │       ├── store.Watch(ctx, prefix)
                 │       └── forwardWatchEvents(ctx, ch, ...) [goroutine]  :313
                 │
-                ├── executeReconciliationCycle(ctx, ctrl, nil) [initial]  :409
+                ├── executeReconciliationCycle(ctx, ctrl, nil) [initial]  :419
                 │
                 └── runReconcileSelectLoop(ctx, ctrl, ...)   :352
                     └── SELECT:
@@ -33,40 +33,42 @@ Runner.Run(ctx)                                              :196
 
 ### executeReconciliationCycle → the core loop
 ```
-executeReconciliationCycle(ctx, controller, deltaEvents)     :409
+executeReconciliationCycle(ctx, controller, deltaEvents)     :419
 └── FOR attempt 0..maxReconciliationAttempts(5):
-    └── attemptSingleReconciliation(ctx, ctrl, events)       :469
-        ├── scanFactsForController(ctx, ctrl)                :582
+    └── attemptSingleReconciliation(ctx, ctrl, events)       :479
+        ├── scanFactsForController(ctx, ctrl)                :603
         │   └── FOR EACH prefix in ctrl.Watch():
         │       └── store.ScanWithRevision(ctx, prefix)
         │
         ├── store.SortFacts(allFacts)
         │
-        ├── computeReconciliationChanges(ctx, ctrl, ...)     :518
-        │   ├── IF DeltaController + deltaEvents:
-        │   │   └── ctrl.ReconcileDelta(ctx, facts, events)
-        │   │       └── ErrDeltaFallback → fallback below
-        │   └── ctrl.Reconcile(ctx, facts)
+        ├── computeReconciliationChanges(ctx, ctrl, ...)     :528
+        │   ├── invokeControllerReconcile(ctx, ctrl, ...)    :539
+        │   │   ├── IF DeltaController + deltaEvents:
+        │   │   │   └── ctrl.ReconcileDelta(ctx, facts, events)
+        │   │   │       └── ErrDeltaFallback → fallback below
+        │   │   └── ctrl.Reconcile(ctx, facts)
+        │   └── metricsCollector.RecordReconciliation(...)   [if collector set]
         │
-        ├── enforceWriteDomain(ctrlName, changes)            :674
+        ├── enforceWriteDomain(ctrlName, changes)            :695
         │   └── drop changes outside controllerOutputPrefixes
         │
-        ├── validateAndCapChanges(ctrlName, changes)         :537
-        │   ├── sortChangesByGroupAndKey(changes)            :710
-        │   ├── findDuplicateChangeKey(changes)              :764
+        ├── validateAndCapChanges(ctrlName, changes)         :558
+        │   ├── sortChangesByGroupAndKey(changes)            :731
+        │   ├── findDuplicateChangeKey(changes)              :785
         │   └── IF > 60 changes:
-        │       └── takeWholeGroups(changes, 60)             :726
+        │       └── takeWholeGroups(changes, 60)             :747
         │
-        ├── buildReconciliationTransaction(...)              :599
+        ├── buildReconciliationTransaction(...)              :620
         │   ├── per-change revision guards (CAS)
-        │   └── appendInputKeyGuards(...)                    :637
+        │   └── appendInputKeyGuards(...)                    :658
         │       └── guards input keys within write domain
         │
         ├── store.Transaction(ctx, compares, ops, nil)
         │   ├── succeeded → commit, break
         │   └── conflict → exponential backoff (10ms–500ms) + retry
         │
-        └── executePendingPostCommitOperations(ctx, ctrl)    :568
+        └── executePendingPostCommitOperations(ctx, ctrl)    :589
 ```
 
 ### Constants
@@ -77,7 +79,7 @@ executeReconciliationCycle(ctx, controller, deltaEvents)     :409
 | `reconcileRetryBaseDelayMs` | 10 | runner.go:34 |
 | `reconcileRetryMaxDelayMs` | 500 | runner.go:38 |
 | `maxTransactionChanges` | 60 | runner.go:55 |
-| `defaultMaxReconciliationAttempts` | 5 | runner.go:402 |
+| `defaultMaxReconciliationAttempts` | 5 | runner.go:412 |
 
 ---
 

@@ -109,15 +109,8 @@ func (haRunner *HARunner) startControllers() {
 	controllerCtx, cancelFunc := context.WithCancel(context.Background())
 	haRunner.cancelRunner = cancelFunc
 
-	var wrappedControllers []Controller
-	for _, controller := range haRunner.controllers {
-		wrappedControllers = append(wrappedControllers, &metricsWrappedController{
-			inner:   controller,
-			metrics: haRunner.metrics,
-		})
-	}
-
-	haRunner.runner = NewRunner(haRunner.factStore, wrappedControllers...)
+	haRunner.runner = NewRunner(haRunner.factStore, haRunner.controllers...)
+	haRunner.runner.SetMetricsCollector(haRunner.metrics)
 	if haRunner.eventLog != nil {
 		haRunner.runner.SetEventLog(haRunner.eventLog)
 	}
@@ -153,29 +146,4 @@ func (haRunner *HARunner) stopControllers() {
 		haRunner.runner = nil
 		haRunner.runnerDone = nil
 	}
-}
-
-// metricsWrappedController wraps a Controller to record reconciliation metrics.
-type metricsWrappedController struct {
-	inner   Controller
-	metrics *MetricsCollector
-}
-
-// Name returns the wrapped controller's name for identification in metrics and logs.
-func (wrapped *metricsWrappedController) Name() string { return wrapped.inner.Name() }
-
-// Watch delegates to the wrapped controller's Watch to return its observed fact prefixes.
-func (wrapped *metricsWrappedController) Watch() []string { return wrapped.inner.Watch() }
-
-// Reconcile delegates to the wrapped controller and records reconciliation duration and change count in the metrics collector.
-func (wrapped *metricsWrappedController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
-	startTime := time.Now()
-	changes, err := wrapped.inner.Reconcile(ctx, facts)
-	duration := time.Since(startTime)
-
-	if wrapped.metrics != nil {
-		wrapped.metrics.RecordReconciliation(wrapped.inner.Name(), duration, len(changes), err)
-	}
-
-	return changes, err
 }
