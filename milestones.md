@@ -254,6 +254,17 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
 - [ ] Multi-prefix controller scans read at one pinned revision
 - [ ] Persisted JWT signing keyring shared by API replicas; `token_use` claim separates user and workload tokens
 - [ ] Integration test: deposed leader's transaction is rejected
+- [ ] Node heartbeats on etcd leases (architecture review 2026-11-10): agents write `time.Now()` (`agent/telemetry.go` `WriteHeartbeat`) and `NodeFailureController` compares it with the control plane's clock (30 s timeout), so clock skew > 30 s marks a healthy node unreachable and triggers mass rescheduling. Use `PutWithLease` + TTL (key expiry = failure, etcd is the only clock)
+- [ ] Fencing covers the `HARunner.stopControllers` timeout path: after 10 s it only logs "forcing stop" and clears its fields while the old runner's goroutines may still commit (architecture review 2026-11-10)
+- [ ] Absence guards: a decision based on a missing key is CAS-protected only when the controller also writes that key; decide how transactions guard scanned prefixes (e.g. per-prefix revision compare) alongside the pinned-revision item; `maxInputKeyGuards` weakens guarding further (architecture review 2026-11-10)
+
+### Runner hardening (unscheduled; architecture review 2026-11-10)
+
+- [ ] `DeltaController` / `deltaBuffer` / `ReconcileDelta` plumbing has no implementer (dead code since added): implement for the hot controllers (endpoint, instance) or delete
+- [ ] A controller loop returning nil makes `Runner.Run` cancel every controller while the node still holds leadership (`controllers/runner.go` `Run`, `runSingleController`): treat a nil exit as an error and restart
+- [ ] Controller restart backoff never resets (`runSingleController` `attemptIndex`): reset after a healthy period
+- [ ] A cycle abandoned after CAS retries waits for the 30 s resync: re-arm the reconcile trigger
+- [ ] Repo hygiene: ~180 MB of stale build binaries in the repo root (`cca`, `cca-linux*`) → gitignored `dist/`; split `agent/agent.go` (~2,000 lines)
 
 ### Phase 181 — Store Access Isolation (M181)
 
