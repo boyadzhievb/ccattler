@@ -118,7 +118,7 @@ git push && git push origin v1.17.0-beta
 
 ## Test Infrastructure
 
-- **E2E:** VMware VMs at `192.168.100.215/.30/.31` (GitHub runner label `e2e`).
+- **E2E:** vmherd VMs bridged onto the LAN at `192.168.100.50/.51/.52` on testbed-100.77 (`cluster_test.sh --env lan`, GitHub runner label `e2e`).
 - **Deploy cluster:** `vmherd` VMs on m4800 (192.168.100.71) at `192.168.124.x` (.10 ctrl, .20/.30 workers; runner label `deploy`). Host setup: [design/deploy-host.md](design/deploy-host.md).
 
 Details in [design/TESTING.md](design/TESTING.md).

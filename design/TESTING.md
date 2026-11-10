@@ -162,17 +162,21 @@ Scenarios not yet tested that would strengthen confidence:
 
 Two separate clusters, on separate hosts to avoid resource contention:
 
-### E2E cluster (testbed-100.49)
+### E2E cluster (bridged LAN VMs on testbed-100.77)
 
-Ephemeral VMs managed by vmherd using official Ubuntu cloud images (cloud-init). Created, tested, and halted on every CI push.
+Three vmherd VMs (Debian cloud image) on testbed-100.77, attached to the host bridge `br1` with vmherd bridge mode (vmherd >= 0.4.0), so they sit directly on the LAN like bare-metal nodes. Herdfile: `test/e2e/vm-lan/Herdfile`; inventory: `deploy/ansible/lan-e2e-inventory.ini`; values: `test/e2e/e2e-lan.ccv`. Layout matches the old bare-metal e2e cluster: the control-plane node runs no agent.
 
 | VM | IP | Role | Resources |
 |----|-----|------|-----------|
-| cca-test-ctrl | 192.168.122.10 | etcd + controlplane + worker | 3072 MB / 2 vCPU |
-| cca-test-worker-1 | 192.168.122.20 | worker | 2048 MB / 2 vCPU |
-| cca-test-worker-2 | 192.168.122.30 | worker | 2048 MB / 2 vCPU |
+| cca-lan-ctrl | 192.168.100.50 | etcd + controlplane | 4096 MB / 2 vCPU |
+| cca-lan-worker-1 | 192.168.100.51 | worker | 3072 MB / 2 vCPU |
+| cca-lan-worker-2 | 192.168.100.52 | worker | 3072 MB / 2 vCPU |
 
-Run: `./test/e2e/cluster_test.sh` (triggered by `test.yml` on push to master)
+- Addresses are static (cloud-init), from the range 192.168.100.50–.60 reserved for e2e VMs; keep that range outside the router's DHCP pool. Gateway and DNS are the LAN router (192.168.100.1), the host's upstream resolver — the host's own resolv.conf points at a 127.0.0.1 local resolver the VMs cannot use.
+- Images come from the `registry:2` container on testbed-100.77 (`192.168.100.77:5000`).
+- VMs stay running after a run (failed runs keep them for inspection); destroy with `cd test/e2e/vm-lan && vmherd destroy`.
+
+Run: `./test/e2e/cluster_test.sh --env lan` (workflow `e2e.yml`, runner label `e2e` on the testbed-100.77 runner, on push to master)
 
 ### Deploy cluster (libvirt VMs on m4800)
 
@@ -197,7 +201,7 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 
 ### Two clusters, one host
 
-The E2E VM cluster runs on testbed-100.49 (16 GB) and the deploy cluster on m4800. They use separate Herdfiles (`test/e2e/vm-test/` and `test/e2e/vm-deploy/`) and non-overlapping libvirt networks (122.x for E2E, 124.x for deploy). E2E VMs are ephemeral (created per CI run), deploy VMs are long-lived. VM lifecycle managed by vmherd.
+The E2E VM cluster runs on testbed-100.77 (16 GB) and the deploy cluster on m4800. They use separate Herdfiles (`test/e2e/vm-lan/` and `test/e2e/vm-deploy/`): E2E VMs are bridged onto the LAN (192.168.100.50–.60), deploy VMs sit on a private libvirt NAT network (124.x). VM lifecycle managed by vmherd.
 
 ## Demo Commands
 

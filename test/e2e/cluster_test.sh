@@ -9,6 +9,7 @@
 # Two environments:
 #   --env test     (default): bare-metal 3-node cluster on 100.215/30/31 (always-on)
 #   --env deploy:             3 libvirt VMs on 192.168.124.x (deploy host, design/deploy-host.md), long-lived
+#   --env lan:                3 vmherd VMs bridged onto the LAN at 192.168.100.50-52 (testbed-100.77)
 #
 # Workload selection (each workload has a .cca file and a .workload manifest):
 #   --workload whoami,airflow   deploy specific workloads (comma-separated)
@@ -21,6 +22,7 @@
 # Prerequisites:
 #   - test (bare-metal): SSH access to 100.215/30/31, Ansible, Go toolchain
 #   - deploy: Linux host with libvirt/KVM, vmherd, Ansible
+#   - lan: as deploy, plus host bridge br1 and vmherd >= 0.4.0 (bridge mode)
 #   - Or: CCattler binary at deploy/ansible/cca-linux-amd64 (--skip-build)
 #
 # VM lifecycle (deploy env): VMs are managed via vmherd
@@ -194,6 +196,7 @@ log "Selected workloads: ${WORKLOAD_NAMES[*]}"
 # Environment-specific configuration
 #   test:      bare-metal 3-node cluster on 100.215/30/31 (default, always-on nodes)
 #   deploy:    long-lived VMs on the deploy host via vmherd (Caddy reverse proxy)
+#   lan:       vmherd VMs bridged onto the LAN, bare-metal e2e layout (ctrl runs no agent)
 declare -A NODE_IPS
 case "$CLUSTER_ENV" in
     test)
@@ -228,8 +231,24 @@ case "$CLUSTER_ENV" in
         DESTROY_ON_EXIT=none
         VALUES_FILE="$SCRIPT_DIR/deploy.ccv"
         ;;
+    lan)
+        INVENTORY="lan-e2e-inventory.ini"
+        PLAYBOOK="baremetal-deploy.yml"
+        CTRL_IP="192.168.100.50"
+        WORKER_IPS=("192.168.100.51" "192.168.100.52")
+        CTRL_NODE="cca-lan-ctrl"
+        WORKER1_NODE="cca-lan-worker-1"
+        WORKER2_NODE="cca-lan-worker-2"
+        VM_NAMES=("cca-lan-ctrl" "cca-lan-worker-1" "cca-lan-worker-2")
+        NODE_IPS=(["cca-lan-ctrl"]="192.168.100.50" ["cca-lan-worker-1"]="192.168.100.51" ["cca-lan-worker-2"]="192.168.100.52")
+        EXPECTED_NODES=2
+        SSH_USER="vmherd"
+        VMHERD_DIR="$SCRIPT_DIR/vm-lan"
+        DESTROY_ON_EXIT=none
+        VALUES_FILE="$SCRIPT_DIR/e2e-lan.ccv"
+        ;;
     *)
-        echo "Unknown --env: $CLUSTER_ENV (must be 'test' or 'deploy')" >&2
+        echo "Unknown --env: $CLUSTER_ENV (must be 'test', 'deploy' or 'lan')" >&2
         exit 1
         ;;
 esac
