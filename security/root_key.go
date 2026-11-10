@@ -8,9 +8,11 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // DefaultSecretRootKeyPath is where the control plane keeps the secret root
@@ -80,29 +82,49 @@ func LoadLegacySecretMasterKeyFile(filePath string) ([]byte, error) {
 }
 
 // loadPrivateSecretKeyFile reads a 32-byte key file that must be a regular
-// file without group or world permissions; missingError wraps a missing file.
+// file (not a symlink, opened with O_NOFOLLOW), owned by this process's user,
+// without group or world permissions; the checks run on the opened file, so
+// it cannot be swapped between check and read. missingError wraps a missing file.
 func loadPrivateSecretKeyFile(filePath string, keyDescription string, missingError error) ([]byte, error) {
-	fileInfo, statError := os.Stat(filePath)
-	if errors.Is(statError, fs.ErrNotExist) {
+	keyFile, openError := os.OpenFile(filePath, os.O_RDONLY|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: operator-supplied key path
+	if errors.Is(openError, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s", missingError, filePath)
 	}
+	if openError != nil {
+		return nil, fmt.Errorf("open %s %s (symlinks are refused): %w", keyDescription, filePath, openError)
+	}
+	defer func() { _ = keyFile.Close() }()
+	fileInfo, statError := keyFile.Stat()
 	if statError != nil {
 		return nil, fmt.Errorf("stat %s %s: %w", keyDescription, filePath, statError)
 	}
-	if !fileInfo.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s %s is not a regular file", keyDescription, filePath)
+	if fileCheckError := checkPrivateKeyFileInfo(fileInfo, filePath, keyDescription); fileCheckError != nil {
+		return nil, fileCheckError
 	}
-	if permissionBits := fileInfo.Mode().Perm(); permissionBits&secretRootKeyForbiddenModeBits != 0 {
-		return nil, fmt.Errorf("%s %s has mode %04o; it must not be group- or world-accessible (chmod 400)", keyDescription, filePath, permissionBits)
-	}
-	keyBytes, readError := os.ReadFile(filePath) //nolint:gosec // G304: operator-supplied key path
-	if readError != nil {
+	keyBytes := make([]byte, SecretRootKeySize+1)
+	readLength, readError := io.ReadFull(keyFile, keyBytes)
+	if readError != nil && !errors.Is(readError, io.ErrUnexpectedEOF) && !errors.Is(readError, io.EOF) {
 		return nil, fmt.Errorf("read %s %s: %w", keyDescription, filePath, readError)
 	}
-	if len(keyBytes) != SecretRootKeySize {
-		return nil, fmt.Errorf("%s %s has %d bytes, want %d", keyDescription, filePath, len(keyBytes), SecretRootKeySize)
+	if readLength != SecretRootKeySize {
+		return nil, fmt.Errorf("%s %s has %d bytes, want %d", keyDescription, filePath, fileInfo.Size(), SecretRootKeySize)
 	}
-	return keyBytes, nil
+	return keyBytes[:SecretRootKeySize], nil
+}
+
+// checkPrivateKeyFileInfo verifies an opened key file is a regular file owned
+// by this process's user with no group or world permission bits.
+func checkPrivateKeyFileInfo(fileInfo fs.FileInfo, filePath string, keyDescription string) error {
+	if !fileInfo.Mode().IsRegular() {
+		return fmt.Errorf("%s %s is not a regular file", keyDescription, filePath)
+	}
+	if permissionBits := fileInfo.Mode().Perm(); permissionBits&secretRootKeyForbiddenModeBits != 0 {
+		return fmt.Errorf("%s %s has mode %04o; it must not be group- or world-accessible (chmod 400)", keyDescription, filePath, permissionBits)
+	}
+	if fileStat, hasOwner := fileInfo.Sys().(*syscall.Stat_t); hasOwner && int(fileStat.Uid) != os.Geteuid() {
+		return fmt.Errorf("%s %s is owned by uid %d, not by this process (uid %d)", keyDescription, filePath, fileStat.Uid, os.Geteuid())
+	}
+	return nil
 }
 
 // ValidateSecretRootKeyDistinctFromLegacy fails when the root key is

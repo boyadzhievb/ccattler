@@ -90,6 +90,8 @@ func TestGateKeyMigrationWaitsForEveryEnabledNodeThenDeletesPlaintext(t *testing
 	sealedFacts := append(legacyGateFacts(),
 		kv(sealedGateKeyPath("auto-gate"), "sealed"),
 		kv(sealedGateKeyPath("manual-gate"), "sealed"),
+		// Enrolled but never registered (e.g. an agentless control plane): has no
+		// agent to report, so it does not hold the cutover back.
 		kv(security.EnrolledNodePrefix+"node-enrolled-only", "{}"),
 		kv(types.KeyDesiredRouteTLSKey("plain-gate"), "ORPHAN-KEY"), // gate without tls
 	)
@@ -97,7 +99,7 @@ func TestGateKeyMigrationWaitsForEveryEnabledNodeThenDeletesPlaintext(t *testing
 	changes, _ := migrationController.Reconcile(ctx, buildFacts(sealedFacts...))
 	status := decodeMigrationStatus(t, changes)
 	if len(changes) != 1 || status == nil || status.State != GateKeyMigrationWaitingForAgents ||
-		strings.Join(status.PendingNodes, ",") != "node-enrolled-only,node-old" || status.PlaintextCount != 3 {
+		strings.Join(status.PendingNodes, ",") != "node-old" || status.PlaintextCount != 3 {
 		t.Fatalf("changes = %d, status = %+v", len(changes), status)
 	}
 	// Same status stored: nothing to write.

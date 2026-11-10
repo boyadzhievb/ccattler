@@ -28,39 +28,36 @@ type legacyMigrationIntent struct {
 }
 
 // CheckLegacyMigrationGate returns every unmet migration gate condition
-// (empty when the gate passes): backup confirmed, migration not started yet,
+// (empty when the gate passes): backup confirmed, keyring/legacy present,
 // every live API replica on this build with the active KEK and a passed root
-// check, and every enrolled, non-disabled node on secret delivery v2.
+// check, and every registered, non-disabled node on secret delivery v2.
 func (keyringCodec *KeyringEnvelopeCodec) CheckLegacyMigrationGate(ctx context.Context, gateRequest LegacyMigrationGateRequest, buildVersion string) ([]string, error) {
 	var unmetConditions []string
 	if !gateRequest.ConfirmBackup {
 		unmetConditions = append(unmetConditions, "confirm_backup not set: take and verify an etcd snapshot first (runbook in design/TESTING.md)")
 	}
-	migrationStatus, readError := readKeyringMigrationStatus(ctx, keyringCodec.factStore)
-	if readError != nil {
-		return nil, readError
+	if legacyKeyState := keyringCodec.currentSnapshot().legacyKeyState; legacyKeyState != LegacyKeyPresent {
+		unmetConditions = append(unmetConditions, fmt.Sprintf("keyring is %s: the migration already started, or there was never a legacy key", legacyKeyState))
 	}
-	if migrationStatus.State != KeyringMigrationNotStarted {
-		unmetConditions = append(unmetConditions, fmt.Sprintf("migration is already %s", migrationStatus.State))
-	}
-	replicaConditions, replicaError := keyringCodec.checkReplicaReports(ctx, buildVersion)
+	replicaConditions, replicaError := keyringCodec.checkReplicaReports(ctx, buildVersion, "")
 	if replicaError != nil {
 		return nil, replicaError
 	}
 	unmetConditions = append(unmetConditions, replicaConditions...)
-	nodeFacts, nodeError := scanStorePrefixes(ctx, keyringCodec.factStore, EnrolledNodePrefix, types.ScanObservedNodes)
+	nodeFacts, nodeError := scanStorePrefixes(ctx, keyringCodec.factStore, types.ScanObservedNodes)
 	if nodeError != nil {
 		return nil, nodeError
 	}
-	if pendingNodes := NodesNotReporting(nodeFacts, "secret_delivery", types.SecretDeliveryVersion); len(pendingNodes) > 0 {
+	if pendingNodes := NodesNotReporting(nodeFacts, types.NodeReportSecretDelivery, types.SecretDeliveryVersion); len(pendingNodes) > 0 {
 		unmetConditions = append(unmetConditions, "nodes not on secret delivery "+types.SecretDeliveryVersion+" (upgrade their agents): "+strings.Join(pendingNodes, ", "))
 	}
 	return unmetConditions, nil
 }
 
 // checkReplicaReports returns the unmet replica conditions: at least one live
-// report, and every report on buildVersion with the active KEK and root_check ok.
-func (keyringCodec *KeyringEnvelopeCodec) checkReplicaReports(ctx context.Context, buildVersion string) ([]string, error) {
+// report, every report with the active KEK and root_check ok, on buildVersion
+// (when not empty) and acting on requiredLegacyKeyState (when not empty).
+func (keyringCodec *KeyringEnvelopeCodec) checkReplicaReports(ctx context.Context, buildVersion string, requiredLegacyKeyState LegacyKeyState) ([]string, error) {
 	reportFacts, scanError := keyringCodec.factStore.Scan(ctx, types.ScanObservedKeyringReplicas)
 	if scanError != nil {
 		return nil, fmt.Errorf("scan %s: %w", types.ScanObservedKeyringReplicas, scanError)
@@ -77,22 +74,23 @@ func (keyringCodec *KeyringEnvelopeCodec) checkReplicaReports(ctx context.Contex
 			unmetConditions = append(unmetConditions, fmt.Sprintf("replica %s: unreadable keyring report", replicaID))
 			continue
 		}
-		if report.Version != buildVersion || report.ActiveKEKVersion != activeKEKVersion || report.RootCheck != "ok" {
-			unmetConditions = append(unmetConditions, fmt.Sprintf("replica %s: version %s, KEK %d, root_check %s (want %s, KEK %d, ok)",
-				replicaID, report.Version, report.ActiveKEKVersion, report.RootCheck, buildVersion, activeKEKVersion))
+		versionMismatch := buildVersion != "" && report.Version != buildVersion
+		if versionMismatch || report.ActiveKEKVersion != activeKEKVersion || report.RootCheck != keyringReplicaReportRootCheckOK {
+			unmetConditions = append(unmetConditions, fmt.Sprintf("replica %s: version %s, KEK %d, root_check %s (want %s, KEK %d, %s)",
+				replicaID, report.Version, report.ActiveKEKVersion, report.RootCheck, buildVersion, activeKEKVersion, keyringReplicaReportRootCheckOK))
+		}
+		if requiredLegacyKeyState != "" && report.LegacyKeyState != requiredLegacyKeyState {
+			unmetConditions = append(unmetConditions, fmt.Sprintf("replica %s still acts on keyring state %q (want %s; it refreshes within %s)",
+				replicaID, report.LegacyKeyState, requiredLegacyKeyState, keyringRefreshFallbackInterval))
 		}
 	}
 	return unmetConditions, nil
 }
 
-// StartLegacyMigration records the intent and switches the migration state to
-// in_progress in one transaction guarded by the migration fact's revision, so
-// two concurrent requests cannot both start it. Writes are v2 from here.
+// StartLegacyMigration moves keyring/legacy from present to migrating (writes
+// are v2 from here) and records the intent and the in_progress status in the
+// same guarded transaction, so two concurrent requests cannot both start it.
 func (keyringCodec *KeyringEnvelopeCodec) StartLegacyMigration(ctx context.Context, requestedBy string) error {
-	migrationFact, getError := keyringCodec.factStore.Get(ctx, types.KeyObservedKeyringMigration)
-	if getError != nil {
-		return fmt.Errorf("read %s: %w", types.KeyObservedKeyringMigration, getError)
-	}
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	intentJSON, intentError := json.Marshal(legacyMigrationIntent{RequestedBy: requestedBy, RequestedAt: startedAt})
 	if intentError != nil {
@@ -102,17 +100,37 @@ func (keyringCodec *KeyringEnvelopeCodec) StartLegacyMigration(ctx context.Conte
 	if statusError != nil {
 		return statusError
 	}
-	transactionSucceeded, transactionError := keyringCodec.factStore.Transaction(ctx,
-		[]store.Compare{{Key: types.KeyObservedKeyringMigration, Revision: migrationFact.Revision}},
-		[]store.Op{
-			{Type: store.OpPut, Key: types.KeyIntentKeyringLegacyMigration, Value: intentJSON},
-			{Type: store.OpPut, Key: types.KeyObservedKeyringMigration, Value: statusJSON},
-		}, nil)
+	return keyringCodec.advanceLegacyKeyState(ctx, LegacyKeyPresent, LegacyKeyMigrating,
+		store.Op{Type: store.OpPut, Key: types.KeyIntentKeyringLegacyMigration, Value: intentJSON},
+		store.Op{Type: store.OpPut, Key: types.KeyObservedKeyringMigration, Value: statusJSON})
+}
+
+// advanceLegacyKeyState moves keyring/legacy one step forward (fromState →
+// toState) with extra puts, in one transaction guarded by the revisions of
+// keyring/legacy and observed/keyring/migration just read, after checking the
+// value read is fromState. The state never moves backwards.
+func (keyringCodec *KeyringEnvelopeCodec) advanceLegacyKeyState(ctx context.Context, fromState LegacyKeyState, toState LegacyKeyState, extraOperations ...store.Op) error {
+	legacyFact, legacyError := keyringCodec.factStore.Get(ctx, types.KeyKeyringLegacy)
+	if legacyError != nil {
+		return fmt.Errorf("read %s: %w", types.KeyKeyringLegacy, legacyError)
+	}
+	if LegacyKeyState(legacyFact.Value) != fromState {
+		return fmt.Errorf("keyring is %s, not %s; nothing to do", legacyFact.Value, fromState)
+	}
+	migrationFact, migrationError := keyringCodec.factStore.Get(ctx, types.KeyObservedKeyringMigration)
+	if migrationError != nil {
+		return fmt.Errorf("read %s: %w", types.KeyObservedKeyringMigration, migrationError)
+	}
+	operations := append([]store.Op{{Type: store.OpPut, Key: types.KeyKeyringLegacy, Value: []byte(toState)}}, extraOperations...)
+	transactionSucceeded, transactionError := keyringCodec.factStore.Transaction(ctx, []store.Compare{
+		{Key: types.KeyKeyringLegacy, Revision: legacyFact.Revision},
+		{Key: types.KeyObservedKeyringMigration, Revision: migrationFact.Revision},
+	}, operations, nil)
 	if transactionError != nil {
-		return fmt.Errorf("start migration: %w", transactionError)
+		return fmt.Errorf("keyring %s → %s: %w", fromState, toState, transactionError)
 	}
 	if !transactionSucceeded {
-		return fmt.Errorf("start migration: the migration state changed concurrently; check it and retry")
+		return fmt.Errorf("keyring %s → %s: the keyring or migration state changed concurrently; check it and retry", fromState, toState)
 	}
 	return keyringCodec.Refresh(ctx)
 }

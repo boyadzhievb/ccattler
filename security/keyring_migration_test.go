@@ -40,6 +40,7 @@ func newMigrationTestFixture(t *testing.T, v1SecretCount int) *migrationTestFixt
 	}
 	keyringCodec.publishKeyringReplicaReport(ctx, "cp-1", "v-test", 0)
 	factStore.Put(ctx, EnrolledNodePrefix+"worker-1", []byte("{}"))
+	factStore.Put(ctx, types.KeyObservedNodeState("worker-1"), []byte(types.NodeAlive))
 	factStore.Put(ctx, types.KeyObservedNodeSecretDelivery("worker-1"), []byte(types.SecretDeliveryVersion))
 	return &migrationTestFixture{factStore: factStore, keyringCodec: keyringCodec, legacyKeyProvider: legacyKeyProvider}
 }
@@ -64,8 +65,8 @@ func TestLegacyMigrationGateConditions(t *testing.T) {
 	}{
 		{"no backup confirmation", func() {}, LegacyMigrationGateRequest{}, "v-test", "confirm_backup"},
 		{"replica on another version", func() {}, confirmed, "v-other", "replica cp-1"},
-		{"node not on delivery v2", func() {
-			fixture.factStore.Put(ctx, EnrolledNodePrefix+"worker-2", []byte("{}"))
+		{"registered node not on delivery v2", func() {
+			fixture.factStore.Put(ctx, types.KeyObservedNodeState("worker-2"), []byte(types.NodeAlive))
 		}, confirmed, "v-test", "worker-2"},
 	}
 	for _, testCase := range testCases {
@@ -111,8 +112,37 @@ func TestStartLegacyMigrationSwitchesWritesToV2(t *testing.T) {
 		t.Error("write after the migration start is not v2")
 	}
 	unmet, _ := fixture.keyringCodec.CheckLegacyMigrationGate(ctx, LegacyMigrationGateRequest{ConfirmBackup: true}, "v-test")
-	if !strings.Contains(strings.Join(unmet, "; "), "already in_progress") {
+	if !strings.Contains(strings.Join(unmet, "; "), "keyring is migrating") {
 		t.Errorf("second start not refused: %v", unmet)
+	}
+}
+
+// TestLegacyMigrationGateIgnoresAgentlessControlPlane verifies code-review
+// finding 1: a control plane enrolled at server start without an agent never
+// reports secret_delivery and must not block the gate.
+func TestLegacyMigrationGateIgnoresAgentlessControlPlane(t *testing.T) {
+	ctx := context.Background()
+	fixture := newMigrationTestFixture(t, 1)
+	fixture.factStore.Put(ctx, EnrolledNodePrefix+"cp-1", []byte("{}"))
+	if unmet, _ := fixture.keyringCodec.CheckLegacyMigrationGate(ctx, LegacyMigrationGateRequest{ConfirmBackup: true}, "v-test"); len(unmet) != 0 {
+		t.Fatalf("agentless control plane blocks the gate: %v", unmet)
+	}
+}
+
+// TestStartLegacyMigrationOnlyOnce verifies code-review finding 5: a second
+// start (even one that skipped the gate) is refused and leaves the state alone.
+func TestStartLegacyMigrationOnlyOnce(t *testing.T) {
+	ctx := context.Background()
+	fixture := newMigrationTestFixture(t, 1)
+	if startError := fixture.keyringCodec.StartLegacyMigration(ctx, "user:first"); startError != nil {
+		t.Fatal(startError)
+	}
+	intentBefore, _ := fixture.factStore.Get(ctx, types.KeyIntentKeyringLegacyMigration)
+	if startError := fixture.keyringCodec.StartLegacyMigration(ctx, "user:second"); startError == nil {
+		t.Fatal("second start succeeded")
+	}
+	if intentAfter, _ := fixture.factStore.Get(ctx, types.KeyIntentKeyringLegacyMigration); string(intentAfter.Value) != string(intentBefore.Value) {
+		t.Error("second start overwrote the intent")
 	}
 }
 

@@ -1173,8 +1173,9 @@ Where the key of a TLS gate lives
 7. Cutover (gate-key-migration controller, leader, one-time and idempotent)
    for each plaintext desired|derived/route/{gate}/tls/key:
      secrets/route/{gate}/tls/key absent → seal it there (desired wins, as in the proxy)
-   when every enrolled or registered, non-disabled node reports gate_key_delivery = v1
-   (registered nodes count too, so a cluster without enrollment never completes early):
+   when every registered (agent wrote observed/node/{id}/state), non-disabled node
+   reports gate_key_delivery = v1 (M177 review: enrolled-only nodes such as an
+   agentless control plane have no agent to report and would block forever):
      delete the plaintext facts (the one sanctioned writer of desired/route/ besides
      the compiler; cca apply never removes desired/route/{gate}/tls/key and Diff
      never shows it); until then old agents keep reading them
@@ -1229,8 +1230,10 @@ Inputs on every API replica
 
 2. Keyring bootstrap (first replica only; create-only transaction)
    keyring/active absent →
+     refuse (exit, restore from backup) if any other keyring/ key or any v2
+       envelope exists: a lost or partial keyring is never replaced (review F2)
      KEK₁ = random 32 bytes
-     txn [compare keyring/active rev 0]:
+     txn [compare every key below rev 0]:
        put keyring/kek/1         = wrap(root, KEK₁)
        put keyring/kek/1/state   = active
        put keyring/active        = 1
@@ -1244,12 +1247,20 @@ Inputs on every API replica
 
 3. Every replica, every start
    open keyring/root_check with the root key; failure → exit (different root key)
-   load KEKs it can unwrap; watch keyring/ (new versions, keyring/legacy changes)
-   report observed/keyring/replica/{node-id} = {version, active_kek, root_check: ok}
-     with a lease (TTL), so stopped replicas disappear from the set
+   load KEKs it can unwrap; watch keyring/ (new versions, keyring/legacy changes;
+     a closed watch is logged and re-subscribed; refreshes run one at a time)
+   report observed/keyring/replica/{node-id} = {version, active_kek,
+     legacy_key_state, root_check: ok}, rewritten every 10 s under a 30 s lease,
+     so stopped replicas disappear and the gates see what each replica acts on
+
+   keyring/legacy is the only authority for write mode and v1 opening (review F3):
+     none (fresh) | present → migrating → retired, forward only, each step one
+     transaction guarded by the revisions of keyring/legacy and
+     observed/keyring/migration after re-checking the value read.
+     observed/keyring/migration is progress information, never authority.
 
 4. Sealing and opening (one codec behind SecretStore, CredentialStore, controllers)
-   write mode  = v2 if migration state ∈ {in_progress, completed} else v1
+   write mode  = v1 if keyring/legacy = present, else v2
    seal v2     = magic | 2 | active_kek | wrap(KEK, DEK) | nonce | AES-GCM(DEK, value, AAD = store key)
    seal v1     = legacy layout, legacy key (upgraded clusters before the gate only)
    open        = magic → v2: KEK by version (unknown version → re-read keyring, else error)
@@ -1257,11 +1268,14 @@ Inputs on every API replica
    AAD binds the envelope to its key: a value copied to another key does not open
 
 5. Migration gate (POST /api/secret/migrate-keys {confirm_backup: true}; cca secret migrate-keys --confirm-backup)
-   409 with every unmet condition unless:
-     confirm_backup set
+   capability cluster.admin (irreversible); 409 with every unmet condition unless:
+     confirm_backup set; keyring/legacy = present
      every live replica report has this version, the active KEK, root_check ok
-     every enrolled, non-disabled node reports secret_delivery = v2 (M174 report)
-   → put intent/keyring/legacy_migration; migration state = in_progress (writes are v2 from here)
+     every registered (agent wrote observed/node/{id}/state), non-disabled node
+       reports secret_delivery = v2 (an agentless control plane is not counted)
+   → keyring/legacy present → migrating (writes are v2 from here), with
+     intent/keyring/legacy_migration and migration {state: in_progress} in the
+     same guarded transaction (a second start fails: the state is no longer present)
 
 6. Migration (keyring controller, leader, bounded batches)
    scan secrets/ and credentials/ for v1 envelopes
@@ -1272,18 +1286,22 @@ Inputs on every API replica
        generated its own key); never deleted, never skipped silently
    after each batch persist observed/keyring/migration =
      {state, legacy_v1_envelope_count, unreadable_count, migrated, started, completed}
-   v1 count = 0 ∧ unreadable = 0 → state = completed
+   runs while keyring/legacy = migrating; v1 count = 0 → state = completed;
+   a v1 envelope written later (a replica that had not refreshed yet) re-opens
+     it: state back to in_progress, re-encrypted, completed again
    crash at any point → resumes from the remaining v1 envelopes (idempotent)
    THIS IS THE ROLLBACK BOUNDARY
 
 7. Retirement gate (POST /api/secret/retire-legacy-key; cca secret retire-legacy-key)
-   409 unless: legacy state = present; migration completed; full scan finds 0 v1
-     envelopes; no plaintext desired|derived/route/*/tls/key fact; every enrolled or
-     registered, non-disabled node reports legacy_key_file = absent, except API
-     replicas (a live observed/keyring/replica/{id} with the same node ID): their
-     server opens v1 until retirement, so they keep the file until then
-   → put keyring/legacy = retired (guarded by its revision); replicas drop the
-     legacy key from memory and refuse v1
+   capability cluster.admin; 409 unless: keyring/legacy = migrating; every live
+     replica report acts on migrating (seals v2); migration completed; full scan
+     finds 0 v1 envelopes; no plaintext desired|derived/route/*/tls/key fact;
+     every registered, non-disabled node reports legacy_key_file = absent, except
+     API replicas (a live observed/keyring/replica/{id} with the same node ID —
+     server --node-id = agent node ID): their server opens v1 until retirement
+   → keyring/legacy migrating → retired (guarded by the revisions of keyring/legacy
+     and observed/keyring/migration, so a v1 write that re-opened the migration
+     fails it); replicas drop the legacy key from memory and refuse v1
    Ansible: the worker role removes secret-master.key from non-control-plane hosts
      (asserted); the control-plane roles remove it only with
      -e retire_legacy_secret_key=true, run after this step

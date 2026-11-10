@@ -632,8 +632,11 @@ RewrapEnvelope(ctx, oldProvider, newProvider, envelope)        [:141]
 ### Secret keyring and envelope codec (M177 steps 1–2, Flow 29)
 
 ```
-runServer → security.NewSecretStore(factStore, startSecretEnvelopeCodec(ctx, factStore, cfg))
-startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go]
+executeServerCommand [cmd/cca/command_server.go:334]
+  keyringCodec := startSecretEnvelopeCodec(ctx, factStore, cfg); NewSecretStore(factStore, keyringCodec)
+  keyringCodec → startControllersWithLeaderElection (route-tls, gate-key-migration, keyring-migration)
+               → configureAndStartAPIServer → SetKeyringAdministration(keyringCodec, version)
+startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go:26]
 ├── loadSecretKeyProviders(ctx, cfg)
 │   ├── store = memory → newEphemeralSecretKeyProvider(), no legacy   [never on disk]
 │   ├── LoadLegacySecretMasterKeyFile(/etc/ccattler/secret-master.key)  [missing → nil legacy]
@@ -641,51 +644,55 @@ startSecretEnvelopeCodec                                [cmd/cca/server_secret_k
 │       ├── --kms-provider → loadKMSRootKeyProvider     [LookupKMSKeyProviderFactory; wrap/unwrap probe]
 │       └── else LoadSecretRootKeyFile + ValidateSecretRootKeyDistinctFromLegacy → NewLocalKeyProvider
 ├── NewKeyringEnvelopeCodec(ctx, factStore, root, legacy)   [security/envelope_codec.go]
-│   ├── ensureKeyring                                    [security/keyring.go; create-only txn on keyring/active]
+│   ├── ensureKeyring                                    [security/keyring.go; every bootstrap key compared rev 0]
+│   │   refuseKeyringRebootstrap: other keyring/ keys or v2 envelopes without keyring/active → error
 │   │   writes keyring/kek/1, kek/1/state, active, root_check, legacy, observed/keyring/migration
-│   │   fresh (no legacy, no envelopes) → migration completed; else not_started
-│   └── Refresh → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy, migration)
-├── go RunKeyringWatch(ctx)                              [keyring/ + observed/keyring/migration, 60s fallback]
-├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}, lease 30s]
+│   │   fresh (no legacy, no envelopes) → legacy none; else present
+│   └── Refresh (serialized) → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy state)
+├── go RunKeyringWatch(ctx)                              [keyring/ only; closed watch → re-subscribe; 60s fallback]
+├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}: rewritten every 10s, lease 30s]
 └── any error → exitWithSecretKeyError                   [no silent key generation]
 
-KeyringEnvelopeCodec.SealEnvelopeForKey(storeKey) → migration in_progress|completed ? sealEnvelopeV2(active KEK, AAD=storeKey) : SealEnvelope(legacy)
-KeyringEnvelopeCodec.OpenEnvelopeForKey(storeKey) → isEnvelopeV2 ? openEnvelopeV2Payload(KEK[version]) : legacy (refused once retired)
-Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, RouteTLSController,
-         GateKeyMigrationController (via SecretStore.EnvelopeCodec()), SealSecretValue(codec, storeKey, ...)
+keyring/legacy (authority): none | present → migrating → retired   [advanceLegacyKeyState, security/keyring_migration.go:112]
+KeyringEnvelopeCodec.SealEnvelopeForKey [security/envelope_codec.go:111] → legacy present ? SealEnvelope(legacy) : sealEnvelopeV2(active KEK, AAD=storeKey)
+KeyringEnvelopeCodec.OpenEnvelopeForKey [:125] → isEnvelopeV2 ? openEnvelopeV2Payload(KEK[version]) : legacy (refused once retired)
+Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, SealSecretValue(codec, storeKey, ...),
+         RouteTLSController and GateKeyMigrationController (the server passes keyringCodec directly)
 POST /api/secret/rotate → 409 until keyring rotation (M178)
 
 Legacy key migration (M177 step 3, Flow 29 steps 5–6):
 cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest
-POST /api/secret/migrate-keys → handleSecretMigrateKeys          [api/keyring_migration.go; secret.write @ cluster]
-├── KeyringEnvelopeCodec.CheckLegacyMigrationGate(req, buildVersion)   [security/keyring_migration.go]
-│   ├── confirm_backup set; migration state = not_started
-│   ├── checkReplicaReports  → observed/keyring/replica/* (version, active KEK, root_check ok)
-│   └── NodesNotReporting(enrollment + observed/node/, "secret_delivery", "v2")   [security/node_reports.go]
-├── unmet → 409 {error, unmet[]}
-└── StartLegacyMigration(principal)   [txn guarded by observed/keyring/migration revision]
-    puts intent/keyring/legacy_migration + migration {state: in_progress}; Refresh → writes are v2
-KeyringMigrationController.Reconcile (leader; Watch secrets/, credentials/, observed/keyring/migration)
-├── state ≠ in_progress → no changes
-├── KeyringEnvelopeCodec.PlanLegacyMigrationBatch(facts, 50)   [v1 → open(legacy) → sealEnvelopeV2(AAD = key)]
+POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration.go:96; cluster.admin via beginKeyringAdministration]
+├── CheckLegacyMigrationGate(req, buildVersion)          [security/keyring_migration.go:34]
+│   ├── confirm_backup set; keyring/legacy = present
+│   ├── checkReplicaReports(version, "") → observed/keyring/replica/* (version, active KEK, root_check ok)
+│   └── NodesNotReporting(observed/node/, secret_delivery, v2)   [security/node_reports.go; registered nodes only]
+├── unmet → writeKeyringGateRefusal (409 {error, unmet[]})
+└── StartLegacyMigration(principal) [:93] → advanceLegacyKeyState(present → migrating,
+    + intent/keyring/legacy_migration + migration {state: in_progress}); writes are v2
+KeyringMigrationController.Reconcile [controllers/keyring_migration.go:63] (leader; Watch secrets/, credentials/, keyring/legacy, observed/keyring/migration)
+├── keyring/legacy ≠ migrating → no changes
+├── PlanLegacyMigrationBatch(facts, 50) [security/keyring_migration.go:149]   [v1 → open(legacy) → sealEnvelopeV2(AAD = key)]
 │   unreadable v1 counted, never rewritten or deleted
 └── puts rewrites (runner revision guard per key) + migration {migrated, legacy_v1_envelope_count, unreadable_count}
-    count 0 → state completed
+    count 0 → completed; v1 found while completed → in_progress again
 Write domain: keyring-migration → secrets/, credentials/, observed/keyring/migration   [controllers/topological_sort.go]
 
 Legacy key retirement (M177 step 4, Flow 29 step 7):
 cca secret retire-legacy-key → executeSecretRetireLegacyKey → postSecretAdminRequest
-POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey   [api/keyring_migration.go; beginKeyringAdministration]
-├── KeyringEnvelopeCodec.CheckLegacyRetirementGate                  [security/keyring_retirement.go]
-│   ├── legacy = present; migration completed with count 0
+POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_migration.go:70; cluster.admin]
+├── CheckLegacyRetirementGate [security/keyring_retirement.go:24]
+│   ├── keyring/legacy = migrating; migration completed with count 0
+│   ├── checkReplicaReports("", migrating) → every live replica acts on migrating (seals v2)
 │   └── checkRetirementStoreConditions
 │       ├── countV1Envelopes (full scan secrets/ + credentials/)
 │       ├── plaintext desired|derived/route/*/tls/key facts
 │       └── nodesHoldingLegacyKeyFile = NodesNotReporting(legacy_key_file, absent) − API replicas
 ├── unmet → writeKeyringGateRefusal (409)
-└── RetireLegacyKey → keyring/legacy = retired (txn on its revision) → Refresh
+└── RetireLegacyKey [:112] → advanceLegacyKeyState(migrating → retired)   [guards keyring/legacy + migration revisions]
 Every replica: Refresh sees retired → legacyKeyProvider = nil (warn); OpenEnvelopeForKey(v1) refused
-Ansible: worker role removes secret-master.key on non-control-plane hosts; control-plane roles only with retire_legacy_secret_key=true
+Ansible: worker role removes secret-master.key on non-control-plane hosts; control-plane roles only with
+  retire_legacy_secret_key=true (HA: also secret-master.key.<ts>~ backups); HA stages keys in a per-run 0700 tempdir, deleted after use
 
 cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400)
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)

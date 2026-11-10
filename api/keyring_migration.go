@@ -50,7 +50,8 @@ func writeKeyringGateRefusal(responseWriter http.ResponseWriter, gateName string
 }
 
 // beginKeyringAdministration checks method, configuration and capability
-// (secret.write at cluster scope) shared by both keyring endpoints.
+// shared by both keyring endpoints. Both are irreversible, so they require
+// cluster.admin at cluster scope rather than secret.write (security finding F9).
 func (apiServer *Server) beginKeyringAdministration(responseWriter http.ResponseWriter, request *http.Request) bool {
 	if request.Method != http.MethodPost {
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
@@ -60,7 +61,7 @@ func (apiServer *Server) beginKeyringAdministration(responseWriter http.Response
 		writeJSONError(responseWriter, "keyring not configured", http.StatusServiceUnavailable)
 		return false
 	}
-	return apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster)
+	return apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster)
 }
 
 // handleSecretRetireLegacyKey implements POST /api/secret/retire-legacy-key:
@@ -118,5 +119,5 @@ func (apiServer *Server) handleSecretMigrateKeys(responseWriter http.ResponseWri
 	}
 	logging.Default().Info("legacy key migration started", "principal", requestedBy)
 	responseWriter.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"state": "in_progress"})
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"state": string(security.KeyringMigrationInProgress)})
 }

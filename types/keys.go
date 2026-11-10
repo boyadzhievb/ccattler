@@ -2458,6 +2458,25 @@ func KeyObservedKeyringReplica(nodeID string) string {
 // requires it from every node.
 const SecretDeliveryVersion = "v2"
 
+// Node report attribute names under observed/node/{id}/ that cutover gates
+// check (security.NodesNotReporting).
+const (
+	// NodeReportSecretDelivery holds SecretDeliveryVersion once the agent receives secrets from the control plane.
+	NodeReportSecretDelivery = "secret_delivery"
+	// NodeReportGateKeyDelivery holds GateKeyDeliveryVersion once the agent fetches gate keys (M176).
+	NodeReportGateKeyDelivery = "gate_key_delivery"
+	// NodeReportLegacyKeyFile holds LegacyKeyFilePresent or LegacyKeyFileAbsent.
+	NodeReportLegacyKeyFile = "legacy_key_file"
+)
+
+// Values of observed/node/{id}/legacy_key_file.
+const (
+	// LegacyKeyFilePresent: /etc/ccattler/secret-master.key exists on the node.
+	LegacyKeyFilePresent = "present"
+	// LegacyKeyFileAbsent: the legacy key file is gone from the node.
+	LegacyKeyFileAbsent = "absent"
+)
+
 // KeyIntentKeyringLegacyMigration records the operator's request to migrate
 // v1 envelopes to v2 (cca secret migrate-keys, Flow 29 step 5).
 const KeyIntentKeyringLegacyMigration = PrefixIntent + "/keyring/legacy_migration"

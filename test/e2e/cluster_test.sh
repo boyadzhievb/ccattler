@@ -1981,8 +1981,13 @@ force_gate_key_refetch() {
 verify_legacy_key_retirement() {
     local etcd_get="sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --print-value-only"
     log "  Retiring the legacy key (cca secret retire-legacy-key)..."
-    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca secret retire-legacy-key" \
-        || fail "Upgrade: cca secret retire-legacy-key refused (see the unmet conditions above)"
+    # Replicas republish their keyring report every 10 s; until each one reports
+    # acting on 'migrating' the gate refuses on purpose, so retry briefly.
+    local deadline=$((SECONDS + CONVERGE_TIMEOUT))
+    until ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca secret retire-legacy-key"; do
+        [[ $SECONDS -lt $deadline ]] || fail "Upgrade: cca secret retire-legacy-key refused (see the unmet conditions above)"
+        sleep 5
+    done
     [[ "$(ssh_vm "$CTRL_NODE" "$etcd_get /ccattler/keyring/legacy" | tr -d '[:space:]')" == "retired" ]] \
         || fail "Upgrade: keyring/legacy is not retired"
     ssh_vm "$CTRL_NODE" "sudo systemctl restart cca-server && sleep 3 && sudo /usr/local/bin/cca status >/dev/null" \

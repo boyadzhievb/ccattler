@@ -3,6 +3,18 @@
 # The first node generates PKI via "cca init"; other nodes receive copies.
 # Leader election in cca-server ensures only one controller is active.
 
+# Keys pass through the Ansible controller: stage them in a fresh private
+# (0700) directory per run, never a fixed world-readable /tmp path, and delete
+# it once distributed (M177 review: root key and CA key were left in /tmp).
+- name: Create a private staging directory on the Ansible controller
+  tempfile:
+    state: directory
+    suffix: ccattler-ha-pki
+  register: ha_pki_staging
+  delegate_to: localhost
+  run_once: true
+  become: false
+
 - name: Generate PKI on the first control-plane node
   command: >
     /usr/local/bin/cca init
@@ -35,22 +47,28 @@
 
 # Every replica must hold the first node's secret keys (Flow 29); before M177
 # each secondary generated its own secret-master.key. A secondary's differing
-# key is kept as a backup file, since v1 secrets it wrote need it to open.
-- name: Fetch the secret root key from the first control-plane node
+# key is kept as secret-master.key.<timestamp>~: v1 secrets it wrote open only
+# with it (they show as unreadable_count; recovery in design/TESTING.md).
+# A binary older than M177 has no root key yet: nothing is fetched or copied.
+- name: Fetch the secret root key from the first control-plane node (if any)
   fetch:
     src: /etc/ccattler/secret-root.key
-    dest: /tmp/ccattler-ha-pki/
-    flat: true
-  when: inventory_hostname == groups['controlplane'][0]
-
-# Only clusters set up before M177 have a legacy key; new clusters have none.
-- name: Fetch the legacy secret master key from the first control-plane node (if any)
-  fetch:
-    src: /etc/ccattler/secret-master.key
-    dest: /tmp/ccattler-ha-pki/
+    dest: "{{ ha_pki_staging.path }}/"
     flat: true
     fail_on_missing: false
   when: inventory_hostname == groups['controlplane'][0]
+
+# Only clusters set up before M177 have a legacy key; new clusters have none,
+# and after retirement it is never fetched again.
+- name: Fetch the legacy secret master key from the first control-plane node (if any)
+  fetch:
+    src: /etc/ccattler/secret-master.key
+    dest: "{{ ha_pki_staging.path }}/"
+    flat: true
+    fail_on_missing: false
+  when:
+    - inventory_hostname == groups['controlplane'][0]
+    - not (retire_legacy_secret_key | default(false) | bool)
 
 - name: Ensure the configuration directory exists on other control-plane nodes
   file:
@@ -63,17 +81,19 @@
 
 - name: Distribute secret root key to other control-plane nodes
   copy:
-    src: /tmp/ccattler-ha-pki/secret-root.key
+    src: "{{ ha_pki_staging.path }}/secret-root.key"
     dest: /etc/ccattler/secret-root.key
     owner: root
     group: root
     mode: "0400"
-  when: inventory_hostname != groups['controlplane'][0]
+  when:
+    - inventory_hostname != groups['controlplane'][0]
+    - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-root.key') | length > 0
   notify: restart cca-server
 
 - name: Distribute legacy secret master key to other control-plane nodes
   copy:
-    src: /tmp/ccattler-ha-pki/secret-master.key
+    src: "{{ ha_pki_staging.path }}/secret-master.key"
     dest: /etc/ccattler/secret-master.key
     owner: root
     group: root
@@ -81,30 +101,39 @@
     backup: true
   when:
     - inventory_hostname != groups['controlplane'][0]
-    - lookup('ansible.builtin.fileglob', '/tmp/ccattler-ha-pki/secret-master.key') | length > 0
+    - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-master.key') | length > 0
     - not (retire_legacy_secret_key | default(false) | bool)
   notify: restart cca-server
 
 # Only after 'cca secret retire-legacy-key' succeeded (Flow 29 step 7): run the
-# playbook with -e retire_legacy_secret_key=true to delete the retired key
-# from every replica.
-- name: Remove the retired legacy secret master key from every replica
-  file:
-    path: /etc/ccattler/secret-master.key
-    state: absent
+# playbook with -e retire_legacy_secret_key=true to delete the retired key and
+# its backup copies (secret-master.key.<timestamp>~) from every replica.
+- name: Find the retired legacy secret master key and its backups on every replica
+  find:
+    paths: /etc/ccattler
+    patterns: "secret-master.key*"
+  register: replica_legacy_key_files
   when: retire_legacy_secret_key | default(false) | bool
 
-- name: Assert the retired legacy secret master key is gone from every replica
-  stat:
-    path: /etc/ccattler/secret-master.key
-  register: replica_legacy_key_file
-  failed_when: replica_legacy_key_file.stat.exists
+- name: Remove the retired legacy secret master key and its backups from every replica
+  file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ replica_legacy_key_files.files | default([]) }}"
+  when: retire_legacy_secret_key | default(false) | bool
+
+- name: Assert no legacy secret master key copy is left on any replica
+  find:
+    paths: /etc/ccattler
+    patterns: "secret-master.key*"
+  register: replica_legacy_key_leftovers
+  failed_when: replica_legacy_key_leftovers.matched > 0
   when: retire_legacy_secret_key | default(false) | bool
 
 - name: Fetch CA and shared PKI from the first control-plane node
   fetch:
     src: "{{ item }}"
-    dest: /tmp/ccattler-ha-pki/
+    dest: "{{ ha_pki_staging.path }}/"
     flat: true
   loop:
     - /etc/ccattler/pki/ca.pem
@@ -114,7 +143,7 @@
 - name: Fetch node cert and key from the first node (used as template)
   fetch:
     src: "{{ item }}"
-    dest: /tmp/ccattler-ha-pki/
+    dest: "{{ ha_pki_staging.path }}/"
     flat: true
   loop:
     - /etc/ccattler/pki/node.pem
@@ -123,13 +152,21 @@
 
 - name: Distribute CA to other control-plane nodes
   copy:
-    src: "/tmp/ccattler-ha-pki/{{ item }}"
+    src: "{{ ha_pki_staging.path }}/{{ item }}"
     dest: "{{ cca_cert_dir }}/{{ item }}"
     mode: "0600"
   loop:
     - ca.pem
     - ca-key.pem
   when: inventory_hostname != groups['controlplane'][0]
+
+- name: Delete the private staging directory on the Ansible controller
+  file:
+    path: "{{ ha_pki_staging.path }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  become: false
 
 - name: Generate per-node certificates on secondary control-plane nodes
   command: >

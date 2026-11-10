@@ -58,7 +58,7 @@ func TestSecretMigrateKeysGateAndStart(testContext *testing.T) {
 		testContext.Fatalf("with backup: %d %s", started.Code, started.Body.String())
 	}
 	again := sendMigrateKeys(`{"confirm_backup": true}`)
-	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), "already in_progress") {
+	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), "keyring is migrating") {
 		testContext.Fatalf("second start: %d %s", again.Code, again.Body.String())
 	}
 

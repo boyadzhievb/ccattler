@@ -242,6 +242,23 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 - [x] Retirement gate + `cca secret retire-legacy-key` (count 0 by full scan, migration completed, no plaintext gate key facts, every node except API replicas `legacy_key_file = absent` — replicas keep the file until retirement because their server opens v1 with it); replicas drop the legacy key and refuse v1; Ansible: worker role removes `secret-master.key` from non-control-plane hosts and asserts it, control-plane roles only with `-e retire_legacy_secret_key=true` after retirement
 - [x] Etcd backup/restore runbook in `design/TESTING.md` (referenced by `--confirm-backup`); backup + restore executed on the e2e control plane (marker written after the snapshot gone after restore, `cca status` healthy)
 - [ ] Tests (all done except migration under traffic on the deploy cluster, which needs a deploy run with the upgrade path): legacy key cannot unwrap any KEK, open `root_check` or any v2 envelope; every legacy value unchanged after migration; kill mid-batch and resume; gates refuse with the unmet conditions; v1 refused after retirement; deploy cluster migration under traffic
+- [x] Independent review 2026-11-10 (`code-reviewer` + `security-audit`, d3f6bb1^..2c0fcfe); each finding verified in the code:
+  - security F3 + review 4 + review 5 (fixed): write mode and v1 opening came from `observed/keyring/migration` (writable by any controller-role component; a late v1 write after completion stranded retirement; two concurrent `migrate-keys` could both start). `keyring/legacy` is now the only authority: none | present → migrating → retired, forward only, each step one transaction (`advanceLegacyKeyState`) guarded by the revisions of `keyring/legacy` and the migration fact after re-checking the value; the controller runs while migrating and re-opens a completed migration when v1 appears; retirement requires every live replica report to act on migrating
+  - review 1 (HIGH, fixed): an agentless control plane is enrolled at server start, never reports, and blocked both gates forever (and the M176 gate-key cutover). `NodesNotReporting` counts registered nodes only (agent wrote `observed/node/{id}/state`); Flow 28 updated
+  - review 2 (documented): replica exclusion matches server `--node-id` with the agent node ID; runbook says to keep them equal (Ansible does)
+  - security F2 (fixed): bootstrap compared only `keyring/active`; a deleted `keyring/active` would overwrite KEK 1 and lose every v2 secret. Every bootstrap key is compared absent, and any other `keyring/` key or any v2 envelope refuses bootstrap
+  - review 3 (fixed): concurrent Refresh could store an older snapshot; Refresh is serialized; a closed keyring watch is logged and re-subscribed (watch on `keyring/` only, the sole authority)
+  - review 10 (fixed): replica report rewritten on every renewal (now also carries `legacy_key_state`); renewal errors logged
+  - security F5 (fixed): retire transaction also guards the migration fact's revision
+  - security F1 + F6 + review 6 + review 7 + review 8 (fixed): HA role staged root/legacy/CA keys in a fixed, world-readable, never-cleaned `/tmp/ccattler-ha-pki` (a stale legacy key could be redistributed after retirement): per-run 0700 `tempfile` directory deleted after use; root-key fetch tolerant like the legacy fetch; legacy never fetched with `retire_legacy_secret_key`; retirement removes `secret-master.key*` backups too and asserts none is left; runbook covers unreadable-envelope recovery
+  - security F7 (fixed): root key loader opens with `O_NOFOLLOW` and checks mode and owner (= process uid) on the opened file
+  - security F9 (fixed): migrate-keys and retire-legacy-key require `cluster.admin` (irreversible)
+  - security F12 + F8 + review 11 (documented): encrypted off-node snapshots, delete pre-migration snapshots after retirement, `cca init` output is control-plane-only, disabled nodes are not checked
+  - style (fixed): typed constants for node report names/values and the migrate response; marshal error handled in the CLI; AUTH_GRAPH entries corrected (`executeServerCommand`, codec passed directly, line numbers)
+  - security F4 (M181 dependency): a legacy-key holder with etcd write access can plant v1 data that the migration then re-encrypts as v2; provenance needs agents without `secrets/` write access (M181). Recorded under M181
+  - review 9 (rejected): the batch planner decrypts every v1 envelope per cycle to count unreadable ones (O(N²/50)); one-time migration, acceptable below tens of thousands of v1 secrets
+  - security F10 (rejected): migration counts, replica versions and `requested_by` in `observed/`/`intent/` are low-value operational status
+  - security F11 (info): wrapped DEK without AAD and unauthenticated KEK version only allow denial of service; covered by the nested AEAD
 
 ### Phase 178 — Keyring Rotation (M178)
 
@@ -285,6 +302,7 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
 - [ ] Agents limited to their node's keys and read-only desired state
+- [ ] Secret provenance (M177 security review F4): with direct etcd write access an agent holding the old legacy key can plant v1 envelopes under `secrets/`/`credentials/` (and roll back v2 values or `keyring/`); the M177 migration re-encrypts whatever v1 it finds. Closing agent write access to `secrets/`, `credentials/`, `keyring/` and `observed/keyring/` removes this; also decide on version binding for v2 values
 - [ ] Secret delivery checks binding (found during M174): agents can no longer write placements, grants or `observed/instance/{id}/service`; instance → service mapping from a control-plane-only fact
 - [ ] Short-lived node certificates with rotation; removed nodes rejected by etcd and API
 - [ ] Threat model T5 updated with the real residual risk

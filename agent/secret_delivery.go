@@ -394,9 +394,9 @@ func (nodeAgent *Agent) publishSecretDeliveryCapability(ctx context.Context) {
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedNodeSecretDelivery(nodeAgent.nodeID), []byte(types.SecretDeliveryVersion)); putError != nil {
 		logging.Default().Error("failed to publish secret delivery version", "agent", nodeAgent.nodeID, "error", putError.Error())
 	}
-	legacyKeyFileState := "absent"
+	legacyKeyFileState := types.LegacyKeyFileAbsent
 	if _, statError := os.Stat(nodeAgent.legacyKeyFilePath); statError == nil {
-		legacyKeyFileState = "present"
+		legacyKeyFileState = types.LegacyKeyFilePresent
 		logging.Default().Warn("legacy secret key file is unused by this agent; remove it during the M177 migration", "agent", nodeAgent.nodeID, "path", nodeAgent.legacyKeyFilePath)
 	}
 	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedNodeLegacyKeyFile(nodeAgent.nodeID), []byte(legacyKeyFileState)); putError != nil {

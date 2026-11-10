@@ -233,10 +233,18 @@ systemctl start etcd && systemctl start cca-server
 cca status
 ```
 
-- The snapshot holds every secret envelope and the keyring (`keyring/kek/*` wrapped by the root key). Protect it like the root key; it is useless without `secret-root.key` (and, for v1 envelopes, `secret-master.key`).
+- The snapshot holds every secret envelope and the keyring (`keyring/kek/*` wrapped by the root key). Protect it like the root key; it is useless without `secret-root.key`. **Before retirement it also holds every v1 envelope, which anyone with a worker's old `secret-master.key` can open:** store off-node copies encrypted (e.g. `age`/`gpg` to an operator key), and delete pre-migration snapshots once the legacy key is retired and a fresh snapshot exists.
 - Restoring a pre-migration snapshot after `migrate-keys` brings back v1 envelopes and `migration = not_started`: install the previous binaries before starting `cca-server`, and keep `secret-master.key` until the migration runs again.
 - After `retire-legacy-key` and the deletion of `secret-master.key`, a pre-migration snapshot can no longer be decrypted. Take a fresh snapshot after retirement.
 - HA (3 members): restore the same snapshot on every member with `--initial-cluster` listing all three peer URLs, then start etcd on all of them; see the etcd disaster-recovery guide.
+
+### Legacy key migration and retirement notes (M177)
+
+- **Order:** upgrade every control-plane replica (`cca secret generate-root-key` or the Ansible roles) → back up etcd (above) → `cca secret migrate-keys --confirm-backup` → wait until `observed/keyring/migration` reports `completed` → workers lose `secret-master.key` (worker Ansible role) → `cca secret retire-legacy-key` → `ansible-playbook … -e retire_legacy_secret_key=true` → take a fresh snapshot.
+- **`unreadable_count > 0`:** a v1 secret the legacy key cannot open, typically written through an HA replica that had generated its own `secret-master.key` before M177 (Ansible keeps that key as `/etc/ccattler/secret-master.key.<timestamp>~` on the replica). Recover the value from its source and re-create it with `cca secret set <name>`: the new value is written v2, the migration completes, and retirement can pass. Retirement stays refused while any unreadable envelope exists.
+- **Node IDs:** the retirement gate excuses API replicas from `legacy_key_file = absent` by matching the server's `--node-id` with the agent's node ID on the same host (Ansible sets both to `inventory_hostname`). Keep them equal on hosts that run both.
+- **Disabled nodes** are not checked by either gate and may still hold the old key file; remove it before re-enabling such a node.
+- **`cca init` output** (e.g. `/tmp/cca-init`) holds `secret-root.key` and `ca-key.pem`: it is control-plane-only material; delete it after `setup.sh` ran, never copy it to workers.
 
 ## Demo Commands
 

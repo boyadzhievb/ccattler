@@ -45,22 +45,24 @@ func (keyringMigrationController *KeyringMigrationController) Name() string {
 	return "keyring-migration"
 }
 
-// Watch returns the envelope areas and the migration status.
+// Watch returns the envelope areas, the authoritative keyring state and the
+// migration status.
 func (keyringMigrationController *KeyringMigrationController) Watch() []string {
 	return []string{
 		security.SecretStorePrefix,
 		security.CredentialStorePrefix,
+		types.KeyKeyringLegacy,
 		types.KeyObservedKeyringMigration,
 	}
 }
 
-// Reconcile does nothing unless the migration is in progress. Then it
-// rewrites one batch of v1 envelopes (each put guarded by the runner with the
-// envelope's scanned revision) and updates observed/keyring/migration;
-// zero v1 envelopes left completes the migration.
+// Reconcile does nothing unless keyring/legacy is migrating. Then it rewrites
+// one batch of v1 envelopes (each put guarded by the runner with the
+// envelope's scanned revision) and updates observed/keyring/migration: zero
+// v1 left is completed; a v1 envelope written late re-opens it (in_progress).
 func (keyringMigrationController *KeyringMigrationController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	migrationStatus, hasStatus := parseKeyringMigrationStatus(facts)
-	if !hasStatus || migrationStatus.State != security.KeyringMigrationInProgress {
+	if !hasStatus || !isKeyringMigrating(facts) {
 		return nil, nil
 	}
 	migrationBatch, planError := keyringMigrationController.migrationPlanner.PlanLegacyMigrationBatch(ctx, facts, keyringMigrationBatchSize)
@@ -75,10 +77,16 @@ func (keyringMigrationController *KeyringMigrationController) Reconcile(ctx cont
 	nextStatus.Migrated += len(migrationBatch.Rewrites)
 	nextStatus.LegacyV1EnvelopeCount = migrationBatch.RemainingV1Count
 	nextStatus.UnreadableCount = migrationBatch.UnreadableV1Count
-	if migrationBatch.RemainingV1Count == 0 {
+	switch {
+	case migrationBatch.RemainingV1Count == 0 && migrationStatus.State != security.KeyringMigrationCompleted:
 		nextStatus.State = security.KeyringMigrationCompleted
 		nextStatus.Completed = time.Now().UTC().Format(time.RFC3339)
 		logging.Default().Info("keyring-migration: completed", "migrated", fmt.Sprintf("%d", nextStatus.Migrated))
+	case migrationBatch.RemainingV1Count > 0 && migrationStatus.State == security.KeyringMigrationCompleted:
+		nextStatus.State = security.KeyringMigrationInProgress
+		nextStatus.Completed = ""
+		logging.Default().Warn("keyring-migration: v1 envelopes appeared after completion, re-encrypting them",
+			"remaining", fmt.Sprintf("%d", migrationBatch.RemainingV1Count))
 	}
 	if nextStatus == migrationStatus {
 		return changes, nil
@@ -88,6 +96,16 @@ func (keyringMigrationController *KeyringMigrationController) Reconcile(ctx cont
 		return nil, marshalError
 	}
 	return append(changes, Change{Type: store.OpPut, Key: types.KeyObservedKeyringMigration, Value: statusJSON}), nil
+}
+
+// isKeyringMigrating reports whether keyring/legacy is migrating in facts.
+func isKeyringMigrating(facts []store.Fact) bool {
+	for _, fact := range store.FactsWithPrefix(facts, types.KeyKeyringLegacy) {
+		if fact.Key == types.KeyKeyringLegacy {
+			return security.LegacyKeyState(fact.Value) == security.LegacyKeyMigrating
+		}
+	}
+	return false
 }
 
 // parseKeyringMigrationStatus reads observed/keyring/migration from facts.

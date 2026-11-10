@@ -67,6 +67,10 @@ func TestLoadSecretRootKeyFileRejectsInvalidFiles(t *testing.T) {
 		return keyPath
 	}
 	validKey := bytes.Repeat([]byte{7}, SecretRootKeySize)
+	symlinkPath := filepath.Join(temporaryDirectory, "link.key")
+	if symlinkError := os.Symlink(writeKeyFile("target.key", validKey, 0o400), symlinkPath); symlinkError != nil {
+		t.Fatal(symlinkError)
+	}
 	testCases := []struct {
 		name            string
 		keyPath         string
@@ -78,6 +82,7 @@ func TestLoadSecretRootKeyFileRejectsInvalidFiles(t *testing.T) {
 		{"world readable", writeKeyFile("world.key", validKey, 0o404), "group- or world-accessible"},
 		{"too short", writeKeyFile("short.key", validKey[:16], 0o400), "has 16 bytes"},
 		{"too long", writeKeyFile("long.key", append(validKey, 1), 0o400), "has 33 bytes"},
+		{"symlink", symlinkPath, "symlinks are refused"},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {

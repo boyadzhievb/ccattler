@@ -17,23 +17,28 @@ import (
 const plaintextGateKeySuffix = "/tls/key"
 
 // CheckLegacyRetirementGate returns every unmet retirement gate condition
-// (Flow 29 step 7, R7): the legacy key is still present, the migration is
-// completed with zero v1 envelopes (recounted by a full scan), no plaintext
-// gate key fact exists, and every node other than the API replicas reports
-// legacy_key_file = absent. Replicas keep the file until retirement.
+// (Flow 29 step 7, R7): keyring/legacy is migrating, every live replica acts
+// on it (seals v2), the migration is completed with zero v1 envelopes
+// (recounted by a full scan), no plaintext gate key fact exists, and every
+// node other than the API replicas reports legacy_key_file = absent.
 func (keyringCodec *KeyringEnvelopeCodec) CheckLegacyRetirementGate(ctx context.Context) ([]string, error) {
 	var unmetConditions []string
-	if legacyKeyState := keyringCodec.currentSnapshot().legacyKeyState; legacyKeyState != LegacyKeyPresent {
-		unmetConditions = append(unmetConditions, fmt.Sprintf("legacy key state is %s; there is nothing to retire", legacyKeyState))
+	if legacyKeyState := keyringCodec.currentSnapshot().legacyKeyState; legacyKeyState != LegacyKeyMigrating {
+		unmetConditions = append(unmetConditions, fmt.Sprintf("keyring is %s; retirement needs a completed migration (state migrating)", legacyKeyState))
 	}
 	migrationStatus, readError := readKeyringMigrationStatus(ctx, keyringCodec.factStore)
 	if readError != nil {
 		return nil, readError
 	}
 	if migrationStatus.State != KeyringMigrationCompleted || migrationStatus.LegacyV1EnvelopeCount != 0 {
-		unmetConditions = append(unmetConditions, fmt.Sprintf("migration is %s with %d v1 envelopes (run cca secret migrate-keys and wait for completed)",
-			migrationStatus.State, migrationStatus.LegacyV1EnvelopeCount))
+		unmetConditions = append(unmetConditions, fmt.Sprintf("migration is %s with %d v1 envelopes (%d unreadable); the keyring controller re-encrypts v1 envelopes, also ones written late — wait for completed",
+			migrationStatus.State, migrationStatus.LegacyV1EnvelopeCount, migrationStatus.UnreadableCount))
 	}
+	replicaConditions, replicaError := keyringCodec.checkReplicaReports(ctx, "", LegacyKeyMigrating)
+	if replicaError != nil {
+		return nil, replicaError
+	}
+	unmetConditions = append(unmetConditions, replicaConditions...)
 	storeConditions, storeError := keyringCodec.checkRetirementStoreConditions(ctx)
 	if storeError != nil {
 		return nil, storeError
@@ -61,7 +66,7 @@ func (keyringCodec *KeyringEnvelopeCodec) checkRetirementStoreConditions(ctx con
 			unmetConditions = append(unmetConditions, "plaintext gate key fact still exists: "+routeFact.Key)
 		}
 	}
-	nodeFacts, nodeError := scanStorePrefixes(ctx, keyringCodec.factStore, EnrolledNodePrefix, types.ScanObservedNodes, types.ScanObservedKeyringReplicas)
+	nodeFacts, nodeError := scanStorePrefixes(ctx, keyringCodec.factStore, types.ScanObservedNodes, types.ScanObservedKeyringReplicas)
 	if nodeError != nil {
 		return nil, nodeError
 	}
@@ -84,14 +89,15 @@ func countV1Envelopes(envelopeFacts []store.Fact) int {
 
 // nodesHoldingLegacyKeyFile returns the nodes that do not report
 // legacy_key_file = absent, excluding API replicas (a live keyring report
-// with the same node ID): their server still opens v1 until retirement.
+// with the same node ID — server --node-id must equal the agent's node ID):
+// their server still opens v1 until retirement.
 func nodesHoldingLegacyKeyFile(nodeFacts []store.Fact) []string {
 	replicaNodes := make(map[string]bool)
 	for _, reportFact := range store.FactsWithPrefix(nodeFacts, types.ScanObservedKeyringReplicas) {
 		replicaNodes[strings.TrimPrefix(reportFact.Key, types.ScanObservedKeyringReplicas)] = true
 	}
 	var pendingNodes []string
-	for _, nodeID := range NodesNotReporting(nodeFacts, "legacy_key_file", "absent") {
+	for _, nodeID := range NodesNotReporting(nodeFacts, types.NodeReportLegacyKeyFile, types.LegacyKeyFileAbsent) {
 		if !replicaNodes[nodeID] {
 			pendingNodes = append(pendingNodes, nodeID)
 		}
@@ -99,22 +105,10 @@ func nodesHoldingLegacyKeyFile(nodeFacts []store.Fact) []string {
 	return pendingNodes
 }
 
-// RetireLegacyKey sets keyring/legacy = retired in a transaction guarded by
-// its revision. Every replica then drops the legacy key and refuses v1
-// envelopes; the step cannot be undone.
+// RetireLegacyKey moves keyring/legacy from migrating to retired, guarded by
+// the revisions of keyring/legacy and observed/keyring/migration read now
+// (a v1 write that reopened the migration fails it). Every replica then drops
+// the legacy key and refuses v1 envelopes; the step cannot be undone.
 func (keyringCodec *KeyringEnvelopeCodec) RetireLegacyKey(ctx context.Context) error {
-	legacyFact, getError := keyringCodec.factStore.Get(ctx, types.KeyKeyringLegacy)
-	if getError != nil {
-		return fmt.Errorf("read %s: %w", types.KeyKeyringLegacy, getError)
-	}
-	transactionSucceeded, transactionError := keyringCodec.factStore.Transaction(ctx,
-		[]store.Compare{{Key: types.KeyKeyringLegacy, Revision: legacyFact.Revision}},
-		[]store.Op{{Type: store.OpPut, Key: types.KeyKeyringLegacy, Value: []byte(LegacyKeyRetired)}}, nil)
-	if transactionError != nil {
-		return fmt.Errorf("retire legacy key: %w", transactionError)
-	}
-	if !transactionSucceeded {
-		return fmt.Errorf("retire legacy key: %s changed concurrently; check it and retry", types.KeyKeyringLegacy)
-	}
-	return keyringCodec.Refresh(ctx)
+	return keyringCodec.advanceLegacyKeyState(ctx, LegacyKeyMigrating, LegacyKeyRetired)
 }

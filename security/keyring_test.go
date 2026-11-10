@@ -40,11 +40,10 @@ func readTestMigrationState(t *testing.T, factStore store.StateStore) KeyringMig
 	return migrationStatus.State
 }
 
-// writeTestMigrationState overwrites the persisted migration state.
-func writeTestMigrationState(t *testing.T, factStore store.StateStore, migrationState KeyringMigrationState) {
+// writeTestLegacyKeyState overwrites the authoritative keyring state.
+func writeTestLegacyKeyState(t *testing.T, factStore store.StateStore, legacyKeyState LegacyKeyState) {
 	t.Helper()
-	migrationJSON, _ := json.Marshal(KeyringMigrationStatus{State: migrationState})
-	if _, putError := factStore.Put(context.Background(), types.KeyObservedKeyringMigration, migrationJSON); putError != nil {
+	if _, putError := factStore.Put(context.Background(), types.KeyKeyringLegacy, []byte(legacyKeyState)); putError != nil {
 		t.Fatal(putError)
 	}
 }
@@ -107,7 +106,7 @@ func TestKeyringUpgradeKeepsV1UntilMigration(t *testing.T) {
 	if isEnvelopeV2(beforeGate) {
 		t.Error("v2 written before the migration gate")
 	}
-	writeTestMigrationState(t, factStore, KeyringMigrationInProgress)
+	writeTestLegacyKeyState(t, factStore, LegacyKeyMigrating)
 	if refreshError := keyringCodec.Refresh(ctx); refreshError != nil {
 		t.Fatal(refreshError)
 	}
@@ -159,7 +158,7 @@ func TestLegacyKeyCannotOpenKeyringMaterial(t *testing.T) {
 	if _, unwrapError := legacyKeyProvider.UnwrapKey(ctx, rootCheckFact.Value); unwrapError == nil {
 		t.Error("legacy key opened root_check")
 	}
-	writeTestMigrationState(t, factStore, KeyringMigrationInProgress)
+	writeTestLegacyKeyState(t, factStore, LegacyKeyMigrating)
 	_ = keyringCodec.Refresh(ctx)
 	v2Envelope, _ := keyringCodec.SealEnvelopeForKey(ctx, "secrets/db", []byte("value"))
 	if _, openError := OpenEnvelope(ctx, legacyKeyProvider, v2Envelope); openError == nil {
@@ -251,7 +250,39 @@ func TestKeyringReplicaReportPublished(t *testing.T) {
 	if unmarshalError := json.Unmarshal(reportFact.Value, &report); unmarshalError != nil {
 		t.Fatal(unmarshalError)
 	}
-	if report.Version != "v-test" || report.ActiveKEKVersion != keyringFirstKEKVersion || report.RootCheck != "ok" {
+	if report.Version != "v-test" || report.ActiveKEKVersion != keyringFirstKEKVersion || report.RootCheck != keyringReplicaReportRootCheckOK || report.LegacyKeyState != LegacyKeyNone {
 		t.Errorf("report = %+v", report)
+	}
+}
+
+// TestKeyringRefusesRebootstrapOverExistingData verifies security finding F2:
+// a missing keyring/active never leads to a new keyring over a partial one or
+// over v2 envelopes (which would become unreadable).
+func TestKeyringRefusesRebootstrapOverExistingData(t *testing.T) {
+	ctx := context.Background()
+	rootKeyProvider := newTestKeyProvider(t)
+
+	partialKeyring := store.NewMemoryStore()
+	if _, codecError := NewKeyringEnvelopeCodec(ctx, partialKeyring, rootKeyProvider, nil); codecError != nil {
+		t.Fatal(codecError)
+	}
+	originalKEK, _ := partialKeyring.Get(ctx, types.KeyKeyringKEK(keyringFirstKEKVersion))
+	partialKeyring.Delete(ctx, types.KeyKeyringActive)
+	if _, codecError := NewKeyringEnvelopeCodec(ctx, partialKeyring, rootKeyProvider, newTestKeyProvider(t)); codecError == nil || !strings.Contains(codecError.Error(), "keyring is incomplete") {
+		t.Errorf("rebootstrap over a partial keyring: %v", codecError)
+	}
+	if currentKEK, _ := partialKeyring.Get(ctx, types.KeyKeyringKEK(keyringFirstKEKVersion)); string(currentKEK.Value) != string(originalKEK.Value) {
+		t.Error("KEK 1 was overwritten")
+	}
+
+	lostKeyring := store.NewMemoryStore()
+	firstCodec, _ := NewKeyringEnvelopeCodec(ctx, lostKeyring, rootKeyProvider, nil)
+	_ = NewSecretStore(lostKeyring, firstCodec).PutSecret(ctx, "db", []byte("v2-value"))
+	keyringFacts, _ := lostKeyring.Scan(ctx, types.PrefixKeyring+"/")
+	for _, keyringFact := range keyringFacts {
+		lostKeyring.Delete(ctx, keyringFact.Key)
+	}
+	if _, codecError := NewKeyringEnvelopeCodec(ctx, lostKeyring, rootKeyProvider, newTestKeyProvider(t)); codecError == nil || !strings.Contains(codecError.Error(), "v2 secret envelopes exist") {
+		t.Errorf("rebootstrap over v2 envelopes: %v", codecError)
 	}
 }

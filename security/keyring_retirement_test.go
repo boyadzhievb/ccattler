@@ -30,6 +30,8 @@ func completeTestMigration(t *testing.T, fixture *migrationTestFixture) {
 	completedJSON, _ := json.Marshal(KeyringMigrationStatus{State: KeyringMigrationCompleted, Migrated: len(migrationBatch.Rewrites)})
 	fixture.factStore.Put(ctx, types.KeyObservedKeyringMigration, completedJSON)
 	_ = fixture.keyringCodec.Refresh(ctx)
+	// The replica republishes its report every few seconds in production.
+	fixture.keyringCodec.publishKeyringReplicaReport(ctx, "cp-1", "v-test", 0)
 }
 
 // TestLegacyRetirementGateConditions verifies each retirement condition:
@@ -48,9 +50,9 @@ func TestLegacyRetirementGateConditions(t *testing.T) {
 	if !strings.Contains(strings.Join(unmet, "; "), "worker-1") {
 		t.Fatalf("worker without legacy_key_file report not refused: %v", unmet)
 	}
-	fixture.factStore.Put(ctx, types.KeyObservedNodeLegacyKeyFile("worker-1"), []byte("absent"))
-	fixture.factStore.Put(ctx, EnrolledNodePrefix+"cp-1", []byte("{}"))
-	fixture.factStore.Put(ctx, types.KeyObservedNodeLegacyKeyFile("cp-1"), []byte("present"))
+	fixture.factStore.Put(ctx, types.KeyObservedNodeLegacyKeyFile("worker-1"), []byte(types.LegacyKeyFileAbsent))
+	fixture.factStore.Put(ctx, types.KeyObservedNodeState("cp-1"), []byte(types.NodeAlive))
+	fixture.factStore.Put(ctx, types.KeyObservedNodeLegacyKeyFile("cp-1"), []byte(types.LegacyKeyFilePresent))
 	fixture.factStore.Put(ctx, types.ScanDerivedRoutes+"web/tls/key", []byte("-----BEGIN EC PRIVATE KEY-----"))
 	unmet, _ = fixture.keyringCodec.CheckLegacyRetirementGate(ctx)
 	if len(unmet) != 1 || !strings.Contains(unmet[0], "plaintext gate key") {
@@ -80,7 +82,7 @@ func TestRetireLegacyKeyRefusesV1AndDropsKey(t *testing.T) {
 		t.Error("v1 envelope opened after retirement")
 	}
 	unmet, _ := fixture.keyringCodec.CheckLegacyRetirementGate(ctx)
-	if !strings.Contains(strings.Join(unmet, "; "), "nothing to retire") {
+	if !strings.Contains(strings.Join(unmet, "; "), "keyring is retired") {
 		t.Errorf("second retirement not refused: %v", unmet)
 	}
 	restartedCodec, codecError := NewKeyringEnvelopeCodec(ctx, fixture.factStore, fixture.keyringCodec.rootKeyProvider, fixture.legacyKeyProvider)

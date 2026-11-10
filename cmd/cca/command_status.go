@@ -2166,7 +2166,11 @@ func executeSecretMigrateKeys(args []string) {
 		}
 		confirmBackup = true
 	}
-	requestBody, _ := json.Marshal(map[string]bool{"confirm_backup": confirmBackup})
+	requestBody, marshalError := json.Marshal(map[string]bool{"confirm_backup": confirmBackup})
+	if marshalError != nil {
+		fmt.Fprintf(os.Stderr, "error: encode request: %v\n", marshalError)
+		os.Exit(1)
+	}
 	postSecretAdminRequest("/api/secret/migrate-keys", requestBody)
 	fmt.Println("legacy key migration started: writes are v2; the keyring controller re-encrypts v1 secrets")
 }

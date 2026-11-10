@@ -38,15 +38,16 @@ type SecretEnvelopeCodec interface {
 }
 
 // KeyringEnvelopeCodec is the control plane's envelope codec: v2 envelopes
-// under the keyring's active KEK once the migration has started (or on a
-// fresh cluster), v1 under the legacy key before that; v1 envelopes open with
-// the legacy key until it is retired.
+// under the keyring's active KEK unless keyring/legacy is present (upgraded
+// cluster before the migration gate), then v1 under the legacy key; v1
+// envelopes open with the legacy key until it is retired.
 type KeyringEnvelopeCodec struct {
 	factStore         store.StateStore // factStore holds the keyring and migration state.
 	rootKeyProvider   KeyProvider      // rootKeyProvider unwraps KEKs and the root check.
 	legacyKeyProvider KeyProvider      // legacyKeyProvider opens and writes v1 envelopes; nil on fresh clusters and after retirement.
 	snapshot          *keyringSnapshot // snapshot is the current keyring view.
 	mutex             sync.RWMutex     // mutex guards snapshot and legacyKeyProvider.
+	refreshMutex      sync.Mutex       // refreshMutex serializes Refresh so an older read never replaces a newer snapshot.
 }
 
 // NewKeyringEnvelopeCodec creates the keyring on first use, proves the root
@@ -61,15 +62,18 @@ func NewKeyringEnvelopeCodec(ctx context.Context, factStore store.StateStore, ro
 		return nil, refreshError
 	}
 	snapshot, currentLegacyKeyProvider := keyringCodec.currentState()
-	if snapshot.legacyKeyState == LegacyKeyPresent && currentLegacyKeyProvider == nil {
-		return nil, errors.New("the keyring still needs the legacy secret-master.key (migration not completed); restore it on this replica")
+	if snapshot.legacyKeyState.needsLegacyKey() && currentLegacyKeyProvider == nil {
+		return nil, fmt.Errorf("the keyring is %s and still needs the legacy secret-master.key; restore it on this replica", snapshot.legacyKeyState)
 	}
 	return keyringCodec, nil
 }
 
-// Refresh re-reads the keyring and migration state from the store. Once the
-// legacy key is retired, this replica drops it from memory for good.
+// Refresh re-reads the keyring from the store. Refreshes run one at a time,
+// so a slow read can never replace a newer snapshot. Once the legacy key is
+// retired, this replica drops it from memory for good.
 func (keyringCodec *KeyringEnvelopeCodec) Refresh(ctx context.Context) error {
+	keyringCodec.refreshMutex.Lock()
+	defer keyringCodec.refreshMutex.Unlock()
 	snapshot, loadError := loadKeyringSnapshot(ctx, keyringCodec.factStore, keyringCodec.rootKeyProvider)
 	if loadError != nil {
 		return loadError
@@ -101,12 +105,12 @@ func (keyringCodec *KeyringEnvelopeCodec) currentState() (*keyringSnapshot, KeyP
 	return keyringCodec.snapshot, keyringCodec.legacyKeyProvider
 }
 
-// SealEnvelopeForKey writes v2 with the active KEK once the migration state
-// allows it, otherwise v1 with the legacy key (upgraded clusters before the
+// SealEnvelopeForKey writes v2 with the active KEK unless keyring/legacy is
+// present, then v1 with the legacy key (upgraded clusters before the
 // migration gate, while old agents may still decrypt locally).
 func (keyringCodec *KeyringEnvelopeCodec) SealEnvelopeForKey(ctx context.Context, storeKey string, plaintext []byte) ([]byte, error) {
 	snapshot, currentLegacyKeyProvider := keyringCodec.currentState()
-	if snapshot.migrationState.writesV2() {
+	if snapshot.legacyKeyState.writesV2() {
 		return sealEnvelopeV2(snapshot.keyEncryptionKeys[snapshot.activeKEKVersion], snapshot.activeKEKVersion, storeKey, plaintext)
 	}
 	if currentLegacyKeyProvider == nil {
@@ -156,11 +160,7 @@ func (keyringCodec *KeyringEnvelopeCodec) openLegacyEnvelope(ctx context.Context
 // keyring/ and observed/keyring/migration and every
 // keyringRefreshFallbackInterval. Blocks until ctx is cancelled.
 func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) {
-	keyringEvents, keyringWatchError := keyringCodec.factStore.Watch(ctx, types.PrefixKeyring+"/", store.WatchOption{Prefix: true})
-	migrationEvents, migrationWatchError := keyringCodec.factStore.Watch(ctx, types.KeyObservedKeyringMigration, store.WatchOption{})
-	if keyringWatchError != nil || migrationWatchError != nil {
-		logging.Default().Warn("keyring watch unavailable, refreshing on the fallback interval only")
-	}
+	keyringEvents := keyringCodec.subscribeKeyringWatch(ctx)
 	fallbackTicker := time.NewTicker(keyringRefreshFallbackInterval)
 	defer fallbackTicker.Stop()
 	for {
@@ -168,14 +168,14 @@ func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case _, isOpen := <-keyringEvents:
-			if !isOpen {
-				keyringEvents = nil
-			}
-		case _, isOpen := <-migrationEvents:
-			if !isOpen {
-				migrationEvents = nil
+			if !isOpen && ctx.Err() == nil {
+				logging.Default().Warn("keyring watch closed, re-subscribing")
+				keyringEvents = keyringCodec.subscribeKeyringWatch(ctx)
 			}
 		case <-fallbackTicker.C:
+			if keyringEvents == nil {
+				keyringEvents = keyringCodec.subscribeKeyringWatch(ctx)
+			}
 		}
 		if refreshError := keyringCodec.Refresh(ctx); refreshError != nil && ctx.Err() == nil {
 			logging.Default().Error("keyring refresh failed", "error", refreshError.Error())
@@ -183,12 +183,28 @@ func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) {
 	}
 }
 
+// subscribeKeyringWatch watches keyring/ (the only authority for write mode).
+// On failure it logs and returns nil; the fallback tick retries.
+func (keyringCodec *KeyringEnvelopeCodec) subscribeKeyringWatch(ctx context.Context) <-chan store.Event {
+	keyringEvents, watchError := keyringCodec.factStore.Watch(ctx, types.PrefixKeyring+"/", store.WatchOption{Prefix: true})
+	if watchError != nil {
+		logging.Default().Warn("keyring watch unavailable, retrying on the fallback interval", "error", watchError.Error())
+		return nil
+	}
+	return keyringEvents
+}
+
+// keyringReplicaReportRootCheckOK is the root_check value a running replica
+// reports; a replica whose root check fails exits instead of reporting.
+const keyringReplicaReportRootCheckOK = "ok"
+
 // keyringReplicaReport is the JSON a replica publishes at
 // observed/keyring/replica/{node-id}.
 type keyringReplicaReport struct {
-	Version          string `json:"version"`            // Version is the cca build version.
-	ActiveKEKVersion int    `json:"active_kek_version"` // ActiveKEKVersion is the KEK this replica seals with.
-	RootCheck        string `json:"root_check"`         // RootCheck is "ok" (a failed check stops the replica).
+	Version          string         `json:"version"`            // Version is the cca build version.
+	ActiveKEKVersion int            `json:"active_kek_version"` // ActiveKEKVersion is the KEK this replica seals with.
+	LegacyKeyState   LegacyKeyState `json:"legacy_key_state"`   // LegacyKeyState is the keyring state this replica acts on (v1 vs v2 writes).
+	RootCheck        string         `json:"root_check"`         // RootCheck is keyringReplicaReportRootCheckOK.
 }
 
 // RunKeyringReplicaReporter publishes this replica's keyring report under a
@@ -208,29 +224,37 @@ func (keyringCodec *KeyringEnvelopeCodec) RunKeyringReplicaReporter(ctx context.
 	}
 }
 
-// publishKeyringReplicaReport renews the report lease, or grants a new lease
-// and rewrites the report when the lease is gone. Returns the lease in use.
+// publishKeyringReplicaReport renews the report lease (granting a new one
+// when it is gone) and rewrites the report with this replica's current
+// keyring view, so the gates see what each live replica acts on now.
+// Returns the lease in use, 0 after a failure (logged; retried next tick).
 func (keyringCodec *KeyringEnvelopeCodec) publishKeyringReplicaReport(ctx context.Context, nodeID string, buildVersion string, leaseID int64) int64 {
 	if leaseID != 0 {
-		if _, renewError := keyringCodec.factStore.RenewLease(ctx, leaseID); renewError == nil {
-			return leaseID
+		if _, renewError := keyringCodec.factStore.RenewLease(ctx, leaseID); renewError != nil {
+			logging.Default().Warn("keyring replica report: lease renewal failed, granting a new lease", "error", renewError.Error())
+			leaseID = 0
 		}
 	}
-	reportJSON, marshalError := json.Marshal(keyringReplicaReport{
-		Version: buildVersion, ActiveKEKVersion: keyringCodec.currentSnapshot().activeKEKVersion, RootCheck: "ok"})
+	if leaseID == 0 {
+		newLeaseID, grantError := keyringCodec.factStore.GrantLease(ctx, keyringReplicaReportTTLSeconds)
+		if grantError != nil {
+			logging.Default().Warn("keyring replica report: lease grant failed", "error", grantError.Error())
+			return 0
+		}
+		leaseID = newLeaseID
+	}
+	snapshot := keyringCodec.currentSnapshot()
+	reportJSON, marshalError := json.Marshal(keyringReplicaReport{Version: buildVersion, ActiveKEKVersion: snapshot.activeKEKVersion,
+		LegacyKeyState: snapshot.legacyKeyState, RootCheck: keyringReplicaReportRootCheckOK})
 	if marshalError != nil {
-		return 0
+		logging.Default().Warn("keyring replica report: encode failed", "error", marshalError.Error())
+		return leaseID
 	}
-	newLeaseID, grantError := keyringCodec.factStore.GrantLease(ctx, keyringReplicaReportTTLSeconds)
-	if grantError != nil {
-		logging.Default().Warn("keyring replica report: lease grant failed", "error", grantError.Error())
-		return 0
-	}
-	if _, putError := keyringCodec.factStore.PutWithLease(ctx, types.KeyObservedKeyringReplica(nodeID), reportJSON, newLeaseID); putError != nil {
+	if _, putError := keyringCodec.factStore.PutWithLease(ctx, types.KeyObservedKeyringReplica(nodeID), reportJSON, leaseID); putError != nil {
 		logging.Default().Warn("keyring replica report: write failed", "error", putError.Error())
 		return 0
 	}
-	return newLeaseID
+	return leaseID
 }
 
 // legacyOnlyEnvelopeCodec seals and opens v1 envelopes with one key provider.

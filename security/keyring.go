@@ -29,17 +29,32 @@ const (
 	KeyringMigrationCompleted KeyringMigrationState = "completed"
 )
 
-// LegacyKeyState records whether the legacy master key still matters.
+// LegacyKeyState is the authoritative keyring state at keyring/legacy: it
+// decides v1 vs v2 writes and whether v1 envelopes open. It only moves
+// forward (present → migrating → retired), each step a guarded transaction;
+// observed/keyring/migration is progress information, never authority.
 type LegacyKeyState string
 
 const (
-	// LegacyKeyNone: fresh cluster, no legacy key and no v1 envelope ever existed.
+	// LegacyKeyNone: fresh cluster, no legacy key and no v1 envelope ever existed; writes are v2.
 	LegacyKeyNone LegacyKeyState = "none"
-	// LegacyKeyPresent: v1 envelopes may exist; the legacy key opens them.
+	// LegacyKeyPresent: upgraded cluster before the migration gate; writes are v1.
 	LegacyKeyPresent LegacyKeyState = "present"
-	// LegacyKeyRetired: no replica loads the legacy key or opens v1 envelopes.
+	// LegacyKeyMigrating: after the migration gate; writes are v2, v1 still opens and is re-encrypted.
+	LegacyKeyMigrating LegacyKeyState = "migrating"
+	// LegacyKeyRetired: no replica loads the legacy key or opens v1 envelopes; writes are v2.
 	LegacyKeyRetired LegacyKeyState = "retired"
 )
+
+// writesV2 reports whether new envelopes must be v2 in this keyring state.
+func (legacyKeyState LegacyKeyState) writesV2() bool {
+	return legacyKeyState != LegacyKeyPresent
+}
+
+// needsLegacyKey reports whether replicas must hold the legacy key to open v1.
+func (legacyKeyState LegacyKeyState) needsLegacyKey() bool {
+	return legacyKeyState == LegacyKeyPresent || legacyKeyState == LegacyKeyMigrating
+}
 
 // KeyringMigrationStatus is the JSON stored at observed/keyring/migration.
 type KeyringMigrationStatus struct {
@@ -49,11 +64,6 @@ type KeyringMigrationStatus struct {
 	Migrated              int                   `json:"migrated"`                 // Migrated counts envelopes re-encrypted so far.
 	Started               string                `json:"started,omitempty"`        // Started is the RFC 3339 start time.
 	Completed             string                `json:"completed,omitempty"`      // Completed is the RFC 3339 completion time.
-}
-
-// writesV2 reports whether new envelopes must be v2 in this migration state.
-func (migrationState KeyringMigrationState) writesV2() bool {
-	return migrationState == KeyringMigrationInProgress || migrationState == KeyringMigrationCompleted
 }
 
 // keyringFirstKEKVersion is the KEK version created at bootstrap.
@@ -74,55 +84,63 @@ var encryptedStorePrefixes = []string{SecretStorePrefix, CredentialStorePrefix}
 var ErrKeyringRootCheckFailed = errors.New("keyring/root_check cannot be opened with this root key (different root key than the other replicas)")
 
 // keyringSnapshot is the in-memory view of the keyring a replica seals and
-// opens with: unwrapped KEKs by version, the active version, the legacy key
-// state and the migration state.
+// opens with: unwrapped KEKs by version, the active version and the
+// authoritative legacy key state.
 type keyringSnapshot struct {
-	keyEncryptionKeys map[int][]byte        // keyEncryptionKeys are the unwrapped KEKs by version.
-	activeKEKVersion  int                   // activeKEKVersion seals new v2 envelopes.
-	legacyKeyState    LegacyKeyState        // legacyKeyState says whether v1 envelopes may be opened.
-	migrationState    KeyringMigrationState // migrationState decides v1 vs v2 writes.
+	keyEncryptionKeys map[int][]byte // keyEncryptionKeys are the unwrapped KEKs by version.
+	activeKEKVersion  int            // activeKEKVersion seals new v2 envelopes.
+	legacyKeyState    LegacyKeyState // legacyKeyState decides v1 vs v2 writes and whether v1 opens.
 }
 
 // ensureKeyring creates the keyring once, in one create-only transaction
-// (compare keyring/active absent). A fresh cluster (no legacy key, no
-// envelope) starts with migration completed; otherwise not_started. Losing
-// the race to another replica is not an error.
+// (every bootstrap key compared absent). A fresh cluster (no legacy key, no
+// envelope) starts with legacy none; otherwise present. Losing the race to
+// another replica is not an error; a partial or lost keyring is (security F2).
 func ensureKeyring(ctx context.Context, factStore store.StateStore, rootKeyProvider KeyProvider, legacyKeyAvailable bool) error {
 	if _, getError := factStore.Get(ctx, types.KeyKeyringActive); getError == nil {
 		return nil
 	} else if !errors.Is(getError, store.ErrKeyNotFound) {
 		return fmt.Errorf("read %s: %w", types.KeyKeyringActive, getError)
 	}
-	hasEnvelopes, scanError := storeHasEnvelopes(ctx, factStore)
-	if scanError != nil {
-		return scanError
-	}
-	if hasEnvelopes && !legacyKeyAvailable {
-		return errors.New("secrets exist but the legacy secret-master.key is missing; restore it from another control-plane replica before upgrading")
+	if refusalError := refuseKeyringRebootstrap(ctx, factStore, legacyKeyAvailable); refusalError != nil {
+		return refusalError
 	}
 	bootstrapOperations, buildError := buildKeyringBootstrapOperations(ctx, rootKeyProvider, legacyKeyAvailable)
 	if buildError != nil {
 		return buildError
 	}
-	if _, transactionError := factStore.Transaction(ctx,
-		[]store.Compare{{Key: types.KeyKeyringActive, Revision: 0}}, bootstrapOperations, nil); transactionError != nil {
+	bootstrapCompares := make([]store.Compare, 0, len(bootstrapOperations))
+	for _, bootstrapOperation := range bootstrapOperations {
+		bootstrapCompares = append(bootstrapCompares, store.Compare{Key: bootstrapOperation.Key, Revision: 0})
+	}
+	if _, transactionError := factStore.Transaction(ctx, bootstrapCompares, bootstrapOperations, nil); transactionError != nil {
 		return fmt.Errorf("create keyring: %w", transactionError)
 	}
 	return nil
 }
 
-// storeHasEnvelopes reports whether any secret or credential envelope exists.
-func storeHasEnvelopes(ctx context.Context, factStore store.StateStore) (bool, error) {
-	for _, encryptedPrefix := range encryptedStorePrefixes {
-		facts, scanError := factStore.Scan(ctx, encryptedPrefix)
-		if scanError != nil {
-			return false, fmt.Errorf("scan %s: %w", encryptedPrefix, scanError)
-		}
-		if len(facts) > 0 {
-			return true, nil
-		}
+// refuseKeyringRebootstrap stops a bootstrap that would replace a keyring:
+// any other keyring/ key or any v2 envelope means the keyring was lost or
+// tampered with (restore it from a backup); v1 envelopes need the legacy key.
+func refuseKeyringRebootstrap(ctx context.Context, factStore store.StateStore, legacyKeyAvailable bool) error {
+	keyringFacts, keyringError := factStore.Scan(ctx, types.PrefixKeyring+"/")
+	if keyringError != nil {
+		return fmt.Errorf("scan %s/: %w", types.PrefixKeyring, keyringError)
 	}
-	return false, nil
+	if len(keyringFacts) > 0 {
+		return fmt.Errorf("keyring is incomplete (%s missing, %d other keyring keys exist); refusing to create a new one over it: restore the keyring from an etcd backup", types.KeyKeyringActive, len(keyringFacts))
+	}
+	envelopeFacts, scanError := scanStorePrefixes(ctx, factStore, encryptedStorePrefixes...)
+	if scanError != nil {
+		return scanError
+	}
+	if len(envelopeFacts) > countV1Envelopes(envelopeFacts) {
+		return errors.New("v2 secret envelopes exist but the keyring is missing; refusing to create a new keyring (they would become unreadable): restore the keyring from an etcd backup")
+	}
+	if len(envelopeFacts) > 0 && !legacyKeyAvailable {
+		return errors.New("secrets exist but the legacy secret-master.key is missing; restore it from another control-plane replica before upgrading")
+	}
+	return nil
 }
 
 // buildKeyringBootstrapOperations generates KEK 1, wraps it and the root check
@@ -181,15 +199,16 @@ func loadKeyringSnapshot(ctx context.Context, factStore store.StateStore, rootKe
 	if legacyError != nil {
 		return nil, fmt.Errorf("read %s: %w", types.KeyKeyringLegacy, legacyError)
 	}
-	migrationStatus, migrationError := readKeyringMigrationStatus(ctx, factStore)
-	if migrationError != nil {
-		return nil, migrationError
+	legacyKeyState := LegacyKeyState(legacyFact.Value)
+	switch legacyKeyState {
+	case LegacyKeyNone, LegacyKeyPresent, LegacyKeyMigrating, LegacyKeyRetired:
+	default:
+		return nil, fmt.Errorf("%s = %q is not a keyring state", types.KeyKeyringLegacy, legacyFact.Value)
 	}
 	return &keyringSnapshot{
 		keyEncryptionKeys: keyEncryptionKeys,
 		activeKEKVersion:  activeKEKVersion,
-		legacyKeyState:    LegacyKeyState(legacyFact.Value),
-		migrationState:    migrationStatus.State,
+		legacyKeyState:    legacyKeyState,
 	}, nil
 }
 

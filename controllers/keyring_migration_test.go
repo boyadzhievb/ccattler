@@ -164,3 +164,27 @@ func TestKeyringMigrationReportsUnreadableAndNeverCompletes(t *testing.T) {
 		t.Error("unreadable envelope was modified")
 	}
 }
+
+// TestKeyringMigrationReopensForLateV1Envelope verifies code-review finding 4:
+// a v1 envelope written after completion (e.g. by a replica that had not
+// refreshed yet) re-opens the migration and is re-encrypted.
+func TestKeyringMigrationReopensForLateV1Envelope(t *testing.T) {
+	ctx := context.Background()
+	factStore, keyringCodec, _, legacyKeyProvider := newUpgradedKeyringCluster(t, 2)
+	_ = keyringCodec.StartLegacyMigration(ctx, "user:admin")
+	migrationController := NewKeyringMigrationController(keyringCodec)
+	migrationRunner := NewRunner(factStore, migrationController)
+	_ = migrationRunner.executeReconciliationCycle(ctx, migrationController, nil)
+	if status := readMigrationStatus(t, factStore); status.State != security.KeyringMigrationCompleted {
+		t.Fatalf("first run = %+v", status)
+	}
+	lateEnvelope, _ := security.SealEnvelope(ctx, legacyKeyProvider, []byte("late-value"))
+	factStore.Put(ctx, security.SecretStorePrefix+"late", []byte(base64.StdEncoding.EncodeToString(lateEnvelope)))
+	_ = migrationRunner.executeReconciliationCycle(ctx, migrationController, nil)
+	if status := readMigrationStatus(t, factStore); status.State != security.KeyringMigrationCompleted || status.Migrated != 3 {
+		t.Fatalf("after the late v1 envelope = %+v, want completed with 3 migrated", status)
+	}
+	if value, getError := security.NewSecretStore(factStore, keyringCodec).GetSecret(ctx, "late"); getError != nil || string(value) != "late-value" {
+		t.Errorf("late secret = %q, %v", value, getError)
+	}
+}

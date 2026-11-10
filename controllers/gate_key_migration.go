@@ -157,10 +157,10 @@ func collectSealedGateKeyNames(facts []store.Fact) map[string]bool {
 	return sealedGates
 }
 
-// collectNodesWithoutGateKeyDelivery returns the sorted nodes (enrolled or
-// registered, not disabled) that do not report gate_key_delivery = v1.
+// collectNodesWithoutGateKeyDelivery returns the sorted registered,
+// non-disabled nodes that do not report gate_key_delivery = v1.
 func collectNodesWithoutGateKeyDelivery(facts []store.Fact) []string {
-	return security.NodesNotReporting(facts, "gate_key_delivery", types.GateKeyDeliveryVersion)
+	return security.NodesNotReporting(facts, types.NodeReportGateKeyDelivery, types.GateKeyDeliveryVersion)
 }
 
 // migrationStatusChange returns a put of observed/gate-keys/migration when the
