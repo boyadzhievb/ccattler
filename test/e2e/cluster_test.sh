@@ -487,7 +487,7 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
     wait
     ssh_vm "$CTRL_NODE" "sudo systemctl stop cca-server 2>/dev/null || true"
     for vm in "${VM_NAMES[@]}"; do
-        ssh_vm "$vm" "sudo rm -rf /etc/ccattler/pki /etc/ccattler/secret-master.key /etc/ccattler/endpoints" &
+        ssh_vm "$vm" "sudo rm -rf /etc/ccattler/pki /etc/ccattler/secret-master.key /etc/ccattler/secret-root.key /etc/ccattler/endpoints" &
     done
     wait
     ssh_vm "$CTRL_NODE" "sudo rm -rf /tmp/cca-init /etc/systemd/system/etcd.service /etc/systemd/system/etcd.service.d"

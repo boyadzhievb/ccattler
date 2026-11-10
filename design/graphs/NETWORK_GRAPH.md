@@ -700,7 +700,7 @@ RouteTLSController.Reconcile(ctx, facts)                       :62
 └── cleanupUnneededSealedGateKeys(facts, parseSystemKeyGateNames(facts))
     → DELETE secrets/route/{gate}/tls/key unless the gate exists with tls auto,
       or manual without tls/key_secret (same rule as GateKeySecretName)
-Wired in cmd/cca/command_server.go:392 when the cluster CA is loaded; key provider from loadSecretKeyProvider (:687), shared with the secret store.
+Wired in cmd/cca/command_server.go:417 when the cluster CA is loaded; key provider from loadSecretKeyProvider (cmd/cca/server_secret_keys.go:25), shared with the secret store.
 ```
 
 ### GateKeyMigrationController (controllers/gate_key_migration.go) — plaintext key cutover (Flow 28 step 7)

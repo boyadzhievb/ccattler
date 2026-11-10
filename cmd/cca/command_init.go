@@ -169,19 +169,16 @@ func executeInitCommand(parsedConfig initCommandConfig) {
 		os.Exit(1)
 	}
 
-	secretMasterKey, masterKeyError := security.GenerateMasterKey()
-	if masterKeyError != nil {
-		fmt.Fprintf(os.Stderr, "error generating secret master key: %v\n", masterKeyError)
-		os.Exit(1)
-	}
-
 	writeInitFile(outputDirectory, "ca.pem", certificateAuthority.CACertificatePEM(), 0644)
 	writeInitFile(outputDirectory, "ca-key.pem", caKeyPEM, 0600)
 	writeInitFile(outputDirectory, "node.pem", nodeCertificate.CertificatePEM, 0644)
 	writeInitFile(outputDirectory, "node-key.pem", nodeCertificate.PrivateKeyPEM, 0600)
 	writeInitFile(outputDirectory, "etcd.pem", etcdCertificate.CertificatePEM, 0644)
 	writeInitFile(outputDirectory, "etcd-key.pem", etcdCertificate.PrivateKeyPEM, 0600)
-	writeInitFile(outputDirectory, "secret-master.key", secretMasterKey, 0600)
+	isSecondaryReplica := parsedConfig.existingCAPath != "" && parsedConfig.existingCAKeyPath != ""
+	if !isSecondaryReplica {
+		writeInitSecretKeys(outputDirectory)
+	}
 
 	setupScript := buildSetupScript(parsedConfig.advertiseAddress, parsedConfig.nodeID, outputDirectory, parsedConfig.clusterCIDR, parsedConfig.vipCIDR)
 	writeInitFile(outputDirectory, "setup.sh", []byte(setupScript), 0755)
@@ -255,11 +252,29 @@ func printInitSummary(outputDirectory string) {
 	fmt.Println("  node-key.pem       Node private key (cca server/agent)")
 	fmt.Println("  etcd.pem           etcd certificate")
 	fmt.Println("  etcd-key.pem       etcd private key (owned by etcd user)")
-	fmt.Println("  secret-master.key  Secret store encryption key")
+	fmt.Println("  secret-root.key    Secret root key (control plane only; same file on every replica)")
+	fmt.Println("  secret-master.key  Legacy secret key (retired by the M177 key migration)")
 	fmt.Println("  setup.sh           Setup script (review, then run with sudo)")
 	fmt.Println()
 	fmt.Println("Review the setup script, then run:")
 	fmt.Printf("  sudo %s/setup.sh\n", outputDirectory)
+}
+
+// writeInitSecretKeys writes the secret root key (Flow 29) and, until the
+// M177 keyring replaces it, the legacy master key for a new cluster. HA
+// secondaries (--ca) get neither: every replica must hold the first node's
+// keys, so Ansible copies them instead of generating different ones.
+func writeInitSecretKeys(outputDirectory string) {
+	secretMasterKey, masterKeyError := security.GenerateMasterKey()
+	if masterKeyError != nil {
+		fmt.Fprintf(os.Stderr, "error generating secret master key: %v\n", masterKeyError)
+		os.Exit(1)
+	}
+	writeInitFile(outputDirectory, "secret-master.key", secretMasterKey, 0600)
+	if rootKeyError := security.GenerateSecretRootKeyFile(filepath.Join(outputDirectory, "secret-root.key")); rootKeyError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", rootKeyError)
+		os.Exit(1)
+	}
 }
 
 // writeInitFile writes data to a file in the output directory.
@@ -324,8 +339,14 @@ func buildSetupScript(advertiseAddress string, nodeID string, sourceDirectory st
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/node.pem\" \"$SOURCE_DIR/node-key.pem\" \"$PKI_DIR/\"\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/etcd.pem\" \"$SOURCE_DIR/etcd-key.pem\" \"$PKI_DIR/\"\n")
 	scriptBuilder.WriteString("cp \"$SOURCE_DIR/ca.pem\" /etc/ccattler/ca.pem\n")
-	scriptBuilder.WriteString("cp \"$SOURCE_DIR/secret-master.key\" /etc/ccattler/secret-master.key\n")
-	scriptBuilder.WriteString("chmod 600 \"$PKI_DIR/ca-key.pem\" \"$PKI_DIR/node-key.pem\" \"$PKI_DIR/etcd-key.pem\" /etc/ccattler/secret-master.key\n")
+	scriptBuilder.WriteString("chmod 600 \"$PKI_DIR/ca-key.pem\" \"$PKI_DIR/node-key.pem\" \"$PKI_DIR/etcd-key.pem\"\n")
+	scriptBuilder.WriteString("# Secret keys exist only in a first-node init; HA secondaries receive copies.\n")
+	scriptBuilder.WriteString("if [ -f \"$SOURCE_DIR/secret-master.key\" ] && [ ! -f /etc/ccattler/secret-master.key ]; then\n")
+	scriptBuilder.WriteString("    install -m 600 \"$SOURCE_DIR/secret-master.key\" /etc/ccattler/secret-master.key\n")
+	scriptBuilder.WriteString("fi\n")
+	scriptBuilder.WriteString("if [ -f \"$SOURCE_DIR/secret-root.key\" ] && [ ! -f /etc/ccattler/secret-root.key ]; then\n")
+	scriptBuilder.WriteString("    install -m 400 \"$SOURCE_DIR/secret-root.key\" /etc/ccattler/secret-root.key\n")
+	scriptBuilder.WriteString("fi\n")
 	scriptBuilder.WriteString("chmod 644 \"$PKI_DIR/ca.pem\" \"$PKI_DIR/node.pem\" \"$PKI_DIR/etcd.pem\"\n\n")
 
 	scriptBuilder.WriteString("echo '==> Configuring etcd with TLS'\n")

@@ -18,6 +18,13 @@
   args:
     creates: /etc/ccattler/pki/ca.pem
 
+# Clusters set up before M177 have no root key; cca server refuses to start
+# without it (Flow 29). Generated once, never overwritten.
+- name: Generate secret root key (clusters that predate M177)
+  command: /usr/local/bin/cca secret generate-root-key
+  args:
+    creates: /etc/ccattler/secret-root.key
+
 - name: Enable and start cca-server
   systemd:
     name: cca-server

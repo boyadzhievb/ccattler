@@ -10,7 +10,7 @@ command listed here exists in `cmd/cca/main.go`. Run `cca --help` for full usage
 cca apply <file>              # deploy config
 cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
-cca server [flags]            # start control plane
+cca server [flags]            # start control plane (--secret-root-key <file> | --kms-provider <p> --kms-key-id <id>)
 cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --storage-dir <path>)
 cca token create/list/revoke  # bootstrap token management
 cca join <server> <token>     # join node to cluster
@@ -47,6 +47,7 @@ cca images list/pull
 cca top [nodes|workloads]
 cca metric set <svc> <m> <v>
 cca secret set/get/list/delete/rotate   # secret management (M174 changes: see "Secrets (M174)")
+cca secret generate-root-key [--path <file>]   # local, on a control-plane node: create the secret root key once (M177)
 cca gc instances               # garbage-collect stopped instance facts
 cca audit [flags]              # query/stream audit log (--principal, --action, --since, --follow)
 

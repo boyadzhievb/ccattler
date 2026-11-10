@@ -2015,7 +2015,8 @@ func executeWatchCommand(prefix string) {
 	}
 }
 
-// executeSecretCommand dispatches cca secret subcommands: set, get, list, delete.
+// executeSecretCommand dispatches cca secret subcommands: set, get, list,
+// delete, rotate and the local generate-root-key.
 func executeSecretCommand(args []string) {
 	subcommand := args[0]
 	switch subcommand {
@@ -2041,8 +2042,10 @@ func executeSecretCommand(args []string) {
 		executeSecretDelete(args[1])
 	case "rotate":
 		executeSecretRotate()
+	case "generate-root-key":
+		executeSecretGenerateRootKey(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate> [name] [value]")
+		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate|generate-root-key> [name] [value]")
 		os.Exit(1)
 	}
 }

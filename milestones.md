@@ -224,10 +224,10 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 - [x] Design flow written (Flow 29)
 
-**Step 1 — Root key and startup checks**
-- [ ] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; `cca init` writes it for new clusters (no `secret-master.key`); the HA role copies it to every replica like the CA files (fixes replicas with different keys)
-- [ ] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
-- [ ] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key; `loadOrGenerateSecretMasterKey` removed (no silent generation); in-memory store uses an ephemeral in-memory root key
+**Step 1 — Root key and startup checks** (done 2026-11-10: unit tests; manual `--env lan` e2e on .77 passed with root key 0400 on the control plane only; `cca secret generate-root-key` for clusters that predate M177; the server still seals with the legacy key until step 2)
+- [x] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; `cca init` writes it for new clusters (no `secret-master.key`); the HA role copies it to every replica like the CA files (fixes replicas with different keys)
+- [x] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
+- [x] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key; `loadOrGenerateSecretMasterKey` removed (no silent generation); in-memory store uses an ephemeral in-memory root key
 
 **Step 2 — Keyring and envelope v2**
 - [ ] Keyring bootstrap in one create-only transaction (`keyring/kek/1`, `keyring/active`, `keyring/root_check`, `keyring/legacy`, migration state: `completed` on a fresh cluster, `not_started` on an upgrade); `root_check` failure → exit; replicas watch `keyring/` and report `observed/keyring/replica/{id}` with a lease

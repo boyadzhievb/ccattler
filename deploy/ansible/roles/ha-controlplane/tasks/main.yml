@@ -21,6 +21,55 @@
     creates: /etc/ccattler/pki/ca.pem
   when: inventory_hostname == groups['controlplane'][0]
 
+- name: Generate secret root key on the first node (clusters that predate M177)
+  command: /usr/local/bin/cca secret generate-root-key
+  args:
+    creates: /etc/ccattler/secret-root.key
+  when: inventory_hostname == groups['controlplane'][0]
+
+# Every replica must hold the first node's secret keys (Flow 29); before M177
+# each secondary generated its own secret-master.key. A secondary's differing
+# key is kept as a backup file, since v1 secrets it wrote need it to open.
+- name: Fetch secret keys from the first control-plane node
+  fetch:
+    src: "{{ item }}"
+    dest: /tmp/ccattler-ha-pki/
+    flat: true
+  loop:
+    - /etc/ccattler/secret-root.key
+    - /etc/ccattler/secret-master.key
+  when: inventory_hostname == groups['controlplane'][0]
+
+- name: Ensure the configuration directory exists on other control-plane nodes
+  file:
+    path: /etc/ccattler
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: inventory_hostname != groups['controlplane'][0]
+
+- name: Distribute secret root key to other control-plane nodes
+  copy:
+    src: /tmp/ccattler-ha-pki/secret-root.key
+    dest: /etc/ccattler/secret-root.key
+    owner: root
+    group: root
+    mode: "0400"
+  when: inventory_hostname != groups['controlplane'][0]
+  notify: restart cca-server
+
+- name: Distribute legacy secret master key to other control-plane nodes
+  copy:
+    src: /tmp/ccattler-ha-pki/secret-master.key
+    dest: /etc/ccattler/secret-master.key
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+  when: inventory_hostname != groups['controlplane'][0]
+  notify: restart cca-server
+
 - name: Fetch CA and shared PKI from the first control-plane node
   fetch:
     src: "{{ item }}"

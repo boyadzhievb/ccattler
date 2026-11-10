@@ -900,8 +900,9 @@ _cca_completions() {
             case "$previous_word" in
                 --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
                 --listen|--endpoints|--store-prefix) ;;
-                --cert|--key|--ca) COMPREPLY=($(compgen -f -- "$current_word")) ;;
-                *) COMPREPLY=($(compgen -W "--listen --tls --cert --key --ca --store --endpoints --store-prefix --dns --dns-listen" -- "$current_word")) ;;
+                --cert|--key|--ca|--secret-root-key) COMPREPLY=($(compgen -f -- "$current_word")) ;;
+                --kms-provider|--kms-key-id) ;;
+                *) COMPREPLY=($(compgen -W "--listen --tls --cert --key --ca --store --endpoints --store-prefix --dns --dns-listen --secret-root-key --kms-provider --kms-key-id" -- "$current_word")) ;;
             esac
             ;;
         agent)
@@ -1065,7 +1066,10 @@ func buildZshCompletionScript() string {
 	builder.WriteString("                '--endpoints[etcd endpoints]:endpoints:' \\\n")
 	builder.WriteString("                '--store-prefix[etcd key prefix]:prefix:' \\\n")
 	builder.WriteString("                '--dns[enable DNS server]' \\\n")
-	builder.WriteString("                '--dns-listen[DNS listen address]:address:'\n")
+	builder.WriteString("                '--dns-listen[DNS listen address]:address:' \\\n")
+	builder.WriteString("                '--secret-root-key[secret root key file]:file:_files' \\\n")
+	builder.WriteString("                '--kms-provider[KMS provider for the secret root key]:provider:' \\\n")
+	builder.WriteString("                '--kms-key-id[KMS key used as the secret root key]:key:'\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        agent)\n")
 	builder.WriteString("            _arguments \\\n")

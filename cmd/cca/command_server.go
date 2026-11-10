@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -115,6 +114,13 @@ type serverCommandConfig struct {
 	clusterCIDR string
 	// vipCIDR overrides the default service virtual IP CIDR (e.g. "10.200.0.0/24").
 	vipCIDR string
+	// secretRootKeyPath is the root key file that protects the secret keyring
+	// (Flow 29); ignored when kmsProviderName is set.
+	secretRootKeyPath string
+	// kmsProviderName selects a KMS key as the secret root key (e.g. "aws-kms").
+	kmsProviderName string
+	// kmsKeyID identifies the KMS key used as the secret root key.
+	kmsKeyID string
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -124,10 +130,11 @@ type serverCommandConfig struct {
 func parseServerCommandArgs(args []string) serverCommandConfig {
 	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := serverCommandConfig{
-		storeBackend:   defaults.storeBackend,
-		etcdEndpoints:  defaults.etcdEndpoints,
-		storeKeyPrefix: defaults.storeKeyPrefix,
-		listenAddress:  "0.0.0.0:" + defaultAPIListenPort,
+		storeBackend:      defaults.storeBackend,
+		etcdEndpoints:     defaults.etcdEndpoints,
+		storeKeyPrefix:    defaults.storeKeyPrefix,
+		listenAddress:     "0.0.0.0:" + defaultAPIListenPort,
+		secretRootKeyPath: security.DefaultSecretRootKeyPath,
 	}
 	explicitListenProvided := false
 
@@ -229,6 +236,21 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.cloudRegion = args[argIndex]
+			}
+		case "--secret-root-key":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.secretRootKeyPath = args[argIndex]
+			}
+		case "--kms-provider":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.kmsProviderName = args[argIndex]
+			}
+		case "--kms-key-id":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.kmsKeyID = args[argIndex]
 			}
 		case "--oidc-issuer":
 			if argIndex+1 < len(args) {
@@ -341,7 +363,7 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
 	// One secret store for controllers and API, so a key rotation reaches the
 	// controllers that seal system-owned secrets (route-tls, gate-key-migration).
-	secretStore := security.NewSecretStore(factStore, loadSecretKeyProvider())
+	secretStore := security.NewSecretStore(factStore, loadSecretKeyProvider(ctx, parsedConfig))
 
 	if runControllers {
 		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, secretStore)
@@ -682,18 +704,6 @@ func configureAndStartAPIServer(
 	if parsedConfig.dnsEnabled {
 		startDNSServer(ctx, factStore, parsedConfig.dnsListenAddress)
 	}
-}
-
-// loadSecretKeyProvider loads (or generates) the local secret master key and
-// returns the key provider shared by the secret store and the controllers
-// that seal system-owned secrets (route-tls, Flow 28). Exits on failure.
-func loadSecretKeyProvider() security.KeyProvider {
-	secretKeyProvider, keyProviderError := security.NewLocalKeyProvider(loadOrGenerateSecretMasterKey())
-	if keyProviderError != nil {
-		fmt.Fprintf(os.Stderr, "secret key provider: %v\n", keyProviderError)
-		os.Exit(1)
-	}
-	return secretKeyProvider
 }
 
 // configureSecretStoreAndDelivery attaches the secret store and enables node
@@ -1081,34 +1091,6 @@ func preflightRequireSecureKeyPermissions(filePath string, description string) {
 		fmt.Fprintf(os.Stderr, "  Fix: chmod 600 %s\n", filePath)
 		os.Exit(1)
 	}
-}
-
-// secretMasterKeyPath is the canonical location for the secret store's 32-byte
-// master key. Ansible provisions the same key to all nodes at this path.
-const secretMasterKeyPath = "/etc/ccattler/secret-master.key" //nolint:gosec // file path, not a credential
-
-// loadOrGenerateSecretMasterKey reads the master key from disk, or generates a
-// fresh one and writes it out. The key file is 32 bytes of raw binary data.
-func loadOrGenerateSecretMasterKey() []byte {
-	if existingKey, readErr := os.ReadFile(secretMasterKeyPath); readErr == nil && len(existingKey) == 32 {
-		return existingKey
-	}
-
-	freshKey, generateError := security.GenerateMasterKey()
-	if generateError != nil {
-		fmt.Fprintf(os.Stderr, "generate secret master key: %v\n", generateError)
-		os.Exit(1)
-	}
-
-	parentDir := filepath.Dir(secretMasterKeyPath)
-	_ = os.MkdirAll(parentDir, 0700)
-	if writeError := os.WriteFile(secretMasterKeyPath, freshKey, 0600); writeError != nil {
-		fmt.Fprintf(os.Stderr, "write secret master key: %v\n", writeError)
-		fmt.Fprintf(os.Stderr, "  fix: sudo mkdir -p %s && sudo chown $(id -u) %s\n", parentDir, parentDir)
-		os.Exit(1)
-	}
-	fmt.Printf("Generated new secret master key at %s\n", secretMasterKeyPath)
-	return freshKey
 }
 
 // clusterStatusResponse is the structured representation of the full cluster status,

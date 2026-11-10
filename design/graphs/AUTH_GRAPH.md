@@ -629,6 +629,25 @@ RewrapEnvelope(ctx, oldProvider, newProvider, envelope)        [:141]
 | AWSKMSKeyProvider | security/kms_cloud.go   | cloudprovider | AWS KMS key ARN/alias    |
 | GCPKMSKeyProvider | security/kms_cloud.go   | cloudprovider | GCP KMS resource name    |
 
+### Secret key loading at server startup (M177 step 1, Flow 29)
+
+```
+runServer → security.NewSecretStore(factStore, loadSecretKeyProvider(ctx, cfg))
+loadSecretKeyProvider(ctx, cfg)                       [cmd/cca/server_secret_keys.go:25]
+├── store = memory → newEphemeralSecretKeyProvider()  [random key, never on disk]
+├── security.LoadLegacySecretMasterKeyFile(/etc/ccattler/secret-master.key)   [security/root_key.go]
+├── validateSecretRootKey(ctx, cfg, legacyKey)
+│   ├── --kms-provider → validateKMSRootKey           [LookupKMSKeyProviderFactory; wrap/unwrap probe]
+│   └── else LoadSecretRootKeyFile(--secret-root-key, default /etc/ccattler/secret-root.key)
+│       └── ValidateSecretRootKeyDistinctFromLegacy
+├── any error → exitWithSecretKeyError                [no silent key generation]
+└── NewLocalKeyProvider(legacyKey)                    [v1 envelopes until the step 2 keyring]
+
+cca secret generate-root-key [--path]  → executeSecretGenerateRootKey → GenerateSecretRootKeyFile (O_EXCL, 0400)
+cca init (first node)                  → writeInitSecretKeys → secret-master.key + secret-root.key
+cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files
+```
+
 ### SecretStore (security/secrets.go)
 
 ```
