@@ -79,6 +79,8 @@ cca secret retire-legacy-key                 # stop using the old master key (af
 cca secret rotate                            # new KEK version, re-wrap (refused until migration completed)
 ```
 
+Names starting with `route/` are reserved for system gate keys (M176): `cca secret` refuses and hides them; see [config-secrets.md](config-secrets.md).
+
 | Target | Store key | Required permission |
 |---|---|---|
 | no flag (built-in `default` tenant) | `secrets/tenant/default/{name}` | `secret.write` at `team/default` |

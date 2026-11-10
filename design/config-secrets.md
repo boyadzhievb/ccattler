@@ -203,6 +203,8 @@ secrets/cluster/{name}             cluster secret, e.g. secrets/cluster/registry
 secrets/route/{gate}/tls/key       sealed gate TLS key (written by the system, not by users)
 ```
 
+Reserved name prefix (since M176): secret names starting with `route/` belong to the system. `/api/secret` (and so `cca secret set/get/list/delete`) hides and refuses them, the compiler rejects them as service secrets and as `key secret`, and they are never delivered to instances. A user secret created under `route/…` before M176 stays in the store but is unreachable: re-create it under another name before upgrading, and update the configurations that reference it.
+
 Rules:
 
 - **Ownership (decision A):** services and secrets resolve their tenant in this order: (1) explicit `owner`; (2) the tenant inferred from a hierarchical name such as `payments/api`; (3) the built-in tenant `default`. `default` is reserved (no user-declared `tenant default`) and is an ordinary tenant for isolation, not a global namespace: flat, unowned services use `secrets/tenant/default/…` and cannot reach other tenants' secrets.
