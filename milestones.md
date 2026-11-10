@@ -220,13 +220,26 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
 
 ### Phase 177 — Root Key, Keyring & Key Migration (M177)
 
-- [ ] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; Ansible generates once and provisions every control-plane replica
+Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in `design/config-secrets.md` (fresh clusters start on v2 with no legacy key; four ordered steps, one release).
+
+- [x] Design flow written (Flow 29)
+
+**Step 1 — Root key and startup checks**
+- [ ] Fresh root key `/etc/ccattler/secret-root.key` (`0400`, root), never derived from `secret-master.key`; `cca init` writes it for new clusters (no `secret-master.key`); the HA role copies it to every replica like the CA files (fixes replicas with different keys)
 - [ ] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
-- [ ] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key, `keyring/root_check` fails to open
-- [ ] Keyring in etcd (`keyring/kek/{v}`, `keyring/active`, `keyring/root_check`); replicas watch it and report `observed/keyring/replica/{id}`
-- [ ] Envelope v2 (magic, KEK version, wrapped DEK, AAD = store key); legacy key opens v1 only and never wraps anything new; writes stay v1 until migration starts
-- [ ] Migration gate + `cca secret migrate-keys --confirm-backup` → `intent/keyring/legacy_migration`; leader-elected keyring controller re-encrypts v1 → v2 in bounded CAS batches, resumes after a crash, persists `observed/keyring/migration` (`legacy_v1_envelope_count`)
-- [ ] Retirement gate + `cca secret retire-legacy-key` (count 0 by full scan, migration completed, no plaintext gate key facts, every node `legacy_key_file = absent`); replicas stop loading the legacy key and refuse v1; Ansible removes `secret-master.key` from workers, then control plane, and asserts absence
+- [ ] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key; `loadOrGenerateSecretMasterKey` removed (no silent generation); in-memory store uses an ephemeral in-memory root key
+
+**Step 2 — Keyring and envelope v2**
+- [ ] Keyring bootstrap in one create-only transaction (`keyring/kek/1`, `keyring/active`, `keyring/root_check`, `keyring/legacy`, migration state: `completed` on a fresh cluster, `not_started` on an upgrade); `root_check` failure → exit; replicas watch `keyring/` and report `observed/keyring/replica/{id}` with a lease
+- [ ] One envelope codec for `SecretStore`, `CredentialStore`, route-tls, gate-key migration and `PUT /api/gate-key`: v2 (magic, KEK version, wrapped DEK, AAD = store key) once migration is in progress or completed, v1 before; legacy key opens v1 only and never wraps anything new
+- [ ] `keyring` store principal and role (`keyring/`, `intent/keyring/`, `observed/keyring/`, re-write `secrets/` and `credentials/`); `api-server` role still has no rule for them
+
+**Step 3 — Migration gate and controller**
+- [ ] Migration gate + `cca secret migrate-keys --confirm-backup` → `intent/keyring/legacy_migration` (409 lists unmet conditions: backup confirmation, live replica reports, every node `secret_delivery = v2`)
+- [ ] Leader-elected keyring controller re-encrypts v1 → v2 under `secrets/` and `credentials/` in bounded CAS batches, resumes after a crash, persists `observed/keyring/migration` (`legacy_v1_envelope_count`, `unreadable_count`)
+
+**Step 4 — Retirement, Ansible, runbook**
+- [ ] Retirement gate + `cca secret retire-legacy-key` (count 0 by full scan, migration completed, no plaintext gate key facts, every node `legacy_key_file = absent`); replicas drop the legacy key and refuse v1; Ansible removes `secret-master.key` from workers, then control plane, and asserts absence
 - [ ] Etcd backup/restore runbook in `design/TESTING.md` (referenced by `--confirm-backup`)
 - [ ] Tests: legacy key cannot unwrap any KEK, open `root_check` or any v2 envelope; every legacy value unchanged after migration; kill mid-batch and resume; gates refuse with the unmet conditions; v1 refused after retirement; deploy cluster migration under traffic
 

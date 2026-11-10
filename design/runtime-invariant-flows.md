@@ -1207,6 +1207,105 @@ node disabled or unenrolled → delivery refused (403, audited); cached keys kep
 - Controllers seal with the secret store's current key provider (`KeyProviderSource`), so a key rotation applies to new envelopes at once.
 - The delivery response is capped at 4 MiB on the agent (about 1000 gates); beyond that the agent reports `unreachable` (known limit).
 
+## Flow 29: Root Key, Keyring & Legacy Key Migration (M177)
+
+**Status:** designed 2026-11-10. Decisions: fresh clusters start directly on v2 with no legacy key; M177 is delivered in four ordered steps and one release. Spec: [config-secrets.md](config-secrets.md#key-hierarchy) (key hierarchy, R1, R7, R8) and "Migration (upgrade order) and cutover gates".
+
+**Problem**: every envelope under `secrets/` and `credentials/` is wrapped directly by `/etc/ccattler/secret-master.key`. That key was copied to every worker before M174, so it is treated as compromised. The server also generates the key silently when the file is missing, and the HA role does not copy it, so HA replicas can each hold a different key (a secret written through one replica cannot be opened by another).
+
+**Invariant**: only API replicas hold the root key; every replica holds the same one (proved by `keyring/root_check`) or refuses to start. New envelopes are v2 (active KEK, AAD = store key) once the cluster is past the migration gate, or from the first write on a fresh cluster. The legacy key never wraps anything new, and after retirement no replica opens a v1 envelope.
+
+```
+Inputs on every API replica
+  root key    /etc/ccattler/secret-root.key (32 bytes, 0400, root) | --kms-provider <name>
+  legacy key  /etc/ccattler/secret-master.key (optional; upgraded clusters only)
+  in-memory store (local simulation, tests): ephemeral root key generated in memory,
+    never written; every persistent store requires the file or --kms-provider
+
+1. Startup checks (before serving)
+   root key missing, unreadable, size ≠ 32, group/world-readable → exit
+   legacy key present and byte-identical to the root key           → exit
+   no silent generation: loadOrGenerateSecretMasterKey is removed
+
+2. Keyring bootstrap (first replica only; create-only transaction)
+   keyring/active absent →
+     KEK₁ = random 32 bytes
+     txn [compare keyring/active rev 0]:
+       put keyring/kek/1         = wrap(root, KEK₁)
+       put keyring/kek/1/state   = active
+       put keyring/active        = 1
+       put keyring/root_check    = seal(root, fixed value)
+       put keyring/legacy        = none | present
+       put observed/keyring/migration = {state: completed, legacy_v1_envelope_count: 0}
+                                        (fresh)  | {state: not_started} (upgrade)
+     fresh  ⇔ no legacy key file on this replica ∧ no envelope under secrets/ or credentials/
+     upgrade ⇔ otherwise (legacy key required; v1 envelopes without it → exit with a hint)
+   CAS lost (another replica bootstrapped) → re-read keyring/*, continue at step 3
+
+3. Every replica, every start
+   open keyring/root_check with the root key; failure → exit (different root key)
+   load KEKs it can unwrap; watch keyring/ (new versions, keyring/legacy changes)
+   report observed/keyring/replica/{node-id} = {version, active_kek, root_check: ok}
+     with a lease (TTL), so stopped replicas disappear from the set
+
+4. Sealing and opening (one codec behind SecretStore, CredentialStore, controllers)
+   write mode  = v2 if migration state ∈ {in_progress, completed} else v1
+   seal v2     = magic | 2 | active_kek | wrap(KEK, DEK) | nonce | AES-GCM(DEK, value, AAD = store key)
+   seal v1     = legacy layout, legacy key (upgraded clusters before the gate only)
+   open        = magic → v2: KEK by version (unknown version → re-read keyring, else error)
+                 no magic → v1: legacy key, unless keyring/legacy = retired → error
+   AAD binds the envelope to its key: a value copied to another key does not open
+
+5. Migration gate (POST /api/secret/migrate-keys {confirm_backup: true}; cca secret migrate-keys --confirm-backup)
+   409 with every unmet condition unless:
+     confirm_backup set
+     every live replica report has this version, the active KEK, root_check ok
+     every enrolled, non-disabled node reports secret_delivery = v2 (M174 report)
+   → put intent/keyring/legacy_migration; migration state = in_progress (writes are v2 from here)
+
+6. Migration (keyring controller, leader, bounded batches)
+   scan secrets/ and credentials/ for v1 envelopes
+   per batch (≤ keyringMigrationBatchSize, within the runner's transaction budget):
+     open v1 with the legacy key → seal v2 (new DEK, AAD = its store key) → put with revision guard
+     revision conflict → re-read in the next round (a concurrent user write is already v2)
+     legacy key cannot open it → count as unreadable (e.g. written by an HA replica that
+       generated its own key); never deleted, never skipped silently
+   after each batch persist observed/keyring/migration =
+     {state, legacy_v1_envelope_count, unreadable_count, migrated, started, completed}
+   v1 count = 0 ∧ unreadable = 0 → state = completed
+   crash at any point → resumes from the remaining v1 envelopes (idempotent)
+   THIS IS THE ROLLBACK BOUNDARY
+
+7. Retirement gate (POST /api/secret/retire-legacy-key; cca secret retire-legacy-key)
+   409 unless: migration completed; full scan finds 0 v1 envelopes; no plaintext
+     desired|derived/route/*/tls/key fact; every enrolled node reports legacy_key_file = absent
+   → put keyring/legacy = retired; replicas drop the legacy key from memory and refuse v1
+   Ansible then deletes secret-master.key on the control plane and asserts absence
+   a replica that starts later with the file present: warns once, never loads it
+```
+
+**Failure and recovery paths:**
+
+```
+replica with another root key        → root_check fails → exits; others keep serving
+two replicas bootstrap at once       → one CAS wins; the other reads its keyring
+pre-M177 replica still running       → cannot report (step 3) and cannot open v2: upgrade
+                                       every control-plane replica before migrate-keys
+                                       (documented; the gate cannot see old replicas)
+unreadable v1 envelopes              → migration stays in_progress with unreadable_count;
+                                       operator re-sets those secrets (cca secret set) or
+                                       copies the right legacy key; retirement stays refused
+etcd restored to a pre-migration snapshot → restore the previous binaries too (runbook)
+legacy key lost before migration     → v1 secrets unreadable; re-create them (documented)
+```
+
+**What must match:**
+- One codec seals and opens for `SecretStore`, `CredentialStore`, `RouteTLSController`, `GateKeyMigrationController` and `PUT /api/gate-key`; nothing calls `SealEnvelope`/`OpenEnvelope` with a raw key any more.
+- The AAD is the exact store key the envelope is written to (`secrets/{name}`, `secrets/route/{gate}/tls/key`, `credentials/{name}`); every writer passes it.
+- The legacy key never wraps a KEK, `root_check` or a v2 DEK; tests prove it cannot open any of them.
+- Store roles: a `keyring` principal owns `keyring/`, `intent/keyring/`, `observed/keyring/` and re-writes `secrets/` and `credentials/`; the `api-server` role still has no rule for `secrets/`, `credentials/` or `keyring/`.
+- `cca init` writes `secret-root.key` (not `secret-master.key`) for new clusters; the HA role copies `secret-root.key` to every replica like the CA files.
+
 ## Checklist for New Features
 
 When adding a new feature that touches the runtime:
