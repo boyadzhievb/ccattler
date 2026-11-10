@@ -1303,7 +1303,7 @@ legacy key lost before migration     → v1 secrets unreadable; re-create them (
 - One codec seals and opens for `SecretStore`, `CredentialStore`, `RouteTLSController`, `GateKeyMigrationController` and `PUT /api/gate-key`; nothing calls `SealEnvelope`/`OpenEnvelope` with a raw key any more.
 - The AAD is the exact store key the envelope is written to (`secrets/{name}`, `secrets/route/{gate}/tls/key`, `credentials/{name}`); every writer passes it.
 - The legacy key never wraps a KEK, `root_check` or a v2 DEK; tests prove it cannot open any of them.
-- Store roles: a `keyring` principal owns `keyring/`, `intent/keyring/`, `observed/keyring/` and re-writes `secrets/` and `credentials/`; the `api-server` role still has no rule for `secrets/`, `credentials/` or `keyring/`.
+- Boundaries: the keyring migration controller writes only inside its runner-enforced write domain (`secrets/`, `credentials/`, `observed/keyring/migration`); keyring bootstrap and the migration gate run in the server through its own store. No separate `keyring` store role: controllers run on the runner's store, where a role would never be bound (decided 2026-11-10; controller store isolation is M181). The `api-server` role still has no rule for `secrets/`, `credentials/` or `keyring/`.
 - `cca init` writes `secret-root.key` (not `secret-master.key`) for new clusters; the HA role copies `secret-root.key` to every replica like the CA files.
 
 ## Checklist for New Features

@@ -235,7 +235,7 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 **Step 3 — Migration gate and controller** (done 2026-11-10 except the role decision below: unit tests incl. 120-secret run through the runner, crash resume, unreadable envelopes, API 409/200; `--env lan --from-release --upgrade` e2e on .77 runs `migrate-keys` after the upgrade: 4 envelopes migrated, count 0, gate keys v2 and re-fetched by every agent with its cache cleared)
 - [x] Migration gate + `cca secret migrate-keys --confirm-backup` → `intent/keyring/legacy_migration` (409 lists unmet conditions: backup confirmation, live replica reports, every node `secret_delivery = v2`)
-- [ ] `keyring` store principal and role for the keyring controller (`keyring/`, `intent/keyring/`, `observed/keyring/`, re-write `secrets/` and `credentials/`); `api-server` role keeps no rule for them (asserted by `TestSecretDeliveryRoleIsReadOnlyAndAPIServerRoleHasNoSecrets`). **Deviation proposed (user decision, 2026-11-10):** every controller runs on the runner's raw store, so a store role would never be bound (dead code); the controller boundary the runner enforces is the write domain, declared as `keyring-migration: secrets/, credentials/, observed/keyring/migration` in `controllerOutputPrefixes`. Store-layer isolation for controllers belongs to M181
+- [x] Keyring controller boundary: runner-enforced write domain `keyring-migration: secrets/, credentials/, observed/keyring/migration` (`controllerOutputPrefixes`) instead of a separate store role. **Decided 2026-11-10 (user):** every controller runs on the runner's raw store, so a role would never be bound (dead code); the process holds the root key and full etcd credentials anyway, so a role would not stop an attacker, and the write domain already drops out-of-domain writes from bugs. `api-server` keeps no rule for `secrets/`, `credentials/`, `keyring/` (asserted by `TestSecretDeliveryRoleIsReadOnlyAndAPIServerRoleHasNoSecrets`). Store-layer isolation for controllers belongs to M181
 - [x] Leader-elected keyring controller re-encrypts v1 → v2 under `secrets/` and `credentials/` in bounded CAS batches, resumes after a crash, persists `observed/keyring/migration` (`legacy_v1_envelope_count`, `unreadable_count`)
 
 **Step 4 — Retirement, Ansible, runbook**
@@ -273,6 +273,7 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 ### Runner hardening (unscheduled; architecture review 2026-11-10)
 
+- [ ] A production controller missing from `controllerOutputPrefixes` passes every write unchecked (`enforceWriteDomain` returns the changes unchanged for an undeclared controller): add a test that fails when a controller in the production list has no declared write domain (found during M177 step 3)
 - [ ] `DeltaController` / `deltaBuffer` / `ReconcileDelta` plumbing has no implementer (dead code since added): implement for the hot controllers (endpoint, instance) or delete
 - [ ] A controller loop returning nil makes `Runner.Run` cancel every controller while the node still holds leadership (`controllers/runner.go` `Run`, `runSingleController`): treat a nil exit as an error and restart
 - [ ] Controller restart backoff never resets (`runSingleController` `attemptIndex`): reset after a healthy period
