@@ -21,22 +21,20 @@ const SecretGrantPrefix = "desired/"
 
 // SecretStore manages encrypted secrets in the fact store using envelope
 // encryption. Each secret is encrypted with a per-secret data encryption key
-// (DEK), and the DEK is wrapped by the configured KeyProvider. Only the
-// wrapped DEK and ciphertext are stored — the master key never touches
-// secret plaintext directly.
+// (DEK); the envelope codec wraps the DEK (keyring KEK for v2, legacy key for
+// v1, Flow 29). Only the wrapped DEK and ciphertext are stored.
 type SecretStore struct {
-	factStore   store.StateStore // factStore holds the encrypted secret blobs.
-	keyProvider KeyProvider      // keyProvider wraps and unwraps per-secret DEKs.
-	mutex       sync.RWMutex     // mutex serializes concurrent access to the store.
+	factStore     store.StateStore    // factStore holds the encrypted secret blobs.
+	envelopeCodec SecretEnvelopeCodec // envelopeCodec seals and opens envelopes bound to their store key.
+	mutex         sync.RWMutex        // mutex serializes concurrent access to the store.
 }
 
 // NewSecretStore creates a secret store backed by the given fact store and
-// KeyProvider. The KeyProvider handles all key wrapping — for local keys use
-// NewLocalKeyProvider, for cloud KMS use the appropriate provider.
-func NewSecretStore(factStore store.StateStore, keyProvider KeyProvider) *SecretStore {
+// envelope codec (the server passes its KeyringEnvelopeCodec).
+func NewSecretStore(factStore store.StateStore, envelopeCodec SecretEnvelopeCodec) *SecretStore {
 	return &SecretStore{
-		factStore:   factStore,
-		keyProvider: keyProvider,
+		factStore:     factStore,
+		envelopeCodec: envelopeCodec,
 	}
 }
 
@@ -48,23 +46,28 @@ func NewSecretStoreWithMasterKey(factStore store.StateStore, masterKey []byte) (
 	if err != nil {
 		return nil, err
 	}
-	return NewSecretStore(factStore, localKeyProvider), nil
+	return NewSecretStore(factStore, legacyOnlyEnvelopeCodec{keyProvider: localKeyProvider}), nil
 }
 
-// PutSecret encrypts and stores a secret value using envelope encryption.
-// A random DEK is generated for each secret, the plaintext is encrypted with
-// the DEK, and the DEK is wrapped by the KeyProvider. The envelope blob is
-// base64-encoded before storage.
+// EnvelopeCodec returns the codec controllers use to seal system-owned
+// secrets (route-tls, gate-key-migration), shared with this store.
+func (secretStore *SecretStore) EnvelopeCodec() SecretEnvelopeCodec {
+	return secretStore.envelopeCodec
+}
+
+// PutSecret encrypts and stores a secret value using envelope encryption,
+// bound to its store key secrets/{name}. The envelope blob is base64-encoded
+// before storage.
 func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string, plaintext []byte) error {
 	secretStore.mutex.Lock()
 	defer secretStore.mutex.Unlock()
 
-	encodedEnvelope, err := SealSecretValue(ctx, secretStore.keyProvider, plaintext)
+	secretKey := SecretStorePrefix + secretName
+	encodedEnvelope, err := SealSecretValue(ctx, secretStore.envelopeCodec, secretKey, plaintext)
 	if err != nil {
 		return fmt.Errorf("encrypt secret %q: %w", secretName, err)
 	}
 
-	secretKey := SecretStorePrefix + secretName
 	if _, err := secretStore.factStore.Put(ctx, secretKey, encodedEnvelope); err != nil {
 		return fmt.Errorf("store secret %q: %w", secretName, err)
 	}
@@ -72,11 +75,11 @@ func (secretStore *SecretStore) PutSecret(ctx context.Context, secretName string
 	return nil
 }
 
-// SealSecretValue seals plaintext into the stored secret format: an envelope
-// (SealEnvelope) encoded as base64, the value kept at secrets/{name}. Used by
-// PutSecret and by controllers that write system-owned secrets directly.
-func SealSecretValue(ctx context.Context, keyProvider KeyProvider, plaintext []byte) ([]byte, error) {
-	envelopeBlob, err := SealEnvelope(ctx, keyProvider, plaintext)
+// SealSecretValue seals plaintext into the stored secret format for the
+// store key it will be written to (secrets/{name}): an envelope encoded as
+// base64. Used by PutSecret and by controllers that write system-owned secrets.
+func SealSecretValue(ctx context.Context, envelopeCodec SecretEnvelopeCodec, secretKey string, plaintext []byte) ([]byte, error) {
+	envelopeBlob, err := envelopeCodec.SealEnvelopeForKey(ctx, secretKey, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -89,8 +92,7 @@ func (secretStore *SecretStore) GetSecret(ctx context.Context, secretName string
 }
 
 // GetSecretThroughStore reads the envelope through readStore (e.g. a store
-// bound to the secret-delivery principal) and decrypts it with this store's
-// current KeyProvider, so a rotation applies to every reader at once.
+// bound to the secret-delivery principal) and opens it with this store's codec.
 func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readStore store.StateStore, secretName string) ([]byte, error) {
 	secretStore.mutex.RLock()
 	defer secretStore.mutex.RUnlock()
@@ -106,7 +108,7 @@ func (secretStore *SecretStore) GetSecretThroughStore(ctx context.Context, readS
 		return nil, fmt.Errorf("decode secret %q: %w", secretName, err)
 	}
 
-	plaintext, err := OpenEnvelope(ctx, secretStore.keyProvider, envelopeBlob)
+	plaintext, err := secretStore.envelopeCodec.OpenEnvelopeForKey(ctx, secretKey, envelopeBlob)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt secret %q: %w", secretName, err)
 	}
@@ -170,60 +172,6 @@ func (secretStore *SecretStore) GetSecretForService(ctx context.Context, service
 	}
 
 	return plaintext, mountPath, nil
-}
-
-// RotateKeyProvider re-wraps all stored secrets' DEKs from the old provider
-// to a new provider without decrypting or re-encrypting the secret payloads.
-// After rotation, the SecretStore's active KeyProvider is updated to the new
-// one. This is the master key rotation operation.
-func (secretStore *SecretStore) RotateKeyProvider(ctx context.Context, newKeyProvider KeyProvider) error {
-	secretStore.mutex.Lock()
-	defer secretStore.mutex.Unlock()
-
-	facts, err := secretStore.factStore.Scan(ctx, SecretStorePrefix)
-	if err != nil {
-		return fmt.Errorf("rotate: scan secrets: %w", err)
-	}
-
-	for _, fact := range facts {
-		envelopeBlob, decodeErr := base64.StdEncoding.DecodeString(string(fact.Value))
-		if decodeErr != nil {
-			return fmt.Errorf("rotate: decode %s: %w", fact.Key, decodeErr)
-		}
-
-		rewrappedEnvelope, rewrapErr := RewrapEnvelope(ctx, secretStore.keyProvider, newKeyProvider, envelopeBlob)
-		if rewrapErr != nil {
-			return fmt.Errorf("rotate: rewrap %s: %w", fact.Key, rewrapErr)
-		}
-
-		encodedEnvelope := base64.StdEncoding.EncodeToString(rewrappedEnvelope)
-		if _, putErr := secretStore.factStore.Put(ctx, fact.Key, []byte(encodedEnvelope)); putErr != nil {
-			return fmt.Errorf("rotate: store %s: %w", fact.Key, putErr)
-		}
-	}
-
-	secretStore.keyProvider = newKeyProvider
-	return nil
-}
-
-// KeyProviderSource supplies the current secret key provider. Controllers
-// that seal system-owned secrets read it on every use, so a key provider
-// rotation (RotateKeyProvider) applies to them as well.
-type KeyProviderSource interface {
-	// CurrentKeyProvider returns the provider new envelopes are sealed with.
-	CurrentKeyProvider() KeyProvider
-}
-
-// CurrentKeyProvider returns the store's current key provider.
-func (secretStore *SecretStore) CurrentKeyProvider() KeyProvider {
-	secretStore.mutex.RLock()
-	defer secretStore.mutex.RUnlock()
-	return secretStore.keyProvider
-}
-
-// KeyProviderName returns the name of the active KeyProvider.
-func (secretStore *SecretStore) KeyProviderName() string {
-	return secretStore.keyProvider.ProviderName()
 }
 
 // GenerateMasterKey generates a random 32-byte master key for the secret store.

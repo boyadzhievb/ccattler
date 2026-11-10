@@ -361,9 +361,9 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	runControllers := !parsedConfig.apiOnly
 	runAPIServer := !parsedConfig.controllersOnly
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
-	// One secret store for controllers and API, so a key rotation reaches the
-	// controllers that seal system-owned secrets (route-tls, gate-key-migration).
-	secretStore := security.NewSecretStore(factStore, loadSecretKeyProvider(ctx, parsedConfig))
+	// One envelope codec for the secret store and the controllers that seal
+	// system-owned secrets (route-tls, gate-key-migration), Flow 29.
+	secretStore := security.NewSecretStore(factStore, startSecretEnvelopeCodec(ctx, factStore, parsedConfig))
 
 	if runControllers {
 		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, secretStore)
@@ -411,10 +411,10 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController(),
 		controllers.NewStorageController(factStore),
-		controllers.NewGateKeyMigrationController(secretStore))
+		controllers.NewGateKeyMigrationController(secretStore.EnvelopeCodec()))
 
 	if clusterCertificateAuthority != nil {
-		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretStore))
+		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretStore.EnvelopeCodec()))
 	}
 
 	metricsCollector := controllers.NewMetricsCollector()

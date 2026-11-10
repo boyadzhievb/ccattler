@@ -629,22 +629,34 @@ RewrapEnvelope(ctx, oldProvider, newProvider, envelope)        [:141]
 | AWSKMSKeyProvider | security/kms_cloud.go   | cloudprovider | AWS KMS key ARN/alias    |
 | GCPKMSKeyProvider | security/kms_cloud.go   | cloudprovider | GCP KMS resource name    |
 
-### Secret key loading at server startup (M177 step 1, Flow 29)
+### Secret keyring and envelope codec (M177 steps 1–2, Flow 29)
 
 ```
-runServer → security.NewSecretStore(factStore, loadSecretKeyProvider(ctx, cfg))
-loadSecretKeyProvider(ctx, cfg)                       [cmd/cca/server_secret_keys.go:25]
-├── store = memory → newEphemeralSecretKeyProvider()  [random key, never on disk]
-├── security.LoadLegacySecretMasterKeyFile(/etc/ccattler/secret-master.key)   [security/root_key.go]
-├── validateSecretRootKey(ctx, cfg, legacyKey)
-│   ├── --kms-provider → validateKMSRootKey           [LookupKMSKeyProviderFactory; wrap/unwrap probe]
-│   └── else LoadSecretRootKeyFile(--secret-root-key, default /etc/ccattler/secret-root.key)
-│       └── ValidateSecretRootKeyDistinctFromLegacy
-├── any error → exitWithSecretKeyError                [no silent key generation]
-└── NewLocalKeyProvider(legacyKey)                    [v1 envelopes until the step 2 keyring]
+runServer → security.NewSecretStore(factStore, startSecretEnvelopeCodec(ctx, factStore, cfg))
+startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go]
+├── loadSecretKeyProviders(ctx, cfg)
+│   ├── store = memory → newEphemeralSecretKeyProvider(), no legacy   [never on disk]
+│   ├── LoadLegacySecretMasterKeyFile(/etc/ccattler/secret-master.key)  [missing → nil legacy]
+│   └── loadSecretRootKeyProvider(ctx, cfg, legacyKey)
+│       ├── --kms-provider → loadKMSRootKeyProvider     [LookupKMSKeyProviderFactory; wrap/unwrap probe]
+│       └── else LoadSecretRootKeyFile + ValidateSecretRootKeyDistinctFromLegacy → NewLocalKeyProvider
+├── NewKeyringEnvelopeCodec(ctx, factStore, root, legacy)   [security/envelope_codec.go]
+│   ├── ensureKeyring                                    [security/keyring.go; create-only txn on keyring/active]
+│   │   writes keyring/kek/1, kek/1/state, active, root_check, legacy, observed/keyring/migration
+│   │   fresh (no legacy, no envelopes) → migration completed; else not_started
+│   └── Refresh → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy, migration)
+├── go RunKeyringWatch(ctx)                              [keyring/ + observed/keyring/migration, 60s fallback]
+├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}, lease 30s]
+└── any error → exitWithSecretKeyError                   [no silent key generation]
 
-cca secret generate-root-key [--path]  → executeSecretGenerateRootKey → GenerateSecretRootKeyFile (O_EXCL, 0400)
-cca init (first node)                  → writeInitSecretKeys → secret-master.key + secret-root.key
+KeyringEnvelopeCodec.SealEnvelopeForKey(storeKey) → migration in_progress|completed ? sealEnvelopeV2(active KEK, AAD=storeKey) : SealEnvelope(legacy)
+KeyringEnvelopeCodec.OpenEnvelopeForKey(storeKey) → isEnvelopeV2 ? openEnvelopeV2Payload(KEK[version]) : legacy (refused once retired)
+Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, RouteTLSController,
+         GateKeyMigrationController (via SecretStore.EnvelopeCodec()), SealSecretValue(codec, storeKey, ...)
+POST /api/secret/rotate → 409 until keyring rotation (M178)
+
+cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400)
+cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files
 ```
 

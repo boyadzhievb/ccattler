@@ -1923,9 +1923,9 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 	})
 }
 
-// handleSecretRotate generates a new master key and re-wraps all stored
-// secret DEKs under it. Running agents are not disrupted — they already
-// decrypted secrets at startup. New node enrollments receive the new key.
+// handleSecretRotate refuses rotation with 409 until keyring rotation lands
+// (M178, Flow 29). The former in-memory rotation re-wrapped every secret under
+// a key that was never persisted, so a server restart lost every secret.
 func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
@@ -1938,37 +1938,7 @@ func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, 
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
 		return
 	}
-
-	requestContext := request.Context()
-
-	secretNames, listErr := apiServer.secretStore.ListSecrets(requestContext)
-	if listErr != nil {
-		writeJSONError(responseWriter, "list secrets: "+listErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	newMasterKey, generateErr := security.GenerateMasterKey()
-	if generateErr != nil {
-		writeJSONError(responseWriter, "generate key: "+generateErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	newKeyProvider, providerErr := security.NewLocalKeyProvider(newMasterKey)
-	if providerErr != nil {
-		writeJSONError(responseWriter, "create key provider: "+providerErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if rotateErr := apiServer.secretStore.RotateKeyProvider(requestContext, newKeyProvider); rotateErr != nil {
-		writeJSONError(responseWriter, "rotate: "+rotateErr.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	responseWriter.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{
-		"rotated": len(secretNames),
-		"message": "master key rotated successfully",
-	})
+	writeJSONError(responseWriter, "secret key rotation is not available yet: it moves to the persisted keyring (M178) and is refused until the legacy key migration has completed", http.StatusConflict)
 }
 
 // handleUser dispatches /api/user requests for user account CRUD.

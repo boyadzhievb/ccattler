@@ -134,29 +134,6 @@ func OpenEnvelope(ctx context.Context, keyProvider KeyProvider, envelope []byte)
 	return plaintext, nil
 }
 
-// RewrapEnvelope re-wraps an existing envelope's DEK with a new KeyProvider
-// without decrypting or re-encrypting the secret payload. This is the key
-// rotation operation: the ciphertext is unchanged, only the DEK wrapper
-// changes.
-func RewrapEnvelope(ctx context.Context, oldKeyProvider KeyProvider, newKeyProvider KeyProvider, envelope []byte) ([]byte, error) {
-	wrappedDEK, ciphertext, err := unpackEnvelope(envelope)
-	if err != nil {
-		return nil, err
-	}
-
-	dataEncryptionKey, err := oldKeyProvider.UnwrapKey(ctx, wrappedDEK)
-	if err != nil {
-		return nil, fmt.Errorf("rewrap: unwrap with old provider: %w", err)
-	}
-
-	newWrappedDEK, err := newKeyProvider.WrapKey(ctx, dataEncryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("rewrap: wrap with new provider: %w", err)
-	}
-
-	return packEnvelope(newWrappedDEK, ciphertext), nil
-}
-
 // packEnvelope serializes a wrapped DEK and ciphertext into the envelope
 // binary format: [4-byte wrappedDEK length (big-endian)][wrappedDEK][ciphertext].
 func packEnvelope(wrappedDEK []byte, ciphertext []byte) []byte {
@@ -183,7 +160,18 @@ func unpackEnvelope(envelope []byte) ([]byte, []byte, error) {
 
 // encryptWithDEK encrypts plaintext using AES-256-GCM with a data encryption key.
 func encryptWithDEK(dataEncryptionKey []byte, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(dataEncryptionKey)
+	return encryptWithKeyAndAdditionalData(dataEncryptionKey, plaintext, nil)
+}
+
+// decryptWithDEK decrypts ciphertext produced by encryptWithDEK.
+func decryptWithDEK(dataEncryptionKey []byte, ciphertext []byte) ([]byte, error) {
+	return decryptWithKeyAndAdditionalData(dataEncryptionKey, ciphertext, nil)
+}
+
+// encryptWithKeyAndAdditionalData encrypts plaintext with AES-256-GCM and
+// binds additionalData (authenticated, not encrypted). Output: nonce || ciphertext.
+func encryptWithKeyAndAdditionalData(encryptionKey []byte, plaintext []byte, additionalData []byte) ([]byte, error) {
+	block, err := aes.NewCipher(encryptionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -195,12 +183,13 @@ func encryptWithDEK(dataEncryptionKey []byte, plaintext []byte) ([]byte, error) 
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return nil, err
 	}
-	return aesGCM.Seal(nonce, nonce, plaintext, nil), nil
+	return aesGCM.Seal(nonce, nonce, plaintext, additionalData), nil
 }
 
-// decryptWithDEK decrypts ciphertext produced by encryptWithDEK.
-func decryptWithDEK(dataEncryptionKey []byte, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(dataEncryptionKey)
+// decryptWithKeyAndAdditionalData decrypts output of
+// encryptWithKeyAndAdditionalData; it fails unless additionalData matches.
+func decryptWithKeyAndAdditionalData(encryptionKey []byte, ciphertext []byte, additionalData []byte) ([]byte, error) {
+	block, err := aes.NewCipher(encryptionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -213,5 +202,5 @@ func decryptWithDEK(dataEncryptionKey []byte, ciphertext []byte) ([]byte, error)
 		return nil, fmt.Errorf("ciphertext too short for nonce")
 	}
 	nonce, ciphertextBody := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return aesGCM.Open(nil, nonce, ciphertextBody, nil)
+	return aesGCM.Open(nil, nonce, ciphertextBody, additionalData)
 }

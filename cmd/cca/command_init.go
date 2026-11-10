@@ -253,24 +253,17 @@ func printInitSummary(outputDirectory string) {
 	fmt.Println("  etcd.pem           etcd certificate")
 	fmt.Println("  etcd-key.pem       etcd private key (owned by etcd user)")
 	fmt.Println("  secret-root.key    Secret root key (control plane only; same file on every replica)")
-	fmt.Println("  secret-master.key  Legacy secret key (retired by the M177 key migration)")
 	fmt.Println("  setup.sh           Setup script (review, then run with sudo)")
 	fmt.Println()
 	fmt.Println("Review the setup script, then run:")
 	fmt.Printf("  sudo %s/setup.sh\n", outputDirectory)
 }
 
-// writeInitSecretKeys writes the secret root key (Flow 29) and, until the
-// M177 keyring replaces it, the legacy master key for a new cluster. HA
-// secondaries (--ca) get neither: every replica must hold the first node's
-// keys, so Ansible copies them instead of generating different ones.
+// writeInitSecretKeys writes the secret root key (Flow 29) for a new cluster.
+// New clusters have no legacy secret-master.key and write v2 envelopes from
+// the first secret. HA secondaries (--ca) get no key: every replica must hold
+// the first node's root key, so Ansible copies it instead.
 func writeInitSecretKeys(outputDirectory string) {
-	secretMasterKey, masterKeyError := security.GenerateMasterKey()
-	if masterKeyError != nil {
-		fmt.Fprintf(os.Stderr, "error generating secret master key: %v\n", masterKeyError)
-		os.Exit(1)
-	}
-	writeInitFile(outputDirectory, "secret-master.key", secretMasterKey, 0600)
 	if rootKeyError := security.GenerateSecretRootKeyFile(filepath.Join(outputDirectory, "secret-root.key")); rootKeyError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", rootKeyError)
 		os.Exit(1)

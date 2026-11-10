@@ -27,34 +27,42 @@ func newTestCertificateAuthority(t *testing.T) *security.CertificateAuthority {
 }
 
 // newTestRouteTLSController creates a route-tls controller with a test CA and
-// a local secret key provider, returning the provider to open sealed keys.
-func newTestRouteTLSController(t *testing.T) (*RouteTLSController, security.KeyProvider) {
+// a keyring envelope codec, returning the codec to open sealed keys.
+func newTestRouteTLSController(t *testing.T) (*RouteTLSController, security.SecretEnvelopeCodec) {
 	t.Helper()
-	masterKey, keyError := security.GenerateMasterKey()
+	envelopeCodec := newTestEnvelopeCodec(t)
+	return NewRouteTLSController(newTestCertificateAuthority(t), envelopeCodec), envelopeCodec
+}
+
+// newTestEnvelopeCodec creates the server's keyring codec on a fresh
+// in-memory store (no legacy key, so it seals v2 envelopes).
+func newTestEnvelopeCodec(t *testing.T) security.SecretEnvelopeCodec {
+	t.Helper()
+	rootKey, keyError := security.GenerateMasterKey()
 	if keyError != nil {
 		t.Fatal(keyError)
 	}
-	secretKeyProvider, providerError := security.NewLocalKeyProvider(masterKey)
+	rootKeyProvider, providerError := security.NewLocalKeyProvider(rootKey)
 	if providerError != nil {
 		t.Fatal(providerError)
 	}
-	return NewRouteTLSController(newTestCertificateAuthority(t), newTestKeyProviderSource(secretKeyProvider)), secretKeyProvider
+	envelopeCodec, codecError := security.NewKeyringEnvelopeCodec(context.Background(), store.NewMemoryStore(), rootKeyProvider, nil)
+	if codecError != nil {
+		t.Fatal(codecError)
+	}
+	return envelopeCodec
 }
 
-// newTestKeyProviderSource wraps a key provider in a secret store, the
-// KeyProviderSource the server passes to the controllers.
-func newTestKeyProviderSource(secretKeyProvider security.KeyProvider) *security.SecretStore {
-	return security.NewSecretStore(store.NewMemoryStore(), secretKeyProvider)
-}
-
-// openSealedTestSecret decodes and opens a value written by SealSecretValue.
-func openSealedTestSecret(t *testing.T, secretKeyProvider security.KeyProvider, sealedValue string) []byte {
+// openSealedTestSecret decodes and opens a value written by SealSecretValue
+// for the gate's sealed key path.
+func openSealedTestSecret(t *testing.T, envelopeCodec security.SecretEnvelopeCodec, gateName string, sealedValue string) []byte {
 	t.Helper()
 	envelopeBlob, decodeError := base64.StdEncoding.DecodeString(sealedValue)
 	if decodeError != nil {
 		t.Fatalf("sealed key is not base64: %v", decodeError)
 	}
-	plaintext, openError := security.OpenEnvelope(context.Background(), secretKeyProvider, envelopeBlob)
+	sealedKeyStoreKey := security.SecretStorePrefix + types.SecretNameRouteTLSKey(gateName)
+	plaintext, openError := envelopeCodec.OpenEnvelopeForKey(context.Background(), sealedKeyStoreKey, envelopeBlob)
 	if openError != nil {
 		t.Fatalf("open sealed key: %v", openError)
 	}
@@ -104,7 +112,7 @@ func TestRouteTLSControllerIssuesCertForAutoMode(t *testing.T) {
 	if !hasSealedKey {
 		t.Fatal("expected sealed key at secrets/route/web-public/tls/key")
 	}
-	keyPEM := openSealedTestSecret(t, secretKeyProvider, sealedKey)
+	keyPEM := openSealedTestSecret(t, secretKeyProvider, "web-public", sealedKey)
 	if _, pairError := tls.X509KeyPair([]byte(certPEM), keyPEM); pairError != nil {
 		t.Errorf("sealed key does not match the certificate: %v", pairError)
 	}
@@ -281,7 +289,7 @@ func TestRouteTLSControllerRenewalOverwritesSealedKeyThroughRunner(t *testing.T)
 		return value != "" && value != firstSealedKey
 	})
 	renewedCertificate := waitForStoreValue(t, factStore, types.KeyDerivedRouteTLSCert("web-public"), nonEmpty)
-	keyPEM := openSealedTestSecret(t, secretKeyProvider, renewedSealedKey)
+	keyPEM := openSealedTestSecret(t, secretKeyProvider, "web-public", renewedSealedKey)
 	if _, pairError := tls.X509KeyPair([]byte(renewedCertificate), keyPEM); pairError != nil {
 		t.Errorf("renewed sealed key does not match the renewed certificate: %v", pairError)
 	}
@@ -331,15 +339,8 @@ func TestRouteTLSControllerDeletesSealedKeysNoGateNeeds(t *testing.T) {
 	}
 }
 
-func TestRouteTLSControllerSealsWithRotatedKeyAndReissuesLostSealedKey(t *testing.T) {
-	_, originalProvider := newTestRouteTLSController(t)
-	secretStore := newTestKeyProviderSource(originalProvider)
-	routeTLSController := NewRouteTLSController(newTestCertificateAuthority(t), secretStore)
-	rotatedMasterKey, _ := security.GenerateMasterKey()
-	rotatedProvider, _ := security.NewLocalKeyProvider(rotatedMasterKey)
-	if rotateError := secretStore.RotateKeyProvider(context.Background(), rotatedProvider); rotateError != nil {
-		t.Fatal(rotateError)
-	}
+func TestRouteTLSControllerReissuesLostSealedKey(t *testing.T) {
+	routeTLSController, envelopeCodec := newTestRouteTLSController(t)
 	futureExpiry := time.Now().Add(60 * 24 * time.Hour).Format(time.RFC3339)
 	// Valid certificate, but the sealed key is gone and no plaintext key waits.
 	facts := buildFacts(
@@ -361,7 +362,7 @@ func TestRouteTLSControllerSealsWithRotatedKeyAndReissuesLostSealedKey(t *testin
 	if sealedValue == "" {
 		t.Fatalf("lost sealed key not re-issued: %d changes", len(changes))
 	}
-	if opened := openSealedTestSecret(t, rotatedProvider, sealedValue); !strings.Contains(string(opened), "PRIVATE KEY") {
-		t.Error("key not sealed with the rotated provider")
+	if opened := openSealedTestSecret(t, envelopeCodec, "web-public", sealedValue); !strings.Contains(string(opened), "PRIVATE KEY") {
+		t.Error("re-issued key does not open as a private key")
 	}
 }

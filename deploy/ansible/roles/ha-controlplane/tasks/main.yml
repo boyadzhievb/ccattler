@@ -30,14 +30,20 @@
 # Every replica must hold the first node's secret keys (Flow 29); before M177
 # each secondary generated its own secret-master.key. A secondary's differing
 # key is kept as a backup file, since v1 secrets it wrote need it to open.
-- name: Fetch secret keys from the first control-plane node
+- name: Fetch the secret root key from the first control-plane node
   fetch:
-    src: "{{ item }}"
+    src: /etc/ccattler/secret-root.key
     dest: /tmp/ccattler-ha-pki/
     flat: true
-  loop:
-    - /etc/ccattler/secret-root.key
-    - /etc/ccattler/secret-master.key
+  when: inventory_hostname == groups['controlplane'][0]
+
+# Only clusters set up before M177 have a legacy key; new clusters have none.
+- name: Fetch the legacy secret master key from the first control-plane node (if any)
+  fetch:
+    src: /etc/ccattler/secret-master.key
+    dest: /tmp/ccattler-ha-pki/
+    flat: true
+    fail_on_missing: false
   when: inventory_hostname == groups['controlplane'][0]
 
 - name: Ensure the configuration directory exists on other control-plane nodes
@@ -67,7 +73,9 @@
     group: root
     mode: "0600"
     backup: true
-  when: inventory_hostname != groups['controlplane'][0]
+  when:
+    - inventory_hostname != groups['controlplane'][0]
+    - lookup('ansible.builtin.fileglob', '/tmp/ccattler-ha-pki/secret-master.key') | length > 0
   notify: restart cca-server
 
 - name: Fetch CA and shared PKI from the first control-plane node

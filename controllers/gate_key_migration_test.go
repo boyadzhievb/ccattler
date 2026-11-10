@@ -15,11 +15,11 @@ import (
 	"github.com/boyadzhievb/ccattler/types"
 )
 
-// newTestGateKeyMigrationController returns the controller and its provider.
-func newTestGateKeyMigrationController(t *testing.T) (*GateKeyMigrationController, security.KeyProvider) {
+// newTestGateKeyMigrationController returns the controller and its codec.
+func newTestGateKeyMigrationController(t *testing.T) (*GateKeyMigrationController, security.SecretEnvelopeCodec) {
 	t.Helper()
-	_, secretKeyProvider := newTestRouteTLSController(t)
-	return NewGateKeyMigrationController(newTestKeyProviderSource(secretKeyProvider)), secretKeyProvider
+	envelopeCodec := newTestEnvelopeCodec(t)
+	return NewGateKeyMigrationController(envelopeCodec), envelopeCodec
 }
 
 // sealedGateKeyPath returns secrets/route/{gate}/tls/key.
@@ -75,7 +75,7 @@ func TestGateKeyMigrationSealsPlaintextKeysAndKeepsThemForOldAgents(t *testing.T
 		if !sealed || strings.Contains(sealedValue, expectedPEM) {
 			t.Fatalf("gate %s not sealed (or sealed in plaintext)", gateName)
 		}
-		if opened := openSealedTestSecret(t, secretKeyProvider, sealedValue); string(opened) != expectedPEM {
+		if opened := openSealedTestSecret(t, secretKeyProvider, gateName, sealedValue); string(opened) != expectedPEM {
 			t.Errorf("gate %s sealed %q", gateName, opened)
 		}
 	}

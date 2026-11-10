@@ -229,13 +229,13 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 - [x] `--kms-provider` for the root key wires `security.LookupKMSKeyProviderFactory` into the server (no production caller since M174 removed agent decryption)
 - [x] Startup errors: missing, unreadable, wrong size, group/world-readable, identical to the legacy key; `loadOrGenerateSecretMasterKey` removed (no silent generation); in-memory store uses an ephemeral in-memory root key
 
-**Step 2 — Keyring and envelope v2**
-- [ ] Keyring bootstrap in one create-only transaction (`keyring/kek/1`, `keyring/active`, `keyring/root_check`, `keyring/legacy`, migration state: `completed` on a fresh cluster, `not_started` on an upgrade); `root_check` failure → exit; replicas watch `keyring/` and report `observed/keyring/replica/{id}` with a lease
-- [ ] One envelope codec for `SecretStore`, `CredentialStore`, route-tls, gate-key migration and `PUT /api/gate-key`: v2 (magic, KEK version, wrapped DEK, AAD = store key) once migration is in progress or completed, v1 before; legacy key opens v1 only and never wraps anything new
-- [ ] `keyring` store principal and role (`keyring/`, `intent/keyring/`, `observed/keyring/`, re-write `secrets/` and `credentials/`); `api-server` role still has no rule for them
+**Step 2 — Keyring and envelope v2** (done 2026-11-10: `KeyringEnvelopeCodec` shared by secrets, credentials and controllers; `cca init` writes no `secret-master.key`, so new clusters start on v2; `POST /api/secret/rotate` now 409 — the old in-memory rotation lost every secret on restart; unit tests incl. race, AAD binding, R1 legacy-key proofs, concurrent bootstrap; manual `--env lan` e2e on .77 with whoami + gate-tls passed (T1–T18): no `secret-master.key`, migration `completed`, legacy `none`, replica report present, sealed gate keys in v2 format)
+- [x] Keyring bootstrap in one create-only transaction (`keyring/kek/1`, `keyring/active`, `keyring/root_check`, `keyring/legacy`, migration state: `completed` on a fresh cluster, `not_started` on an upgrade); `root_check` failure → exit; replicas watch `keyring/` and report `observed/keyring/replica/{id}` with a lease
+- [x] One envelope codec for `SecretStore`, `CredentialStore`, route-tls, gate-key migration and `PUT /api/gate-key`: v2 (magic, KEK version, wrapped DEK, AAD = store key) once migration is in progress or completed, v1 before; legacy key opens v1 only and never wraps anything new
 
 **Step 3 — Migration gate and controller**
 - [ ] Migration gate + `cca secret migrate-keys --confirm-backup` → `intent/keyring/legacy_migration` (409 lists unmet conditions: backup confirmation, live replica reports, every node `secret_delivery = v2`)
+- [ ] `keyring` store principal and role for the keyring controller (`keyring/`, `intent/keyring/`, `observed/keyring/`, re-write `secrets/` and `credentials/`); `api-server` role keeps no rule for them (asserted by `TestSecretDeliveryRoleIsReadOnlyAndAPIServerRoleHasNoSecrets`). Moved from step 2: bootstrap and the codec use the server's raw store, the controller is the first component that needs the role
 - [ ] Leader-elected keyring controller re-encrypts v1 → v2 under `secrets/` and `credentials/` in bounded CAS batches, resumes after a crash, persists `observed/keyring/migration` (`legacy_v1_envelope_count`, `unreadable_count`)
 
 **Step 4 — Retirement, Ansible, runbook**

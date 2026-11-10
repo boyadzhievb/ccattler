@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,10 +14,10 @@ import (
 	"github.com/boyadzhievb/ccattler/security"
 )
 
-// TestValidateSecretRootKeyChecks verifies the server-side root key checks:
+// TestLoadSecretRootKeyProviderChecks verifies the server-side root key checks:
 // a valid distinct key passes; missing, identical-to-legacy and unknown KMS
 // providers fail.
-func TestValidateSecretRootKeyChecks(t *testing.T) {
+func TestLoadSecretRootKeyProviderChecks(t *testing.T) {
 	temporaryDirectory := t.TempDir()
 	rootKeyPath := filepath.Join(temporaryDirectory, "secret-root.key")
 	if generateError := security.GenerateSecretRootKeyFile(rootKeyPath); generateError != nil {
@@ -26,37 +27,32 @@ func TestValidateSecretRootKeyChecks(t *testing.T) {
 	distinctLegacyKey := bytes.Repeat([]byte{9}, security.SecretRootKeySize)
 	ctx := context.Background()
 
-	if validateError := validateSecretRootKey(ctx, serverCommandConfig{secretRootKeyPath: rootKeyPath}, distinctLegacyKey); validateError != nil {
+	if _, validateError := loadSecretRootKeyProvider(ctx, serverCommandConfig{secretRootKeyPath: rootKeyPath}, distinctLegacyKey); validateError != nil {
 		t.Errorf("valid root key refused: %v", validateError)
 	}
-	if validateError := validateSecretRootKey(ctx, serverCommandConfig{secretRootKeyPath: rootKeyPath}, rootKey); validateError == nil {
+	if _, validateError := loadSecretRootKeyProvider(ctx, serverCommandConfig{secretRootKeyPath: rootKeyPath}, rootKey); validateError == nil {
 		t.Error("root key identical to the legacy key accepted")
 	}
 	missingKeyConfig := serverCommandConfig{secretRootKeyPath: filepath.Join(temporaryDirectory, "absent.key")}
-	if validateError := validateSecretRootKey(ctx, missingKeyConfig, distinctLegacyKey); validateError == nil {
+	if _, validateError := loadSecretRootKeyProvider(ctx, missingKeyConfig, distinctLegacyKey); validateError == nil {
 		t.Error("missing root key accepted")
 	}
 	unknownKMSConfig := serverCommandConfig{kmsProviderName: "no-such-kms", kmsKeyID: "key"}
-	if validateError := validateSecretRootKey(ctx, unknownKMSConfig, distinctLegacyKey); validateError == nil || !strings.Contains(validateError.Error(), "not available") {
+	if _, validateError := loadSecretRootKeyProvider(ctx, unknownKMSConfig, distinctLegacyKey); validateError == nil || !strings.Contains(validateError.Error(), "not available") {
 		t.Errorf("unknown KMS provider error = %v, want 'not available'", validateError)
 	}
 }
 
-// TestWriteInitSecretKeysWritesBothKeys verifies a first-node init writes a
-// root key (0400) distinct from the legacy master key.
-func TestWriteInitSecretKeysWritesBothKeys(t *testing.T) {
+// TestWriteInitSecretKeysWritesOnlyRootKey verifies a first-node init writes
+// a root key (0400) and no legacy master key: new clusters start on v2.
+func TestWriteInitSecretKeysWritesOnlyRootKey(t *testing.T) {
 	outputDirectory := t.TempDir()
 	writeInitSecretKeys(outputDirectory)
-	rootKey, rootKeyError := security.LoadSecretRootKeyFile(filepath.Join(outputDirectory, "secret-root.key"))
-	if rootKeyError != nil {
+	if _, rootKeyError := security.LoadSecretRootKeyFile(filepath.Join(outputDirectory, "secret-root.key")); rootKeyError != nil {
 		t.Fatalf("root key: %v", rootKeyError)
 	}
-	legacyKey, legacyKeyError := security.LoadLegacySecretMasterKeyFile(filepath.Join(outputDirectory, "secret-master.key"))
-	if legacyKeyError != nil {
-		t.Fatalf("legacy key: %v", legacyKeyError)
-	}
-	if bytes.Equal(rootKey, legacyKey) {
-		t.Error("root key equals the legacy key")
+	if _, legacyKeyError := security.LoadLegacySecretMasterKeyFile(filepath.Join(outputDirectory, "secret-master.key")); !errors.Is(legacyKeyError, security.ErrLegacySecretMasterKeyMissing) {
+		t.Errorf("legacy key error = %v, want missing (new clusters have no legacy key)", legacyKeyError)
 	}
 }
 

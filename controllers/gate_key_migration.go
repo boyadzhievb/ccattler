@@ -41,13 +41,13 @@ type gateKeyMigrationStatus struct {
 // fact of a gate that uses a system key and has no sealed copy, and deletes the plaintext facts only when every
 // non-disabled node reports gate_key_delivery = v1, so old agents keep TLS.
 type GateKeyMigrationController struct {
-	keyProviderSource security.KeyProviderSource // keyProviderSource supplies the current key that seals plaintext keys.
+	envelopeCodec security.SecretEnvelopeCodec // envelopeCodec seals keys bound to their store key (shared with the secret store).
 }
 
 // NewGateKeyMigrationController creates the migration controller sealing with
-// the current key of the server's secret store.
-func NewGateKeyMigrationController(keyProviderSource security.KeyProviderSource) *GateKeyMigrationController {
-	return &GateKeyMigrationController{keyProviderSource: keyProviderSource}
+// the server's keyring envelope codec (Flow 29).
+func NewGateKeyMigrationController(envelopeCodec security.SecretEnvelopeCodec) *GateKeyMigrationController {
+	return &GateKeyMigrationController{envelopeCodec: envelopeCodec}
 }
 
 // Name returns "gate-key-migration", identifying this controller in logs.
@@ -83,12 +83,13 @@ func (gateKeyMigrationController *GateKeyMigrationController) Reconcile(ctx cont
 		if sealedGates[gateName] || !systemKeyGates[gateName] {
 			continue
 		}
-		sealedKey, sealError := security.SealSecretValue(ctx, gateKeyMigrationController.keyProviderSource.CurrentKeyProvider(), []byte(plaintextKeys[gateName].privateKeyPEM))
+		sealedKeyStoreKey := security.SecretStorePrefix + types.SecretNameRouteTLSKey(gateName)
+		sealedKey, sealError := security.SealSecretValue(ctx, gateKeyMigrationController.envelopeCodec, sealedKeyStoreKey, []byte(plaintextKeys[gateName].privateKeyPEM))
 		if sealError != nil {
 			return nil, fmt.Errorf("seal plaintext key of gate %s: %w", gateName, sealError)
 		}
 		logging.Default().Info("gate-key-migration: sealed plaintext gate key", "gate", gateName)
-		changes = append(changes, Change{Type: store.OpPut, Key: security.SecretStorePrefix + types.SecretNameRouteTLSKey(gateName), Value: sealedKey})
+		changes = append(changes, Change{Type: store.OpPut, Key: sealedKeyStoreKey, Value: sealedKey})
 		sealedNow[gateName] = true
 	}
 

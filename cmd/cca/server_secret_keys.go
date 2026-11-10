@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/boyadzhievb/ccattler/security"
+	"github.com/boyadzhievb/ccattler/store"
 )
 
 // legacySecretMasterKeyPath is the legacy master key that wraps v1 envelopes.
@@ -18,30 +19,49 @@ import (
 // (Flow 29); it is retired by the M177 migration.
 const legacySecretMasterKeyPath = "/etc/ccattler/secret-master.key" //nolint:gosec // G101: file path, not a credential
 
-// loadSecretKeyProvider returns the key provider for secret envelopes after
-// the root key startup checks (Flow 29 step 1). The in-memory store uses
-// ephemeral keys that never touch disk; a persistent store requires both
-// key files (or a KMS root key) and exits on any check failure.
-func loadSecretKeyProvider(ctx context.Context, parsedConfig serverCommandConfig) security.KeyProvider {
+// startSecretEnvelopeCodec loads the root key (and the legacy key when the
+// file exists), opens or creates the keyring (Flow 29 steps 1–3) and starts
+// the keyring watch and this replica's keyring report. Any failure exits:
+// a replica with a missing or different root key never serves.
+func startSecretEnvelopeCodec(ctx context.Context, factStore store.StateStore, parsedConfig serverCommandConfig) *security.KeyringEnvelopeCodec {
+	rootKeyProvider, legacyKeyProvider := loadSecretKeyProviders(ctx, parsedConfig)
+	keyringCodec, codecError := security.NewKeyringEnvelopeCodec(ctx, factStore, rootKeyProvider, legacyKeyProvider)
+	if codecError != nil {
+		exitWithSecretKeyError(codecError)
+	}
+	go keyringCodec.RunKeyringWatch(ctx)
+	go keyringCodec.RunKeyringReplicaReporter(ctx, parsedConfig.nodeID, version)
+	fmt.Printf("Secret keyring ready (root key: %s, legacy key: %t)\n", rootKeyProvider.ProviderName(), legacyKeyProvider != nil)
+	return keyringCodec
+}
+
+// loadSecretKeyProviders returns the root key provider and the legacy key
+// provider (nil when secret-master.key does not exist, e.g. a fresh M177
+// cluster). The in-memory store uses an ephemeral root key and no legacy key.
+func loadSecretKeyProviders(ctx context.Context, parsedConfig serverCommandConfig) (security.KeyProvider, security.KeyProvider) {
 	if parsedConfig.storeBackend == "memory" {
-		return newEphemeralSecretKeyProvider()
+		return newEphemeralSecretKeyProvider(), nil
 	}
 	legacyKey, legacyKeyError := security.LoadLegacySecretMasterKeyFile(legacySecretMasterKeyPath)
-	if legacyKeyError != nil {
+	if legacyKeyError != nil && !errors.Is(legacyKeyError, security.ErrLegacySecretMasterKeyMissing) {
 		exitWithSecretKeyError(legacyKeyError)
 	}
-	if rootKeyError := validateSecretRootKey(ctx, parsedConfig, legacyKey); rootKeyError != nil {
+	rootKeyProvider, rootKeyError := loadSecretRootKeyProvider(ctx, parsedConfig, legacyKey)
+	if rootKeyError != nil {
 		exitWithSecretKeyError(rootKeyError)
+	}
+	if legacyKey == nil {
+		return rootKeyProvider, nil
 	}
 	legacyKeyProvider, providerError := security.NewLocalKeyProvider(legacyKey)
 	if providerError != nil {
 		exitWithSecretKeyError(providerError)
 	}
-	return legacyKeyProvider
+	return rootKeyProvider, legacyKeyProvider
 }
 
-// newEphemeralSecretKeyProvider creates an in-memory key for the in-memory
-// store: secrets live only as long as the process, so the key does too.
+// newEphemeralSecretKeyProvider creates an in-memory root key for the
+// in-memory store: secrets live only as long as the process, so the key does too.
 func newEphemeralSecretKeyProvider() security.KeyProvider {
 	ephemeralKey, generateError := security.GenerateMasterKey()
 	if generateError != nil {
@@ -55,51 +75,54 @@ func newEphemeralSecretKeyProvider() security.KeyProvider {
 	return ephemeralKeyProvider
 }
 
-// validateSecretRootKey checks the root key: a KMS key must wrap and unwrap
-// a probe value; a key file must pass LoadSecretRootKeyFile and differ from
-// the legacy key (decision R1).
-func validateSecretRootKey(ctx context.Context, parsedConfig serverCommandConfig, legacyKey []byte) error {
+// loadSecretRootKeyProvider returns the root key provider: a KMS key that
+// must wrap and unwrap a probe value, or a key file that must pass
+// LoadSecretRootKeyFile and differ from the legacy key (decision R1).
+func loadSecretRootKeyProvider(ctx context.Context, parsedConfig serverCommandConfig, legacyKey []byte) (security.KeyProvider, error) {
 	if parsedConfig.kmsProviderName != "" {
-		return validateKMSRootKey(ctx, parsedConfig)
+		return loadKMSRootKeyProvider(ctx, parsedConfig)
 	}
 	rootKey, loadError := security.LoadSecretRootKeyFile(parsedConfig.secretRootKeyPath)
 	if loadError != nil {
-		return loadError
+		return nil, loadError
 	}
-	return security.ValidateSecretRootKeyDistinctFromLegacy(rootKey, legacyKey)
+	if distinctError := security.ValidateSecretRootKeyDistinctFromLegacy(rootKey, legacyKey); distinctError != nil {
+		return nil, distinctError
+	}
+	return security.NewLocalKeyProvider(rootKey)
 }
 
-// validateKMSRootKey builds the configured KMS key provider and round-trips a
-// random probe through it, so a wrong key ID or missing permission fails at
-// startup instead of on the first secret write.
-func validateKMSRootKey(ctx context.Context, parsedConfig serverCommandConfig) error {
+// loadKMSRootKeyProvider builds the configured KMS key provider and
+// round-trips a random probe through it, so a wrong key ID or missing
+// permission fails at startup instead of on the first secret write.
+func loadKMSRootKeyProvider(ctx context.Context, parsedConfig serverCommandConfig) (security.KeyProvider, error) {
 	kmsFactory := security.LookupKMSKeyProviderFactory(parsedConfig.kmsProviderName)
 	if kmsFactory == nil {
-		return fmt.Errorf("--kms-provider %q is not available in this build (use a cloud build, cca-cloud)", parsedConfig.kmsProviderName)
+		return nil, fmt.Errorf("--kms-provider %q is not available in this build (use a cloud build, cca-cloud)", parsedConfig.kmsProviderName)
 	}
 	if parsedConfig.kmsKeyID == "" {
-		return errors.New("--kms-provider needs --kms-key-id")
+		return nil, errors.New("--kms-provider needs --kms-key-id")
 	}
 	kmsKeyProvider, factoryError := kmsFactory(ctx, parsedConfig.kmsKeyID, parsedConfig.cloudRegion)
 	if factoryError != nil {
-		return fmt.Errorf("KMS root key %s: %w", parsedConfig.kmsKeyID, factoryError)
+		return nil, fmt.Errorf("KMS root key %s: %w", parsedConfig.kmsKeyID, factoryError)
 	}
 	probeValue, probeError := security.GenerateDEK()
 	if probeError != nil {
-		return probeError
+		return nil, probeError
 	}
 	wrappedProbe, wrapError := kmsKeyProvider.WrapKey(ctx, probeValue)
 	if wrapError != nil {
-		return fmt.Errorf("KMS root key %s: wrap: %w", parsedConfig.kmsKeyID, wrapError)
+		return nil, fmt.Errorf("KMS root key %s: wrap: %w", parsedConfig.kmsKeyID, wrapError)
 	}
 	unwrappedProbe, unwrapError := kmsKeyProvider.UnwrapKey(ctx, wrappedProbe)
 	if unwrapError != nil {
-		return fmt.Errorf("KMS root key %s: unwrap: %w", parsedConfig.kmsKeyID, unwrapError)
+		return nil, fmt.Errorf("KMS root key %s: unwrap: %w", parsedConfig.kmsKeyID, unwrapError)
 	}
 	if !bytes.Equal(unwrappedProbe, probeValue) {
-		return fmt.Errorf("KMS root key %s: unwrapped probe does not match", parsedConfig.kmsKeyID)
+		return nil, fmt.Errorf("KMS root key %s: unwrapped probe does not match", parsedConfig.kmsKeyID)
 	}
-	return nil
+	return kmsKeyProvider, nil
 }
 
 // exitWithSecretKeyError prints a secret key startup error with the fix for
@@ -109,8 +132,8 @@ func exitWithSecretKeyError(keyError error) {
 	if errors.Is(keyError, security.ErrSecretRootKeyMissing) {
 		fmt.Fprintln(os.Stderr, "  Fix: sudo cca secret generate-root-key   (once, on one control-plane node; copy it to the other replicas)")
 	}
-	if errors.Is(keyError, security.ErrLegacySecretMasterKeyMissing) {
-		fmt.Fprintln(os.Stderr, "  Fix: run 'cca init' and its setup.sh, or copy secret-master.key from another control-plane replica")
+	if errors.Is(keyError, security.ErrKeyringRootCheckFailed) {
+		fmt.Fprintln(os.Stderr, "  Fix: copy secret-root.key from a running control-plane replica; every replica needs the same root key")
 	}
 	os.Exit(1)
 }

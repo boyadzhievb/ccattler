@@ -276,18 +276,19 @@ func (adapter *SimulatorCloudAdapter) ExchangeCount() int {
 const CredentialStorePrefix = "credentials/"
 
 // CredentialStore manages encrypted cloud credentials in the fact store using
-// envelope encryption via a KeyProvider (same architecture as SecretStore).
+// envelope encryption through the shared envelope codec (same architecture
+// as SecretStore; raw envelopes, not base64).
 type CredentialStore struct {
-	factStore   store.StateStore // factStore holds the encrypted credential blobs.
-	keyProvider KeyProvider      // keyProvider wraps and unwraps per-credential DEKs.
+	factStore     store.StateStore    // factStore holds the encrypted credential blobs.
+	envelopeCodec SecretEnvelopeCodec // envelopeCodec seals and opens envelopes bound to their store key.
 }
 
 // NewCredentialStore creates a credential store backed by the given fact store
-// and KeyProvider.
-func NewCredentialStore(factStore store.StateStore, keyProvider KeyProvider) *CredentialStore {
+// and envelope codec.
+func NewCredentialStore(factStore store.StateStore, envelopeCodec SecretEnvelopeCodec) *CredentialStore {
 	return &CredentialStore{
-		factStore:   factStore,
-		keyProvider: keyProvider,
+		factStore:     factStore,
+		envelopeCodec: envelopeCodec,
 	}
 }
 
@@ -298,19 +299,19 @@ func NewCredentialStoreWithMasterKey(factStore store.StateStore, masterKey []byt
 	if err != nil {
 		return nil, err
 	}
-	return NewCredentialStore(factStore, localKeyProvider), nil
+	return NewCredentialStore(factStore, legacyOnlyEnvelopeCodec{keyProvider: localKeyProvider}), nil
 }
 
 // PutCredential encrypts and stores a cloud credential for the given instance
 // and identity combination using envelope encryption.
 func (credentialStore *CredentialStore) PutCredential(ctx context.Context, instanceID string, identityName string, credential *CloudCredential) error {
 	serialized := serializeCredential(credential)
-	envelopeBlob, err := SealEnvelope(ctx, credentialStore.keyProvider, []byte(serialized))
+	credentialKey := CredentialStorePrefix + instanceID + "/" + identityName
+	envelopeBlob, err := credentialStore.envelopeCodec.SealEnvelopeForKey(ctx, credentialKey, []byte(serialized))
 	if err != nil {
 		return fmt.Errorf("encrypt credential: %w", err)
 	}
 
-	credentialKey := CredentialStorePrefix + instanceID + "/" + identityName
 	_, err = credentialStore.factStore.Put(ctx, credentialKey, envelopeBlob)
 	return err
 }
@@ -324,7 +325,7 @@ func (credentialStore *CredentialStore) GetCredential(ctx context.Context, insta
 		return nil, fmt.Errorf("get credential: %w", err)
 	}
 
-	plaintext, err := OpenEnvelope(ctx, credentialStore.keyProvider, entry.Value)
+	plaintext, err := credentialStore.envelopeCodec.OpenEnvelopeForKey(ctx, credentialKey, entry.Value)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt credential: %w", err)
 	}

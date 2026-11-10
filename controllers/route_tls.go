@@ -31,14 +31,14 @@ const (
 // at secrets/route/{gate}/tls/key (Flow 28) and never written as a fact.
 type RouteTLSController struct {
 	certificateAuthority *security.CertificateAuthority // certificateAuthority issues gate certificates.
-	keyProviderSource    security.KeyProviderSource     // keyProviderSource supplies the current key that seals gate private keys.
+	envelopeCodec        security.SecretEnvelopeCodec   // envelopeCodec seals gate private keys bound to their store key (shared with the secret store).
 }
 
 // NewRouteTLSController creates a controller that auto-issues TLS certificates
 // for gates using the given cluster certificate authority and seals their
-// private keys with the current key of the server's secret store.
-func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, keyProviderSource security.KeyProviderSource) *RouteTLSController {
-	return &RouteTLSController{certificateAuthority: certificateAuthority, keyProviderSource: keyProviderSource}
+// private keys with the server's keyring envelope codec (Flow 29).
+func NewRouteTLSController(certificateAuthority *security.CertificateAuthority, envelopeCodec security.SecretEnvelopeCodec) *RouteTLSController {
+	return &RouteTLSController{certificateAuthority: certificateAuthority, envelopeCodec: envelopeCodec}
 }
 
 // Name returns "route-tls", identifying this controller in logs.
@@ -168,7 +168,8 @@ func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx con
 		return nil, issueError
 	}
 
-	sealedPrivateKey, sealError := security.SealSecretValue(ctx, routeTLSController.keyProviderSource.CurrentKeyProvider(), issuedCertificate.PrivateKeyPEM)
+	sealedKeyStoreKey := security.SecretStorePrefix + types.SecretNameRouteTLSKey(routeName)
+	sealedPrivateKey, sealError := security.SealSecretValue(ctx, routeTLSController.envelopeCodec, sealedKeyStoreKey, issuedCertificate.PrivateKeyPEM)
 	if sealError != nil {
 		return nil, fmt.Errorf("seal private key: %w", sealError)
 	}
@@ -179,7 +180,7 @@ func (routeTLSController *RouteTLSController) issueSealedGateCertificate(ctx con
 
 	return groupedChanges("route-tls-issue/"+routeName,
 		Change{Type: store.OpPut, Key: types.KeyDerivedRouteTLSCert(routeName), Value: issuedCertificate.CertificatePEM},
-		Change{Type: store.OpPut, Key: security.SecretStorePrefix + types.SecretNameRouteTLSKey(routeName), Value: sealedPrivateKey},
+		Change{Type: store.OpPut, Key: sealedKeyStoreKey, Value: sealedPrivateKey},
 		Change{Type: store.OpPut, Key: types.KeyDerivedRouteTLSNotAfter(routeName), Value: []byte(issuedCertificate.NotAfter.Format(time.RFC3339))},
 	), nil
 }

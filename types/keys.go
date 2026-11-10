@@ -2405,3 +2405,49 @@ const (
 	// GateProxyDisabled means the agent runs no gate proxy and fetches no gate keys.
 	GateProxyDisabled GateProxyState = "disabled"
 )
+
+// PrefixKeyring is the store area for the secret keyring (Flow 29): KEK
+// versions wrapped by the root key, the active version, the root check and
+// the legacy key state. Hidden from /api/state (not in its allowlist).
+const PrefixKeyring = "keyring"
+
+// ScanKeyringKEKs is the prefix that lists every KEK version and its state.
+const ScanKeyringKEKs = PrefixKeyring + "/kek/"
+
+// KeyKeyringActive holds the KEK version new v2 envelopes are sealed with.
+const KeyKeyringActive = PrefixKeyring + "/active"
+
+// KeyKeyringRootCheck holds a fixed value sealed with the root key; a replica
+// that cannot open it has a different root key and refuses to start.
+const KeyKeyringRootCheck = PrefixKeyring + "/root_check"
+
+// KeyKeyringLegacy records the legacy master key state: "none" (fresh
+// cluster), "present" (v1 envelopes may exist) or "retired".
+const KeyKeyringLegacy = PrefixKeyring + "/legacy"
+
+// KeyKeyringKEK returns the store path of a KEK version wrapped by the root key.
+// Path: keyring/kek/{version}
+func KeyKeyringKEK(kekVersion int) string {
+	return fmt.Sprintf("%s%d", ScanKeyringKEKs, kekVersion)
+}
+
+// KeyKeyringKEKState returns the store path of a KEK version's state
+// ("active" | "retiring" | "retired").
+// Path: keyring/kek/{version}/state
+func KeyKeyringKEKState(kekVersion int) string {
+	return fmt.Sprintf("%s%d/state", ScanKeyringKEKs, kekVersion)
+}
+
+// KeyObservedKeyringMigration holds the legacy key migration status as JSON
+// (state, legacy_v1_envelope_count, unreadable_count, ...).
+const KeyObservedKeyringMigration = PrefixObserved + "/keyring/migration"
+
+// ScanObservedKeyringReplicas lists the API replicas' keyring reports.
+const ScanObservedKeyringReplicas = PrefixObserved + "/keyring/replica/"
+
+// KeyObservedKeyringReplica returns the store path of an API replica's
+// keyring report (version, active KEK, root check), written with a lease.
+// Path: observed/keyring/replica/{nodeID}
+func KeyObservedKeyringReplica(nodeID string) string {
+	return ScanObservedKeyringReplicas + nodeID
+}
