@@ -149,6 +149,9 @@ discover_workloads() {
 }
 
 if [[ "$LIST_WORKLOADS" == "true" ]]; then
+    # Manifests reference ${LOCAL_REGISTRY} in their image lists; it is read
+    # from the values file only later, and listing needs just descriptions.
+    LOCAL_REGISTRY=""
     echo "Available workloads:"
     for workload_name in $(discover_workloads); do
         # shellcheck source=/dev/null
