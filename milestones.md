@@ -243,6 +243,7 @@ Design: Flow 28 in `design/runtime-invariant-flows.md`; decisions 2026-11-07 in 
 - [ ] CLI: `cca secret set/get/list/delete --tenant/--cluster` (mutually exclusive, default tenant when omitted), value from stdin or `--from-file`; `share`/`unshare` → `desired/secret_share/{owner}/{name}/{consumer}`; write scope `team/{tenant}`, `team/default`, `cluster`
 - [ ] Compiler resolution (unqualified, `cluster/…`, `tenant/{t}/…`), apply errors for unresolvable/unshared references, grant facts with canonical names (incl. connection auto-grants); delivery re-checks shares
 - [ ] `cca secret migrate-names --plan` / `--apply mapping.ccv`: refuses unmapped secrets; per secret re-encrypts under the canonical AAD, rewrites grants and references, removes the legacy key in one transaction
+- [ ] Drop the `route/` secret-name reservation (M176) once user and system secrets have separate key prefixes: user secrets under `secrets/tenant/…` / `secrets/cluster/…`, gate keys under `secrets/route/…`. Only after `migrate-names` has moved every legacy `secrets/{name}` key (a legacy `secrets/route/…` user key would still collide); then `route/…` is an ordinary user name (`IsSystemOwnedSecretName`, `/api/secret` filter, compiler checks, docs)
 - [ ] Optional admission policy rejecting services that fall into `default` (off by default)
 - [ ] Tests: acceptance A (unowned service gets `default`, refused `payments`); share → delivered, `unshare` → refused at next start; cluster secret needs cluster grant; `--tenant` with `--cluster` rejected
 

@@ -203,7 +203,7 @@ secrets/cluster/{name}             cluster secret, e.g. secrets/cluster/registry
 secrets/route/{gate}/tls/key       sealed gate TLS key (written by the system, not by users)
 ```
 
-Reserved name prefix (since M176): secret names starting with `route/` belong to the system. `/api/secret` (and so `cca secret set/get/list/delete`) hides and refuses them, the compiler rejects them as service secrets and as `key secret`, and they are never delivered to instances. A user secret created under `route/…` before M176 stays in the store but is unreachable: re-create it under another name before upgrading, and update the configurations that reference it.
+Reserved name prefix (since M176): secret names starting with `route/` belong to the system. `/api/secret` (and so `cca secret set/get/list/delete`) hides and refuses them, the compiler rejects them as service secrets and as `key secret`, and they are never delivered to instances. A user secret created under `route/…` before M176 stays in the store but is unreachable: re-create it under another name before upgrading, and update the configurations that reference it. The reservation is temporary: it exists because user and system secrets share the flat `secrets/{name}` namespace today, and is dropped in M179 once user secrets live under `secrets/tenant/…` / `secrets/cluster/…` and `migrate-names` has moved every legacy key.
 
 Rules:
 
