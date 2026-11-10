@@ -436,7 +436,8 @@ ShadowDataPlane.ReconcileVIPDataPlane(ctx, configs)  [shadow_dataplane.go:50]
 | `writeSourceIPStickyChain` | `appendRouteChains`, `buildRouteRuleset` |
 | `writeCookieProxyChain` | `appendRouteChains`, `buildRouteRuleset` |
 | `sanitizeNftablesChainName` | `buildVIPRuleset`, `appendRouteChains` |
-| `CheckNftablesAvailable` | Agent startup (provider selection) |
+| `CheckNftablesAvailable` | `resolveRuleBasedDataPlaneBackend` via `hostDataPlaneToolProbes` (agent startup, cmd/cca/command_agent.go) |
+| `CheckIptablesAvailable` | `resolveRuleBasedDataPlaneBackend` via `hostDataPlaneToolProbes` (agent startup; auto with neither nft nor iptables, or a forced backend whose tool is missing, exits with an error) |
 | `ensureGlobalChainAndJumpRules` | `IptablesDataPlane.ReconcileVIPDataPlane`, `ReconcileRouteDataPlane` |
 | `ensureJumpToChain` | `ensureGlobalChainAndJumpRules` |
 | `ensureMasqueradeForDNAT` | `ensureGlobalChainAndJumpRules` |

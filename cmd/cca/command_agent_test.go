@@ -3,7 +3,10 @@
 
 package main
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestDeriveGateHTTPSListenAddress verifies the gate HTTPS listener binds the
 // same host as the plain proxy on port 443.
@@ -37,5 +40,44 @@ func TestParseAgentProxyTLSListen(t *testing.T) {
 	disabledConfig := parseAgentCommandArgs([]string{"--node-id", "node-1"})
 	if disabledConfig.proxyEnabled || disabledConfig.proxyTLSListenAddress != "" {
 		t.Errorf("no proxy flags: got enabled=%v address=%q", disabledConfig.proxyEnabled, disabledConfig.proxyTLSListenAddress)
+	}
+}
+
+// TestResolveRuleBasedDataPlaneBackend verifies backend selection fails loudly
+// when the chosen backend's host tool is missing, instead of starting a data
+// plane that cannot program rules.
+func TestResolveRuleBasedDataPlaneBackend(t *testing.T) {
+	toolMissing := func() error { return errors.New("not found") }
+	toolPresent := func() error { return nil }
+	testCases := []struct {
+		name             string
+		requestedBackend string
+		nftables         func() error
+		iptables         func() error
+		expectedBackend  string
+		expectError      bool
+	}{
+		{"auto prefers nftables", "auto", toolPresent, toolPresent, "nftables", false},
+		{"auto falls back to iptables", "auto", toolMissing, toolPresent, "iptables", false},
+		{"auto with neither tool fails", "auto", toolMissing, toolMissing, "", true},
+		{"forced nftables without nft fails", "nftables", toolMissing, toolPresent, "", true},
+		{"forced nftables with nft", "nftables", toolPresent, toolMissing, "nftables", false},
+		{"forced iptables without iptables fails", "iptables", toolPresent, toolMissing, "", true},
+		{"forced iptables with iptables", "iptables", toolMissing, toolPresent, "iptables", false},
+		{"shadow needs iptables", "shadow", toolPresent, toolMissing, "", true},
+		{"shadow does not need nft", "shadow", toolMissing, toolPresent, "shadow", false},
+		{"ebpf needs neither tool", "ebpf", toolMissing, toolMissing, "ebpf", false},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			toolProbes := dataPlaneToolProbes{nftablesAvailable: testCase.nftables, iptablesAvailable: testCase.iptables}
+			resolvedBackend, resolveError := resolveRuleBasedDataPlaneBackend(testCase.requestedBackend, toolProbes)
+			if testCase.expectError != (resolveError != nil) {
+				t.Fatalf("error = %v, expectError %v", resolveError, testCase.expectError)
+			}
+			if resolvedBackend != testCase.expectedBackend {
+				t.Errorf("backend = %q, want %q", resolvedBackend, testCase.expectedBackend)
+			}
+		})
 	}
 }

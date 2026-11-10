@@ -47,7 +47,7 @@ type agentCommandConfig struct {
 	apiServerAddress       string // apiServerAddress is the control-plane API (host:port) for secret delivery; defaults to /etc/ccattler/server-address.
 	debugListenAddress     string // debugListenAddress is the address for the agent debug HTTP API (e.g. "127.0.0.1:9771").
 	secretAPIListenAddress string // secretAPIListenAddress is the address for the per-instance secret HTTP API (e.g. "0.0.0.0:9772").
-	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", or "iptables" (default "auto").
+	dataPlaneBackend       string // dataPlaneBackend selects the data plane provider: "auto", "nftables", "iptables", "shadow" or "ebpf" (default "auto").
 	clusterCIDR            string // clusterCIDR overrides the default overlay network CIDR for container IPs (e.g. "10.100.0.0/16").
 	networkMode            string // networkMode selects overlay networking: "local" (bridge only) or "vxlan" (cross-node tunnels).
 	dnsUpstream            string // dnsUpstream is the control plane DNS address for cca.local queries (e.g. "10.0.0.5:15353").
@@ -500,17 +500,73 @@ func createAgentRuntimeAdapter(runtimeBackend string, advertiseAddress string, c
 	}
 }
 
-// createDataPlaneProvider selects the data plane implementation based on
-// the --dataplane flag. "auto" tries nftables first, falling back to
-// iptables. "nftables" or "iptables" forces a specific backend. "ebpf"
-// uses CCattler's eBPF socket LB (requires ebpf build tag).
-func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore, clusterName string, nodeID string) network.DataPlaneProvider {
-	switch dataPlaneBackend {
+// dataPlaneToolProbes checks whether the host tools behind the nftables and
+// iptables data planes are usable. Each probe returns nil when its tool works.
+type dataPlaneToolProbes struct {
+	nftablesAvailable func() error // nftablesAvailable probes the nft CLI and kernel support.
+	iptablesAvailable func() error // iptablesAvailable probes the iptables CLI and nat table.
+}
+
+// hostDataPlaneToolProbes probes the real host tools.
+var hostDataPlaneToolProbes = dataPlaneToolProbes{
+	nftablesAvailable: network.CheckNftablesAvailable,
+	iptablesAvailable: network.CheckIptablesAvailable,
+}
+
+// resolveRuleBasedDataPlaneBackend resolves "auto", "nftables", "iptables"
+// and "shadow" to the backend that will run, failing when its host tool is
+// missing instead of starting a data plane that cannot program rules. Other
+// backends pass through unchanged.
+func resolveRuleBasedDataPlaneBackend(requestedBackend string, toolProbes dataPlaneToolProbes) (string, error) {
+	switch requestedBackend {
 	case "nftables":
-		fmt.Println("Data plane: nftables (forced)")
+		if probeError := toolProbes.nftablesAvailable(); probeError != nil {
+			return "", fmt.Errorf("--dataplane nftables: %w (install the nftables package)", probeError)
+		}
+		return requestedBackend, nil
+	case "iptables", "shadow":
+		if probeError := toolProbes.iptablesAvailable(); probeError != nil {
+			return "", fmt.Errorf("--dataplane %s: %w (install the iptables package)", requestedBackend, probeError)
+		}
+		return requestedBackend, nil
+	case "ebpf":
+		return requestedBackend, nil
+	}
+	nftablesError := toolProbes.nftablesAvailable()
+	if nftablesError == nil {
+		return "nftables", nil
+	}
+	if iptablesError := toolProbes.iptablesAvailable(); iptablesError != nil {
+		return "", fmt.Errorf("no data plane backend available: nftables: %v; iptables: %v (install the nftables package)", nftablesError, iptablesError)
+	}
+	return "iptables", nil
+}
+
+// createDataPlaneProvider selects the data plane implementation based on
+// the --dataplane flag ("auto": nftables, else iptables; "shadow": iptables
+// active, nftables generated for comparison; "ebpf" needs the ebpf build tag).
+// Exits when the selected backend's host tool is missing.
+func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore, clusterName string, nodeID string) network.DataPlaneProvider {
+	resolvedBackend, resolveError := resolveRuleBasedDataPlaneBackend(dataPlaneBackend, hostDataPlaneToolProbes)
+	if resolveError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", resolveError)
+		os.Exit(1)
+	}
+	isAutoSelected := dataPlaneBackend != resolvedBackend
+	switch resolvedBackend {
+	case "nftables":
+		if isAutoSelected {
+			fmt.Println("Data plane: nftables (auto-detected)")
+		} else {
+			fmt.Println("Data plane: nftables (forced)")
+		}
 		return network.NewNftablesDataPlane()
 	case "iptables":
-		fmt.Println("Data plane: iptables (forced)")
+		if isAutoSelected {
+			fmt.Println("Data plane: iptables (nftables not available, falling back)")
+		} else {
+			fmt.Println("Data plane: iptables (forced)")
+		}
 		return network.NewIptablesDataPlane()
 	case "shadow":
 		fmt.Println("Data plane: shadow (iptables active, nftables generating for comparison)")
@@ -524,12 +580,9 @@ func createDataPlaneProvider(dataPlaneBackend string, factStore store.StateStore
 		fmt.Println("Data plane: independent eBPF (socket LB + tc DNAT)")
 		return ebpfFactory(factStore, clusterName, nodeID)
 	default:
-		if network.CheckNftablesAvailable() == nil {
-			fmt.Println("Data plane: nftables (auto-detected)")
-			return network.NewNftablesDataPlane()
-		}
-		fmt.Println("Data plane: iptables (nftables not available, falling back)")
-		return network.NewIptablesDataPlane()
+		fmt.Fprintf(os.Stderr, "error: unknown data plane backend %q\n", resolvedBackend)
+		os.Exit(1)
+		return nil
 	}
 }
 

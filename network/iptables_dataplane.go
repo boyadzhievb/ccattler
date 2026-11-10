@@ -63,6 +63,19 @@ type IptablesDataPlane struct {
 	initialized bool
 }
 
+// CheckIptablesAvailable probes whether the iptables CLI is installed and can
+// read the nat table. Returns nil if the iptables data plane can run.
+func CheckIptablesAvailable() error {
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return fmt.Errorf("iptables binary not found: %w", err)
+	}
+	output, runErr := exec.Command("iptables", "-t", "nat", "-S").CombinedOutput()
+	if runErr != nil {
+		return fmt.Errorf("iptables nat table not usable: %w (output: %s)", runErr, string(output))
+	}
+	return nil
+}
+
 // NewIptablesDataPlane creates an IptablesDataPlane ready to program
 // iptables DNAT rules on the local host.
 func NewIptablesDataPlane() *IptablesDataPlane {
