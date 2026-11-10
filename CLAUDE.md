@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M176 — Phase 176 Gate Key Sealing & Delivery. M1–M176 complete. Gates A–I resolved.
+**Completed through:** M177 — Phase 177 Root Key, Keyring & Key Migration. M1–M177 complete. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.75.0-beta <Badge type="tip" text="latest" /> {#v1-75-0-beta}
+## v1.76.0-beta <Badge type="tip" text="latest" /> {#v1-76-0-beta}
+
+**2026-11-10** — Root Key, Keyring & Key Migration.
+
+- **Root Key, Keyring & Key Migration** (M177) — Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M176.
+
+---
+
+## v1.75.0-beta {#v1-75-0-beta}
 
 **2026-11-10** — Gate Key Sealing & Delivery.
 
