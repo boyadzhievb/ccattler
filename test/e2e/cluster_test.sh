@@ -1892,6 +1892,33 @@ fi
 final_running=$(echo "$FINAL_STATUS" | jq '[.instances[] | select(.state == "running")] | length')
 log "Stability check passed: $final_running/$CUMULATIVE_EXPECTED_CONTAINERS instances still running"
 
+# verify_upgrade_keyring_state checks the M177 upgrade path (Flow 29): a
+# cluster upgraded from a release with secret-master.key keeps the legacy key
+# (keyring/legacy = present, migration not_started, v1 writes), and the v1
+# sealed gate keys still reach every agent (gate_keys = ready).
+verify_upgrade_keyring_state() {
+    local etcd_get="sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --print-value-only"
+    local legacy_state migration_state
+    legacy_state=$(ssh_vm "$CTRL_NODE" "$etcd_get /ccattler/keyring/legacy" | tr -d '[:space:]')
+    migration_state=$(ssh_vm "$CTRL_NODE" "$etcd_get /ccattler/observed/keyring/migration" | jq -r '.state')
+    log "  Keyring after upgrade: legacy=$legacy_state migration=$migration_state"
+    if [[ "$UPGRADE_HAS_LEGACY_KEY" == "true" ]]; then
+        [[ "$legacy_state" == "present" && "$migration_state" == "not_started" ]] \
+            || fail "Upgrade: keyring took the fresh path (legacy=$legacy_state, migration=$migration_state); want present/not_started"
+    fi
+    if [[ " ${WORKLOAD_NAMES[*]} " == *" gate-tls "* ]]; then
+        local deadline=$((SECONDS + CONVERGE_TIMEOUT)) not_ready
+        while true; do
+            not_ready=$(ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --prefix /ccattler/observed/node/" \
+                | paste - - | grep '/gate_keys[[:space:]]' | grep -vc '"state":"ready"' || true)
+            [[ "$not_ready" -eq 0 ]] && break
+            [[ $SECONDS -lt $deadline ]] || fail "Upgrade: $not_ready node(s) report gate_keys != ready (v1 gate keys not delivered)"
+            sleep 3
+        done
+        log "  Gate keys (sealed before the upgrade) delivered to every agent"
+    fi
+}
+
 # ---- Step 7: Upgrade test (--upgrade only) ----
 if [[ "$UPGRADE_TEST" == "true" ]]; then
     log "=== UPGRADE TEST: switching from release binary to local build ==="
@@ -1922,6 +1949,17 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
         scp_to_vm "$vm" "$ANSIBLE_DIR/cca-linux-amd64" "/tmp/cca"
         ssh_vm "$vm" "sudo mv /tmp/cca /usr/local/bin/cca && sudo chmod 0755 /usr/local/bin/cca"
     done
+
+    # M177: the server needs a secret root key and never creates one itself.
+    # This is the documented upgrade step (the Ansible control-plane roles run
+    # the same command). A pre-M177 release leaves secret-master.key behind,
+    # so the upgraded cluster must take the upgrade path, not the fresh one.
+    UPGRADE_HAS_LEGACY_KEY=false
+    if ssh_vm "$CTRL_NODE" "sudo test -f /etc/ccattler/secret-master.key"; then
+        UPGRADE_HAS_LEGACY_KEY=true
+    fi
+    ssh_vm "$CTRL_NODE" "sudo test -f /etc/ccattler/secret-root.key || sudo /usr/local/bin/cca secret generate-root-key" \
+        || fail "Upgrade: generating the secret root key failed"
 
     # Restart server then agents — same startup order as initial deploy.
     log "Starting server with new binary..."
@@ -1969,6 +2007,8 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
 
     # Verify etcd still healthy.
     ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "Upgrade: cca server unreachable after binary swap"
+
+    verify_upgrade_keyring_state
 
     log "=== UPGRADE TEST PASSED ==="
 fi

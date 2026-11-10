@@ -25,6 +25,12 @@
   command: /usr/local/bin/cca secret generate-root-key
   args:
     creates: /etc/ccattler/secret-root.key
+  register: secret_root_key_generation
+  # A binary older than M177 has no such subcommand (it prints the secret
+  # usage) and needs no root key; any other failure stops the play.
+  failed_when: >-
+    secret_root_key_generation.rc != 0 and
+    'usage: cca secret' not in secret_root_key_generation.stderr
   when: inventory_hostname == groups['controlplane'][0]
 
 # Every replica must hold the first node's secret keys (Flow 29); before M177

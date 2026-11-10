@@ -193,7 +193,7 @@ func main() {
 		executeEnableNodeCommand(os.Args[2])
 	case "secret":
 		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate> [name] [value]")
+			fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate|generate-root-key> [name] [value]")
 			os.Exit(1)
 		}
 		executeSecretCommand(os.Args[2:])
