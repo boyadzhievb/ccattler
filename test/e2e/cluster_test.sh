@@ -550,6 +550,21 @@ if [[ -n "$DATAPLANE_OVERRIDE" ]]; then
 fi
 ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --skip-tags testapp,cleanup $ANSIBLE_EXTRA_ARGS
 
+# ---- Step 2.5: Test-only tools on the nodes ----
+# The checks below run dig (DNS) on every node and etcdctl (mTLS) on the
+# control node. Minimal images (Debian genericcloud) ship neither, and they
+# are not runtime dependencies, so they are installed here, not by Ansible.
+log "Installing test tools (bind9-dnsutils; etcd-client on $CTRL_NODE)..."
+for vm in "${VM_NAMES[@]}"; do
+    test_packages="bind9-dnsutils"
+    if [[ "$vm" == "$CTRL_NODE" ]]; then
+        test_packages="bind9-dnsutils etcd-client"
+    fi
+    ssh_vm "$vm" "command -v dig >/dev/null && { [[ '$vm' != '$CTRL_NODE' ]] || command -v etcdctl >/dev/null; } \
+        || sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q $test_packages >/dev/null" \
+        || fail "Installing test tools ($test_packages) on $vm failed"
+done
+
 # ---- Step 3: Verify cluster basics ----
 log "Verifying etcd health via cca server API..."
 deadline=$((SECONDS + 30))

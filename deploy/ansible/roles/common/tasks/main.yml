@@ -139,6 +139,9 @@
       - ca-certificates
       - gnupg
       - dnsmasq
+      # The agent's default (auto) data plane runs the nft CLI; minimal
+      # images such as Debian genericcloud do not ship it.
+      - nftables
     state: present
     update_cache: true
 
