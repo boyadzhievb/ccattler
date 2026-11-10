@@ -1955,15 +1955,44 @@ verify_legacy_key_migration() {
         local sealed_key_header
         sealed_key_header=$(ssh_vm "$CTRL_NODE" "K=\$(sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --keys-only --prefix /ccattler/secrets/route/ | head -1); $etcd_get \$K | base64 -d | head -c 5 | od -An -tx1" | tr -d ' \n')
         [[ "$sealed_key_header" == "cca75ec702" ]] || fail "Upgrade: sealed gate key is not v2 after migration (header $sealed_key_header)"
-        # Force a fresh fetch: without its tmpfs cache and its gate_keys report,
-        # an agent reports ready only after the server opened the v2 keys.
-        for vm in "${WORKER_NODES_WITH_AGENT[@]}"; do
-            ssh_vm "$vm" "sudo systemctl stop cca-agent && sudo rm -rf /run/ccattler/gate-keys"
-            ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del /ccattler/observed/node/$vm/gate_keys >/dev/null"
-            ssh_vm "$vm" "sudo systemctl start cca-agent"
-        done
-        wait_for_gate_keys_ready "v2 gate keys not delivered after the migration" "${#WORKER_NODES_WITH_AGENT[@]}"
+        force_gate_key_refetch "v2 gate keys not delivered after the migration"
         log "  Gate keys re-encrypted as v2 and fetched again by every agent (cache cleared)"
+    fi
+}
+
+# force_gate_key_refetch clears every agent's tmpfs gate-key cache and its
+# gate_keys report, restarts it and waits until all report ready again: an
+# agent reports ready only after the server opened the keys for it.
+force_gate_key_refetch() {
+    local failure_reason="$1"
+    for vm in "${WORKER_NODES_WITH_AGENT[@]}"; do
+        ssh_vm "$vm" "sudo systemctl stop cca-agent && sudo rm -rf /run/ccattler/gate-keys"
+        ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del /ccattler/observed/node/$vm/gate_keys >/dev/null"
+        ssh_vm "$vm" "sudo systemctl start cca-agent"
+    done
+    wait_for_gate_keys_ready "$failure_reason" "${#WORKER_NODES_WITH_AGENT[@]}"
+}
+
+# verify_legacy_key_retirement retires the legacy key (Flow 29 step 7): the
+# gate passes, keyring/legacy = retired, a server restarted with the old file
+# still present starts and ignores it, the server starts after the file is
+# removed (what Ansible does with retire_legacy_secret_key=true), and gate
+# keys are still delivered.
+verify_legacy_key_retirement() {
+    local etcd_get="sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --print-value-only"
+    log "  Retiring the legacy key (cca secret retire-legacy-key)..."
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca secret retire-legacy-key" \
+        || fail "Upgrade: cca secret retire-legacy-key refused (see the unmet conditions above)"
+    [[ "$(ssh_vm "$CTRL_NODE" "$etcd_get /ccattler/keyring/legacy" | tr -d '[:space:]')" == "retired" ]] \
+        || fail "Upgrade: keyring/legacy is not retired"
+    ssh_vm "$CTRL_NODE" "sudo systemctl restart cca-server && sleep 3 && sudo /usr/local/bin/cca status >/dev/null" \
+        || fail "Upgrade: cca-server unhealthy after restart with the retired key file present"
+    ssh_vm "$CTRL_NODE" "sudo rm -f /etc/ccattler/secret-master.key && sudo systemctl restart cca-server && sleep 3 && sudo /usr/local/bin/cca status >/dev/null" \
+        || fail "Upgrade: cca-server unhealthy after the retired key file was removed"
+    log "  Legacy key retired; server healthy with and without the old key file"
+    if [[ " ${WORKLOAD_NAMES[*]} " == *" gate-tls "* ]]; then
+        force_gate_key_refetch "gate keys not delivered after the legacy key was retired"
+        log "  Gate keys delivered to every agent after retirement (cache cleared)"
     fi
 }
 
@@ -2059,6 +2088,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     verify_upgrade_keyring_state
     if [[ "$UPGRADE_HAS_LEGACY_KEY" == "true" ]]; then
         verify_legacy_key_migration
+        verify_legacy_key_retirement
     fi
 
     log "=== UPGRADE TEST PASSED ==="

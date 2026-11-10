@@ -82,7 +82,24 @@
   when:
     - inventory_hostname != groups['controlplane'][0]
     - lookup('ansible.builtin.fileglob', '/tmp/ccattler-ha-pki/secret-master.key') | length > 0
+    - not (retire_legacy_secret_key | default(false) | bool)
   notify: restart cca-server
+
+# Only after 'cca secret retire-legacy-key' succeeded (Flow 29 step 7): run the
+# playbook with -e retire_legacy_secret_key=true to delete the retired key
+# from every replica.
+- name: Remove the retired legacy secret master key from every replica
+  file:
+    path: /etc/ccattler/secret-master.key
+    state: absent
+  when: retire_legacy_secret_key | default(false) | bool
+
+- name: Assert the retired legacy secret master key is gone from every replica
+  stat:
+    path: /etc/ccattler/secret-master.key
+  register: replica_legacy_key_file
+  failed_when: replica_legacy_key_file.stat.exists
+  when: retire_legacy_secret_key | default(false) | bool
 
 - name: Fetch CA and shared PKI from the first control-plane node
   fetch:

@@ -103,7 +103,7 @@ type Server struct {
 	userTokenIssuer            *security.UserTokenIssuer     // userTokenIssuer mints user authentication JWTs for the login flow.
 	watchMultiplexer           *WatchMultiplexer
 	secretStore                *security.SecretStore            // secretStore handles encrypted secret CRUD.
-	keyringMigrationGate       KeyringMigrationGate             // keyringMigrationGate checks and starts the legacy key migration (Flow 29).
+	keyringAdministration      KeyringAdministration            // keyringAdministration runs the legacy key migration and retirement gates (Flow 29).
 	buildVersion               string                           // buildVersion is this server's cca version, compared with replica reports.
 	secretDeliveryService      *security.SecretDeliveryService  // secretDeliveryService serves POST /api/node/secrets (Flow 27); nil disables it.
 	gateKeyDeliveryService     *security.GateKeyDeliveryService // gateKeyDeliveryService serves POST /api/node/gate-keys (Flow 28); nil disables it.
@@ -379,6 +379,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/activate", apiServer.instrumentedHandler("activate", apiServer.handleActivate))
 	apiServer.mux.HandleFunc("/api/secret/rotate", apiServer.instrumentedHandler("secret-rotate", apiServer.handleSecretRotate))
 	apiServer.mux.HandleFunc("/api/secret/migrate-keys", apiServer.instrumentedHandler("secret-migrate-keys", apiServer.handleSecretMigrateKeys))
+	apiServer.mux.HandleFunc("/api/secret/retire-legacy-key", apiServer.instrumentedHandler("secret-retire-legacy-key", apiServer.handleSecretRetireLegacyKey))
 	apiServer.mux.HandleFunc("/api/secret", apiServer.instrumentedHandler("secret", apiServer.handleSecret))
 	apiServer.mux.HandleFunc("/api/node/drain", apiServer.instrumentedHandler("node-drain", apiServer.handleNodeDrain))
 	apiServer.mux.HandleFunc("/api/node/disable", apiServer.instrumentedHandler("node-disable", apiServer.handleNodeDisable))

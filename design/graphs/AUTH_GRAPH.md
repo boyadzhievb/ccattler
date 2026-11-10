@@ -673,6 +673,20 @@ KeyringMigrationController.Reconcile (leader; Watch secrets/, credentials/, obse
     count 0 → state completed
 Write domain: keyring-migration → secrets/, credentials/, observed/keyring/migration   [controllers/topological_sort.go]
 
+Legacy key retirement (M177 step 4, Flow 29 step 7):
+cca secret retire-legacy-key → executeSecretRetireLegacyKey → postSecretAdminRequest
+POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey   [api/keyring_migration.go; beginKeyringAdministration]
+├── KeyringEnvelopeCodec.CheckLegacyRetirementGate                  [security/keyring_retirement.go]
+│   ├── legacy = present; migration completed with count 0
+│   └── checkRetirementStoreConditions
+│       ├── countV1Envelopes (full scan secrets/ + credentials/)
+│       ├── plaintext desired|derived/route/*/tls/key facts
+│       └── nodesHoldingLegacyKeyFile = NodesNotReporting(legacy_key_file, absent) − API replicas
+├── unmet → writeKeyringGateRefusal (409)
+└── RetireLegacyKey → keyring/legacy = retired (txn on its revision) → Refresh
+Every replica: Refresh sees retired → legacyKeyProvider = nil (warn); OpenEnvelopeForKey(v1) refused
+Ansible: worker role removes secret-master.key on non-control-plane hosts; control-plane roles only with retire_legacy_secret_key=true
+
 cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400)
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files

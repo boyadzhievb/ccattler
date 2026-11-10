@@ -238,10 +238,10 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 - [x] Keyring controller boundary: runner-enforced write domain `keyring-migration: secrets/, credentials/, observed/keyring/migration` (`controllerOutputPrefixes`) instead of a separate store role. **Decided 2026-11-10 (user):** every controller runs on the runner's raw store, so a role would never be bound (dead code); the process holds the root key and full etcd credentials anyway, so a role would not stop an attacker, and the write domain already drops out-of-domain writes from bugs. `api-server` keeps no rule for `secrets/`, `credentials/`, `keyring/` (asserted by `TestSecretDeliveryRoleIsReadOnlyAndAPIServerRoleHasNoSecrets`). Store-layer isolation for controllers belongs to M181
 - [x] Leader-elected keyring controller re-encrypts v1 → v2 under `secrets/` and `credentials/` in bounded CAS batches, resumes after a crash, persists `observed/keyring/migration` (`legacy_v1_envelope_count`, `unreadable_count`)
 
-**Step 4 — Retirement, Ansible, runbook**
-- [ ] Retirement gate + `cca secret retire-legacy-key` (count 0 by full scan, migration completed, no plaintext gate key facts, every node `legacy_key_file = absent`); replicas drop the legacy key and refuse v1; Ansible removes `secret-master.key` from workers, then control plane, and asserts absence
-- [ ] Etcd backup/restore runbook in `design/TESTING.md` (referenced by `--confirm-backup`)
-- [ ] Tests: legacy key cannot unwrap any KEK, open `root_check` or any v2 envelope; every legacy value unchanged after migration; kill mid-batch and resume; gates refuse with the unmet conditions; v1 refused after retirement; deploy cluster migration under traffic
+**Step 4 — Retirement, Ansible, runbook** (done 2026-11-10: unit + API tests; `--env lan --from-release --upgrade` e2e on .77 runs the whole lifecycle — v1.75.0-beta → upgrade → migrate (4 envelopes) → retire → server restart with and without the old file → gate keys re-fetched after each stage)
+- [x] Retirement gate + `cca secret retire-legacy-key` (count 0 by full scan, migration completed, no plaintext gate key facts, every node except API replicas `legacy_key_file = absent` — replicas keep the file until retirement because their server opens v1 with it); replicas drop the legacy key and refuse v1; Ansible: worker role removes `secret-master.key` from non-control-plane hosts and asserts it, control-plane roles only with `-e retire_legacy_secret_key=true` after retirement
+- [x] Etcd backup/restore runbook in `design/TESTING.md` (referenced by `--confirm-backup`); backup + restore executed on the e2e control plane (marker written after the snapshot gone after restore, `cca status` healthy)
+- [ ] Tests (all done except migration under traffic on the deploy cluster, which needs a deploy run with the upgrade path): legacy key cannot unwrap any KEK, open `root_check` or any v2 envelope; every legacy value unchanged after migration; kill mid-batch and resume; gates refuse with the unmet conditions; v1 refused after retirement; deploy cluster migration under traffic
 
 ### Phase 178 — Keyring Rotation (M178)
 
@@ -273,6 +273,7 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 ### Runner hardening (unscheduled; architecture review 2026-11-10)
 
+- [ ] Flaky `TestControlPlaneRestart_NoDataLoss` (integration/ha_resilience_test.go:230): failed once in CI on 089a4ff ("running instances during outage: got 3, want 9") after killing controller groups and a fixed 200 ms sleep; passes 8/8 alone and 3/3 as a full package under -race locally. Replace the sleep-then-assert with a `waitFor` on the condition the test means
 - [ ] A production controller missing from `controllerOutputPrefixes` passes every write unchecked (`enforceWriteDomain` returns the changes unchanged for an undeclared controller): add a test that fails when a controller in the production list has no declared write domain (found during M177 step 3)
 - [ ] `DeltaController` / `deltaBuffer` / `ReconcileDelta` plumbing has no implementer (dead code since added): implement for the hot controllers (endpoint, instance) or delete
 - [ ] A controller loop returning nil makes `Runner.Run` cancel every controller while the node still holds leadership (`controllers/runner.go` `Run`, `runSingleController`): treat a nil exit as an error and restart

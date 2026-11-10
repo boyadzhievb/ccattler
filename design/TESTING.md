@@ -203,6 +203,41 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 
 The E2E VM cluster runs on testbed-100.77 (16 GB) and the deploy cluster on m4800. They use separate Herdfiles (`test/e2e/vm-lan/` and `test/e2e/vm-deploy/`): E2E VMs are bridged onto the LAN (192.168.100.50–.60), deploy VMs sit on a private libvirt NAT network (124.x). VM lifecycle managed by vmherd.
 
+## etcd backup and restore (runbook)
+
+Required before `cca secret migrate-keys --confirm-backup` (M177, Flow 29 step 5): the migration is the rollback boundary, and the only way back is this restore **together with the previous `cca` binaries**. Tested on the e2e control plane (cca-lan-ctrl, etcd 3.5.16, single member) on 2026-11-10: a marker written after the snapshot was gone after the restore, and `cca status` was healthy.
+
+Run on the control-plane node as root. The client certificate is the node certificate from `cca init`; the etcd data directory and member name come from the `etcd` unit (`ETCD_DATA_DIR=/var/lib/etcd/default`, `ETCD_NAME=%H`).
+
+```sh
+ETCD="--endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/ca.pem \
+  --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
+
+# 1. Back up and verify (keep the file off the node as well).
+mkdir -p /var/backups/ccattler && chmod 700 /var/backups/ccattler
+SNAPSHOT=/var/backups/ccattler/etcd-$(date +%Y%m%d-%H%M%S).db
+etcdctl $ETCD snapshot save "$SNAPSHOT"
+etcdutl snapshot status "$SNAPSHOT" -w table      # revision and key count must be non-zero
+
+# 2. Restore (single member): stop writers, restore into a new directory,
+#    keep the old one, swap, start.
+systemctl stop cca-server etcd
+etcdutl snapshot restore "$SNAPSHOT" --name "$(hostname)" \
+  --data-dir /var/lib/etcd/default.restored \
+  --initial-cluster "$(hostname)=http://localhost:2380" \
+  --initial-advertise-peer-urls http://localhost:2380
+chown -R etcd:etcd /var/lib/etcd/default.restored
+mv /var/lib/etcd/default /var/lib/etcd/default.pre-restore
+mv /var/lib/etcd/default.restored /var/lib/etcd/default
+systemctl start etcd && systemctl start cca-server
+cca status
+```
+
+- The snapshot holds every secret envelope and the keyring (`keyring/kek/*` wrapped by the root key). Protect it like the root key; it is useless without `secret-root.key` (and, for v1 envelopes, `secret-master.key`).
+- Restoring a pre-migration snapshot after `migrate-keys` brings back v1 envelopes and `migration = not_started`: install the previous binaries before starting `cca-server`, and keep `secret-master.key` until the migration runs again.
+- After `retire-legacy-key` and the deletion of `secret-master.key`, a pre-migration snapshot can no longer be decrypted. Take a fresh snapshot after retirement.
+- HA (3 members): restore the same snapshot on every member with `--initial-cluster` listing all three peer URLs, then start etcd on all of them; see the etcd disaster-recovery guide.
+
 ## Demo Commands
 
 Each milestone has a corresponding demo command that exercises its headline feature interactively:

@@ -15,41 +15,85 @@ import (
 // maxMigrateKeysRequestBytes caps the POST /api/secret/migrate-keys body.
 const maxMigrateKeysRequestBytes = 4096
 
-// KeyringMigrationGate checks and starts the legacy key migration
-// (implemented by security.KeyringEnvelopeCodec, Flow 29 step 5).
-type KeyringMigrationGate interface {
-	// CheckLegacyMigrationGate returns every unmet gate condition.
+// KeyringAdministration checks and runs the legacy key migration and
+// retirement (implemented by security.KeyringEnvelopeCodec, Flow 29 steps 5 and 7).
+type KeyringAdministration interface {
+	// CheckLegacyMigrationGate returns every unmet migration gate condition.
 	CheckLegacyMigrationGate(ctx context.Context, gateRequest security.LegacyMigrationGateRequest, buildVersion string) ([]string, error)
 	// StartLegacyMigration records the intent and switches writes to v2.
 	StartLegacyMigration(ctx context.Context, requestedBy string) error
+	// CheckLegacyRetirementGate returns every unmet retirement gate condition.
+	CheckLegacyRetirementGate(ctx context.Context) ([]string, error)
+	// RetireLegacyKey retires the legacy key; v1 envelopes are refused afterwards.
+	RetireLegacyKey(ctx context.Context) error
 }
 
-// SetKeyringMigrationGate enables POST /api/secret/migrate-keys; buildVersion
-// is the version every replica report must match.
-func (apiServer *Server) SetKeyringMigrationGate(keyringMigrationGate KeyringMigrationGate, buildVersion string) {
-	apiServer.keyringMigrationGate = keyringMigrationGate
+// SetKeyringAdministration enables POST /api/secret/migrate-keys and
+// /api/secret/retire-legacy-key; buildVersion is the version every replica
+// report must match.
+func (apiServer *Server) SetKeyringAdministration(keyringAdministration KeyringAdministration, buildVersion string) {
+	apiServer.keyringAdministration = keyringAdministration
 	apiServer.buildVersion = buildVersion
 }
 
-// migrateKeysRefusal is the 409 body: every unmet gate condition.
-type migrateKeysRefusal struct {
+// keyringGateRefusal is the 409 body: every unmet gate condition.
+type keyringGateRefusal struct {
 	Error string   `json:"error"` // Error summarizes the refusal.
 	Unmet []string `json:"unmet"` // Unmet lists each condition that is not satisfied.
+}
+
+// writeKeyringGateRefusal answers 409 with every unmet gate condition.
+func writeKeyringGateRefusal(responseWriter http.ResponseWriter, gateName string, unmetConditions []string) {
+	responseWriter.Header().Set("Content-Type", "application/json")
+	responseWriter.WriteHeader(http.StatusConflict)
+	_ = json.NewEncoder(responseWriter).Encode(keyringGateRefusal{Error: gateName + " gate not passed", Unmet: unmetConditions})
+}
+
+// beginKeyringAdministration checks method, configuration and capability
+// (secret.write at cluster scope) shared by both keyring endpoints.
+func (apiServer *Server) beginKeyringAdministration(responseWriter http.ResponseWriter, request *http.Request) bool {
+	if request.Method != http.MethodPost {
+		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
+		return false
+	}
+	if apiServer.keyringAdministration == nil {
+		writeJSONError(responseWriter, "keyring not configured", http.StatusServiceUnavailable)
+		return false
+	}
+	return apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster)
+}
+
+// handleSecretRetireLegacyKey implements POST /api/secret/retire-legacy-key:
+// 409 with every unmet retirement condition, otherwise the legacy key is
+// retired (irreversible: v1 envelopes are refused from then on).
+func (apiServer *Server) handleSecretRetireLegacyKey(responseWriter http.ResponseWriter, request *http.Request) {
+	if !apiServer.beginKeyringAdministration(responseWriter, request) {
+		return
+	}
+	requestContext := request.Context()
+	unmetConditions, checkError := apiServer.keyringAdministration.CheckLegacyRetirementGate(requestContext)
+	if checkError != nil {
+		writeJSONError(responseWriter, "check retirement gate: "+checkError.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(unmetConditions) > 0 {
+		writeKeyringGateRefusal(responseWriter, "retirement", unmetConditions)
+		return
+	}
+	if retireError := apiServer.keyringAdministration.RetireLegacyKey(requestContext); retireError != nil {
+		writeJSONError(responseWriter, retireError.Error(), http.StatusConflict)
+		return
+	}
+	logging.Default().Info("legacy secret key retired", "principal", security.PrincipalFromContext(requestContext))
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"legacy": string(security.LegacyKeyRetired)})
 }
 
 // handleSecretMigrateKeys implements POST /api/secret/migrate-keys
 // {"confirm_backup": true}: 409 with every unmet condition, otherwise the
 // migration starts (writes become v2, the keyring controller re-encrypts).
 func (apiServer *Server) handleSecretMigrateKeys(responseWriter http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	if apiServer.keyringMigrationGate == nil {
-		writeJSONError(responseWriter, "keyring not configured", http.StatusServiceUnavailable)
-		return
-	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+	if !apiServer.beginKeyringAdministration(responseWriter, request) {
 		return
 	}
 	var gateRequest security.LegacyMigrationGateRequest
@@ -58,22 +102,21 @@ func (apiServer *Server) handleSecretMigrateKeys(responseWriter http.ResponseWri
 		return
 	}
 	requestContext := request.Context()
-	unmetConditions, checkError := apiServer.keyringMigrationGate.CheckLegacyMigrationGate(requestContext, gateRequest, apiServer.buildVersion)
+	unmetConditions, checkError := apiServer.keyringAdministration.CheckLegacyMigrationGate(requestContext, gateRequest, apiServer.buildVersion)
 	if checkError != nil {
 		writeJSONError(responseWriter, "check migration gate: "+checkError.Error(), http.StatusInternalServerError)
 		return
 	}
-	responseWriter.Header().Set("Content-Type", "application/json")
 	if len(unmetConditions) > 0 {
-		responseWriter.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(responseWriter).Encode(migrateKeysRefusal{Error: "migration gate not passed", Unmet: unmetConditions})
+		writeKeyringGateRefusal(responseWriter, "migration", unmetConditions)
 		return
 	}
 	requestedBy := security.PrincipalFromContext(requestContext)
-	if startError := apiServer.keyringMigrationGate.StartLegacyMigration(requestContext, requestedBy); startError != nil {
+	if startError := apiServer.keyringAdministration.StartLegacyMigration(requestContext, requestedBy); startError != nil {
 		writeJSONError(responseWriter, startError.Error(), http.StatusConflict)
 		return
 	}
 	logging.Default().Info("legacy key migration started", "principal", requestedBy)
+	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(map[string]string{"state": "in_progress"})
 }

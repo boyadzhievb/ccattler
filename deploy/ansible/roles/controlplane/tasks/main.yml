@@ -31,6 +31,22 @@
     secret_root_key_generation.rc != 0 and
     'usage: cca secret' not in secret_root_key_generation.stderr
 
+# Only after 'cca secret retire-legacy-key' succeeded (Flow 29 step 7): run the
+# playbook with -e retire_legacy_secret_key=true. Earlier, the server still
+# needs the key to open v1 envelopes.
+- name: Remove the retired legacy secret master key from the control plane
+  file:
+    path: /etc/ccattler/secret-master.key
+    state: absent
+  when: retire_legacy_secret_key | default(false) | bool
+
+- name: Assert the retired legacy secret master key is gone
+  stat:
+    path: /etc/ccattler/secret-master.key
+  register: control_plane_legacy_key_file
+  failed_when: control_plane_legacy_key_file.stat.exists
+  when: retire_legacy_secret_key | default(false) | bool
+
 - name: Enable and start cca-server
   systemd:
     name: cca-server

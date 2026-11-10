@@ -44,9 +44,9 @@ type SecretEnvelopeCodec interface {
 type KeyringEnvelopeCodec struct {
 	factStore         store.StateStore // factStore holds the keyring and migration state.
 	rootKeyProvider   KeyProvider      // rootKeyProvider unwraps KEKs and the root check.
-	legacyKeyProvider KeyProvider      // legacyKeyProvider opens and writes v1 envelopes; nil on fresh clusters.
+	legacyKeyProvider KeyProvider      // legacyKeyProvider opens and writes v1 envelopes; nil on fresh clusters and after retirement.
 	snapshot          *keyringSnapshot // snapshot is the current keyring view.
-	mutex             sync.RWMutex     // mutex guards snapshot.
+	mutex             sync.RWMutex     // mutex guards snapshot and legacyKeyProvider.
 }
 
 // NewKeyringEnvelopeCodec creates the keyring on first use, proves the root
@@ -60,14 +60,15 @@ func NewKeyringEnvelopeCodec(ctx context.Context, factStore store.StateStore, ro
 	if refreshError := keyringCodec.Refresh(ctx); refreshError != nil {
 		return nil, refreshError
 	}
-	snapshot := keyringCodec.currentSnapshot()
-	if snapshot.legacyKeyState == LegacyKeyPresent && legacyKeyProvider == nil {
+	snapshot, currentLegacyKeyProvider := keyringCodec.currentState()
+	if snapshot.legacyKeyState == LegacyKeyPresent && currentLegacyKeyProvider == nil {
 		return nil, errors.New("the keyring still needs the legacy secret-master.key (migration not completed); restore it on this replica")
 	}
 	return keyringCodec, nil
 }
 
-// Refresh re-reads the keyring and migration state from the store.
+// Refresh re-reads the keyring and migration state from the store. Once the
+// legacy key is retired, this replica drops it from memory for good.
 func (keyringCodec *KeyringEnvelopeCodec) Refresh(ctx context.Context) error {
 	snapshot, loadError := loadKeyringSnapshot(ctx, keyringCodec.factStore, keyringCodec.rootKeyProvider)
 	if loadError != nil {
@@ -75,29 +76,43 @@ func (keyringCodec *KeyringEnvelopeCodec) Refresh(ctx context.Context) error {
 	}
 	keyringCodec.mutex.Lock()
 	keyringCodec.snapshot = snapshot
+	droppedLegacyKey := snapshot.legacyKeyState == LegacyKeyRetired && keyringCodec.legacyKeyProvider != nil
+	if droppedLegacyKey {
+		keyringCodec.legacyKeyProvider = nil
+	}
 	keyringCodec.mutex.Unlock()
+	if droppedLegacyKey {
+		logging.Default().Warn("legacy secret key is retired: dropped from memory and never loaded again; delete /etc/ccattler/secret-master.key from this node")
+	}
 	return nil
 }
 
 // currentSnapshot returns the snapshot under the read lock.
 func (keyringCodec *KeyringEnvelopeCodec) currentSnapshot() *keyringSnapshot {
+	snapshot, _ := keyringCodec.currentState()
+	return snapshot
+}
+
+// currentState returns the snapshot and the legacy key provider (nil when
+// absent or retired) under one read lock.
+func (keyringCodec *KeyringEnvelopeCodec) currentState() (*keyringSnapshot, KeyProvider) {
 	keyringCodec.mutex.RLock()
 	defer keyringCodec.mutex.RUnlock()
-	return keyringCodec.snapshot
+	return keyringCodec.snapshot, keyringCodec.legacyKeyProvider
 }
 
 // SealEnvelopeForKey writes v2 with the active KEK once the migration state
 // allows it, otherwise v1 with the legacy key (upgraded clusters before the
 // migration gate, while old agents may still decrypt locally).
 func (keyringCodec *KeyringEnvelopeCodec) SealEnvelopeForKey(ctx context.Context, storeKey string, plaintext []byte) ([]byte, error) {
-	snapshot := keyringCodec.currentSnapshot()
+	snapshot, currentLegacyKeyProvider := keyringCodec.currentState()
 	if snapshot.migrationState.writesV2() {
 		return sealEnvelopeV2(snapshot.keyEncryptionKeys[snapshot.activeKEKVersion], snapshot.activeKEKVersion, storeKey, plaintext)
 	}
-	if keyringCodec.legacyKeyProvider == nil {
+	if currentLegacyKeyProvider == nil {
 		return nil, errors.New("seal: v1 writes need the legacy key, which this replica does not hold")
 	}
-	return SealEnvelope(ctx, keyringCodec.legacyKeyProvider, plaintext)
+	return SealEnvelope(ctx, currentLegacyKeyProvider, plaintext)
 }
 
 // OpenEnvelopeForKey opens v2 envelopes with the KEK they name (re-reading the
@@ -127,13 +142,14 @@ func (keyringCodec *KeyringEnvelopeCodec) OpenEnvelopeForKey(ctx context.Context
 // openLegacyEnvelope opens a v1 envelope with the legacy key, refused once
 // the legacy key is retired.
 func (keyringCodec *KeyringEnvelopeCodec) openLegacyEnvelope(ctx context.Context, envelope []byte) ([]byte, error) {
-	if keyringCodec.currentSnapshot().legacyKeyState == LegacyKeyRetired {
+	snapshot, currentLegacyKeyProvider := keyringCodec.currentState()
+	if snapshot.legacyKeyState == LegacyKeyRetired {
 		return nil, errors.New("open: v1 envelope refused, the legacy key is retired")
 	}
-	if keyringCodec.legacyKeyProvider == nil {
+	if currentLegacyKeyProvider == nil {
 		return nil, errors.New("open: v1 envelope needs the legacy key, which this replica does not hold")
 	}
-	return OpenEnvelope(ctx, keyringCodec.legacyKeyProvider, envelope)
+	return OpenEnvelope(ctx, currentLegacyKeyProvider, envelope)
 }
 
 // RunKeyringWatch keeps the snapshot current: it refreshes on changes under

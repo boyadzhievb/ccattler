@@ -1277,11 +1277,17 @@ Inputs on every API replica
    THIS IS THE ROLLBACK BOUNDARY
 
 7. Retirement gate (POST /api/secret/retire-legacy-key; cca secret retire-legacy-key)
-   409 unless: migration completed; full scan finds 0 v1 envelopes; no plaintext
-     desired|derived/route/*/tls/key fact; every enrolled node reports legacy_key_file = absent
-   → put keyring/legacy = retired; replicas drop the legacy key from memory and refuse v1
-   Ansible then deletes secret-master.key on the control plane and asserts absence
-   a replica that starts later with the file present: warns once, never loads it
+   409 unless: legacy state = present; migration completed; full scan finds 0 v1
+     envelopes; no plaintext desired|derived/route/*/tls/key fact; every enrolled or
+     registered, non-disabled node reports legacy_key_file = absent, except API
+     replicas (a live observed/keyring/replica/{id} with the same node ID): their
+     server opens v1 until retirement, so they keep the file until then
+   → put keyring/legacy = retired (guarded by its revision); replicas drop the
+     legacy key from memory and refuse v1
+   Ansible: the worker role removes secret-master.key from non-control-plane hosts
+     (asserted); the control-plane roles remove it only with
+     -e retire_legacy_secret_key=true, run after this step
+   a replica that starts later with the file present: warns once, never uses it
 ```
 
 **Failure and recovery paths:**

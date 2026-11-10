@@ -36,7 +36,7 @@ func TestSecretMigrateKeysGateAndStart(testContext *testing.T) {
 	stopReport()
 
 	apiServer := NewServer(rawStore)
-	apiServer.SetKeyringMigrationGate(keyringCodec, "v-test")
+	apiServer.SetKeyringAdministration(keyringCodec, "v-test")
 	apiAuthorizer := security.NewAPIAuthorizer()
 	apiAuthorizer.Grant("user:admin", security.CapabilityClusterAdmin, security.ScopeCluster)
 	apiServer.SetAPIAuthorizer(apiAuthorizer)
@@ -60,5 +60,13 @@ func TestSecretMigrateKeysGateAndStart(testContext *testing.T) {
 	again := sendMigrateKeys(`{"confirm_backup": true}`)
 	if again.Code != http.StatusConflict || !strings.Contains(again.Body.String(), "already in_progress") {
 		testContext.Fatalf("second start: %d %s", again.Code, again.Body.String())
+	}
+
+	retireRequest := httptest.NewRequest(http.MethodPost, "/api/secret/retire-legacy-key", nil)
+	retireRequest = retireRequest.WithContext(security.WithPrincipalStruct(retireRequest.Context(), adminPrincipal))
+	retireRecorder := httptest.NewRecorder()
+	apiServer.handleSecretRetireLegacyKey(retireRecorder, retireRequest)
+	if retireRecorder.Code != http.StatusConflict || !strings.Contains(retireRecorder.Body.String(), "migration is in_progress") {
+		testContext.Fatalf("retire before the migration completed: %d %s", retireRecorder.Code, retireRecorder.Body.String())
 	}
 }

@@ -694,7 +694,7 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetPolicyGate(policyGate)
 
 	configureSecretStoreAndDelivery(statusAPIServer, factStore, rbacAuthorizer, auditLog, secretStore)
-	statusAPIServer.SetKeyringMigrationGate(keyringCodec, version)
+	statusAPIServer.SetKeyringAdministration(keyringCodec, version)
 
 	if parsedConfig.apiOnly {
 		statusAPIServer.SetServerMode(api.ServerModeAPIOnly)

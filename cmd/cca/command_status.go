@@ -2047,8 +2047,10 @@ func executeSecretCommand(args []string) {
 		executeSecretGenerateRootKey(args[1:])
 	case "migrate-keys":
 		executeSecretMigrateKeys(args[1:])
+	case "retire-legacy-key":
+		executeSecretRetireLegacyKey(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys> [name] [value]")
+		fmt.Fprintln(os.Stderr, secretCommandUsage)
 		os.Exit(1)
 	}
 }
@@ -2167,6 +2169,23 @@ func executeSecretMigrateKeys(args []string) {
 	requestBody, _ := json.Marshal(map[string]bool{"confirm_backup": confirmBackup})
 	postSecretAdminRequest("/api/secret/migrate-keys", requestBody)
 	fmt.Println("legacy key migration started: writes are v2; the keyring controller re-encrypts v1 secrets")
+}
+
+// secretCommandUsage is printed for a missing or unknown cca secret
+// subcommand. Ansible's root-key task recognizes binaries without
+// generate-root-key by the "usage: cca secret" prefix.
+const secretCommandUsage = "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys|retire-legacy-key> [name] [value]" //nolint:gosec // G101: usage text, not a credential
+
+// executeSecretRetireLegacyKey implements "cca secret retire-legacy-key": once
+// the retirement gate passes, every replica drops the legacy key and refuses
+// v1 envelopes (irreversible; Flow 29 step 7).
+func executeSecretRetireLegacyKey(args []string) {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, "usage: cca secret retire-legacy-key")
+		os.Exit(1)
+	}
+	postSecretAdminRequest("/api/secret/retire-legacy-key", nil)
+	fmt.Println("legacy secret key retired: delete /etc/ccattler/secret-master.key from the control-plane nodes (Ansible: -e retire_legacy_secret_key=true)")
 }
 
 // postSecretAdminRequest POSTs a secret administration request and exits

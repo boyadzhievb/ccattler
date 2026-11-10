@@ -59,6 +59,23 @@
     state: absent
   when: dataplane_backend | default('auto') == 'ebpf'
 
+# Workers have not needed the legacy secret key since M174 (secrets are
+# delivered by the control plane). A control-plane host keeps it until the
+# key is retired (Flow 29): its server still opens v1 envelopes with it.
+- name: Remove the legacy secret master key from workers (M177)
+  file:
+    path: /etc/ccattler/secret-master.key
+    state: absent
+  when: inventory_hostname not in groups['controlplane'] | default([])
+  notify: restart cca-agent
+
+- name: Assert the legacy secret master key is gone from workers
+  stat:
+    path: /etc/ccattler/secret-master.key
+  register: worker_legacy_key_file
+  failed_when: worker_legacy_key_file.stat.exists
+  when: inventory_hostname not in groups['controlplane'] | default([])
+
 - name: Install cca-agent systemd unit
   template:
     src: cca-agent.service.j2
