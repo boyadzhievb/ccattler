@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.74.0-beta <Badge type="tip" text="latest" /> {#v1-74-0-beta}
+## v1.75.0-beta <Badge type="tip" text="latest" /> {#v1-75-0-beta}
+
+**2026-11-10** — Gate Key Sealing & Delivery.
+
+- **Gate Key Sealing & Delivery** (M176) — Gate TLS private keys sealed under `secrets/route/…` instead of plain facts; `tls { key secret "…" }`; agents fetch them through `POST /api/node/gate-keys` and cache them in tmpfs so TLS survives an agent restart while the API is down. Upgrade note: secret names starting with `route/` are now reserved for gate keys — rename any user secret under `route/` before upgrading. Depends: M174.
+
+---
+
+## v1.74.0-beta {#v1-74-0-beta}
 
 **2026-11-07** — Status Snapshot & Bulk Reads.
 
