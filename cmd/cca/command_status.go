@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2044,8 +2045,10 @@ func executeSecretCommand(args []string) {
 		executeSecretRotate()
 	case "generate-root-key":
 		executeSecretGenerateRootKey(args[1:])
+	case "migrate-keys":
+		executeSecretMigrateKeys(args[1:])
 	default:
-		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate|generate-root-key> [name] [value]")
+		fmt.Fprintln(os.Stderr, "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys> [name] [value]")
 		os.Exit(1)
 	}
 }
@@ -2143,33 +2146,42 @@ func executeSecretDelete(secretName string) {
 	fmt.Printf("secret %q deleted\n", secretName)
 }
 
-// executeSecretRotate rotates the master encryption key by re-wrapping all
-// stored secret DEKs under a new key via the API.
+// executeSecretRotate implements "cca secret rotate". The server refuses
+// rotation (409) until keyring rotation lands in M178; the CLI prints why.
 func executeSecretRotate() {
-	requestURL := fmt.Sprintf("%s/api/secret/rotate", statusAPIBaseURL())
-	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "application/json", nil) //nolint:gosec // CLI connects to user-configured API server
+	postSecretAdminRequest("/api/secret/rotate", nil)
+}
+
+// executeSecretMigrateKeys implements "cca secret migrate-keys
+// --confirm-backup": it asks the server to pass the migration gate and start
+// re-encrypting v1 envelopes (Flow 29); a refusal lists every unmet condition.
+func executeSecretMigrateKeys(args []string) {
+	confirmBackup := false
+	for _, argument := range args {
+		if argument != "--confirm-backup" {
+			fmt.Fprintln(os.Stderr, "usage: cca secret migrate-keys --confirm-backup")
+			os.Exit(1)
+		}
+		confirmBackup = true
+	}
+	requestBody, _ := json.Marshal(map[string]bool{"confirm_backup": confirmBackup})
+	postSecretAdminRequest("/api/secret/migrate-keys", requestBody)
+	fmt.Println("legacy key migration started: writes are v2; the keyring controller re-encrypts v1 secrets")
+}
+
+// postSecretAdminRequest POSTs a secret administration request and exits
+// with the server's message (e.g. the unmet gate conditions) unless it is 200.
+func postSecretAdminRequest(apiPath string, requestBody []byte) {
+	requestURL := statusAPIBaseURL() + apiPath
+	httpResponse, err := buildAuthenticatedHTTPClient().Post(requestURL, "application/json", bytes.NewReader(requestBody)) //nolint:gosec // CLI connects to user-configured API server
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is the server running?")
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
-
 	if httpResponse.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(httpResponse.Body)
-		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		fmt.Fprintf(os.Stderr, "error: %s\n", bytes.TrimSpace(responseBody))
 		os.Exit(1)
 	}
-
-	var rotateResult map[string]interface{}
-	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&rotateResult); decodeErr != nil {
-		fmt.Fprintf(os.Stderr, "decode: %v\n", decodeErr)
-		os.Exit(1)
-	}
-	rotatedValue, rotatedOK := rotateResult["rotated"].(float64)
-	if !rotatedOK {
-		fmt.Fprintln(os.Stderr, "unexpected response format")
-		os.Exit(1)
-	}
-	rotatedCount := int(rotatedValue)
-	fmt.Printf("master key rotated — %d secret(s) re-wrapped\n", rotatedCount)
 }

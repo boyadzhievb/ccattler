@@ -655,6 +655,24 @@ Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, RouteTLSC
          GateKeyMigrationController (via SecretStore.EnvelopeCodec()), SealSecretValue(codec, storeKey, ...)
 POST /api/secret/rotate → 409 until keyring rotation (M178)
 
+Legacy key migration (M177 step 3, Flow 29 steps 5–6):
+cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest
+POST /api/secret/migrate-keys → handleSecretMigrateKeys          [api/keyring_migration.go; secret.write @ cluster]
+├── KeyringEnvelopeCodec.CheckLegacyMigrationGate(req, buildVersion)   [security/keyring_migration.go]
+│   ├── confirm_backup set; migration state = not_started
+│   ├── checkReplicaReports  → observed/keyring/replica/* (version, active KEK, root_check ok)
+│   └── NodesNotReporting(enrollment + observed/node/, "secret_delivery", "v2")   [security/node_reports.go]
+├── unmet → 409 {error, unmet[]}
+└── StartLegacyMigration(principal)   [txn guarded by observed/keyring/migration revision]
+    puts intent/keyring/legacy_migration + migration {state: in_progress}; Refresh → writes are v2
+KeyringMigrationController.Reconcile (leader; Watch secrets/, credentials/, observed/keyring/migration)
+├── state ≠ in_progress → no changes
+├── KeyringEnvelopeCodec.PlanLegacyMigrationBatch(facts, 50)   [v1 → open(legacy) → sealEnvelopeV2(AAD = key)]
+│   unreadable v1 counted, never rewritten or deleted
+└── puts rewrites (runner revision guard per key) + migration {migrated, legacy_v1_envelope_count, unreadable_count}
+    count 0 → state completed
+Write domain: keyring-migration → secrets/, credentials/, observed/keyring/migration   [controllers/topological_sort.go]
+
 cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400)
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files

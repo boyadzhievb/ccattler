@@ -361,17 +361,19 @@ func executeServerCommand(parsedConfig serverCommandConfig) {
 	runControllers := !parsedConfig.apiOnly
 	runAPIServer := !parsedConfig.controllersOnly
 	eventLog := types.NewEventLog(factStore, types.DefaultEventLogMaxEvents)
-	// One envelope codec for the secret store and the controllers that seal
-	// system-owned secrets (route-tls, gate-key-migration), Flow 29.
-	secretStore := security.NewSecretStore(factStore, startSecretEnvelopeCodec(ctx, factStore, parsedConfig))
+	// One envelope codec for the secret store, the controllers that seal
+	// system-owned secrets (route-tls, gate-key-migration) and the keyring
+	// migration (Flow 29).
+	keyringCodec := startSecretEnvelopeCodec(ctx, factStore, parsedConfig)
+	secretStore := security.NewSecretStore(factStore, keyringCodec)
 
 	if runControllers {
-		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, secretStore)
+		startControllersWithLeaderElection(ctx, factStore, eventLog, parsedConfig, clusterCertificateAuthority, keyringCodec)
 	}
 
 	if runAPIServer {
 		configureAndStartAPIServer(ctx, factStore, authorizedStore, rbacAuthorizer, auditLog, eventLog, parsedConfig,
-			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore)
+			serverTLSConfig, clusterCertificateAuthority, enrollmentEnabled, secretStore, keyringCodec)
 	}
 
 	printStartupBannerAndAwaitShutdown(ctx, parsedConfig, runAPIServer)
@@ -399,7 +401,7 @@ func initializeAuthorizationLayer(factStore store.StateStore) (*security.RBACAut
 // controllers plus optional cloud controllers) and starts them inside an HA
 // runner with leader election. The runner goroutine runs until the context is
 // cancelled.
-func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority, secretStore *security.SecretStore) {
+func startControllersWithLeaderElection(ctx context.Context, factStore store.StateStore, eventLog *types.EventLog, parsedConfig serverCommandConfig, clusterCertificateAuthority *security.CertificateAuthority, keyringCodec *security.KeyringEnvelopeCodec) {
 	networkController := controllers.NewNetworkController()
 	if parsedConfig.vipCIDR != "" {
 		networkController = controllers.NewNetworkControllerWithCIDR(parsedConfig.vipCIDR)
@@ -411,10 +413,11 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewNetworkPolicyController(),
 		controllers.NewWarmZeroController(),
 		controllers.NewStorageController(factStore),
-		controllers.NewGateKeyMigrationController(secretStore.EnvelopeCodec()))
+		controllers.NewGateKeyMigrationController(keyringCodec),
+		controllers.NewKeyringMigrationController(keyringCodec))
 
 	if clusterCertificateAuthority != nil {
-		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, secretStore.EnvelopeCodec()))
+		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, keyringCodec))
 	}
 
 	metricsCollector := controllers.NewMetricsCollector()
@@ -647,6 +650,7 @@ func configureAndStartAPIServer(
 	clusterCertificateAuthority *security.CertificateAuthority,
 	enrollmentEnabled bool,
 	secretStore *security.SecretStore,
+	keyringCodec *security.KeyringEnvelopeCodec,
 ) {
 
 	issuerURL := resolveServerIssuerURL(parsedConfig)
@@ -690,6 +694,7 @@ func configureAndStartAPIServer(
 	statusAPIServer.SetPolicyGate(policyGate)
 
 	configureSecretStoreAndDelivery(statusAPIServer, factStore, rbacAuthorizer, auditLog, secretStore)
+	statusAPIServer.SetKeyringMigrationGate(keyringCodec, version)
 
 	if parsedConfig.apiOnly {
 		statusAPIServer.SetServerMode(api.ServerModeAPIOnly)

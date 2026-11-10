@@ -32,9 +32,6 @@ const secretDeliveryRetryMax = 30 * time.Second
 // a change of the service's grants, connections or pull secret retries at once.
 const secretDeliveryRefusedRetry = 5 * time.Minute
 
-// secretDeliveryProtocolVersion is reported in observed/node/{id}/secret_delivery.
-const secretDeliveryProtocolVersion = "v2"
-
 // LegacySecretMasterKeyPath is the old per-node key file. Agents no longer use
 // it; they only report whether it is still present (migration gate, M177).
 const LegacySecretMasterKeyPath = "/etc/ccattler/secret-master.key" //nolint:gosec // G101: file path, not a credential
@@ -394,7 +391,7 @@ func (nodeAgent *Agent) sweepSecretMaterial(ctx context.Context, desiredByID map
 // publishSecretDeliveryCapability reports that this agent uses control-plane
 // delivery and whether the legacy key file is still on disk (Flow 27).
 func (nodeAgent *Agent) publishSecretDeliveryCapability(ctx context.Context) {
-	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedNodeSecretDelivery(nodeAgent.nodeID), []byte(secretDeliveryProtocolVersion)); putError != nil {
+	if _, putError := nodeAgent.store.Put(ctx, types.KeyObservedNodeSecretDelivery(nodeAgent.nodeID), []byte(types.SecretDeliveryVersion)); putError != nil {
 		logging.Default().Error("failed to publish secret delivery version", "agent", nodeAgent.nodeID, "error", putError.Error())
 	}
 	legacyKeyFileState := "absent"

@@ -158,36 +158,9 @@ func collectSealedGateKeyNames(facts []store.Fact) map[string]bool {
 }
 
 // collectNodesWithoutGateKeyDelivery returns the sorted nodes (enrolled or
-// registered, not disabled) that do not report gate_key_delivery = v1. Counting
-// registered nodes too keeps clusters without enrollment from deleting early.
+// registered, not disabled) that do not report gate_key_delivery = v1.
 func collectNodesWithoutGateKeyDelivery(facts []store.Fact) []string {
-	knownNodes := make(map[string]bool)
-	disabledNodes := make(map[string]bool)
-	upgradedNodes := make(map[string]bool)
-	for _, fact := range store.FactsWithPrefix(facts, security.EnrolledNodePrefix) {
-		if nodeID := strings.TrimPrefix(fact.Key, security.EnrolledNodePrefix); nodeID != "" && !strings.Contains(nodeID, "/") {
-			knownNodes[nodeID] = true
-		}
-	}
-	for _, fact := range store.FactsWithPrefix(facts, types.ScanObservedNodes) {
-		nodeID, attributePath, hasAttribute := strings.Cut(strings.TrimPrefix(fact.Key, types.ScanObservedNodes), "/")
-		switch {
-		case !hasAttribute:
-		case attributePath == "state":
-			knownNodes[nodeID] = true
-			disabledNodes[nodeID] = types.NodeState(fact.Value) == types.NodeDisabled
-		case attributePath == "gate_key_delivery":
-			upgradedNodes[nodeID] = string(fact.Value) == types.GateKeyDeliveryVersion
-		}
-	}
-	pendingNodes := make([]string, 0)
-	for nodeID := range knownNodes {
-		if !disabledNodes[nodeID] && !upgradedNodes[nodeID] {
-			pendingNodes = append(pendingNodes, nodeID)
-		}
-	}
-	sort.Strings(pendingNodes)
-	return pendingNodes
+	return security.NodesNotReporting(facts, "gate_key_delivery", types.GateKeyDeliveryVersion)
 }
 
 // migrationStatusChange returns a put of observed/gate-keys/migration when the

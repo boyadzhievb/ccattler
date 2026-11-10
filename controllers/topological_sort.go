@@ -107,6 +107,7 @@ func controllerOutputPrefixes() map[string][]string {
 		"route":                {"derived/route/"},
 		"route-tls":            {"derived/route/", "secrets/route/"},
 		"gate-key-migration":   {"desired/route/", "derived/route/", "secrets/route/", "observed/gate-keys/"},
+		"keyring-migration":    {"secrets/", "credentials/", "observed/keyring/migration"},
 		"auth":                 {},
 	}
 }

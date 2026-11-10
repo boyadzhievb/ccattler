@@ -225,7 +225,7 @@ func TestPublishSecretDeliveryCapabilityReportsLegacyKeyFile(testContext *testin
 	nodeAgent.publishSecretDeliveryCapability(ctx)
 	legacyFact, _ := memoryStore.Get(ctx, types.KeyObservedNodeLegacyKeyFile("node-1"))
 	deliveryFact, _ := memoryStore.Get(ctx, types.KeyObservedNodeSecretDelivery("node-1"))
-	if string(legacyFact.Value) != "absent" || string(deliveryFact.Value) != secretDeliveryProtocolVersion {
+	if string(legacyFact.Value) != "absent" || string(deliveryFact.Value) != types.SecretDeliveryVersion {
 		testContext.Fatalf("legacy=%s delivery=%s", legacyFact.Value, deliveryFact.Value)
 	}
 	_ = os.WriteFile(nodeAgent.legacyKeyFilePath, []byte("k"), 0o600)

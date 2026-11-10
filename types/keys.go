@@ -2451,3 +2451,13 @@ const ScanObservedKeyringReplicas = PrefixObserved + "/keyring/replica/"
 func KeyObservedKeyringReplica(nodeID string) string {
 	return ScanObservedKeyringReplicas + nodeID
 }
+
+// SecretDeliveryVersion is what an agent reports at
+// observed/node/{id}/secret_delivery once it receives secrets from the
+// control plane instead of decrypting locally (M174); the M177 migration gate
+// requires it from every node.
+const SecretDeliveryVersion = "v2"
+
+// KeyIntentKeyringLegacyMigration records the operator's request to migrate
+// v1 envelopes to v2 (cca secret migrate-keys, Flow 29 step 5).
+const KeyIntentKeyringLegacyMigration = PrefixIntent + "/keyring/legacy_migration"

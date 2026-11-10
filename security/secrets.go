@@ -49,12 +49,6 @@ func NewSecretStoreWithMasterKey(factStore store.StateStore, masterKey []byte) (
 	return NewSecretStore(factStore, legacyOnlyEnvelopeCodec{keyProvider: localKeyProvider}), nil
 }
 
-// EnvelopeCodec returns the codec controllers use to seal system-owned
-// secrets (route-tls, gate-key-migration), shared with this store.
-func (secretStore *SecretStore) EnvelopeCodec() SecretEnvelopeCodec {
-	return secretStore.envelopeCodec
-}
-
 // PutSecret encrypts and stores a secret value using envelope encryption,
 // bound to its store key secrets/{name}. The envelope blob is base64-encoded
 // before storage.

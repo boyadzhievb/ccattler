@@ -257,6 +257,8 @@ case "$CLUSTER_ENV" in
 esac
 
 ALL_IPS=("$CTRL_IP" "${WORKER_IPS[@]}")
+# Worker nodes always run an agent (the control-plane node does not in every env).
+WORKER_NODES_WITH_AGENT=("$WORKER1_NODE" "$WORKER2_NODE")
 ETCD_ENDPOINTS="https://${CTRL_IP}:2379"
 ETCD_TLS_FLAGS="--cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem"
 
@@ -1907,15 +1909,61 @@ verify_upgrade_keyring_state() {
             || fail "Upgrade: keyring took the fresh path (legacy=$legacy_state, migration=$migration_state); want present/not_started"
     fi
     if [[ " ${WORKLOAD_NAMES[*]} " == *" gate-tls "* ]]; then
-        local deadline=$((SECONDS + CONVERGE_TIMEOUT)) not_ready
-        while true; do
-            not_ready=$(ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --prefix /ccattler/observed/node/" \
-                | paste - - | grep '/gate_keys[[:space:]]' | grep -vc '"state":"ready"' || true)
-            [[ "$not_ready" -eq 0 ]] && break
-            [[ $SECONDS -lt $deadline ]] || fail "Upgrade: $not_ready node(s) report gate_keys != ready (v1 gate keys not delivered)"
-            sleep 3
-        done
+        wait_for_gate_keys_ready "v1 gate keys not delivered after the upgrade"
         log "  Gate keys (sealed before the upgrade) delivered to every agent"
+    fi
+}
+
+# wait_for_gate_keys_ready waits until no agent reports gate_keys other than
+# ready and, when given, at least minimum_ready agents report ready; a gate
+# key the server cannot open keeps an agent waiting.
+wait_for_gate_keys_ready() {
+    local failure_reason="$1" minimum_ready="${2:-0}"
+    local deadline=$((SECONDS + CONVERGE_TIMEOUT)) gate_key_reports not_ready ready
+    while true; do
+        gate_key_reports=$(ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --prefix /ccattler/observed/node/" \
+            | paste - - | grep '/gate_keys[[:space:]]' || true)
+        not_ready=$(echo "$gate_key_reports" | grep -c . | tr -d ' ')
+        ready=$(echo "$gate_key_reports" | grep -c '"state":"ready"' || true)
+        not_ready=$((not_ready - ready))
+        [[ "$not_ready" -eq 0 && "$ready" -ge "$minimum_ready" ]] && return 0
+        [[ $SECONDS -lt $deadline ]] || fail "Upgrade: gate_keys ready on $ready node(s), not ready on $not_ready ($failure_reason)"
+        sleep 3
+    done
+}
+
+# verify_legacy_key_migration runs the M177 legacy key migration (Flow 29
+# steps 5–6) on the upgraded cluster: the gate passes, every v1 envelope is
+# re-encrypted, the count reaches 0, and gate keys still reach every agent.
+verify_legacy_key_migration() {
+    local etcd_get="sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --print-value-only"
+    log "  Starting the legacy key migration (cca secret migrate-keys --confirm-backup)..."
+    ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca secret migrate-keys --confirm-backup" \
+        || fail "Upgrade: cca secret migrate-keys refused (see the unmet conditions above)"
+    local deadline=$((SECONDS + CONVERGE_TIMEOUT)) migration_json migration_state
+    while true; do
+        migration_json=$(ssh_vm "$CTRL_NODE" "$etcd_get /ccattler/observed/keyring/migration")
+        migration_state=$(echo "$migration_json" | jq -r '.state')
+        [[ "$migration_state" == "completed" ]] && break
+        [[ $SECONDS -lt $deadline ]] || fail "Upgrade: legacy key migration did not complete: $migration_json"
+        sleep 3
+    done
+    [[ "$(echo "$migration_json" | jq -r '.legacy_v1_envelope_count')" == "0" && "$(echo "$migration_json" | jq -r '.unreadable_count')" == "0" ]] \
+        || fail "Upgrade: migration completed with v1 or unreadable envelopes left: $migration_json"
+    log "  Legacy key migration completed: $migration_json"
+    if [[ " ${WORKLOAD_NAMES[*]} " == *" gate-tls "* ]]; then
+        local sealed_key_header
+        sealed_key_header=$(ssh_vm "$CTRL_NODE" "K=\$(sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS get --keys-only --prefix /ccattler/secrets/route/ | head -1); $etcd_get \$K | base64 -d | head -c 5 | od -An -tx1" | tr -d ' \n')
+        [[ "$sealed_key_header" == "cca75ec702" ]] || fail "Upgrade: sealed gate key is not v2 after migration (header $sealed_key_header)"
+        # Force a fresh fetch: without its tmpfs cache and its gate_keys report,
+        # an agent reports ready only after the server opened the v2 keys.
+        for vm in "${WORKER_NODES_WITH_AGENT[@]}"; do
+            ssh_vm "$vm" "sudo systemctl stop cca-agent && sudo rm -rf /run/ccattler/gate-keys"
+            ssh_vm "$CTRL_NODE" "sudo etcdctl --endpoints=$ETCD_ENDPOINTS $ETCD_TLS_FLAGS del /ccattler/observed/node/$vm/gate_keys >/dev/null"
+            ssh_vm "$vm" "sudo systemctl start cca-agent"
+        done
+        wait_for_gate_keys_ready "v2 gate keys not delivered after the migration" "${#WORKER_NODES_WITH_AGENT[@]}"
+        log "  Gate keys re-encrypted as v2 and fetched again by every agent (cache cleared)"
     fi
 }
 
@@ -2009,6 +2057,9 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     ssh_vm "$CTRL_NODE" "sudo /usr/local/bin/cca status >/dev/null" || fail "Upgrade: cca server unreachable after binary swap"
 
     verify_upgrade_keyring_state
+    if [[ "$UPGRADE_HAS_LEGACY_KEY" == "true" ]]; then
+        verify_legacy_key_migration
+    fi
 
     log "=== UPGRADE TEST PASSED ==="
 fi
