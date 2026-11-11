@@ -30,7 +30,11 @@ func startSecretEnvelopeCodec(ctx context.Context, factStore store.StateStore, p
 	if codecError != nil {
 		exitWithSecretKeyError(codecError)
 	}
-	go keyringCodec.RunKeyringWatch(ctx)
+	go func() {
+		if watchError := keyringCodec.RunKeyringWatch(ctx); watchError != nil {
+			exitWithSecretKeyError(watchError)
+		}
+	}()
 	go keyringCodec.RunKeyringReplicaReporter(ctx, parsedConfig.nodeID, version)
 	fmt.Printf("Secret keyring ready (root key: %s, legacy key: %t)\n", rootKeyProvider.ProviderName(), legacyKeyProvider != nil)
 	return keyringCodec
@@ -148,6 +152,52 @@ func exitWithSecretKeyError(keyError error) {
 		fmt.Fprintln(os.Stderr, "  Fix: copy secret-root.key from a running control-plane replica; every replica needs the same root key")
 	}
 	os.Exit(1)
+}
+
+// rootKeyRotationReplicaWait is how long rotate-root-key waits for the replica
+// reports to expire (their lease TTL is 30 s after a server stops).
+const rootKeyRotationReplicaWait = 45 * time.Second
+
+// executeSecretRotateRootKey implements "cca secret rotate-root-key [--path
+// <file>]" (Flow 30 part B): a local command on a control-plane host, run with
+// every cca-server stopped. It connects to etcd like cca server, refuses while
+// a replica report is alive, re-wraps the keyring in one transaction and swaps
+// the key files. Copy the new file to every other replica before starting them.
+func executeSecretRotateRootKey(args []string) {
+	rootKeyPath := security.DefaultSecretRootKeyPath
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		if args[argIndex] == "--path" && argIndex+1 < len(args) {
+			argIndex++
+			rootKeyPath = args[argIndex]
+			continue
+		}
+		fmt.Fprintln(os.Stderr, "usage: cca secret rotate-root-key [--path <file>]")
+		os.Exit(1)
+	}
+	storeDefaults := resolveStoreDefaultsForDaemon()
+	factStore, storeError := createStateStoreFromServerConfig(storeDefaults.storeBackend, storeDefaults.etcdEndpoints, storeDefaults.storeKeyPrefix,
+		storeDefaults.etcdCertPath, storeDefaults.etcdKeyPath, storeDefaults.etcdCACertPath)
+	if storeError != nil {
+		fmt.Fprintf(os.Stderr, "error: connect to etcd at %s: %v\n", storeDefaults.etcdEndpoints, storeError)
+		os.Exit(1)
+	}
+	defer func() { _ = factStore.Close() }()
+	ctx := context.Background()
+	fmt.Printf("Waiting up to %s for every API replica to stop...\n", rootKeyRotationReplicaWait)
+	if waitError := security.WaitForStoppedKeyringReplicas(ctx, factStore, rootKeyRotationReplicaWait); waitError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", waitError)
+		os.Exit(1)
+	}
+	resumed, rotateError := security.RotateSecretRootKeyFile(ctx, factStore, rootKeyPath)
+	if rotateError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", rotateError)
+		os.Exit(1)
+	}
+	if resumed {
+		fmt.Println("Finished an interrupted root key rotation (the keyring was already re-wrapped).")
+	}
+	fmt.Printf("Root key rotated: %s is the new key, %s.old the previous one (delete it once every replica runs).\n", rootKeyPath, rootKeyPath)
+	fmt.Println("Copy the new key to every other control-plane replica, then start cca-server one host at a time.")
 }
 
 // executeSecretGenerateRootKey implements "cca secret generate-root-key

@@ -158,15 +158,17 @@ func (keyringCodec *KeyringEnvelopeCodec) openLegacyEnvelope(ctx context.Context
 
 // RunKeyringWatch keeps the snapshot current: it refreshes on changes under
 // keyring/ and observed/keyring/migration and every
-// keyringRefreshFallbackInterval. Blocks until ctx is cancelled.
-func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) {
+// keyringRefreshFallbackInterval. Blocks until ctx is cancelled (nil), or
+// returns ErrKeyringRootCheckFailed when the root key changed underneath
+// (root key rotation, Flow 30): the replica must exit, not serve stale keys.
+func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) error {
 	keyringEvents := keyringCodec.subscribeKeyringWatch(ctx)
 	fallbackTicker := time.NewTicker(keyringRefreshFallbackInterval)
 	defer fallbackTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case _, isOpen := <-keyringEvents:
 			if !isOpen && ctx.Err() == nil {
 				logging.Default().Warn("keyring watch closed, re-subscribing")
@@ -177,9 +179,14 @@ func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) {
 				keyringEvents = keyringCodec.subscribeKeyringWatch(ctx)
 			}
 		}
-		if refreshError := keyringCodec.Refresh(ctx); refreshError != nil && ctx.Err() == nil {
-			logging.Default().Error("keyring refresh failed", "error", refreshError.Error())
+		refreshError := keyringCodec.Refresh(ctx)
+		if refreshError == nil || ctx.Err() != nil {
+			continue
 		}
+		if errors.Is(refreshError, ErrKeyringRootCheckFailed) {
+			return refreshError
+		}
+		logging.Default().Error("keyring refresh failed", "error", refreshError.Error())
 	}
 }
 

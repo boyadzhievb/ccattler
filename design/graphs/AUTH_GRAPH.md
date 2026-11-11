@@ -649,7 +649,8 @@ startSecretEnvelopeCodec                                [cmd/cca/server_secret_k
 │   │   writes keyring/kek/1, kek/1/state, active, root_check, legacy, observed/keyring/migration
 │   │   fresh (no legacy, no envelopes) → legacy none; else present
 │   └── Refresh (serialized) → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy state)
-├── go RunKeyringWatch(ctx)                              [keyring/ only; closed watch → re-subscribe; 60s fallback]
+├── go RunKeyringWatch(ctx) [security/envelope_codec.go:164] [keyring/ only; closed watch → re-subscribe; 60s fallback;
+│                                                          ErrKeyringRootCheckFailed (root key rotated) → exitWithSecretKeyError]
 ├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}: rewritten every 10s, lease 30s]
 └── any error → exitWithSecretKeyError                   [no silent key generation]
 
@@ -720,7 +721,16 @@ Every replica: Refresh sees retired → legacyKeyProvider = nil (warn); OpenEnve
 Ansible: worker role removes secret-master.key on non-control-plane hosts; control-plane roles only with
   retire_legacy_secret_key=true (HA: also secret-master.key.<ts>~ backups); HA stages keys in a per-run 0700 tempdir, deleted after use
 
-cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400)
+cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400, fsync)
+cca secret rotate-root-key [--path] → executeSecretRotateRootKey [cmd/cca/server_secret_keys.go:166] (local; store from resolveStoreDefaultsForDaemon)
+├── WaitForStoppedKeyringReplicas(45s) [security/root_key_rotation.go:34]   [observed/keyring/replica/* must be empty]
+└── RotateSecretRootKeyFile(path) [:64]
+    ├── loadRootKeyOpeningKeyring(path) [:103] opens root_check?
+    │   no → loadRootKeyOpeningKeyring(path.next) opens? → swapRootKeyFiles (resume) | error (wrong key files)
+    ├── remove stale path.next → GenerateSecretRootKeyFile(path.next)
+    ├── rewrapKeyringUnderRootKey [:126]  ONE txn [revisions of every keyring/kek/{v}, root_check, keyring/active]:
+    │   put keyring/kek/{v} = wrap(next, unwrap(current, ·)) for every version, put root_check = wrap(next, fixed value)
+    └── swapRootKeyFiles [:175]: path → path.old, path.next → path, fsync directory
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files
 ```

@@ -61,6 +61,11 @@ func GenerateSecretRootKeyFile(filePath string) error {
 		_ = os.Remove(filePath)
 		return fmt.Errorf("write %s: %w", filePath, writeError)
 	}
+	if syncError := keyFile.Sync(); syncError != nil {
+		_ = keyFile.Close()
+		_ = os.Remove(filePath)
+		return fmt.Errorf("sync %s: %w", filePath, syncError)
+	}
 	return keyFile.Close()
 }
 

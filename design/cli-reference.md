@@ -78,6 +78,7 @@ cca secret migrate-names --plan | --apply <mapping.ccv>
 cca secret migrate-keys --confirm-backup     # re-encrypt v1 envelopes (after migration gate)
 cca secret retire-legacy-key                 # stop using the old master key (after retirement gate)
 cca secret rotate                            # new KEK version, re-wrap (refused until the legacy key is retired)
+cca secret rotate-root-key [--path <file>]   # local, every cca-server stopped: new root key, keyring re-wrapped (run by rotate-root-key.yml)
 ```
 
 Names starting with `route/` are reserved for system gate keys (M176): `cca secret` refuses and hides them; see [config-secrets.md](config-secrets.md).
@@ -92,7 +93,7 @@ Names starting with `route/` are reserved for system gate keys (M176): `cca secr
 - The value is never a command-line argument (it would land in shell history and the process list).
 - `share` writes `desired/secret_share/{owner}/{name}/{consumer}` and needs `secret.write` in the owner's scope; `unshare` deletes it. A consuming service still needs `secret.use` in its own scope at apply. Delivery re-checks the share on every request, so `unshare` stops delivery at the next instance start.
 - `get` prints the value (as today) and needs `secret.read` in the secret's scope; `list` shows metadata only (name, tenant, KEK version, shares).
-- `migrate-keys`, `retire-legacy-key` and `rotate` need `cluster.admin` and return `409` with the unmet gate conditions.
+- `migrate-keys` and `retire-legacy-key` need `cluster.admin`, `rotate` needs `secret.write` at cluster; all three return `409` with the unmet gate conditions.
 
 Examples:
 

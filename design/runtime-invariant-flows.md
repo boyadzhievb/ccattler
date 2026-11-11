@@ -1432,11 +1432,11 @@ cca secret rotate-root-key [--path /etc/ccattler/secret-root.key]
        put keyring/kek/{v}    = wrap(new, KEK_v)   for every version
        put keyring/root_check = seal(new, fixed value)
      THIS IS THE POINT OF NO RETURN (before it, the old key still works everywhere)
-  5. rename {path} → {path}.old, {path}.next → {path}
-  running it again after success: the key at --path opens root_check and no
-    .next exists → generates another key. The playbook therefore runs it once
-    and checks its exit code; a re-run of the playbook after a failure in
-    step 4–6 skips step 3 when the first host has {path}.old.
+  5. rename {path} → {path}.old, {path}.next → {path}, fsync the directory
+  running it again after success rotates again (a newer key). That is safe:
+    the playbook always copies the key the command just installed, so a
+    re-run of the whole playbook after any failure leaves every replica on
+    one key.
 ```
 
 **Failure and recovery paths:**
