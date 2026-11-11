@@ -145,9 +145,13 @@
     state: present
     update_cache: true
 
+# etcd-client provides etcdctl: the HA etcd role's health checks, the etcd
+# backup runbook (design/TESTING.md) and rotate-root-key.yml snapshots use it.
 - name: Install etcd from distribution packages
   apt:
-    name: etcd-server
+    name:
+      - etcd-server
+      - etcd-client
     state: present
   when: "'etcd' in group_names"
 

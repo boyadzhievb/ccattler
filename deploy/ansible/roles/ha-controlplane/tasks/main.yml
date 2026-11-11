@@ -50,13 +50,17 @@
 # key is kept as secret-master.key.<timestamp>~: v1 secrets it wrote open only
 # with it (they show as unreadable_count; recovery in design/TESTING.md).
 # A binary older than M177 has no root key yet: nothing is fetched or copied.
+# ha-deploy.yml runs this role with serial: 1, so every host is its own batch
+# with its own staging directory: each batch fetches from the first node
+# (delegate_to + run_once) instead of only the first node's batch.
 - name: Fetch the secret root key from the first control-plane node (if any)
   fetch:
     src: /etc/ccattler/secret-root.key
     dest: "{{ ha_pki_staging.path }}/"
     flat: true
     fail_on_missing: false
-  when: inventory_hostname == groups['controlplane'][0]
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
 
 # Only clusters set up before M177 have a legacy key; new clusters have none,
 # and after retirement it is never fetched again.
@@ -66,9 +70,9 @@
     dest: "{{ ha_pki_staging.path }}/"
     flat: true
     fail_on_missing: false
-  when:
-    - inventory_hostname == groups['controlplane'][0]
-    - not (retire_legacy_secret_key | default(false) | bool)
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
+  when: not (retire_legacy_secret_key | default(false) | bool)
 
 - name: Ensure the configuration directory exists on other control-plane nodes
   file:
@@ -138,7 +142,8 @@
   loop:
     - /etc/ccattler/pki/ca.pem
     - /etc/ccattler/pki/ca-key.pem
-  when: inventory_hostname == groups['controlplane'][0]
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
 
 - name: Fetch node cert and key from the first node (used as template)
   fetch:
@@ -148,7 +153,8 @@
   loop:
     - /etc/ccattler/pki/node.pem
     - /etc/ccattler/pki/node-key.pem
-  when: inventory_hostname == groups['controlplane'][0]
+  delegate_to: "{{ groups['controlplane'][0] }}"
+  run_once: true
 
 - name: Distribute CA to other control-plane nodes
   copy:
@@ -201,18 +207,16 @@
     mode: "0644"
   notify: restart cca-server
 
-- name: Enable and start cca-server
+# Not started here: until the etcd-cluster play forms the raft cluster, each
+# control-plane host runs its own standalone etcd behind one endpoint list, and
+# a server reading the keyring across them (keyring/active from one member,
+# root_check from another) exits (Flow 29 step 3). ha-deploy.yml starts every
+# server and waits for its API once etcd is healthy.
+- name: Enable cca-server (started after the etcd cluster forms)
   systemd:
     name: cca-server
     enabled: true
-    state: started
     daemon_reload: true
-
-- name: Wait for cca-server API to respond
-  wait_for:
-    host: "{{ ansible_host }}"
-    port: 9770
-    timeout: 45
 
 - name: Copy example configs from local checkout
   copy:

@@ -12,6 +12,7 @@ ExecStart=/usr/local/bin/cca server \
   --cert {{ cca_cert_dir }}/node.pem \
   --key {{ cca_cert_dir }}/node-key.pem \
   --ca {{ cca_cert_dir }}/ca.pem \
+  --ca-key {{ cca_cert_dir }}/ca-key.pem \
   --cluster-cidr {{ cluster_cidr }} \
   --vip-cidr {{ vip_cidr }}
 Restart=on-failure

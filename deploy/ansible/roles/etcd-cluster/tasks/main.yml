@@ -22,11 +22,19 @@
     path: /var/lib/etcd
     state: absent
 
+# Distribution packages run etcd as user etcd (Debian, Ubuntu); otherwise root.
+- name: Look up the etcd service user
+  getent:
+    database: passwd
+    key: etcd
+    fail_key: false
+
 - name: Recreate etcd data directory
   file:
     path: /var/lib/etcd
     state: directory
-    owner: root
+    owner: "{{ 'etcd' if getent_passwd.etcd is not none else 'root' }}"
+    group: "{{ 'etcd' if getent_passwd.etcd is not none else 'root' }}"
     mode: "0700"
 
 - name: Create etcd systemd drop-in directory
@@ -35,10 +43,15 @@
     state: directory
     mode: "0755"
 
+- name: Remove the drop-in name used before it sorted after tls.conf
+  file:
+    path: /etc/systemd/system/etcd.service.d/cluster.conf
+    state: absent
+
 - name: Install etcd cluster drop-in
   template:
     src: etcd-cluster.conf.j2
-    dest: /etc/systemd/system/etcd.service.d/cluster.conf
+    dest: /etc/systemd/system/etcd.service.d/zz-cluster.conf
     mode: "0644"
 
 - name: Reload systemd and start etcd cluster
