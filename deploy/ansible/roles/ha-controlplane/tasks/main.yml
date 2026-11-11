@@ -93,7 +93,6 @@
   when:
     - inventory_hostname != groups['controlplane'][0]
     - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-root.key') | length > 0
-  notify: restart cca-server
 
 - name: Distribute legacy secret master key to other control-plane nodes
   copy:
@@ -107,7 +106,6 @@
     - inventory_hostname != groups['controlplane'][0]
     - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-master.key') | length > 0
     - not (retire_legacy_secret_key | default(false) | bool)
-  notify: restart cca-server
 
 # Only after 'cca secret retire-legacy-key' succeeded (Flow 29 step 7): run the
 # playbook with -e retire_legacy_secret_key=true to delete the retired key and
@@ -200,12 +198,14 @@
     content: "{{ etcd_endpoints }}\n"
     mode: "0600"
 
+# No restart handlers in this role: a server restarted here would run against
+# the standalone pre-cluster etcds. ha-deploy.yml restarts every server once
+# the etcd cluster is healthy, which also applies new keys and unit flags.
 - name: Install cca-server systemd unit (HA mode with --node-id)
   template:
     src: cca-server.service.j2
     dest: /etc/systemd/system/cca-server.service
     mode: "0644"
-  notify: restart cca-server
 
 # Not started here: until the etcd-cluster play forms the raft cluster, each
 # control-plane host runs its own standalone etcd behind one endpoint list, and

@@ -1,5 +1,0 @@
----
-- name: restart cca-server
-  systemd:
-    name: cca-server
-    state: restarted
