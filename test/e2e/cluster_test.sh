@@ -499,6 +499,14 @@ if ssh_vm "$CTRL_NODE" "test -f /usr/local/bin/cca" 2>/dev/null; then
         ssh_vm "$vm" "sudo ip link delete cca0 2>/dev/null; sudo ip link delete cca-vxlan0 2>/dev/null; sudo ip link delete cca-vip0 2>/dev/null; sudo rm -rf /var/run/netns/cca-* 2>/dev/null" &
     done
     wait
+    # Every backend's state, not only the next run's (agents are stopped): a
+    # deployment that switches backend (e.g. nftables → ebpf) must not inherit
+    # the old rules, which also misled the data plane checks (run 43018952938).
+    log "Removing data plane state of every backend (nftables, iptables, eBPF)..."
+    for vm in "${VM_NAMES[@]}"; do
+        ssh_vm "$vm" "sudo nft delete table ip cca 2>/dev/null; for table in nat filter; do sudo iptables -t \$table -S 2>/dev/null | grep -- '-j CCA_' | sed 's/^-A /-D /' | while read -r rule; do sudo iptables -t \$table \$rule; done; for chain in \$(sudo iptables -t \$table -S 2>/dev/null | awk '/^-N CCA_/{print \$2}'); do sudo iptables -t \$table -F \$chain; done; for chain in \$(sudo iptables -t \$table -S 2>/dev/null | awk '/^-N CCA_/{print \$2}'); do sudo iptables -t \$table -X \$chain; done; done; sudo rm -rf /sys/fs/bpf/cca; true" &
+    done
+    wait
     if [[ "$KEEP_DATA" == "false" ]]; then
         log "Removing all containers, images, and snapshots..."
         for vm in "${VM_NAMES[@]}"; do
@@ -1045,44 +1053,92 @@ log "  Running instances with endpoints: $ENDPOINT_COUNT"
 VIP_COUNT=$(echo "$NET_JSON" | jq '.networking | length' 2>/dev/null || echo "0")
 log "  VIP/networking entries: $VIP_COUNT"
 
-# Wait for data plane rules to appear on a worker node (agents install DNAT rules;
-# the ctrl node may not run an agent).
+# Data plane helpers. The backend is known, never guessed from rules on the
+# node: leftovers of an earlier deployment with another backend must not pick
+# the checks. Pass/fail is decided by traffic through the VIPs; the per-backend
+# inspection below only confirms the entries exist and dumps diagnostics.
+
+# resolve_dataplane_type prints the backend the agents run (nftables, iptables
+# or ebpf): the requested --dataplane, or for auto the agent's startup line on $1.
+resolve_dataplane_type() {
+    local vm="$1"
+    case "$DATAPLANE_OVERRIDE" in
+        nftables|iptables|ebpf) echo "$DATAPLANE_OVERRIDE"; return ;;
+    esac
+    local startup_line
+    startup_line=$(ssh_vm "$vm" "sudo journalctl -u cca-agent -o cat --no-pager 2>/dev/null | grep '^Data plane:' | tail -1" 2>/dev/null | tail -1)
+    case "$startup_line" in
+        "Data plane: shadow"*|"Data plane: iptables"*) echo "iptables" ;;
+        "Data plane: nftables"*) echo "nftables" ;;
+        *eBPF*) echo "ebpf" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+# count_dataplane_entries prints the number of service entries the backend $2
+# holds on node $1 (nftables verdict map, iptables service chains, eBPF map).
+count_dataplane_entries() {
+    local vm="$1" backend="$2" entry_count
+    case "$backend" in
+        nftables) entry_count=$(ssh_vm "$vm" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto' || true" | tail -1) ;;
+        iptables) entry_count=$(ssh_vm "$vm" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_' || true" | tail -1) ;;
+        ebpf)     entry_count=$(ssh_vm "$vm" "sudo bpftool -j map dump name cca_services 2>/dev/null | grep -o '\"service_id\"' | wc -l" | tail -1) ;;
+    esac
+    echo "${entry_count:-0}"
+}
+
+# dump_dataplane prints the service entries of backend $2 on node $1.
+dump_dataplane() {
+    local vm="$1" backend="$2"
+    case "$backend" in
+        nftables) ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null | head -40" 2>/dev/null || true ;;
+        iptables) ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" 2>/dev/null || true ;;
+        ebpf)     ssh_vm "$vm" "sudo bpftool map dump name cca_services 2>/dev/null | grep -A3 formatted | head -40" 2>/dev/null || true ;;
+    esac
+}
+
+# dataplane_has_vip_port succeeds when backend $2 on node $1 dispatches TCP
+# VIP $3 port $4. The eBPF map stores both in network byte order, read as
+# little-endian integers by bpftool.
+dataplane_has_vip_port() {
+    local vm="$1" backend="$2" vip="$3" port="$4"
+    case "$backend" in
+        nftables) ssh_vm "$vm" "sudo nft list map ip cca vip_dispatch 2>/dev/null" | grep -q "$vip \. tcp \. $port : goto" ;;
+        iptables) ssh_vm "$vm" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null" | grep "$vip" | grep -q "dpt:$port" ;;
+        ebpf)
+            local octet1 octet2 octet3 octet4
+            IFS=. read -r octet1 octet2 octet3 octet4 <<< "$vip"
+            local vip_key=$(( (octet4 << 24) | (octet3 << 16) | (octet2 << 8) | octet1 ))
+            local port_key=$(( ((port & 255) << 8) | (port >> 8) ))
+            ssh_vm "$vm" "sudo bpftool -j map dump name cca_services 2>/dev/null" | grep -q "\"vip_addr\":$vip_key,\"port\":$port_key,\"protocol\":6"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# Wait for data plane entries on a worker node (agents program them; the ctrl
+# node may not run an agent).
 DATAPLANE_CHECK_NODE="$WORKER1_NODE"
+DATAPLANE_TYPE=$(resolve_dataplane_type "$DATAPLANE_CHECK_NODE")
 DATAPLANE_DEADLINE=$((SECONDS + 30))
 DNAT_RULE_COUNT=0
-DATAPLANE_TYPE=""
 while [[ $SECONDS -lt $DATAPLANE_DEADLINE ]]; do
-    NFT_COUNT=$(ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null | grep -c 'goto' || true" | tail -1)
-    NFT_COUNT=${NFT_COUNT:-0}
-    if [[ "$NFT_COUNT" -gt 0 ]]; then
-        DNAT_RULE_COUNT=$NFT_COUNT
-        DATAPLANE_TYPE="nftables"
-        break
-    fi
-    IPT_COUNT=$(ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | grep -c 'CCA_SVC_' || true" | tail -1)
-    IPT_COUNT=${IPT_COUNT:-0}
-    if [[ "$IPT_COUNT" -gt 0 ]]; then
-        DNAT_RULE_COUNT=$IPT_COUNT
-        DATAPLANE_TYPE="iptables"
-        break
-    fi
+    DNAT_RULE_COUNT=$(count_dataplane_entries "$DATAPLANE_CHECK_NODE" "$DATAPLANE_TYPE")
+    [[ "$DNAT_RULE_COUNT" -gt 0 ]] && break
     sleep 3
 done
-log "  Data plane rules on $DATAPLANE_CHECK_NODE: $DNAT_RULE_COUNT ($DATAPLANE_TYPE)"
+log "  Data plane entries on $DATAPLANE_CHECK_NODE: $DNAT_RULE_COUNT ($DATAPLANE_TYPE)"
 
 if [[ "$DNAT_RULE_COUNT" -gt 0 ]]; then
-    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null | head -30" 2>/dev/null || true
-    else
-        ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | head -20" 2>/dev/null || true
-    fi
-    log "VIP data plane OK — DNAT rules programmed ($DATAPLANE_TYPE)"
+    dump_dataplane "$DATAPLANE_CHECK_NODE" "$DATAPLANE_TYPE"
+    log "VIP data plane OK — service entries programmed ($DATAPLANE_TYPE)"
 else
-    log "WARNING: No data plane rules found — cross-node VIP routing may not work"
+    log "WARNING: No $DATAPLANE_TYPE data plane entries found — cross-node VIP routing may not work"
     log "  Dumping diagnostics..."
+    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo journalctl -u cca-agent -o cat --no-pager 2>/dev/null | grep -i 'data plane' | tail -5" 2>/dev/null || true
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list tables 2>/dev/null" 2>/dev/null || true
-    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo nft list table ip cca 2>/dev/null" 2>/dev/null || true
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" 2>/dev/null || true
+    ssh_vm "$DATAPLANE_CHECK_NODE" "sudo bpftool map list 2>/dev/null | grep -A1 cca_" 2>/dev/null || true
     log "  Networking from API:"
     curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true
     log "  Nodes from API:"
@@ -1099,11 +1155,7 @@ log "Validating cross-node VIP connectivity and DNS resolution..."
 # Dump per-service DNAT backends on every node for debugging.
 for vm in "${VM_NAMES[@]}"; do
     log "  data plane backends on $vm ($DATAPLANE_TYPE):"
-    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        ssh_vm "$vm" "sudo nft list table ip cca 2>/dev/null | head -40" 2>/dev/null || true
-    else
-        ssh_vm "$vm" "for chain in \$(sudo iptables -t nat -L CCA_SERVICES -n 2>/dev/null | awk '/CCA_SVC_/{print \$1}'); do echo \"  \$chain:\"; sudo iptables -t nat -L \"\$chain\" -n 2>/dev/null | grep DNAT; done" 2>/dev/null || true
-    fi
+    dump_dataplane "$vm" "$DATAPLANE_TYPE"
     log "  bridge/route info on $vm:"
     ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" 2>/dev/null || true
 done
@@ -1619,20 +1671,15 @@ if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
         log "  KNOWN GAP (M191): no VIP for whoami-multiport port 8081 — multi-port service VIPs not implemented"
     fi
 
-    if [[ "$DATAPLANE_TYPE" == "nftables" ]]; then
-        # Entries look like "10.x.y.z . tcp . 80 : goto svc_whoami_multiport".
-        VERDICT_MAP=$(ssh_vm "$WORKER1_NODE" "sudo nft list map ip cca vip_dispatch 2>/dev/null" || echo "")
-        PORT80_IN_MAP=false
-        PORT8081_IN_MAP=false
-        if echo "$VERDICT_MAP" | grep -q "\. tcp \. 80 : goto svc_whoami_multiport"; then
-            PORT80_IN_MAP=true
+    if [[ -n "$MULTIPORT_PORT80_VIP" ]]; then
+        PORT80_IN_DATAPLANE=false
+        if dataplane_has_vip_port "$WORKER1_NODE" "$DATAPLANE_TYPE" "$MULTIPORT_PORT80_VIP" 80; then
+            PORT80_IN_DATAPLANE=true
         fi
-        if echo "$VERDICT_MAP" | grep -q "\. tcp \. 8081 : goto svc_whoami_multiport"; then
-            PORT8081_IN_MAP=true
-        fi
-        log "  nftables verdict map entries — port 80: $PORT80_IN_MAP, port 8081: $PORT8081_IN_MAP"
-        if [[ "$PORT80_IN_MAP" != "true" ]]; then
-            log "  FAIL: no nftables vip_dispatch entry for whoami-multiport port 80"
+        log "  $DATAPLANE_TYPE entry for $MULTIPORT_PORT80_VIP:80 on $WORKER1_NODE: $PORT80_IN_DATAPLANE"
+        if [[ "$PORT80_IN_DATAPLANE" != "true" ]]; then
+            log "  FAIL: no $DATAPLANE_TYPE data plane entry for whoami-multiport port 80"
+            dump_dataplane "$WORKER1_NODE" "$DATAPLANE_TYPE"
             MULTIPORT_PASS=false
         fi
     fi

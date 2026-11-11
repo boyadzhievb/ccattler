@@ -46,6 +46,23 @@
     - /var/lib/cca/volumes
     - /var/log/ccattler
 
+# Every data plane backend's state (nftables table, iptables CCA_* chains, eBPF
+# pins), so a redeploy with another --dataplane starts clean.
+- name: Remove data plane state of every backend
+  shell: |
+    nft delete table ip cca 2>/dev/null
+    for table in nat filter; do
+      iptables -t $table -S 2>/dev/null | grep -- '-j CCA_' | sed 's/^-A /-D /' |
+        while read -r rule; do iptables -t $table $rule; done
+      for chain in $(iptables -t $table -S 2>/dev/null | awk '/^-N CCA_/{print $2}'); do iptables -t $table -F "$chain"; done
+      for chain in $(iptables -t $table -S 2>/dev/null | awk '/^-N CCA_/{print $2}'); do iptables -t $table -X "$chain"; done
+    done
+    rm -rf /sys/fs/bpf/cca
+    true
+  args:
+    executable: /bin/bash
+  changed_when: false
+
 - name: Remove etcd data
   file:
     path: /var/lib/etcd
