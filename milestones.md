@@ -308,6 +308,11 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
   - SA8 low-medium, rejected for M178 → M182: `--ca-key` on every HA replica keeps the CA key in three servers' memory (it was already on every control-plane disk; enrollment needs it); documented
   - SA9 low, rejected → M181: etcd trusts every cluster-CA certificate (unchanged by M178)
   - SA10 low, fixed: `no_log` on the HA role's key fetch/copy tasks; KEK step failure fails the play; snapshot expiry and off-node copies documented in the runbook. Not fixed: `ha-deploy.yml` re-run during an interrupted rotation copies the first host's key (do not run it during a rotation — runbook)
+- [x] Review fixes executed on the 3+1 HA set (testbed-100.77, 2026-11-11, build c61c5a3):
+  - A, failure before the commit (stray `.old` on ctrl-2): play stopped inside the rescue block, every server restarted on the unchanged key, secret readable
+  - B, success: 42 s, all three hosts on the new key, no leftover key files, follow-up KEK rotation awaited until `completed`, both test secrets read through each replica
+  - C, failure after the commit (commit + swaps done, servers down, `.old` everywhere): plain re-run refused as ambiguous; `-e resume_root_key_rotation=true` finished it (servers up, `.old` shredded, KEK rotation completed), secrets readable through each replica
+  - Found while doing so, fixed: the cleanup role never removed `/tmp/cca-init`, so every "clean" HA redeploy skipped `cca init` and reinstalled the previous CA and root key (a fresh redeploy now gets a new root key; checked)
 - [ ] Restore the CI triggers removed in 606e0ef (`e2e.yml` push, `e2e-extended.yml` schedule, `upgrade-test.yml` release) when the e2e VM set returns to testbed-100.77
 
 ### Phase 179 — Tenant-Scoped Secrets (M179)

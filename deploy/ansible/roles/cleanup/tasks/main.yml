@@ -42,6 +42,9 @@
   loop:
     - /etc/ccattler/pki
     - /etc/ccattler
+    # cca init output: left in place, a redeploy skipped cca init (creates:
+    # setup.sh) and reinstalled the previous CA and secret root key.
+    - /tmp/cca-init
     - /var/lib/ccattler
     - /var/lib/cca/volumes
     - /var/log/ccattler
