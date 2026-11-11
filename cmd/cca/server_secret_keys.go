@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
@@ -73,6 +74,17 @@ func newEphemeralSecretKeyProvider() security.KeyProvider {
 	}
 	fmt.Println("Secret keys: ephemeral (in-memory store); nothing is written to disk")
 	return ephemeralKeyProvider
+}
+
+// parseKeyringRetireGrace parses --keyring-retire-grace (a Go duration such as
+// 168h); a malformed or non-positive value is a startup error.
+func parseKeyringRetireGrace(flagValue string) time.Duration {
+	retireGrace, parseError := time.ParseDuration(flagValue)
+	if parseError != nil || retireGrace <= 0 {
+		fmt.Fprintf(os.Stderr, "error: --keyring-retire-grace %q must be a positive duration (e.g. 168h)\n", flagValue)
+		os.Exit(1)
+	}
+	return retireGrace
 }
 
 // loadSecretRootKeyProvider returns the root key provider: a KMS key that

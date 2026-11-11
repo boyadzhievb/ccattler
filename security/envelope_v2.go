@@ -58,13 +58,7 @@ func sealEnvelopeV2(keyEncryptionKey []byte, kekVersion int, storeKey string, pl
 	if wrapError != nil {
 		return nil, fmt.Errorf("seal v2 envelope: wrap DEK: %w", wrapError)
 	}
-	envelope := make([]byte, 0, envelopeV2HeaderSize+len(wrappedDEK)+len(sealedValue))
-	envelope = append(envelope, envelopeV2Magic...)
-	envelope = append(envelope, envelopeV2Format)
-	envelope = binary.BigEndian.AppendUint32(envelope, uint32(kekVersion))      //nolint:gosec // range checked above
-	envelope = binary.BigEndian.AppendUint16(envelope, uint16(len(wrappedDEK))) //nolint:gosec // AES-GCM wrapped DEK is 60 bytes
-	envelope = append(envelope, wrappedDEK...)
-	return append(envelope, sealedValue...), nil
+	return assembleEnvelopeV2(kekVersion, wrappedDEK, sealedValue), nil
 }
 
 // parseEnvelopeV2 splits a v2 envelope into its KEK version, wrapped DEK and
@@ -83,6 +77,41 @@ func parseEnvelopeV2(envelope []byte) (int, []byte, []byte, error) {
 	wrappedDEK := envelope[envelopeV2HeaderSize : envelopeV2HeaderSize+wrappedDEKLength]
 	sealedValue := envelope[envelopeV2HeaderSize+wrappedDEKLength:]
 	return kekVersion, wrappedDEK, sealedValue, nil
+}
+
+// rewrapEnvelopeV2 moves a v2 envelope to another KEK version: the DEK is
+// unwrapped with currentKEK and wrapped with targetKEK. The nonce, ciphertext
+// and AAD binding are unchanged; nothing is decrypted beyond the DEK (Flow 30).
+func rewrapEnvelopeV2(envelope []byte, currentKEK []byte, targetKEK []byte, targetKEKVersion int) ([]byte, error) {
+	if targetKEKVersion <= 0 || targetKEKVersion > math.MaxUint32 {
+		return nil, fmt.Errorf("re-wrap v2 envelope: invalid KEK version %d", targetKEKVersion)
+	}
+	_, wrappedDEK, sealedValue, parseError := parseEnvelopeV2(envelope)
+	if parseError != nil {
+		return nil, parseError
+	}
+	dataEncryptionKey, unwrapError := decryptWithDEK(currentKEK, wrappedDEK)
+	if unwrapError != nil {
+		return nil, fmt.Errorf("re-wrap v2 envelope: unwrap DEK: %w", unwrapError)
+	}
+	rewrappedDEK, wrapError := encryptWithDEK(targetKEK, dataEncryptionKey)
+	if wrapError != nil {
+		return nil, fmt.Errorf("re-wrap v2 envelope: wrap DEK: %w", wrapError)
+	}
+	return assembleEnvelopeV2(targetKEKVersion, rewrappedDEK, sealedValue), nil
+}
+
+// assembleEnvelopeV2 lays out a v2 envelope; the caller checked kekVersion
+// fits in 32 bits. Layout: magic | 2 | kek_version | wrapped_dek_length |
+// wrapped_dek | nonce || ciphertext (sealedValue).
+func assembleEnvelopeV2(kekVersion int, wrappedDEK []byte, sealedValue []byte) []byte {
+	envelope := make([]byte, 0, envelopeV2HeaderSize+len(wrappedDEK)+len(sealedValue))
+	envelope = append(envelope, envelopeV2Magic...)
+	envelope = append(envelope, envelopeV2Format)
+	envelope = binary.BigEndian.AppendUint32(envelope, uint32(kekVersion))      //nolint:gosec // range checked by the callers
+	envelope = binary.BigEndian.AppendUint16(envelope, uint16(len(wrappedDEK))) //nolint:gosec // AES-GCM wrapped DEK is 60 bytes
+	envelope = append(envelope, wrappedDEK...)
+	return append(envelope, sealedValue...)
 }
 
 // openEnvelopeV2Payload unwraps the DEK with the KEK and decrypts the value;

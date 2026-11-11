@@ -2438,6 +2438,12 @@ func KeyKeyringKEKState(kekVersion int) string {
 	return fmt.Sprintf("%s%d/state", ScanKeyringKEKs, kekVersion)
 }
 
+// KeyKeyringKEKRetiringSince returns the store path of the RFC 3339 time a
+// KEK version became retiring; it is deleted after the retire grace (Flow 30).
+func KeyKeyringKEKRetiringSince(kekVersion int) string {
+	return fmt.Sprintf("%s%d/retiring_since", ScanKeyringKEKs, kekVersion)
+}
+
 // KeyObservedKeyringMigration holds the legacy key migration status as JSON
 // (state, legacy_v1_envelope_count, unreadable_count, ...).
 const KeyObservedKeyringMigration = PrefixObserved + "/keyring/migration"

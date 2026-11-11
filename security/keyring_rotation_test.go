@@ -102,7 +102,7 @@ func TestStartKeyringRotationRecordsIntentOnce(t *testing.T) {
 		t.Fatalf("want exactly one start to win: %v", startResults)
 	}
 
-	var rotationIntent keyringRotationIntent
+	var rotationIntent KeyringRotationIntent
 	intentFact, _ := factStore.Get(ctx, types.KeyIntentKeyringRotation)
 	if json.Unmarshal(intentFact.Value, &rotationIntent) != nil || rotationIntent.TargetVersion != 2 || rotationIntent.RequestedBy != "user:admin" {
 		t.Fatalf("intent = %s", intentFact.Value)

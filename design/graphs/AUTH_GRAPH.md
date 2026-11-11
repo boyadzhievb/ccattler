@@ -634,7 +634,7 @@ RewrapEnvelope(ctx, oldProvider, newProvider, envelope)        [:141]
 ```
 executeServerCommand [cmd/cca/command_server.go:334]
   keyringCodec := startSecretEnvelopeCodec(ctx, factStore, cfg); NewSecretStore(factStore, keyringCodec)
-  keyringCodec → startControllersWithLeaderElection (route-tls, gate-key-migration, keyring-migration)
+  keyringCodec → startControllersWithLeaderElection (route-tls, gate-key-migration, keyring-migration, keyring-rotation)
                → configureAndStartAPIServer → SetKeyringAdministration(keyringCodec, version)
 startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go:26]
 ├── loadSecretKeyProviders(ctx, cfg)
@@ -669,6 +669,22 @@ POST /api/secret/rotate → handleSecretRotate [api/keyring_migration.go:82; sec
 ├── unmet → writeKeyringGateRefusal (409 {error, unmet[]})
 └── StartKeyringRotation(principal) [:70] → txn [keyring/active rev, keyring/legacy rev, intent create-only]
     put intent/keyring/rotation {target_version = active + 1} + observed/keyring/rotation {state: in_progress}
+KeyringRotationController.Reconcile [controllers/keyring_rotation.go:88] (leader; Watch keyring/, intent/keyring/rotation,
+  observed/keyring/rotation, observed/keyring/replica/, secrets/, credentials/; --keyring-retire-grace, default 168h)
+├── parseKeyringRotationView [:255] → recordKEKFact [:285] (keyring/kek/{v}, /state, /retiring_since)
+├── intent ∧ active < target:
+│   ├── kek/{target} absent → createTargetKEK [:122] → CreateWrappedKEK [security/keyring_rotation.go:157]
+│   │   put kek/{target} + kek/{target}/state = pending (runner: create-only)
+│   └── else → switchActiveKEK [:136]: put keyring/active = target, target active, previous draining (one group)
+├── PlanKEKRewrapBatch(facts, active, 40) [security/keyring_rotation.go:173]
+│   └── rewrapEnvelopeV2 [security/envelope_v2.go:85] (DEK re-wrapped; nonce, ciphertext, AAD unchanged)
+├── no rewrites → planVersionTransitions [:150]
+│   ├── draining, 0 envelopes, ReplicasNotOnKEK [security/keyring_rotation.go:237] empty → retiring + retiring_since
+│   ├── retiring, named again → draining
+│   └── retiring, grace elapsed (retireGraceElapsed [:193]) → delete kek/{v}, /state, /retiring_since
+└── planRotationStatus [:201]: rewrapped, remaining, unreadable_count; remaining 0 ∧ none draining →
+    delete intent, state completed; unchanged status not written
+Write domain: keyring-rotation → keyring/kek/, keyring/active, secrets/, credentials/, intent/keyring/rotation, observed/keyring/rotation
 
 Legacy key migration (M177 step 3, Flow 29 steps 5–6):
 cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest

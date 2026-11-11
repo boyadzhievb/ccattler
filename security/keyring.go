@@ -69,9 +69,6 @@ type KeyringMigrationStatus struct {
 // keyringFirstKEKVersion is the KEK version created at bootstrap.
 const keyringFirstKEKVersion = 1
 
-// keyringKEKStateActive marks the KEK version in use.
-const keyringKEKStateActive = "active"
-
 // keyringRootCheckPlaintext is the fixed value sealed in keyring/root_check.
 var keyringRootCheckPlaintext = []byte("ccattler keyring root check v1")
 
@@ -169,7 +166,7 @@ func buildKeyringBootstrapOperations(ctx context.Context, rootKeyProvider KeyPro
 	}
 	return []store.Op{
 		{Type: store.OpPut, Key: types.KeyKeyringKEK(keyringFirstKEKVersion), Value: wrappedKEK},
-		{Type: store.OpPut, Key: types.KeyKeyringKEKState(keyringFirstKEKVersion), Value: []byte(keyringKEKStateActive)},
+		{Type: store.OpPut, Key: types.KeyKeyringKEKState(keyringFirstKEKVersion), Value: []byte(KEKVersionActive)},
 		{Type: store.OpPut, Key: types.KeyKeyringActive, Value: []byte(strconv.Itoa(keyringFirstKEKVersion))},
 		{Type: store.OpPut, Key: types.KeyKeyringRootCheck, Value: sealedRootCheck},
 		{Type: store.OpPut, Key: types.KeyKeyringLegacy, Value: []byte(legacyKeyState)},

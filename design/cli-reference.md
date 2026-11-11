@@ -10,7 +10,7 @@ command listed here exists in `cmd/cca/main.go`. Run `cca --help` for full usage
 cca apply <file>              # deploy config
 cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
-cca server [flags]            # start control plane (--secret-root-key <file> | --kms-provider <p> --kms-key-id <id>)
+cca server [flags]            # start control plane (--secret-root-key <file> | --kms-provider <p> --kms-key-id <id>; --keyring-retire-grace <duration>, default 168h)
 cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --storage-dir <path>)
 cca token create/list/revoke  # bootstrap token management
 cca join <server> <token>     # join node to cluster

@@ -121,6 +121,9 @@ type serverCommandConfig struct {
 	kmsProviderName string
 	// kmsKeyID identifies the KMS key used as the secret root key.
 	kmsKeyID string
+	// keyringRetireGrace is how long a retiring KEK version is kept before it
+	// is deleted (--keyring-retire-grace, Flow 30).
+	keyringRetireGrace time.Duration
 }
 
 // parseServerCommandArgs extracts store-related flags from the arguments
@@ -130,11 +133,12 @@ type serverCommandConfig struct {
 func parseServerCommandArgs(args []string) serverCommandConfig {
 	defaults := resolveStoreDefaultsForDaemon()
 	parsedConfig := serverCommandConfig{
-		storeBackend:      defaults.storeBackend,
-		etcdEndpoints:     defaults.etcdEndpoints,
-		storeKeyPrefix:    defaults.storeKeyPrefix,
-		listenAddress:     "0.0.0.0:" + defaultAPIListenPort,
-		secretRootKeyPath: security.DefaultSecretRootKeyPath,
+		storeBackend:       defaults.storeBackend,
+		etcdEndpoints:      defaults.etcdEndpoints,
+		storeKeyPrefix:     defaults.storeKeyPrefix,
+		listenAddress:      "0.0.0.0:" + defaultAPIListenPort,
+		secretRootKeyPath:  security.DefaultSecretRootKeyPath,
+		keyringRetireGrace: controllers.DefaultKeyringRetireGrace,
 	}
 	explicitListenProvided := false
 
@@ -251,6 +255,11 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 			if argIndex+1 < len(args) {
 				argIndex++
 				parsedConfig.kmsKeyID = args[argIndex]
+			}
+		case "--keyring-retire-grace":
+			if argIndex+1 < len(args) {
+				argIndex++
+				parsedConfig.keyringRetireGrace = parseKeyringRetireGrace(args[argIndex])
 			}
 		case "--oidc-issuer":
 			if argIndex+1 < len(args) {
@@ -414,7 +423,8 @@ func startControllersWithLeaderElection(ctx context.Context, factStore store.Sta
 		controllers.NewWarmZeroController(),
 		controllers.NewStorageController(factStore),
 		controllers.NewGateKeyMigrationController(keyringCodec),
-		controllers.NewKeyringMigrationController(keyringCodec))
+		controllers.NewKeyringMigrationController(keyringCodec),
+		controllers.NewKeyringRotationController(keyringCodec, parsedConfig.keyringRetireGrace))
 
 	if clusterCertificateAuthority != nil {
 		controllerList = append(controllerList, controllers.NewRouteTLSController(clusterCertificateAuthority, keyringCodec))
