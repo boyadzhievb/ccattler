@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.76.0-beta <Badge type="tip" text="latest" /> {#v1-76-0-beta}
+## v1.77.0-beta <Badge type="tip" text="latest" /> {#v1-77-0-beta}
+
+**2026-11-11** — Keyring Rotation.
+
+- **Keyring Rotation** (M178) — `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M177.
+
+---
+
+## v1.76.0-beta {#v1-76-0-beta}
 
 **2026-11-10** — Root Key, Keyring & Key Migration.
 
