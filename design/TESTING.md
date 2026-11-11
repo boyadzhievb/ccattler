@@ -246,6 +246,25 @@ cca status
 - **Disabled nodes** are not checked by either gate and may still hold the old key file; remove it before re-enabling such a node.
 - **`cca init` output** (e.g. `/tmp/cca-init`) holds `secret-root.key` and `ca-key.pem`: it is control-plane-only material; delete it after `setup.sh` ran, never copy it to workers.
 
+## HA cluster on testbed-100.77
+
+Bridged 3 control-plane + 1 worker set for HA checks (`test/e2e/vm-ha-lan/Herdfile`, 192.168.100.53–.56, 11 GB). The host has 16 GB, so it never runs next to the e2e set (`vm-lan`, 10 GB): stop the ccattler runner and the e2e VMs first, and bring both back afterwards.
+
+```sh
+# on testbed-100.77
+sudo systemctl stop actions.runner.boyadzhievb-ccattler.testbed-100-43.service
+(cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd down)
+cd <repo copy>/test/e2e/vm-ha-lan && vmherd up
+cd ../../../deploy/ansible
+ansible-playbook -i lan-ha-inventory.ini ha-deploy.yml -e vmherd_ssh_key=$(cd ../../test/e2e/vm-ha-lan && vmherd info ssh-key)
+# afterwards
+(cd <repo copy>/test/e2e/vm-ha-lan && vmherd down)
+(cd ~/actions-runner/_work/ccattler/ccattler/test/e2e/vm-lan && vmherd up)
+sudo systemctl start actions.runner.boyadzhievb-ccattler.testbed-100-43.service
+```
+
+The HA servers listen on the host IP only: on a control-plane host use `CCA_API=<host ip>:9770 sudo -E cca …`.
+
 ## Root key rotation (runbook, M178)
 
 Flow 30 part B. Offline: the API is down for about a minute; agents and running containers are not touched. File root key only (a KMS root key is refused).

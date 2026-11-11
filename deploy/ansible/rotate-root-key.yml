@@ -171,6 +171,8 @@
 
     - name: Rotate the KEK too (the root key rotation re-wrapped the same KEKs)
       command: /usr/local/bin/cca secret rotate
+      environment:
+        CCA_API: "{{ ansible_host }}:9770"
       register: kek_rotation
       failed_when: false
       when:
