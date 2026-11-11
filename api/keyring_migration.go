@@ -6,6 +6,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -95,8 +96,12 @@ func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, 
 	}
 	requestedBy := security.PrincipalFromContext(requestContext)
 	targetVersion, startError := apiServer.keyringAdministration.StartKeyringRotation(requestContext, requestedBy)
-	if startError != nil {
+	if errors.Is(startError, security.ErrKeyringRotationConflict) {
 		writeJSONError(responseWriter, startError.Error(), http.StatusConflict)
+		return
+	}
+	if startError != nil {
+		writeJSONError(responseWriter, "start KEK rotation: "+startError.Error(), http.StatusInternalServerError)
 		return
 	}
 	logging.Default().Info("KEK rotation started", "principal", requestedBy, "target_version", strconv.Itoa(targetVersion))

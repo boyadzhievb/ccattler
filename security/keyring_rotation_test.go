@@ -6,6 +6,7 @@ package security
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -117,5 +118,35 @@ func TestStartKeyringRotationRecordsIntentOnce(t *testing.T) {
 	}
 	if unmet, _ := keyringCodec.CheckKeyringRotationGate(ctx, "v-test"); len(unmet) != 1 || !strings.Contains(unmet[0], "already running") {
 		t.Fatalf("gate during a rotation: %v", unmet)
+	}
+}
+
+// TestKeyringRotationGateLimitsRetainedVersions verifies the gate refuses a
+// rotation once keyringMaxRetainedKEKVersions versions are kept, so repeated
+// rotations cannot outgrow the single root key re-wrap transaction.
+func TestKeyringRotationGateLimitsRetainedVersions(t *testing.T) {
+	ctx := context.Background()
+	keyringCodec, factStore := newFreshKeyringCodec(t)
+	for kekVersion := 2; kekVersion <= keyringMaxRetainedKEKVersions; kekVersion++ {
+		wrappedKEK, _ := keyringCodec.CreateWrappedKEK(ctx)
+		factStore.Put(ctx, types.KeyKeyringKEK(kekVersion), wrappedKEK)
+		factStore.Put(ctx, types.KeyKeyringKEKState(kekVersion), []byte(KEKVersionRetiring))
+	}
+	_ = keyringCodec.Refresh(ctx)
+	if unmet, _ := keyringCodec.CheckKeyringRotationGate(ctx, "v-test"); len(unmet) != 1 || !strings.Contains(unmet[0], "KEK versions are retained") {
+		t.Fatalf("gate with %d versions: %v", keyringMaxRetainedKEKVersions, unmet)
+	}
+}
+
+// TestStartKeyringRotationConflictIsTyped verifies refusals by the keyring
+// state wrap ErrKeyringRotationConflict (the API answers 409, other errors 500).
+func TestStartKeyringRotationConflictIsTyped(t *testing.T) {
+	ctx := context.Background()
+	keyringCodec, _ := newFreshKeyringCodec(t)
+	if _, startError := keyringCodec.StartKeyringRotation(ctx, "user:admin"); startError != nil {
+		t.Fatal(startError)
+	}
+	if _, startError := keyringCodec.StartKeyringRotation(ctx, "user:admin"); !errors.Is(startError, ErrKeyringRotationConflict) {
+		t.Fatalf("second start: %v (want ErrKeyringRotationConflict)", startError)
 	}
 }

@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,8 @@ type KeyringRotationPlanner interface {
 	CreateWrappedKEK(ctx context.Context) ([]byte, error)
 	// PlanKEKRewrapBatch re-wraps up to batchLimit envelopes onto activeKEKVersion.
 	PlanKEKRewrapBatch(ctx context.Context, facts []store.Fact, activeKEKVersion int, batchLimit int) (security.KEKRewrapBatch, error)
+	// ProveKEKVersion fails unless the KEK of kekVersion unwraps with the root key.
+	ProveKEKVersion(ctx context.Context, kekVersion int) error
 }
 
 // KeyringRotationController carries out a KEK rotation (Flow 30): it creates
@@ -57,6 +60,7 @@ type keyringRotationView struct {
 	rotationIntent    *security.KeyringRotationIntent  // rotationIntent is intent/keyring/rotation, nil when absent.
 	rotationStatus    security.KeyringRotationStatus   // rotationStatus is observed/keyring/rotation.
 	rotationStatusRaw []byte                           // rotationStatusRaw is the stored status, to skip unchanged writes.
+	legacyKeyState    security.LegacyKeyState          // legacyKeyState is keyring/legacy (rotation needs none or retired).
 }
 
 // NewKeyringRotationController creates the controller around the server's
@@ -87,14 +91,11 @@ func (keyringRotationController *KeyringRotationController) Watch() []string {
 // switch to it, re-wrap one batch, then retire, complete and delete versions.
 func (keyringRotationController *KeyringRotationController) Reconcile(ctx context.Context, facts []store.Fact) ([]Change, error) {
 	keyringView, hasKeyring := parseKeyringRotationView(facts)
-	if !hasKeyring {
+	if !hasKeyring || (keyringView.rotationIntent == nil && !hasNonActiveKEKVersion(keyringView)) {
 		return nil, nil
 	}
 	if rotationIntent := keyringView.rotationIntent; rotationIntent != nil && keyringView.activeKEKVersion < rotationIntent.TargetVersion {
-		if !keyringView.wrappedKEKs[rotationIntent.TargetVersion] {
-			return keyringRotationController.createTargetKEK(ctx, rotationIntent.TargetVersion)
-		}
-		return switchActiveKEK(keyringView, rotationIntent.TargetVersion), nil
+		return keyringRotationController.advanceToTargetKEK(ctx, keyringView, rotationIntent.TargetVersion)
 	}
 	rewrapBatch, planError := keyringRotationController.rotationPlanner.PlanKEKRewrapBatch(ctx, facts, keyringView.activeKEKVersion, keyringRewrapBatchSize)
 	if planError != nil {
@@ -115,6 +116,24 @@ func (keyringRotationController *KeyringRotationController) Reconcile(ctx contex
 		return nil, statusError
 	}
 	return append(changes, statusChanges...), nil
+}
+
+// advanceToTargetKEK creates the target KEK or switches to it, after checking
+// the intent from the store (target = active + 1, legacy key none or retired)
+// and proving the existing target KEK unwraps (review: intent is forgeable).
+func (keyringRotationController *KeyringRotationController) advanceToTargetKEK(ctx context.Context, keyringView keyringRotationView, targetVersion int) ([]Change, error) {
+	if targetVersion != keyringView.activeKEKVersion+1 || !keyringView.legacyKeyState.AllowsKEKRotation() {
+		logging.Default().Warn("keyring-rotation: ignoring a rotation intent the gate would refuse",
+			"target_version", strconv.Itoa(targetVersion), "active", strconv.Itoa(keyringView.activeKEKVersion), "legacy", string(keyringView.legacyKeyState))
+		return nil, nil
+	}
+	if !keyringView.wrappedKEKs[targetVersion] {
+		return keyringRotationController.createTargetKEK(ctx, targetVersion)
+	}
+	if proveError := keyringRotationController.rotationPlanner.ProveKEKVersion(ctx, targetVersion); proveError != nil {
+		return nil, fmt.Errorf("target KEK %d does not unwrap with the root key: %w", targetVersion, proveError)
+	}
+	return switchActiveKEK(keyringView, targetVersion), nil
 }
 
 // createTargetKEK writes keyring/kek/{target} (wrapped by the root key) and
@@ -175,7 +194,7 @@ func (keyringRotationController *KeyringRotationController) planVersionTransitio
 				Change{Type: store.OpPut, Key: types.KeyKeyringKEKState(kekVersion), Value: []byte(security.KEKVersionDraining)},
 				Change{Type: store.OpDelete, Key: types.KeyKeyringKEKRetiringSince(kekVersion)},
 			)...)
-		case versionState == security.KEKVersionRetiring && keyringRotationController.retireGraceElapsed(keyringView.retiringSince[kekVersion], currentTime):
+		case versionState == security.KEKVersionRetiring && replicasOnActiveKEK && keyringRotationController.retireGraceElapsed(keyringView.retiringSince[kekVersion], currentTime):
 			logging.Default().Info("keyring-rotation: deleting retired KEK", "version", strconv.Itoa(kekVersion))
 			delete(nextStates, kekVersion)
 			changes = append(changes, groupedChanges(groupID,
@@ -196,8 +215,9 @@ func (keyringRotationController *KeyringRotationController) retireGraceElapsed(r
 }
 
 // planRotationStatus updates observed/keyring/rotation while a rotation runs
-// and completes it (intent deleted) when no envelope names another version
-// and no replaced version is still draining. Unchanged status is not written.
+// and completes it (intent deleted) once nothing is left to re-wrap and no
+// replaced version waits for replica reports; unreadable envelopes do not
+// block completion (they are listed). Unchanged status is not written.
 func (keyringRotationController *KeyringRotationController) planRotationStatus(keyringView keyringRotationView, rewrapBatch security.KEKRewrapBatch, nextStates map[int]security.KEKVersionState) ([]Change, error) {
 	if keyringView.rotationIntent == nil {
 		return nil, nil
@@ -211,13 +231,18 @@ func (keyringRotationController *KeyringRotationController) planRotationStatus(k
 		}
 	}
 	nextStatus.UnreadableCount = rewrapBatch.UnreadableCount
+	nextStatus.UnreadableKeys = rewrapBatch.UnreadableKeys
 	var changes []Change
-	if nextStatus.Remaining == 0 && len(rewrapBatch.Rewrites) == 0 && !hasDrainingKEKVersion(nextStates, keyringView.activeKEKVersion) {
+	if len(rewrapBatch.Rewrites) == 0 && !hasDrainingKEKVersionAwaitingReplicas(nextStates, keyringView.activeKEKVersion, rewrapBatch) {
 		nextStatus.State = security.KeyringRotationCompleted
 		nextStatus.Completed = keyringRotationController.timeNow().UTC().Format(time.RFC3339)
 		changes = append(changes, Change{Type: store.OpDelete, Key: types.KeyIntentKeyringRotation})
 		logging.Default().Info("keyring-rotation: completed", "version", strconv.Itoa(keyringView.activeKEKVersion),
 			"rewrapped", strconv.Itoa(nextStatus.Rewrapped))
+		if nextStatus.Remaining > 0 {
+			logging.Default().Warn("keyring-rotation: completed with envelopes that cannot be re-wrapped; their KEK versions are kept (re-set those secrets)",
+				"remaining", strconv.Itoa(nextStatus.Remaining), "keys", strings.Join(nextStatus.UnreadableKeys, ","))
+		}
 	}
 	statusJSON, marshalError := json.Marshal(nextStatus)
 	if marshalError != nil {
@@ -229,11 +254,25 @@ func (keyringRotationController *KeyringRotationController) planRotationStatus(k
 	return append(changes, Change{Type: store.OpPut, Key: types.KeyObservedKeyringRotation, Value: statusJSON}), nil
 }
 
-// hasDrainingKEKVersion reports whether any version other than the active one
-// is still draining (or still marked active after a switch).
-func hasDrainingKEKVersion(kekVersionStates map[int]security.KEKVersionState, activeKEKVersion int) bool {
+// hasDrainingKEKVersionAwaitingReplicas reports whether a replaced version is
+// still draining (or still marked active) although no envelope names it, i.e.
+// it only waits for the replica reports. A version still named after a batch
+// with no re-wraps is named only by envelopes that cannot be re-wrapped.
+func hasDrainingKEKVersionAwaitingReplicas(kekVersionStates map[int]security.KEKVersionState, activeKEKVersion int, rewrapBatch security.KEKRewrapBatch) bool {
 	for kekVersion, versionState := range kekVersionStates {
-		if kekVersion != activeKEKVersion && (versionState == security.KEKVersionDraining || versionState == security.KEKVersionActive) {
+		isDraining := versionState == security.KEKVersionDraining || versionState == security.KEKVersionActive
+		if kekVersion != activeKEKVersion && isDraining && rewrapBatch.EnvelopesByKEKVersion[kekVersion] == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNonActiveKEKVersion reports whether the keyring holds any version other
+// than the active one; without one and without an intent there is no work.
+func hasNonActiveKEKVersion(keyringView keyringRotationView) bool {
+	for kekVersion := range keyringView.kekVersionStates {
+		if kekVersion != keyringView.activeKEKVersion {
 			return true
 		}
 	}
@@ -260,12 +299,18 @@ func parseKeyringRotationView(facts []store.Fact) (keyringRotationView, bool) {
 	}
 	hasActive := false
 	for _, fact := range store.FactsWithPrefix(facts, types.PrefixKeyring+"/") {
-		if fact.Key == types.KeyKeyringActive {
+		switch fact.Key {
+		case types.KeyKeyringActive:
 			activeVersion, parseError := strconv.Atoi(string(fact.Value))
 			keyringView.activeKEKVersion, hasActive = activeVersion, parseError == nil
-			continue
+			if parseError != nil {
+				logging.Default().Warn("keyring-rotation: keyring/active is not a version, doing nothing", "value", string(fact.Value))
+			}
+		case types.KeyKeyringLegacy:
+			keyringView.legacyKeyState = security.LegacyKeyState(fact.Value)
+		default:
+			recordKEKFact(&keyringView, fact)
 		}
-		recordKEKFact(&keyringView, fact)
 	}
 	for _, fact := range store.FactsWithPrefix(facts, types.KeyIntentKeyringRotation) {
 		var rotationIntent security.KeyringRotationIntent

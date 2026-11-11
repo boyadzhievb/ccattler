@@ -632,11 +632,11 @@ RewrapEnvelope(ctx, oldProvider, newProvider, envelope)        [:141]
 ### Secret keyring and envelope codec (M177 steps 1–2, Flow 29)
 
 ```
-executeServerCommand [cmd/cca/command_server.go:334]
+executeServerCommand [cmd/cca/command_server.go:343]
   keyringCodec := startSecretEnvelopeCodec(ctx, factStore, cfg); NewSecretStore(factStore, keyringCodec)
   keyringCodec → startControllersWithLeaderElection (route-tls, gate-key-migration, keyring-migration, keyring-rotation)
                → configureAndStartAPIServer → SetKeyringAdministration(keyringCodec, version)
-startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go:26]
+startSecretEnvelopeCodec                                [cmd/cca/server_secret_keys.go:28]
 ├── loadSecretKeyProviders(ctx, cfg)
 │   ├── store = memory → newEphemeralSecretKeyProvider(), no legacy   [never on disk]
 │   ├── LoadLegacySecretMasterKeyFile(/etc/ccattler/secret-master.key)  [missing → nil legacy]
@@ -649,7 +649,7 @@ startSecretEnvelopeCodec                                [cmd/cca/server_secret_k
 │   │   writes keyring/kek/1, kek/1/state, active, root_check, legacy, observed/keyring/migration
 │   │   fresh (no legacy, no envelopes) → legacy none; else present
 │   └── Refresh (serialized) → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy state)
-├── go RunKeyringWatch(ctx) [security/envelope_codec.go:164] [keyring/ only; closed watch → re-subscribe; 60s fallback;
+├── go RunKeyringWatch(ctx) [security/envelope_codec.go:163] [keyring/ only; closed watch → re-subscribe; 60s fallback;
 │                                                          ErrKeyringRootCheckFailed (root key rotated) → exitWithSecretKeyError]
 ├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}: rewritten every 10s, lease 30s]
 └── any error → exitWithSecretKeyError                   [no silent key generation]
@@ -662,34 +662,43 @@ Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, SealSecre
 
 KEK rotation gate (M178 step 1, Flow 30 step 1):
 cca secret rotate → executeSecretRotate → postSecretAdminRequest
-POST /api/secret/rotate → handleSecretRotate [api/keyring_migration.go:82; secret.write at cluster via beginKeyringRequest]
-├── CheckKeyringRotationGate(buildVersion)               [security/keyring_rotation.go:48]
-│   ├── keyring/legacy = none | retired (allowsKEKRotation)
+POST /api/secret/rotate → handleSecretRotate [api/keyring_migration.go:83; secret.write at cluster via beginKeyringRequest]
+├── CheckKeyringRotationGate(buildVersion)               [security/keyring_rotation.go:84]
+│   ├── keyring/legacy = none | retired (AllowsKEKRotation [:68])
+│   ├── fewer than keyringMaxRetainedKEKVersions (8) KEK versions
 │   ├── intent/keyring/rotation absent (one rotation at a time)
 │   └── checkReplicaReports(version, "") → observed/keyring/replica/*
 ├── unmet → writeKeyringGateRefusal (409 {error, unmet[]})
-└── StartKeyringRotation(principal) [:70] → txn [keyring/active rev, keyring/legacy rev, intent create-only]
+└── StartKeyringRotation(principal) [:111] → Refresh + verifyKeyringRootCheck, then
+    txn [keyring/active, keyring/legacy, keyring/root_check revs; intent create-only]
     put intent/keyring/rotation {target_version = active + 1} + observed/keyring/rotation {state: in_progress}
-KeyringRotationController.Reconcile [controllers/keyring_rotation.go:88] (leader; Watch keyring/, intent/keyring/rotation,
-  observed/keyring/rotation, observed/keyring/replica/, secrets/, credentials/; --keyring-retire-grace, default 168h)
-├── parseKeyringRotationView [:255] → recordKEKFact [:285] (keyring/kek/{v}, /state, /retiring_since)
-├── intent ∧ active < target:
-│   ├── kek/{target} absent → createTargetKEK [:122] → CreateWrappedKEK [security/keyring_rotation.go:157]
+    ErrKeyringRotationConflict → 409; any other error → 500
+cca secret keyring-status → executeSecretKeyringStatus → fetchStateFactsWithPrefix(observed/keyring/) [GET /api/state]
+KeyringRotationController.Reconcile [controllers/keyring_rotation.go:92] (leader; Watch keyring/, intent/keyring/rotation,
+  observed/keyring/rotation, observed/keyring/replica/, secrets/, credentials/; --keyring-retire-grace, default 168h, min 1h)
+├── parseKeyringRotationView [:294] → recordKEKFact [:330] (keyring/kek/{v}, /state, /retiring_since; keyring/legacy)
+├── no intent ∧ no non-active version (hasNonActiveKEKVersion [:273]) → nothing
+├── intent ∧ active < target → advanceToTargetKEK [:124]
+│   ├── target ≠ active + 1 or legacy not none|retired → ignored (warn; forged intent)
+│   ├── kek/{target} absent → createTargetKEK [:141] → CreateWrappedKEK [security/keyring_rotation.go:206] (Refresh first)
 │   │   put kek/{target} + kek/{target}/state = pending (runner: create-only)
-│   └── else → switchActiveKEK [:136]: put keyring/active = target, target active, previous draining (one group)
-├── PlanKEKRewrapBatch(facts, active, 40) [security/keyring_rotation.go:173]
-│   └── rewrapEnvelopeV2 [security/envelope_v2.go:85] (DEK re-wrapped; nonce, ciphertext, AAD unchanged)
-├── no rewrites → planVersionTransitions [:150]
-│   ├── draining, 0 envelopes, ReplicasNotOnKEK [security/keyring_rotation.go:237] empty → retiring + retiring_since
+│   └── else → ProveKEKVersion [security/keyring_rotation.go:197] → switchActiveKEK [:155]:
+│       put keyring/active = target, target active, previous draining (one group)
+├── PlanKEKRewrapBatch(facts, active, 40) [security/keyring_rotation.go:225]
+│   ├── rewrapEnvelopeV2 [security/envelope_v2.go:85] (DEK re-wrapped; nonce, ciphertext, AAD unchanged)
+│   └── unreadable → recordUnreadable [:188] (count + first 10 keys)
+├── no rewrites → planVersionTransitions [:169] (ReplicasNotOnKEK [security/keyring_rotation.go:289])
+│   ├── draining, 0 envelopes, every report on active → retiring + retiring_since
 │   ├── retiring, named again → draining
-│   └── retiring, grace elapsed (retireGraceElapsed [:193]) → delete kek/{v}, /state, /retiring_since
-└── planRotationStatus [:201]: rewrapped, remaining, unreadable_count; remaining 0 ∧ none draining →
-    delete intent, state completed; unchanged status not written
+│   └── retiring, every report on active, grace elapsed (retireGraceElapsed [:212]) → delete kek/{v}, /state, /retiring_since
+└── planRotationStatus [:221]: rewrapped, remaining, unreadable_count, unreadable_keys;
+    no rewrites ∧ no draining version awaiting reports (hasDrainingKEKVersionAwaitingReplicas [:261]) →
+    delete intent, state completed (unreadable-only versions stay draining); unchanged status not written
 Write domain: keyring-rotation → keyring/kek/, keyring/active, secrets/, credentials/, intent/keyring/rotation, observed/keyring/rotation
 
 Legacy key migration (M177 step 3, Flow 29 steps 5–6):
 cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest
-POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration.go:136; cluster.admin via beginKeyringAdministration]
+POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration.go:141; cluster.admin via beginKeyringAdministration]
 ├── CheckLegacyMigrationGate(req, buildVersion)          [security/keyring_migration.go:34]
 │   ├── confirm_backup set; keyring/legacy = present
 │   ├── checkReplicaReports(version, "") → observed/keyring/replica/* (version, active KEK, root_check ok)
@@ -707,7 +716,7 @@ Write domain: keyring-migration → secrets/, credentials/, observed/keyring/mig
 
 Legacy key retirement (M177 step 4, Flow 29 step 7):
 cca secret retire-legacy-key → executeSecretRetireLegacyKey → postSecretAdminRequest
-POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_migration.go:110; cluster.admin]
+POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_migration.go:115; cluster.admin]
 ├── CheckLegacyRetirementGate [security/keyring_retirement.go:24]
 │   ├── keyring/legacy = migrating; migration completed with count 0
 │   ├── checkReplicaReports("", migrating) → every live replica acts on migrating (seals v2)
@@ -723,22 +732,24 @@ Ansible: worker role removes secret-master.key on non-control-plane hosts; contr
 
 cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400, fsync)
 Root key rotation (M178 Flow 30 part B; driven by deploy/ansible/rotate-root-key.yml):
-cca secret root-key-status [--path] → executeSecretRootKeyStatus [cmd/cca/server_secret_keys.go:204] (read-only)
-└── InspectRootKeyFiles [security/root_key_rotation.go:114] → loadRootKeyFileState [:252] (path, path.next)
+cca secret root-key-status [--path] → executeSecretRootKeyStatus [cmd/cca/server_secret_keys.go:207] (read-only)
+└── InspectRootKeyFiles [security/root_key_rotation.go:114] → loadRootKeyFileState [:255] (path, path.next)
     → stage idle | staged | committed | invalid; old present?
-cca secret rotate-root-key --commit|--finish [--path] → executeSecretRotateRootKey [cmd/cca/server_secret_keys.go:170]
+cca secret rotate-root-key --commit|--finish [--path] → executeSecretRotateRootKey [cmd/cca/server_secret_keys.go:173]
 ├── openLocalControlPlaneStore (resolveStoreDefaultsForDaemon) ; WaitForStoppedKeyringReplicas(45s) [:78]
-├── --commit → CommitRootKeyRotation(path, legacy key) [:143]
-│   ├── committed → finishStagedRootKey [:204] (swap only)
-│   ├── refuse: not staged, .old present, loadValidatedRootKeyPair [:223] (.next ≠ current, ≠ legacy),
+├── --commit → CommitRootKeyRotation(path, legacy key) [:142]
+│   ├── committed → finishStagedRootKey [:207] (swap only)
+│   ├── refuse: not staged, .old present, loadValidatedRootKeyPair [:226] (.next ≠ current, ≠ legacy),
 │   │   liveKeyringReplicas re-read [:100]
-│   ├── rewrapKeyringUnderRootKey [:280] → buildRootKeyRewrapTransaction [:297]
-│   │   intent/keyring/rotation must be absent; rewrapWithProof [:350] (wrap + unwrap dry run)
+│   ├── rewrapKeyringUnderRootKey [:281] → buildRootKeyRewrapTransaction [:298]
+│   │   intent/keyring/rotation must be absent; rewrapWithProof [:351] (wrap + unwrap dry run)
 │   │   ONE txn [revisions: every keyring/kek/{v}, root_check, keyring/active;
 │   │            absent: intent/keyring/rotation, keyring/kek/{max+1}, keyring/kek/{max+1}/state]
 │   │   put keyring/kek/{v} = wrap(next, unwrap(current, ·)), put root_check = wrap(next, fixed value)
-│   └── swapRootKeyFiles [:364]: path → path.old, path.next → path, syncDirectory [:376]
-└── --finish → FinishRootKeyRotation [:181]: committed → finishStagedRootKey; idle → no-op; staged → refuse
+│   └── swapRootKeyFiles [:365]: path → path.old, path.next → path, syncDirectory [:377]
+└── --finish → FinishRootKeyRotation [:184]: committed → finishStagedRootKey; idle → no-op; staged → refuse
+Playbook: rotate-root-key.yml finishes with .old shredded or archived as secret-root.key.retired-<time>,
+  shreds /tmp/cca-init/secret-root.key; both control-plane roles shred cca init's key copies after setup.sh
 Stale-replica fence: CreateWrappedKEK and StartKeyringRotation call Refresh first (root_check must open)
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files

@@ -136,9 +136,8 @@ func InspectRootKeyFiles(ctx context.Context, factStore store.StateStore, rootKe
 }
 
 // CommitRootKeyRotation re-wraps the keyring under the staged {path}.next and
-// swaps the files (Flow 30 part B, first host). It never generates a key: the
-// staged file must already be on every replica. On a host whose keyring is
-// already under .next (crash after the commit) it only finishes the swap.
+// swaps the files (Flow 30 part B, first host); it never generates a key. If
+// the keyring is already under .next (crash after the commit) it only swaps.
 // Returns the new key's fingerprint.
 func CommitRootKeyRotation(ctx context.Context, factStore store.StateStore, rootKeyPath string, legacyKey []byte) (string, error) {
 	filesStatus, inspectError := InspectRootKeyFiles(ctx, factStore, rootKeyPath)
@@ -158,8 +157,12 @@ func CommitRootKeyRotation(ctx context.Context, factStore store.StateStore, root
 	if loadError != nil {
 		return "", loadError
 	}
-	if liveReplicas, scanError := liveKeyringReplicas(ctx, factStore); scanError != nil || len(liveReplicas) > 0 {
-		return "", fmt.Errorf("API replicas running, refusing to commit: %v %v", liveReplicas, scanError)
+	liveReplicas, scanError := liveKeyringReplicas(ctx, factStore)
+	if scanError != nil {
+		return "", scanError
+	}
+	if len(liveReplicas) > 0 {
+		return "", fmt.Errorf("API replicas running, refusing to commit: %s", strings.Join(liveReplicas, ", "))
 	}
 	if rewrapError := rewrapKeyringUnderRootKey(ctx, factStore, currentKey, nextKey); rewrapError != nil {
 		return "", rewrapError
@@ -271,12 +274,10 @@ func loadRootKeyFileState(ctx context.Context, factStore store.StateStore, keyPa
 	return rootKeyProvider, RootKeyFileOpens, nil
 }
 
-// rewrapKeyringUnderRootKey re-wraps every keyring/kek/{v} and root_check from
-// the current to the next root key in ONE transaction, after checking in
-// memory that the next key unwraps every result. Guards: the revision of each
-// key written and of keyring/active, and the absence of the next KEK version
-// and of a rotation intent, so a stale replica cannot add a KEK under the old
-// root key concurrently (review finding 1).
+// rewrapKeyringUnderRootKey re-wraps every keyring/kek/{v} and root_check under
+// the next root key in ONE transaction (built and dry-run by
+// buildRootKeyRewrapTransaction, whose guards keep a stale replica from adding
+// a KEK under the old root key meanwhile, review F1).
 func rewrapKeyringUnderRootKey(ctx context.Context, factStore store.StateStore, currentKeyProvider KeyProvider, nextKeyProvider KeyProvider) error {
 	compares, operations, buildError := buildRootKeyRewrapTransaction(ctx, factStore, currentKeyProvider, nextKeyProvider)
 	if buildError != nil {

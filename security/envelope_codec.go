@@ -156,8 +156,7 @@ func (keyringCodec *KeyringEnvelopeCodec) openLegacyEnvelope(ctx context.Context
 	return OpenEnvelope(ctx, currentLegacyKeyProvider, envelope)
 }
 
-// RunKeyringWatch keeps the snapshot current: it refreshes on changes under
-// keyring/ and observed/keyring/migration and every
+// RunKeyringWatch refreshes the snapshot on keyring/ changes and every
 // keyringRefreshFallbackInterval. Blocks until ctx is cancelled (nil), or
 // returns ErrKeyringRootCheckFailed when the root key changed underneath
 // (root key rotation, Flow 30): the replica must exit, not serve stale keys.

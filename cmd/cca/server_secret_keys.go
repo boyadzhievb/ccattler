@@ -81,12 +81,16 @@ func newEphemeralSecretKeyProvider() security.KeyProvider {
 	return ephemeralKeyProvider
 }
 
+// minimumKeyringRetireGrace is the shortest --keyring-retire-grace accepted: a
+// replica that missed the switch must have time to report or exit (review).
+const minimumKeyringRetireGrace = time.Hour
+
 // parseKeyringRetireGrace parses --keyring-retire-grace (a Go duration such as
-// 168h); a malformed or non-positive value is a startup error.
+// 168h); a malformed value or one below minimumKeyringRetireGrace is a startup error.
 func parseKeyringRetireGrace(flagValue string) time.Duration {
 	retireGrace, parseError := time.ParseDuration(flagValue)
-	if parseError != nil || retireGrace <= 0 {
-		fmt.Fprintf(os.Stderr, "error: --keyring-retire-grace %q must be a positive duration (e.g. 168h)\n", flagValue)
+	if parseError != nil || retireGrace < minimumKeyringRetireGrace {
+		fmt.Fprintf(os.Stderr, "error: --keyring-retire-grace %q must be a duration of at least %s (e.g. 168h)\n", flagValue, minimumKeyringRetireGrace)
 		os.Exit(1)
 	}
 	return retireGrace
@@ -163,10 +167,9 @@ const rootKeyRotationReplicaWait = 45 * time.Second
 const rootKeyRotationUsage = "usage: cca secret rotate-root-key --commit|--finish [--path <file>]" //nolint:gosec // G101: usage text, not a credential
 
 // executeSecretRotateRootKey implements "cca secret rotate-root-key
-// --commit|--finish [--path <file>]" (Flow 30 part B), a local command run
-// with every cca-server stopped and {path}.next already on every replica.
-// --commit (first host) re-wraps the keyring under .next in one transaction
-// and swaps the files; --finish (other hosts) only swaps, never writes etcd.
+// --commit|--finish [--path <file>]" (Flow 30 part B), run with every server
+// stopped and {path}.next on every replica: --commit (first host) re-wraps the
+// keyring and swaps the files, --finish (other hosts) only swaps.
 func executeSecretRotateRootKey(args []string) {
 	rootKeyPath, rotationMode := parseRootKeyCommandArgs(args, rootKeyRotationUsage, "--commit", "--finish")
 	factStore := openLocalControlPlaneStore()

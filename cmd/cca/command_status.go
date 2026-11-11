@@ -2054,6 +2054,8 @@ func executeSecretCommand(args []string) {
 		executeSecretRotateRootKey(args[1:])
 	case "root-key-status":
 		executeSecretRootKeyStatus(args[1:])
+	case "keyring-status":
+		executeSecretKeyringStatus()
 	default:
 		fmt.Fprintln(os.Stderr, secretCommandUsage)
 		os.Exit(1)
@@ -2162,6 +2164,15 @@ func executeSecretRotate() {
 	fmt.Println("KEK rotation started: the keyring controller creates the new KEK and re-wraps every secret")
 }
 
+// executeSecretKeyringStatus implements "cca secret keyring-status": prints the
+// legacy key migration and KEK rotation status and every replica's keyring
+// report (observed/keyring/), one fact per line.
+func executeSecretKeyringStatus() {
+	for _, factEntry := range fetchStateFactsWithPrefix("observed/keyring/") {
+		fmt.Printf("%s: %s\n", strings.TrimPrefix(factEntry.Key, "observed/keyring/"), factEntry.Value)
+	}
+}
+
 // executeSecretMigrateKeys implements "cca secret migrate-keys
 // --confirm-backup": it asks the server to pass the migration gate and start
 // re-encrypting v1 envelopes (Flow 29); a refusal lists every unmet condition.
@@ -2186,7 +2197,7 @@ func executeSecretMigrateKeys(args []string) {
 // secretCommandUsage is printed for a missing or unknown cca secret
 // subcommand. Ansible's root-key task recognizes binaries without
 // generate-root-key by the "usage: cca secret" prefix.
-const secretCommandUsage = "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys|retire-legacy-key|rotate-root-key|root-key-status> [name] [value]" //nolint:gosec // G101: usage text, not a credential
+const secretCommandUsage = "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys|retire-legacy-key|rotate-root-key|root-key-status|keyring-status> [name] [value]" //nolint:gosec // G101: usage text, not a credential
 
 // executeSecretRetireLegacyKey implements "cca secret retire-legacy-key": once
 // the retirement gate passes, every replica drops the legacy key and refuses

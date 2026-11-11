@@ -274,15 +274,19 @@ Flow 30 part B. Offline: the API is down for about a minute; agents and running 
 ```sh
 cd deploy/ansible
 ansible-playbook -i <inventory> rotate-root-key.yml                    # default: deletes .old, then rotates the KEKs
-ansible-playbook -i <inventory> rotate-root-key.yml -e keep_old_root_key=true   # keep .old for older snapshots
+ansible-playbook -i <inventory> rotate-root-key.yml -e keep_old_root_key=true   # archive the old key as secret-root.key.retired-<time>
+ansible-playbook -i <inventory> rotate-root-key.yml -e resume_root_key_rotation=true   # a run failed after the commit
 ```
 
 - **Before:** every control-plane host on the same `cca` version; no `secret-root.key.old` left from an earlier rotation (archive it with the snapshots it opens, or delete it); for the KEK rotation step, the legacy key must be retired (otherwise that step reports 409 and the root key rotation still stands).
-- **Re-run after any failure.** The playbook reads each host's stage (`cca secret root-key-status`: `idle | staged | committed | invalid`) and only goes forward once the keyring is committed to the new key. Before the commit a failure restarts the servers on the old key; after it, the servers stay down until the re-run.
+- **Re-run after any failure.** The playbook reads each host's stage (`cca secret root-key-status`: `idle | staged | committed | invalid`) and only goes forward once the keyring is committed to the new key. Before the commit a failure restarts the servers on the old key; after it, the servers stay down until the re-run. If the run failed after every host was already swapped (all `idle`, `secret-root.key.old` present), the playbook cannot tell that from a deliberately kept key: re-run with `-e resume_root_key_rotation=true`.
+- **Status:** `cca secret keyring-status` prints the migration and KEK rotation status (including `unreadable_keys`) and every replica's report.
 - **Manual inspection:** `sudo cca secret root-key-status` on each control-plane host. `committed` on any host means the keyring is already under `secret-root.key.next`: never delete or regenerate that file; run `sudo cca secret rotate-root-key --finish` on each host and start `cca-server`.
 - **Back up the new key** off-node (encrypted) after the run; the playbook prints its fingerprint (first 16 hex characters of its SHA-256) so copies can be compared. Old off-node key backups hold the old key and open only pre-rotation snapshots.
-- **Old key leaked:** root rotation re-wraps the same KEKs, so the old key plus a pre-rotation snapshot still yields them. Keep the default KEK rotation step, wait until `observed/keyring/rotation` is `completed`, then delete or re-encrypt every pre-rotation snapshot.
-- **Rollback** (only before step 8 deleted `.old`): stop every `cca-server`, restore the `etcd-before-root-key-rotation-*.db` snapshot (restore steps above), put `secret-root.key.old` back as `secret-root.key` on every replica, start the servers.
+- **Old key leaked:** re-wraps never change a secret's DEK, so the old root key plus any etcd snapshot or copy from before the rotation still decrypts every secret value that existed then. Rotate (root key, then the default KEK step, which the play waits for), **re-set every secret value** (`cca secret set …`, and rotate the credentials they stand for), then delete or re-encrypt the pre-rotation snapshots.
+- **Unreadable envelopes** (`unreadable_keys` in `cca secret keyring-status`): the KEK rotation completes anyway and keeps their KEK version; re-set those secrets, and the version retires on its own.
+- **Snapshots** under `/var/backups/ccattler` are never expired by the playbook; they hold the keyring under the root key of their time — move them off-node (encrypted) and expire them yourself.
+- **Rollback** (only before step 8 shredded `.old`): stop every `cca-server`, restore the `etcd-before-root-key-rotation-*.db` snapshot (restore steps above), put `secret-root.key.old` back as `secret-root.key` on every replica, start the servers.
 
 ## Demo Commands
 

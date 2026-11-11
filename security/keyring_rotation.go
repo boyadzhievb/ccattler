@@ -46,13 +46,14 @@ const (
 
 // KeyringRotationStatus is the JSON stored at observed/keyring/rotation.
 type KeyringRotationStatus struct {
-	State           KeyringRotationState `json:"state"`               // State is the rotation state.
-	TargetVersion   int                  `json:"target_version"`      // TargetVersion is the KEK version being introduced.
-	Rewrapped       int                  `json:"rewrapped"`           // Rewrapped counts envelopes moved to the target KEK so far.
-	Remaining       int                  `json:"remaining"`           // Remaining counts envelopes still naming another KEK version.
-	UnreadableCount int                  `json:"unreadable_count"`    // UnreadableCount counts envelopes that cannot be re-wrapped (malformed, unknown KEK).
-	Started         string               `json:"started"`             // Started is the RFC 3339 time the gate passed.
-	Completed       string               `json:"completed,omitempty"` // Completed is the RFC 3339 completion time.
+	State           KeyringRotationState `json:"state"`                     // State is the rotation state.
+	TargetVersion   int                  `json:"target_version"`            // TargetVersion is the KEK version being introduced.
+	Rewrapped       int                  `json:"rewrapped"`                 // Rewrapped counts envelopes moved to the target KEK so far.
+	Remaining       int                  `json:"remaining"`                 // Remaining counts envelopes still naming another KEK version.
+	UnreadableCount int                  `json:"unreadable_count"`          // UnreadableCount counts envelopes that cannot be re-wrapped (malformed, unknown KEK).
+	UnreadableKeys  []string             `json:"unreadable_keys,omitempty"` // UnreadableKeys lists up to 10 of them; re-set those secrets.
+	Started         string               `json:"started"`                   // Started is the RFC 3339 time the gate passed.
+	Completed       string               `json:"completed,omitempty"`       // Completed is the RFC 3339 completion time.
 }
 
 // KeyringRotationIntent is the JSON stored at intent/keyring/rotation.
@@ -62,20 +63,34 @@ type KeyringRotationIntent struct {
 	RequestedAt   string `json:"requested_at"`   // RequestedAt is the RFC 3339 time the gate passed.
 }
 
-// allowsKEKRotation reports whether a KEK rotation may start in this keyring
+// AllowsKEKRotation reports whether a KEK rotation may start in this keyring
 // state: never while v1 envelopes may exist or be written (M178 decision).
-func (legacyKeyState LegacyKeyState) allowsKEKRotation() bool {
+func (legacyKeyState LegacyKeyState) AllowsKEKRotation() bool {
 	return legacyKeyState == LegacyKeyNone || legacyKeyState == LegacyKeyRetired
 }
 
+// keyringMaxRetainedKEKVersions caps the KEK versions kept (active, draining,
+// retiring): each rotation adds one for the retire grace, and the root key
+// re-wrap must fit every version into one etcd transaction (review).
+const keyringMaxRetainedKEKVersions = 8
+
+// ErrKeyringRotationConflict marks a rotation start refused by the keyring
+// state (another rotation, a concurrent change, the legacy key), not a failure.
+var ErrKeyringRotationConflict = errors.New("KEK rotation refused by the keyring state")
+
 // CheckKeyringRotationGate returns every unmet KEK rotation condition (empty
-// when the gate passes): keyring/legacy none or retired, no rotation running,
-// and every live API replica on this build with the active KEK and root_check ok.
+// when the gate passes): legacy key none or retired, no rotation running, fewer
+// than keyringMaxRetainedKEKVersions versions, every live replica healthy.
 func (keyringCodec *KeyringEnvelopeCodec) CheckKeyringRotationGate(ctx context.Context, buildVersion string) ([]string, error) {
 	var unmetConditions []string
-	if legacyKeyState := keyringCodec.currentSnapshot().legacyKeyState; !legacyKeyState.allowsKEKRotation() {
+	snapshot := keyringCodec.currentSnapshot()
+	if !snapshot.legacyKeyState.AllowsKEKRotation() {
 		unmetConditions = append(unmetConditions, fmt.Sprintf(
-			"keyring is %s: finish the legacy key migration and retire the legacy key first (cca secret migrate-keys, cca secret retire-legacy-key)", legacyKeyState))
+			"keyring is %s: finish the legacy key migration and retire the legacy key first (cca secret migrate-keys, cca secret retire-legacy-key)", snapshot.legacyKeyState))
+	}
+	if retainedVersions := len(snapshot.keyEncryptionKeys); retainedVersions >= keyringMaxRetainedKEKVersions {
+		unmetConditions = append(unmetConditions, fmt.Sprintf(
+			"%d KEK versions are retained (limit %d): wait until replaced versions pass the retire grace (--keyring-retire-grace)", retainedVersions, keyringMaxRetainedKEKVersions))
 	}
 	if _, getError := keyringCodec.factStore.Get(ctx, types.KeyIntentKeyringRotation); getError == nil {
 		unmetConditions = append(unmetConditions, "a KEK rotation is already running (see "+types.KeyObservedKeyringRotation+")")
@@ -89,14 +104,20 @@ func (keyringCodec *KeyringEnvelopeCodec) CheckKeyringRotationGate(ctx context.C
 	return append(unmetConditions, replicaConditions...), nil
 }
 
-// StartKeyringRotation re-proves the root key, then records
-// intent/keyring/rotation for KEK version active + 1 and the in_progress
-// status in one transaction guarded by the revisions of keyring/active and
-// keyring/legacy (intent create-only), so two concurrent requests cannot both
-// start one. Returns the target version.
+// StartKeyringRotation re-proves the root key and records the intent for KEK
+// version active + 1 with its in_progress status, in one transaction guarded
+// by keyring/active, keyring/legacy and keyring/root_check (intent create-only).
+// Refusals by the keyring state wrap ErrKeyringRotationConflict.
 func (keyringCodec *KeyringEnvelopeCodec) StartKeyringRotation(ctx context.Context, requestedBy string) (int, error) {
 	if refreshError := keyringCodec.Refresh(ctx); refreshError != nil {
 		return 0, fmt.Errorf("re-check the root key before starting a KEK rotation: %w", refreshError)
+	}
+	rootCheckFact, rootCheckError := keyringCodec.factStore.Get(ctx, types.KeyKeyringRootCheck)
+	if rootCheckError != nil {
+		return 0, fmt.Errorf("read %s: %w", types.KeyKeyringRootCheck, rootCheckError)
+	}
+	if verifyError := verifyKeyringRootCheck(ctx, keyringCodec.factStore, keyringCodec.rootKeyProvider); verifyError != nil {
+		return 0, verifyError
 	}
 	activeFact, activeError := keyringCodec.factStore.Get(ctx, types.KeyKeyringActive)
 	if activeError != nil {
@@ -110,8 +131,8 @@ func (keyringCodec *KeyringEnvelopeCodec) StartKeyringRotation(ctx context.Conte
 	if legacyError != nil {
 		return 0, fmt.Errorf("read %s: %w", types.KeyKeyringLegacy, legacyError)
 	}
-	if !LegacyKeyState(legacyFact.Value).allowsKEKRotation() {
-		return 0, fmt.Errorf("keyring is %s: KEK rotation needs none or retired", legacyFact.Value)
+	if !LegacyKeyState(legacyFact.Value).AllowsKEKRotation() {
+		return 0, fmt.Errorf("%w: keyring is %s, KEK rotation needs none or retired", ErrKeyringRotationConflict, legacyFact.Value)
 	}
 	rotationOperations, buildError := buildKeyringRotationStartOperations(activeKEKVersion+1, requestedBy)
 	if buildError != nil {
@@ -120,13 +141,14 @@ func (keyringCodec *KeyringEnvelopeCodec) StartKeyringRotation(ctx context.Conte
 	transactionSucceeded, transactionError := keyringCodec.factStore.Transaction(ctx, []store.Compare{
 		{Key: types.KeyKeyringActive, Revision: activeFact.Revision},
 		{Key: types.KeyKeyringLegacy, Revision: legacyFact.Revision},
+		{Key: types.KeyKeyringRootCheck, Revision: rootCheckFact.Revision},
 		{Key: types.KeyIntentKeyringRotation, Revision: 0},
 	}, rotationOperations, nil)
 	if transactionError != nil {
 		return 0, fmt.Errorf("start KEK rotation: %w", transactionError)
 	}
 	if !transactionSucceeded {
-		return 0, errors.New("start KEK rotation: a rotation started or the keyring changed concurrently; check it and retry")
+		return 0, fmt.Errorf("%w: a rotation started or the keyring changed concurrently; check it and retry", ErrKeyringRotationConflict)
 	}
 	return activeKEKVersion + 1, nil
 }
@@ -154,6 +176,27 @@ type KEKRewrapBatch struct {
 	Rewrites              []store.Fact // Rewrites are re-wrapped envelopes (Key, Value, Revision of the scanned fact for the CAS guard).
 	EnvelopesByKEKVersion map[int]int  // EnvelopesByKEKVersion counts envelopes naming each KEK version after this batch, unreadable ones included.
 	UnreadableCount       int          // UnreadableCount counts envelopes that cannot be re-wrapped (malformed, v1, unknown KEK).
+	UnreadableKeys        []string     // UnreadableKeys names the first keyringUnreadableKeysReported of them.
+}
+
+// keyringUnreadableKeysReported caps the unreadable envelope keys listed in
+// the rotation status, so a large failure cannot bloat the status fact.
+const keyringUnreadableKeysReported = 10
+
+// recordUnreadable counts an envelope that cannot be re-wrapped and lists its
+// store key while fewer than keyringUnreadableKeysReported are listed.
+func (rewrapBatch *KEKRewrapBatch) recordUnreadable(storeKey string) {
+	rewrapBatch.UnreadableCount++
+	if len(rewrapBatch.UnreadableKeys) < keyringUnreadableKeysReported {
+		rewrapBatch.UnreadableKeys = append(rewrapBatch.UnreadableKeys, storeKey)
+	}
+}
+
+// ProveKEKVersion fails unless the KEK of kekVersion is in the keyring and
+// unwraps with this replica's root key (re-reading the keyring once).
+func (keyringCodec *KeyringEnvelopeCodec) ProveKEKVersion(ctx context.Context, kekVersion int) error {
+	_, keyringError := keyringCodec.keyEncryptionKeysIncluding(ctx, kekVersion)
+	return keyringError
 }
 
 // CreateWrappedKEK generates a fresh KEK and returns it wrapped by the root
@@ -193,7 +236,7 @@ func (keyringCodec *KeyringEnvelopeCodec) PlanKEKRewrapBatch(ctx context.Context
 		envelope, isV1 := decodeStoredEnvelope(fact.Value, isSecretValue)
 		envelopeKEKVersion, _, _, parseError := parseEnvelopeV2(envelope)
 		if isV1 || parseError != nil {
-			rewrapBatch.UnreadableCount++
+			rewrapBatch.recordUnreadable(fact.Key)
 			continue
 		}
 		rewrapBatch.EnvelopesByKEKVersion[envelopeKEKVersion]++
@@ -202,7 +245,7 @@ func (keyringCodec *KeyringEnvelopeCodec) PlanKEKRewrapBatch(ctx context.Context
 			continue
 		}
 		if currentKEK == nil {
-			rewrapBatch.UnreadableCount++
+			rewrapBatch.recordUnreadable(fact.Key)
 			continue
 		}
 		if len(rewrapBatch.Rewrites) >= batchLimit {
@@ -210,7 +253,7 @@ func (keyringCodec *KeyringEnvelopeCodec) PlanKEKRewrapBatch(ctx context.Context
 		}
 		rewrapped, rewrapError := rewrapEnvelopeV2(envelope, currentKEK, keyEncryptionKeys[activeKEKVersion], activeKEKVersion)
 		if rewrapError != nil {
-			rewrapBatch.UnreadableCount++
+			rewrapBatch.recordUnreadable(fact.Key)
 			continue
 		}
 		if isSecretValue {

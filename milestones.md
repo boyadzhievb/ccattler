@@ -286,7 +286,29 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
   - F11 low, fixed: a staged key equal to the current or the legacy key is refused
 - [x] KEK rotation during traffic on the deploy cluster (m4800, 2026-11-11, cluster from Deploy Testbed 43018952938 on 606e0ef, eBPF): `cca secret rotate` → completed in 9 s, KEK 1→2, 8 envelopes re-wrapped (4 Airflow secrets + 4 sealed gate keys), 0 unreadable; 960/960 HTTP 200 to whoami and the Airflow webserver from worker-1 during 120 s around the rotation; 16/16 instances running, 0 restarts; every Airflow secret readable; replica report on KEK 2. (That deploy run failed only on a data plane check misled by a stale nftables table from an older deployment — fixed in 7954ffb, not M178.)
 - [ ] Tests: kill at each step and restart; every secret readable; re-wrap leaves DEK/nonce/ciphertext/AAD byte-identical; CAS conflict retried; replicas read the same versions; old root key opens neither `root_check` nor any KEK (unit tests done); `cluster_test.sh` root key rotation (single node + HA) — HA run done by playbook (step 4), not yet automated in cluster_test.sh
-- [ ] Independent review (`code-reviewer` + `security-audit`), findings recorded here
+- [x] Independent review of the milestone diff 1c5e42e..606e0ef (`code-reviewer` + `security-audit`, 2026-11-11), each finding verified in the code:
+  - CR1 medium, fixed (docs): the old-root-key-leak mitigation was overclaimed — re-wraps never change a DEK, so old root key + a pre-rotation snapshot still decrypts every value that existed then; Flow 30, config-secrets and the runbook now say to re-set those values
+  - CR2 medium, fixed: one envelope that cannot be re-wrapped wedged the rotation (intent never deleted → every later KEK and root key rotation refused) → the rotation completes when nothing re-wrappable is left, the version stays draining, the status lists up to 10 `unreadable_keys`; new `cca secret keyring-status`
+  - CR3 medium, fixed: steps before the rescue block left servers stopped on failure → everything after the stop is inside the block
+  - CR4 medium, fixed: a failure after every host swapped re-entered the pre-commit path and restarted "on the old key" → an `.old` with nothing committed now stops the play as ambiguous; `-e resume_root_key_rotation=true` continues; a finished run never leaves `.old` (shredded, or archived as `.retired-<time>` with `keep_old_root_key`)
+  - CR5 low-medium, fixed: the follow-up KEK rotation's failure was swallowed → the play fails on it and waits for `completed`
+  - CR6 low, fixed (docs): "a replica that stopped reporting cannot be sealing" was too strong; the retire grace (now ≥ 1 h) is the protection; the delete also requires every replica report on the active KEK
+  - CR7 low, fixed: warn on an unparseable `keyring/active`; StartKeyringRotation conflicts are typed (409), other errors 500; replica list message. Not fixed: a non-active KEK without a `/state` fact is never retired (only reachable by manual edits)
+  - CR8 low, fixed: the watch test no longer sleeps (it re-writes `keyring/legacy` until the watch has seen an event)
+  - CR9 low, fixed: doc comment of TestKeyringRotationNeverDeletesReferencedKEK matched to what it asserts; new tests for forged intents, unreadable completion, delete waiting for reports, the version cap, typed conflicts
+  - CR10 low, rejected: no test at full batch size against etcd — 40 re-wraps + status = 41 operations, compares capped at 87, within etcd's 128; the runner enforces the budget
+  - CR11/12 low, fixed: AUTH_GRAPH line references, `keyringRewrapBatchSize` = 40 in config-secrets, `ansible_host` fallback in the playbook; CI trigger restore tracked below
+  - SA1 medium, fixed: `cca init` left the root key and CA key in `/tmp/cca-init` → both control-plane roles shred the key copies after setup.sh; the rotation playbook shreds `/tmp/cca-init/secret-root.key`
+  - SA2 medium, fixed: unlimited rotations could outgrow the single root key re-wrap transaction (F10) → the gate refuses at 8 retained KEK versions; grace minimum 1 h
+  - SA3 medium, fixed: the controller trusted a forgeable intent → acts only if target = active + 1 and the legacy key is none or retired, and switches only to a target KEK that unwraps (ProveKEKVersion). Removing `intent/` from the api-server role is left to M181
+  - SA4 low-medium, partly fixed: StartKeyringRotation re-proves the root key and guards `keyring/root_check`'s revision. Residual (accepted): between CreateWrappedKEK's Refresh and the runner commit a replica left running during an offline root rotation could add a KEK under the old root key — milliseconds wide, needs a server the playbook verified stopped and whose report expired; the commit side is fully guarded
+  - SA5 low, fixed: delete re-checks replica reports; grace minimum 1 h
+  - SA6 low, fixed: idle cycles skip the scan when there is no intent and no non-active version. Not fixed: orphan `pending` KEK after a manual intent removal (no production path creates one)
+  - SA7 low, rejected for M178 → M182: conditional policies pass without a scope check (pre-existing authorizer behaviour)
+  - SA8 low-medium, rejected for M178 → M182: `--ca-key` on every HA replica keeps the CA key in three servers' memory (it was already on every control-plane disk; enrollment needs it); documented
+  - SA9 low, rejected → M181: etcd trusts every cluster-CA certificate (unchanged by M178)
+  - SA10 low, fixed: `no_log` on the HA role's key fetch/copy tasks; KEK step failure fails the play; snapshot expiry and off-node copies documented in the runbook. Not fixed: `ha-deploy.yml` re-run during an interrupted rotation copies the first host's key (do not run it during a rotation — runbook)
+- [ ] Restore the CI triggers removed in 606e0ef (`e2e.yml` push, `e2e-extended.yml` schedule, `upgrade-test.yml` release) when the e2e VM set returns to testbed-100.77
 
 ### Phase 179 — Tenant-Scoped Secrets (M179)
 
@@ -327,10 +349,13 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
 - [ ] Secret delivery checks binding (found during M174): agents can no longer write placements, grants or `observed/instance/{id}/service`; instance → service mapping from a control-plane-only fact
 - [ ] Short-lived node certificates with rotation; removed nodes rejected by etcd and API
 - [ ] Threat model T5 updated with the real residual risk
+- [ ] Keyring facts (M178 review SA3/SA9): remove `intent/keyring/` from the api-server and controller store roles' write access; etcd trusts every cluster-CA certificate (a worker's node cert can read and write all of etcd, add members, take snapshots) — separate etcd CA or client-cert hostname restrictions
 - [ ] Store-layer audit writes (found during M175): `AuthorizedStore` persists an audit entry to etcd (`StoreBackedAuditLog.Log` → `persistEntry` → Put) for every allowed Get/Scan/Watch, so reads become etcd writes (an uncached status call wrote ~615 before M175, still one per scan); persist denies and writes, keep allowed reads in memory or aggregated per request; measure etcd puts/s before and after
 
 ### Phase 182 — Security Defense in Depth (M182)
 
+- [ ] Conditional policies (M178 review SA7): a conditional policy for a capability passes without a scope check (`security/api_authorizer.go`, nil ResourceContext from requireCapability) — require a declared scope or fail closed for cluster-scope endpoints
+- [ ] CA key exposure (M178 review SA8): every HA replica loads `ca-key.pem` for enrollment; only the leader or a dedicated signer should hold it
 - [ ] Volume host path must be under the storage provider root
 - [ ] Secret API bound to the bridge gateway; caller IP must match the token's instance
 - [ ] Process runtime refused when TLS is enabled unless `--allow-process-runtime`

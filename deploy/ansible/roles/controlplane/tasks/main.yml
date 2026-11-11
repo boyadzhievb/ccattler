@@ -18,6 +18,18 @@
   args:
     creates: /etc/ccattler/pki/ca.pem
 
+# setup.sh copies the keys into place; the copies cca init left would outlive
+# a root key rotation (M178 review). setup.sh stays as the creates: guard.
+- name: Shred the private keys cca init left in /tmp/cca-init
+  shell: |
+    for key_file in /tmp/cca-init/*.key /tmp/cca-init/*-key.pem; do
+      [ -e "$key_file" ] && shred -u "$key_file"
+    done
+    true
+  args:
+    executable: /bin/bash
+  changed_when: false
+
 # Clusters set up before M177 have no root key; cca server refuses to start
 # without it (Flow 29). Generated once, never overwritten.
 - name: Generate secret root key (clusters that predate M177)

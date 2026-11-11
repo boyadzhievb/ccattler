@@ -1345,17 +1345,23 @@ legacy key lost before migration     → v1 secrets unreadable; re-create them (
    capability secret.write at cluster; 409 with every unmet condition unless:
      keyring/legacy = none | retired
      no intent/keyring/rotation exists (one rotation at a time)
+     fewer than keyringMaxRetainedKEKVersions (8) KEK versions kept (each rotation
+       adds one for the retire grace; the root key re-wrap must fit one etcd txn)
      every live replica report has this build version, active_kek = keyring/active,
        root_check ok
-   → txn guarded by the revisions of keyring/active and keyring/legacy,
-     intent create-only:
+   → re-prove the root key (Refresh), then txn guarded by the revisions of
+     keyring/active, keyring/legacy and keyring/root_check, intent create-only:
        put intent/keyring/rotation = {target_version: active + 1, requested_by, requested_at}
        put observed/keyring/rotation = {state: in_progress, target_version, started}
    returns at once; the work is the controller's
 
 2. keyring-rotation controller (leader; reads keyring/, intent/keyring/rotation,
    observed/keyring/, secrets/, credentials/). Each cycle does the first step
-   that is not done yet; every step is decided from stored state only.
+   that is not done yet; every step is decided from stored state only. Without
+   an intent and without any non-active version it does nothing (no scan).
+   The intent is a fact anyone with store write could forge (until M181), so
+   the controller acts on it only if target = active + 1 and keyring/legacy is
+   none | retired, and switches only to a target KEK that unwraps (review).
 
    a. Create    keyring/kek/{target} absent →
                   put keyring/kek/{target}       = wrap(root, random 32 bytes)
@@ -1378,25 +1384,32 @@ legacy key lost before migration     → v1 secrets unreadable; re-create them (
                 revision conflict → re-read next cycle (a concurrent user write is
                   already under the active KEK)
                 after each batch: observed/keyring/rotation = {state, target_version,
-                  rewrapped, remaining, started}
+                  rewrapped, remaining, unreadable_count, unreadable_keys (≤ 10), started}
+                an envelope that cannot be re-wrapped (malformed, unknown KEK) is
+                  counted and listed, never rewritten or deleted
 
    d. Retire    a draining version with 0 envelopes naming it ∧ every live replica
                 report has active_kek = keyring/active →
                   put keyring/kek/{v}/state          = retiring
                   put keyring/kek/{v}/retiring_since = now (RFC 3339)
-                when no draining version is left:
+                when nothing is left to re-wrap and no replaced version waits for
+                replica reports:
                   delete intent/keyring/rotation
                   put observed/keyring/rotation = {state: completed, ..., completed}
+                a version still named only by unreadable envelopes stays draining
+                (never deleted) without blocking completion; the operator re-sets
+                the listed secrets (cca secret keyring-status) and it retires later
                 (a new rotation may start while older versions are retiring)
 
-   e. Delete    a retiring version, now − retiring_since ≥ --keyring-retire-grace (7d)
-                ∧ this cycle's full scan finds 0 envelopes naming it →
+   e. Delete    a retiring version, now − retiring_since ≥ --keyring-retire-grace
+                (default 7d, minimum 1h) ∧ every live replica report has the active
+                KEK ∧ this cycle's full scan finds 0 envelopes naming it →
                   delete keyring/kek/{v}, /state, /retiring_since
                 an envelope naming a retiring version appears (should not happen) →
                   state back to draining, retiring_since deleted, re-wrapped in c
 ```
 
-Replica reports (`observed/keyring/replica/{node-id}`, Flow 29 step 3) are unchanged; step d uses `active_kek`. A replica that stopped reporting has no lease, so it cannot be sealing either.
+Replica reports (`observed/keyring/replica/{node-id}`, Flow 29 step 3) are unchanged; steps d and e use `active_kek`. A replica that stopped reporting is not counted. A replica that was paused or partitioned past its lease could still seal with an old KEK when it resumes, before its watch fires; the retire grace (at least 1 h, default 7 d) makes that window practically closed, and an envelope naming a retiring version sends it back to draining. The delete transaction's guards cover only part of a large `secrets/` area, so the full scan is not atomic against a write in the same instant: the grace, not the scan, is the protection.
 
 ### Part B — Root key rotation (offline, one playbook)
 
@@ -1416,25 +1429,33 @@ Stage of a host (cca secret root-key-status, read-only):
 Playbook deploy/ansible/rotate-root-key.yml (control-plane hosts, any_errors_fatal;
 every step is decided by the observed stages, never by where a previous run stopped)
   1. refuse a KMS root key; require the same cca version on every host
-  2. stop cca-server one host at a time; require systemctl is-active = inactive everywhere
-  3. read every host's stage; any invalid → stop. Any committed → skip to 5
-  4. (nothing committed yet)                                  failure → rescue: read the
-     a. refuse a leftover .old (archive it with the             first host's stage; not
-        snapshots it opens, or delete it)                       committed → start the
-     b. etcd snapshot + etcdutl snapshot status                 servers on the old key;
-     c. first host: cca secret generate-root-key --path .next   committed → leave them down;
-        (an existing .next is reused, never regenerated)        fail either way with the
-     d. copy .next to every replica through a 0700 staging      stage, re-run goes forward
+  2. stop cca-server one host at a time
+  3. (inside the rescue block from here)                       failure → rescue: read the
+     require systemctl is-active = inactive everywhere          first host's stage; not
+     read every host's stage; any invalid → stop                committed → start the
+     committed = any host committed, or                         servers on the old key;
+       -e resume_root_key_rotation=true (a run that failed      committed → leave them down;
+       after the commit, hosts idle with .old present)          fail either way with the
+     .old present and not committed → stop: ambiguous            stage, re-run goes forward
+       (archive it or pass resume_root_key_rotation)
+  4. (not committed)
+     a. etcd snapshot + etcdutl snapshot status
+     b. first host: cca secret generate-root-key --path .next
+        (an existing .next is reused, never regenerated)
+     c. copy .next to every replica through a 0700 staging
         dir on the controller (no_log, deleted in always:),
         verify each copy's sha256 against the first host, sync
-     e. first host: cca secret rotate-root-key --commit
+     d. first host: cca secret rotate-root-key --commit
   5. every host: cca secret rotate-root-key --finish (no-op where already done)
   6. start cca-server one host at a time; each must listen on its API port and
      stay active before the next starts (the server opens the keyring before it
      listens, so listening proves the new key; a wrong key exits)
   7. fresh etcd snapshot + status check
-  8. shred secret-root.key.old on every host, unless keep_old_root_key=true
-  9. cca secret rotate (KEK rotation, unless rotate_kek_after=false; review F7)
+  8. old key: shredded, or with keep_old_root_key=true archived as
+     secret-root.key.retired-<time>; a finished run never leaves .old.
+     The copy cca init left in /tmp/cca-init is shredded too
+  9. cca secret rotate (KEK rotation, unless rotate_kek_after=false); a refusal
+     fails the play (the root key rotation stands); then wait for completed
  10. print the new key's fingerprint: back the key up off-node
 
 cca secret rotate-root-key --commit|--finish [--path /etc/ccattler/secret-root.key]
@@ -1474,6 +1495,13 @@ KEK rotation
   replica with a stale active KEK  → seals under the previous version; step c re-wraps
                                      it; step d waits until every report shows the new one
   rotate while a rotation runs     → 409 (intent exists)
+  envelope that cannot be re-wrapped → listed in the status; the rotation completes,
+                                     its KEK version stays draining until the secret
+                                     is re-set (it never blocks later rotations)
+  forged intent (store write)      → ignored unless target = active + 1 and the
+                                     legacy key is none | retired (M181 closes it)
+  many rotations in a row          → refused at 8 retained versions until the retire
+                                     grace deletes old ones
   etcd restored to an older snapshot → the snapshot holds its own keyring (KEKs are
                                      wrapped by the root key); consistent as a whole
 
@@ -1491,14 +1519,19 @@ Root key rotation
   replica alive during the         → its keyring watch fails root_check: it exits
     transaction (playbook bypassed)
   second rotation with .old left   → refused before anything changes (review F6)
-  rollback after the transaction   → restore the step-4b snapshot together with
+  failure after the commit, hosts  → re-run with -e resume_root_key_rotation=true:
+    idle, .old present               finish, start, clean up
+  rollback after the transaction   → restore the step-4a snapshot together with
                                      secret-root.key.old (kept until step 8)
-  etcd snapshots taken before the  → open only with secret-root.key.old: keep it with
-    rotation                         them (keep_old_root_key=true) or delete both
-  OLD ROOT KEY LEAKED              → root rotation alone is not enough: the KEKs keep
-                                     their values, so the old key + any pre-rotation
-                                     snapshot still yields them. Step 9 rotates the
-                                     KEKs; then delete or re-encrypt old snapshots (F7)
+  etcd snapshots taken before the  → open only with the old key: archive it with them
+    rotation                         (keep_old_root_key=true) or delete both
+  OLD ROOT KEY LEAKED              → re-wraps never change a DEK. Whoever holds the old
+                                     root key and any etcd snapshot (or etcd copy) from
+                                     before the rotation can decrypt every secret value
+                                     that existed then, also after both rotations:
+                                     re-set those values (cca secret set). Root + KEK
+                                     rotation (step 9) protect what is written after,
+                                     and stop the old key from opening the live keyring
 ```
 
 **What must match:**

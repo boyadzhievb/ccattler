@@ -342,16 +342,24 @@ func TestRunKeyringWatchExitsAfterRootKeyRotation(t *testing.T) {
 	}
 	watchResult := make(chan error, 1)
 	go func() { watchResult <- runningCodec.RunKeyringWatch(ctx) }()
-	time.Sleep(50 * time.Millisecond)
 	if rewrapError := rewrapKeyringUnderRootKey(ctx, cluster.factStore, runningKeyProvider, newTestKeyProvider(t)); rewrapError != nil {
 		t.Fatal(rewrapError)
 	}
-	select {
-	case watchError := <-watchResult:
-		if !errors.Is(watchError, ErrKeyringRootCheckFailed) {
-			t.Fatalf("watch ended with %v", watchError)
+	// The watch may subscribe after the re-wrap; re-writing keyring/legacy with
+	// its own value produces keyring/ events until the watch has seen one.
+	eventTicker := time.NewTicker(20 * time.Millisecond)
+	defer eventTicker.Stop()
+	for {
+		select {
+		case watchError := <-watchResult:
+			if !errors.Is(watchError, ErrKeyringRootCheckFailed) {
+				t.Fatalf("watch ended with %v", watchError)
+			}
+			return
+		case <-eventTicker.C:
+			cluster.factStore.Put(ctx, types.KeyKeyringLegacy, []byte(LegacyKeyNone))
+		case <-ctx.Done():
+			t.Fatalf("watch still running after the root key changed: %v", ctx.Err())
 		}
-	case <-ctx.Done():
-		t.Fatalf("watch still running after the root key changed: %v", ctx.Err())
 	}
 }

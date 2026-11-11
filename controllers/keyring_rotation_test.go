@@ -274,8 +274,8 @@ func TestKeyringRotationResumesOnEveryNewLeader(t *testing.T) {
 }
 
 // TestKeyringRotationNeverDeletesReferencedKEK verifies an envelope naming a
-// retiring KEK that cannot be re-wrapped sends the version back to draining,
-// keeps it past the grace and keeps it counted as unreadable.
+// retiring KEK that cannot be re-wrapped sends the version back to draining
+// and keeps it past the grace.
 func TestKeyringRotationNeverDeletesReferencedKEK(t *testing.T) {
 	ctx := context.Background()
 	cluster := newRotationTestCluster(t, 3)
@@ -341,5 +341,75 @@ func TestKeyringRotationNeverOverwritesConcurrentWrite(t *testing.T) {
 	}
 	if rotationStatus := cluster.readRotationStatus(t); rotationStatus.State != security.KeyringRotationCompleted {
 		t.Fatalf("rotation after the conflict = %+v", rotationStatus)
+	}
+}
+
+// TestKeyringRotationIgnoresIntentTheGateWouldRefuse verifies a forged intent
+// (target beyond active + 1, or written while the legacy key is not retired)
+// makes the controller create and switch nothing.
+func TestKeyringRotationIgnoresIntentTheGateWouldRefuse(t *testing.T) {
+	ctx := context.Background()
+	for _, forgery := range []struct {
+		name          string // name describes the forged state.
+		targetVersion int    // targetVersion is the forged intent's target.
+		legacyState   string // legacyState is written to keyring/legacy.
+	}{
+		{"target skips versions", 5, string(security.LegacyKeyNone)},
+		{"legacy key still migrating", 2, string(security.LegacyKeyMigrating)},
+	} {
+		t.Run(forgery.name, func(t *testing.T) {
+			cluster := newRotationTestCluster(t, 2)
+			intentJSON, _ := json.Marshal(security.KeyringRotationIntent{TargetVersion: forgery.targetVersion})
+			cluster.factStore.Put(ctx, types.KeyIntentKeyringRotation, intentJSON)
+			cluster.factStore.Put(ctx, types.KeyKeyringLegacy, []byte(forgery.legacyState))
+			cluster.runRotationCycle(t, NewKeyringRotationController(cluster.keyringCodec, DefaultKeyringRetireGrace))
+			if cluster.storeValue(types.KeyKeyringKEK(forgery.targetVersion)) != "" || cluster.storeValue(types.KeyKeyringActive) != "1" {
+				t.Fatalf("forged intent acted on: kek/%d present=%t, active=%s", forgery.targetVersion,
+					cluster.storeValue(types.KeyKeyringKEK(forgery.targetVersion)) != "", cluster.storeValue(types.KeyKeyringActive))
+			}
+		})
+	}
+}
+
+// TestKeyringRotationCompletesWithUnreadableEnvelope verifies an envelope that
+// cannot be re-wrapped does not wedge the rotation: it completes (intent
+// deleted, so the next rotation can start), lists the key, and keeps KEK 1.
+func TestKeyringRotationCompletesWithUnreadableEnvelope(t *testing.T) {
+	ctx := context.Background()
+	cluster := newRotationTestCluster(t, 3)
+	corruptEnvelope := cluster.storedEnvelope(t, "app-001")
+	corruptEnvelope[12] ^= 0xFF // damage the wrapped DEK; the header still names KEK 1
+	cluster.factStore.Put(ctx, security.SecretStorePrefix+"app-001", []byte(base64.StdEncoding.EncodeToString(corruptEnvelope)))
+	cluster.completeTestRotation(t, NewKeyringRotationController(cluster.keyringCodec, DefaultKeyringRetireGrace))
+
+	rotationStatus := cluster.readRotationStatus(t)
+	if rotationStatus.UnreadableCount != 1 || len(rotationStatus.UnreadableKeys) != 1 || rotationStatus.UnreadableKeys[0] != security.SecretStorePrefix+"app-001" {
+		t.Fatalf("status = %+v", rotationStatus)
+	}
+	if cluster.storeValue(types.KeyIntentKeyringRotation) != "" {
+		t.Fatal("intent left behind: the next rotation would be refused")
+	}
+	if cluster.storeValue(types.KeyKeyringKEK(1)) == "" || cluster.storeValue(types.KeyKeyringKEKState(1)) != string(security.KEKVersionDraining) {
+		t.Fatalf("KEK 1 still named by an envelope: state %q", cluster.storeValue(types.KeyKeyringKEKState(1)))
+	}
+}
+
+// TestKeyringRotationDeleteWaitsForReplicaReports verifies a retiring KEK past
+// the grace is not deleted while no replica report confirms the active KEK.
+func TestKeyringRotationDeleteWaitsForReplicaReports(t *testing.T) {
+	ctx := context.Background()
+	cluster := newRotationTestCluster(t, 2)
+	controller := NewKeyringRotationController(cluster.keyringCodec, time.Hour)
+	cluster.completeTestRotation(t, controller)
+	_ = cluster.factStore.Delete(ctx, types.KeyObservedKeyringReplica("cp-1"))
+	controller.timeNow = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	cluster.runRotationCycle(t, controller)
+	if cluster.storeValue(types.KeyKeyringKEK(1)) == "" {
+		t.Fatal("KEK 1 deleted without any replica report")
+	}
+	cluster.publishReplicaReport(t)
+	cluster.runRotationCycle(t, controller)
+	if cluster.storeValue(types.KeyKeyringKEK(1)) != "" {
+		t.Fatal("KEK 1 kept although the grace passed and the replica reports KEK 2")
 	}
 }

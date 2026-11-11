@@ -61,6 +61,7 @@
     fail_on_missing: false
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
+  no_log: true
 
 # Only clusters set up before M177 have a legacy key; new clusters have none,
 # and after retirement it is never fetched again.
@@ -72,6 +73,7 @@
     fail_on_missing: false
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
+  no_log: true
   when: not (retire_legacy_secret_key | default(false) | bool)
 
 - name: Ensure the configuration directory exists on other control-plane nodes
@@ -90,6 +92,7 @@
     owner: root
     group: root
     mode: "0400"
+  no_log: true
   when:
     - inventory_hostname != groups['controlplane'][0]
     - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-root.key') | length > 0
@@ -102,6 +105,7 @@
     group: root
     mode: "0600"
     backup: true
+  no_log: true
   when:
     - inventory_hostname != groups['controlplane'][0]
     - lookup('ansible.builtin.fileglob', ha_pki_staging.path ~ '/secret-master.key') | length > 0
@@ -142,6 +146,7 @@
     - /etc/ccattler/pki/ca-key.pem
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
+  no_log: true
 
 - name: Fetch node cert and key from the first node (used as template)
   fetch:
@@ -153,6 +158,7 @@
     - /etc/ccattler/pki/node-key.pem
   delegate_to: "{{ groups['controlplane'][0] }}"
   run_once: true
+  no_log: true
 
 - name: Distribute CA to other control-plane nodes
   copy:
@@ -162,6 +168,7 @@
   loop:
     - ca.pem
     - ca-key.pem
+  no_log: true
   when: inventory_hostname != groups['controlplane'][0]
 
 - name: Delete the private staging directory on the Ansible controller
@@ -191,6 +198,18 @@
   args:
     creates: /etc/ccattler/pki/node.pem
   when: inventory_hostname != groups['controlplane'][0]
+
+# setup.sh copied the keys into place; the copies cca init left would outlive
+# a root key rotation (M178 review). setup.sh stays as the creates: guard.
+- name: Shred the private keys cca init left in /tmp/cca-init
+  shell: |
+    for key_file in /tmp/cca-init/*.key /tmp/cca-init/*-key.pem; do
+      [ -e "$key_file" ] && shred -u "$key_file"
+    done
+    true
+  args:
+    executable: /bin/bash
+  changed_when: false
 
 - name: Write etcd endpoints config (all 3 nodes)
   copy:

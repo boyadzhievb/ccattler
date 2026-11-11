@@ -125,6 +125,31 @@ func executeImagesPullCommand(imageReference string, nodeID string) {
 	}
 }
 
+// stateFactEntry is one fact returned by GET /api/state.
+type stateFactEntry struct {
+	Key   string `json:"key"`   // Key is the fact's store key.
+	Value string `json:"value"` // Value is the fact's value.
+}
+
+// fetchStateFactsWithPrefix reads the facts under prefix through GET
+// /api/state as the CLI user; connection or decode failures exit.
+func fetchStateFactsWithPrefix(prefix string) []stateFactEntry {
+	apiURL := statusAPIBaseURL() + "/api/state?prefix=" + prefix
+	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
+	if requestError != nil {
+		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
+		os.Exit(1)
+	}
+	defer func() { _ = httpResponse.Body.Close() }()
+	checkAPIResponseStatus(httpResponse)
+	var facts []stateFactEntry
+	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&facts); decodeError != nil {
+		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
+		os.Exit(1)
+	}
+	return facts
+}
+
 // discoverNodesWithDebugAPI returns the sorted IDs of nodes that have published
 // a debug_address. When filterNodeID is non-empty, only that node is returned;
 // the API proxy reports it if the node has no debug API.
@@ -133,26 +158,8 @@ func discoverNodesWithDebugAPI(filterNodeID string) []string {
 		return []string{filterNodeID}
 	}
 
-	apiURL := statusAPIBaseURL() + "/api/state?prefix=observed/node/"
-	httpResponse, requestError := buildAuthenticatedHTTPClient().Get(apiURL) //nolint:gosec // CLI connects to user-configured API server
-	if requestError != nil {
-		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'server' running?")
-		os.Exit(1)
-	}
-	defer func() { _ = httpResponse.Body.Close() }()
-	checkAPIResponseStatus(httpResponse)
-
-	var facts []struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
-	}
-	if decodeError := json.NewDecoder(httpResponse.Body).Decode(&facts); decodeError != nil {
-		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeError)
-		os.Exit(1)
-	}
-
 	var nodeIDs []string
-	for _, factEntry := range facts {
+	for _, factEntry := range fetchStateFactsWithPrefix("observed/node/") {
 		if strings.HasSuffix(factEntry.Key, "/debug_address") && factEntry.Value != "" {
 			extractedNodeID := extractNodeIDFromDebugKey(factEntry.Key)
 			if extractedNodeID != "" {
