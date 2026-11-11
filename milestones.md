@@ -262,10 +262,15 @@ Design: Flow 29 in `design/runtime-invariant-flows.md`; decisions 2026-11-10 in 
 
 ### Phase 178 — Keyring Rotation (M178)
 
-- [ ] `cca secret rotate` → `intent/keyring/rotation`; refused until migration completed
-- [ ] Keyring controller: create-only KEK write, `keyring/active` switch, CAS re-wrap of DEKs in bounded batches (`keyringRewrapBatchSize`), idempotent resume, `retiring` → deleted after `--keyring-retire-grace` (7d); referenced versions never deleted
-- [ ] Root key rotation as a separate operator command (re-wraps `keyring/kek/*` and `root_check` only)
-- [ ] Tests: kill at each step and restart; every secret readable; CAS conflict retried; replicas read the same versions; rotation during traffic on the deploy cluster
+Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--root-key-rotation-m178), decisions in [config-secrets.md](design/config-secrets.md#rotation-crash-safe) (2026-11-11).
+
+- [x] Design: Flow 30 + M178 decisions (KEK rotation only after retirement; new `keyring-rotation` controller; offline root key rotation automated by one playbook)
+- [ ] Step 1 — rotation gate: `cca secret rotate` → `POST /api/secret/rotate` writes `intent/keyring/rotation` + `observed/keyring/rotation`; 409 listing unmet conditions (`keyring/legacy` not `none|retired`, rotation running, replica reports)
+- [ ] Step 2 — `keyring-rotation` controller: create-only `pending` KEK, `keyring/active` switch, CAS re-wrap in bounded batches (`keyringRewrapBatchSize`), `draining → retiring` when unreferenced and every replica reports the new version, delete after `--keyring-retire-grace` (7d) and a full scan; write domain declared; referenced versions never deleted
+- [ ] Step 3 — `cca secret rotate-root-key` (local, file root key only): refuses while a replica report is alive, one guarded transaction over every `keyring/kek/*` + `root_check`, `.next`/`.old` files, resume after a crash; a running replica that can no longer unwrap the keyring exits
+- [ ] Step 4 — `deploy/ansible/rotate-root-key.yml`: snapshot, stop one by one, rotate, copy, start one by one, delete `.old`, fresh snapshot; rescue restarts on the old key before the transaction; runbook in TESTING.md (old snapshots unusable after rotation)
+- [ ] Tests: kill at each step and restart; every secret readable; re-wrap leaves DEK/nonce/ciphertext/AAD byte-identical; CAS conflict retried; replicas read the same versions; old root key opens neither `root_check` nor any KEK; `cluster_test.sh` root key rotation (single node + HA); KEK rotation during traffic on the deploy cluster
+- [ ] Independent review (`code-reviewer` + `security-audit`), findings recorded here
 
 ### Phase 179 — Tenant-Scoped Secrets (M179)
 

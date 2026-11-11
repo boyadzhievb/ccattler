@@ -592,7 +592,7 @@ Node-pressure eviction protects the cluster from out-of-memory cascades. When a 
 
 ## 20. Secret Key Rotation
 
-> Current behavior. M174 replaces it with the keyring controller ([config-secrets.md](config-secrets.md#rotation-crash-safe), Flow 27).
+> Historical. Removed in M177 (`/api/secret/rotate` answers 409); replaced in M178 by keyring rotation ([Flow 30](#flow-30-keyring-rotation--root-key-rotation-m178)).
 
 **Chain:** `cca secret rotate` CLI → POST `/api/secret/rotate` → `SecretStore.RotateKeyProvider()` re-wraps DEKs → new master key distributed to agents via enrollment refresh
 
@@ -1329,6 +1329,152 @@ legacy key lost before migration     → v1 secrets unreadable; re-create them (
 - The legacy key never wraps a KEK, `root_check` or a v2 DEK; tests prove it cannot open any of them.
 - Boundaries: the keyring migration controller writes only inside its runner-enforced write domain (`secrets/`, `credentials/`, `observed/keyring/migration`); keyring bootstrap and the migration gate run in the server through its own store. No separate `keyring` store role: controllers run on the runner's store, where a role would never be bound (decided 2026-11-10; controller store isolation is M181). The `api-server` role still has no rule for `secrets/`, `credentials/` or `keyring/`.
 - `cca init` writes `secret-root.key` (not `secret-master.key`) for new clusters; the HA role copies `secret-root.key` to every replica like the CA files.
+
+## Flow 30: Keyring Rotation & Root Key Rotation (M178)
+
+**Status:** designed 2026-11-11. Decisions: KEK rotation is allowed only when `keyring/legacy` is `none` or `retired` (it never overlaps the v1 migration); a new `keyring-rotation` controller does it (the migration controller is unchanged); root key rotation is offline (every API replica stopped) and automated by one playbook, because the file root key is the only mode in use (the KMS providers are behind the `cloudprovider` build tag and untested). Spec: [config-secrets.md](config-secrets.md#rotation-crash-safe).
+
+**Problem**: a KEK or the root key that may have been copied must be replaceable without losing a secret. `POST /api/secret/rotate` answers 409 since M177 (the former in-memory rotation lost every secret on restart). The root key is a file on every API replica; changing it while replicas run leaves some of them with a key that no longer opens the keyring.
+
+**Invariant**: every envelope names the KEK version that wraps its DEK, and that version exists in `keyring/kek/` for as long as one envelope names it. At every point of a KEK rotation, and after a crash at any step, every secret opens on every replica. The root key changes only while no API replica is alive, in one transaction; a replica holding another root key never serves.
+
+### Part A — KEK rotation (online)
+
+```
+1. Rotation gate (POST /api/secret/rotate; cca secret rotate)
+   capability secret.write at cluster; 409 with every unmet condition unless:
+     keyring/legacy = none | retired
+     no intent/keyring/rotation exists (one rotation at a time)
+     every live replica report has this build version, active_kek = keyring/active,
+       root_check ok
+   → txn guarded by the revisions of keyring/active and keyring/legacy,
+     intent create-only:
+       put intent/keyring/rotation = {target_version: active + 1, requested_by, requested_at}
+       put observed/keyring/rotation = {state: in_progress, target_version, started}
+   returns at once; the work is the controller's
+
+2. keyring-rotation controller (leader; reads keyring/, intent/keyring/rotation,
+   observed/keyring/, secrets/, credentials/). Each cycle does the first step
+   that is not done yet; every step is decided from stored state only.
+
+   a. Create    keyring/kek/{target} absent →
+                  put keyring/kek/{target}       = wrap(root, random 32 bytes)
+                  put keyring/kek/{target}/state = pending
+                (one group; the runner compares both keys absent: create-only)
+                crash after it → an unused pending version, picked up in b
+
+   b. Switch    keyring/active < target →
+                  put keyring/active               = target
+                  put keyring/kek/{target}/state   = active
+                  put keyring/kek/{previous}/state = draining
+                (one group, guarded by the scanned revisions)
+                replicas see it through their keyring watch and seal with target;
+                a replica that meets an unknown version re-reads the keyring (Flow 29 step 4)
+
+   c. Re-wrap   v2 envelopes whose kek_version ≠ active, ≤ keyringRewrapBatchSize per cycle:
+                  unwrap the DEK with its KEK version → wrap with the active KEK →
+                  put the envelope back (header and wrapped DEK change; nonce,
+                  ciphertext and AAD are byte-identical), guarded by its scanned revision
+                revision conflict → re-read next cycle (a concurrent user write is
+                  already under the active KEK)
+                after each batch: observed/keyring/rotation = {state, target_version,
+                  rewrapped, remaining, started}
+
+   d. Retire    a draining version with 0 envelopes naming it ∧ every live replica
+                report has active_kek = keyring/active →
+                  put keyring/kek/{v}/state          = retiring
+                  put keyring/kek/{v}/retiring_since = now (RFC 3339)
+                when no draining version is left:
+                  delete intent/keyring/rotation
+                  put observed/keyring/rotation = {state: completed, ..., completed}
+                (a new rotation may start while older versions are retiring)
+
+   e. Delete    a retiring version, now − retiring_since ≥ --keyring-retire-grace (7d)
+                ∧ this cycle's full scan finds 0 envelopes naming it →
+                  delete keyring/kek/{v}, /state, /retiring_since
+                an envelope naming a retiring version appears (should not happen) →
+                  state back to draining, retiring_since deleted, re-wrapped in c
+```
+
+Replica reports (`observed/keyring/replica/{node-id}`, Flow 29 step 3) are unchanged; step d uses `active_kek`. A replica that stopped reporting has no lease, so it cannot be sealing either.
+
+### Part B — Root key rotation (offline, one playbook)
+
+```
+Operator runs: ansible-playbook rotate-root-key.yml   (API down ~1 minute;
+agents and running containers are not touched; new instances that need secrets
+wait in waiting-for-secrets and start when the API is back)
+
+Playbook (control-plane hosts, serial: 1, any_errors_fatal)
+  1. etcd snapshot (existing runbook task)                      failure → abort, nothing changed
+  2. stop cca-server on every control-plane host, one by one    failure → rescue: start the stopped ones (old key)
+  3. first host: cca secret rotate-root-key                     refusal → rescue: start all (old key)
+  4. copy secret-root.key to the other replicas                 failure → that replica stays down; play fails naming it
+       (the HA role's root key task, reused)
+  5. start cca-server one by one; each must be healthy          a wrong file fails root_check: the replica exits
+       before the next starts
+  6. every replica healthy → delete secret-root.key.old on every host,
+       take a fresh etcd snapshot
+
+cca secret rotate-root-key [--path /etc/ccattler/secret-root.key]
+  (local command on a control-plane host, talks to the store directly like
+   cca server; file root key only — refused with --kms-provider)
+  1. wait up to rootKeyRotationReplicaWait (45 s) until no observed/keyring/replica/*
+     is left (leases expire 30 s after a server stops); still present → exit,
+     listing the replicas
+  2. the key at --path opens keyring/root_check        → continue at 3
+     {path}.next exists and opens keyring/root_check   → the transaction already
+                                                         committed: continue at 5
+     neither                                           → exit (wrong key file)
+  3. new key = random 32 bytes → {path}.next (0400, root, fsync)
+  4. ONE transaction, guarded by the revisions of every key it writes and of
+     keyring/active:
+       put keyring/kek/{v}    = wrap(new, KEK_v)   for every version
+       put keyring/root_check = seal(new, fixed value)
+     THIS IS THE POINT OF NO RETURN (before it, the old key still works everywhere)
+  5. rename {path} → {path}.old, {path}.next → {path}
+  running it again after success: the key at --path opens root_check and no
+    .next exists → generates another key. The playbook therefore runs it once
+    and checks its exit code; a re-run of the playbook after a failure in
+    step 4–6 skips step 3 when the first host has {path}.old.
+```
+
+**Failure and recovery paths:**
+
+```
+KEK rotation
+  crash between any two steps      → the next cycle resumes from stored state; every
+                                     envelope names an existing version
+  leader change mid-rotation       → the new leader continues (nothing is in memory)
+  replica with a stale active KEK  → seals under the previous version; step c re-wraps
+                                     it; step d waits until every report shows the new one
+  rotate while a rotation runs     → 409 (intent exists)
+  etcd restored to an older snapshot → the snapshot holds its own keyring (KEKs are
+                                     wrapped by the root key); consistent as a whole
+
+Root key rotation
+  a server is still alive          → the command refuses (step 1); nothing changed
+  crash before the transaction     → old key works; {path}.next is overwritten next run
+  crash after the transaction,     → run again: .next opens root_check, the rename is
+    before the rename                finished
+  replica started with the old key → root_check fails → it exits (Flow 29 step 3)
+  replica alive during the         → its next keyring refresh cannot unwrap the KEKs:
+    transaction (playbook bypassed)  it must exit, not serve with stale keys (new in M178)
+  rollback after the transaction   → restore the step-1 snapshot together with
+                                     secret-root.key.old (kept until step 6)
+  etcd snapshots taken before the  → open only with the old root key, which step 6
+    rotation                         deletes: after a successful rotation they are
+                                     unusable by design (documented in the runbook)
+```
+
+**What must match:**
+- Re-wrap changes only the envelope header and the wrapped DEK. The DEK, nonce, ciphertext and AAD (store key) stay; a test compares them byte for byte.
+- A KEK version is deleted only in state `retiring`, after the grace period, after a full scan in the same cycle found no envelope naming it. No other code path deletes under `keyring/kek/`.
+- Replicas seal only with `keyring/active`. Retirement waits for every live replica report to show it.
+- The `keyring-rotation` write domain is `keyring/kek/`, `keyring/active`, `secrets/`, `credentials/`, `intent/keyring/rotation`, `observed/keyring/rotation`. It never writes `keyring/root_check` or `keyring/legacy`. The gate (step 1) runs in the server through its own store, like the migration gate.
+- `cca secret rotate-root-key` is the only writer of `keyring/root_check` after bootstrap, and re-wraps every KEK version in the same transaction as the check value: there is no state where some KEKs are under one root key and some under another.
+- The playbook holds no logic of its own: it stops, runs the command, copies, starts and checks. The refusal conditions live in `cca`.
+- The old root key never wraps anything after the transaction; a test proves it opens neither `root_check` nor any `keyring/kek/*`.
 
 ## Checklist for New Features
 

@@ -238,14 +238,26 @@ Rules:
 
 ### Rotation (crash-safe)
 
-Rotation is a fact, not a command: `POST /api/secret/rotate` writes `intent/keyring/rotation = {target_version}` and returns. A leader-elected `keyring` controller does the work:
+**M178 decisions (2026-11-11).** Full flow: [runtime-invariant-flows.md Flow 30](runtime-invariant-flows.md#flow-30-keyring-rotation--root-key-rotation-m178).
+
+| Item | Decision |
+|---|---|
+| When KEK rotation is allowed | Only with `keyring/legacy` = `none` or `retired`, so it never overlaps the v1 migration. |
+| Who does it | A new `keyring-rotation` controller with its own write domain; `keyring-migration` is unchanged. |
+| KEK version states | `pending → active → draining → retiring → deleted`. `draining` = replaced but still named by envelopes. |
+| Root key rotation | Offline: every API replica stopped, one transaction, `cca secret rotate-root-key`. Compared with Kubernetes (staged, unchecked), Consul (staged, verified), Vault and AWS KMS (key never leaves a KMS/HSM): the file root key is the only mode in use (the KMS providers need the `cloudprovider` build and are untested), and offline has the fewest states. `root_check` makes a wrong key file stop a replica instead of corrupting data. |
+| Automation | One playbook (`rotate-root-key.yml`): snapshot, stop one by one, rotate, copy, start one by one, clean up. It aborts and restarts on the old key on any failure before the transaction. The logic and refusals are in `cca`, not in the playbook. |
+| Staged online root key rotation | Not built. Reconsider only if the ~1 minute API pause matters. |
+| Old etcd snapshots | After a root key rotation they open only with the old root key, which is deleted. The playbook takes a fresh snapshot at the end. |
+
+Rotation is a fact, not a command: `POST /api/secret/rotate` writes `intent/keyring/rotation = {target_version}` and returns. A leader-elected `keyring-rotation` controller does the work:
 
 1. Create the new KEK, wrap it with the root key, write `keyring/kek/{new}` with a create-only transaction. A crash here leaves an unused version.
 2. Set `keyring/active = {new}`. New secrets use it from now on; every replica sees the change through its watch.
 3. Re-wrap envelopes whose `kek_version` is older, in bounded batches (`keyringRewrapBatchSize`, e.g. 100 per transaction round): unwrap the DEK with the old KEK, wrap with the new one, write with a revision guard (CAS). A guard conflict re-reads that envelope in the next round; concurrent user writes are never overwritten. Only the wrapped DEK changes.
-4. When no envelope references a version, set it `retiring`; delete it after `--keyring-retire-grace` (default 7 days). A version that is still referenced is never deleted.
+4. When no envelope references a version and every live replica reports the new active version, set it `retiring`; delete it after `--keyring-retire-grace` (default 7 days) and a last full scan. A version that is still referenced is never deleted.
 
-Every envelope names its KEK version, so after a crash at any step every secret is readable, and the controller resumes by scanning for older versions (idempotent: re-running a finished step changes nothing). Root key rotation (re-wrap only `keyring/kek/*` and `keyring/root_check`) is a separate operator command and never runs automatically.
+Every envelope names its KEK version, so after a crash at any step every secret is readable, and the controller resumes by scanning for older versions (idempotent: re-running a finished step changes nothing). Root key rotation (re-wrap only `keyring/kek/*` and `keyring/root_check`) is a separate, offline operator command (`cca secret rotate-root-key`, run by `rotate-root-key.yml`) and never runs automatically.
 
 ### Scoped delivery to agents
 
