@@ -66,7 +66,10 @@ func GenerateSecretRootKeyFile(filePath string) error {
 		_ = os.Remove(filePath)
 		return fmt.Errorf("sync %s: %w", filePath, syncError)
 	}
-	return keyFile.Close()
+	if closeError := keyFile.Close(); closeError != nil {
+		return fmt.Errorf("close %s: %w", filePath, closeError)
+	}
+	return syncDirectory(filepath.Dir(filePath))
 }
 
 // ErrLegacySecretMasterKeyMissing is returned when the legacy master key file

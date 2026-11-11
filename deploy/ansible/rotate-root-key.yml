@@ -1,0 +1,186 @@
+---
+# Rotate the secret root key (M178, design/runtime-invariant-flows.md Flow 30 part B)
+#
+# Offline: every cca-server is stopped for about a minute. Agents and running
+# containers are not touched; new instances that need secrets wait and start
+# when the API is back. The logic and every refusal live in cca
+# (`cca secret rotate-root-key --commit|--finish`, `cca secret root-key-status`);
+# this playbook only stops, copies, runs those commands and starts.
+#
+# Run (from deploy/ansible):
+#   ansible-playbook -i ha-inventory.ini rotate-root-key.yml
+#
+# Variables:
+#   keep_old_root_key=true   keep secret-root.key.old (needed to restore etcd
+#                            snapshots taken before the rotation); default: deleted
+#                            once every replica runs on the new key
+#   rotate_kek_after=false   skip the KEK rotation that follows by default; the
+#                            root key re-wraps the same KEKs, so after a suspected
+#                            leak of the old root key the KEKs must change too
+#
+# Safe to re-run after any failure: every step is decided by the observed stage
+# (idle | staged | committed) of each host, never by where the last run stopped.
+# Before the commit a failure restarts the servers on the old key; after it the
+# play only goes forward. Runbook: design/TESTING.md "Root key rotation".
+
+- name: Rotate the secret root key
+  hosts: controlplane
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    root_key_path: /etc/ccattler/secret-root.key
+    first_control_plane_host: "{{ groups['controlplane'][0] }}"
+    etcd_client_flags: >-
+      --endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/ca.pem
+      --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem
+  tasks:
+    - name: Refuse clusters whose root key is a KMS key
+      command: systemctl cat cca-server
+      register: server_unit
+      changed_when: false
+      failed_when: server_unit.rc != 0 or '--kms-provider' in server_unit.stdout
+
+    - name: Read the cca version on every control-plane host
+      command: /usr/local/bin/cca version
+      register: cca_version
+      changed_when: false
+
+    - name: Require the same cca version on every control-plane host
+      assert:
+        that: hostvars[item].cca_version.stdout == cca_version.stdout
+        fail_msg: "{{ item }} runs another cca version; upgrade every control-plane host first"
+      loop: "{{ groups['controlplane'] }}"
+      run_once: true
+
+    - name: Stop cca-server, one host at a time
+      systemd:
+        name: cca-server
+        state: stopped
+      throttle: 1
+
+    - name: Require cca-server to be inactive everywhere
+      command: systemctl is-active cca-server
+      register: server_activity
+      changed_when: false
+      failed_when: server_activity.stdout != 'inactive'
+
+    - name: Read each host's root key stage
+      command: /usr/local/bin/cca secret root-key-status
+      register: root_key_status
+      changed_when: false
+
+    - name: Decide whether the keyring was already committed to the new key
+      set_fact:
+        root_key_committed: >-
+          {{ groups['controlplane'] | map('extract', hostvars, ['root_key_status', 'stdout'])
+             | select('search', 'stage=committed') | list | length > 0 }}
+      run_once: true
+
+    - name: Refuse hosts whose key files open nothing
+      assert:
+        that: "'stage=invalid' not in root_key_status.stdout"
+        fail_msg: "{{ inventory_hostname }}: {{ root_key_status.stdout }} — wrong key files; see the runbook"
+
+    - name: Stage the new key and commit it (only when not committed yet)
+      when: not root_key_committed | bool
+      block:
+        - name: Refuse a leftover secret-root.key.old from an earlier rotation
+          assert:
+            that: "'old=false' in root_key_status.stdout"
+            fail_msg: "{{ inventory_hostname }}: archive or delete {{ root_key_path }}.old (it opens snapshots taken before the last rotation)"
+
+        - name: Snapshot etcd before the rotation
+          shell: |
+            set -euo pipefail
+            mkdir -p /var/backups/ccattler && chmod 700 /var/backups/ccattler
+            snapshot=/var/backups/ccattler/etcd-before-root-key-rotation-$(date +%Y%m%d-%H%M%S).db
+            etcdctl {{ etcd_client_flags }} snapshot save "$snapshot"
+            etcdutl snapshot status "$snapshot" -w table
+          args:
+            executable: /bin/bash
+          when: inventory_hostname == first_control_plane_host
+
+        - name: Generate secret-root.key.next on the first host (an existing one is reused)
+          command: /usr/local/bin/cca secret generate-root-key --path {{ root_key_path }}.next
+          args:
+            creates: "{{ root_key_path }}.next"
+          when: inventory_hostname == first_control_plane_host
+
+        - name: Copy secret-root.key.next to every replica
+          include_tasks: rotate-root-key-distribute.yml
+
+        - name: Commit the keyring to the new key on the first host
+          command: /usr/local/bin/cca secret rotate-root-key --commit
+          when: inventory_hostname == first_control_plane_host
+
+      rescue:
+        - name: Read the stage again after the failure
+          command: /usr/local/bin/cca secret root-key-status
+          register: root_key_status_after_failure
+          changed_when: false
+          failed_when: false
+          delegate_to: "{{ first_control_plane_host }}"
+          run_once: true
+
+        - name: Restart cca-server on the old key (nothing was committed)
+          systemd:
+            name: cca-server
+            state: started
+          when: "'stage=committed' not in root_key_status_after_failure.stdout"
+
+        - name: Stop here
+          fail:
+            msg: >-
+              Root key rotation failed. First-host state: {{ root_key_status_after_failure.stdout | default('unknown') }}.
+              committed → the keyring is on the new key: fix the cause and re-run the playbook (it only goes forward).
+              otherwise → the servers run on the old key again; fix the cause and re-run.
+
+    - name: Install the new key on the other replicas
+      command: /usr/local/bin/cca secret rotate-root-key --finish
+      register: root_key_finish
+      when: inventory_hostname != first_control_plane_host
+
+    - name: Finish the first host too (no-op unless its swap was interrupted)
+      command: /usr/local/bin/cca secret rotate-root-key --finish
+      register: root_key_finish_first
+      when: inventory_hostname == first_control_plane_host
+
+    - name: Start cca-server and wait for its API, one host at a time
+      include_tasks: rotate-root-key-start.yml
+      loop: "{{ groups['controlplane'] }}"
+      loop_control:
+        loop_var: replica_host
+      run_once: true
+
+    - name: Snapshot etcd after the rotation
+      shell: |
+        set -euo pipefail
+        snapshot=/var/backups/ccattler/etcd-after-root-key-rotation-$(date +%Y%m%d-%H%M%S).db
+        etcdctl {{ etcd_client_flags }} snapshot save "$snapshot"
+        etcdutl snapshot status "$snapshot" -w table
+      args:
+        executable: /bin/bash
+      when: inventory_hostname == first_control_plane_host
+
+    - name: Delete secret-root.key.old (every replica runs on the new key)
+      command: shred -u {{ root_key_path }}.old
+      args:
+        removes: "{{ root_key_path }}.old"
+      when: not (keep_old_root_key | default(false) | bool)
+
+    - name: Rotate the KEK too (the root key rotation re-wrapped the same KEKs)
+      command: /usr/local/bin/cca secret rotate
+      register: kek_rotation
+      failed_when: false
+      when:
+        - rotate_kek_after | default(true) | bool
+        - inventory_hostname == first_control_plane_host
+
+    - name: Report the result
+      debug:
+        msg:
+          - "New root key fingerprint: {{ (root_key_finish_first.stdout | default('')) | regex_search('fingerprint [0-9a-f]+') }}"
+          - "Back up the new secret-root.key off-node (encrypted); the old backups hold the old key."
+          - "KEK rotation: {{ kek_rotation.stdout | default('skipped') }} {{ kek_rotation.stderr | default('') }}"
+      when: inventory_hostname == first_control_plane_host

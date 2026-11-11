@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
@@ -158,29 +159,17 @@ func exitWithSecretKeyError(keyError error) {
 // reports to expire (their lease TTL is 30 s after a server stops).
 const rootKeyRotationReplicaWait = 45 * time.Second
 
-// executeSecretRotateRootKey implements "cca secret rotate-root-key [--path
-// <file>]" (Flow 30 part B): a local command on a control-plane host, run with
-// every cca-server stopped. It connects to etcd like cca server, refuses while
-// a replica report is alive, re-wraps the keyring in one transaction and swaps
-// the key files. Copy the new file to every other replica before starting them.
+// rootKeyRotationUsage is printed for invalid cca secret rotate-root-key arguments.
+const rootKeyRotationUsage = "usage: cca secret rotate-root-key --commit|--finish [--path <file>]" //nolint:gosec // G101: usage text, not a credential
+
+// executeSecretRotateRootKey implements "cca secret rotate-root-key
+// --commit|--finish [--path <file>]" (Flow 30 part B), a local command run
+// with every cca-server stopped and {path}.next already on every replica.
+// --commit (first host) re-wraps the keyring under .next in one transaction
+// and swaps the files; --finish (other hosts) only swaps, never writes etcd.
 func executeSecretRotateRootKey(args []string) {
-	rootKeyPath := security.DefaultSecretRootKeyPath
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		if args[argIndex] == "--path" && argIndex+1 < len(args) {
-			argIndex++
-			rootKeyPath = args[argIndex]
-			continue
-		}
-		fmt.Fprintln(os.Stderr, "usage: cca secret rotate-root-key [--path <file>]")
-		os.Exit(1)
-	}
-	storeDefaults := resolveStoreDefaultsForDaemon()
-	factStore, storeError := createStateStoreFromServerConfig(storeDefaults.storeBackend, storeDefaults.etcdEndpoints, storeDefaults.storeKeyPrefix,
-		storeDefaults.etcdCertPath, storeDefaults.etcdKeyPath, storeDefaults.etcdCACertPath)
-	if storeError != nil {
-		fmt.Fprintf(os.Stderr, "error: connect to etcd at %s: %v\n", storeDefaults.etcdEndpoints, storeError)
-		os.Exit(1)
-	}
+	rootKeyPath, rotationMode := parseRootKeyCommandArgs(args, rootKeyRotationUsage, "--commit", "--finish")
+	factStore := openLocalControlPlaneStore()
 	defer func() { _ = factStore.Close() }()
 	ctx := context.Background()
 	fmt.Printf("Waiting up to %s for every API replica to stop...\n", rootKeyRotationReplicaWait)
@@ -188,16 +177,76 @@ func executeSecretRotateRootKey(args []string) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", waitError)
 		os.Exit(1)
 	}
-	resumed, rotateError := security.RotateSecretRootKeyFile(ctx, factStore, rootKeyPath)
+	var keyFingerprint string
+	var rotateError error
+	if rotationMode == "--commit" {
+		legacyKey, legacyKeyError := security.LoadLegacySecretMasterKeyFile(legacySecretMasterKeyPath)
+		if legacyKeyError != nil && !errors.Is(legacyKeyError, security.ErrLegacySecretMasterKeyMissing) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", legacyKeyError)
+			os.Exit(1)
+		}
+		keyFingerprint, rotateError = security.CommitRootKeyRotation(ctx, factStore, rootKeyPath, legacyKey)
+	} else {
+		keyFingerprint, rotateError = security.FinishRootKeyRotation(ctx, factStore, rootKeyPath)
+	}
 	if rotateError != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", rotateError)
 		os.Exit(1)
 	}
-	if resumed {
-		fmt.Println("Finished an interrupted root key rotation (the keyring was already re-wrapped).")
+	fmt.Printf("%s opens the keyring (fingerprint %s); the previous key, if any, is %s%s.\n",
+		rootKeyPath, keyFingerprint, rootKeyPath, security.RootKeyOldSuffix)
+}
+
+// executeSecretRootKeyStatus implements "cca secret root-key-status [--path
+// <file>]": prints which of the key file and {path}.next open the keyring and
+// the rotation stage (idle|staged|committed|invalid). Read-only; the playbook
+// decides from it whether to roll back or go forward.
+func executeSecretRootKeyStatus(args []string) {
+	rootKeyPath, _ := parseRootKeyCommandArgs(args, "usage: cca secret root-key-status [--path <file>]")
+	factStore := openLocalControlPlaneStore()
+	defer func() { _ = factStore.Close() }()
+	filesStatus, inspectError := security.InspectRootKeyFiles(context.Background(), factStore, rootKeyPath)
+	if inspectError != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", inspectError)
+		os.Exit(1)
 	}
-	fmt.Printf("Root key rotated: %s is the new key, %s.old the previous one (delete it once every replica runs).\n", rootKeyPath, rootKeyPath)
-	fmt.Println("Copy the new key to every other control-plane replica, then start cca-server one host at a time.")
+	fmt.Printf("stage=%s key=%s next=%s old=%t\n", filesStatus.Stage, filesStatus.Current, filesStatus.Next, filesStatus.OldExists)
+}
+
+// parseRootKeyCommandArgs parses --path and exactly one of modeFlags (none
+// when modeFlags is empty); anything else prints usageText and exits.
+func parseRootKeyCommandArgs(args []string, usageText string, modeFlags ...string) (string, string) {
+	rootKeyPath, selectedMode := security.DefaultSecretRootKeyPath, ""
+	for argIndex := 0; argIndex < len(args); argIndex++ {
+		switch {
+		case args[argIndex] == "--path" && argIndex+1 < len(args):
+			argIndex++
+			rootKeyPath = args[argIndex]
+		case selectedMode == "" && slices.Contains(modeFlags, args[argIndex]):
+			selectedMode = args[argIndex]
+		default:
+			fmt.Fprintln(os.Stderr, usageText)
+			os.Exit(1)
+		}
+	}
+	if len(modeFlags) > 0 && selectedMode == "" {
+		fmt.Fprintln(os.Stderr, usageText)
+		os.Exit(1)
+	}
+	return rootKeyPath, selectedMode
+}
+
+// openLocalControlPlaneStore connects to etcd the way cca server does
+// (endpoints and TLS from the node's defaults) or exits.
+func openLocalControlPlaneStore() store.StateStore {
+	storeDefaults := resolveStoreDefaultsForDaemon()
+	factStore, storeError := createStateStoreFromServerConfig(storeDefaults.storeBackend, storeDefaults.etcdEndpoints, storeDefaults.storeKeyPrefix,
+		storeDefaults.etcdCertPath, storeDefaults.etcdKeyPath, storeDefaults.etcdCACertPath)
+	if storeError != nil {
+		fmt.Fprintf(os.Stderr, "error: connect to etcd at %s: %v\n", storeDefaults.etcdEndpoints, storeError)
+		os.Exit(1)
+	}
+	return factStore
 }
 
 // executeSecretGenerateRootKey implements "cca secret generate-root-key

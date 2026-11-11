@@ -89,11 +89,15 @@ func (keyringCodec *KeyringEnvelopeCodec) CheckKeyringRotationGate(ctx context.C
 	return append(unmetConditions, replicaConditions...), nil
 }
 
-// StartKeyringRotation records intent/keyring/rotation for KEK version
-// active + 1 and the in_progress status in one transaction guarded by the
-// revisions of keyring/active and keyring/legacy (intent create-only), so two
-// concurrent requests cannot both start one. Returns the target version.
+// StartKeyringRotation re-proves the root key, then records
+// intent/keyring/rotation for KEK version active + 1 and the in_progress
+// status in one transaction guarded by the revisions of keyring/active and
+// keyring/legacy (intent create-only), so two concurrent requests cannot both
+// start one. Returns the target version.
 func (keyringCodec *KeyringEnvelopeCodec) StartKeyringRotation(ctx context.Context, requestedBy string) (int, error) {
+	if refreshError := keyringCodec.Refresh(ctx); refreshError != nil {
+		return 0, fmt.Errorf("re-check the root key before starting a KEK rotation: %w", refreshError)
+	}
 	activeFact, activeError := keyringCodec.factStore.Get(ctx, types.KeyKeyringActive)
 	if activeError != nil {
 		return 0, fmt.Errorf("read %s: %w", types.KeyKeyringActive, activeError)
@@ -153,8 +157,13 @@ type KEKRewrapBatch struct {
 }
 
 // CreateWrappedKEK generates a fresh KEK and returns it wrapped by the root
-// key, the value stored at keyring/kek/{version} (Flow 30 step a).
+// key, the value stored at keyring/kek/{version} (Flow 30 step a). It first
+// re-proves this replica's root key against keyring/root_check, so a replica
+// left running across a root key rotation never adds a KEK under the old key.
 func (keyringCodec *KeyringEnvelopeCodec) CreateWrappedKEK(ctx context.Context) ([]byte, error) {
+	if refreshError := keyringCodec.Refresh(ctx); refreshError != nil {
+		return nil, fmt.Errorf("re-check the root key before creating a KEK: %w", refreshError)
+	}
 	keyEncryptionKey, generateError := GenerateDEK()
 	if generateError != nil {
 		return nil, generateError

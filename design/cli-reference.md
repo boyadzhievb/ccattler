@@ -78,7 +78,8 @@ cca secret migrate-names --plan | --apply <mapping.ccv>
 cca secret migrate-keys --confirm-backup     # re-encrypt v1 envelopes (after migration gate)
 cca secret retire-legacy-key                 # stop using the old master key (after retirement gate)
 cca secret rotate                            # new KEK version, re-wrap (refused until the legacy key is retired)
-cca secret rotate-root-key [--path <file>]   # local, every cca-server stopped: new root key, keyring re-wrapped (run by rotate-root-key.yml)
+cca secret rotate-root-key --commit|--finish [--path <file>]  # local, every cca-server stopped, .next staged on every replica (run by rotate-root-key.yml)
+cca secret root-key-status [--path <file>]   # local, read-only: stage=idle|staged|committed|invalid
 ```
 
 Names starting with `route/` are reserved for system gate keys (M176): `cca secret` refuses and hides them; see [config-secrets.md](config-secrets.md).

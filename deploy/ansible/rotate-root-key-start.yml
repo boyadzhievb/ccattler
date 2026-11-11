@@ -1,0 +1,26 @@
+---
+# Starts cca-server on one replica (replica_host) and waits for its API. The
+# server opens the keyring before it listens, so a listening API proves the
+# replica's root key opens the keyring; a wrong key makes it exit and this
+# wait fail, which stops the play before the next replica starts.
+# Included by rotate-root-key.yml in a loop over the control-plane hosts.
+
+- name: Start cca-server on {{ replica_host }}
+  systemd:
+    name: cca-server
+    state: started
+  delegate_to: "{{ replica_host }}"
+
+- name: Wait for the API of {{ replica_host }} (keyring opened with the new key)
+  wait_for:
+    host: "{{ hostvars[replica_host].ansible_host | default(replica_host) }}"
+    port: 9770
+    timeout: 60
+  delegate_to: "{{ replica_host }}"
+
+- name: Require cca-server to still be running on {{ replica_host }}
+  command: systemctl is-active cca-server
+  register: started_server_activity
+  changed_when: false
+  failed_when: started_server_activity.stdout != 'active'
+  delegate_to: "{{ replica_host }}"

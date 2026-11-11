@@ -722,15 +722,24 @@ Ansible: worker role removes secret-master.key on non-control-plane hosts; contr
   retire_legacy_secret_key=true (HA: also secret-master.key.<ts>~ backups); HA stages keys in a per-run 0700 tempdir, deleted after use
 
 cca secret generate-root-key [--path]  → GenerateSecretRootKeyFile (O_EXCL, 0400, fsync)
-cca secret rotate-root-key [--path] → executeSecretRotateRootKey [cmd/cca/server_secret_keys.go:166] (local; store from resolveStoreDefaultsForDaemon)
-├── WaitForStoppedKeyringReplicas(45s) [security/root_key_rotation.go:34]   [observed/keyring/replica/* must be empty]
-└── RotateSecretRootKeyFile(path) [:64]
-    ├── loadRootKeyOpeningKeyring(path) [:103] opens root_check?
-    │   no → loadRootKeyOpeningKeyring(path.next) opens? → swapRootKeyFiles (resume) | error (wrong key files)
-    ├── remove stale path.next → GenerateSecretRootKeyFile(path.next)
-    ├── rewrapKeyringUnderRootKey [:126]  ONE txn [revisions of every keyring/kek/{v}, root_check, keyring/active]:
-    │   put keyring/kek/{v} = wrap(next, unwrap(current, ·)) for every version, put root_check = wrap(next, fixed value)
-    └── swapRootKeyFiles [:175]: path → path.old, path.next → path, fsync directory
+Root key rotation (M178 Flow 30 part B; driven by deploy/ansible/rotate-root-key.yml):
+cca secret root-key-status [--path] → executeSecretRootKeyStatus [cmd/cca/server_secret_keys.go:204] (read-only)
+└── InspectRootKeyFiles [security/root_key_rotation.go:114] → loadRootKeyFileState [:252] (path, path.next)
+    → stage idle | staged | committed | invalid; old present?
+cca secret rotate-root-key --commit|--finish [--path] → executeSecretRotateRootKey [cmd/cca/server_secret_keys.go:170]
+├── openLocalControlPlaneStore (resolveStoreDefaultsForDaemon) ; WaitForStoppedKeyringReplicas(45s) [:78]
+├── --commit → CommitRootKeyRotation(path, legacy key) [:143]
+│   ├── committed → finishStagedRootKey [:204] (swap only)
+│   ├── refuse: not staged, .old present, loadValidatedRootKeyPair [:223] (.next ≠ current, ≠ legacy),
+│   │   liveKeyringReplicas re-read [:100]
+│   ├── rewrapKeyringUnderRootKey [:280] → buildRootKeyRewrapTransaction [:297]
+│   │   intent/keyring/rotation must be absent; rewrapWithProof [:350] (wrap + unwrap dry run)
+│   │   ONE txn [revisions: every keyring/kek/{v}, root_check, keyring/active;
+│   │            absent: intent/keyring/rotation, keyring/kek/{max+1}, keyring/kek/{max+1}/state]
+│   │   put keyring/kek/{v} = wrap(next, unwrap(current, ·)), put root_check = wrap(next, fixed value)
+│   └── swapRootKeyFiles [:364]: path → path.old, path.next → path, syncDirectory [:376]
+└── --finish → FinishRootKeyRotation [:181]: committed → finishStagedRootKey; idle → no-op; staged → refuse
+Stale-replica fence: CreateWrappedKEK and StartKeyringRotation call Refresh first (root_check must open)
 cca init (first node)                  → writeInitSecretKeys → secret-root.key only (new clusters start on v2)
 cca init --ca (HA secondary)           → no secret keys; Ansible copies the first node's files
 ```

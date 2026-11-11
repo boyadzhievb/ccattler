@@ -268,7 +268,20 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
 - [x] Step 1 — rotation gate: `cca secret rotate` → `POST /api/secret/rotate` writes `intent/keyring/rotation` + `observed/keyring/rotation`; 409 listing unmet conditions (`keyring/legacy` not `none|retired`, rotation running, replica reports)
 - [x] Step 2 — `keyring-rotation` controller: create-only `pending` KEK, `keyring/active` switch, CAS re-wrap in bounded batches (`keyringRewrapBatchSize`), `draining → retiring` when unreferenced and every replica reports the new version, delete after `--keyring-retire-grace` (7d) and a full scan; write domain declared; referenced versions never deleted
 - [x] Step 3 — `cca secret rotate-root-key` (local, file root key only): refuses while a replica report is alive, one guarded transaction over every `keyring/kek/*` + `root_check`, `.next`/`.old` files, resume after a crash; a running replica that can no longer unwrap the keyring exits
-- [ ] Step 4 — `deploy/ansible/rotate-root-key.yml`: snapshot, stop one by one, rotate, copy, start one by one, delete `.old`, fresh snapshot; rescue restarts on the old key before the transaction; runbook in TESTING.md (old snapshots unusable after rotation)
+- [x] Step 3b — rework after the design review below: `--commit|--finish`, `root-key-status`, staged `.next` on every replica before the commit, stale-replica fence
+- [ ] Step 4 — `deploy/ansible/rotate-root-key.yml` (+ `rotate-root-key-distribute.yml`, `rotate-root-key-start.yml`) and runbook in TESTING.md: written, `--syntax-check` passes; **not yet run on a cluster**
+- Design review of the root key rotation (`security-audit`, 2026-11-11), verified against the code:
+  - F1 high, fixed: a replica left running could add a KEK under the old root key around the commit → the re-wrap transaction also guards absence of `intent/keyring/rotation` and `keyring/kek/{max+1}`(`/state`); `CreateWrappedKEK` and `StartKeyringRotation` re-prove the root key (Refresh) first
+  - F2 high, fixed: re-running the command on a finished host started a second rotation → `--commit` never generates and refuses without a staged `.next`; `--finish` never writes etcd
+  - F3 high, fixed: the new key existed only as one `.next` → staged and checksum-verified on every replica before the commit; `generate-root-key` fsyncs the directory; nothing deletes or regenerates `.next`
+  - F4 medium, fixed: rescue decided by playbook position → decided by `root-key-status` (committed → never roll back)
+  - F5 medium, fixed: expired reports do not prove no server runs → playbook requires `systemctl is-active` = inactive and one cca version on every host; the command re-reads reports right before the transaction; residual window closed by F1
+  - F6 medium, fixed: a second rotation overwrote `.old` → refused before anything changes
+  - F7 medium, fixed (design + playbook): root rotation keeps the KEK values → playbook rotates the KEKs afterwards (`rotate_kek_after`, default on); runbook says to delete or re-encrypt pre-rotation snapshots after an old-key leak
+  - F8 medium, fixed: key copy hygiene → staging dir deleted in `always:`, `no_log`, `shred -u` for `.old`, fingerprint printed, off-node backup step in the runbook
+  - F9 low, rejected: a stale report cannot confirm a start, because the replica reports are verified gone before the commit and the start check is the API port, which opens only after the keyring
+  - F10 low, fixed: dry-run unwrap of every re-wrapped value before the commit; resume message corrected (fingerprint output). Not fixed: >~60 KEK versions exceed etcd's 128-op transaction (the re-wrap then fails without change)
+  - F11 low, fixed: a staged key equal to the current or the legacy key is refused
 - [ ] Tests: kill at each step and restart; every secret readable; re-wrap leaves DEK/nonce/ciphertext/AAD byte-identical; CAS conflict retried; replicas read the same versions; old root key opens neither `root_check` nor any KEK; `cluster_test.sh` root key rotation (single node + HA); KEK rotation during traffic on the deploy cluster
 - [ ] Independent review (`code-reviewer` + `security-audit`), findings recorded here
 

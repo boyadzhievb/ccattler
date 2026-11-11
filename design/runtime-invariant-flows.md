@@ -1400,43 +1400,68 @@ Replica reports (`observed/keyring/replica/{node-id}`, Flow 29 step 3) are uncha
 
 ### Part B — Root key rotation (offline, one playbook)
 
+Reworked after the security review of 2026-11-11 (findings F1–F11 in milestones.md Phase 178).
+
 ```
 Operator runs: ansible-playbook rotate-root-key.yml   (API down ~1 minute;
 agents and running containers are not touched; new instances that need secrets
 wait in waiting-for-secrets and start when the API is back)
 
-Playbook (control-plane hosts, serial: 1, any_errors_fatal)
-  1. etcd snapshot (existing runbook task)                      failure → abort, nothing changed
-  2. stop cca-server on every control-plane host, one by one    failure → rescue: start the stopped ones (old key)
-  3. first host: cca secret rotate-root-key                     refusal → rescue: start all (old key)
-  4. copy secret-root.key to the other replicas                 failure → that replica stays down; play fails naming it
-       (the HA role's root key task, reused)
-  5. start cca-server one by one; each must be healthy          a wrong file fails root_check: the replica exits
-       before the next starts
-  6. every replica healthy → delete secret-root.key.old on every host,
-       take a fresh etcd snapshot
+Stage of a host (cca secret root-key-status, read-only):
+  idle       key file opens keyring/root_check, no .next
+  staged     key file opens, .next present (not committed)
+  committed  .next opens, key file does not (or is absent): swap pending
+  invalid    nothing opens (wrong files, or a KMS root key)
 
-cca secret rotate-root-key [--path /etc/ccattler/secret-root.key]
-  (local command on a control-plane host, talks to the store directly like
-   cca server; file root key only — refused with --kms-provider)
-  1. wait up to rootKeyRotationReplicaWait (45 s) until no observed/keyring/replica/*
-     is left (leases expire 30 s after a server stops); still present → exit,
-     listing the replicas
-  2. the key at --path opens keyring/root_check        → continue at 3
-     {path}.next exists and opens keyring/root_check   → the transaction already
-                                                         committed: continue at 5
-     neither                                           → exit (wrong key file)
-  3. new key = random 32 bytes → {path}.next (0400, root, fsync)
-  4. ONE transaction, guarded by the revisions of every key it writes and of
-     keyring/active:
-       put keyring/kek/{v}    = wrap(new, KEK_v)   for every version
-       put keyring/root_check = seal(new, fixed value)
-     THIS IS THE POINT OF NO RETURN (before it, the old key still works everywhere)
-  5. rename {path} → {path}.old, {path}.next → {path}, fsync the directory
-  running it again after success rotates again (a newer key). That is safe:
-    the playbook always copies the key the command just installed, so a
-    re-run of the whole playbook after any failure leaves every replica on
-    one key.
+Playbook deploy/ansible/rotate-root-key.yml (control-plane hosts, any_errors_fatal;
+every step is decided by the observed stages, never by where a previous run stopped)
+  1. refuse a KMS root key; require the same cca version on every host
+  2. stop cca-server one host at a time; require systemctl is-active = inactive everywhere
+  3. read every host's stage; any invalid → stop. Any committed → skip to 5
+  4. (nothing committed yet)                                  failure → rescue: read the
+     a. refuse a leftover .old (archive it with the             first host's stage; not
+        snapshots it opens, or delete it)                       committed → start the
+     b. etcd snapshot + etcdutl snapshot status                 servers on the old key;
+     c. first host: cca secret generate-root-key --path .next   committed → leave them down;
+        (an existing .next is reused, never regenerated)        fail either way with the
+     d. copy .next to every replica through a 0700 staging      stage, re-run goes forward
+        dir on the controller (no_log, deleted in always:),
+        verify each copy's sha256 against the first host, sync
+     e. first host: cca secret rotate-root-key --commit
+  5. every host: cca secret rotate-root-key --finish (no-op where already done)
+  6. start cca-server one host at a time; each must listen on its API port and
+     stay active before the next starts (the server opens the keyring before it
+     listens, so listening proves the new key; a wrong key exits)
+  7. fresh etcd snapshot + status check
+  8. shred secret-root.key.old on every host, unless keep_old_root_key=true
+  9. cca secret rotate (KEK rotation, unless rotate_kek_after=false; review F7)
+ 10. print the new key's fingerprint: back the key up off-node
+
+cca secret rotate-root-key --commit|--finish [--path /etc/ccattler/secret-root.key]
+  (local, talks to etcd like cca server; never generates a key)
+  both: wait up to 45 s until no observed/keyring/replica/* is left
+  --commit (first host)
+    committed → only the swap (crash after the transaction), no etcd write
+    not staged → refuse ("nothing to commit"); a second commit after success
+      therefore never rotates again (review F2)
+    refuse: .old exists; .next = current key or = legacy key; a replica report
+      re-appeared; intent/keyring/rotation exists (KEK rotation running)
+    wrap every KEK and root_check with .next and unwrap them again in memory (dry run)
+    ONE transaction, guarded by the revisions of every keyring/kek/{v},
+      root_check and keyring/active, and by the ABSENCE of intent/keyring/rotation
+      and keyring/kek/{max+1}(/state), so a stale replica cannot add a KEK under
+      the old root key in between (review F1):
+        put keyring/kek/{v}    = wrap(new, KEK_v)   for every version
+        put keyring/root_check = seal(new, fixed value)
+      THIS IS THE POINT OF NO RETURN (before it, the old key still works everywhere)
+    swap: {path} → {path}.old, {path}.next → {path}, fsync the directory
+  --finish (other hosts): committed → swap and verify the installed key opens;
+    idle → no-op; staged → refuse (commit first); never writes etcd
+  generate-root-key fsyncs the file and its directory (review F3)
+
+A replica process re-proves its root key (Refresh → root_check) before it
+creates a KEK or starts a KEK rotation, and its keyring watch exits the
+server when root_check stops opening (review F1, F5).
 ```
 
 **Failure and recovery paths:**
@@ -1453,18 +1478,27 @@ KEK rotation
                                      wrapped by the root key); consistent as a whole
 
 Root key rotation
-  a server is still alive          → the command refuses (step 1); nothing changed
-  crash before the transaction     → old key works; {path}.next is overwritten next run
-  crash after the transaction,     → run again: .next opens root_check, the rename is
-    before the rename                finished
+  a server is still alive          → refused (playbook: systemctl; command: replica
+                                     reports, re-read right before the transaction)
+  failure before the transaction   → rescue starts the servers on the old key; .next
+                                     stays and is reused (never regenerated) next run
+  transaction committed but the    → stage committed: rescue leaves the servers down;
+    client saw an error              re-run goes forward (--finish everywhere)
+  crash during the swap            → --commit / --finish finish it (stage committed)
+  stale replica adds a KEK under   → the transaction fails (kek/{max+1} guard) or the
+    the old key                      replica refuses (Refresh fails root_check)
   replica started with the old key → root_check fails → it exits (Flow 29 step 3)
-  replica alive during the         → its next keyring refresh cannot unwrap the KEKs:
-    transaction (playbook bypassed)  it must exit, not serve with stale keys (new in M178)
-  rollback after the transaction   → restore the step-1 snapshot together with
-                                     secret-root.key.old (kept until step 6)
-  etcd snapshots taken before the  → open only with the old root key, which step 6
-    rotation                         deletes: after a successful rotation they are
-                                     unusable by design (documented in the runbook)
+  replica alive during the         → its keyring watch fails root_check: it exits
+    transaction (playbook bypassed)
+  second rotation with .old left   → refused before anything changes (review F6)
+  rollback after the transaction   → restore the step-4b snapshot together with
+                                     secret-root.key.old (kept until step 8)
+  etcd snapshots taken before the  → open only with secret-root.key.old: keep it with
+    rotation                         them (keep_old_root_key=true) or delete both
+  OLD ROOT KEY LEAKED              → root rotation alone is not enough: the KEKs keep
+                                     their values, so the old key + any pre-rotation
+                                     snapshot still yields them. Step 9 rotates the
+                                     KEKs; then delete or re-encrypt old snapshots (F7)
 ```
 
 **What must match:**
@@ -1473,7 +1507,8 @@ Root key rotation
 - Replicas seal only with `keyring/active`. Retirement waits for every live replica report to show it.
 - The `keyring-rotation` write domain is `keyring/kek/`, `keyring/active`, `secrets/`, `credentials/`, `intent/keyring/rotation`, `observed/keyring/rotation`. It never writes `keyring/root_check` or `keyring/legacy`. The gate (step 1) runs in the server through its own store, like the migration gate.
 - `cca secret rotate-root-key` is the only writer of `keyring/root_check` after bootstrap, and re-wraps every KEK version in the same transaction as the check value: there is no state where some KEKs are under one root key and some under another.
-- The playbook holds no logic of its own: it stops, runs the command, copies, starts and checks. The refusal conditions live in `cca`.
+- The playbook holds no logic of its own: it stops, runs the commands, copies, starts and checks, and chooses rollback or forward only from `root-key-status`. The refusal conditions live in `cca`.
+- Nothing ever deletes or regenerates a `.next` that may hold the committed key: `generate-root-key` refuses to overwrite, `--commit` never generates, and the swap is the only rename of `.next`.
 - The old root key never wraps anything after the transaction; a test proves it opens neither `root_check` nor any `keyring/kek/*`.
 
 ## Checklist for New Features

@@ -246,6 +246,23 @@ cca status
 - **Disabled nodes** are not checked by either gate and may still hold the old key file; remove it before re-enabling such a node.
 - **`cca init` output** (e.g. `/tmp/cca-init`) holds `secret-root.key` and `ca-key.pem`: it is control-plane-only material; delete it after `setup.sh` ran, never copy it to workers.
 
+## Root key rotation (runbook, M178)
+
+Flow 30 part B. Offline: the API is down for about a minute; agents and running containers are not touched. File root key only (a KMS root key is refused).
+
+```sh
+cd deploy/ansible
+ansible-playbook -i <inventory> rotate-root-key.yml                    # default: deletes .old, then rotates the KEKs
+ansible-playbook -i <inventory> rotate-root-key.yml -e keep_old_root_key=true   # keep .old for older snapshots
+```
+
+- **Before:** every control-plane host on the same `cca` version; no `secret-root.key.old` left from an earlier rotation (archive it with the snapshots it opens, or delete it); for the KEK rotation step, the legacy key must be retired (otherwise that step reports 409 and the root key rotation still stands).
+- **Re-run after any failure.** The playbook reads each host's stage (`cca secret root-key-status`: `idle | staged | committed | invalid`) and only goes forward once the keyring is committed to the new key. Before the commit a failure restarts the servers on the old key; after it, the servers stay down until the re-run.
+- **Manual inspection:** `sudo cca secret root-key-status` on each control-plane host. `committed` on any host means the keyring is already under `secret-root.key.next`: never delete or regenerate that file; run `sudo cca secret rotate-root-key --finish` on each host and start `cca-server`.
+- **Back up the new key** off-node (encrypted) after the run; the playbook prints its fingerprint (first 16 hex characters of its SHA-256) so copies can be compared. Old off-node key backups hold the old key and open only pre-rotation snapshots.
+- **Old key leaked:** root rotation re-wraps the same KEKs, so the old key plus a pre-rotation snapshot still yields them. Keep the default KEK rotation step, wait until `observed/keyring/rotation` is `completed`, then delete or re-encrypt every pre-rotation snapshot.
+- **Rollback** (only before step 8 deleted `.old`): stop every `cca-server`, restore the `etcd-before-root-key-rotation-*.db` snapshot (restore steps above), put `secret-root.key.old` back as `secret-root.key` on every replica, start the servers.
+
 ## Demo Commands
 
 Each milestone has a corresponding demo command that exercises its headline feature interactively:

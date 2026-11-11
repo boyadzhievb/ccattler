@@ -2052,6 +2052,8 @@ func executeSecretCommand(args []string) {
 		executeSecretRetireLegacyKey(args[1:])
 	case "rotate-root-key":
 		executeSecretRotateRootKey(args[1:])
+	case "root-key-status":
+		executeSecretRootKeyStatus(args[1:])
 	default:
 		fmt.Fprintln(os.Stderr, secretCommandUsage)
 		os.Exit(1)
@@ -2184,7 +2186,7 @@ func executeSecretMigrateKeys(args []string) {
 // secretCommandUsage is printed for a missing or unknown cca secret
 // subcommand. Ansible's root-key task recognizes binaries without
 // generate-root-key by the "usage: cca secret" prefix.
-const secretCommandUsage = "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys|retire-legacy-key|rotate-root-key> [name] [value]" //nolint:gosec // G101: usage text, not a credential
+const secretCommandUsage = "usage: cca secret <set|get|list|delete|rotate|generate-root-key|migrate-keys|retire-legacy-key|rotate-root-key|root-key-status> [name] [value]" //nolint:gosec // G101: usage text, not a credential
 
 // executeSecretRetireLegacyKey implements "cca secret retire-legacy-key": once
 // the retirement gate passes, every replica drops the legacy key and refuses

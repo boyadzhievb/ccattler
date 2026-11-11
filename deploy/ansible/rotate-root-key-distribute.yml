@@ -1,0 +1,72 @@
+---
+# Copies secret-root.key.next from the first control-plane host to every other
+# replica through a private staging directory on the Ansible controller, then
+# verifies every copy. Included by rotate-root-key.yml; the staging directory
+# is deleted even when a step fails.
+
+- name: Distribute and verify secret-root.key.next
+  block:
+    - name: Create a private staging directory on the Ansible controller
+      tempfile:
+        state: directory
+        suffix: cca-root-key
+      register: root_key_staging
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Restrict the staging directory to its owner
+      file:
+        path: "{{ root_key_staging.path }}"
+        mode: "0700"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: Fetch secret-root.key.next from the first host
+      fetch:
+        src: "{{ root_key_path }}.next"
+        dest: "{{ root_key_staging.path }}/secret-root.key.next"
+        flat: true
+      no_log: true
+      when: inventory_hostname == first_control_plane_host
+
+    - name: Copy secret-root.key.next to the other replicas
+      copy:
+        src: "{{ root_key_staging.path }}/secret-root.key.next"
+        dest: "{{ root_key_path }}.next"
+        owner: root
+        group: root
+        mode: "0400"
+        force: true
+      no_log: true
+      when: inventory_hostname != first_control_plane_host
+
+    - name: Read the checksum of every copy
+      stat:
+        path: "{{ root_key_path }}.next"
+        checksum_algorithm: sha256
+      register: next_key_file
+      no_log: true
+
+    - name: Require every copy to match the first host's key
+      assert:
+        that:
+          - next_key_file.stat.exists
+          - next_key_file.stat.checksum == hostvars[first_control_plane_host].next_key_file.stat.checksum
+        fail_msg: "{{ inventory_hostname }}: secret-root.key.next differs from the first host's"
+        quiet: true
+
+    - name: Flush the copies to disk
+      command: sync
+      changed_when: false
+
+  always:
+    - name: Delete the staging directory on the Ansible controller
+      file:
+        path: "{{ root_key_staging.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: false
+      when: root_key_staging.path is defined
