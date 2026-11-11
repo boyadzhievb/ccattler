@@ -38,7 +38,7 @@ Node-pressure eviction controller (`controllers/eviction.go`) monitors per-node 
 **K8s**: ConfigMap/Secret watch → pod restart or volume refresh, secret rotation.
 **CCattler**: Agent computes SHA256 hash of all config inputs (env vars, config files, secrets) at start time. On steady-state cycle, recomputes and compares — if different, stops and restarts with new config. Secret rotation library exists (`security/secrets.go:RotateKeyProvider`).
 **Files**: `agent/agent.go`, `security/secrets.go`, `types/keys.go`.
-`cca secret rotate` CLI command generates a new master key and re-wraps all DEKs via the `/api/secret/rotate` API endpoint. New nodes receive the rotated key at enrollment.
+`cca secret rotate` records a KEK rotation intent through `/api/secret/rotate`; the keyring-rotation controller creates the new KEK and re-wraps every DEK (M178, Flow 30). Nodes never receive a key; secrets reach them through delivery (M174).
 **Files**: `agent/agent.go`, `security/secrets.go`, `api/server.go`, `cmd/cca/command_status.go`, `types/keys.go`.
 
 ### 6. Pod Disruption Budgets — DONE (pre-existing)

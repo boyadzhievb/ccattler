@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/boyadzhievb/ccattler/logging"
 	"github.com/boyadzhievb/ccattler/security"
@@ -26,6 +27,10 @@ type KeyringAdministration interface {
 	CheckLegacyRetirementGate(ctx context.Context) ([]string, error)
 	// RetireLegacyKey retires the legacy key; v1 envelopes are refused afterwards.
 	RetireLegacyKey(ctx context.Context) error
+	// CheckKeyringRotationGate returns every unmet KEK rotation condition (Flow 30).
+	CheckKeyringRotationGate(ctx context.Context, buildVersion string) ([]string, error)
+	// StartKeyringRotation records the rotation intent; returns the target KEK version.
+	StartKeyringRotation(ctx context.Context, requestedBy string) (int, error)
 }
 
 // SetKeyringAdministration enables POST /api/secret/migrate-keys and
@@ -50,9 +55,15 @@ func writeKeyringGateRefusal(responseWriter http.ResponseWriter, gateName string
 }
 
 // beginKeyringAdministration checks method, configuration and capability
-// shared by both keyring endpoints. Both are irreversible, so they require
+// shared by the legacy key endpoints. Both are irreversible, so they require
 // cluster.admin at cluster scope rather than secret.write (security finding F9).
 func (apiServer *Server) beginKeyringAdministration(responseWriter http.ResponseWriter, request *http.Request) bool {
+	return apiServer.beginKeyringRequest(responseWriter, request, security.CapabilityClusterAdmin)
+}
+
+// beginKeyringRequest checks the POST method, that the keyring is configured
+// and that the caller holds requiredCapability at cluster scope.
+func (apiServer *Server) beginKeyringRequest(responseWriter http.ResponseWriter, request *http.Request, requiredCapability security.Capability) bool {
 	if request.Method != http.MethodPost {
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return false
@@ -61,7 +72,36 @@ func (apiServer *Server) beginKeyringAdministration(responseWriter http.Response
 		writeJSONError(responseWriter, "keyring not configured", http.StatusServiceUnavailable)
 		return false
 	}
-	return apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster)
+	return apiServer.requireCapability(responseWriter, request, requiredCapability, security.ScopeCluster)
+}
+
+// handleSecretRotate implements POST /api/secret/rotate (Flow 30 step 1): 409
+// with every unmet condition, otherwise intent/keyring/rotation is recorded and
+// the keyring-rotation controller does the work. Rotation destroys nothing, so
+// secret.write at cluster scope suffices.
+func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, request *http.Request) {
+	if !apiServer.beginKeyringRequest(responseWriter, request, security.CapabilitySecretWrite) {
+		return
+	}
+	requestContext := request.Context()
+	unmetConditions, checkError := apiServer.keyringAdministration.CheckKeyringRotationGate(requestContext, apiServer.buildVersion)
+	if checkError != nil {
+		writeJSONError(responseWriter, "check rotation gate: "+checkError.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(unmetConditions) > 0 {
+		writeKeyringGateRefusal(responseWriter, "rotation", unmetConditions)
+		return
+	}
+	requestedBy := security.PrincipalFromContext(requestContext)
+	targetVersion, startError := apiServer.keyringAdministration.StartKeyringRotation(requestContext, requestedBy)
+	if startError != nil {
+		writeJSONError(responseWriter, startError.Error(), http.StatusConflict)
+		return
+	}
+	logging.Default().Info("KEK rotation started", "principal", requestedBy, "target_version", strconv.Itoa(targetVersion))
+	responseWriter.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(responseWriter).Encode(map[string]any{"state": security.KeyringRotationInProgress, "target_version": targetVersion})
 }
 
 // handleSecretRetireLegacyKey implements POST /api/secret/retire-legacy-key:

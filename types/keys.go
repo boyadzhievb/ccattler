@@ -2480,3 +2480,11 @@ const (
 // KeyIntentKeyringLegacyMigration records the operator's request to migrate
 // v1 envelopes to v2 (cca secret migrate-keys, Flow 29 step 5).
 const KeyIntentKeyringLegacyMigration = PrefixIntent + "/keyring/legacy_migration"
+
+// KeyIntentKeyringRotation records the operator's request to rotate the KEK
+// (cca secret rotate, Flow 30); it exists while a rotation runs.
+const KeyIntentKeyringRotation = PrefixIntent + "/keyring/rotation"
+
+// KeyObservedKeyringRotation holds the KEK rotation status as JSON (state,
+// target_version, started, ...).
+const KeyObservedKeyringRotation = PrefixObserved + "/keyring/rotation"

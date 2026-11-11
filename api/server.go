@@ -1927,24 +1927,6 @@ func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, 
 	})
 }
 
-// handleSecretRotate refuses rotation with 409 until keyring rotation lands
-// (M178, Flow 29). The former in-memory rotation re-wrapped every secret under
-// a key that was never persisted, so a server restart lost every secret.
-func (apiServer *Server) handleSecretRotate(responseWriter http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
-		return
-	}
-	if apiServer.secretStore == nil {
-		writeJSONError(responseWriter, "secret store not configured", http.StatusServiceUnavailable)
-		return
-	}
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
-		return
-	}
-	writeJSONError(responseWriter, "secret key rotation is not available yet: it moves to the persisted keyring (M178) and is refused until the legacy key migration has completed", http.StatusConflict)
-}
-
 // handleUser dispatches /api/user requests for user account CRUD.
 // POST creates a user, GET lists users, DELETE removes a user.
 func (apiServer *Server) handleUser(responseWriter http.ResponseWriter, request *http.Request) {

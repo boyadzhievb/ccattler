@@ -280,31 +280,3 @@ func TestSecretAPIProtectsSystemOwnedGateKeys(testContext *testing.T) {
 		testContext.Error("system key was modified or deleted")
 	}
 }
-
-// TestSecretRotateRefusedUntilKeyringRotation verifies POST /api/secret/rotate
-// answers 409 and leaves every secret readable: the former in-memory rotation
-// lost every secret on the next restart (Flow 29, rotation moves to M178).
-func TestSecretRotateRefusedUntilKeyringRotation(testContext *testing.T) {
-	rawStore := store.NewMemoryStore()
-	masterKey, _ := security.GenerateMasterKey()
-	secretStore, _ := security.NewSecretStoreWithMasterKey(rawStore, masterKey)
-	ctx := context.Background()
-	_ = secretStore.PutSecret(ctx, "db.password", []byte("s3cret"))
-	apiServer := NewServer(rawStore)
-	apiServer.SetSecretStore(secretStore)
-	apiAuthorizer := security.NewAPIAuthorizer()
-	apiAuthorizer.Grant("user:admin", security.CapabilityClusterAdmin, security.ScopeCluster)
-	apiServer.SetAPIAuthorizer(apiAuthorizer)
-	adminPrincipal := security.Principal{Kind: security.PrincipalKindUser, Name: "admin"}
-
-	request := httptest.NewRequest(http.MethodPost, "/api/secret/rotate", nil)
-	request = request.WithContext(security.WithPrincipalStruct(request.Context(), adminPrincipal))
-	responseRecorder := httptest.NewRecorder()
-	apiServer.handleSecretRotate(responseRecorder, request)
-	if responseRecorder.Code != http.StatusConflict {
-		testContext.Fatalf("rotate status = %d, want 409", responseRecorder.Code)
-	}
-	if value, getError := secretStore.GetSecret(ctx, "db.password"); getError != nil || string(value) != "s3cret" {
-		testContext.Errorf("secret after refused rotate = %q, %v", value, getError)
-	}
-}

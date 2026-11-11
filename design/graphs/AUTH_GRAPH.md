@@ -658,11 +658,21 @@ KeyringEnvelopeCodec.SealEnvelopeForKey [security/envelope_codec.go:111] → leg
 KeyringEnvelopeCodec.OpenEnvelopeForKey [:125] → isEnvelopeV2 ? openEnvelopeV2Payload(KEK[version]) : legacy (refused once retired)
 Callers: SecretStore.PutSecret/GetSecretThroughStore, CredentialStore, SealSecretValue(codec, storeKey, ...),
          RouteTLSController and GateKeyMigrationController (the server passes keyringCodec directly)
-POST /api/secret/rotate → 409 until keyring rotation (M178)
+
+KEK rotation gate (M178 step 1, Flow 30 step 1):
+cca secret rotate → executeSecretRotate → postSecretAdminRequest
+POST /api/secret/rotate → handleSecretRotate [api/keyring_migration.go:82; secret.write at cluster via beginKeyringRequest]
+├── CheckKeyringRotationGate(buildVersion)               [security/keyring_rotation.go:48]
+│   ├── keyring/legacy = none | retired (allowsKEKRotation)
+│   ├── intent/keyring/rotation absent (one rotation at a time)
+│   └── checkReplicaReports(version, "") → observed/keyring/replica/*
+├── unmet → writeKeyringGateRefusal (409 {error, unmet[]})
+└── StartKeyringRotation(principal) [:70] → txn [keyring/active rev, keyring/legacy rev, intent create-only]
+    put intent/keyring/rotation {target_version = active + 1} + observed/keyring/rotation {state: in_progress}
 
 Legacy key migration (M177 step 3, Flow 29 steps 5–6):
 cca secret migrate-keys --confirm-backup → executeSecretMigrateKeys → postSecretAdminRequest
-POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration.go:96; cluster.admin via beginKeyringAdministration]
+POST /api/secret/migrate-keys → handleSecretMigrateKeys [api/keyring_migration.go:136; cluster.admin via beginKeyringAdministration]
 ├── CheckLegacyMigrationGate(req, buildVersion)          [security/keyring_migration.go:34]
 │   ├── confirm_backup set; keyring/legacy = present
 │   ├── checkReplicaReports(version, "") → observed/keyring/replica/* (version, active KEK, root_check ok)
@@ -680,7 +690,7 @@ Write domain: keyring-migration → secrets/, credentials/, observed/keyring/mig
 
 Legacy key retirement (M177 step 4, Flow 29 step 7):
 cca secret retire-legacy-key → executeSecretRetireLegacyKey → postSecretAdminRequest
-POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_migration.go:70; cluster.admin]
+POST /api/secret/retire-legacy-key → handleSecretRetireLegacyKey [api/keyring_migration.go:110; cluster.admin]
 ├── CheckLegacyRetirementGate [security/keyring_retirement.go:24]
 │   ├── keyring/legacy = migrating; migration completed with count 0
 │   ├── checkReplicaReports("", migrating) → every live replica acts on migrating (seals v2)

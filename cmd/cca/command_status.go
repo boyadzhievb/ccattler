@@ -2148,10 +2148,13 @@ func executeSecretDelete(secretName string) {
 	fmt.Printf("secret %q deleted\n", secretName)
 }
 
-// executeSecretRotate implements "cca secret rotate". The server refuses
-// rotation (409) until keyring rotation lands in M178; the CLI prints why.
+// executeSecretRotate implements "cca secret rotate": the server passes the
+// rotation gate and records the intent; the keyring-rotation controller
+// creates the new KEK and re-wraps every envelope (Flow 30). A refusal lists
+// every unmet condition.
 func executeSecretRotate() {
 	postSecretAdminRequest("/api/secret/rotate", nil)
+	fmt.Println("KEK rotation started: the keyring controller creates the new KEK and re-wraps every secret")
 }
 
 // executeSecretMigrateKeys implements "cca secret migrate-keys

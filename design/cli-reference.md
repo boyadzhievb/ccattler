@@ -77,7 +77,7 @@ cca secret unshare <name> --tenant <owner> --with-tenant <consumer>
 cca secret migrate-names --plan | --apply <mapping.ccv>
 cca secret migrate-keys --confirm-backup     # re-encrypt v1 envelopes (after migration gate)
 cca secret retire-legacy-key                 # stop using the old master key (after retirement gate)
-cca secret rotate                            # new KEK version, re-wrap (refused until migration completed)
+cca secret rotate                            # new KEK version, re-wrap (refused until the legacy key is retired)
 ```
 
 Names starting with `route/` are reserved for system gate keys (M176): `cca secret` refuses and hides them; see [config-secrets.md](config-secrets.md).
