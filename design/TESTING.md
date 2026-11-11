@@ -265,6 +265,8 @@ sudo systemctl start actions.runner.boyadzhievb-ccattler.testbed-100-43.service
 
 The HA servers listen on the host IP only: on a control-plane host use `CCA_API=<host ip>:9770 sudo -E cca …`.
 
+While the HA set occupies the host (since 2026-11-11), `e2e.yml`, `e2e-extended.yml` and `upgrade-test.yml` run only on manual dispatch (their push, schedule and release triggers are removed); restore them when the e2e set returns.
+
 ## Root key rotation (runbook, M178)
 
 Flow 30 part B. Offline: the API is down for about a minute; agents and running containers are not touched. File root key only (a KMS root key is refused).

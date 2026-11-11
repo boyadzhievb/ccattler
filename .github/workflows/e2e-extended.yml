@@ -19,8 +19,8 @@ on:
         options:
           - "build"
           - "release"
-  schedule:
-    - cron: "0 3 * * *"
+  # Nightly schedule paused while testbed-100.77 hosts the HA VM set
+  # (design/TESTING.md "HA cluster on testbed-100.77"); restore afterwards.
 
 concurrency:
   group: baremetal-e2e

@@ -1,8 +1,8 @@
 name: E2E Cluster Test
 
+# Manual only while testbed-100.77 hosts the HA VM set (design/TESTING.md
+# "HA cluster on testbed-100.77"); restore the push trigger afterwards.
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       workload:

@@ -1,8 +1,9 @@
 name: Upgrade Test
 
+# Manual only: it still targets the retired bare-metal e2e environment, and
+# testbed-100.77 hosts the HA VM set (design/TESTING.md); restore the release
+# trigger once it targets the LAN VMs.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 concurrency:
