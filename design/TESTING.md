@@ -1,6 +1,6 @@
 # CCattler Test Plan
 
-1836 tests across 19 packages. Every milestone has a "must test" headline scenario, supported by unit and integration tests.
+2028 test functions across 19 packages (counted 2026-11-11 with `go test ./... -list '.*'`). Every milestone lists its test scenarios in its checklist in [milestones.md](../milestones.md), and is verified by unit tests plus a deploy-cluster or e2e run.
 
 ## How to Run
 
@@ -9,7 +9,23 @@ go test ./...                          # all tests
 go test ./integration/ -v              # integration tests only
 go test ./... -run TestVolumeSurvives  # single test by name
 go run ./cmd/cca/ demo-storage         # live demo with volume migration
+go run ./cmd/cca/ readiness            # test suite across 16 areas, readiness report
+./test/e2e/cluster_test.sh --env lan   # e2e on the bridged LAN VMs (from testbed-100.77)
 ```
+
+## Test Layers
+
+| Layer | Where | Runs in |
+|-------|-------|---------|
+| Unit | `*_test.go` next to the code | `test.yml` on every push and pull request (`go test -race -short ./...`) |
+| Integration (simulated runtime, in-memory store) | `integration/` | `test.yml`; auth and security subsets also in `auth-test.yml`, `security-test.yml` |
+| Chaos (failure injection, convergence) | `chaos/`, `cca chaos`, `cca benchmark` | `test.yml` (unit tests); commands run by hand |
+| E2E on the LAN VM cluster | `test/e2e/cluster_test.sh --env lan` (includes `gate_tls_checks.sh`) | `e2e.yml` (runner label `e2e`), manual dispatch |
+| Extended and upgrade E2E (still the default `--env test`, the retired bare-metal nodes) | `test/e2e/cluster_test.sh --extended`, `--from-release --upgrade` | `e2e-extended.yml`, `upgrade-test.yml` (runner label `e2e`), manual dispatch |
+| E2E on the deploy cluster (Airflow and heavy workloads) | `test/e2e/cluster_test.sh --env deploy` | `deploy-testbed.yml` (runner label `deploy`), manual dispatch |
+| Placement and tenant quota (12 scenarios, deploy cluster) | `test/e2e/placement_test.sh` | by hand; no workflow runs it |
+| HA failover (bare-metal node addresses, not the `vm-ha-lan` set) | `test/e2e/baremetal_ha_test.sh` | `e2e-ha.yml`, manual dispatch |
+| Deploy cluster health | `test/e2e/health_check.sh` | `health-check.yml`, hourly |
 
 ## Examples
 
@@ -27,136 +43,23 @@ The `examples/` directory contains working `.cca` configs — one per feature ar
 | `web-container.cca` | Container runtime with SSI hostname display |
 | `autoscaling.cca` | Horizontal/vertical/event-driven scaling policies |
 | `zabbix.cca` | Monitoring integration with Zabbix |
+| `rolling-update.cca` | Update strategy, disruption budget, health-gated rollout with automatic rollback |
+| `auth.cca` | Roles, groups and grants (capabilities with scopes) |
+| `airflow.cca` | Apache Airflow CeleryExecutor stack with PostgreSQL and Redis |
 | `reference.cca` | **All DSL constructs** — annotated config reference (every block, every field, with comments) |
-
-## Test Coverage by Milestone
-
-### M1 — State Machine (Phases 0–4)
-
-**Headline**: Apply config, see facts reconcile in the store.
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | Desired service → instances created → placed on node | Covered | `TestDesiredToPlaced` |
-| **Must** | Scale up creates new instances and places them | Covered | `TestScaleUpPlacesNewInstances` |
-| **Must** | Scale down stops excess instances | Covered | `TestScaleDown` |
-| **Must** | Failed instance → replacement created | Covered | `TestFailureReplacesFailedInstance` |
-| **Must** | Endpoints created for running instances with ports | Covered | `TestEndpointCreatedForRunningInstance` |
-| **Must** | Stale endpoints removed when instance stops | Covered | `TestStaleEndpointRemoved` |
-| Should | Scale down prefers pending over running | Covered | `TestScaleDownPrefersPending` |
-| Should | No placement without alive nodes | Covered | `TestNoAliveNodes` |
-| Should | Scheduler skips unreachable nodes | Covered | `TestSkipUnreachableNodes` |
-| Should | Stopped instances not counted toward desired | Covered | `TestStoppedInstancesNotCounted` |
-| Should | Multiple services reconciled independently | Covered | `TestMultipleServices` |
-| Could | Transaction conflict during concurrent writes | Covered | `TestTransactionConflict` |
-| Could | Watch delivers events in order | Covered | `TestWatchExactKey`, `TestWatchPrefix` |
-
-### M2 — Single Machine (Phase 5)
-
-**Headline**: CLI → parser → store → reconciler → running container.
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | Agent starts instance placed on its node | Covered | `TestAgentStartsPlacedInstance` |
-| **Must** | Agent stops removed instance | Covered | `TestAgentStopsRemovedInstance` |
-| **Must** | Agent ignores placements for other nodes | Covered | `TestAgentIgnoresOtherNode` |
-| **Must** | Agent registers node in store | Covered | `TestAgentRegistersNode` |
-| **Must** | Agent writes heartbeat lease | Covered | `TestAgentWritesHeartbeat` |
-| **Must** | HTTP health probe reports healthy/unhealthy | Covered | `TestAgentReportsHealthy`, `TestAgentReportsUnhealthy` |
-| **Must** | DSL parse + compile end-to-end | Covered | `TestApplyEndToEnd` |
-| Should | No health check when service has no health config | Covered | `TestAgentNoHealthWithoutConfig` |
-| Should | TCP health probe works | Covered | `TestTCPHealthy`, `TestTCPConnectionRefused` |
-| Should | Simulator runtime tracks start/stop/list | Covered | `TestSimStart` through `TestSimInterfaceCompliance` |
-| Should | Process runtime starts real OS processes | Covered | `TestProcessStartAndStop` through `TestProcessInterfaceCompliance` |
-| Could | Container runtime (docker/nerdctl/lima) | Manual | `cca run-container examples/web-container.cca` |
-
-### M3 — Distributed (Phase 6)
-
-**Headline**: 10 instances spread across 3 nodes.
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | Instances spread evenly across nodes | Covered | `TestDistributedSpreadAcrossNodes` |
-| **Must** | Node failure → reschedule to survivors | Covered | `TestDistributedNodeFailureReschedules` |
-| **Must** | Resource-aware scheduling (fit + spread) | Covered | `TestResourceFit`, `TestResourceSpreadWithAccounting` |
-| **Must** | Node failure detector (lease expiry) | Covered | `TestNodeFailureDetectsExpiredLease` |
-| Should | Heartbeats visible in store | Covered | `TestDistributedHeartbeatsVisibleInStore` |
-| Should | Multiple services deployed simultaneously | Covered | `TestDistributedMultiServiceSpread` |
-| Should | Instances on dead node marked failed | Covered | `TestNodeFailureMarksInstancesAsFailed` |
-| Should | Already-unreachable nodes not re-detected | Covered | `TestNodeFailureSkipsAlreadyUnreachable` |
-| Could | Resource exhaustion (more instances than capacity) | Covered | `TestResourceExhaustion` |
-
-### M4 — Networking (Phase 7)
-
-**Headline**: Services reachable by name, traffic balances.
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | Instances get unique IPs from node subnets | Covered | `TestInstancesGetUniqueIPsFromNodeSubnet` |
-| **Must** | Service gets VIP and DNS record | Covered | `TestServiceGetsVIPAndDNS` |
-| **Must** | DNS resolves service name to VIP | Covered | `TestDNSResolvesServiceToVIP` |
-| **Must** | Load balancer distributes across instances | Covered | `TestLoadBalancingDistributesTraffic` |
-| **Must** | Two services reachable by name (headline) | Covered | `TestServiceReachableByName` |
-| Should | Endpoints reflect allocated IPs, not 127.0.0.1 | Covered | `TestEndpointsReflectAllocatedIPs` |
-| Should | Scale up adds to load balancer pool | Covered | `TestScaleUpAddsToLoadBalancerPool` |
-| Should | Node failure updates networking | Covered | `TestNodeFailureUpdatesNetworking` |
-| Should | IP released on instance stop | Covered | `TestInstanceIPReleasedOnStop` |
-| Should | Two services have independent networking | Covered | `TestMultipleServicesIndependentNetworking` |
-| Should | Agent with network provider writes allocation facts | Covered | `TestAgentWithNetworkProviderWritesAllocationFact` |
-| Should | Agent without network provider uses 127.0.0.1 | Covered | `TestAgentWithoutNetworkProviderUsesLoopback` |
-| Could | DNS server returns NXDOMAIN for unknown service | Covered | `TestDNSServerReturnsNXDOMAINForUnknownService` |
-| Could | Concurrent IP allocations don't collide | Covered | `TestConcurrentAllocationsDoNotCollide` |
-
-### M5 — Storage (Phase 8)
-
-**Headline**: Persistent volumes survive node moves.
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | Volume created from desired state (available) | Covered | `TestVolumeCreatedFromDesiredState` |
-| **Must** | Volume attached when instance starts | Covered | `TestVolumeAttachedWhenInstanceStarts` |
-| **Must** | Volume detached when instance stops | Covered | `TestVolumeDetachedWhenInstanceStops` |
-| **Must** | Volume survives node failure (headline) | Covered | `TestVolumeSurvivesNodeFailure` |
-| **Must** | Volume force-detached on unreachable node | Covered | `TestVolumeForceDetachOnUnreachableNode` |
-| Should | Multiple services with independent volumes | Covered | `TestMultipleServicesIndependentVolumes` |
-| Should | Service without volume unaffected | Covered | `TestServiceWithoutVolumeUnaffected` |
-| Should | All volume facts present in store | Covered | `TestVolumeStateReflectedInStore` |
-| Should | Volume reattaches after force-detach | Covered | `TestVolumeReattachAfterForceDetach` |
-| Should | Agent without storage provider ignores volumes | Covered | `TestAgentWithoutStorageProviderIgnoresVolumes` |
-| Should | Agent does not start when volume unavailable | Covered | `TestAgentDoesNotStartWhenVolumeUnavailable` |
-| Should | Exclusive attach enforced (ReadWriteOnce) | Covered | `TestExclusiveAttachEnforced` |
-| Should | StorageController idempotent | Covered | `TestStorageControllerIdempotent` |
-| Could | Concurrent attach/detach thread-safe | Covered | `TestConcurrentAttachDetachSafe` |
-| Could | Volume DSL round-trip (parse → compile → facts) | Covered | `TestCompileVolumeDeclaration`, `TestParseVolumeDeclaration` |
-
-### Cross-Cutting
-
-| Category | Scenario | Status | Test |
-|----------|----------|--------|------|
-| **Must** | All example configs parse and apply | Covered | `TestAllExamplesParseAndApply` |
-| Should | Store value isolation (mutations don't leak) | Covered | `TestValueIsolation` |
-| Should | Codec round-trips for all types | Covered | `TestServiceRoundTrip`, `TestInstanceRoundTrip`, `TestNodeRoundTrip`, `TestObservedVolumeRoundTrip` |
-| Should | Key path format assertions | Covered | `TestKeyPaths`, `TestVolumeKeyPaths` |
 
 ## Known Gaps
 
-Scenarios not yet tested that would strengthen confidence:
+Scenarios not yet tested. Triaged 2026-11-11; the open items are tracked in [milestones.md](../milestones.md) under "Test gaps".
 
 | Area | Scenario | Priority |
 |------|----------|----------|
-| Storage | Volume referenced by service but not declared in DSL | Should |
-| Storage | Two services sharing the same volume (exclusive attach conflict) | Should |
-| Storage | Volume size mismatch between desired and observed | Could |
-| Storage | Delete desired volume while attached | Could |
-| Networking | VIP pool exhaustion (more services than /24 addresses) | Could |
-| Scheduling | Anti-affinity across availability zones | Future (M7) |
-| DSL | Duplicate service names in same file | Should |
-| DSL | Duplicate volume names in same file | Should |
-| DSL | Empty service block (no image) error message | Covered | 
-| Agent | Agent restart recovery (reconnect to existing runtime state) | Future (M6) |
-| Controller | Controller restart (state rebuilt from store) | Future (M6) |
-| Store | Watch ordering under concurrent writes | Could |
-| End-to-end | Full lifecycle: deploy → scale → update image → rollback | Future (M7) |
+| DSL | `cca apply` accepts an undefined volume reference and duplicate service/volume names; only `cca lint` reports them | Should |
+| Storage | Two services mounting the same exclusive volume (only the provider-level attach conflict is tested) | Should |
+| Storage | Delete desired volume while attached (the provider refuses it in `TestDeleteVolumeWhileAttachedReturnsError`; the controller's cleanup is tested only for an available volume) | Could |
+| Networking | VIP pool exhaustion: allocation is highest octet + 1 with no upper bound and no reuse of freed addresses | Should |
+| Store | Watch ordering under concurrent writers (`TestWatchEventOrdering` uses one writer) | Could |
+| End-to-end | Full lifecycle in one test: deploy → scale → update image → rollback (each step is tested separately) | Could |
 
 ## E2E Test Infrastructure
 
@@ -176,7 +79,7 @@ Three vmherd VMs (Debian cloud image) on testbed-100.77, attached to the host br
 - Images come from the `registry:2` container on testbed-100.77 (`192.168.100.77:5000`).
 - VMs stay running after a run (failed runs keep them for inspection); destroy with `cd test/e2e/vm-lan && vmherd destroy`.
 
-Run: `./test/e2e/cluster_test.sh --env lan` (workflow `e2e.yml`, runner label `e2e` on the testbed-100.77 runner, on push to master)
+Run: `./test/e2e/cluster_test.sh --env lan` (workflow `e2e.yml`, runner label `e2e` on the testbed-100.77 runner; manual dispatch only while the HA set occupies the host, see "HA cluster on testbed-100.77")
 
 ### Deploy cluster (libvirt VMs on m4800)
 
@@ -199,7 +102,7 @@ The Airflow stack (postgres + redis + webserver + scheduler + 2 workers) needs a
 | whoami, whoami-multiport | 1 GB | 2 GB |
 | Airflow full stack | 4 GB | 8 GB |
 
-### Two clusters, one host
+### Two clusters, two hosts
 
 The E2E VM cluster runs on testbed-100.77 (16 GB) and the deploy cluster on m4800. They use separate Herdfiles (`test/e2e/vm-lan/` and `test/e2e/vm-deploy/`): E2E VMs are bridged onto the LAN (192.168.100.50–.60), deploy VMs sit on a private libvirt NAT network (124.x). VM lifecycle managed by vmherd.
 
@@ -301,7 +204,7 @@ Each milestone has a corresponding demo command that exercises its headline feat
 
 ## Adding Tests for a New Milestone
 
-1. Fill in the **Must/Should/Could** table for the milestone before starting implementation.
+1. List the milestone's **Must/Should/Could** test scenarios in its checklist in `milestones.md` before starting implementation.
 2. Write the **Must** tests as integration tests in `integration/`.
 3. Write **Should** tests as unit tests in the relevant package.
 4. Add an example `.cca` file to `examples/` — it is automatically validated by `TestAllExamplesParseAndApply`.

@@ -93,7 +93,7 @@ Names starting with `route/` are reserved for system gate keys (M176): `cca secr
 
 - `--tenant` and `--cluster` are mutually exclusive; omitting both means `default`.
 - The value is never a command-line argument (it would land in shell history and the process list).
-- `share` writes `desired/secret_share/{owner}/{name}/{consumer}` and needs `secret.write` in the owner's scope; `unshare` deletes it. A consuming service still needs `secret.use` in its own scope at apply. Delivery re-checks the share on every request, so `unshare` stops delivery at the next instance start.
+- `share` writes `desired/secret_share/{owner}/{consumer}/{name}` (`owner` is a tenant or `cluster`) and needs `secret.write` in the owner's scope; `unshare` deletes it. A consuming service still needs `secret.use` in its own scope at apply. Delivery re-checks the share on every request and every container start fetches, so `unshare` stops delivery at the next start, crash restarts included. Planned in M179 (full flag set in `openspec/changes/tenant-scoped-secrets/`).
 - `get` prints the value (as today) and needs `secret.read` in the secret's scope; `list` shows metadata only (name, tenant, KEK version, shares).
 - `migrate-keys` and `retire-legacy-key` need `cluster.admin`, `rotate` needs `secret.write` at cluster; all three return `409` with the unmet gate conditions.
 

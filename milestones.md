@@ -315,15 +315,171 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
   - Found while doing so, fixed: the cleanup role never removed `/tmp/cca-init`, so every "clean" HA redeploy skipped `cca init` and reinstalled the previous CA and root key (a fresh redeploy now gets a new root key; checked)
 - [ ] Restore the CI triggers removed in 606e0ef (`e2e.yml` push, `e2e-extended.yml` schedule, `upgrade-test.yml` release) when the e2e VM set returns to testbed-100.77
 
+### Phase 210 — Job Secret Isolation Fix (M210)
+
+Found by the M179 round-3 security audit (2026-11-12, SA H2), present in released code since M174: `controllers/job.go:177` writes `observed/instance/{id}/service = {job name}`, and delivery (`security/secret_delivery.go` `authorizeNodeForInstance`) trusted it, so a job named like a service received that service's secrets without `secret.use` (job names are free strings). Scheduled before M179 as a separate fix (user decision 2026-11-12).
+
+- [x] Failing test first: `TestSecretDeliveryRefusesWrongNodeUnplacedDisabledAndUnenrolled` cases "job instance named like a service" and "service not declared" failed (delivery returned the secrets)
+- [x] Delivery refuses instances with `derived/instance/{id}/job_owner` and services without the `desired/service/{svc}` marker (`checkInstanceIsServiceInstance`); `secret-delivery` role reads `derived/instance/`
+- [x] Docs: Flow 27 step 6, AUTH_GRAPH delivery tree, config-secrets.md delivery role
+- [x] `gofmt`, `golangci-lint` (security, api), `go test ./...` green (one api fixture lacked the service marker real applies always write)
+- [x] Independent review: `code-reviewer` + `security-audit` on the diff (2026-11-12). Each verified in code:
+  - CR 1 (legacy agent secret API still serves a job named like a `legacy_secret_api` service) — **rejected**: the API serves only material that delivery wrote for that instance (`agent/secret_api.go:190` `ReadInstanceSecret(instanceID, …)`), and delivery now refuses job instances, so the job gets "forbidden"; the security audit reached the same result
+  - CR 3 / SA 3 (job creation changes ungrouped, `job_owner` written last) — **fixed**: one `instance-create/{id}` group with `job_owner` first (`controllers/job.go` `buildJobInstanceCreationChanges`)
+  - SA 1 (job and stateful instance IDs share `{name}-{n}`: a job named like a stateful service overwrites its instances' facts and, with this fix, a stray `job_owner` cuts their secrets) and CR 2 (a job named like a service with grants now waits in `waiting-for-secrets` forever and holds a parallelism slot) — **scheduled as M211** (root cause: shared ID namespace, no create-only instance creation, untyped workload reference)
+  - CR 1 proof: `agent/TestLegacySecretAPIRefusesJobNamedLikeService` runs the agent against the production `SecretDeliveryService`; with the M210 check disabled it fails ("job instance received secret material", the released bug), with it the job gets no material and every read is 403
+  - CR 4 (stale `job_owner` on a reused stateful ID) — follows from SA 1; closed by distinct names
+  - SA 2 (node-writable `observed/instance/{id}/service`) — already recorded below as M181
+  - SA 5 / CR 5 (marker check is not a security gate) — **accepted**: it only rejects undeclared services; the docs say no more than that
+  - Found while verifying: agents never read `desired/job/{name}/image` (only `KeyDesiredServiceImage`, `agent/agent.go:1093`), so a job instance on a real agent runs only with a same-named service's image — jobs effectively do not run outside the simulator. Pre-existing; **scheduled as M212**
+- [ ] Deploy-cluster run (services with secrets still start; a job named like a service is refused)
+- [ ] Not in scope (recorded): the service identity fact stays node-writable (`observed/instance/{id}/service`, compromised node) until M181
+
+### Phase 214 — Adversarial User Testing (M214)
+
+Priority: right after M210 (user decision 2026-11-12). Unit tests, reviews and the scripted deploy run check what we expected; this milestone has someone act as a real user (and as a careless or hostile one) on a deployed cluster, the way M210's job hole and the M211–M213 bugs would have been found earlier. Manual first, then automate what was confirmed.
+
+- [x] Plan written: [design/adversarial-testing.md](design/adversarial-testing.md) — two `haiku` subagent testers in parallel (A: `adv-dev`, `api-writer`, team `payments`, sessions 1+4; B: `adv-reader`, `api-reader`, team `frontend`, session 2), own short-TTL tokens, forced-command SSH keys that can only run `cca` as that user, budget 150 commands / 60 min each; orchestrator keeps admin and sessions 3+5, verifies every finding
+- [ ] Run it (preconditions: M210 pushed, Deploy Testbed green, runner idle)
+- [ ] Charter `design/adversarial-testing.md`: rules (deploy cluster on m4800 only, run from the runner checkout, never the e2e or HA sets during CI, no `rm -rf`, restore with `vmherd destroy` + Deploy Testbed), roles used (cluster admin, `api-writer`, `api-reader`, team-scoped users, node identity), how a finding is recorded (command, expected, actual, evidence, severity)
+- [ ] Session 1 — names and identity: the same name for a service, job, cronjob, volume, gate, connection; hierarchical names with attribute segments (`x/secret/y`, `x/owner`, `x/instances`); uppercase, `_`, `.`, `:`, unicode, 253+ characters; re-apply with changed or omitted fields; delete and re-create with the same name
+- [ ] Session 2 — authorization as a non-admin: every `cca` command with `api-reader`, `api-writer` and team-scoped tokens; secrets via apply, status, describe, `/api/state`, watch, legacy APIs; claiming another team's service, gate or connection; expired, revoked and malformed tokens
+- [ ] Session 3 — lifecycle under failure: kill/restart server, agent and etcd during apply, rollout, scale, job runs and secret rotation; disable a node mid-rollout; fill the disk; clock skew on one node; network partition between a worker and the control plane
+- [ ] Session 4 — limits: 300 services created and deleted (VIP pool), configs that exceed one etcd transaction, many shares or grants, huge secret values, many concurrent `cca apply`, watch connection limits
+- [ ] Session 5 — data plane: VIP and DNS after churn, gates and TLS with wrong or missing keys, network policy bypass attempts from a container, volume host paths
+- [ ] Every confirmed finding: a failing automated test first (unit/integration where possible), then a milestone item placed by severity (security and data loss before features); record in this phase
+- [ ] `test/e2e/adversarial/`: confirmed misuse cases as a repeatable script run by the Deploy Testbed workflow (expected refusals asserted, not just "no crash")
+- [ ] Repeat one short session after each security milestone (M179, M181) — add the item to their checklists
+
+### Phase 211 — Workload Identity & Safe Instance Creation (M211)
+
+Found during the M210 review (2026-11-12). Root cause, verified in code: (1) jobs (`controllers/job.go:139`) and stateful services (`controllers/instance.go:438`) both build instance IDs as `{name}-{n}` from user-chosen names, but services and jobs live in separate desired namespaces, so nothing ever compares their names; (2) controller `Change` has only put and delete (`controllers/controller.go:25`), so creating an instance overwrites an existing one silently — no create-only option like the keyring's transactions; (3) an instance's workload is the bare string `observed/instance/{id}/service` (a job writes its own name there), not a typed reference. Effect: job `victim` writes `victim-0` over stateful service `victim`'s instance (state back to `pending`, plus `job_owner`, which since M210 cuts its secrets); a job named like a service with secrets waits in `waiting-for-secrets` forever and holds a parallelism slot.
+
+- [ ] Failing tests first: job named like a stateful service does not touch the service's instances; job named like a service is rejected at apply
+- [ ] Apply rejects a name used by more than one workload kind (service, job, cronjob), checked against the configuration and the store; cronjob-generated job names cannot equal a service name
+- [ ] Controller `Change` gains a create-only put (transaction compare: key absent); instance and job instance creation use it; a conflict is reported, never overwritten
+- [ ] Typed workload reference for instances (`kind` + `name`) written by controllers only; delivery, agent and failure handling use it instead of the bare service string (also removes the node-writable identity used by delivery — coordinate with M181)
+- [ ] Startup/lint listing of existing clusters that already have a cross-kind name collision
+
+### Phase 212 — Jobs Run on Real Agents (M212)
+
+Found during the M210 review (2026-11-12): agents read an instance's image only through `lookupServiceImageFromStore` (`agent/agent.go:1093`, `desired/service/{name}/image`); nothing in `agent/` reads `desired/job/{name}/image` or the job command. A job instance on a real agent therefore starts only with a same-named service's image and command, otherwise not at all. Simulator-only tests hid it.
+
+- [ ] Failing test first: a job with no same-named service runs to completion on an agent (integration with the process or container runtime, not only the simulator)
+- [ ] Agent resolves job instances (typed reference from M211) from `desired/job/{name}/…`: image, command, pull secret, completion reporting
+- [ ] Deploy-cluster check: a one-shot job and a cronjob complete; add to the Deploy Testbed workloads
+
+### Phase 213 — VIP Pool Allocation (M213)
+
+Found in the `design/TESTING.md` triage (2026-11-11), scheduled 2026-11-12.
+
+- [ ] Failing tests first: exhaustion and reuse after 254 create/delete cycles
+- [ ] Allocate the lowest free address inside `--vip-cidr` (`controllers/network.go` `determineNextVIPFourthOctet`), report exhaustion explicitly as an observed error, never emit `.255` or an address outside the CIDR
+
 ### Phase 179 — Tenant-Scoped Secrets (M179)
 
-- [ ] Canonical names `secrets/tenant/{t}/…`, `secrets/cluster/…`; tenant resolution owner → hierarchical name → reserved `default`
-- [ ] CLI: `cca secret set/get/list/delete --tenant/--cluster` (mutually exclusive, default tenant when omitted), value from stdin or `--from-file`; `share`/`unshare` → `desired/secret_share/{owner}/{name}/{consumer}`; write scope `team/{tenant}`, `team/default`, `cluster`
-- [ ] Compiler resolution (unqualified, `cluster/…`, `tenant/{t}/…`), apply errors for unresolvable/unshared references, grant facts with canonical names (incl. connection auto-grants); delivery re-checks shares
-- [ ] `cca secret migrate-names --plan` / `--apply mapping.ccv`: refuses unmapped secrets; per secret re-encrypts under the canonical AAD, rewrites grants and references, removes the legacy key in one transaction
-- [ ] Drop the `route/` secret-name reservation (M176) once user and system secrets have separate key prefixes: user secrets under `secrets/tenant/…` / `secrets/cluster/…`, gate keys under `secrets/route/…`. Only after `migrate-names` has moved every legacy `secrets/{name}` key (a legacy `secrets/route/…` user key would still collide); then `route/…` is an ordinary user name (`IsSystemOwnedSecretName`, `/api/secret` filter, compiler checks, docs)
+Spec, decisions and tasks: OpenSpec change [`openspec/changes/tenant-scoped-secrets/`](openspec/changes/tenant-scoped-secrets/) (design.md, specs/…/spec.md, tasks.md). Legacy name migration split off to M209 on 2026-11-12 (user decision after review round 2).
+
+- [ ] Canonical names `secrets/tenant/{t}/…`, `secrets/cluster/…` via `/api/secret/v2/…`; tenants for services, connections (`owner`) and gates (target service's tenant); name validation (forged grant keys), reserved tenant names and secret first segments
+- [ ] CLI: `cca secret set/get/list/delete/share/unshare --tenant/--cluster` (default tenant when omitted), value from stdin or `--from-file`; shares `desired/secret_share/{owner}/{consumer}/{name}`, also for cluster secrets
+- [ ] Apply authorized at the owning tenant's scope (one resolution stage, both apply paths); conditional policies no longer widen scope (moved from M182)
+- [ ] Resolution and delivery: grant value `{source, reference, mount_path}`, delivery re-checks tenant/grant/share, every container start fetches, legacy grants stay pinned, no restarts from the format change
+- [ ] Mixed-version guard over replicas and agents; conflict records + `delete-conflict` for canonical-looking legacy keys
+- [x] ~~Drop the `route/` secret-name reservation~~ — decided 2026-11-12 (draft review): the reservation stays permanently; `tenant`/`cluster`/`route` reserved as secret first segments and, with `default`, as tenant names
 - [ ] Optional admission policy rejecting services that fall into `default` (off by default)
-- [ ] Tests: acceptance A (unowned service gets `default`, refused `payments`); share → delivered, `unshare` → refused at next start; cluster secret needs cluster grant; `--tenant` with `--cluster` rejected
+- [ ] Tests: every scenario in the change's spec.md (acceptance A; share → delivered; `unshare` → a crash restart is refused; cluster secret needs a share; `--tenant` with `--cluster` rejected; upgrade without restarts)
+
+**Draft review (2026-11-12, code-reviewer + security-audit on the OpenSpec draft).** Each finding verified in the code; all accepted into the revised draft except SA-L3/L5 (deferred, out of scope):
+
+| # | Finding | Verified at | Resolution |
+|---|---|---|---|
+| CR-C1 / SA-H1 | Apply and secret handlers authorize at `ScopeCluster` only; `owner payments` claims a tenant | `api/server.go:718`, `security/fact_authorizer.go:33`, `api/server.go:1839` | Fixed in design: scope of the resolved tenant; owner change needs `cluster.admin` (tasks 2.4, 2.5) |
+| CR-C2 | `lang.Compile` is pure, cannot check shares | `api/server.go` `lang.Compile(file)` | Fixed: resolution stage before commit on both apply paths (task 4.1) |
+| CR-C3 / SA-M9 | Delivery, agent, connections, pull secrets, gate `key secret` use raw names; connections are global | `security/secret_delivery.go:192-207`, `agent/agent.go:1128`, `lang/compiler.go:890-905` | Fixed: canonical grant key + `{source, reference}` value, per-consumer resolution (tasks 4.2–4.5) |
+| CR-C4 / SA-H3 | Legacy names may look canonical (`tenant/x/y`) | `types/validate.go:63` | Fixed: reserved first segments; plan/startup conflict check (tasks 2.2, 3.2) |
+| SA-H2 / CR-H6 | Old replica ignores `?tenant=`, writes flat key; guard misses no-report and default-tenant writes | `api/server.go:1810`, `security/keyring_migration.go:60-93` | Fixed: `/api/secret/v2` (old replicas 404), separate guard helper, default writes gated, 409 without reporter (task 3.1) |
+| SA-H4 / CR-H3 | Lifting `route/` reservation is racy and stateless | `types/validate.go:105` `IsSystemOwnedSecretName` | Fixed: reservation kept permanently |
+| SA-H5 | Crash restart reuses tmpfs after unshare | `design/config-secrets.md` failure table | Fixed: agent revocation (task 4.6) |
+| CR-H1 | Re-apply before migration breaks existing services | design | Fixed: legacy fallback for existing grants (task 4.2) |
+| CR-H2 / SA-M6 | One txn per secret exceeds 128 ops; no guards; no keyring precondition; mapping untrusted | `store/memory.go:35` | Fixed: two-phase resumable migration, preconditions, mapping validation, foreign-tenant refusal (tasks 5.x) |
+| CR-H4 / SA-M3 | `secretDeliveryRole` cannot read shares | `security/secret_delivery.go` (no `secret_share`) | Fixed: task 4.3 |
+| CR-H5 / SA-M7 | Listing uses `secret.metadata.read`, not `secret.read`; status/describe leak | `api/server.go:1839`, `api/status.go:463`, `api/describe.go:572` | Fixed: keep `secret.metadata.read` per scope; filter status/describe (task 4.7) |
+| SA-M4 / CR-M1 | Share key prefix ambiguity; shares survive delete | design | Fixed: `{owner}/{consumer}/{name}`, exact Gets, delete cascade (task 2.7) |
+| SA-M1 | Fallback to `default` on store error | `tenant/tenant.go:53-63` | Fixed: only absent owner → `default` (task 2.3) |
+| SA-M2 | Error text is an existence oracle | design | Fixed: one error text |
+| SA-M5 | Share facts writable through apply with `workload.create`; ABAC skips scope | `security/fact_authorizer.go:48-56`, `security/api_authorizer.go:122-135` | Fixed: `desired/secret_share/` → `cluster.admin`; ABAC scope stays M182 |
+| CR-M2/M3/M6, SA-M8 | `default` rules, name length, missing scenarios | spec | Fixed in spec and task 2.2 |
+| CR-M7 | "Flow 9" does not exist; Flows 27/28 change | `design/runtime-invariant-flows.md` | Fixed: task 1.1 |
+| SA-L1 | No audit records specified | spec | Fixed: audit requirement (task 6.2) |
+| SA-L2 | `TenantSecretStore` unwired | `tenant/secret_isolation.go` (no production caller) | Fixed: delete (task 2.8) |
+| SA-L3/L5 | Quotas, tenant deletion | — | Out of scope (proposal non-goals); tenant deletion leaves secrets owned by the name, noted for multi-tenancy work |
+
+**Review round 2 (2026-11-12, revised draft).** Each finding verified in the code; user decisions 2026-11-12: gate tenant = target service's tenant, connections get `owner`, cluster secrets shareable, migration by controller (M209), fetch on every start, conditional-policy fix in M179, jobs out of scope, split migration to M209.
+
+| # | Finding | Verified at | Resolution |
+|---|---|---|---|
+| SA HIGH-1 | Service name `x/secret/y` forges grant key of `x`; names not validated in `lang/` | `lang/parser.go:1397` `expectHierarchicalName`, no `ValidateResourceName` in `lang/` | Fixed: segment validation, reserved attribute segments, grant facts only from declared references (tasks 2.2, 3.1) |
+| SA HIGH-2 | Global connections: any tenant redefines `db`, receives others' secrets | `desired/connection/` → `workload.create` | Fixed: connection `owner`; secret resolves in the connection's tenant; change needs owner scope (tasks 2.4, 5.2) |
+| CR N1 / SA HIGH-3 | Grant value drops explicit mount path | `lang/compiler.go:870` | Fixed: `{source, reference, mount_path}`, old value parsed (tasks 5.3, 5.6) |
+| CR N2 | Grant changes restart every instance (config hash) | `agent/agent.go:1388` | Fixed: hash over `(reference, mount_path)` (task 5.7) |
+| CR N3 | Phase 2 exceeds 128 ops | `store/memory.go:35` | Fixed in M209: phases 2a/2b |
+| CR N4 / SA HIGH-5 | Gates and jobs have no owner | `lang/ast.go:497` `RouteDecl` | Fixed: gate = target service's tenant (task 5.5); jobs out of scope (pull secret key has no production reader) |
+| CR N5 | Per-fact authorizer has no tenant; two principal types | `security/fact_authorizer.go:26-30`, `tenant/policy_gate.go:121` | Fixed: one resolution stage for both paths (task 3.1) |
+| CR N6 | Share-revision guard on grant write impossible (sequential Puts) | `api/server.go:702` | Fixed: guard dropped, delivery is the enforcement point |
+| CR N7 | Old agents not guarded | `security/keyring_migration.go:51` pattern | Fixed: node report `secret_name_format` (task 4.2) |
+| CR N8 | Canonical-looking legacy keys unreachable, block forever | design | Fixed: conflict records + `delete-conflict` (task 4.3) |
+| CR N9 / SA MEDIUM-11 | Cluster share contradiction; no delivery check for cluster secrets | `security/secret_delivery.go:192-207` | Fixed: cluster secrets reach tenants via shares; delivery checks them |
+| SA HIGH-4 | Foreign grant blocks owner deleting a leaked secret | design | Fixed: only own-tenant grants block; `--force` (task 4.5) |
+| SA MEDIUM-6 | Conditional policies skip scope | `security/api_authorizer.go:122-130` | Fixed in M179 (task 3.4); removed from M182 |
+| SA MEDIUM-7 | `intent/secret_names/` writable with `workload.create` | `security/fact_authorizer.go` `workloadFactPrefixes` | Fixed in M209 (`cluster.admin`, re-validation, hash) |
+| SA MEDIUM-8 | v2 path ambiguity (`share`, `migrate-names` as names) | design | Fixed: fixed endpoints with query/body (task 4.1) |
+| SA MEDIUM-9 | Same-named canonical secret silently replaces legacy value | design | Fixed: legacy grants stay pinned (task 5.2) |
+| SA MEDIUM-10 | Revocation races; legacy agent API checks grant only | `agent/secret_api.go:253` | Fixed: fetch on every start, generation counter, share check (tasks 5.6, 5.8) |
+| SA MEDIUM-12 | Parser cannot express qualified references; invalid grants skipped silently | `lang/parser.go:1548`, `security/secret_delivery.go:199` | Fixed: tasks 5.1, 5.4 |
+| SA MEDIUM-13 | Hierarchical name squatting | `lang/compiler.go:312` | Fixed: first segment must equal owner (task 2.3) |
+| SA MEDIUM-14 | Compromised node claims instances | M181 notes | Accepted until M181; stated in threat model (task 6.3) |
+| CR M1 | Reserved tenant names break existing services; unknown tenants | `lang/compiler.go:312-318` | Fixed: lint/startup listing; `--tenant` requires a declared tenant (tasks 2.5, 4.1) |
+| CR M2 | Checklist contradicted design | milestones.md | Fixed: checklist rewritten |
+| CR M3 | Migration as long HTTP request | — | Fixed in M209: intent + controller |
+| CR M4 | Dual grants during migration | — | Fixed in M209: de-duplicate by reference |
+| CR M5/M6, SA LOW-15/16/18/19 | Missing scenarios; mount collisions; share to `default`; listing via `GrantedScopes`; audit fields | spec | Fixed in spec/design |
+| SA LOW-17 | Refusal reasons in observed state are an existence oracle | `security/secret_delivery.go:108-116` | Rejected: operator-visible, low; recorded as accepted risk |
+| SA LOW-20 | Old replica `/api/secret` accepts `tenant/x/y` | — | Covered: conflict records at first guard pass |
+| SA LOW-21 | Owner-change TOCTOU | — | Rejected: owner change needs `cluster.admin`; apply has no transaction (residual, low) |
+| CR L3 | Guard passes while a stopped replica's lease expired | — | Accepted: upgrade rule in release notes; returning replica blocks further writes |
+
+**Review round 3 (2026-11-12).** Each verified in code; user decisions 2026-11-12 (all recommendations accepted): job hole fixed first as M210; legacy grants byte-identical; conditional policies cluster-only; stored owner/target checked; decode table with cluster default; ownerless connections need `cluster.admin`; guard only on set/share; share/connection visibility; `keyring/legacy` none|retired for set/share; one release in four steps. All other findings fixed in design.md/spec.md/tasks.md:
+
+| # | Finding | Verified at | Resolution |
+|---|---|---|---|
+| CR H1 | New hash format restarts every instance on agent upgrade | `agent/agent.go:1388`, stored hash `:1004` | Legacy bytes unchanged + golden test (task 3.7) |
+| CR H2 / SA M4 | Conditional policies have no scope field | `security/api_authorizer.go:21-25` | Cluster scope only, `ResourceContext{Team}` on scoped checks, upgrade note (task 1.9) |
+| CR H3 | One `source` cannot hold several roles; pull secrets have no grant | `lang/compiler.go:358`, `security/secret_delivery.go` | `roles` list; per-service canonical connection/pull facts; explicit pull grant kept (task 3.2–3.3) |
+| CR H4 | Pin order contradictory; no unpin; legacy values not rotatable | design | Order fixed; pin ends with the legacy key; `--legacy` update (task 2.3) |
+| CR H5 / SA M5 | `keyring/name_*` writer, trigger, roles undefined | `security/rbac.go:240-275` | `KeyringEnvelopeCodec` reporter loop; canonical paths wait for the marker; roles (tasks 2.5, 2.6) |
+| SA H1 | Re-apply without `owner` or with a new gate target takes over another tenant's object | `api/server.go:702` (Put only) | Stored owner/target checked (task 1.6) |
+| SA H2 | Job named like a service gets its secrets (released code) | `controllers/job.go:177`, `security/secret_delivery.go:152` | Fixed in M210 |
+| SA H3 / CR M3 | Facts without a tenant would open to team scopes | `security/fact_authorizer.go:33` | Decode table; everything else `ScopeCluster`; classification test (task 1.6) |
+| CR M1 / SA M1 | Reserved segment list open-ended; route `a/service`; lexer-valid names | `lang/lexer.go:276`, `tenant/scoped_query.go:118` | Generated-list test; single-segment routes/connections; lint of failing names (tasks 1.1–1.3) |
+| CR M2 / SA M9 | Gate overwrite, missing target, `/api/gate-key` | `security/gate_key_delivery.go`, `api/node_gate_key_delivery.go:63` | Stored target, unknown target rejected, gate-key stays cluster-only (tasks 1.6, 3.5) |
+| CR M4 | v1 envelopes do not bind the key | `security/envelope_codec.go` | set/share need `keyring/legacy` none|retired (task 2.4) |
+| CR M5 / SA M3 | Connection owner storage; ownerless connections | `lang/compiler.go:890-905` | Owner in the JSON value; ownerless need `cluster.admin` (tasks 1.5, 1.6) |
+| CR M6 / SA M8 | Tmpfs reuse paths remain | `agent/secret_delivery.go:150`, `agent/init.go:325` | Wipe at stop, init uses current material, generation counter (task 3.8) |
+| CR M7 / SA M2 | Guard node set wrong; blocks revocation; forged reports | `security/node_reports.go:19-37` | Nodes from `enrollment/node/`; set/share only; forged report accepted until M181 (task 2.4) |
+| CR M8 / SA L1 | Docs contradict (cluster grant, share key, mount paths) | `design/cli-reference.md:96`, `lang/parser.go:1553` | Fixed in config-secrets.md, cli-reference.md, design.md |
+| SA M6 | `/api/state` shows all shares and connections | `tenant/scoped_query.go:99-110` | Visibility rule (task 2.8) |
+| SA M7 | Compromised-node mechanism mis-described | `agent/agent.go:1872` | Corrected; accepted until M181 (task 4.1) |
+| SA M10 / M11 | Orphan tenants; cascade over 128 ops | `store/memory.go:35` | Declaration only for set/share; share cap 100 (tasks 2.2, 2.7) |
+| SA L2–L8 | Audit request ID, CLI fallback, agent validation, tenant-state errors, tenant change at restart, stale-replica plant, grants never deleted | various | Fixed in tasks or documented (L6, L7, L8 accepted) |
+
+### Phase 209 — Secret Name Migration (M209)
+
+Split from M179 on 2026-11-12; scheduled right after M179 (number chosen so nothing is renumbered). Draft: OpenSpec change [`openspec/changes/secret-name-migration/`](openspec/changes/secret-name-migration/), not yet reviewed.
+
+- [ ] Independent review of the draft (`code-reviewer` + `security-audit`); findings recorded here
+- [ ] `--plan` (cluster `secret.metadata.read`) and `--apply` writing `intent/secret_names/` (`cluster.admin` through apply) with preconditions and mapping validation
+- [ ] `secret-name-migration` controller: phases 1, 2a, 2b; shares for other-tenant consumers; resume; audit
+- [ ] Tests: every scenario in the change's spec.md; deploy cluster migration under traffic with 0 restarts
 
 ### Phase 180 — HA Correctness (M180)
 
@@ -346,6 +502,15 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
 - [ ] A cycle abandoned after CAS retries waits for the 30 s resync: re-arm the reconcile trigger
 - [ ] Repo hygiene: ~180 MB of stale build binaries in the repo root (`cca`, `cca-linux*`) → gitignored `dist/`; split `agent/agent.go` (~2,000 lines)
 
+### Test gaps (unscheduled; `design/TESTING.md` triage 2026-11-11)
+
+- [x] ~~VIP pool has no bound and no reuse~~ — scheduled as M213 (2026-11-12, found bugs are prioritized as milestones)
+- [ ] `cca apply` does not run the linter's reference checks: an undefined volume reference and duplicate service/volume names are reported only by `cca lint` (`lang/linter.go`). Decide whether apply rejects them; test on the apply path
+- [ ] Two services mounting the same exclusive volume: only `TestExclusiveAttachEnforced` (provider level) exists; add a scheduler/agent-level test for the second service's outcome
+- [ ] Delete a desired volume while attached: the provider refuses it (`TestDeleteVolumeWhileAttachedReturnsError`), but `TestStorageControllerCleansUpRemovedVolume` covers only an available volume at controller level
+- [ ] Watch ordering with concurrent writers (`TestWatchEventOrdering` uses one writer)
+- [ ] One integration test for the full lifecycle: deploy → scale → update image → rollback
+
 ### Phase 181 — Store Access Isolation (M181)
 
 - [ ] Design doc: agent access to state (etcd roles vs API gateway)
@@ -359,7 +524,7 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
 
 ### Phase 182 — Security Defense in Depth (M182)
 
-- [ ] Conditional policies (M178 review SA7): a conditional policy for a capability passes without a scope check (`security/api_authorizer.go`, nil ResourceContext from requireCapability) — require a declared scope or fail closed for cluster-scope endpoints
+- [x] ~~Conditional policies (M178 review SA7)~~ — moved to M179 (task 3.4) on 2026-11-12: tenant scoping is meaningless while a conditional policy grants every scope
 - [ ] CA key exposure (M178 review SA8): every HA replica loads `ca-key.pem` for enrollment; only the leader or a dedicated signer should hold it
 - [ ] Volume host path must be under the storage provider root
 - [ ] Secret API bound to the bridge gateway; caller IP must match the token's instance
@@ -373,19 +538,20 @@ Design: [Flow 30](design/runtime-invariant-flows.md#flow-30-keyring-rotation--ro
 - [ ] Status discovery treats empty-valued keys such as `{svc}/resources/cpu` as services: discover only root markers (found during M175)
 - [ ] Status cache (found during M175): `handleStatus` writes `?all=true` responses (stopped instances included) to the 2s cluster-scope cache that plain requests read, so `cca get` can briefly show stopped instances; cache only the plain view or key the cache by the `all` flag
 
-### OpenSpec pilot (unscheduled, before M206)
+### OpenSpec pilot (before M179)
 
-Decision in `design/chats/chat-03nov-2.md`: adopt OpenSpec, pilot on GitOps, migrate no existing documentation.
+Decision in `design/chats/chat-03nov-2.md`: adopt OpenSpec, pilot on GitOps, migrate no existing documentation. Changed 2026-11-11: the pilot moves forward to M179 (Tenant-Scoped Secrets), the next milestone, so that requirement scenarios serve as its acceptance criteria; GitOps (M206/M207) becomes the second change.
 
 Roles: `CLAUDE.md` = engineering rules and invariants; `design/` = architecture and implementation details; `design/runtime-invariant-flows.md` = end-to-end chains across components (Flows 11, 24, 25 stay there; specs link to flows and flows link back, nothing copied); `openspec/specs/` = behaviour requirements of maintained capabilities; `openspec/changes/` = work in progress; `milestones.md` = roadmap.
 
-- [ ] Install pinned `@fission-ai/openspec@1.16.0` (needs Node >= 22.12.0; local v25.9.0); record the version
-- [ ] `openspec init --tools claude` on a clean tree; review `git status` and `git diff -- .claude/` before committing; keep existing agents, skills and workflows unless a real conflict shows up
+- [x] Install pinned `@fission-ai/openspec@1.16.0` (needs Node >= 22.12.0; local v25.9.0); record the version. Done 2026-11-11: run as `npx @fission-ai/openspec@1.16.0 …` (a global `npm install -g` needs root on this machine, so there is no `openspec` on PATH); telemetry turned off (`config set telemetry.enabled false`)
+- [x] `openspec init --tools claude` on a clean tree; review `git status` and `git diff -- .claude/` before committing; keep existing agents, skills and workflows unless a real conflict shows up. Done 2026-11-11 with only `design/TESTING.md` and `milestones.md` modified: it added `openspec/`, `.claude/commands/opsx/` (6 commands) and 6 `.claude/skills/openspec-*` skills, and changed no existing file
 - [ ] Workflow ownership: OpenSpec drives proposal → specs → tasks → implementation → archive for OpenSpec-managed capabilities; `.claude/workflows/feature-development.js` does not run a competing pipeline for the same change; project-manager and technical-writer agents stay; `release-pipeline.js` / `scripts/release.sh` keep release execution
-- [ ] Minimal `openspec/config.yaml`: `schema: spec-driven`, `context` points at CLAUDE.md and `design/` (no restated invariants), `rules` per artifact, `operations.apply.guidance` (inspect implementation and call graphs first, report real test results)
-- [ ] First change `git-backed-configuration-sources` drafted from M206/M207 and existing architecture, resolving: Git outage, invalid revision, source ownership, partial application, concurrent revisions (pin to commit), sync vs health, `cca scale` overrides, manual `cca apply` (`cli` owner, conflict/adoption), etcd transaction limits
+- [x] Minimal `openspec/config.yaml`: `schema: spec-driven`, `context` points at CLAUDE.md and `design/` (no restated invariants), `rules` per artifact, `operations.apply.guidance` (inspect implementation and call graphs first, report real test results). The `specs` and `tasks` rules add: every scenario names its test, and those tests are written and seen failing first
+- [x] (drafted 2026-11-11 in `openspec/changes/tenant-scoped-secrets/`, `openspec validate` passes; not yet reviewed, two open questions in its `design.md`) First change `tenant-scoped-secrets` drafted from the M179 checklist and `design/config-secrets.md`; every requirement scenario names the test that proves it, and those tests are written and seen failing before implementation
+- [ ] Second change `git-backed-configuration-sources` drafted from M206/M207 and existing architecture, resolving: Git outage, invalid revision, source ownership, partial application, concurrent revisions (pin to commit), sync vs health, `cca scale` overrides, manual `cca apply` (`cli` owner, conflict/adoption), etcd transaction limits
 - [ ] Review ownership, override, prune and transaction semantics before implementation starts
-- [ ] Release order per change: tasks done → tests pass → `openspec archive` → update M206/M207 links to `openspec/specs/...` and the dated `openspec/changes/archive/<date>-<change>/` → `scripts/release.sh`
+- [ ] Release order per change: tasks done → tests pass → `openspec archive` → update the milestone's links (M179, later M206/M207) to `openspec/specs/...` and the dated `openspec/changes/archive/<date>-<change>/` → `scripts/release.sh`
 
 ### GitOps — Phases 206–207
 
@@ -504,7 +670,13 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M176 — Gate Key Sealing & Delivery | 176 | Gate TLS private keys sealed under `secrets/route/…` instead of plain facts; `tls { key secret "…" }`; agents fetch them through `POST /api/node/gate-keys` and cache them in tmpfs so TLS survives an agent restart while the API is down. Upgrade note: secret names starting with `route/` are now reserved for gate keys — rename any user secret under `route/` before upgrading. Depends: M174. |
 | M177 — Root Key, Keyring & Key Migration | 177 | Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M176. |
 | M178 — Keyring Rotation | 178 | `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M177. |
-| M179 — Tenant-Scoped Secrets | 179 | Secrets belong to a tenant (`secrets/tenant/{t}/…`, `secrets/cluster/…`, reserved `default`); `cca secret set --tenant/--cluster`, `share`/`unshare`; compiler resolution and delivery re-check shares; `cca secret migrate-names` re-encrypts legacy names. Depends: M177. |
+| M210 — Job Secret Isolation Fix | 210 | Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Scheduled before M179. |
+| M214 — Adversarial User Testing | 214 | Exploratory testing on the deploy cluster as a real (non-admin and admin) user trying to misuse or break the system; every confirmed finding becomes a failing automated test and a prioritized milestone item; confirmed attacks become a repeatable `test/e2e/adversarial/` suite in the deploy run. Scheduled right after M210 (user decision 2026-11-12: found bugs first). |
+| M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |
+| M212 — Jobs Run on Real Agents | 212 | Bug fix: agents read the image only from `desired/service/{name}/image`, so job instances run only with a same-named service's image. Agents resolve job instances from `desired/job/…`. |
+| M213 — VIP Pool Allocation | 213 | Bug fix: VIP allocation takes highest octet + 1 with no bound or reuse; after 254 allocations it emits `.255`, then invalid addresses. Lowest free address in `--vip-cidr`, explicit exhaustion. |
+| M179 — Tenant-Scoped Secrets | 179 | Secrets belong to a tenant (`secrets/tenant/{t}/…`, `secrets/cluster/…`, reserved `default`); `cca secret set --tenant/--cluster`, `share`/`unshare`; apply authorized at the owning tenant's scope; connections and gates get a tenant; delivery re-checks shares and every container start fetches. Existing secrets keep working for their existing grants. Upgrade: every replica and agent before the first scoped write. Depends: M177. |
+| M209 — Secret Name Migration | 209 | `cca secret migrate-names --plan` / `--apply`: a controller re-encrypts legacy `secrets/{name}` keys under tenant or cluster names, rewrites grants and creates shares, without restarting instances. Split from M179 on 2026-11-12; scheduled right after it. Depends: M179. |
 | M180 — HA Correctness | 180 | Leader election on an etcd lease instead of wall-clock timestamps, and the leader key revision is checked in every controller transaction. Multi-prefix scans read at one revision. Persisted JWT signing keyring shared by replicas, with a token-use claim. Before M184. |
 | M181 — Store Access Isolation | 181 | Agents can no longer read or write every etcd key. Near term: etcd roles mapped from certificate CN, or a separate etcd client CA for the control plane only. Target: agents go through an API gateway. Short-lived node certificates with rotation and revocation. Design doc first. |
 | M182 — Security Defense in Depth | 182 | Volume host paths checked against the storage root. Secret API bound to the container bridge with a source-IP check. Process runtime refused outside dev mode. nftables ruleset input validated. Scan pagination. A CI check that every controller constructor and API setter has a production caller. |

@@ -1,0 +1,31 @@
+schema: spec-driven
+
+# Engineering rules and invariants live in CLAUDE.md, architecture in design/.
+# They are referenced here, never restated.
+context: |
+  Read CLAUDE.md (code style, anti-pattern rules, architectural rules,
+  independent review) and the relevant design/ document before writing any
+  artifact. End-to-end chains across components live in
+  design/runtime-invariant-flows.md: link to a flow, do not copy it.
+  Read the call graph in design/graphs/ before reading source.
+  milestones.md is the roadmap; a change names the milestone it implements.
+
+rules:
+  proposal:
+    - Name the milestone from milestones.md and state what is out of scope
+    - Compare with how Kubernetes, Vault, Consul or AWS solve the same problem when the change is architectural
+  specs:
+    - Every requirement has at least one scenario, and every scenario names the test that proves it (Go test function or e2e check ID)
+    - Scenarios describe facts in the store and observable behaviour, never internal function calls
+  design:
+    - Link the flow in design/runtime-invariant-flows.md that the change adds or alters
+    - List the failure cases and what the system does in each
+  tasks:
+    - The first tasks write the tests named in the spec scenarios and record them failing, before any implementation task
+    - The last tasks are lint, unit tests, a deploy-cluster or e2e run, and the independent review from CLAUDE.md
+
+operations:
+  apply:
+    guidance:
+      - Inspect the implementation and the call graphs before changing code
+      - Report real test results with their output; never mark a task done on an unexecuted test
