@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.77.0-beta <Badge type="tip" text="latest" /> {#v1-77-0-beta}
+## v1.78.0-beta <Badge type="tip" text="latest" /> {#v1-78-0-beta}
+
+**2026-11-12** — Job Secret Isolation Fix.
+
+- **Job Secret Isolation Fix** (M210) — Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Also ships M215: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s. Upgrade note: none.
+
+---
+
+## v1.77.0-beta {#v1-77-0-beta}
 
 **2026-11-11** — Keyring Rotation.
 

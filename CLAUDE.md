@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Completed through:** M178 — Phase 178 Keyring Rotation. M1–M178 complete. Gates A–I resolved.
+**Latest release:** M210 — Job Secret Isolation Fix (v1.78.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 
