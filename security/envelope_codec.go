@@ -156,12 +156,15 @@ func (keyringCodec *KeyringEnvelopeCodec) openLegacyEnvelope(ctx context.Context
 	return OpenEnvelope(ctx, currentLegacyKeyProvider, envelope)
 }
 
-// RunKeyringWatch refreshes the snapshot on keyring/ changes and every
-// keyringRefreshFallbackInterval. Blocks until ctx is cancelled (nil), or
-// returns ErrKeyringRootCheckFailed when the root key changed underneath
-// (root key rotation, Flow 30): the replica must exit, not serve stale keys.
+// RunKeyringWatch refreshes once after subscribing (closing the gap since the
+// codec load), then on keyring/ changes and every fallback interval. Returns
+// nil when ctx ends, or ErrKeyringRootCheckFailed when the root key changed
+// underneath (Flow 30): the replica must exit.
 func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) error {
 	keyringEvents := keyringCodec.subscribeKeyringWatch(ctx)
+	if fatalError := keyringCodec.refreshKeyringFromWatch(ctx); fatalError != nil {
+		return fatalError
+	}
 	fallbackTicker := time.NewTicker(keyringRefreshFallbackInterval)
 	defer fallbackTicker.Stop()
 	for {
@@ -178,15 +181,25 @@ func (keyringCodec *KeyringEnvelopeCodec) RunKeyringWatch(ctx context.Context) e
 				keyringEvents = keyringCodec.subscribeKeyringWatch(ctx)
 			}
 		}
-		refreshError := keyringCodec.Refresh(ctx)
-		if refreshError == nil || ctx.Err() != nil {
-			continue
+		if fatalError := keyringCodec.refreshKeyringFromWatch(ctx); fatalError != nil {
+			return fatalError
 		}
-		if errors.Is(refreshError, ErrKeyringRootCheckFailed) {
-			return refreshError
-		}
-		logging.Default().Error("keyring refresh failed", "error", refreshError.Error())
 	}
+}
+
+// refreshKeyringFromWatch refreshes the snapshot for RunKeyringWatch. It
+// returns ErrKeyringRootCheckFailed (fatal, the replica exits); any other
+// refresh error is logged and the previous snapshot stays in use.
+func (keyringCodec *KeyringEnvelopeCodec) refreshKeyringFromWatch(ctx context.Context) error {
+	refreshError := keyringCodec.Refresh(ctx)
+	if refreshError == nil || ctx.Err() != nil {
+		return nil
+	}
+	if errors.Is(refreshError, ErrKeyringRootCheckFailed) {
+		return refreshError
+	}
+	logging.Default().Error("keyring refresh failed", "error", refreshError.Error())
+	return nil
 }
 
 // subscribeKeyringWatch watches keyring/ (the only authority for write mode).

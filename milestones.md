@@ -335,6 +335,23 @@ Found by the M179 round-3 security audit (2026-11-12, SA H2), present in release
 - [ ] Deploy-cluster run (services with secrets still start; a job named like a service is refused)
 - [ ] Not in scope (recorded): the service identity fact stays node-writable (`observed/instance/{id}/service`, compromised node) until M181
 
+### Phase 215 — Keyring Watch Startup Gap (M215)
+
+Found 2026-11-12: CI "Authentication Tests" failed on 21c77db with `TestRunKeyringWatchExitsAfterRootKeyRotation` timing out (reproduced locally ~1/30 with `-race -cover`). Cause: `RunKeyringWatch` (`security/envelope_codec.go`) refreshed only on events or the 60 s fallback tick, so a keyring change between the codec load and the watch subscription (a replica starting during a root key rotation) was missed for up to 60 s; the test's nudge re-wrote `keyring/legacy` with its own value, which `MemoryStore.Put` ignores (no event), so it never covered that window.
+
+- [x] Failing test first: `TestRunKeyringWatchSeesRotationBeforeSubscribe` (rotation before subscribe, no further writes) timed out with the watch still running
+- [x] Fix: one `Refresh` right after subscribing; root-check failure returns at once
+- [x] Old test no longer relies on no-op writes; both tests pass 100× under `-race -cover`
+- [x] AUTH_GRAPH updated
+- [x] Independent review (2026-11-12): `code-reviewer` APPROVE, `security-audit` "strong". Verified in code:
+  - CR doc comment 5 lines (limit 4), duplicated refresh handling, stale graph line — **fixed** (`refreshKeyringFromWatch` helper, comment trimmed, AUTH_GRAPH)
+  - CR/SA: `EtcdStore.Put` also skips identical values (`store/etcd.go:164-188`, `TestEtcdIdempotentPut`), so the old nudge never worked on either backend — confirms the cause
+  - SA 1 (initial refresh runs in the watch goroutine, a stale replica may serve for milliseconds) — **rejected**: a root key rotation re-wraps KEKs without changing their values, so a stale snapshot still seals and opens correctly; KEK creation refreshes first and the re-wrap transaction is guarded
+  - SA 2 (any `UnwrapKey` error, e.g. a KMS timeout, is reported as `ErrKeyringRootCheckFailed` and exits the replica, `security/keyring.go:218-221`) — pre-existing, KMS providers only; **scheduled in M182**
+  - SA 3 (no backoff when a watch keeps closing: hot loop of re-subscribe + refresh) — pre-existing; **added to Runner hardening**
+  - SA 4/5 (initial-refresh retry hint, report lease after `os.Exit`) — accepted, within the existing 45 s `--finish` wait
+- [ ] CI "Authentication Tests" green
+
 ### Phase 214 — Adversarial User Testing (M214)
 
 Priority: right after M210 (user decision 2026-11-12). Unit tests, reviews and the scripted deploy run check what we expected; this milestone has someone act as a real user (and as a careless or hostile one) on a deployed cluster, the way M210's job hole and the M211–M213 bugs would have been found earlier. Manual first, then automate what was confirmed.
@@ -345,6 +362,7 @@ Priority: right after M210 (user decision 2026-11-12). Unit tests, reviews and t
 - [ ] Session 1 — names and identity: the same name for a service, job, cronjob, volume, gate, connection; hierarchical names with attribute segments (`x/secret/y`, `x/owner`, `x/instances`); uppercase, `_`, `.`, `:`, unicode, 253+ characters; re-apply with changed or omitted fields; delete and re-create with the same name
 - [ ] Session 2 — authorization as a non-admin: every `cca` command with `api-reader`, `api-writer` and team-scoped tokens; secrets via apply, status, describe, `/api/state`, watch, legacy APIs; claiming another team's service, gate or connection; expired, revoked and malformed tokens
 - [ ] Session 3 — lifecycle under failure: kill/restart server, agent and etcd during apply, rollout, scale, job runs and secret rotation; disable a node mid-rollout; fill the disk; clock skew on one node; network partition between a worker and the control plane
+- [ ] Session 3b — broken releases under traffic (2026-11-12, after a K8s "deploy a non-existent tag on purpose" write-up): a load loop against a service VIP and a gate counts failed requests while rolling out (1) a non-existent image tag, (2) an image that exits at start, (3) an image that runs but never passes readiness, (4) each of these on a 1-replica service; then roll back by re-applying the old config and time the recovery. Expected: 0 failed requests, old instances keep serving, a clear rollout status. Hypotheses from reading `controllers/rollout.go`, to confirm or refute here: auto-rollback counts only `failed` new instances, and `image-pull-backoff` never becomes `failed`, so a bad tag never rolls back by itself; a new instance counts as healthy when `running`, not when ready, so case (3) may stop old instances; with no new instance yet, `buildOldInstanceStopChanges` may stop one old instance before a replacement exists (case 4 = outage). Then automate as a Deploy Testbed check
 - [ ] Session 4 — limits: 300 services created and deleted (VIP pool), configs that exceed one etcd transaction, many shares or grants, huge secret values, many concurrent `cca apply`, watch connection limits
 - [ ] Session 5 — data plane: VIP and DNS after churn, gates and TLS with wrong or missing keys, network policy bypass attempts from a container, volume host paths
 - [ ] Every confirmed finding: a failing automated test first (unit/integration where possible), then a milestone item placed by severity (security and data loss before features); record in this phase
@@ -494,6 +512,7 @@ Split from M179 on 2026-11-12; scheduled right after M179 (number chosen so noth
 
 ### Runner hardening (unscheduled; architecture review 2026-11-10)
 
+- [ ] Keyring watch has no backoff when `Watch` keeps returning a closed channel (M215 review SA3): `RunKeyringWatch` re-subscribes and refreshes in a hot loop; add a short delay before re-subscribing
 - [ ] Flaky `TestControlPlaneRestart_NoDataLoss` (integration/ha_resilience_test.go:230): failed once in CI on 089a4ff ("running instances during outage: got 3, want 9") after killing controller groups and a fixed 200 ms sleep; passes 8/8 alone and 3/3 as a full package under -race locally. Replace the sleep-then-assert with a `waitFor` on the condition the test means
 - [ ] A production controller missing from `controllerOutputPrefixes` passes every write unchecked (`enforceWriteDomain` returns the changes unchanged for an undeclared controller): add a test that fails when a controller in the production list has no declared write domain (found during M177 step 3)
 - [ ] `DeltaController` / `deltaBuffer` / `ReconcileDelta` plumbing has no implementer (dead code since added): implement for the hot controllers (endpoint, instance) or delete
@@ -525,6 +544,7 @@ Split from M179 on 2026-11-12; scheduled right after M179 (number chosen so noth
 ### Phase 182 — Security Defense in Depth (M182)
 
 - [x] ~~Conditional policies (M178 review SA7)~~ — moved to M179 (task 3.4) on 2026-11-12: tenant scoping is meaningless while a conditional policy grants every scope
+- [ ] Transient KMS errors exit the replica (M215 review SA2): `verifyKeyringRootCheck` (`security/keyring.go:218-221`) maps any `UnwrapKey` error to `ErrKeyringRootCheckFailed`; only an authentication/decrypt failure should, other errors take the non-fatal refresh path. Failing test with a KMS provider that times out
 - [ ] CA key exposure (M178 review SA8): every HA replica loads `ca-key.pem` for enrollment; only the leader or a dedicated signer should hold it
 - [ ] Volume host path must be under the storage provider root
 - [ ] Secret API bound to the bridge gateway; caller IP must match the token's instance
@@ -671,6 +691,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M177 — Root Key, Keyring & Key Migration | 177 | Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M176. |
 | M178 — Keyring Rotation | 178 | `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M177. |
 | M210 — Job Secret Isolation Fix | 210 | Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Scheduled before M179. |
+| M215 — Keyring Watch Startup Gap | 215 | Bug fix: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s; fixes the flaky CI test that exposed it. Shipped with M210. |
 | M214 — Adversarial User Testing | 214 | Exploratory testing on the deploy cluster as a real (non-admin and admin) user trying to misuse or break the system; every confirmed finding becomes a failing automated test and a prioritized milestone item; confirmed attacks become a repeatable `test/e2e/adversarial/` suite in the deploy run. Scheduled right after M210 (user decision 2026-11-12: found bugs first). |
 | M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |
 | M212 — Jobs Run on Real Agents | 212 | Bug fix: agents read the image only from `desired/service/{name}/image`, so job instances run only with a same-named service's image. Agents resolve job instances from `desired/job/…`. |

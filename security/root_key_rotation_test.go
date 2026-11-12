@@ -328,6 +328,27 @@ func TestWaitForStoppedKeyringReplicas(t *testing.T) {
 	}
 }
 
+// TestRunKeyringWatchSeesRotationBeforeSubscribe verifies a root key rotation
+// committed after the codec loaded but before the watch subscribed (a replica
+// starting during the rotation) stops the watch at once, not at the next
+// fallback tick (M215). No store events follow the rotation.
+func TestRunKeyringWatchSeesRotationBeforeSubscribe(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cluster := newRootKeyTestCluster(t)
+	runningKeyProvider, _ := NewLocalKeyProvider(cluster.originalKey)
+	runningCodec, codecError := NewKeyringEnvelopeCodec(ctx, cluster.factStore, runningKeyProvider, nil)
+	if codecError != nil {
+		t.Fatal(codecError)
+	}
+	if rewrapError := rewrapKeyringUnderRootKey(ctx, cluster.factStore, runningKeyProvider, newTestKeyProvider(t)); rewrapError != nil {
+		t.Fatal(rewrapError)
+	}
+	if watchError := runningCodec.RunKeyringWatch(ctx); !errors.Is(watchError, ErrKeyringRootCheckFailed) {
+		t.Fatalf("watch ended with %v, want ErrKeyringRootCheckFailed", watchError)
+	}
+}
+
 // TestRunKeyringWatchExitsAfterRootKeyRotation verifies a replica still
 // running when the keyring moves to another root key stops its watch with
 // ErrKeyringRootCheckFailed (the server then exits) instead of serving.
@@ -345,21 +366,17 @@ func TestRunKeyringWatchExitsAfterRootKeyRotation(t *testing.T) {
 	if rewrapError := rewrapKeyringUnderRootKey(ctx, cluster.factStore, runningKeyProvider, newTestKeyProvider(t)); rewrapError != nil {
 		t.Fatal(rewrapError)
 	}
-	// The watch may subscribe after the re-wrap; re-writing keyring/legacy with
-	// its own value produces keyring/ events until the watch has seen one.
-	eventTicker := time.NewTicker(20 * time.Millisecond)
-	defer eventTicker.Stop()
-	for {
-		select {
-		case watchError := <-watchResult:
-			if !errors.Is(watchError, ErrKeyringRootCheckFailed) {
-				t.Fatalf("watch ended with %v", watchError)
-			}
-			return
-		case <-eventTicker.C:
-			cluster.factStore.Put(ctx, types.KeyKeyringLegacy, []byte(LegacyKeyNone))
-		case <-ctx.Done():
-			t.Fatalf("watch still running after the root key changed: %v", ctx.Err())
+	// Whether the watch subscribed before the re-wrap (event) or after it
+	// (initial refresh, TestRunKeyringWatchSeesRotationBeforeSubscribe), it
+	// must stop without further store writes. (The earlier version re-wrote
+	// keyring/legacy with its own value, which the memory store ignores, so on
+	// a slow runner it waited for the 60 s fallback tick and timed out.)
+	select {
+	case watchError := <-watchResult:
+		if !errors.Is(watchError, ErrKeyringRootCheckFailed) {
+			t.Fatalf("watch ended with %v", watchError)
 		}
+	case <-ctx.Done():
+		t.Fatalf("watch still running after the root key changed: %v", ctx.Err())
 	}
 }

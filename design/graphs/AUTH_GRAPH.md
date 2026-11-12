@@ -649,7 +649,8 @@ startSecretEnvelopeCodec                                [cmd/cca/server_secret_k
 │   │   writes keyring/kek/1, kek/1/state, active, root_check, legacy, observed/keyring/migration
 │   │   fresh (no legacy, no envelopes) → legacy none; else present
 │   └── Refresh (serialized) → loadKeyringSnapshot (root_check, unwrap KEKs, active, legacy state)
-├── go RunKeyringWatch(ctx) [security/envelope_codec.go:163] [keyring/ only; closed watch → re-subscribe; 60s fallback;
+├── go RunKeyringWatch(ctx) [security/envelope_codec.go:163] [subscribe keyring/, then refreshKeyringFromWatch once (no gap between load and watch);
+│                                                          closed watch → re-subscribe; 60s fallback;
 │                                                          ErrKeyringRootCheckFailed (root key rotated) → exitWithSecretKeyError]
 ├── go RunKeyringReplicaReporter(ctx, nodeID, version)   [observed/keyring/replica/{id}: rewritten every 10s, lease 30s]
 └── any error → exitWithSecretKeyError                   [no silent key generation]
