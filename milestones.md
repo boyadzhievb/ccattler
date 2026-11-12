@@ -332,7 +332,7 @@ Found by the M179 round-3 security audit (2026-11-12, SA H2), present in release
   - SA 2 (node-writable `observed/instance/{id}/service`) — already recorded below as M181
   - SA 5 / CR 5 (marker check is not a security gate) — **accepted**: it only rejects undeclared services; the docs say no more than that
   - Found while verifying: agents never read `desired/job/{name}/image` (only `KeyDesiredServiceImage`, `agent/agent.go:1093`), so a job instance on a real agent runs only with a same-named service's image — jobs effectively do not run outside the simulator. Pre-existing; **scheduled as M212**
-- [ ] Deploy-cluster run (services with secrets still start; a job named like a service is refused)
+- [x] Deploy-cluster run: Deploy Testbed 43212961434 green on ed24a28 (M210 + M215): 16/16 instances incl. Airflow with secrets, gate TLS T1–T18. A job named like a service is covered by `agent/TestLegacySecretAPIRefusesJobNamedLikeService` and is re-checked live in M214 session 1
 - [ ] Not in scope (recorded): the service identity fact stays node-writable (`observed/instance/{id}/service`, compromised node) until M181
 
 ### Phase 215 — Keyring Watch Startup Gap (M215)
@@ -350,7 +350,7 @@ Found 2026-11-12: CI "Authentication Tests" failed on 21c77db with `TestRunKeyri
   - SA 2 (any `UnwrapKey` error, e.g. a KMS timeout, is reported as `ErrKeyringRootCheckFailed` and exits the replica, `security/keyring.go:218-221`) — pre-existing, KMS providers only; **scheduled in M182**
   - SA 3 (no backoff when a watch keeps closing: hot loop of re-subscribe + refresh) — pre-existing; **added to Runner hardening**
   - SA 4/5 (initial-refresh retry hint, report lease after `os.Exit`) — accepted, within the existing 45 s `--finish` wait
-- [ ] CI "Authentication Tests" green
+- [x] CI green on ed24a28 (Test, Authentication, Security, CodeQL, Trivy); Deploy Testbed 43212961434 green
 
 ### Phase 214 — Adversarial User Testing (M214)
 
@@ -690,7 +690,7 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M176 — Gate Key Sealing & Delivery | 176 | Gate TLS private keys sealed under `secrets/route/…` instead of plain facts; `tls { key secret "…" }`; agents fetch them through `POST /api/node/gate-keys` and cache them in tmpfs so TLS survives an agent restart while the API is down. Upgrade note: secret names starting with `route/` are now reserved for gate keys — rename any user secret under `route/` before upgrading. Depends: M174. |
 | M177 — Root Key, Keyring & Key Migration | 177 | Fresh control-plane root key (the old master key was on every worker), keyring in etcd with `root_check`, envelope v2 bound to its store key. Gated `cca secret migrate-keys` re-encrypts every v1 envelope with persisted progress; gated `retire-legacy-key` ends use of the old key. Depends: M174, M176. |
 | M178 — Keyring Rotation | 178 | `cca secret rotate` as a fact; leader-elected keyring controller with create-only KEKs, CAS re-wrap in bounded batches, crash-safe resume, grace-period retirement. Depends: M177. |
-| M210 — Job Secret Isolation Fix | 210 | Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Scheduled before M179. |
+| M210 — Job Secret Isolation Fix | 210 | Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Also ships M215: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s. Upgrade note: none. |
 | M215 — Keyring Watch Startup Gap | 215 | Bug fix: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s; fixes the flaky CI test that exposed it. Shipped with M210. |
 | M214 — Adversarial User Testing | 214 | Exploratory testing on the deploy cluster as a real (non-admin and admin) user trying to misuse or break the system; every confirmed finding becomes a failing automated test and a prioritized milestone item; confirmed attacks become a repeatable `test/e2e/adversarial/` suite in the deploy run. Scheduled right after M210 (user decision 2026-11-12: found bugs first). |
 | M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |

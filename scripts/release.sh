@@ -49,8 +49,6 @@ if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
     exit 1
 fi
 
-MILESTONE_NUMBER="${MILESTONE#M}"
-
 # --- Validate milestone exists in milestones.md ---
 
 MILESTONE_LINE=$(grep "^| ${MILESTONE} " "$MILESTONES_MD" 2>/dev/null || true)
@@ -94,11 +92,14 @@ echo "==> Updating CLAUDE.md..."
 SHORT_TITLE=$(echo "$MILESTONE_TITLE" | sed "s/^${MILESTONE} — //")
 
 # Build new status line, escaping & and \ for sed replacement safety.
-NEW_STATUS="**Completed through:** ${MILESTONE} — Phase ${MILESTONE_NUMBER} ${SHORT_TITLE}. M1–${MILESTONE} complete. Gates A–I resolved."
-SAFE_STATUS=$(printf '%s' "$NEW_STATUS" | sed 's/[&\\/]/\\&/g')
+# Milestones are released in priority order, not number order (bug fixes get
+# new numbers, e.g. M210 before M179), so the line names the release only and
+# never claims a "M1–Mn complete" range.
+NEW_STATUS="**Latest release:** ${MILESTONE} — ${SHORT_TITLE} (${TAG}). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved."
+SAFE_STATUS=$(printf '%s' "$NEW_STATUS" | sed 's/[&\\/|]/\\&/g')
 
-# Replace the existing status line.
-sed -i '' "s|^\*\*Completed through:\*\*.*|${SAFE_STATUS}|" "$CLAUDE_MD"
+# Replace the existing status line (old "Completed through" or new format).
+sed -i '' -E "s|^\*\*(Completed through\|Latest release):\*\*.*|${SAFE_STATUS}|" "$CLAUDE_MD"
 
 # --- Update changelog ---
 
