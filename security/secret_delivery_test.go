@@ -55,6 +55,7 @@ func newDeliveryTestFixture(testContext *testing.T) *deliveryTestFixture {
 	putTestFact(testContext, rawStore, types.KeyObservedNodeState("node-1"), string(types.NodeAlive))
 	putTestFact(testContext, rawStore, types.KeyPlacementInstance("inst-1"), "node-1")
 	putTestFact(testContext, rawStore, types.KeyObservedInstanceService("inst-1"), "checkout")
+	putTestFact(testContext, rawStore, types.KeyDesiredService("checkout"), "")
 	putTestFact(testContext, rawStore, types.ScanDesiredServiceSecrets("checkout")+"db.password", "/run/secrets/db")
 	if putError := secretStore.PutSecret(ctx, "db.password", []byte("s3cret")); putError != nil {
 		testContext.Fatalf("PutSecret: %v", putError)
@@ -123,6 +124,15 @@ func TestSecretDeliveryRefusesWrongNodeUnplacedDisabledAndUnenrolled(testContext
 			_ = fixture.rawStore.Delete(context.Background(), EnrolledNodePrefix+"node-1")
 		}},
 		{name: "path in instance id", nodeID: "node-1", instanceID: "inst-1/../x", setUp: func(*deliveryTestFixture) {}},
+		// A job named like a service records the job name as the instance's
+		// service; it must not receive that service's secrets.
+		{name: "job instance named like a service", nodeID: "node-1", instanceID: "inst-1", setUp: func(fixture *deliveryTestFixture) {
+			putTestFact(testContext, fixture.rawStore, types.KeyDerivedJobInstanceOwner("inst-1"), "checkout")
+		}},
+		// Grant facts without the service's root marker are not a service.
+		{name: "service not declared", nodeID: "node-1", instanceID: "inst-1", setUp: func(fixture *deliveryTestFixture) {
+			_ = fixture.rawStore.Delete(context.Background(), types.KeyDesiredService("checkout"))
+		}},
 	}
 	for _, testCase := range testCases {
 		testContext.Run(testCase.name, func(subTest *testing.T) {

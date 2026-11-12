@@ -14,9 +14,124 @@ import (
 	"time"
 
 	"github.com/boyadzhievb/ccattler/runtime"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
+
+// inProcessDeliveryClient adapts the real server-side SecretDeliveryService to
+// the agent's SecretDeliveryClient, so a test runs the production
+// authorization checks without HTTP or mTLS.
+type inProcessDeliveryClient struct {
+	nodeID          string                          // nodeID is the calling node (the certificate CN in production).
+	deliveryService *security.SecretDeliveryService // deliveryService is the production delivery service.
+}
+
+// FetchInstanceSecrets calls the delivery service and maps a refusal to the
+// same SecretDeliveryError the HTTP client returns for 403.
+func (deliveryClient *inProcessDeliveryClient) FetchInstanceSecrets(ctx context.Context, instanceID string) (map[string][]byte, error) {
+	delivered, deliveryError := deliveryClient.deliveryService.DeliverInstanceSecrets(ctx, deliveryClient.nodeID, instanceID)
+	if deliveryError != nil {
+		return nil, &SecretDeliveryError{Reason: SecretWaitNotAuthorized, Detail: deliveryError.Error()}
+	}
+	return delivered.Secrets, nil
+}
+
+// newRealDeliveryTestAgent returns an agent on node "test-node" whose secret
+// delivery goes through the production SecretDeliveryService (role-bound
+// store), with service "web" (legacy secret API on) granted secret db-password.
+func newRealDeliveryTestAgent(testContext *testing.T) (*Agent, *SecretMaterialStore, *specRecordingRuntime, store.StateStore) {
+	testContext.Helper()
+	ctx := context.Background()
+	rawStore := store.NewMemoryStore()
+	masterKey, keyError := security.GenerateMasterKey()
+	if keyError != nil {
+		testContext.Fatal(keyError)
+	}
+	secretStore, secretStoreError := security.NewSecretStoreWithMasterKey(rawStore, masterKey)
+	if secretStoreError != nil {
+		testContext.Fatal(secretStoreError)
+	}
+	if putError := secretStore.PutSecret(ctx, "db-password", []byte("s3cret")); putError != nil {
+		testContext.Fatal(putError)
+	}
+	rbacAuthorizer := security.NewRBACAuthorizer()
+	for _, builtinRole := range security.BuiltinRoles() {
+		rbacAuthorizer.AddRole(builtinRole)
+	}
+	rbacAuthorizer.BindRole(security.RoleBinding{Principal: security.SecretDeliveryPrincipal, RoleName: "secret-delivery"})
+	deliveryStore := security.NewAuthorizedStore(rawStore, rbacAuthorizer, nil)
+	deliveryStore.SetServicePrincipal(security.SecretDeliveryPrincipal)
+	deliveryService := security.NewSecretDeliveryService(deliveryStore, secretStore, security.NewInMemoryAuditLog(10))
+
+	for factKey, factValue := range map[string]string{
+		security.EnrolledNodePrefix + "test-node":           "{}",
+		types.KeyObservedNodeState("test-node"):             string(types.NodeAlive),
+		types.KeyDesiredService("web"):                      "",
+		types.KeyDesiredServiceImage("web"):                 "nginx:1.27",
+		types.KeyDesiredServiceSecret("web", "db-password"): "/run/secrets/db-password",
+		types.KeyDesiredServiceLegacySecretAPI("web"):       "true",
+	} {
+		_, _ = rawStore.Put(ctx, factKey, []byte(factValue))
+	}
+
+	recordingRuntime := newSpecRecordingRuntime()
+	materialStore := NewSecretMaterialStore(testContext.TempDir())
+	nodeAgent := New("test-node", rawStore, recordingRuntime)
+	nodeAgent.SetSecretDelivery(&inProcessDeliveryClient{nodeID: "test-node", deliveryService: deliveryService}, materialStore)
+	return nodeAgent, materialStore, recordingRuntime, rawStore
+}
+
+// placeTestInstance writes the facts the instance or job controller writes for
+// an instance of service (or job) ownerName placed on test-node.
+func placeTestInstance(ctx context.Context, rawStore store.StateStore, instanceID string, ownerName string, isJob bool) {
+	_, _ = rawStore.Put(ctx, types.KeyPlacementInstance(instanceID), []byte("test-node"))
+	_, _ = rawStore.Put(ctx, types.KeyObservedInstanceService(instanceID), []byte(ownerName))
+	if isJob {
+		_, _ = rawStore.Put(ctx, types.KeyDerivedJobInstanceOwner(instanceID), []byte(ownerName))
+	}
+}
+
+// TestLegacySecretAPIRefusesJobNamedLikeService checks the M210 review claim
+// that a job named like a legacy-secret-API service still reads that service's
+// secrets through the agent's per-instance API. A real instance of "web" is the
+// positive control; the job instance gets no material and every read is 403,
+// even with a token registered for it directly.
+func TestLegacySecretAPIRefusesJobNamedLikeService(testContext *testing.T) {
+	ctx := context.Background()
+	nodeAgent, materialStore, recordingRuntime, rawStore := newRealDeliveryTestAgent(testContext)
+	secretAPIServer, baseURL, cancel := startTestSecretAPIServer(testContext, materialStore, rawStore)
+	defer cancel()
+	nodeAgent.SetSecretAPIServer(secretAPIServer)
+
+	placeTestInstance(ctx, rawStore, "web-svc-1", "web", false)
+	nodeAgent.reconcileDesiredInstance(ctx, placedInstanceInfo{id: "web-svc-1", service: "web"})
+	serviceSpec, serviceStarted := recordingRuntime.startedSpec("web-svc-1")
+	if !serviceStarted || serviceSpec.Env["CCA_SECRET_TOKEN"] == "" {
+		testContext.Fatalf("control: service instance started=%v env=%v", serviceStarted, serviceSpec.Env)
+	}
+	if statusCode, responseBody := getWithBearerToken(testContext, baseURL+"/v1/secrets/db-password?raw=true", serviceSpec.Env["CCA_SECRET_TOKEN"]); statusCode != http.StatusOK || string(responseBody) != "s3cret" {
+		testContext.Fatalf("control: service instance read status %d body %q", statusCode, responseBody)
+	}
+
+	placeTestInstance(ctx, rawStore, "web-job-1", "web", true)
+	nodeAgent.reconcileDesiredInstance(ctx, placedInstanceInfo{id: "web-job-1", service: "web"})
+	if _, hasMaterial := materialStore.ReadInstanceSecrets("web-job-1"); hasMaterial {
+		testContext.Fatal("job instance received secret material")
+	}
+	if jobSpec, jobStarted := recordingRuntime.startedSpec("web-job-1"); jobStarted {
+		if statusCode, _ := getWithBearerToken(testContext, baseURL+"/v1/secrets/db-password", jobSpec.Env["CCA_SECRET_TOKEN"]); statusCode != http.StatusForbidden {
+			testContext.Fatalf("job instance token read status %d, want 403", statusCode)
+		}
+	}
+	directJobToken, registerError := secretAPIServer.RegisterInstanceToken("web-job-1", "web")
+	if registerError != nil {
+		testContext.Fatal(registerError)
+	}
+	if statusCode, _ := getWithBearerToken(testContext, baseURL+"/v1/secrets/db-password", directJobToken); statusCode != http.StatusForbidden {
+		testContext.Fatalf("job instance with a direct token: status %d, want 403", statusCode)
+	}
+}
 
 // specRecordingRuntime wraps the simulator and records every started spec so
 // tests can inspect env vars and mounts.

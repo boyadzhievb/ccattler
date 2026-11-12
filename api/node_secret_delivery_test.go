@@ -43,6 +43,7 @@ func newSecretDeliveryTestServer(testContext *testing.T) *Server {
 		security.EnrolledNodePrefix + "node-1":                      "{}",
 		types.KeyPlacementInstance("inst-1"):                        "node-1",
 		types.KeyObservedInstanceService("inst-1"):                  "checkout",
+		types.KeyDesiredService("checkout"):                         "",
 		types.ScanDesiredServiceSecrets("checkout") + "db.password": "/run/secrets/db",
 	} {
 		_, _ = rawStore.Put(ctx, factKey, []byte(factValue))

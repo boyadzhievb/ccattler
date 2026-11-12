@@ -153,7 +153,26 @@ func (deliveryService *SecretDeliveryService) authorizeNodeForInstance(ctx conte
 	if serviceError != nil || serviceFact == nil || len(serviceFact.Value) == 0 {
 		return "", firstError(serviceError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance has no service"})
 	}
-	return string(serviceFact.Value), nil
+	serviceName := string(serviceFact.Value)
+	if identityError := checkInstanceIsServiceInstance(ctx, deliveryService.deliveryStore, instanceID, serviceName); identityError != nil {
+		return "", identityError
+	}
+	return serviceName, nil
+}
+
+// checkInstanceIsServiceInstance refuses job instances (a job records its own
+// name as the instance's service, so a job named like a service would receive
+// that service's secrets) and services without a declared root marker.
+func checkInstanceIsServiceInstance(ctx context.Context, readStore store.StateStore, instanceID string, serviceName string) error {
+	jobOwnerFact, jobOwnerError := getOptionalDeliveryFact(ctx, readStore, types.KeyDerivedJobInstanceOwner(instanceID))
+	if jobOwnerError != nil || jobOwnerFact != nil {
+		return firstError(jobOwnerError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "instance belongs to a job"})
+	}
+	serviceMarkerFact, markerError := getOptionalDeliveryFact(ctx, readStore, types.KeyDesiredService(serviceName))
+	if markerError != nil || serviceMarkerFact == nil {
+		return firstError(markerError, &SecretDeliveryRefusal{Reason: SecretDeliveryNotAuthorized, Detail: "service is not declared"})
+	}
+	return nil
 }
 
 // checkDeliveryNode refuses a delivery to a node that is not enrolled or is
@@ -309,6 +328,7 @@ func secretDeliveryRole() Role {
 			{KeyPrefix: types.ScanDerivedRoutes, Operations: readOnly},
 			{KeyPrefix: "placement/instance/", Operations: readOnly},
 			{KeyPrefix: "observed/instance/", Operations: readOnly},
+			{KeyPrefix: "derived/instance/", Operations: readOnly},
 			{KeyPrefix: "observed/node/", Operations: readOnly},
 			{KeyPrefix: EnrolledNodePrefix, Operations: readOnly},
 		},

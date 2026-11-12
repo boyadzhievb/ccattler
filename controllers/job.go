@@ -172,12 +172,14 @@ func computeInstancesToCreate(spec jobSpec, state jobState) int {
 // buildJobInstanceCreationChanges creates the store changes to launch a
 // new job instance with the given ID.
 func buildJobInstanceCreationChanges(spec jobSpec, instanceID string) []Change {
-	changes := []Change{
-		{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
-		{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(spec.name)},
-		{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
-		{Type: store.OpPut, Key: types.KeyDerivedJobInstanceOwner(instanceID), Value: []byte(spec.name)},
-	}
+	// One group: the job_owner marker must never commit apart from the
+	// instance's service fact, or delivery could see a job as a service (M210).
+	changes := groupedChanges("instance-create/"+instanceID,
+		Change{Type: store.OpPut, Key: types.KeyDerivedJobInstanceOwner(instanceID), Value: []byte(spec.name)},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstance(instanceID), Value: []byte("")},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstanceService(instanceID), Value: []byte(spec.name)},
+		Change{Type: store.OpPut, Key: types.KeyObservedInstanceState(instanceID), Value: []byte(string(types.InstancePending))},
+	)
 	return changes
 }
 

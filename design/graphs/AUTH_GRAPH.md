@@ -809,7 +809,10 @@ Server.handleNodeSecretDelivery  POST /api/node/secrets {instance_id}
 │   │   │   ├── Get("enrollment/node/{node}")                  [not enrolled → not_authorized]
 │   │   │   └── Get("observed/node/{node}/state") == disabled  [→ not_authorized]
 │   │   ├── Get("placement/instance/{id}") == node             [→ not_authorized]
-│   │   └── Get("observed/instance/{id}/service") → service    [agent-writable until M181]
+│   │   ├── Get("observed/instance/{id}/service") → service    [agent-writable until M181]
+│   │   └── checkInstanceIsServiceInstance
+│   │       ├── Get("derived/instance/{id}/job_owner")         [present → not_authorized: a job named like a service]
+│   │       └── Get("desired/service/{svc}")                   [missing → not_authorized: service not declared]
 │   ├── resolveRequiredSecretNames(service)
 │   │   ├── Scan("desired/service/{svc}/secret/") → granted names
 │   │   ├── collectReferencedSecretNames                       [connection secrets, image_pull_secret]

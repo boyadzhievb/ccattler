@@ -1010,6 +1010,10 @@ the directory, then clear `home_node`); there is no `cca` command for it yet.
 6. Authorization (API server, secret-delivery store principal)
    caller = node:node-3, enrolled, not disabled
    placement/instance/{id} == node-3
+   instance is a service instance: no derived/instance/{id}/job_owner (a job
+     records its own name as the instance's service, so a job named like a
+     service would otherwise get that service's secrets) and
+     desired/service/{svc} exists
    for each secret of the service: grant exists; foreign tenant → share exists
    any check fails → 403 with secret names, audit refusal
 
