@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1312,7 +1313,11 @@ func (apiServer *Server) handleAudit(responseWriter http.ResponseWriter, request
 		return
 	}
 
-	tenantFilter := resolveAuditTenantFilter(request)
+	tenantFilter, tenantAllowed := apiServer.resolveAuditTenantFilter(request)
+	if !tenantAllowed {
+		writeJSONError(responseWriter, "audit log: a team or platform membership is required", http.StatusForbidden)
+		return
+	}
 
 	// Capacity is a constant, not the request's limit, so a client cannot size
 	// the allocation; append grows it up to maxEntries (capped above).
@@ -1350,7 +1355,11 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 		return
 	}
 
-	tenantFilter := resolveAuditTenantFilter(request)
+	tenantFilter, tenantAllowed := apiServer.resolveAuditTenantFilter(request)
+	if !tenantAllowed {
+		writeJSONError(responseWriter, "audit log: a team or platform membership is required", http.StatusForbidden)
+		return
+	}
 
 	responseWriter.Header().Set("Content-Type", "text/event-stream")
 	responseWriter.Header().Set("Cache-Control", "no-cache")
@@ -1382,17 +1391,33 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 	}
 }
 
-// matchesAuditFilter returns true when the entry passes all active filters.
-// resolveAuditTenantFilter returns the tenant scope for the requesting principal,
-// or empty string for platform principals who can see all entries.
-func resolveAuditTenantFilter(request *http.Request) string {
+// resolveAuditTenantFilter returns the tenant the requesting principal may
+// read audit entries for ("" = all, for platform principals and cluster
+// admins) and false when anyone else has no team: nothing (M216, fail closed).
+func (apiServer *Server) resolveAuditTenantFilter(request *http.Request) (string, bool) {
 	requestPrincipal := security.PrincipalStructFromContext(request.Context())
-	if requestPrincipal.Name != "" && !tenant.IsPlatformPrincipal(requestPrincipal) {
-		return tenant.ResolvePrincipalTenant(requestPrincipal)
+	if requestPrincipal.Name == "" || tenant.IsPlatformPrincipal(requestPrincipal) {
+		return "", true
 	}
-	return ""
+	if apiServer.apiAuthorizer.AuthorizeAPI(requestPrincipal, security.CapabilityClusterAdmin, security.ScopeCluster, nil) == nil {
+		return "", true
+	}
+	principalTenant := tenant.ResolvePrincipalTenant(requestPrincipal)
+	return principalTenant, principalTenant != ""
 }
 
+// auditEntryInTenant reports whether the entry's target or the name part of
+// its principal has tenantName as a whole path segment ("pay" never matches
+// "paynter" or "payments").
+func auditEntryInTenant(entry security.AuditEntry, tenantName string) bool {
+	principalName := entry.Principal
+	if _, nameAfterKind, hasKind := strings.Cut(principalName, ":"); hasKind {
+		principalName = nameAfterKind
+	}
+	return slices.Contains(strings.Split(entry.Target, "/"), tenantName) || slices.Contains(strings.Split(principalName, "/"), tenantName)
+}
+
+// matchesAuditFilter returns true when the entry passes all active filters.
 func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction string, sinceTime time.Time, filterDenied bool, tenantFilter string) bool {
 	if filterPrincipal != "" && entry.Principal != filterPrincipal {
 		return false
@@ -1406,7 +1431,7 @@ func matchesAuditFilter(entry security.AuditEntry, filterPrincipal, filterAction
 	if filterDenied && !strings.EqualFold(entry.Decision, security.AuditDecisionDeny) {
 		return false
 	}
-	if tenantFilter != "" && !strings.HasPrefix(entry.Target, tenantFilter+"/") && !strings.Contains(entry.Target, "/"+tenantFilter+"/") && !strings.Contains(entry.Principal, tenantFilter) {
+	if tenantFilter != "" && !auditEntryInTenant(entry, tenantFilter) {
 		return false
 	}
 	return true
@@ -1802,11 +1827,6 @@ func (apiServer *Server) handleOIDCJWKS(responseWriter http.ResponseWriter, requ
 // DELETE /api/secret?name=X removes the secret.
 // GET /api/secret (no name) lists all secret names.
 func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, request *http.Request) {
-	if apiServer.secretStore == nil {
-		writeJSONError(responseWriter, "secret store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
 	secretName := request.URL.Query().Get("name")
 
 	if secretName != "" {
@@ -1832,11 +1852,25 @@ func (apiServer *Server) handleSecret(responseWriter http.ResponseWriter, reques
 	}
 }
 
+// requireSecretStoreCapability checks the capability at cluster scope first,
+// then that a secret store is configured, so an unauthorized caller learns
+// nothing about the server's configuration (M216 route sweep: deny first).
+func (apiServer *Server) requireSecretStoreCapability(responseWriter http.ResponseWriter, request *http.Request, capability security.Capability) bool {
+	if !apiServer.requireCapability(responseWriter, request, capability, security.ScopeCluster) {
+		return false
+	}
+	if apiServer.secretStore == nil {
+		writeJSONError(responseWriter, "secret store not configured", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
 // handleSecretGet returns a secret value or lists secret names.
 func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
 	requestContext := request.Context()
 	if secretName == "" {
-		if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretMetadataRead, security.ScopeCluster) {
+		if !apiServer.requireSecretStoreCapability(responseWriter, request, security.CapabilitySecretMetadataRead) {
 			return
 		}
 		secretNames, listErr := apiServer.secretStore.ListSecrets(requestContext)
@@ -1855,7 +1889,7 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 		return
 	}
 
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretRead, security.ScopeCluster) {
+	if !apiServer.requireSecretStoreCapability(responseWriter, request, security.CapabilitySecretRead) {
 		return
 	}
 	plaintext, getErr := apiServer.secretStore.GetSecret(requestContext, secretName)
@@ -1872,7 +1906,7 @@ func (apiServer *Server) handleSecretGet(responseWriter http.ResponseWriter, req
 
 // handleSecretPut stores an encrypted secret value.
 func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+	if !apiServer.requireSecretStoreCapability(responseWriter, request, security.CapabilitySecretWrite) {
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
@@ -1906,7 +1940,7 @@ func (apiServer *Server) handleSecretPut(responseWriter http.ResponseWriter, req
 
 // handleSecretDelete removes an encrypted secret.
 func (apiServer *Server) handleSecretDelete(responseWriter http.ResponseWriter, request *http.Request, secretName string) {
-	if !apiServer.requireCapability(responseWriter, request, security.CapabilitySecretWrite, security.ScopeCluster) {
+	if !apiServer.requireSecretStoreCapability(responseWriter, request, security.CapabilitySecretWrite) {
 		return
 	}
 	if secretName == "" {
@@ -2030,7 +2064,13 @@ func (apiServer *Server) handleUserList(responseWriter http.ResponseWriter, requ
 	_ = json.NewEncoder(responseWriter).Encode(map[string]interface{}{"users": userNames})
 }
 
-// handleUserDelete removes a user account from the fact store.
+// maxUserDeleteOperations caps the facts one user deletion removes in its
+// single transaction (etcd allows 128 operations per transaction).
+const maxUserDeleteOperations = 128
+
+// handleUserDelete removes a user account together with every role grant it
+// holds and its inline capability role, in one transaction, so a user
+// re-created with the same name inherits nothing (M216).
 func (apiServer *Server) handleUserDelete(responseWriter http.ResponseWriter, request *http.Request, userName string) {
 	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
 		return
@@ -2039,9 +2079,13 @@ func (apiServer *Server) handleUserDelete(responseWriter http.ResponseWriter, re
 		writeJSONError(responseWriter, "name parameter required", http.StatusBadRequest)
 		return
 	}
-	requestContext := request.Context()
-	if deleteError := apiServer.factStore.Delete(requestContext, types.KeyAuthUser(userName)); deleteError != nil {
-		writeJSONError(responseWriter, "delete user: "+deleteError.Error(), http.StatusInternalServerError)
+	deleteOperations, collectError := apiServer.collectUserDeleteOperations(request.Context(), userName)
+	if collectError != nil {
+		writeJSONError(responseWriter, "delete user: "+collectError.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, transactionError := apiServer.factStore.Transaction(request.Context(), nil, deleteOperations, nil); transactionError != nil {
+		writeJSONError(responseWriter, "delete user: "+transactionError.Error(), http.StatusInternalServerError)
 		return
 	}
 	responseWriter.Header().Set("Content-Type", "application/json")
@@ -2049,6 +2093,26 @@ func (apiServer *Server) handleUserDelete(responseWriter http.ResponseWriter, re
 		"ok":   "true",
 		"user": userName,
 	})
+}
+
+// collectUserDeleteOperations returns the delete operations for a user record,
+// its grants (auth/grant/user/{name}/) and its inline role
+// (auth/role/inline-user-{name}/); refuses more than one transaction holds.
+func (apiServer *Server) collectUserDeleteOperations(ctx context.Context, userName string) ([]store.Op, error) {
+	deleteOperations := []store.Op{{Type: store.OpDelete, Key: types.KeyAuthUser(userName)}}
+	for _, ownedPrefix := range []string{types.ScanAuthGrantsForPrincipal("user", userName), types.ScanAuthRoles + "inline-user-" + userName + "/"} {
+		ownedFacts, scanError := apiServer.factStore.Scan(ctx, ownedPrefix)
+		if scanError != nil {
+			return nil, fmt.Errorf("scan %s: %w", ownedPrefix, scanError)
+		}
+		for _, ownedFact := range ownedFacts {
+			deleteOperations = append(deleteOperations, store.Op{Type: store.OpDelete, Key: ownedFact.Key})
+		}
+	}
+	if len(deleteOperations) > maxUserDeleteOperations {
+		return nil, fmt.Errorf("user %s owns %d facts, more than one transaction holds (%d): revoke some grants first", userName, len(deleteOperations), maxUserDeleteOperations)
+	}
+	return deleteOperations, nil
 }
 
 // handleUserToken mints a JWT for the named user. Requires cluster.admin.
@@ -2108,7 +2172,7 @@ func (apiServer *Server) handleUserToken(responseWriter http.ResponseWriter, req
 	}
 
 	tokenString, mintError := apiServer.userTokenIssuer.MintUserToken(
-		tokenRequest.Username, userRecord.Team, userRecord.Groups, tokenTTL)
+		tokenRequest.Username, userRecord.Team, userRecord.Groups, tokenTTL, userFact.Revision)
 	if mintError != nil {
 		writeJSONError(responseWriter, "mint token: "+mintError.Error(), http.StatusInternalServerError)
 		return

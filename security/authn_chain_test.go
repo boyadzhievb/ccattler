@@ -82,7 +82,7 @@ func TestAuthenticatorChainLocalTokenNeverReachesWebhook(t *testing.T) {
 
 func TestAuthenticatorChainInternalTokenWorksWithExternalOIDC(t *testing.T) {
 	fixture := newClaimOrderedChain(t)
-	userToken, mintError := fixture.userTokenIssuer.MintUserToken("alice", "", nil, time.Hour)
+	userToken, mintError := fixture.userTokenIssuer.MintUserToken("alice", "", nil, time.Hour, 0)
 	if mintError != nil {
 		t.Fatal(mintError)
 	}

@@ -42,12 +42,12 @@ func (apiServer *Server) handleNodeSecretDelivery(responseWriter http.ResponseWr
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if apiServer.secretDeliveryService == nil {
-		writeJSONError(responseWriter, "secret delivery not configured", http.StatusServiceUnavailable)
-		return
-	}
 	callerPrincipal, isNodeCaller := requireNodeMTLSCaller(responseWriter, request)
 	if !isNodeCaller {
+		return
+	}
+	if apiServer.secretDeliveryService == nil {
+		writeJSONError(responseWriter, "secret delivery not configured", http.StatusServiceUnavailable)
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)

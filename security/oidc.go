@@ -60,12 +60,13 @@ func NewOIDCAuthenticator(config OIDCConfig, verifyingKey crypto.PublicKey) *OID
 // PrincipalKind, Groups, and Attributes carry additional identity metadata for
 // capability-based authorization.
 type AuthenticationResult struct {
-	Principal     string        // canonical identity (e.g. "user:alice@example.com", "node:node-1")
-	PrincipalKind PrincipalKind // kind of entity (user, node, service, system)
-	Groups        []string      // group memberships from the identity provider
-	Attributes    []Attribute   // extracted attributes for ABAC
-	ExpiresAt     time.Time     // token expiry
-	AuthMethod    string        // authentication method used (mtls, oidc, local-token, webhook)
+	Principal          string        // canonical identity (e.g. "user:alice@example.com", "node:node-1")
+	PrincipalKind      PrincipalKind // kind of entity (user, node, service, system)
+	Groups             []string      // group memberships from the identity provider
+	Attributes         []Attribute   // extracted attributes for ABAC
+	ExpiresAt          time.Time     // token expiry
+	UserRecordRevision int64         // revision of the user record a cluster-minted user token is bound to; 0 when absent
+	AuthMethod         string        // authentication method used (mtls, oidc, local-token, webhook)
 }
 
 // Authenticate validates a JWT token and returns the extracted identity. The
@@ -190,12 +191,17 @@ func (authenticator *OIDCAuthenticator) constructAuthenticationResultFromClaims(
 		}
 	}
 
+	var userRecordRevision int64
+	if revisionClaim, hasRevision := claims[UserRecordRevisionClaim].(float64); hasRevision {
+		userRecordRevision = int64(revisionClaim)
+	}
 	return &AuthenticationResult{
-		Principal:     principal,
-		PrincipalKind: PrincipalKindUser,
-		Attributes:    attributes,
-		ExpiresAt:     expiresAt,
-		AuthMethod:    "oidc",
+		Principal:          principal,
+		PrincipalKind:      PrincipalKindUser,
+		Attributes:         attributes,
+		ExpiresAt:          expiresAt,
+		UserRecordRevision: userRecordRevision,
+		AuthMethod:         "oidc",
 	}, nil
 }
 

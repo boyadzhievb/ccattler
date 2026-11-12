@@ -65,15 +65,15 @@ func setupConcurrentAuthHarness(t *testing.T) *concurrentAuthTestHarness {
 	bearerAuthenticator := security.NewBearerTokenAuthenticator(oidcAuthenticator)
 	authenticatorChain := security.NewAuthenticatorChain(bearerAuthenticator)
 
-	adminToken, adminError := tokenIssuer.MintUserToken("admin", "", []string{"platform"}, 1*time.Hour)
+	adminToken, adminError := tokenIssuer.MintUserToken("admin", "", []string{"platform"}, 1*time.Hour, 0)
 	if adminError != nil {
 		t.Fatalf("mint admin token: %v", adminError)
 	}
-	teamADevToken, teamAError := tokenIssuer.MintUserToken("alice", "team-a", []string{"developers"}, 1*time.Hour)
+	teamADevToken, teamAError := tokenIssuer.MintUserToken("alice", "team-a", []string{"developers"}, 1*time.Hour, 0)
 	if teamAError != nil {
 		t.Fatalf("mint team-a-dev token: %v", teamAError)
 	}
-	teamBReadToken, teamBError := tokenIssuer.MintUserToken("bob", "team-b", []string{"viewers"}, 1*time.Hour)
+	teamBReadToken, teamBError := tokenIssuer.MintUserToken("bob", "team-b", []string{"viewers"}, 1*time.Hour, 0)
 	if teamBError != nil {
 		t.Fatalf("mint team-b-readonly token: %v", teamBError)
 	}
@@ -426,7 +426,7 @@ func TestTokenExpiryMidSession(t *testing.T) {
 	defer harness.factStore.Close()
 	defer harness.httpServer.Close()
 
-	shortLivedToken, mintError := harness.tokenIssuer.MintUserToken("ephemeral", "team-a", nil, 1*time.Second)
+	shortLivedToken, mintError := harness.tokenIssuer.MintUserToken("ephemeral", "team-a", nil, 1*time.Second, 0)
 	if mintError != nil {
 		t.Fatalf("mint short-lived token: %v", mintError)
 	}

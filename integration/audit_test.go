@@ -25,8 +25,11 @@ func setupAuditServer(t *testing.T) (store.StateStore, *api.Server) {
 	factStore := store.NewMemoryStore()
 
 	apiAuthorizer := security.NewAPIAuthorizer()
+	// The audit log is unfiltered only for cluster admins and platform members;
+	// a reader without a team is refused since M216 (it used to see every entry).
 	apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
-		"*": {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
+		"*":          {{Capability: security.CapabilityWorkloadRead, Scope: security.ScopeCluster}},
+		"user:admin": {{Capability: security.CapabilityClusterAdmin, Scope: security.ScopeCluster}},
 	})
 
 	apiServer := api.NewServer(factStore)

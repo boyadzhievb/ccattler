@@ -69,11 +69,15 @@ func (apiServer *Server) beginKeyringRequest(responseWriter http.ResponseWriter,
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return false
 	}
+	// Authorize before revealing configuration state (M216 sweep: deny first).
+	if !apiServer.requireCapability(responseWriter, request, requiredCapability, security.ScopeCluster) {
+		return false
+	}
 	if apiServer.keyringAdministration == nil {
 		writeJSONError(responseWriter, "keyring not configured", http.StatusServiceUnavailable)
 		return false
 	}
-	return apiServer.requireCapability(responseWriter, request, requiredCapability, security.ScopeCluster)
+	return true
 }
 
 // handleSecretRotate implements POST /api/secret/rotate (Flow 30 step 1): 409

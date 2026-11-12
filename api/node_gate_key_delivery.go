@@ -29,12 +29,12 @@ func (apiServer *Server) handleNodeGateKeyDelivery(responseWriter http.ResponseW
 		writeJSONError(responseWriter, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
-	if apiServer.gateKeyDeliveryService == nil {
-		writeJSONError(responseWriter, "gate-key delivery not configured", http.StatusServiceUnavailable)
-		return
-	}
 	callerPrincipal, isNodeCaller := requireNodeMTLSCaller(responseWriter, request)
 	if !isNodeCaller {
+		return
+	}
+	if apiServer.gateKeyDeliveryService == nil {
+		writeJSONError(responseWriter, "gate-key delivery not configured", http.StatusServiceUnavailable)
 		return
 	}
 	delivered, deliveryError := apiServer.gateKeyDeliveryService.DeliverGateKeys(request.Context(), callerPrincipal.Name)

@@ -19,6 +19,10 @@ const defaultUserTokenTTL = 8 * time.Hour
 // userTokenAudience is the audience claim for all user tokens.
 const userTokenAudience = "ccattler"
 
+// UserRecordRevisionClaim is the JWT claim holding the store revision of the
+// user record a token was minted from (auth/user/{name}).
+const UserRecordRevisionClaim = "cca_user_rev"
+
 // UserTokenIssuer mints signed JWTs for human user authentication. It reuses
 // the same ES256 signing key as the WorkloadTokenIssuer so the server's
 // OIDCAuthenticator can validate both workload and user tokens.
@@ -49,9 +53,9 @@ func NewUserTokenIssuerWithKey(issuerURL string, signingKey *ecdsa.PrivateKey) *
 }
 
 // MintUserToken creates a signed JWT for the given user with team and group
-// claims. The token authenticates the user against the CCattler API with
-// identity-based authorization.
-func (userTokenIssuer *UserTokenIssuer) MintUserToken(username string, team string, groups []string, tokenTTL time.Duration) (string, error) {
+// claims, bound to the store revision of the user record (claim
+// UserRecordRevisionClaim): rewriting or re-creating the user refuses it (M216).
+func (userTokenIssuer *UserTokenIssuer) MintUserToken(username string, team string, groups []string, tokenTTL time.Duration, userRecordRevision int64) (string, error) {
 	if username == "" {
 		return "", fmt.Errorf("user token: username is required")
 	}
@@ -73,6 +77,9 @@ func (userTokenIssuer *UserTokenIssuer) MintUserToken(username string, team stri
 		"aud": userTokenAudience,
 		"iat": currentTime.Unix(),
 		"exp": currentTime.Add(tokenTTL).Unix(),
+	}
+	if userRecordRevision > 0 {
+		claims[UserRecordRevisionClaim] = userRecordRevision
 	}
 	if team != "" {
 		claims["team"] = team

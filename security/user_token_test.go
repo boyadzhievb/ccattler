@@ -15,7 +15,7 @@ func TestMintUserTokenRoundTrip(t *testing.T) {
 	}
 	userIssuer := NewUserTokenIssuer(workloadIssuer)
 
-	tokenString, mintError := userIssuer.MintUserToken("alice", "payments", []string{"developers"}, 8*time.Hour)
+	tokenString, mintError := userIssuer.MintUserToken("alice", "payments", []string{"developers"}, 8*time.Hour, 0)
 	if mintError != nil {
 		t.Fatalf("mint user token: %v", mintError)
 	}
@@ -64,7 +64,7 @@ func TestMintUserTokenWithoutTeam(t *testing.T) {
 	}
 	userIssuer := NewUserTokenIssuer(workloadIssuer)
 
-	tokenString, mintError := userIssuer.MintUserToken("bob", "", nil, 0)
+	tokenString, mintError := userIssuer.MintUserToken("bob", "", nil, 0, 0)
 	if mintError != nil {
 		t.Fatalf("mint user token: %v", mintError)
 	}
@@ -90,7 +90,7 @@ func TestMintUserTokenEmptyUsername(t *testing.T) {
 	}
 	userIssuer := NewUserTokenIssuer(workloadIssuer)
 
-	_, mintError := userIssuer.MintUserToken("", "payments", nil, time.Hour)
+	_, mintError := userIssuer.MintUserToken("", "payments", nil, time.Hour, 0)
 	if mintError == nil {
 		t.Fatal("expected error for empty username")
 	}
@@ -103,7 +103,7 @@ func TestMintUserTokenDefaultTTL(t *testing.T) {
 	}
 	userIssuer := NewUserTokenIssuer(workloadIssuer)
 
-	tokenString, mintError := userIssuer.MintUserToken("carol", "frontend", nil, 0)
+	tokenString, mintError := userIssuer.MintUserToken("carol", "frontend", nil, 0, 0)
 	if mintError != nil {
 		t.Fatalf("mint user token: %v", mintError)
 	}
@@ -133,7 +133,7 @@ func TestUserTokenIssuerWithExistingKey(t *testing.T) {
 
 	userIssuer := NewUserTokenIssuerWithKey("https://ccattler.test", workloadIssuer.signingKey)
 
-	tokenString, mintError := userIssuer.MintUserToken("dave", "platform", []string{"admins", "ops"}, time.Hour)
+	tokenString, mintError := userIssuer.MintUserToken("dave", "platform", []string{"admins", "ops"}, time.Hour, 0)
 	if mintError != nil {
 		t.Fatalf("mint user token: %v", mintError)
 	}

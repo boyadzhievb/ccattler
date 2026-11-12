@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/boyadzhievb/ccattler/logging"
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
 	"github.com/boyadzhievb/ccattler/types"
 )
@@ -27,6 +28,11 @@ type gcResponseBody struct {
 func (apiServer *Server) handleGC(responseWriter http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
 		http.Error(responseWriter, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// GC deletes facts: cluster.admin only (M216; any authenticated user
+	// could run it before, found in M214 run 1).
+	if !apiServer.requireCapability(responseWriter, request, security.CapabilityClusterAdmin, security.ScopeCluster) {
 		return
 	}
 

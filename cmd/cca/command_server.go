@@ -507,7 +507,7 @@ func resolveServerIssuerURL(parsedConfig serverCommandConfig) string {
 // internal JWT, external OIDC, webhook. Each claims only its own credential
 // shape or issuer, so the webhook (last) never sees local or internal tokens.
 // Returns the chain and the server's own principal ("" without TLS).
-func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
+func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthorizer *security.RBACAuthorizer, workloadTokenIssuer *security.WorkloadTokenIssuer, factStore store.StateStore, parsedConfig serverCommandConfig) (*security.AuthenticatorChain, string) {
 	var chainAuthenticators []security.Authenticator
 	if serverTLSConfig != nil {
 		chainAuthenticators = append(chainAuthenticators, security.NewMTLSAuthenticator())
@@ -527,7 +527,7 @@ func buildServerAuthenticatorAndBindings(serverTLSConfig *tls.Config, rbacAuthor
 		os.Exit(1)
 	}
 
-	chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, parsedConfig)
+	chainAuthenticators = appendBearerTokenAuthenticators(chainAuthenticators, workloadTokenIssuer, factStore, parsedConfig)
 	authenticatorChain := security.NewAuthenticatorChain(chainAuthenticators...)
 	return authenticatorChain, bindServerPrincipal(serverTLSConfig, rbacAuthorizer)
 }
@@ -580,7 +580,7 @@ func bootstrapControlPlaneNodeEnrollment(factStore store.StateStore, serverTLSCo
 // appendBearerTokenAuthenticators adds the JWT and webhook authenticators in
 // claim order: internal JWT (tokens from this server's issuer), external OIDC
 // (tokens from --oidc-issuer), then the webhook for any remaining bearer token.
-func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, parsedConfig serverCommandConfig) []security.Authenticator {
+func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticator, workloadTokenIssuer *security.WorkloadTokenIssuer, factStore store.StateStore, parsedConfig serverCommandConfig) []security.Authenticator {
 	if workloadTokenIssuer != nil {
 		internalOIDCConfig := security.OIDCConfig{
 			Issuer:   workloadTokenIssuer.IssuerURL(),
@@ -593,7 +593,9 @@ func appendBearerTokenAuthenticators(chainAuthenticators []security.Authenticato
 		internalJWTAuthenticator := security.NewBearerTokenAuthenticator(
 			security.NewOIDCAuthenticator(internalOIDCConfig, workloadTokenIssuer.PublicKey()),
 		)
-		chainAuthenticators = append(chainAuthenticators, internalJWTAuthenticator)
+		// A user token counts only while its user record exists and predates
+		// it: deleting or re-creating a user revokes its tokens (M216).
+		chainAuthenticators = append(chainAuthenticators, security.NewLocalUserRecordAuthenticator(internalJWTAuthenticator, factStore))
 	}
 	if parsedConfig.oidcIssuerURL != "" {
 		externalOIDCAuthenticator := buildExternalOIDCAuthenticator(parsedConfig)
@@ -671,7 +673,7 @@ func configureAndStartAPIServer(
 	}
 	userTokenIssuer := security.NewUserTokenIssuer(workloadTokenIssuer)
 
-	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer, workloadTokenIssuer, parsedConfig)
+	authenticatorChain, serverPrincipal := buildServerAuthenticatorAndBindings(serverTLSConfig, rbacAuthorizer, workloadTokenIssuer, factStore, parsedConfig)
 
 	// API-layer capability authorizer. Maps builtin roles to capability grants.
 	apiAuthorizer := security.NewAPIAuthorizer()
