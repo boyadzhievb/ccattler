@@ -369,6 +369,64 @@ Priority: right after M210 (user decision 2026-11-12). Unit tests, reviews and t
 - [ ] `test/e2e/adversarial/`: confirmed misuse cases as a repeatable script run by the Deploy Testbed workflow (expected refusals asserted, not just "no crash")
 - [ ] Repeat one short session after each security milestone (M179, M181) — add the item to their checklists
 
+**Run 1 (2026-11-12, deploy cluster ed24a28 / v1.78.0-beta).** Two haiku testers in parallel: A `adv-dev` (`api-writer`, team payments, ~55 calls), B `adv-reader` (`api-reader`, team frontend, ~90 calls). Transcripts on m4800: `~/adv/adv-dev.md`, `~/adv/adv-reader.md`, `~/adv/orchestrator.md` (setup), `~/adv/watch.log`. Every finding below verified by the orchestrator in code, transcript or a re-run as admin:
+
+| # | Finding | Verified | Resolution |
+|---|---|---|---|
+| A1 / B-F1 | `cca apply` from a remote client (token context) silently runs a local 3-node simulation and prints a fake cluster status; nothing reaches the cluster. The CLI has no API apply path (`cmd/cca/command_apply.go`: local simulation or direct etcd only) | code + transcripts | **M218** |
+| B-F2 | `POST /api/gc` has no capability check (`api/handler_gc.go:27`): any authenticated user (here `api-reader`) makes the server delete instance facts | code + transcript (`gc instances` ran for the reader) | **M216** |
+| A2 | `scale` has no upper bound: `scale a-web 100000` was accepted and 436 instances were created before the tester scaled back | code (`api/server.go:869`) + transcript | **M217** |
+| A3 | `scale` on an undeclared service creates orphan instances with no service, VIP or endpoints (`scale nosuch 2`, 30× `a-loop-*`) | code (no existence check) + transcript | **M217** |
+| — | `/api/scale` ignores store write errors and still answers `ok: true` (`api/server.go:881-886`, found while verifying A2) | code | **M217** |
+| B | `/api/audit` needs only `workload.read` (`api/server.go:1270`): every reader sees all principals' audit trail; yet the reader's `cca audit` returned "No audit entries found" while admin sees entries — filtering unexplained | code + admin re-run | **M216** (scope); empty result: investigate in M216 |
+| A4 / A5 / A7 | Service names with `/` overwrite another service's fields (`checkout/owner` → `desired/service/checkout/owner`, `ledger/instances`); owner taken from the first name segment unchecked; names with uppercase, `:`, `.`, unicode, 254 chars accepted | diff output in transcript; code (M179 round 2/3 SA HIGH-1) | **M179 step 1** (name validation, owner checks) — confirmed live |
+| A6 | A job named like an existing service passes lint/diff with no warning; `describe job` is not a resource type | transcript | **M211** (cross-kind names), **M212** (job visibility) |
+| — | Stateful `ledger` (`stateful` in the config) got random instance IDs, not `ledger-0/1`; `describe` shows no stateful marker | admin `describe service ledger` | investigate first in **M211** (its premise is the `{name}-{n}` collision) |
+| A8 / B-F3 | `cca token …`, `root-key-status`, `rotate-root-key`, `generate-root-key` open etcd / local files directly; from a remote client they fail with raw etcd errors (`localhost:2379`) | code (`cmd/cca/command_misc.go:359`) | **rejected as security finding** (needs etcd client certs, i.e. a control-plane host); confusing error → **M218** |
+| A10 / B-F8 | `cca whoami` reads only the legacy credential file, ignores contexts and tokens: "not logged in" while every command works | code (`cmd/cca/command_login.go:235`) | **M218** |
+| B-F9 | `get secrets` → "No secrets found." while `secret list` returns 5 names (also as admin) | admin re-run | **M218** |
+| B-F10 / F11 / F12 / F13, A11 | inconsistent `*_CMD` redaction in describe; `--team` filter possibly ignored; `readiness` requires `go.mod` in the cwd; `images pull` 403 shown as "FAILED (HTTP 403)"; `audit --denied` unsupported by the CLI though the API filters on it | transcripts | **M218** (each to reproduce first) |
+| B-F4 | `logs webserver-…` flagged by the local secret scanner | admin check: none of the 4 Airflow secret values occurs in the 364 KB log | **rejected** (scanner false positive on the word "Password") |
+| B-F6, A9 | Readers see other teams' services, logs, secret names | — | **accepted**: cluster-wide reads are today's model; tenant scoping is M179/M181 |
+| B-F5 | `put-config` accepted for the reader | — | **rejected**: test-harness wrapper feature, not product |
+| clean-up | `cca user delete` leaves role grants and does not invalidate the user's tokens (deleted `adv-reader` token still authenticated) | admin re-run | **M216** (top item) |
+| B-F14 | Events show `nosuch-*` pending instances and an `observed/instance/` history gap | explained by tester A's `scale nosuch` and the 436-instance flood | covered by A2/A3 |
+
+Tester A's self-escalation probe (`role grant adv-dev cluster-admin`) was blocked by the local auto-mode classifier before reaching the cluster; repeat it in run 2 (B's equivalent was refused with `cluster.admin`).
+- [ ] CI, gating (every Deploy Testbed run, after the cluster checks pass): replay of the tester transcripts without any AI — `scripts/transcript-to-cases` turns `~/adv/*.md` into draft cases in `test/e2e/adversarial/cases.yml` (identity, setup config, `cca` args, expected exit code, `must_contain` / `must_not_contain` patterns — never exact output, IDs and times vary); the expectations are reviewed by hand (a transcript records what happened, not what should happen); `deploy/ansible/adversarial.yml` creates the per-run users and 1 h tokens, runs each case on the control node with that user's context, asserts, writes the same Markdown transcript, deletes the users; runs against any inventory (deploy, lan, HA). Transcripts uploaded as a workflow artifact
+- [ ] CI, exploratory, non-gating, **manual only** — deferred; key setup plan in [design/plans/plan-M214-ai-testers-api-key.md](design/plans/plan-M214-ai-testers-api-key.md) (user decision 2026-11-12: `workflow_dispatch` started and watched by a person; never on every green deployment — green deployments run the Ansible replay above): the two AI testers run headless (`claude -p`, model `haiku`, fixed prompts from `design/adversarial-testing.md`, 150-call / 60-min budget) through the same forced-command wrapper; output = transcripts + findings report as artifacts, never a red build by itself. Needs: an Anthropic API key as a repository secret available only to the `deploy` runner job, a spend cap, and the wrapper/keys provisioned by `scripts/setup-deploy-host.sh` instead of by hand. A confirmed finding still goes through the manual verify → failing test → milestone path
+
+### Phase 216 — API Authorization Gaps (M216)
+
+Found in M214 run 1 (2026-11-12). Priority: first after M214's setup, before M211.
+
+- [ ] **Deleting a user revokes nothing** (found at M214 run 1 clean-up, 2026-11-12): after `cca user delete adv-dev`, `cca role list` still showed `user:adv-dev api-writer`, and the deleted `adv-reader`'s token still authenticated (403 "no workload.read grant" after the grants were revoked by hand, not 401). So a deleted user keeps full access until the token expires, and a new user with the same name inherits the old grants. Fix: user deletion removes the user's grants in the same transaction and invalidates its tokens (token check against the user record or a revocation list); failing tests first for both
+- [ ] Failing tests first: `api-reader` POST `/api/gc` → 403; `api-reader` GET `/api/audit` → 403
+- [ ] `/api/gc` requires `cluster.admin` (it deletes facts)
+- [ ] `/api/audit` requires `cluster.admin` (or a new `audit.read` capability); decide which
+- [ ] Explain why the reader's `cca audit` returned nothing while entries exist; fix or document
+- [ ] Sweep: a test that walks every `apiServer.mux` route and fails when a handler that writes has no `requireCapability` call (prevents the next `/api/gc`)
+
+### Phase 217 — Scale API Safety (M217)
+
+Found in M214 run 1 (2026-11-12): `scale a-web 100000` created 436 real instances; `scale nosuch 2` created orphan instances.
+
+- [ ] Failing tests first: scale above the limit → 400; scale of an undeclared service → 404; store write error → 500, not `ok: true`
+- [ ] Upper bound per service (named constant, overridable by `cluster.admin` only) — also on `instances` in apply
+- [ ] `/api/scale` requires the `desired/service/{svc}` marker
+- [ ] Store write errors returned to the client (`api/server.go` `handleScale`)
+- [ ] Clean-up path for orphan instances already created by earlier scale calls (gc or controller)
+
+### Phase 218 — CLI Remote Correctness (M218)
+
+Found in M214 run 1 (2026-11-12). The CLI behaves as if it ran on the control plane.
+
+- [ ] `cca apply` with a remote context uses `POST /api/apply` (authz, policy gate) instead of a silent local simulation; the local simulation only with an explicit `--simulate`
+- [ ] `cca whoami` reads the current context (server, user, token expiry)
+- [ ] `get secrets` and `secret list` agree
+- [ ] Local-only commands (`token`, `root-key-status`, `rotate-root-key`, `generate-root-key`) say "run on a control-plane node" instead of raw etcd errors
+- [ ] Reproduce and fix or reject: `--team` filter, `readiness` needing `go.mod`, `images pull` 403 message, `*_CMD` redaction rule, `audit --denied`
+
 ### Phase 211 — Workload Identity & Safe Instance Creation (M211)
 
 Found during the M210 review (2026-11-12). Root cause, verified in code: (1) jobs (`controllers/job.go:139`) and stateful services (`controllers/instance.go:438`) both build instance IDs as `{name}-{n}` from user-chosen names, but services and jobs live in separate desired namespaces, so nothing ever compares their names; (2) controller `Change` has only put and delete (`controllers/controller.go:25`), so creating an instance overwrites an existing one silently — no create-only option like the keyring's transactions; (3) an instance's workload is the bare string `observed/instance/{id}/service` (a job writes its own name there), not a typed reference. Effect: job `victim` writes `victim-0` over stateful service `victim`'s instance (state back to `pending`, plus `job_owner`, which since M210 cuts its secrets); a job named like a service with secrets waits in `waiting-for-secrets` forever and holds a parallelism slot.
@@ -693,6 +751,9 @@ Ordered by priority. Renumbered 2026-11-03: the security review milestones were 
 | M210 — Job Secret Isolation Fix | 210 | Secret delivery refuses job instances and undeclared services: a job named like a service no longer receives that service's secrets (hole since M174). Also ships M215: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s. Upgrade note: none. |
 | M215 — Keyring Watch Startup Gap | 215 | Bug fix: the keyring watch refreshes once after subscribing, so a root key rotation during a replica's startup is not missed for up to 60 s; fixes the flaky CI test that exposed it. Shipped with M210. |
 | M214 — Adversarial User Testing | 214 | Exploratory testing on the deploy cluster as a real (non-admin and admin) user trying to misuse or break the system; every confirmed finding becomes a failing automated test and a prioritized milestone item; confirmed attacks become a repeatable `test/e2e/adversarial/` suite in the deploy run. Scheduled right after M210 (user decision 2026-11-12: found bugs first). |
+| M216 — API Authorization Gaps | 216 | Bug fix (M214 run 1): deleting a user keeps its grants and tokens valid; `/api/gc` has no capability check (a read-only user deletes facts); `/api/audit` readable with `workload.read`; a route sweep test so no writing handler lacks a capability check. |
+| M217 — Scale API Safety | 217 | Bug fix (M214 run 1): scale has no upper bound (100000 accepted, 436 instances created), accepts undeclared services (orphan instances), and reports success on store errors. |
+| M218 — CLI Remote Correctness | 218 | Bug fix (M214 run 1): remote `cca apply` silently simulates instead of applying; `whoami` ignores contexts; `get secrets` vs `secret list`; local-only commands fail with raw etcd errors. |
 | M211 — Workload Identity & Safe Instance Creation | 211 | Bug fix: jobs and stateful services share instance IDs `{name}-{n}`, controller puts overwrite existing instances, and an instance's workload is a bare name string. Typed owner reference, create-only instance creation, cross-kind name uniqueness at apply. |
 | M212 — Jobs Run on Real Agents | 212 | Bug fix: agents read the image only from `desired/service/{name}/image`, so job instances run only with a same-named service's image. Agents resolve job instances from `desired/job/…`. |
 | M213 — VIP Pool Allocation | 213 | Bug fix: VIP allocation takes highest octet + 1 with no bound or reuse; after 254 allocations it emits `.255`, then invalid addresses. Lowest free address in `--vip-cidr`, explicit exhaustion. |
