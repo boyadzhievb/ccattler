@@ -1,6 +1,8 @@
 # M214 — AI testers in CI: Anthropic API key setup (deferred)
 
-**Status:** to set up (decision 2026-11-12: wanted — the AI testers find what scripted tests miss). Steps A–C are done by the repository owner; D is a code task. The run stays manual-only (`workflow_dispatch` + required reviewer).
+**Status:** deferred (decision 2026-11-14). Running `claude -p` on the deploy host (m4800) gives the model unrestricted Bash as a user with sudo — it could run `rm -rf`, kill processes, or destroy VMs regardless of prompt instructions. The forced-command SSH keys are the real security boundary and only work when the model runs on a **different machine**. Until a safe execution environment exists (dedicated unprivileged VM, or a remote runner that can only reach m4800 via the forced-command SSH keys), AI testers stay manual: the developer runs them from their workstation as in M214 run 1. Steps A+B are done; C+D are blocked on the execution environment decision.
+
+Previously: to set up (decision 2026-11-12: wanted — the AI testers find what scripted tests miss). Steps A–C are done by the repository owner; D is a code task. The run stays manual-only (`workflow_dispatch` + required reviewer).
 
 Context: milestone M214 (adversarial user testing), `design/adversarial-testing.md`. Two kinds of runs:
 
