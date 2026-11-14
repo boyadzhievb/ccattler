@@ -202,6 +202,44 @@ Each milestone has a corresponding demo command that exercises its headline feat
 | `cca demo-network` | M4 | VIPs, DNS, round-robin load balancing |
 | `cca demo-storage` | M5 | Persistent volume migrates when node dies |
 
+## Acceptance Testing Methodology
+
+Based on [IEEE/ISTQB acceptance testing](https://en.wikipedia.org/wiki/Acceptance_testing) definitions. Acceptance criteria are the conditions a system must satisfy to be accepted by a user or customer.
+
+### Types and How CCattler Implements Them
+
+| Type | Definition | CCattler Implementation |
+|------|-----------|------------------------|
+| **UAT** (User Acceptance Testing) | Verify the solution works for the user — test scenarios, not click-by-click steps | M214 adversarial testing: real user scenarios against a live cluster; each milestone's deploy-cluster check verifies the user story works end-to-end |
+| **OAT** (Operational Acceptance Testing) | Operational readiness: backup, disaster recovery, maintenance, security procedures | Deploy Testbed workflow: deploy → converge → health check → data plane verification → adversarial replay; `cca health` and `health-check.yml` (hourly) |
+| **ATDD** (Acceptance Test-Driven Development) | Acceptance criteria drive development — tests written before code | Every milestone: design spec with acceptance criteria in `milestones.md` → failing tests → implementation → deploy check. A milestone is not complete until its acceptance tests pass |
+| **Field Testing** | Real-world customer environment with real workloads | Airflow (DAGs, scheduler, workers, metadata-db, redis) running continuously on the deploy cluster under load |
+| **Alpha Testing** | Internal pre-release at developer's site | Integration tests (`integration/`), chaos benchmarks (`cca benchmark`), demos |
+| **Contract/Regulation** | Verify contractual or regulatory requirements | Not applicable (no external customers yet) — but the milestone checklist and independent review (code-reviewer + security-audit) serve the same role for internal gates |
+
+### Acceptance Criteria in Practice
+
+Every milestone in `milestones.md` is a set of acceptance criteria:
+
+1. **Before implementation**: design spec lists Must/Should/Could test scenarios (ATDD)
+2. **During implementation**: integration tests fail first, then pass (test-driven)
+3. **Before release**: deploy-cluster check with real workloads (OAT + field testing)
+4. **Independent review**: code-reviewer + security-audit verify the diff against the spec (from Phase 174)
+5. **Adversarial replay**: deterministic cases from manual testing confirm security properties hold (UAT, `test/e2e/adversarial/`)
+
+### Test Execution Flow
+
+```
+Unit tests (go test)
+  → Integration tests (simulated runtime, auth, security)
+    → E2E on LAN VMs (cluster_test.sh --env lan)
+      → Deploy Testbed (real workloads, eBPF dataplane)
+        → Adversarial replay (auth enforcement, role escalation)
+          → Manual adversarial testing (M214 — human + AI testers)
+```
+
+Each layer adds realism. A milestone must pass all layers before release.
+
 ## Adding Tests for a New Milestone
 
 1. List the milestone's **Must/Should/Could** test scenarios in its checklist in `milestones.md` before starting implementation.
