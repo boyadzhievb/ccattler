@@ -421,7 +421,7 @@ Found in M214 run 1 (2026-11-12). Priority: first after M214's setup, before M21
 | SA-L1 | security-audit | Dead code `SetTenantAuditView` / `tenantAuditView` | `api/server.go` | **already tracked** for M218 removal |
 | CR-Style | code-reviewer | Missing struct field comments on test harness | — | **rejected**: all test struct fields already have inline comments |
 
-- [ ] Deploy-cluster check: delete a user with a live token → next request 401; re-create the name → old token still refused
+- [x] Deploy-cluster check (2026-11-14, m4800 on 15f3156): created m216-test, minted token → 403 (authenticated, no grant); deleted user → 401; re-created same name → 401 (old token's revision refused)
 
 ### Phase 217 — Scale API Safety (M217)
 
