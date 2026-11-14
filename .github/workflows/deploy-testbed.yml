@@ -66,6 +66,23 @@ jobs:
           DATAPLANE="${{ inputs.dataplane || 'ebpf' }}"
           ./test/e2e/cluster_test.sh --env deploy --skip-build --workload "$WORKLOAD" --dataplane "$DATAPLANE"
 
+      - name: Install yq
+        run: |
+          YQ_VERSION="v4.44.1"
+          curl -sSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" -o /tmp/yq
+          sudo install -m 755 /tmp/yq /usr/local/bin/yq
+          yq --version
+
+      - name: Adversarial replay (M214)
+        run: ./test/e2e/adversarial/run.sh --env deploy
+
+      - name: Upload adversarial transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: adversarial-transcript
+          path: test/e2e/adversarial/transcript.md
+
       - name: Collect logs on failure
         if: failure()
         run: |

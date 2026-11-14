@@ -1,0 +1,146 @@
+# Adversarial test cases — deterministic replay of M214 run 1 confirmed findings.
+# Each case runs a cca command as a specific user and asserts the outcome.
+# IDs and timestamps vary between runs; patterns use must_contain/must_not_contain.
+#
+# Reviewed by hand: a transcript records what happened, not what should happen.
+# Every case here is a confirmed finding with a known-correct expected behavior.
+
+# --- M216: user deletion revokes access ---
+
+- name: deleted-user-token-refused
+  description: "M216: a deleted user's token must return 401"
+  identity: adv-admin
+  setup:
+    - "user create adv-ephemeral --team payments"
+    - "role grant user:adv-ephemeral --role api-reader"
+  capture_token: adv-ephemeral
+  steps:
+    - command: "status"
+      as: adv-ephemeral
+      expect_exit: 0
+  teardown_before_assert:
+    - "user delete adv-ephemeral"
+  assert_after_teardown:
+    - command: "status"
+      as: adv-ephemeral
+      expect_exit: 1
+      must_contain: ["401", "Unauthorized"]
+
+- name: recreated-user-old-token-refused
+  description: "M216: re-creating a user does not accept the old token"
+  identity: adv-admin
+  setup:
+    - "user create adv-reuse --team payments"
+    - "role grant user:adv-reuse --role api-reader"
+  capture_token: adv-reuse
+  steps:
+    - command: "user delete adv-reuse"
+      as: adv-admin
+    - command: "user create adv-reuse --team payments"
+      as: adv-admin
+  assert:
+    - command: "status"
+      as: adv-reuse
+      expect_exit: 1
+      must_contain: ["401", "Unauthorized"]
+  cleanup:
+    - "user delete adv-reuse"
+
+# --- M216: /api/gc requires cluster.admin ---
+
+- name: gc-requires-admin
+  description: "M216: a reader cannot run gc"
+  identity: adv-reader
+  steps:
+    - command: "gc instances"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden", "cluster.admin"]
+
+# --- M216: audit tenant filter ---
+
+- name: audit-reader-filtered
+  description: "M216: a reader without workload.read gets 403 on audit"
+  identity: adv-nongrant
+  steps:
+    - command: "audit"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden"]
+
+- name: audit-reader-own-tenant
+  description: "M216: a reader with a team sees only their tenant's entries"
+  identity: adv-reader
+  steps:
+    - command: "audit"
+      expect_exit: 0
+      must_not_contain: ["payments"]
+
+# --- M217: scale bounds (expected failures until M217 is implemented) ---
+
+- name: scale-undeclared-service
+  description: "M217: scale on a non-existent service should fail"
+  identity: adv-writer
+  steps:
+    - command: "scale adv-nosuch 2"
+      expect_exit: 1
+      must_not_contain: ["ok"]
+  known_failure: "M217 not yet implemented — currently succeeds and creates orphans"
+
+- name: scale-upper-bound
+  description: "M217: scale above limit should fail"
+  identity: adv-writer
+  steps:
+    - command: "scale adv-nosuch 100000"
+      expect_exit: 1
+  known_failure: "M217 not yet implemented — currently succeeds"
+
+# --- Authorization: role escalation ---
+
+- name: reader-cannot-grant-roles
+  description: "a reader cannot grant itself cluster-admin"
+  identity: adv-reader
+  steps:
+    - command: "role grant user:adv-reader --role cluster-admin"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden", "cluster.admin"]
+
+- name: writer-cannot-grant-roles
+  description: "a writer cannot grant itself cluster-admin"
+  identity: adv-writer
+  steps:
+    - command: "role grant user:adv-writer --role cluster-admin"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden", "cluster.admin"]
+
+- name: reader-cannot-create-users
+  description: "a reader cannot create users"
+  identity: adv-reader
+  steps:
+    - command: "user create adv-hacker --team evil"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden", "cluster.admin"]
+
+- name: reader-cannot-delete-users
+  description: "a reader cannot delete users"
+  identity: adv-reader
+  steps:
+    - command: "user delete adv-writer"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden", "cluster.admin"]
+
+# --- Authorization: secret access ---
+
+- name: reader-cannot-read-secrets
+  description: "a reader cannot read secret values"
+  identity: adv-reader
+  steps:
+    - command: "secret get checkout.db-password"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden"]
+
+- name: reader-cannot-set-secrets
+  description: "a reader cannot set secrets"
+  identity: adv-reader
+  steps:
+    - command: "secret set adv-evil-secret --value hacked"
+      expect_exit: 1
+      must_contain: ["403", "Forbidden"]
