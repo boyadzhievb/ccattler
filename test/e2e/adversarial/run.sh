@@ -51,9 +51,11 @@ cd "$VMHERD_DIR"
 
 # Run a cca command on the control VM and capture output + exit code.
 run_cca() {
-  local exit_code=0
+  set +e
   local output
-  output=$(vmherd ssh "$CTRL_VM" -- "$CCA" "$@" 2>&1) || exit_code=$?
+  output=$(vmherd ssh "$CTRL_VM" -- "$CCA" "$@" 2>&1)
+  local exit_code=$?
+  set -e
   echo "$output"
   return "$exit_code"
 }
@@ -63,10 +65,11 @@ run_cca_as() {
   local identity="$1"
   local token="${TOKENS[$identity]}"
   shift
-  local exit_code=0
+  set +e
   local output
-  # shellcheck disable=SC2086
-  output=$(vmherd ssh "$CTRL_VM" -- "CCA_TOKEN=$token $CCA $*" 2>&1) || exit_code=$?
+  output=$(vmherd ssh "$CTRL_VM" -- "CCA_TOKEN=$token $CCA $*" 2>&1)
+  local exit_code=$?
+  set -e
   echo "$output"
   return "$exit_code"
 }
