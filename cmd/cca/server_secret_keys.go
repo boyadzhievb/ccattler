@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
@@ -172,6 +173,7 @@ const rootKeyRotationUsage = "usage: cca secret rotate-root-key --commit|--finis
 // keyring and swaps the files, --finish (other hosts) only swaps.
 func executeSecretRotateRootKey(args []string) {
 	rootKeyPath, rotationMode := parseRootKeyCommandArgs(args, rootKeyRotationUsage, "--commit", "--finish")
+	requireControlPlaneNode("rotate-root-key", rootKeyPath)
 	factStore := openLocalControlPlaneStore()
 	defer func() { _ = factStore.Close() }()
 	ctx := context.Background()
@@ -206,6 +208,7 @@ func executeSecretRotateRootKey(args []string) {
 // decides from it whether to roll back or go forward.
 func executeSecretRootKeyStatus(args []string) {
 	rootKeyPath, _ := parseRootKeyCommandArgs(args, "usage: cca secret root-key-status [--path <file>]")
+	requireControlPlaneNode("root-key-status", rootKeyPath)
 	factStore := openLocalControlPlaneStore()
 	defer func() { _ = factStore.Close() }()
 	filesStatus, inspectError := security.InspectRootKeyFiles(context.Background(), factStore, rootKeyPath)
@@ -237,6 +240,41 @@ func parseRootKeyCommandArgs(args []string, usageText string, modeFlags ...strin
 		os.Exit(1)
 	}
 	return rootKeyPath, selectedMode
+}
+
+// requireControlPlaneNode exits with an explanation unless this host has etcd
+// endpoints and a root key at rootKeyPath or its .next (a rotation interrupted
+// between its two renames leaves only .next). The root key commands work on
+// etcd directly while every API server is stopped (Flow 30), so only there.
+func requireControlPlaneNode(commandName string, rootKeyPath string) {
+	missingParts := findMissingControlPlaneParts(rootKeyPath)
+	if len(missingParts) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "error: cca secret %s runs only on a control-plane node, which this host is not: %s\n",
+		commandName, strings.Join(missingParts, "; "))
+	os.Exit(1)
+}
+
+// findMissingControlPlaneParts lists what this host lacks to be a control-plane
+// node for the root key commands: etcd endpoints, and a key file at
+// rootKeyPath or rootKeyPath.next. Empty means the commands may run.
+func findMissingControlPlaneParts(rootKeyPath string) []string {
+	var missingParts []string
+	if resolveStoreDefaults().storeBackend != "etcd" {
+		missingParts = append(missingParts, fmt.Sprintf("no etcd endpoints (%s or %s)", endpointsEnvVariable, endpointsConfigPath))
+	}
+	if !rootKeyFileExists(rootKeyPath) && !rootKeyFileExists(rootKeyPath+security.RootKeyNextSuffix) {
+		missingParts = append(missingParts, fmt.Sprintf("no root key at %s or %s%s", rootKeyPath, rootKeyPath, security.RootKeyNextSuffix))
+	}
+	return missingParts
+}
+
+// rootKeyFileExists reports whether a root key file is present at keyPath,
+// without following a symlink and without reading it.
+func rootKeyFileExists(keyPath string) bool {
+	_, statError := os.Lstat(keyPath) //nolint:gosec // G703: the operator's own --path on this host; only its existence is checked
+	return statError == nil
 }
 
 // openLocalControlPlaneStore connects to etcd the way cca server does
