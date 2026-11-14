@@ -461,7 +461,8 @@ The AWS cloud provider (`cloud/aws.go`: instances, load balancers, VPC routes) w
 
 - [x] `test/aws-emulator/Dockerfile` (built locally, AWS publishes no image; CPU picked by the script) and `scripts/aws-emulator.sh start|stop|env|test`: port bound to 127.0.0.1 only, telemetry off, waits for `/__admin/health`, refuses to run tests unless STS reports the emulator account `000000000000`
 - [x] `skipWithoutAWSCredentials` also runs when `AWS_ENDPOINT_URL` is a loopback emulator with its credentials file
-- [x] All 5 `TestAWSIntegration*` tests pass against the emulator (2026-11-14, ~6 s)
+- [x] All 5 `TestAWSIntegration*` tests pass against the emulator (2026-11-14, ~6 s); again on m4800 (Debian 13, x86_64) 2026-11-14 through `scripts/aws-emulator.sh test`
+- [x] Script hardening after the m4800 setup (2026-11-14): rpm CPU from `docker info` (an x86_64 rpm in an arm64 base image failed with `ld-linux-x86-64.so.2 … is needed`); stop with a `chown` hint when `~/.aws/emulator` is not writable (a `sudo` run left it root-owned, emulator then fails `Permission denied (os error 13)`); check for the `aws` CLI before the STS guard. Verified: both new failure paths print their message, test run passes. Host needs: `docker` group (or rootless Docker), `awscli`
 - [ ] CI job (GitHub-hosted runner, x86_64) running `scripts/aws-emulator.sh test`
 - [ ] AWS KMS root key provider (`security/kms_cloud.go`) tested against the emulator, if it emulates KMS
 

@@ -36,13 +36,16 @@ emulator_is_healthy() {
     "https://127.0.0.1:${EMULATOR_PORT}/__admin/health" >/dev/null 2>&1
 }
 
-# Build the image from test/aws-emulator/Dockerfile for this machine's CPU.
+# Build the image from test/aws-emulator/Dockerfile for the Docker daemon's
+# CPU, which decides the base image's CPU (uname -m can differ, e.g. a shell
+# under Rosetta on an Apple Silicon Mac).
 build_emulator_image() {
   local emulator_arch
-  case "$(uname -m)" in
+  emulator_arch="$(docker info --format '{{.Architecture}}')" || fatal "cannot query the Docker daemon"
+  case "$emulator_arch" in
     arm64|aarch64) emulator_arch="aarch64" ;;
     x86_64|amd64)  emulator_arch="x86_64" ;;
-    *) fatal "unsupported CPU $(uname -m)" ;;
+    *) fatal "unsupported Docker CPU ${emulator_arch}" ;;
   esac
   docker build -t "$EMULATOR_IMAGE" --build-arg "EMULATOR_ARCH=${emulator_arch}" \
     "${REPO_ROOT}/test/aws-emulator"
@@ -59,6 +62,10 @@ start_emulator() {
     build_emulator_image
   fi
   mkdir -p "$EMULATOR_STATE_DIR"
+  # A run under sudo leaves the directory root-owned (Docker creates missing
+  # mount sources as root); the emulator then fails with "Permission denied".
+  [[ -w "$EMULATOR_STATE_DIR" ]] \
+    || fatal "${EMULATOR_STATE_DIR} is not writable (owner: $(stat -c %U "$EMULATOR_STATE_DIR" 2>/dev/null || echo unknown)); run: sudo chown -R $(id -un) ${HOME}/.aws"
   local user_args=()
   if [[ "$(uname -s)" == "Linux" ]]; then
     user_args=(--user "$(id -u):$(id -g)")
@@ -105,6 +112,8 @@ EOF
 
 # Start if needed, prove requests reach the emulator, run the AWS tests.
 run_emulator_tests() {
+  command -v aws >/dev/null \
+    || fatal "aws CLI not found; it proves requests reach the emulator, not real AWS (install awscli)"
   local started_here=0
   if ! emulator_is_healthy; then
     start_emulator
