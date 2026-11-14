@@ -52,7 +52,10 @@ func (localUserAuthenticator *LocalUserRecordAuthenticator) Authenticate(request
 	if getError != nil {
 		return nil, fmt.Errorf("user token: read user %q: %w", userName, getError)
 	}
-	if result.UserRecordRevision == 0 || result.UserRecordRevision != userFact.Revision {
+	if result.UserRecordRevision == 0 {
+		return nil, fmt.Errorf("user token: missing revision claim for user %q", userName)
+	}
+	if result.UserRecordRevision != userFact.Revision {
 		return nil, fmt.Errorf("user token: minted for an earlier version of user %q", userName)
 	}
 	return result, nil

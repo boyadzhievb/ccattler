@@ -378,7 +378,7 @@ Priority: right after M210 (user decision 2026-11-12). Unit tests, reviews and t
 | A2 | `scale` has no upper bound: `scale a-web 100000` was accepted and 436 instances were created before the tester scaled back | code (`api/server.go:869`) + transcript | **M217** |
 | A3 | `scale` on an undeclared service creates orphan instances with no service, VIP or endpoints (`scale nosuch 2`, 30× `a-loop-*`) | code (no existence check) + transcript | **M217** |
 | — | `/api/scale` ignores store write errors and still answers `ok: true` (`api/server.go:881-886`, found while verifying A2) | code | **M217** |
-| B-F7 | Reader's `cca audit` returned "No audit entries found" while admin sees entries | `resolveAuditTenantFilter` in `handleAudit` | **by design**: audit entries are filtered to the caller's tenant (frontend had none); first recorded as an over-broad read and rejected in M216 |
+| B-F7 | Reader's `cca audit` returned "No audit entries found" while admin sees entries | `resolveAuditTenantFilter` in `handleAudit` | **fixed in M216**: filter leaked (teamless non-admin/non-platform readers got no filter, saw everything; substring match `pay` hit `payments`); now fail-closed 403 for teamless readers, exact-segment tenant match (`resolveAuditTenantFilter`, `auditEntryInTenant`) |
 | A4 / A5 / A7 | Service names with `/` overwrite another service's fields (`checkout/owner` → `desired/service/checkout/owner`, `ledger/instances`); owner taken from the first name segment unchecked; names with uppercase, `:`, `.`, unicode, 254 chars accepted | diff output in transcript; code (M179 round 2/3 SA HIGH-1) | **M179 step 1** (name validation, owner checks) — confirmed live |
 | A6 | A job named like an existing service passes lint/diff with no warning; `describe job` is not a resource type | transcript | **M211** (cross-kind names), **M212** (job visibility) |
 | — | Stateful `ledger` (`stateful` in the config) got random instance IDs, not `ledger-0/1`; `describe` shows no stateful marker | admin `describe service ledger` | investigate first in **M211** (its premise is the `{name}-{n}` collision) |
@@ -407,9 +407,20 @@ Found in M214 run 1 (2026-11-12). Priority: first after M214's setup, before M21
 - [x] `/api/gc` requires `cluster.admin` (it deletes facts); `api/TestGCRequiresClusterAdmin`; the sweep below failed first on it
 - [x] `/api/audit` stays `workload.read` with its tenant filter (requiring `cluster.admin` was tried and reverted: the filter is the intended design), but the filter **leaked** (M216 security review, verified): a reader without a team and not platform got no filter and saw every entry, and the team match was a substring (`pay` matched `paynter`, `payments`). Fixed: such readers get 403, cluster admins and platform principals see all, tenant match is by whole path segment (`resolveAuditTenantFilter`, `auditEntryInTenant`); `api/TestAuditTenantFilterFailsClosedAndMatchesWholeSegments` failed first on both leaks. Note: `Server.SetTenantAuditView` / `tenantAuditView` have no production caller (dead code) — remove in M218
 - [ ] Open (security review): open watch, events and audit-follow streams keep running after their user is deleted or the token expires (authentication is checked once when the stream opens)
-- [ ] Document config-owned group memberships (user decision 2026-11-12): user delete does not remove `auth/group/*/member/{name}`; re-creating the name reattaches configured groups; covered by `integration/TestUserLifecycleWithConfigOwnedGroupMembership`
+- [x] Document config-owned group memberships (user decision 2026-11-12): user delete does not remove `auth/group/*/member/{name}`; re-creating the name reattaches configured groups; covered by `integration/TestUserLifecycleWithConfigOwnedGroupMembership`. Documented in `design/security-model.md` "Auth Groups and User Deletion (M216)"
 - [x] Sweep `api/TestReadOnlyPrincipalCannotWriteThroughAnyRoute`: every route registered in `api/server.go` gets POST/PUT/DELETE as a built-in `api-reader`; any 2xx fails, except a reviewed allowlist (`/healthz`, `/metrics`: read-only for any method). Found only `/api/gc`
-- [ ] Independent review (`code-reviewer` + `security-audit`) of the M216 diff; findings recorded here
+- [x] Independent review (`code-reviewer` + `security-audit`) of the M216 diff (ea93889..HEAD); findings below
+
+| # | Source | Finding | Verified at | Resolution |
+|---|---|---|---|---|
+| CR-S1 | code-reviewer | `resolveAuditTenantFilter` returns `("", true)` for empty principal name — fail-open for an unreachable case | `api/server.go:1399` | **fixed**: empty name now returns `("", false)` |
+| SA-H1 | security-audit | TOCTOU race in user deletion: grants added between scan and transaction survive as orphans | `api/server.go:2101` collectUserDeleteOperations | **accepted**: orphaned grants are harmless — `LocalUserRecordAuthenticator` refuses tokens for deleted users; only cluster.admin can grant roles, making this an admin-vs-admin race in a millisecond window |
+| SA-H2 | security-audit | Pre-M216 tokens (no `cca_user_rev` claim) rejected immediately on upgrade | `security/authn_local_user.go:55` | **accepted**: intentional breaking change (beta); users re-authenticate after upgrade; document in release notes |
+| SA-M1 | security-audit | SSE streams (watch/events/audit-follow) survive user deletion | `api/server.go:1340` | **already tracked** (open item above, line 409) |
+| SA-M3 | security-audit | Error message says "earlier version" for tokens missing the revision claim | `security/authn_local_user.go:55` | **fixed**: split into "missing revision claim" vs "minted for an earlier version" |
+| SA-L1 | security-audit | Dead code `SetTenantAuditView` / `tenantAuditView` | `api/server.go` | **already tracked** for M218 removal |
+| CR-Style | code-reviewer | Missing struct field comments on test harness | — | **rejected**: all test struct fields already have inline comments |
+
 - [ ] Deploy-cluster check: delete a user with a live token → next request 401; re-create the name → old token still refused
 
 ### Phase 217 — Scale API Safety (M217)

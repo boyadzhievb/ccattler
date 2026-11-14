@@ -204,6 +204,44 @@ grants survive restarts.
 
 Implementation: `api/handler_role.go` (API), `cmd/cca/command_role.go` (CLI)
 
+### Auth Groups and User Deletion (M216)
+
+Auth groups are declared in `.cca` configuration files and compiled into
+`auth/group/{name}/member/{user}` facts. The auth controller resolves group
+grants: a grant to `group developers` applies to every member listed in the
+group.
+
+```
+group developers {
+    member alice
+    member bob
+}
+
+auth {
+    grant workload.read, workload.create to group developers scope team/web
+}
+```
+
+**Group memberships are configuration-owned.** Deleting a user (`cca user
+delete alice`) removes the user record, all grants under
+`auth/grant/user/alice/`, and the inline role `auth/role/inline-user-alice/`
+in a single transaction. It does **not** remove `auth/group/*/member/alice`
+facts because those belong to the applied configuration, not the user
+record. The deleted user's tokens are refused immediately (the token
+authenticator checks the user record exists and was created no later than
+the token's `iat`).
+
+Re-creating a user with the same name (`cca user create alice`) reattaches
+the configured group memberships — the new user inherits whatever rights the
+configuration grants to that name. **Do not reuse user names** unless the
+intent is to grant the same group rights. To remove a name from a group,
+update the `.cca` configuration and re-apply.
+
+Implementation: `api/server.go` (`collectUserDeleteOperations`),
+`security/authn_local_user.go` (`LocalUserRecordAuthenticator`),
+`lang/compiler.go` (`compileGroupDeclaration`). Covered by
+`integration/TestUserLifecycleWithConfigOwnedGroupMembership`.
+
 ### ABAC: Attribute-Based Conditions
 
 ABAC adds context-sensitive rules on top of capability grants:

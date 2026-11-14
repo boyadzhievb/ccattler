@@ -1396,7 +1396,10 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 // admins) and false when anyone else has no team: nothing (M216, fail closed).
 func (apiServer *Server) resolveAuditTenantFilter(request *http.Request) (string, bool) {
 	requestPrincipal := security.PrincipalStructFromContext(request.Context())
-	if requestPrincipal.Name == "" || tenant.IsPlatformPrincipal(requestPrincipal) {
+	if requestPrincipal.Name == "" {
+		return "", false
+	}
+	if tenant.IsPlatformPrincipal(requestPrincipal) {
 		return "", true
 	}
 	if apiServer.apiAuthorizer.AuthorizeAPI(requestPrincipal, security.CapabilityClusterAdmin, security.ScopeCluster, nil) == nil {
