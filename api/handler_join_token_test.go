@@ -64,6 +64,76 @@ func TestJoinTokenRoutesRequireClusterAdmin(t *testing.T) {
 	assertJoinTokenAudited(t, auditLog, "user:admin", created.Token)
 }
 
+// newJoinTokenTestServer returns a server with enrollment, an admin and an
+// api-writer, and the store and audit log behind it.
+func newJoinTokenTestServer(t *testing.T) (*Server, store.StateStore, *security.InMemoryAuditLog) {
+	t.Helper()
+	factStore := store.NewMemoryStore()
+	t.Cleanup(func() { _ = factStore.Close() })
+	certificateAuthority, caError := security.NewCertificateAuthority(24 * time.Hour)
+	if caError != nil {
+		t.Fatal(caError)
+	}
+	apiServer := NewServer(factStore)
+	apiServer.SetEnrollmentService(security.NewEnrollmentService(factStore, certificateAuthority, nil, time.Hour))
+	apiAuthorizer := security.NewAPIAuthorizer()
+	apiAuthorizer.Grant("user:admin", security.CapabilityClusterAdmin, security.ScopeCluster)
+	apiAuthorizer.GrantRole("user:writer", "api-writer")
+	auditLog := security.NewInMemoryAuditLog(joinTokenTestAuditCapacity)
+	apiAuthorizer.SetAuditLogger(auditLog)
+	apiServer.SetAPIAuthorizer(apiAuthorizer)
+	return apiServer, factStore, auditLog
+}
+
+// TestJoinTokenListAndRevokeThroughAPI: a list shows ids, never values; a
+// revoke takes the printed composite form, removes the record and is audited;
+// a second revoke is 404; the writer is refused on every method.
+func TestJoinTokenListAndRevokeThroughAPI(t *testing.T) {
+	apiServer, factStore, auditLog := newJoinTokenTestServer(t)
+	createResponse := serveAsUser(apiServer, "admin", http.MethodPost, JoinTokenPath, `{"ttl":"15m"}`)
+	var created JoinTokenCreateResponse
+	if decodeError := json.Unmarshal(createResponse.Body.Bytes(), &created); decodeError != nil || created.Token == "" {
+		t.Fatalf("create: HTTP %d %s", createResponse.Code, createResponse.Body.String())
+	}
+	tokenValue, _, _ := strings.Cut(created.Token, ".")
+
+	for _, method := range []string{http.MethodGet, http.MethodDelete} {
+		if writerResponse := serveAsUser(apiServer, "writer", method, JoinTokenPath, `{"token":"`+created.Token+`"}`); writerResponse.Code != http.StatusForbidden {
+			t.Errorf("api-writer %s: HTTP %d, want 403", method, writerResponse.Code)
+		}
+	}
+
+	listResponse := serveAsUser(apiServer, "admin", http.MethodGet, JoinTokenPath, "")
+	var listed []JoinTokenListEntry
+	if decodeError := json.Unmarshal(listResponse.Body.Bytes(), &listed); decodeError != nil || len(listed) != 1 {
+		t.Fatalf("list: HTTP %d %s, want one entry", listResponse.Code, listResponse.Body.String())
+	}
+	if listed[0].ID != tokenValue[:joinTokenDisplayPrefixLength] || strings.Contains(listResponse.Body.String(), tokenValue) {
+		t.Errorf("list entry %+v must name the 8-char id and never the value", listed[0])
+	}
+
+	revokeResponse := serveAsUser(apiServer, "admin", http.MethodDelete, JoinTokenPath, `{"token":"`+created.Token+`"}`)
+	if revokeResponse.Code != http.StatusOK {
+		t.Fatalf("revoke with the composite token: HTTP %d %s", revokeResponse.Code, revokeResponse.Body.String())
+	}
+	if tokenRecords, _ := factStore.Scan(context.Background(), security.JoinTokenPrefix); len(tokenRecords) != 0 {
+		t.Errorf("revoke left %d join token records", len(tokenRecords))
+	}
+	if againResponse := serveAsUser(apiServer, "admin", http.MethodDelete, JoinTokenPath, `{"token":"`+tokenValue+`"}`); againResponse.Code != http.StatusNotFound {
+		t.Errorf("revoking an unknown token: HTTP %d, want 404", againResponse.Code)
+	}
+	revokeAudited := false
+	for _, entry := range auditLog.Entries() {
+		revokeAudited = revokeAudited || (entry.Action == joinTokenAuditAction+"revoke" && entry.Target == tokenValue[:joinTokenDisplayPrefixLength])
+		if encodedEntry, _ := json.Marshal(entry); bytes.Contains(encodedEntry, []byte(tokenValue)) {
+			t.Errorf("audit entry contains the token value: %s", encodedEntry)
+		}
+	}
+	if !revokeAudited {
+		t.Errorf("no join-token.revoke audit entry naming the token id in %+v", auditLog.Entries())
+	}
+}
+
 // assertJoinTokenAudited checks for an allowed join-token entry by principal
 // that never contains the secret part of the token.
 func assertJoinTokenAudited(t *testing.T, auditLog *security.InMemoryAuditLog, principal string, tokenValue string) {

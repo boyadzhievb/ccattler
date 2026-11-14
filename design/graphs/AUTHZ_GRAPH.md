@@ -243,6 +243,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/api/node/secrets` | POST | mTLS `node:` principal; placement and grants checked (Flow 27) | node | agent `secret_delivery_client` |
 | `/api/node/gate-keys` | POST | mTLS `node:` principal reporting `gate_proxy = enabled` (Flow 28) | node | agent `gate_key_syncer` |
 | `/api/gate-key` | PUT | `secret.write` | cluster | `cca apply` inline gate key (`gate_key_writer`) |
+| `/api/node/join-token` | POST, GET, DELETE | `cluster.admin`; audited `join-token.{create,list,revoke}` with the 8-char id, never the value | cluster | `cca token create/list/revoke` (direct etcd until 5.2) |
 | `/api/node/debug/` | per endpoint | `node.read` (containers, images, stats), `workload.read` (logs), `workload.exec` (exec), `node.manage` (images/pull) | cluster | `cca node-inspect`, `cca logs`, `cca exec`, `cca images` |
 | `/api/user` | GET, POST, DELETE | `cluster.admin` | cluster | `cca user list/create/delete` |
 | `/api/user/token` | POST | `cluster.admin` | cluster | `cca user token` |

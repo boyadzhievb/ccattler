@@ -66,6 +66,18 @@ func (apiAuthorizer *APIAuthorizer) SetAuditLogger(auditLog AuditLogger) {
 	apiAuthorizer.auditLog = auditLog
 }
 
+// RecordAuditEntry writes an entry to the audit logger, if one is set. API
+// handlers use it for operations whose authorization check alone is not
+// enough of a record (e.g. join tokens, M219).
+func (apiAuthorizer *APIAuthorizer) RecordAuditEntry(entry AuditEntry) {
+	apiAuthorizer.mutex.RLock()
+	auditLog := apiAuthorizer.auditLog
+	apiAuthorizer.mutex.RUnlock()
+	if auditLog != nil {
+		auditLog.Log(entry)
+	}
+}
+
 // ReplaceGrants atomically replaces all store-derived grants with the provided
 // map. This supports the auth reconciliation controller rebuilding state from
 // store facts without leaving a window where grants are partially cleared.

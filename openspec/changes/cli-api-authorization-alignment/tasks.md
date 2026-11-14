@@ -44,7 +44,7 @@ M219. Every group lands its own tests and docs. Failing tests are recorded (comm
 
 ## 5. Join tokens and local-only commands
 
-- [ ] 5.1 `POST/GET/DELETE /api/node/join-token` (`cluster.admin`, audited by token id, value returned only on create). 0.5 passes
+- [x] 5.1 `POST/GET/DELETE /api/node/join-token` (`cluster.admin`, audited by token id, value returned only on create). 0.5 passes — 2026-11-14: `api/handler_join_token.go` on the existing `EnrollmentService`. POST `{node_id, ttl}` → `{token, node_id, expires_at}` (composite `value.fingerprint`, the only time the value leaves the server); GET → `[{id, node_id, expires_at}]` (8-char id); DELETE `{token}` in the body, composite form accepted, unknown → 404 (`store.ErrKeyNotFound`). Audit `join-token.{create,list,revoke}` with the id as target via new `APIAuthorizer.RecordAuditEntry`. Tests: `TestJoinTokenRoutesRequireClusterAdmin` (0.5) and new `TestJoinTokenListAndRevokeThroughAPI` (list never returns values, revoke + audit, second revoke 404, api-writer 403 on GET/DELETE) pass; route sweeps pass with the new route; `AUTHZ_GRAPH.md` row added (needed by `TestDocCrossCheckAuthzRouteTable`, so that part of 5.4 is done). `golangci-lint` default + `cloudprovider` tags: 0 issues (one gosec G101 false positive on the path constant, `nolint` with reason). `go test -race -short ./...` (CI command, `/etc/ccattler` hidden): only 0.6 still fails
 - [ ] 5.2 `cca token create/list/revoke` call the API; the Ansible worker task keeps working unchanged. Unit test in `cmd/cca` with a fake API server
 - [ ] 5.3 Root key commands check for endpoints file and root key path first. 0.6 passes
 - [ ] 5.4 Adversarial replay case `writer-cannot-create-join-token`; `AUTHZ_GRAPH.md` rows for the new routes

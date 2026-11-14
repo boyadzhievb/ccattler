@@ -388,6 +388,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc(NodeSecretDeliveryPath, apiServer.instrumentedHandler("node-secrets", apiServer.handleNodeSecretDelivery))
 	apiServer.mux.HandleFunc(NodeGateKeyDeliveryPath, apiServer.instrumentedHandler("node-gate-keys", apiServer.handleNodeGateKeyDelivery))
 	apiServer.mux.HandleFunc(GateKeyPath, apiServer.instrumentedHandler("gate-key", apiServer.handleGateKey))
+	apiServer.mux.HandleFunc(JoinTokenPath, apiServer.instrumentedHandler("join-token", apiServer.handleJoinToken))
 	apiServer.mux.HandleFunc(nodeDebugPathPrefix, apiServer.handleNodeDebugProxy)
 	apiServer.mux.HandleFunc("/api/user", apiServer.instrumentedHandler("user", apiServer.handleUser))
 	apiServer.mux.HandleFunc("/api/user/token", apiServer.instrumentedHandler("user-token", apiServer.handleUserToken))

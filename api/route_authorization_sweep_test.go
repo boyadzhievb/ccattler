@@ -54,6 +54,7 @@ var routeConstants = map[string]string{
 	"NodeSecretDeliveryPath":  NodeSecretDeliveryPath,
 	"NodeGateKeyDeliveryPath": NodeGateKeyDeliveryPath,
 	"GateKeyPath":             GateKeyPath,
+	"JoinTokenPath":           JoinTokenPath,
 	"nodeDebugPathPrefix":     nodeDebugPathPrefix,
 }
 
