@@ -49,12 +49,14 @@ Optimize the architecture first, the algorithms second, Go code third, and assem
 
 ### Authorization Architecture
 
+- **Unix model: groups + direct capabilities.** No role hierarchies — roles are optional aliases for capability bundles, not a separate authorization layer.
 - **Principals**: `User`, `ServiceIdentity` (includes `NodeIdentity`). Groups are auth-provided attributes.
 - **Permissions**: Capability-based (`workload.read`, `secret.use`), not K8s API verbs.
 - **Scopes**: Hierarchical paths (`cluster`, `team/payments`, `node/node01`).
 - **Two-layer**: Store-layer prefix RBAC (internal), API-layer capability auth (users).
 - **Deny-by-default, fail-closed.** No bypass path, even without `--tls`.
-- **Do NOT implement** K8s Role/ClusterRole/RoleBinding pattern.
+- **Do NOT implement** K8s Role/ClusterRole/RoleBinding pattern or any hierarchical role model.
+- **Prefer direct capability grants** (`--capability workload.read`) over role aliases (`--role api-reader`). Roles are convenience shortcuts, not the primary mechanism.
 
 ---
 

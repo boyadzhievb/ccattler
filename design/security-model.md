@@ -181,26 +181,74 @@ auth {
 Implementation: `security/api_authorizer.go` evaluates
 `AuthorizeAPI(principal, capability, scope, resourceContext) → ALLOW | DENY`.
 
-### Runtime Role Management CLI (M156)
+### Design Direction: Unix-Style Groups, Not Hierarchical Roles (2026-11-14)
 
-Roles and capabilities can be managed at runtime via `cca role`:
+CCattler follows the Unix authorization model: **groups + direct capabilities**.
+Named roles (`api-reader`, `api-writer`, `cluster-admin`) exist only as
+convenience aliases for common capability bundles. They are not a hierarchy,
+cannot inherit from each other, and are not required.
+
+**Why not roles?** Role hierarchies (as in Active Directory, AWS IAM, or
+Kubernetes RBAC with Role/ClusterRole/RoleBinding/ClusterRoleBinding) add
+indirection that obscures who can do what. Unix survived decades with
+user + group + permission, and that model scales to thousands of users.
+The complexity of role hierarchies serves vendors selling identity management
+products, not operators running systems.
+
+**The CCattler way:**
+
+```
+# Groups define WHO (identity, team membership)
+group deployers { member alice; member bob }
+group observers { member carol }
+group secret-ops { member dave }
+
+# Direct capability grants define WHAT each group can do
+auth {
+    grant workload.create, workload.update to group deployers scope cluster
+    grant workload.read, node.read to group observers scope cluster
+    grant secret.read, secret.write to group secret-ops scope cluster
+}
+```
+
+This is equivalent to three Unix groups with fine-grained capabilities instead
+of rwx. No roles needed. `cca role grant group:deployers --capability
+workload.create` works at runtime too.
+
+**Builtin role aliases** (`api-reader`, `api-writer`, `cluster-admin`) expand
+to fixed capability sets at grant time. They are shortcuts, not a separate
+authorization layer. `cca role grant user:alice --role api-reader` is exactly
+equivalent to granting `workload.read`, `node.read`, `placement.read`,
+`scaling.read`, `secret.metadata.read` individually.
+
+### Runtime Grant Management CLI (M156)
+
+Capabilities can be granted to users and groups at runtime:
 
 ```bash
-cca role grant user:alice --role api-reader
+# Direct capability grants (preferred)
 cca role grant user:bob --capability workload.read --scope team/payments
-cca role revoke user:alice --role api-reader
+cca role grant group:deployers --capability workload.create
+
+# Role aliases (convenience shortcuts)
+cca role grant user:alice --role api-reader
+
+# Inspection
 cca role list
 cca role list user:bob
 cca role check user:bob --capability workload.read --scope team/payments
+
+# Revocation
+cca role revoke user:alice --role api-reader
 ```
 
 Grants are persisted as `auth/grant/` and `auth/role/` facts in the store.
 The auth controller watches these keys and rebuilds the in-memory authorizer
 on each reconciliation cycle — no server restart required.
 
-The built-in `cluster-admin` role is auto-bootstrapped to `user:local-admin`
-and the server's own mTLS principal at startup, persisted to the store so
-grants survive restarts.
+The built-in `cluster-admin` capability set is auto-bootstrapped to
+`user:local-admin` and the server's own mTLS principal at startup, persisted
+to the store so grants survive restarts.
 
 Implementation: `api/handler_role.go` (API), `cmd/cca/command_role.go` (CLI)
 
