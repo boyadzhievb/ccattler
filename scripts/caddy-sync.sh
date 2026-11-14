@@ -48,11 +48,10 @@ query_api() {
 # build_caddyfile reads route facts and resolved backends from the CCattler API,
 # then writes a Caddyfile with one site block per route.
 build_caddyfile() {
-    local route_facts derived_facts status_json
+    local route_facts derived_facts
 
     route_facts=$(query_api "/api/state?prefix=desired/route/") || { log "ERROR: failed to query route facts"; return 1; }
     derived_facts=$(query_api "/api/state?prefix=derived/route/") || { log "ERROR: failed to query derived routes"; return 1; }
-    status_json=$(query_api "/status") || { log "ERROR: failed to query status"; return 1; }
 
     local route_names
     route_names=$(echo "$route_facts" | jq -r '.[].key' | sed 's|desired/route/||' | cut -d/ -f1 | sort -u)

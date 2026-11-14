@@ -1,7 +1,7 @@
 ---
 name: lead-developer
 description: Primary programming agent — implements features, writes tests, updates phases for CCattler
-model: opus
+model: sonnet
 tools:
   - Bash
   - Read

@@ -300,7 +300,7 @@ func TestStaleReplicaRefusesKEKCreationAfterRootRotation(t *testing.T) {
 }
 
 // TestInspectRootKeyFilesInvalidWithWrongKey verifies a key file that opens
-// nothing is reported as invalid (also the KMS case: no key file opens).
+// nothing is reported as invalid (also the cloud root key case: no key file opens).
 func TestInspectRootKeyFilesInvalidWithWrongKey(t *testing.T) {
 	cluster := newRootKeyTestCluster(t)
 	wrongKeyPath := filepath.Join(t.TempDir(), "wrong.key")

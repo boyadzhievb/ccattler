@@ -193,7 +193,7 @@ fi
 
 log "Verifying cluster health..."
 $ETCD endpoint health >/dev/null 2>&1 || { echo "FATAL: etcd unreachable at ${CTRL_IP}:2379"; exit 1; }
-curl -sf "${API}/status" >/dev/null 2>&1 || { echo "FATAL: cca server unreachable at ${API}"; exit 1; }
+curl -sf "${API}/api/status" >/dev/null 2>&1 || { echo "FATAL: cca server unreachable at ${API}"; exit 1; }
 log "Cluster healthy. Running 12 placement & tenant scenarios."
 echo ""
 

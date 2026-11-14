@@ -156,7 +156,7 @@ fi
 # Check 5: node registration — all 4 nodes alive
 # ============================================================
 log "Check 5: node registration"
-STATUS_JSON=$(api_curl "${CTRL1_IP}" "/status" 2>/dev/null || echo "{}")
+STATUS_JSON=$(api_curl "${CTRL1_IP}" "/api/status" 2>/dev/null || echo "{}")
 ALIVE_NODES=$(echo "$STATUS_JSON" | python3 -c "
 import sys, json
 try:
@@ -187,7 +187,7 @@ log "  Waiting for workload convergence (90s max)..."
 workload_converged() {
     local status_json running_count
     for check_ip in "${CTRL_IPS[@]}"; do
-        status_json=$(api_curl "$check_ip" "/status" 2>/dev/null) && break
+        status_json=$(api_curl "$check_ip" "/api/status" 2>/dev/null) && break
     done
     running_count=$(echo "$status_json" | python3 -c "
 import sys, json
@@ -212,7 +212,7 @@ fi
 # Check 7: VIP routing — curl whoami VIP from each node
 # ============================================================
 log "Check 7: VIP routing"
-WHOAMI_VIP=$(api_curl "${CTRL1_IP}" "/status" 2>/dev/null | python3 -c "
+WHOAMI_VIP=$(api_curl "${CTRL1_IP}" "/api/status" 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)

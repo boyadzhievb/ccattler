@@ -51,7 +51,7 @@ Never:
 secret(database.password, "super-secret-password")   — WRONG
 ```
 
-Actual secret values live in the encrypted secret subsystem (envelope encryption with KMS). The scheduler and network controller never see plaintext secrets.
+Actual secret values live in the encrypted secret subsystem (envelope encryption under the secret root key). The scheduler and network controller never see plaintext secrets.
 
 **File-mounted secrets are preferred over environment variables:**
 - Avoids exposing secrets through environment inspection
@@ -177,7 +177,7 @@ Non-goals: protecting secrets from a compromised control plane (it holds the key
 ### Key hierarchy
 
 ```
-root key (fresh, control-plane only: /etc/ccattler/secret-root.key, or a KMS key)
+root key (fresh, control-plane only: /etc/ccattler/secret-root.key, or a cloud key in AWS KMS / GCP Cloud KMS)
   └── wraps KEK versions, stored in etcd: keyring/kek/{version}
         └── wraps a per-secret DEK, stored in the envelope (v2)
               └── encrypts the secret value (AES-256-GCM, AAD = store key)
@@ -186,7 +186,7 @@ legacy key (old secret-master.key, control-plane only, migration only)
   └── opens v1 envelopes; wraps nothing new
 ```
 
-- **Root key (R1):** a fresh, cryptographically random 32-byte key generated on the control plane, independent of the CA key and of the legacy key. File `/etc/ccattler/secret-root.key`, mode `0400`, owned by root. Ansible's control-plane role provisions the same file to every HA replica through the same trusted path as the CA material. It is never sent to agents. With `--kms-provider`, the root key is a KMS key and never touches disk.
+- **Root key (R1):** a fresh, cryptographically random 32-byte key generated on the control plane, independent of the CA key and of the legacy key. File `/etc/ccattler/secret-root.key`, mode `0400`, owned by root. Ansible's control-plane role provisions the same file to every HA replica through the same trusted path as the CA material. It is never sent to agents. With `--root-key-provider aws-kms|gcp-kms`, the root key is a cloud key (AWS KMS or GCP Cloud KMS) and never touches disk.
 - **Legacy key (R1):** the existing `secret-master.key` is copied to every worker today, and agents can still read etcd until M181, so it must never protect anything new. On the control plane it is loaded only to open v1 envelopes; it never wraps a KEK, a DEK of a v2 envelope or `keyring/root_check`. It is deleted from the control plane once the migration reports `legacy_v1_envelope_count = 0` (see "Migration").
 - **Startup checks:** a missing, unreadable, wrongly sized or group/world-readable root key file is a startup error (no silent generation). Each replica opens `keyring/root_check` (a fixed value sealed with the root key, written when the keyring is created); failing to open it is a startup error, so a replica with a different root key never serves. A root key byte-identical to the legacy key is a startup error.
 - **Limitation:** whoever copied the legacy key and v1 ciphertext before migration can still decrypt those historical copies. Migration makes the legacy key useless against the current store; it cannot revoke what was already exfiltrated.
@@ -247,7 +247,7 @@ Rules:
 | When KEK rotation is allowed | Only with `keyring/legacy` = `none` or `retired`, so it never overlaps the v1 migration. |
 | Who does it | A new `keyring-rotation` controller with its own write domain; `keyring-migration` is unchanged. |
 | KEK version states | `pending → active → draining → retiring → deleted`. `draining` = replaced but still named by envelopes. |
-| Root key rotation | Offline: every API replica stopped, one transaction, `cca secret rotate-root-key`. Compared with Kubernetes (staged, unchecked), Consul (staged, verified), Vault and AWS KMS (key never leaves a KMS/HSM): the file root key is the only mode in use (the KMS providers need the `cloudprovider` build and are untested), and offline has the fewest states. `root_check` makes a wrong key file stop a replica instead of corrupting data. |
+| Root key rotation | Offline: every API replica stopped, one transaction, `cca secret rotate-root-key`. Compared with Kubernetes (staged, unchecked), Consul (staged, verified), Vault and AWS KMS (key never leaves a KMS/HSM): the file root key is the only mode in use (the AWS KMS and GCP Cloud KMS providers need the `cloudprovider` build and are untested), and offline has the fewest states. `root_check` makes a wrong key file stop a replica instead of corrupting data. |
 | Automation | One playbook (`rotate-root-key.yml`): snapshot, stop one by one, rotate, copy, start one by one, clean up. It aborts and restarts on the old key on any failure before the transaction. The logic and refusals are in `cca`, not in the playbook. |
 | Staged online root key rotation | Not built. Reconsider only if the ~1 minute API pause matters. |
 | Old etcd snapshots | After a root key rotation they open only with the old root key (`secret-root.key.old`). The playbook takes a fresh snapshot and deletes `.old` once every replica runs on the new key, unless `keep_old_root_key=true` keeps it with those snapshots. |

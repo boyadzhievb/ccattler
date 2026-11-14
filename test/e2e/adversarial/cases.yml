@@ -67,12 +67,25 @@
       must_contain: ["forbidden"]
 
 - name: audit-reader-own-tenant
-  description: "M216: a reader with a team sees only their tenant's entries"
+  description: "M216: a reader with a team sees its own tenant's entries and not another team's"
   identity: adv-reader
+  # Each read is audited with the key as target; the tenant filter matches
+  # the team name as a key segment.
+  marker_reads:
+    - as: adv-writer
+      key: "desired/service/payments/adv-marker-@RUN@"
+    - as: adv-reader
+      key: "desired/service/frontend/adv-marker-@RUN@"
   steps:
-    - command: "audit"
+    - command: "audit --limit 500"
       expect_exit: 0
-      must_not_contain: ["payments"]
+      must_contain: ["frontend/adv-marker-@RUN@"]
+      must_not_contain: ["payments/adv-marker-@RUN@"]
+    # The hidden entry exists: the refusal above is not vacuous.
+    - command: "audit --limit 500"
+      as: adv-admin
+      expect_exit: 0
+      must_contain: ["payments/adv-marker-@RUN@"]
 
 # --- M217: scale bounds (expected failures until M217 is implemented) ---
 

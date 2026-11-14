@@ -18,10 +18,10 @@ import (
 )
 
 func init() {
-	RegisterKMSKeyProviderFactory("aws-kms", func(ctx context.Context, keyID string, region string) (KeyProvider, error) {
+	RegisterCloudKeyProviderFactory("aws-kms", func(ctx context.Context, keyID string, region string) (KeyProvider, error) {
 		return NewAWSKMSKeyProvider(ctx, keyID, region)
 	})
-	RegisterKMSKeyProviderFactory("gcp-kms", func(ctx context.Context, keyID string, _ string) (KeyProvider, error) {
+	RegisterCloudKeyProviderFactory("gcp-kms", func(ctx context.Context, keyID string, _ string) (KeyProvider, error) {
 		return NewGCPKMSKeyProvider(ctx, keyID)
 	})
 }

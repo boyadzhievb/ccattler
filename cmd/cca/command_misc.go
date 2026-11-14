@@ -901,8 +901,8 @@ _cca_completions() {
                 --store) COMPREPLY=($(compgen -W "memory etcd" -- "$current_word")) ;;
                 --listen|--endpoints|--store-prefix) ;;
                 --cert|--key|--ca|--secret-root-key) COMPREPLY=($(compgen -f -- "$current_word")) ;;
-                --kms-provider|--kms-key-id|--keyring-retire-grace) ;;
-                *) COMPREPLY=($(compgen -W "--listen --tls --cert --key --ca --store --endpoints --store-prefix --dns --dns-listen --secret-root-key --kms-provider --kms-key-id --keyring-retire-grace" -- "$current_word")) ;;
+                --root-key-provider|--root-key-id|--keyring-retire-grace) ;;
+                *) COMPREPLY=($(compgen -W "--listen --tls --cert --key --ca --store --endpoints --store-prefix --dns --dns-listen --secret-root-key --root-key-provider --root-key-id --keyring-retire-grace" -- "$current_word")) ;;
             esac
             ;;
         agent)
@@ -1068,8 +1068,8 @@ func buildZshCompletionScript() string {
 	builder.WriteString("                '--dns[enable DNS server]' \\\n")
 	builder.WriteString("                '--dns-listen[DNS listen address]:address:' \\\n")
 	builder.WriteString("                '--secret-root-key[secret root key file]:file:_files' \\\n")
-	builder.WriteString("                '--kms-provider[KMS provider for the secret root key]:provider:' \\\n")
-	builder.WriteString("                '--kms-key-id[KMS key used as the secret root key]:key:' \\\n")
+	builder.WriteString("                '--root-key-provider[cloud key service for the secret root key (aws-kms, gcp-kms)]:provider:' \\\n")
+	builder.WriteString("                '--root-key-id[cloud key used as the secret root key]:key:' \\\n")
 	builder.WriteString("                '--keyring-retire-grace[keep retiring KEK versions this long (default 168h)]:duration:'\n")
 	builder.WriteString("            ;;\n")
 	builder.WriteString("        agent)\n")

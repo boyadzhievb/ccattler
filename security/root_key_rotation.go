@@ -60,7 +60,7 @@ const (
 	RootKeyStageStaged RootKeyRotationStage = "staged"
 	// RootKeyStageCommitted: the keyring is under .next; the file swap is pending.
 	RootKeyStageCommitted RootKeyRotationStage = "committed"
-	// RootKeyStageInvalid: no file opens the keyring (wrong files or KMS mode).
+	// RootKeyStageInvalid: no file opens the keyring (wrong files or a cloud root key).
 	RootKeyStageInvalid RootKeyRotationStage = "invalid"
 )
 
@@ -198,7 +198,7 @@ func FinishRootKeyRotation(ctx context.Context, factStore store.StateStore, root
 	case RootKeyStageStaged:
 		return "", errors.New("the keyring is not re-wrapped yet: run cca secret rotate-root-key --commit on the first host")
 	default:
-		return "", fmt.Errorf("neither %s nor %s%s opens keyring/root_check: wrong key files (or the cluster uses --kms-provider)", rootKeyPath, rootKeyPath, RootKeyNextSuffix)
+		return "", fmt.Errorf("neither %s nor %s%s opens keyring/root_check: wrong key files (or the cluster uses --root-key-provider)", rootKeyPath, rootKeyPath, RootKeyNextSuffix)
 	}
 }
 

@@ -172,7 +172,7 @@ While the HA set occupies the host (since 2026-11-11), `e2e.yml`, `e2e-extended.
 
 ## Root key rotation (runbook, M178)
 
-Flow 30 part B. Offline: the API is down for about a minute; agents and running containers are not touched. File root key only (a KMS root key is refused).
+Flow 30 part B. Offline: the API is down for about a minute; agents and running containers are not touched. File root key only (a cloud root key — AWS KMS or GCP Cloud KMS — is refused).
 
 ```sh
 cd deploy/ansible

@@ -96,7 +96,7 @@
     --cert {{ cca_cert_dir }}/node.pem
     --key {{ cca_cert_dir }}/node-key.pem
     -H "Accept: application/json"
-    https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770/status
+    https://{{ hostvars[groups['controlplane'][0]].ansible_host }}:9770/api/status
     | grep -q '"id":"{{ node_id | default(inventory_hostname) }}"'
   delegate_to: "{{ groups['controlplane'][0] }}"
   register: node_registered

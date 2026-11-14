@@ -131,7 +131,7 @@ Short-lived certificates (1hr) with automatic rotation. Being inside the cluster
 
 **Kubernetes**: Secrets Store CSI Driver to integrate external secret managers. Base64-encoded secrets in etcd by default (not encrypted). Requires external operators for rotation.
 
-**CCattler**: Envelope encryption with KMS integration built in. Secrets are references, never values. The agent materializes secrets as bind-mounted files at container start, removes them on stop.
+**CCattler**: Envelope encryption built in, under a local root key file or a cloud key (AWS KMS, GCP Cloud KMS). Secrets are references, never values. The agent materializes secrets as bind-mounted files at container start, removes them on stop.
 
 ```hcl
 secret database.password

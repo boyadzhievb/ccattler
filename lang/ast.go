@@ -24,6 +24,7 @@ type File struct {
 	Networks         []NetworkDecl         // top-level network blocks defining allow/deny rules
 	Routes           []RouteDecl           // top-level gate blocks defining traffic routing with optional sticky sessions
 	BaseDir          string                // directory of the source file, used to resolve "from" paths
+	ProvidedFiles    map[string]string     // declared path → contents sent by the client; when non-nil, referenced files are read only from it (server-side compile), never from disk
 }
 
 // TenantDecl represents a parsed "tenant" block in the DSL.

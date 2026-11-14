@@ -616,16 +616,16 @@ CURL_TLS="--cacert $CA_CERT_LOCAL --cert $CLIENT_CERT_LOCAL --key $CLIENT_KEY_LO
 log "Verifying cca server API..."
 deadline=$((SECONDS + 60))
 while [[ $SECONDS -lt $deadline ]]; do
-    if curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null 2>&1; then
+    if curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" > /dev/null 2>&1; then
         break
     fi
     sleep 2
 done
-curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" > /dev/null || fail "cca server /status unreachable after 60s"
+curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" > /dev/null || fail "cca server /status unreachable after 60s"
 
 count_alive_nodes() {
     local status_json
-    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null) || { echo 0; return; }
+    status_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null) || { echo 0; return; }
     local count
     count=$(echo "$status_json" | grep -o '"state":"alive"' | wc -l | tr -d ' \n') || true
     echo "${count:-0}"
@@ -646,10 +646,10 @@ if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
     if [[ "$node_count" -lt "$EXPECTED_NODES" ]]; then
         log "Final node count: $node_count"
         log "Final /status response:"
-        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>&1 || true
+        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>&1 || true
         echo ""
         log "Registered nodes (from API):"
-        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '.nodes[] | "  \(.id): \(.state)"' || true
+        curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '.nodes[] | "  \(.id): \(.state)"' || true
         fail "Only $node_count/$EXPECTED_NODES nodes registered after ${CONVERGE_TIMEOUT}s"
     fi
 fi
@@ -899,7 +899,7 @@ echo "$IMAGES_JSON" | grep -q '"images"' || fail "debug/images missing images fi
 log "GET /debug/images OK"
 
 log "Testing POST /debug/exec on worker-1..."
-STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+STATUS_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
 INSTANCE_ID=$(echo "$STATUS_JSON" | jq -r '.instances[0].id // empty')
 if [[ -n "$INSTANCE_ID" ]]; then
     # Exec runs /whoami -h, so the target must be a worker-1 instance of a
@@ -1041,7 +1041,7 @@ log "Validating VIP data plane (nftables/iptables DNAT rules)..."
 ENDPOINT_DEADLINE=$((SECONDS + 60))
 ENDPOINT_COUNT=0
 while [[ $SECONDS -lt $ENDPOINT_DEADLINE ]]; do
-    NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
     ENDPOINT_COUNT=$(echo "$NET_JSON" | jq '[.instances[] | select(.state == "running" and .ip != null and .ip != "")] | length' 2>/dev/null || echo "0")
     if [[ "$ENDPOINT_COUNT" -gt 0 ]]; then
         break
@@ -1140,9 +1140,9 @@ else
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo iptables -t nat -L -n 2>/dev/null | head -40" 2>/dev/null || true
     ssh_vm "$DATAPLANE_CHECK_NODE" "sudo bpftool map list 2>/dev/null | grep -A1 cca_" 2>/dev/null || true
     log "  Networking from API:"
-    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.networking' || true
+    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.networking' || true
     log "  Nodes from API:"
-    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq '.nodes' || true
+    curl -s $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq '.nodes' || true
 fi
 
 # ---- Step 5.7: Cross-node VIP connectivity and DNS resolution ----
@@ -1160,7 +1160,7 @@ for vm in "${VM_NAMES[@]}"; do
     ssh_vm "$vm" "ip route show | grep -E 'cni|bridge|cca|10\\.4|172\\.17'" 2>/dev/null || true
 done
 
-NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port) \(.dns)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
@@ -1240,7 +1240,7 @@ log "Validating HTTP traffic through VIPs..."
 HTTP_PORTS_REGEX="^(80|443|8080|8443|8000|3000|9090)$"
 FAST_START_SERVICES="whoami"
 
-NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+NET_JSON=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
 VIP_SERVICES=$(echo "$NET_JSON" | jq -r '.networking[] | "\(.service) \(.vip) \(.port)"' 2>/dev/null || echo "")
 
 if [[ -n "$VIP_SERVICES" ]]; then
@@ -1389,7 +1389,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
 
     RESTORE_DEADLINE=$((SECONDS + 30))
     while [[ $SECONDS -lt $RESTORE_DEADLINE ]]; do
-        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
         if [[ "$RUNNING_COUNT" -ge 2 ]]; then
             break
@@ -1421,7 +1421,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     PREFLIGHT_DEADLINE=$((SECONDS + 60))
     HAS_OTHER_NODE=false
     while [[ $SECONDS -lt $PREFLIGHT_DEADLINE ]]; do
-        OTHER_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+        OTHER_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
             | jq --arg w "$WORKER1_NODE" '[.instances[] | select(.service == "whoami" and .state == "running" and .node != $w)] | length' 2>/dev/null || echo "0")
         if [[ "$OTHER_COUNT" -ge 1 ]]; then
             HAS_OTHER_NODE=true
@@ -1479,7 +1479,7 @@ if [[ "$WHOAMI_DEPLOYED" == "true" && -n "$WHOAMI_VIP" && -n "$WHOAMI_PORT" ]]; 
     RECOVER_STREAK=0
     WORKER1_RECOVERED=false
     while [[ $SECONDS -lt $RECOVER_DEADLINE ]]; do
-        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+        RUNNING_COUNT=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
             | jq '[.instances[] | select(.service == "whoami" and .state == "running")] | length' 2>/dev/null || echo "0")
         if [[ "$RUNNING_COUNT" -ge 2 ]] && ssh_vm "$WORKER1_NODE" "curl -sf -o /dev/null --connect-timeout 2 --max-time 4 http://${WHOAMI_VIP}:${WHOAMI_PORT}/" 2>/dev/null; then
             RECOVER_STREAK=$((RECOVER_STREAK + 1))
@@ -1621,7 +1621,7 @@ done
 if [[ "$MULTIPORT_DEPLOYED" == "true" ]]; then
     log "Validating multi-port VIP data plane (whoami-multiport: ports 80, 8081)..."
 
-    MULTIPORT_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    MULTIPORT_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
     MULTIPORT_VIPS=$(echo "$MULTIPORT_STATUS" | jq -r '.networking[] | select(.service == "whoami-multiport") | "\(.vip) \(.port)"' 2>/dev/null || echo "")
 
     MULTIPORT_VIP_COUNT=$(echo "$MULTIPORT_VIPS" | grep -c '[0-9]' || echo "0")
@@ -1731,7 +1731,7 @@ fi
 if [[ "$MULTIPORT_DEPLOYED" == "true" && -n "$MULTIPORT_PORT80_VIP" ]]; then
     log "Validating multi-port cross-node traffic (whoami-multiport port 80)..."
 
-    MULTIPORT_STATUS_FRESH=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    MULTIPORT_STATUS_FRESH=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
     MULTIPORT_INSTANCE_NODES=$(echo "$MULTIPORT_STATUS_FRESH" | jq -r '[.instances[] | select(.service == "whoami-multiport" and .state == "running")] | .[].node' 2>/dev/null || echo "")
 
     log "  whoami-multiport backends on: $(echo $MULTIPORT_INSTANCE_NODES | tr '\n' ' ')"
@@ -1794,7 +1794,7 @@ done
 if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
     log "Validating warm-zero lifecycle (nginx-warmzero)..."
 
-    WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+    WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
     WARMZERO_VIP=$(echo "$WARMZERO_STATUS" | jq -r '.networking[] | select(.service == "nginx-warmzero") | .vip' 2>/dev/null || echo "")
 
     if [[ -n "$WARMZERO_VIP" ]]; then
@@ -1807,7 +1807,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
             log "  Service at zero, sending activation request..."
             ssh_vm "$CTRL_NODE" "curl -sf --max-time $WARMZERO_ACTIVATION_TIMEOUT http://${WARMZERO_VIP}:80/ >/dev/null 2>&1" || true
             sleep 10
-            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
             warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
         fi
         if [[ "$warmzero_running" -ge 1 ]]; then
@@ -1833,7 +1833,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
         warmzero_deadline=$((SECONDS + 30))
         warmzero_running=1
         while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
-            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+            WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
             warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
             [[ "$warmzero_running" -gt 0 ]] && sleep 5
         done
@@ -1861,7 +1861,7 @@ if [[ "$WARMZERO_DEPLOYED" == "true" ]]; then
             warmzero_deadline=$((SECONDS + 30))
             warmzero_running=1
             while [[ "$warmzero_running" -gt 0 && "$SECONDS" -lt "$warmzero_deadline" ]]; do
-                WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+                WARMZERO_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
                 warmzero_running=$(echo "$WARMZERO_STATUS" | jq '[.instances[] | select(.service == "nginx-warmzero" and .state == "running")] | length' 2>/dev/null || echo "0")
                 [[ "$warmzero_running" -gt 0 ]] && sleep 5
             done
@@ -1921,7 +1921,7 @@ fi
 
 # ---- Step 6: Final status ----
 log "Final cluster status:"
-FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null)
+FINAL_STATUS=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null)
 echo "$FINAL_STATUS" | jq . || true
 
 log "Instances per node (from API):"
@@ -2060,7 +2060,7 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
     log "Local binary built: $(ls -lh "$ANSIBLE_DIR/cca-linux-amd64" | awk '{print $5}')"
 
     # Record pre-upgrade state for comparison.
-    PRE_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    PRE_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
     PRE_UPGRADE_COUNT=$(echo "$PRE_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
     log "Pre-upgrade: $PRE_UPGRADE_COUNT instances"
 
@@ -2120,10 +2120,10 @@ if [[ "$UPGRADE_TEST" == "true" ]]; then
 
     # Verify API is healthy with new binary.
     log "Verifying API health after upgrade..."
-    curl -sf $CURL_TLS "${CCA_API}/status" > /dev/null || fail "Upgrade: API unreachable after binary swap"
+    curl -sf $CURL_TLS "${CCA_API}/api/status" > /dev/null || fail "Upgrade: API unreachable after binary swap"
 
     # Verify instance IDs survived the upgrade (data preserved).
-    POST_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
+    POST_UPGRADE_INSTANCES=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null | jq -r '[.instances[] | .id] | sort | join(",")' || echo "")
     POST_UPGRADE_COUNT=$(echo "$POST_UPGRADE_INSTANCES" | tr ',' '\n' | wc -l | tr -d ' ')
     log "Post-upgrade: $POST_UPGRADE_COUNT instances"
     if [[ "$PRE_UPGRADE_INSTANCES" != "$POST_UPGRADE_INSTANCES" ]]; then

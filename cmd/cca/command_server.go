@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -115,12 +114,13 @@ type serverCommandConfig struct {
 	// vipCIDR overrides the default service virtual IP CIDR (e.g. "10.200.0.0/24").
 	vipCIDR string
 	// secretRootKeyPath is the root key file that protects the secret keyring
-	// (Flow 29); ignored when kmsProviderName is set.
+	// (Flow 29); ignored when rootKeyProviderName is set.
 	secretRootKeyPath string
-	// kmsProviderName selects a KMS key as the secret root key (e.g. "aws-kms").
-	kmsProviderName string
-	// kmsKeyID identifies the KMS key used as the secret root key.
-	kmsKeyID string
+	// rootKeyProviderName selects a cloud key as the secret root key
+	// ("aws-kms" for AWS KMS, "gcp-kms" for GCP Cloud KMS).
+	rootKeyProviderName string
+	// rootKeyID identifies the cloud key used as the secret root key.
+	rootKeyID string
 	// keyringRetireGrace is how long a retiring KEK version is kept before it
 	// is deleted (--keyring-retire-grace, Flow 30).
 	keyringRetireGrace time.Duration
@@ -246,15 +246,15 @@ func parseServerCommandArgs(args []string) serverCommandConfig {
 				argIndex++
 				parsedConfig.secretRootKeyPath = args[argIndex]
 			}
-		case "--kms-provider":
+		case "--root-key-provider":
 			if argIndex+1 < len(args) {
 				argIndex++
-				parsedConfig.kmsProviderName = args[argIndex]
+				parsedConfig.rootKeyProviderName = args[argIndex]
 			}
-		case "--kms-key-id":
+		case "--root-key-id":
 			if argIndex+1 < len(args) {
 				argIndex++
-				parsedConfig.kmsKeyID = args[argIndex]
+				parsedConfig.rootKeyID = args[argIndex]
 			}
 		case "--keyring-retire-grace":
 			if argIndex+1 < len(args) {
@@ -1207,13 +1207,11 @@ func (demoAuthenticator *demoAlwaysAdminAuthenticator) Authenticate(_ *http.Requ
 	}, nil
 }
 
-// launchStatusAPIServer starts the HTTP API server in the background. It hosts
-// both the legacy /status and /metric endpoints and the new /api/* endpoints.
-// When serverTLSConfig is non-nil, the listener is wrapped with TLS for mTLS.
-// When enrollmentEnabled is true, client certs are enforced via middleware
-// (except on /api/enroll) instead of at the TLS layer.
-// The authenticatorChain extracts principal identity from TLS client certificates
-// so that legacy endpoints (/status, /metric) can pass through the AuthorizedStore.
+// launchStatusAPIServer starts the HTTP API server in the background. Every
+// route is an api.Server route; the root-level paths (/healthz, /metrics, OIDC)
+// are forwarded to it. When serverTLSConfig is non-nil, the listener is wrapped
+// with TLS for mTLS. When enrollmentEnabled is true, client certs are enforced
+// via middleware (except on /api/enroll) instead of at the TLS layer.
 // Returns the api.Server so callers can attach optional components like EventLog.
 func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *security.AuthenticatorChain, listenAddress string, serverTLSConfig *tls.Config, enrollmentEnabled bool) *api.Server {
 	apiServer := api.NewServer(factStore)
@@ -1243,42 +1241,6 @@ func launchStatusAPIServer(factStore store.StateStore, authenticatorChain *secur
 	// Expose OIDC endpoints at root level when configured.
 	httpMux.Handle("/.well-known/", apiServer.Handler())
 	httpMux.Handle("/oidc/", apiServer.Handler())
-
-	// authenticateLegacyRequest extracts the principal from the TLS client
-	// certificate (via the authenticator chain) and returns an enriched context.
-	// Legacy endpoints must go through this so the AuthorizedStore can authorize
-	// their store operations. Returns the original context if no chain is set.
-	authenticateLegacyRequest := func(request *http.Request) (context.Context, error) {
-		if authenticatorChain == nil {
-			return request.Context(), nil
-		}
-		result, authError := authenticatorChain.Authenticate(request)
-		if authError != nil {
-			return nil, authError
-		}
-		if result == nil {
-			return request.Context(), nil
-		}
-		enrichedContext := security.WithPrincipal(request.Context(), result.Principal)
-		return enrichedContext, nil
-	}
-
-	// Legacy status endpoint for backward compatibility with 'cca status'.
-	httpMux.HandleFunc("/status", func(responseWriter http.ResponseWriter, request *http.Request) {
-		requestContext, authError := authenticateLegacyRequest(request)
-		if authError != nil {
-			writeServerJSONError(responseWriter, "authentication failed: "+authError.Error(), http.StatusUnauthorized)
-			return
-		}
-		acceptHeader := request.Header.Get("Accept")
-		if strings.Contains(acceptHeader, "application/json") {
-			responseWriter.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(responseWriter).Encode(buildClusterStatusJSON(requestContext, factStore))
-			return
-		}
-		responseWriter.Header().Set("Content-Type", "text/plain")
-		_, _ = responseWriter.Write([]byte(buildStatusTextOutput(requestContext, factStore)))
-	})
 
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
@@ -1472,13 +1434,24 @@ func collectNodeStatusEntries(ctx context.Context, factStore store.StateStore, a
 	return nodeEntries
 }
 
-// buildStatusTextOutput renders the cluster status as human-readable formatted text.
-// It delegates to buildClusterStatusJSON for data collection, then formats the result.
+// buildStatusTextOutput renders the status of an in-process store (local
+// simulation, cca run, demo modes) as text. A running cluster's status goes
+// through GET /api/status instead (executeStatusCommand).
 func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) string {
+	allInstances, _ := types.ListInstances(ctx, factStore)
+	instanceStates := make([]string, 0, len(allInstances))
+	for _, instance := range allInstances {
+		instanceStates = append(instanceStates, string(instance.State))
+	}
+	return renderStatusText(buildClusterStatusJSON(ctx, factStore), instanceStates)
+}
+
+// renderStatusText formats a cluster status as human-readable text.
+// instanceStates holds the state of every instance including stopped ones, for
+// the runtime health summary.
+func renderStatusText(statusData clusterStatusResponse, instanceStates []string) string {
 	var textBuilder strings.Builder
 	textBuilder.WriteString("=== CLUSTER STATUS ===\n\n")
-
-	statusData := buildClusterStatusJSON(ctx, factStore)
 
 	// Render services section.
 	for _, service := range statusData.Services {
@@ -1509,10 +1482,9 @@ func buildStatusTextOutput(ctx context.Context, factStore store.StateStore) stri
 	}
 
 	// Render runtime health summary counting all instances including stopped.
-	allInstances, _ := types.ListInstances(ctx, factStore)
 	var runningTotal, pendingTotal, failedTotal, stoppedTotal int
-	for _, instance := range allInstances {
-		switch instance.State {
+	for _, instanceState := range instanceStates {
+		switch types.InstanceState(instanceState) {
 		case types.InstanceRunning:
 			runningTotal++
 		case types.InstancePending:

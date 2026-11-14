@@ -202,7 +202,7 @@ gate_tls_check_two_gates() {
 # gate_tls_check_service_vip covers T9: the service VIP still speaks plain HTTP.
 gate_tls_check_service_vip() {
     local service_vip vip_status
-    service_vip=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+    service_vip=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
         | jq -r '.networking[] | select(.service == "tls-auto") | .vip' 2>/dev/null || true)
     [[ -n "$service_vip" && "$service_vip" != "null" ]] || fail "gate-tls T9: no VIP for tls-auto"
     vip_status=$(ssh_vm "$GATE_TLS_NODE" "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://${service_vip}:80/" 2>/dev/null || true)
@@ -291,7 +291,7 @@ gate_tls_check_key_delivery() {
 # service, so the check never passes on an empty answer.
 gate_tls_node_without_instance() {
     local service="$1" vm hosting_nodes
-    hosting_nodes=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+    hosting_nodes=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
         | jq -r --arg service "$service" '.instances[] | select(.service == $service) | .node' 2>/dev/null)
     [[ -n "$hosting_nodes" ]] || fail "gate-tls T17: status lists no $service instance (query failed?)"
     for vm in "${GATE_TLS_AGENT_NODES[@]}"; do
@@ -385,7 +385,7 @@ gate_tls_check_restart_stability() {
 
 # gate_tls_running_instances prints the number of running instances of a service.
 gate_tls_running_instances() {
-    curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+    curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
         | jq --arg service "$1" '[.instances[] | select(.service == $service and .state == "running")] | length'
 }
 
@@ -399,7 +399,7 @@ gate_tls_running_at_least() {
 # gate_tls_check_backend_failure covers T13: HTTPS survives killing one instance.
 gate_tls_check_backend_failure() {
     local victim_json victim_id victim_node
-    victim_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/status" 2>/dev/null \
+    victim_json=$(curl -sf $CURL_TLS -H "Accept: application/json" "${CCA_API}/api/status" 2>/dev/null \
         | jq -c '[.instances[] | select(.service == "tls-auto" and .state == "running")][0]' || true)
     victim_id=$(echo "$victim_json" | jq -r '.id')
     victim_node=$(echo "$victim_json" | jq -r '.node')

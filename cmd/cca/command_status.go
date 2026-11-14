@@ -513,23 +513,50 @@ func streamContainerLogs(serviceName string, instanceID string, logsConfig logsC
 	_, _ = io.Copy(os.Stdout, httpResponse.Body)
 }
 
-// executeStatusCommand queries the status API of a running ccattler instance
-// and prints the cluster status to stdout. Requires a running 'run' or 'demo' instance.
+// executeStatusCommand queries GET /api/status?all=true of a running ccattler
+// server and prints the cluster status as text. The server applies the caller's
+// capability and team visibility; stopped instances are requested only for the
+// runtime health counts.
 func executeStatusCommand() {
-	statusRequest, _ := http.NewRequest("GET", statusAPIBaseURL()+"/status", nil)
-	statusRequest.Header.Set("Accept", "text/plain")
+	statusRequest, _ := http.NewRequest("GET", statusAPIBaseURL()+"/api/status?all=true", nil)
 	httpResponse, err := buildAuthenticatedHTTPClient().Do(statusRequest)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot connect to ccattler — is 'run' or 'demo' running?")
+		fmt.Fprintf(os.Stderr, "cannot connect to ccattler at %s — is the server running?\n", statusAPIListenAddress)
 		os.Exit(1)
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 	responseBody, _ := io.ReadAll(httpResponse.Body)
 	if httpResponse.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "error: %s\n", responseBody)
+		fmt.Fprintf(os.Stderr, "error: %s\n", extractAPIErrorMessage(responseBody))
 		os.Exit(1)
 	}
-	fmt.Print(string(responseBody))
+	var statusData clusterStatusResponse
+	if decodeError := json.Unmarshal(responseBody, &statusData); decodeError != nil {
+		fmt.Fprintf(os.Stderr, "error: decode status: %v\n", decodeError)
+		os.Exit(1)
+	}
+	var activeInstances []instanceStatusEntry
+	instanceStates := make([]string, 0, len(statusData.Instances))
+	for _, instance := range statusData.Instances {
+		instanceStates = append(instanceStates, instance.State)
+		if instance.State != string(types.InstanceStopped) {
+			activeInstances = append(activeInstances, instance)
+		}
+	}
+	statusData.Instances = activeInstances
+	fmt.Print(renderStatusText(statusData, instanceStates))
+}
+
+// extractAPIErrorMessage returns the "error" field of an API JSON error body,
+// or the raw body when it is not that shape.
+func extractAPIErrorMessage(responseBody []byte) string {
+	var errorBody struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(responseBody, &errorBody) == nil && errorBody.Error != "" {
+		return errorBody.Error
+	}
+	return strings.TrimSpace(string(responseBody))
 }
 
 // executeMetricSetCommand sends a simulated metric value to a running ccattler instance

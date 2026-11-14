@@ -15,8 +15,8 @@ import (
 )
 
 // KeyProvider wraps and unwraps data encryption keys (DEKs). Each
-// implementation delegates to a different key management backend: a local
-// 32-byte file, AWS KMS, or GCP KMS.
+// implementation delegates to a different key backend: a local 32-byte file
+// (the default), AWS KMS, or GCP Cloud KMS.
 //
 // The CCattler secret store uses envelope encryption: each secret is encrypted
 // with a random DEK, and the DEK is wrapped (encrypted) by the KeyProvider.
@@ -41,7 +41,7 @@ const dekLength = 32
 
 // LocalKeyProvider wraps and unwraps DEKs using a local 32-byte AES-256 master
 // key. This is the simplest provider — suitable for development, single-node
-// clusters, or environments where KMS is unavailable. The master key must be
+// clusters, or environments without a cloud key service. The master key must be
 // stored securely on disk and is never transmitted over the network.
 type LocalKeyProvider struct {
 	masterKey []byte     // masterKey is the 32-byte AES-256 key encryption key.
@@ -138,7 +138,7 @@ func OpenEnvelope(ctx context.Context, keyProvider KeyProvider, envelope []byte)
 // binary format: [4-byte wrappedDEK length (big-endian)][wrappedDEK][ciphertext].
 func packEnvelope(wrappedDEK []byte, ciphertext []byte) []byte {
 	envelope := make([]byte, envelopeHeaderSize+len(wrappedDEK)+len(ciphertext))
-	binary.BigEndian.PutUint32(envelope[:envelopeHeaderSize], uint32(len(wrappedDEK))) //nolint:gosec // wrappedDEK is a KMS-wrapped key, always < 1KB
+	binary.BigEndian.PutUint32(envelope[:envelopeHeaderSize], uint32(len(wrappedDEK))) //nolint:gosec // wrappedDEK is a provider-wrapped key, always < 1KB
 	copy(envelope[envelopeHeaderSize:], wrappedDEK)
 	copy(envelope[envelopeHeaderSize+len(wrappedDEK):], ciphertext)
 	return envelope

@@ -122,7 +122,7 @@ Stored as:
 - `secret(database.password)` — secret exists
 - `secret_grant(api, database.password)` — api may access it
 
-Actual secret values live in an encrypted store (AES-256-GCM envelope encryption with KMS integration). File-mounted secrets are preferred over environment variables — avoids accidental logging and makes rotation easier.
+Actual secret values live in an encrypted store (AES-256-GCM envelope encryption under a root key: a local key file, or a cloud key in AWS KMS or GCP Cloud KMS). File-mounted secrets are preferred over environment variables — avoids accidental logging and makes rotation easier.
 
 ### Storing secrets
 

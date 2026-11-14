@@ -52,7 +52,7 @@ func CompileWithSource(file *File, sourceLines []string) ([]Fact, error) {
 		if referenceErr := validateServiceSecretReferences(serviceDecl, connectionDeclsByName, sourceLines); referenceErr != nil {
 			return nil, referenceErr
 		}
-		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, file.BaseDir, connectionDeclsByName)
+		serviceFacts, serviceErr := compileServiceDeclaration(serviceDecl, sourceLines, referencedFileSourceFor(file), connectionDeclsByName)
 		if serviceErr != nil {
 			return nil, serviceErr
 		}
@@ -131,7 +131,7 @@ func compileInfrastructureDeclarations(file *File, sourceLines []string) ([]Fact
 		facts = append(facts, connectionFacts...)
 	}
 	for _, routeDecl := range file.Routes {
-		routeFacts, err := compileRouteDeclaration(routeDecl, file.BaseDir, sourceLines)
+		routeFacts, err := compileRouteDeclaration(routeDecl, referencedFileSourceFor(file), sourceLines)
 		if err != nil {
 			return nil, err
 		}
@@ -269,7 +269,7 @@ func compileVolumeDeclaration(volumeDecl VolumeDecl, sourceLines []string) ([]Fa
 // compileServiceDeclaration converts a single ServiceDecl into its corresponding facts.
 // It validates the declaration and delegates to per-block sub-compilers for each
 // DSL section (ports, resources, scale, placement, health, config, secrets, etc.).
-func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, baseDir string, connectionDeclsByName map[string]ConnectionDecl) ([]Fact, error) {
+func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, fileSource referencedFileSource, connectionDeclsByName map[string]ConnectionDecl) ([]Fact, error) {
 	if serviceDecl.Name == "" {
 		return nil, &ParseError{
 			Line: serviceDecl.Line, Message: "service name is required",
@@ -335,7 +335,7 @@ func compileServiceDeclaration(serviceDecl ServiceDecl, sourceLines []string, ba
 	facts = append(facts, compileServicePlacementFacts(serviceDecl.Name, serviceDecl.Placement)...)
 	facts = append(facts, compileServiceUpdateFacts(serviceDecl.Name, serviceDecl.Update)...)
 	facts = append(facts, compileServiceHealthProbeFacts(serviceDecl.Name, serviceDecl.Health, serviceDecl.Startup, serviceDecl.Liveness, serviceDecl.Readiness)...)
-	configFacts, configError := compileServiceConfigFacts(serviceDecl.Name, serviceDecl.Config, baseDir)
+	configFacts, configError := compileServiceConfigFacts(serviceDecl.Name, serviceDecl.Config, fileSource)
 	if configError != nil {
 		return nil, configError
 	}
@@ -805,9 +805,39 @@ func compileServiceHealthProbeFacts(serviceName string, healthDecl *HealthDecl, 
 	return healthFacts
 }
 
+// referencedFileSource says where files a configuration references ("from",
+// gate tls cert/key) are read: from providedFiles when non-nil (server-side
+// compile, the client sent them), otherwise from disk relative to baseDir.
+type referencedFileSource struct {
+	baseDir       string            // directory relative paths resolve against (disk reads only)
+	providedFiles map[string]string // declared path → contents; non-nil means never read the disk
+}
+
+// referencedFileSourceFor returns the file source of a parsed configuration.
+func referencedFileSourceFor(file *File) referencedFileSource {
+	return referencedFileSource{baseDir: file.BaseDir, providedFiles: file.ProvidedFiles}
+}
+
+// readReferencedFile returns the contents of declaredPath from the source:
+// only the provided map on the server, the disk for cca apply.
+func (fileSource referencedFileSource) readReferencedFile(declaredPath string) ([]byte, error) {
+	if fileSource.providedFiles != nil {
+		providedContent, isProvided := fileSource.providedFiles[declaredPath]
+		if !isProvided {
+			return nil, fmt.Errorf("file %q was not sent with the request; the server does not read local files", declaredPath)
+		}
+		return []byte(providedContent), nil
+	}
+	resolvedPath := declaredPath
+	if fileSource.baseDir != "" && !filepath.IsAbs(resolvedPath) {
+		resolvedPath = filepath.Join(fileSource.baseDir, resolvedPath)
+	}
+	return os.ReadFile(resolvedPath) //nolint:gosec // intentional: user-specified file reference read by cca apply
+}
+
 // compileServiceConfigFacts produces environment variable and config file facts
 // for a service. Returns nil if no config block is declared.
-func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, baseDir string) ([]Fact, error) {
+func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, fileSource referencedFileSource) ([]Fact, error) {
 	if configDecl == nil {
 		return nil, nil
 	}
@@ -821,11 +851,7 @@ func compileServiceConfigFacts(serviceName string, configDecl *ConfigDecl, baseD
 	for _, configFile := range configDecl.ConfigFiles {
 		fileContent := configFile.Content
 		if configFile.FromFile != "" {
-			resolvedPath := configFile.FromFile
-			if baseDir != "" && !filepath.IsAbs(resolvedPath) {
-				resolvedPath = filepath.Join(baseDir, resolvedPath)
-			}
-			fileBytes, readErr := os.ReadFile(resolvedPath) //nolint:gosec // intentional: user-specified config file reference
+			fileBytes, readErr := fileSource.readReferencedFile(configFile.FromFile)
 			if readErr != nil {
 				return nil, fmt.Errorf("config file %q: cannot read %q: %w", configFile.Path, configFile.FromFile, readErr)
 			}
@@ -951,7 +977,7 @@ func buildConnectionJSON(connectionDecl ConnectionDecl) string {
 }
 
 // compileRouteDeclaration converts a RouteDecl into its corresponding facts.
-func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []string) ([]Fact, error) {
+func compileRouteDeclaration(routeDecl RouteDecl, fileSource referencedFileSource, sourceLines []string) ([]Fact, error) {
 	if routeDecl.Name == "" {
 		return nil, &ParseError{
 			Line: routeDecl.Line, Message: "gate name is required",
@@ -992,11 +1018,11 @@ func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []
 	}
 
 	if routeDecl.TLS != nil {
-		if loadError := loadRouteTLSFiles(routeDecl, baseDir, sourceLines); loadError != nil {
+		if loadError := loadRouteTLSFiles(routeDecl, fileSource, sourceLines); loadError != nil {
 			return nil, loadError
 		}
 
-		tlsFacts, tlsError := compileTLSFacts(routeDecl.Name, routeDecl.TLS, routeDecl.Line, sourceLines)
+		tlsFacts, tlsError := compileTLSFacts(routeDecl.Name, routeDecl.TLS, routeDecl.Line, sourceLines, fileSource.providedFiles != nil)
 		if tlsError != nil {
 			return nil, tlsError
 		}
@@ -1007,21 +1033,24 @@ func compileRouteDeclaration(routeDecl RouteDecl, baseDir string, sourceLines []
 }
 
 // loadRouteTLSFiles reads a manual gate's certificate file and, unless the
-// key is a key secret, its key file (relative paths resolve against baseDir).
-// Content already set (CertPEM, KeyPEM) is kept.
-func loadRouteTLSFiles(routeDecl RouteDecl, baseDir string, sourceLines []string) error {
+// key is a key secret, its key file (from the file source; relative disk paths
+// resolve against its baseDir). Content already set (CertPEM, KeyPEM) is kept.
+func loadRouteTLSFiles(routeDecl RouteDecl, fileSource referencedFileSource, sourceLines []string) error {
 	if routeDecl.TLS.Mode != types.RouteTLSModeManual {
 		return nil
 	}
 	if routeDecl.TLS.CertPEM == "" {
-		certificateBytes, readError := readRouteTLSFile(routeDecl, "cert", routeDecl.TLS.CertFile, baseDir, sourceLines)
+		certificateBytes, readError := readRouteTLSFile(routeDecl, "cert", routeDecl.TLS.CertFile, fileSource, sourceLines)
 		if readError != nil {
 			return readError
 		}
 		routeDecl.TLS.CertPEM = certificateBytes
 	}
-	if routeDecl.TLS.KeySecret == "" && routeDecl.TLS.KeyPEM == "" {
-		keyBytes, readError := readRouteTLSFile(routeDecl, "key", routeDecl.TLS.KeyFile, baseDir, sourceLines)
+	// On the server the key file is never read: cca apply sends the key to
+	// PUT /api/gate-key after the gate facts (Flow 28), so it never travels
+	// in the apply body.
+	if routeDecl.TLS.KeySecret == "" && routeDecl.TLS.KeyPEM == "" && fileSource.providedFiles == nil {
+		keyBytes, readError := readRouteTLSFile(routeDecl, "key", routeDecl.TLS.KeyFile, fileSource, sourceLines)
 		if readError != nil {
 			return readError
 		}
@@ -1032,12 +1061,8 @@ func loadRouteTLSFiles(routeDecl RouteDecl, baseDir string, sourceLines []string
 
 // readRouteTLSFile reads one gate TLS file, returning a ParseError naming the
 // gate and the declared path on failure.
-func readRouteTLSFile(routeDecl RouteDecl, fieldName string, declaredPath string, baseDir string, sourceLines []string) (string, error) {
-	resolvedPath := declaredPath
-	if baseDir != "" && !filepath.IsAbs(resolvedPath) {
-		resolvedPath = filepath.Join(baseDir, resolvedPath)
-	}
-	fileBytes, readError := os.ReadFile(resolvedPath) //nolint:gosec // intentional: user-specified TLS cert/key file
+func readRouteTLSFile(routeDecl RouteDecl, fieldName string, declaredPath string, fileSource referencedFileSource, sourceLines []string) (string, error) {
+	fileBytes, readError := fileSource.readReferencedFile(declaredPath)
 	if readError != nil {
 		return "", &ParseError{
 			Line: routeDecl.Line, Message: fmt.Sprintf("gate %q: cannot read tls %s %q: %v", routeDecl.Name, fieldName, declaredPath, readError),
@@ -1081,7 +1106,9 @@ func compileStickyFacts(routeName string, stickyDecl *RouteStickyDecl) []Fact {
 }
 
 // compileTLSFacts produces facts for a route's TLS termination configuration.
-func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLines []string) ([]Fact, error) {
+// keyDeliveredSeparately is true on the server, where a declared key file is
+// not read (cca apply seals it through PUT /api/gate-key).
+func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLines []string, keyDeliveredSeparately bool) ([]Fact, error) {
 	tlsFacts := []Fact{
 		{Key: types.KeyDesiredRouteTLSMode(routeName), Value: string(tlsDecl.Mode)},
 	}
@@ -1093,7 +1120,8 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 				SourceLine: sourceLineAt(sourceLines, line),
 			}
 		}
-		if tlsDecl.KeySecret == "" && strings.TrimSpace(tlsDecl.KeyPEM) == "" {
+		keyIsElsewhere := tlsDecl.KeySecret != "" || (keyDeliveredSeparately && tlsDecl.KeyFile != "")
+		if !keyIsElsewhere && strings.TrimSpace(tlsDecl.KeyPEM) == "" {
 			return nil, &ParseError{
 				Line: line, Message: fmt.Sprintf("gate %q: tls key file content is empty", routeName),
 				SourceLine: sourceLineAt(sourceLines, line),
@@ -1110,14 +1138,23 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 	return tlsFacts, nil
 }
 
-// ValidateNoLocalFileReferences rejects a file that names local files (gate
-// tls cert/key paths, config "from" files). Server-side parse paths (/api/apply,
-// /api/diff, the policy gate) call it before compiling: the paths are the
-// client's, and reading them on the server would expose server files.
+// ValidateNoLocalFileReferences checks a file compiled on the server
+// (/api/apply, /api/diff, the policy gate) so the server never reads a path
+// the client named. A gate tls key file may be declared but is never read:
+// cca apply seals the key through PUT /api/gate-key after the gate facts, so
+// its contents in the apply body are refused. A gate tls cert file or a config
+// "from" file must be in file.ProvidedFiles, the contents cca apply sent; the
+// compiler then reads only from that map.
 func ValidateNoLocalFileReferences(file *File) error {
 	for _, routeDecl := range file.Routes {
-		if routeDecl.TLS != nil && (routeDecl.TLS.CertFile != "" || routeDecl.TLS.KeyFile != "") {
-			return fmt.Errorf("gate %q: tls cert/key files are read only by cca apply; the server does not read local files", routeDecl.Name)
+		if routeDecl.TLS == nil {
+			continue
+		}
+		if routeDecl.TLS.KeyFile != "" && isProvidedFile(file, routeDecl.TLS.KeyFile) {
+			return fmt.Errorf("gate %q: tls key file contents must not be sent with the configuration; cca apply sends the key to PUT /api/gate-key", routeDecl.Name)
+		}
+		if routeDecl.TLS.CertFile != "" && !isProvidedFile(file, routeDecl.TLS.CertFile) {
+			return fmt.Errorf("gate %q: tls cert file %q was not sent with the request; the server does not read local files (use cca apply)", routeDecl.Name, routeDecl.TLS.CertFile)
 		}
 	}
 	for _, serviceDecl := range file.Services {
@@ -1125,12 +1162,27 @@ func ValidateNoLocalFileReferences(file *File) error {
 			continue
 		}
 		for _, configFile := range serviceDecl.Config.ConfigFiles {
-			if configFile.FromFile != "" {
-				return fmt.Errorf("service %q: config file %q uses from %q; the server does not read local files (use cca apply)", serviceDecl.Name, configFile.Path, configFile.FromFile)
+			if configFile.FromFile != "" && !isProvidedFile(file, configFile.FromFile) {
+				return fmt.Errorf("service %q: config file %q uses from %q, which was not sent with the request; the server does not read local files (use cca apply)", serviceDecl.Name, configFile.Path, configFile.FromFile)
 			}
 		}
 	}
 	return nil
+}
+
+// NonNilProvidedFiles returns the client-sent files, or an empty map when the
+// client sent none, so that a server-side compile never falls back to disk.
+func NonNilProvidedFiles(providedFiles map[string]string) map[string]string {
+	if providedFiles == nil {
+		return map[string]string{}
+	}
+	return providedFiles
+}
+
+// isProvidedFile reports whether the client sent the contents of declaredPath.
+func isProvidedFile(file *File, declaredPath string) bool {
+	_, isProvided := file.ProvidedFiles[declaredPath]
+	return isProvided
 }
 
 // ValidateNoInlineGateKeys returns an error naming the first gate (sorted)
@@ -1679,6 +1731,17 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 			return inlineKeyError
 		}
 	}
+	if writeError := WriteCompiledFacts(ctx, stateStore, file, facts); writeError != nil {
+		return writeError
+	}
+	return writeInlineGateKeys(ctx, file, gateKeyWriter)
+}
+
+// WriteCompiledFacts writes a compiled configuration's facts and deletes the
+// stored facts of each declared gate that the configuration no longer sets
+// (collectRemovedGateFacts). Every apply path uses it: cca apply locally,
+// POST /api/apply direct and through the policy gate.
+func WriteCompiledFacts(ctx context.Context, stateStore store.StateStore, file *File, facts []Fact) error {
 	for _, fact := range facts {
 		if _, putError := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); putError != nil {
 			return fmt.Errorf("writing %s: %w", fact.Key, putError)
@@ -1693,7 +1756,7 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 			return fmt.Errorf("deleting %s: %w", removedFact.Key, deleteError)
 		}
 	}
-	return writeInlineGateKeys(ctx, file, gateKeyWriter)
+	return nil
 }
 
 // writeInlineGateKeys sends each inline gate key (sorted by gate) to the
@@ -1767,18 +1830,37 @@ type FactChange struct {
 // writing anything. Stored facts missing from the compiled output are reported
 // as "delete" only for gates declared in the file (see collectRemovedGateFacts);
 // other stale facts are not touched by apply and so are not reported.
-// allowLocalFiles is false for the API server, which must not read the
-// client's file paths (ValidateNoLocalFileReferences).
+// allowLocalFiles is false for a server-side diff with no client files; the
+// API server calls DiffWithProvidedFiles instead.
 func Diff(ctx context.Context, stateStore store.StateStore, input string, allowLocalFiles bool) ([]FactChange, error) {
+	if !allowLocalFiles {
+		return DiffWithProvidedFiles(ctx, stateStore, input, nil)
+	}
 	file, parseError := Parse(input)
 	if parseError != nil {
 		return nil, parseError
 	}
-	if !allowLocalFiles {
-		if fileError := ValidateNoLocalFileReferences(file); fileError != nil {
-			return nil, fileError
-		}
+	return diffParsedFile(ctx, stateStore, file, input)
+}
+
+// DiffWithProvidedFiles is Diff for the API server: files the configuration
+// references are read only from providedFiles (the contents cca diff sent),
+// never from the server's disk (ValidateNoLocalFileReferences).
+func DiffWithProvidedFiles(ctx context.Context, stateStore store.StateStore, input string, providedFiles map[string]string) ([]FactChange, error) {
+	file, parseError := Parse(input)
+	if parseError != nil {
+		return nil, parseError
 	}
+	file.ProvidedFiles = NonNilProvidedFiles(providedFiles)
+	if fileError := ValidateNoLocalFileReferences(file); fileError != nil {
+		return nil, fileError
+	}
+	return diffParsedFile(ctx, stateStore, file, input)
+}
+
+// diffParsedFile compiles a parsed configuration and compares its facts with
+// the store (shared by Diff and DiffWithProvidedFiles).
+func diffParsedFile(ctx context.Context, stateStore store.StateStore, file *File, input string) ([]FactChange, error) {
 	sourceLines := splitSourceLines(input)
 	facts, compileError := CompileWithSource(file, sourceLines)
 	if compileError != nil {

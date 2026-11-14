@@ -1193,7 +1193,7 @@ func TestPolicyGateAllowsValidDSL(t *testing.T) {
   instances 3
 }`
 
-	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	result, err := gate.Evaluate(ctx, "user:alice", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -1218,7 +1218,7 @@ func TestPolicyGateDenySyntaxError(t *testing.T) {
 
 	gate := NewPolicyGate(memoryStore, registry, nil, nil, auditLog)
 
-	result, err := gate.Evaluate(ctx, "user:alice", "service {{{invalid")
+	result, err := gate.Evaluate(ctx, "user:alice", "service {{{invalid", nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -1262,7 +1262,7 @@ func TestPolicyGateDenyRBAC(t *testing.T) {
   instances 1
 }`
 
-	result, err := gate.Evaluate(ctx, "user:bob", dsl)
+	result, err := gate.Evaluate(ctx, "user:bob", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -1300,7 +1300,7 @@ func TestPolicyGateDenyQuotaExceeded(t *testing.T) {
   instances 10
 }`
 
-	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	result, err := gate.Evaluate(ctx, "user:alice", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -1330,7 +1330,7 @@ func TestPolicyGateDenyDeletingTenant(t *testing.T) {
   instances 1
 }`
 
-	result, err := gate.Evaluate(ctx, "user:alice", dsl)
+	result, err := gate.Evaluate(ctx, "user:alice", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}
@@ -1362,7 +1362,7 @@ func TestPolicyGateEvaluateAndCommit(t *testing.T) {
   instances 2
 }`
 
-	result, err := gate.EvaluateAndCommit(ctx, "user:alice", dsl)
+	result, err := gate.EvaluateAndCommit(ctx, "user:alice", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate and commit: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestPolicyGateNoRBACSkipsAuthorization(t *testing.T) {
   instances 1
 }`
 
-	result, err := gate.Evaluate(ctx, "user:anyone", dsl)
+	result, err := gate.Evaluate(ctx, "user:anyone", dsl, nil)
 	if err != nil {
 		t.Fatalf("evaluate: %v", err)
 	}

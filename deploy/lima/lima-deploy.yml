@@ -391,7 +391,7 @@
         --cert /etc/ccattler/pki/node.pem
         --key /etc/ccattler/pki/node-key.pem
         -H "Accept: application/json"
-        https://127.0.0.1:9770/status
+        https://127.0.0.1:9770/api/status
         | grep -q '"id":"node-1"'
       register: node_registered
       retries: 10
@@ -435,7 +435,7 @@
         --cert /etc/ccattler/pki/node.pem
         --key /etc/ccattler/pki/node-key.pem
         -H "Accept: application/json"
-        https://127.0.0.1:9770/status
+        https://127.0.0.1:9770/api/status
       register: cluster_status
 
     - name: Show running instances

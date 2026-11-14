@@ -50,12 +50,14 @@ type GateResult struct {
 	Stage    string        // the gate stage that produced this result
 	Reason   string        // human-readable explanation
 	Facts    []lang.Fact   // compiled facts ready for commit (if allowed)
+	File     *lang.File    // parsed configuration, for pruning removed gate settings at commit (if allowed)
 	Duration time.Duration // total pipeline evaluation time
 }
 
 // Evaluate runs the full admission pipeline on a DSL input string submitted
 // by the given principal. Returns the result and any compiled facts.
-func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string) (*GateResult, error) {
+// providedFiles holds the client-sent contents of referenced files (nil: none).
+func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string, providedFiles map[string]string) (*GateResult, error) {
 	startTime := time.Now()
 
 	// Stage 1: Syntax validation.
@@ -70,9 +72,11 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 		}, nil
 	}
 
-	// Stage 2: Schema validation (compile AST to facts). Local file paths
-	// (gate tls files, config "from") are a schema error: the server never
-	// reads the client's paths, which also keeps inline gate keys out (Flow 28).
+	// Stage 2: Schema validation (compile AST to facts). Referenced files
+	// (gate tls cert, config "from") are read only from what the client sent;
+	// a path it did not send, or any tls key file, is a schema error: the
+	// server never reads the client's paths (Flow 28).
+	file.ProvidedFiles = lang.NonNilProvidedFiles(providedFiles)
 	err = lang.ValidateNoLocalFileReferences(file)
 	var facts []lang.Fact
 	if err == nil {
@@ -112,6 +116,7 @@ func (gate *PolicyGate) Evaluate(ctx context.Context, principal, dslInput string
 		Stage:    "commit",
 		Reason:   "all gates passed",
 		Facts:    facts,
+		File:     file,
 		Duration: time.Since(startTime),
 	}, nil
 }
@@ -193,8 +198,10 @@ func (gate *PolicyGate) evaluateSecurityPolicyGate(ctx context.Context, principa
 }
 
 // EvaluateAndCommit runs the pipeline and commits facts to the store if allowed.
-func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInput string) (*GateResult, error) {
-	result, err := gate.Evaluate(ctx, principal, dslInput)
+// providedFiles holds the contents of files the configuration references, as
+// sent by cca apply; the gate never reads the server's disk.
+func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInput string, providedFiles map[string]string) (*GateResult, error) {
+	result, err := gate.Evaluate(ctx, principal, dslInput, providedFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +210,8 @@ func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInp
 		return result, nil
 	}
 
-	for _, fact := range result.Facts {
-		if _, err := gate.factStore.Put(ctx, fact.Key, []byte(fact.Value)); err != nil {
-			return nil, fmt.Errorf("commit fact %q: %w", fact.Key, err)
-		}
+	if err := lang.WriteCompiledFacts(ctx, gate.factStore, result.File, result.Facts); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 
 	return result, nil

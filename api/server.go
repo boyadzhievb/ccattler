@@ -591,9 +591,10 @@ func (apiServer *Server) handleState(responseWriter http.ResponseWriter, request
 	_ = json.NewEncoder(responseWriter).Encode(result)
 }
 
-// applyRequest is the JSON body for POST /api/apply.
+// applyRequest is the JSON body for POST /api/apply and POST /api/diff.
 type applyRequest struct {
-	Config string `json:"config"`
+	Config string            `json:"config"`          // DSL configuration text
+	Files  map[string]string `json:"files,omitempty"` // declared path → contents of files the config references (gate tls cert, config "from")
 }
 
 // applyResponse is the JSON response for POST /api/apply.
@@ -617,50 +618,51 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 	responseWriter.Header().Set("Content-Type", "application/json")
 
-	dslInput, readError := readDSLRequestBody(request)
+	configRequest, readError := readDSLRequestBody(request)
 	if readError != "" {
+		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: readError})
 		return
 	}
 
 	if apiServer.policyGate != nil {
-		apiServer.applyViaPolicyGate(responseWriter, request.Context(), dslInput)
+		apiServer.applyViaPolicyGate(responseWriter, request.Context(), configRequest)
 		return
 	}
 
-	apiServer.applyDirect(responseWriter, request.Context(), dslInput)
+	apiServer.applyDirect(responseWriter, request.Context(), configRequest)
 }
 
-// readDSLRequestBody extracts DSL text from the request body. Returns the DSL
-// string and an empty error string on success, or empty DSL and the error
-// message on failure.
-func readDSLRequestBody(request *http.Request) (string, string) {
+// readDSLRequestBody extracts the configuration from the request body: JSON
+// {config, files} or raw DSL text (no files). Returns the request and an empty
+// error string on success, or an error message on failure.
+func readDSLRequestBody(request *http.Request) (applyRequest, string) {
 	contentType := request.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/json") {
 		var body applyRequest
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			return "", "invalid JSON: " + err.Error()
+			return applyRequest{}, "invalid JSON: " + err.Error()
 		}
 		if body.Config == "" {
-			return "", "empty config"
+			return applyRequest{}, "empty config"
 		}
-		return body.Config, ""
+		return body, ""
 	}
 	rawBody, err := io.ReadAll(request.Body)
 	if err != nil {
-		return "", "read body: " + err.Error()
+		return applyRequest{}, "read body: " + err.Error()
 	}
 	if len(rawBody) == 0 {
-		return "", "empty config"
+		return applyRequest{}, "empty config"
 	}
-	return string(rawBody), ""
+	return applyRequest{Config: string(rawBody)}, ""
 }
 
 // applyViaPolicyGate routes DSL through the full admission pipeline
 // (syntax, schema, authorization, quota, commit).
-func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, requestContext context.Context, dslInput string) {
+func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest) {
 	principal := security.PrincipalFromContext(requestContext)
-	result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, dslInput)
+	result, evaluateError := apiServer.policyGate.EvaluateAndCommit(requestContext, principal, configRequest.Config, configRequest.Files)
 	if evaluateError != nil {
 		responseWriter.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "policy: " + evaluateError.Error()})
@@ -676,15 +678,17 @@ func (apiServer *Server) applyViaPolicyGate(responseWriter http.ResponseWriter, 
 
 // applyDirect parses, compiles, and writes facts without policy evaluation.
 // Used in local/demo modes without a policy gate.
-func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, requestContext context.Context, dslInput string) {
-	file, err := lang.Parse(dslInput)
+func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, requestContext context.Context, configRequest applyRequest) {
+	file, err := lang.Parse(configRequest.Config)
 	if err != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "parse: " + err.Error()})
 		return
 	}
-	// The server never reads the client's file paths (gate tls files, config
-	// "from"); this also refuses inline gate keys, which come from key files.
+	// The server never reads the client's file paths: referenced files come
+	// only from the request; a tls key file is declared but never read (the
+	// key goes to PUT /api/gate-key).
+	file.ProvidedFiles = lang.NonNilProvidedFiles(configRequest.Files)
 	err = lang.ValidateNoLocalFileReferences(file)
 	var facts []lang.Fact
 	if err == nil {
@@ -700,12 +704,10 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "authorization: " + authError.Error()})
 		return
 	}
-	for _, fact := range facts {
-		if _, putErr := apiServer.factStore.Put(requestContext, fact.Key, []byte(fact.Value)); putErr != nil {
-			responseWriter.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + putErr.Error()})
-			return
-		}
+	if writeError := lang.WriteCompiledFacts(requestContext, apiServer.factStore, file, facts); writeError != nil {
+		responseWriter.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + writeError.Error()})
+		return
 	}
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
 }
@@ -1587,35 +1589,14 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	requestContext := request.Context()
 
-	var dslContent string
-	contentType := request.Header.Get("Content-Type")
-	if strings.Contains(contentType, "application/json") {
-		var requestBody struct {
-			Config string `json:"config"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&requestBody); err != nil {
-			responseWriter.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "invalid JSON"})
-			return
-		}
-		dslContent = requestBody.Config
-	} else {
-		rawBody, err := io.ReadAll(request.Body)
-		if err != nil {
-			responseWriter.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "read body: " + err.Error()})
-			return
-		}
-		dslContent = string(rawBody)
-	}
-
-	if dslContent == "" {
+	configRequest, readError := readDSLRequestBody(request)
+	if readError != "" {
 		responseWriter.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": "empty config"})
+		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": readError})
 		return
 	}
 
-	changes, diffError := lang.Diff(requestContext, apiServer.factStore, dslContent, false)
+	changes, diffError := lang.DiffWithProvidedFiles(requestContext, apiServer.factStore, configRequest.Config, configRequest.Files)
 	if diffError != nil {
 		responseWriter.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": diffError.Error()})

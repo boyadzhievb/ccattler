@@ -35,11 +35,11 @@
       --endpoints=https://127.0.0.1:2379 --cacert /etc/ccattler/pki/ca.pem
       --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem
   tasks:
-    - name: Refuse clusters whose root key is a KMS key
+    - name: Refuse clusters whose root key is a cloud key (AWS KMS, GCP Cloud KMS)
       command: systemctl cat cca-server
       register: server_unit
       changed_when: false
-      failed_when: server_unit.rc != 0 or '--kms-provider' in server_unit.stdout
+      failed_when: server_unit.rc != 0 or '--root-key-provider' in server_unit.stdout
 
     - name: Read the cca version on every control-plane host
       command: /usr/local/bin/cca version

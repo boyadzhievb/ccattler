@@ -15,8 +15,8 @@ import (
 )
 
 // TestLoadSecretRootKeyProviderChecks verifies the server-side root key checks:
-// a valid distinct key passes; missing, identical-to-legacy and unknown KMS
-// providers fail.
+// a valid distinct key passes; missing, identical-to-legacy and unknown cloud
+// key providers fail.
 func TestLoadSecretRootKeyProviderChecks(t *testing.T) {
 	temporaryDirectory := t.TempDir()
 	rootKeyPath := filepath.Join(temporaryDirectory, "secret-root.key")
@@ -37,9 +37,9 @@ func TestLoadSecretRootKeyProviderChecks(t *testing.T) {
 	if _, validateError := loadSecretRootKeyProvider(ctx, missingKeyConfig, distinctLegacyKey); validateError == nil {
 		t.Error("missing root key accepted")
 	}
-	unknownKMSConfig := serverCommandConfig{kmsProviderName: "no-such-kms", kmsKeyID: "key"}
-	if _, validateError := loadSecretRootKeyProvider(ctx, unknownKMSConfig, distinctLegacyKey); validateError == nil || !strings.Contains(validateError.Error(), "not available") {
-		t.Errorf("unknown KMS provider error = %v, want 'not available'", validateError)
+	unknownProviderConfig := serverCommandConfig{rootKeyProviderName: "no-such-provider", rootKeyID: "key"}
+	if _, validateError := loadSecretRootKeyProvider(ctx, unknownProviderConfig, distinctLegacyKey); validateError == nil || !strings.Contains(validateError.Error(), "not available") {
+		t.Errorf("unknown cloud key provider error = %v, want 'not available'", validateError)
 	}
 }
 

@@ -87,7 +87,7 @@
         --cert {{ cca_cert_dir }}/node.pem
         --key {{ cca_cert_dir }}/node-key.pem
         -H "Accept: application/json"
-        https://{{ ansible_host }}:9770/status
+        https://{{ ansible_host }}:9770/api/status
       register: cluster_status
 
     - name: Display running instances

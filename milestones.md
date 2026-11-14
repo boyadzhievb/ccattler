@@ -442,7 +442,38 @@ Found in M214 run 1 (2026-11-12). The CLI behaves as if it ran on the control pl
 - [ ] `get secrets` and `secret list` agree
 - [ ] Local-only commands (`token`, `root-key-status`, `rotate-root-key`, `generate-root-key`) say "run on a control-plane node" instead of raw etcd errors
 - [ ] Reproduce and fix or reject: `--team` filter, `readiness` needing `go.mod`, `images pull` 403 message, `*_CMD` redaction rule, `audit --denied`
-- [ ] `cca user delete` must also delete `auth/grant/user/{name}/*` facts — orphaned grants reattach when a user name is reused (SA-H1 reopened, found during M214 adversarial replay debugging)
+- [x] `cca user delete` must also delete `auth/grant/user/{name}/*` facts — already done in M216: `cca user delete` calls `DELETE /api/user`, which removes grants and the inline role in one transaction (`collectUserDeleteOperations`, verified 2026-11-14). Only the original SA-H1 race remains (a grant written between the scan and the transaction)
+
+### Phase 219 — CLI/API Authorization Alignment (M219)
+
+Found 2026-11-14 by the M214 replay's new positive control: `cca status` as a user with no grants printed the full cluster status. The legacy `/status` endpoint (`cmd/cca/command_server.go`) authenticates but checks no capability and applies no team filter, while `/api/status` answers 403. Rule (user decision 2026-11-14): CLI and API follow one authentication and authorization model, documented in the call graphs; every gap is fixed. Spec, decisions and tasks: OpenSpec change [`openspec/changes/cli-api-authorization-alignment/`](openspec/changes/cli-api-authorization-alignment/) (proposal, design, spec `api-route-authorization`, tasks).
+
+- [ ] Split `design/graphs/AUTH_GRAPH.md` into `AUTHN_GRAPH.md` (authentication, tokens, OIDC, CA, enrollment) and `AUTHZ_GRAPH.md` (store layer, API layer, auth controller, plus a table: route → method → capability → scope → CLI command); secret encryption and key handling to `SECRETS_GRAPH.md`
+- [ ] Failing tests first: every route on the full server mux (API + legacy) as an authenticated principal without grants, every method → 401/403, except a reviewed public allowlist (`/healthz`, `/api/auth/whoami`, `/api/auth/oidc-config`, `/api/enroll`, `/.well-known/`, `/oidc/jwks`; `/metrics` is M182)
+- [ ] `/status`: same capability check and team filter as `/api/status` (callers: `cca status`, `scripts/caddy-sync.sh`, HA e2e scripts)
+- [ ] `cca apply` / `cca diff` with `--store etcd` bypass API authorization, policy gate and audit: go through `/api/apply` and `/api/diff` (with M218's remote apply)
+- [ ] `cca token` (join tokens) opens etcd directly: API route with `cluster.admin`, or documented as control-plane-only like the root key commands
+- [ ] M214 replay: positive controls per identity (done in run.sh, 2026-11-14) and the audit tenant case with planted markers (done) pass on the deploy cluster
+
+### Phase 220 — AWS Provider Tests Against AWS Emulator (M220)
+
+The AWS cloud provider (`cloud/aws.go`: instances, load balancers, VPC routes) was tested only against real AWS (`//go:build cloudprovider`, skipped without keys). AWS Emulator ([user guide](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-docker.html)) runs EC2, ELBv2 and STS locally; the SDK is pointed at it with standard environment variables, no code change.
+
+- [x] `test/aws-emulator/Dockerfile` (built locally, AWS publishes no image; CPU picked by the script) and `scripts/aws-emulator.sh start|stop|env|test`: port bound to 127.0.0.1 only, telemetry off, waits for `/__admin/health`, refuses to run tests unless STS reports the emulator account `000000000000`
+- [x] `skipWithoutAWSCredentials` also runs when `AWS_ENDPOINT_URL` is a loopback emulator with its credentials file
+- [x] All 5 `TestAWSIntegration*` tests pass against the emulator (2026-11-14, ~6 s)
+- [ ] CI job (GitHub-hosted runner, x86_64) running `scripts/aws-emulator.sh test`
+- [ ] AWS KMS root key provider (`security/kms_cloud.go`) tested against the emulator, if it emulates KMS
+
+### Phase 221 — Key Provider Naming (M221)
+
+"KMS" is the AWS service name; CCattler's own key-wrapping layer (local root key file, keyring envelopes) was also called KMS, which read as AWS-only (user decision 2026-11-14: "KMS" only for AWS KMS / GCP Cloud KMS).
+
+- [x] `security/kms.go` → `key_provider.go`; `kms_registry.go` → `cloud_key_provider_registry.go` (`CloudKeyProviderFactory`, `RegisterCloudKeyProviderFactory`, `LookupCloudKeyProviderFactory`); `kms_cloud.go` → `cloud_key_providers.go` (AWS KMS and GCP Cloud KMS types keep their names)
+- [x] `cca server --kms-provider/--kms-key-id` → `--root-key-provider/--root-key-id` (values `aws-kms`, `gcp-kms` unchanged); completion, Ansible `rotate-root-key.yml`, error messages. No alias for the old flags (beta; only the untested cloud build used them)
+- [x] Docs: design docs, website, AUTH_GRAPH (also dropped the stale `RewrapEnvelope` entries and fixed line numbers); released changelog entries unchanged. security-model.md no longer claims Vault/HSM support
+- [x] gofmt, golangci-lint (default and `cloudprovider` tags), tests for security, cmd/cca, cloud green (2026-11-14)
+- [ ] Independent review (`code-reviewer`)
 
 ### Phase 211 — Workload Identity & Safe Instance Creation (M211)
 

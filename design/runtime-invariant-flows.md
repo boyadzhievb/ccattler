@@ -1222,10 +1222,10 @@ node disabled or unenrolled → delivery refused (403, audited); cached keys kep
 
 ```
 Inputs on every API replica
-  root key    /etc/ccattler/secret-root.key (32 bytes, 0400, root) | --kms-provider <name>
+  root key    /etc/ccattler/secret-root.key (32 bytes, 0400, root) | --root-key-provider aws-kms|gcp-kms
   legacy key  /etc/ccattler/secret-master.key (optional; upgraded clusters only)
   in-memory store (local simulation, tests): ephemeral root key generated in memory,
-    never written; every persistent store requires the file or --kms-provider
+    never written; every persistent store requires the file or --root-key-provider
 
 1. Startup checks (before serving)
    root key missing, unreadable, size ≠ 32, group/world-readable → exit
@@ -1336,7 +1336,7 @@ legacy key lost before migration     → v1 secrets unreadable; re-create them (
 
 ## Flow 30: Keyring Rotation & Root Key Rotation (M178)
 
-**Status:** designed 2026-11-11. Decisions: KEK rotation is allowed only when `keyring/legacy` is `none` or `retired` (it never overlaps the v1 migration); a new `keyring-rotation` controller does it (the migration controller is unchanged); root key rotation is offline (every API replica stopped) and automated by one playbook, because the file root key is the only mode in use (the KMS providers are behind the `cloudprovider` build tag and untested). Spec: [config-secrets.md](config-secrets.md#rotation-crash-safe).
+**Status:** designed 2026-11-11. Decisions: KEK rotation is allowed only when `keyring/legacy` is `none` or `retired` (it never overlaps the v1 migration); a new `keyring-rotation` controller does it (the migration controller is unchanged); root key rotation is offline (every API replica stopped) and automated by one playbook, because the file root key is the only mode in use (the cloud key providers for AWS KMS and GCP Cloud KMS are behind the `cloudprovider` build tag and untested). Spec: [config-secrets.md](config-secrets.md#rotation-crash-safe).
 
 **Problem**: a KEK or the root key that may have been copied must be replaceable without losing a secret. `POST /api/secret/rotate` answers 409 since M177 (the former in-memory rotation lost every secret on restart). The root key is a file on every API replica; changing it while replicas run leaves some of them with a key that no longer opens the keyring.
 
@@ -1428,11 +1428,11 @@ Stage of a host (cca secret root-key-status, read-only):
   idle       key file opens keyring/root_check, no .next
   staged     key file opens, .next present (not committed)
   committed  .next opens, key file does not (or is absent): swap pending
-  invalid    nothing opens (wrong files, or a KMS root key)
+  invalid    nothing opens (wrong files, or a cloud root key)
 
 Playbook deploy/ansible/rotate-root-key.yml (control-plane hosts, any_errors_fatal;
 every step is decided by the observed stages, never by where a previous run stopped)
-  1. refuse a KMS root key; require the same cca version on every host
+  1. refuse a cloud root key (--root-key-provider); require the same cca version on every host
   2. stop cca-server one host at a time
   3. (inside the rescue block from here)                       failure → rescue: read the
      require systemctl is-active = inactive everywhere          first host's stage; not

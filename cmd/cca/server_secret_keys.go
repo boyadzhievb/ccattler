@@ -96,12 +96,12 @@ func parseKeyringRetireGrace(flagValue string) time.Duration {
 	return retireGrace
 }
 
-// loadSecretRootKeyProvider returns the root key provider: a KMS key that
-// must wrap and unwrap a probe value, or a key file that must pass
-// LoadSecretRootKeyFile and differ from the legacy key (decision R1).
+// loadSecretRootKeyProvider returns the root key provider: a cloud key (AWS
+// KMS, GCP Cloud KMS) that must wrap and unwrap a probe value, or a key file
+// that must pass LoadSecretRootKeyFile and differ from the legacy key (R1).
 func loadSecretRootKeyProvider(ctx context.Context, parsedConfig serverCommandConfig, legacyKey []byte) (security.KeyProvider, error) {
-	if parsedConfig.kmsProviderName != "" {
-		return loadKMSRootKeyProvider(ctx, parsedConfig)
+	if parsedConfig.rootKeyProviderName != "" {
+		return loadCloudRootKeyProvider(ctx, parsedConfig)
 	}
 	rootKey, loadError := security.LoadSecretRootKeyFile(parsedConfig.secretRootKeyPath)
 	if loadError != nil {
@@ -113,37 +113,37 @@ func loadSecretRootKeyProvider(ctx context.Context, parsedConfig serverCommandCo
 	return security.NewLocalKeyProvider(rootKey)
 }
 
-// loadKMSRootKeyProvider builds the configured KMS key provider and
+// loadCloudRootKeyProvider builds the configured cloud key provider and
 // round-trips a random probe through it, so a wrong key ID or missing
 // permission fails at startup instead of on the first secret write.
-func loadKMSRootKeyProvider(ctx context.Context, parsedConfig serverCommandConfig) (security.KeyProvider, error) {
-	kmsFactory := security.LookupKMSKeyProviderFactory(parsedConfig.kmsProviderName)
-	if kmsFactory == nil {
-		return nil, fmt.Errorf("--kms-provider %q is not available in this build (use a cloud build, cca-cloud)", parsedConfig.kmsProviderName)
+func loadCloudRootKeyProvider(ctx context.Context, parsedConfig serverCommandConfig) (security.KeyProvider, error) {
+	cloudKeyProviderFactory := security.LookupCloudKeyProviderFactory(parsedConfig.rootKeyProviderName)
+	if cloudKeyProviderFactory == nil {
+		return nil, fmt.Errorf("--root-key-provider %q is not available in this build (use a cloud build, cca-cloud)", parsedConfig.rootKeyProviderName)
 	}
-	if parsedConfig.kmsKeyID == "" {
-		return nil, errors.New("--kms-provider needs --kms-key-id")
+	if parsedConfig.rootKeyID == "" {
+		return nil, errors.New("--root-key-provider needs --root-key-id")
 	}
-	kmsKeyProvider, factoryError := kmsFactory(ctx, parsedConfig.kmsKeyID, parsedConfig.cloudRegion)
+	cloudRootKeyProvider, factoryError := cloudKeyProviderFactory(ctx, parsedConfig.rootKeyID, parsedConfig.cloudRegion)
 	if factoryError != nil {
-		return nil, fmt.Errorf("KMS root key %s: %w", parsedConfig.kmsKeyID, factoryError)
+		return nil, fmt.Errorf("cloud root key %s: %w", parsedConfig.rootKeyID, factoryError)
 	}
 	probeValue, probeError := security.GenerateDEK()
 	if probeError != nil {
 		return nil, probeError
 	}
-	wrappedProbe, wrapError := kmsKeyProvider.WrapKey(ctx, probeValue)
+	wrappedProbe, wrapError := cloudRootKeyProvider.WrapKey(ctx, probeValue)
 	if wrapError != nil {
-		return nil, fmt.Errorf("KMS root key %s: wrap: %w", parsedConfig.kmsKeyID, wrapError)
+		return nil, fmt.Errorf("cloud root key %s: wrap: %w", parsedConfig.rootKeyID, wrapError)
 	}
-	unwrappedProbe, unwrapError := kmsKeyProvider.UnwrapKey(ctx, wrappedProbe)
+	unwrappedProbe, unwrapError := cloudRootKeyProvider.UnwrapKey(ctx, wrappedProbe)
 	if unwrapError != nil {
-		return nil, fmt.Errorf("KMS root key %s: unwrap: %w", parsedConfig.kmsKeyID, unwrapError)
+		return nil, fmt.Errorf("cloud root key %s: unwrap: %w", parsedConfig.rootKeyID, unwrapError)
 	}
 	if !bytes.Equal(unwrappedProbe, probeValue) {
-		return nil, fmt.Errorf("KMS root key %s: unwrapped probe does not match", parsedConfig.kmsKeyID)
+		return nil, fmt.Errorf("cloud root key %s: unwrapped probe does not match", parsedConfig.rootKeyID)
 	}
-	return kmsKeyProvider, nil
+	return cloudRootKeyProvider, nil
 }
 
 // exitWithSecretKeyError prints a secret key startup error with the fix for

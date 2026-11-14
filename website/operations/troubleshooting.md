@@ -378,7 +378,7 @@ curl -X POST http://localhost:9771/debug/images/pull \
 **Symptom:** `cca join` fails or times out.
 
 **Check:**
-1. Is the server running and reachable? `curl -k https://<server>:9770/status`
+1. Is the server running and reachable? `cca status` (or `curl --cacert /etc/ccattler/pki/ca.pem https://<server>:9770/healthz`)
 2. Is the token valid? `cca token list` on the server
 3. Is the CA certificate correct? Use `--ca-cert` flag with the server's CA
 

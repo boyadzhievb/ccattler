@@ -25,12 +25,23 @@ const (
 	awsIntegrationTestPollInterval = 5 * time.Second
 )
 
-// skipWithoutAWSCredentials skips the test if AWS credentials are not available.
+// skipWithoutAWSCredentials skips the test unless real AWS keys are set or
+// the SDK points at a local AWS Emulator (scripts/aws-emulator.sh), whose
+// credentials come from AWS_SHARED_CREDENTIALS_FILE.
 func skipWithoutAWSCredentials(testHandle *testing.T) {
 	testHandle.Helper()
-	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
-		testHandle.Skip("skipping: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY not set")
+	if usingLocalAWSEmulator() && os.Getenv("AWS_SHARED_CREDENTIALS_FILE") != "" {
+		return
 	}
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" || os.Getenv("AWS_SECRET_ACCESS_KEY") == "" {
+		testHandle.Skip("skipping: AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY not set and no local AWS Emulator")
+	}
+}
+
+// usingLocalAWSEmulator reports whether AWS_ENDPOINT_URL is a loopback
+// address, i.e. requests go to a local AWS Emulator and not to AWS.
+func usingLocalAWSEmulator() bool {
+	return strings.HasPrefix(os.Getenv("AWS_ENDPOINT_URL"), "https://127.0.0.1:")
 }
 
 // skipOnAWSAuthorizationError skips the test if the error is an AWS

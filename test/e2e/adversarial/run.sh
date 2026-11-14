@@ -47,7 +47,63 @@ esac
 CCA="/usr/local/bin/cca"
 
 # vmherd state is per-directory; cd to the right VM set.
-cd "$VMHERD_DIR"
+cd "$VMHERD_DIR" || { echo "FATAL: cannot cd to $VMHERD_DIR"; exit 1; }
+
+# Print a message and stop the run; the EXIT trap still cleans up.
+fatal() {
+  echo "FATAL: $*"
+  echo "**FATAL**: $*" >> "$TRANSCRIPT"
+  exit 1
+}
+
+# Run a cca command as a specific user (using their token via env).
+# An empty token would make cca fall back to the admin local-token.
+run_cca_as() {
+  local identity="$1"
+  local token="${TOKENS[$identity]:-}"
+  shift
+  [[ -n "$token" ]] || fatal "no token for $identity (would run as admin)"
+  local exit_code=0
+  local output
+  output=$(vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token $CCA $*" 2>&1) || exit_code=$?
+  echo "$output"
+  return "$exit_code"
+}
+
+# Run an admin setup/teardown command; any failure stops the run, because
+# a refusal case means nothing if its identity was not set up as intended.
+run_cca_or_fatal() {
+  local output
+  output=$(run_cca "$@") || fatal "setup command failed: cca $* → $output"
+}
+
+# Mint a token for a user and store it; refuse anything that is not a JWT.
+mint_token() {
+  local name="$1"
+  local token
+  token=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA user token $name" 2>/dev/null) || fatal "token mint failed for $name"
+  [[ "$token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] || fatal "token for $name is not a JWT"
+  TOKENS["$name"]="$token"
+}
+
+# Per-run tag substituted for @RUN@ in marker keys and patterns, so a marker
+# planted by an earlier run can never satisfy this run's assertions.
+RUN_ID="$(date +%s)"
+
+# Read one store key through GET /api/state?key= as a test user. The API
+# server audits every read with the key as target, so this plants an audit
+# entry in the tenant named by a key segment. 200 and 404 both mean the read
+# was authorized and audited; anything else stops the run.
+read_state_key_as() {
+  local identity="$1" key="$2"
+  local token="${TOKENS[$identity]:-}"
+  [[ -n "$token" ]] || fatal "no token for $identity"
+  local remote_cmd="addr=\$(cat /etc/ccattler/server-address 2>/dev/null || echo 127.0.0.1:9770); curl -s -o /dev/null -w '%{http_code}' --cacert /etc/ccattler/ca.pem -H 'Authorization: Bearer $token' \"https://\$addr/api/state?key=$key\""
+  local http_code
+  http_code=$(vmherd ssh "$CTRL_VM" -- "$remote_cmd" 2>&1) || fatal "marker read failed for $identity: $http_code"
+  [[ "$http_code" == "200" || "$http_code" == "404" ]] || fatal "marker read of $key as $identity returned HTTP $http_code"
+  echo "- Marker read \`$key\` as $identity → HTTP $http_code" >> "$TRANSCRIPT"
+}
 
 # Run a cca command as admin on the control VM and capture output + exit code.
 # vmherd ssh requires the entire remote command as a single string argument.
@@ -55,18 +111,6 @@ run_cca() {
   local exit_code=0
   local output
   output=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA $*" 2>&1) || exit_code=$?
-  echo "$output"
-  return "$exit_code"
-}
-
-# Run a cca command as a specific user (using their token via env).
-run_cca_as() {
-  local identity="$1"
-  local token="${TOKENS[$identity]}"
-  shift
-  local exit_code=0
-  local output
-  output=$(vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token $CCA $*" 2>&1) || exit_code=$?
   echo "$output"
   return "$exit_code"
 }
@@ -110,21 +154,38 @@ setup_identities() {
     "adv-nongrant:none:"
   )
 
+  # Users left by an interrupted run would otherwise make create fail.
+  cleanup_identities >/dev/null
+
   for entry in "${identities[@]}"; do
     IFS=':' read -r name team role <<< "$entry"
     local team_args=()
     if [[ "$team" != "none" ]]; then
       team_args=(--team "$team")
     fi
-    run_cca user create "$name" "${team_args[@]}" >/dev/null 2>&1 || true
+    run_cca_or_fatal user create "$name" "${team_args[@]}"
     if [[ -n "$role" ]]; then
-      run_cca role grant "user:$name" --role "$role" >/dev/null 2>&1 || true
+      run_cca_or_fatal role grant "user:$name" --role "$role"
     fi
-    local token
-    token=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA user token $name" 2>/dev/null)
-    TOKENS["$name"]="$token"
+    mint_token "$name"
     echo "- Created user \`$name\` (team=$team, role=$role)" >> "$TRANSCRIPT"
   done
+  echo "" >> "$TRANSCRIPT"
+  verify_identities
+}
+
+# Positive controls: granted identities can read, the ungranted one is
+# refused. Proves every token is used and no identity runs as admin.
+verify_identities() {
+  local identity output
+  for identity in adv-reader adv-writer; do
+    output=$(run_cca_as "$identity" status) || fatal "$identity cannot run status (grant missing?): $output"
+  done
+  if output=$(run_cca_as adv-nongrant status); then
+    fatal "adv-nongrant ran status without a grant (token ignored, running as admin?)"
+  fi
+  echo "$output" | grep -qi "forbidden" || fatal "adv-nongrant refused for the wrong reason: $output"
+  echo "- Positive controls passed (reader/writer read, nongrant refused)" >> "$TRANSCRIPT"
   echo "" >> "$TRANSCRIPT"
 }
 
@@ -167,15 +228,25 @@ run_case() {
   for ((s=0; s<setup_count; s++)); do
     local setup_cmd
     setup_cmd=$(yq ".[$index].setup[$s]" "$CASES_FILE")
-    run_cca $setup_cmd >/dev/null 2>&1 || true
+    run_cca_or_fatal $setup_cmd
   done
 
   # Capture token if needed.
   local capture_token
   capture_token=$(yq ".[$index].capture_token // \"\"" "$CASES_FILE")
   if [[ -n "$capture_token" && "$capture_token" != "null" ]]; then
-    TOKENS["$capture_token"]=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA user token $capture_token" 2>/dev/null)
+    mint_token "$capture_token"
   fi
+
+  # Plant audit markers: reads of store keys as a given test user.
+  local marker_count
+  marker_count=$(yq ".[$index].marker_reads // [] | length" "$CASES_FILE")
+  for ((mr=0; mr<marker_count; mr++)); do
+    local marker_as marker_key
+    marker_as=$(yq ".[$index].marker_reads[$mr].as" "$CASES_FILE")
+    marker_key=$(yq ".[$index].marker_reads[$mr].key" "$CASES_FILE")
+    read_state_key_as "$marker_as" "${marker_key//@RUN@/$RUN_ID}"
+  done
 
   # Run steps.
   local step_count
@@ -212,7 +283,7 @@ run_case() {
   for ((td=0; td<teardown_count; td++)); do
     local td_cmd
     td_cmd=$(yq ".[$index].teardown_before_assert[$td]" "$CASES_FILE")
-    run_cca $td_cmd >/dev/null 2>&1 || true
+    run_cca_or_fatal $td_cmd
   done
 
   # Run assert_after_teardown.
@@ -304,6 +375,7 @@ assert_step() {
   for ((m=0; m<mc_count; m++)); do
     local pattern
     pattern=$(yq ".[$case_index].${section}[$step_index].must_contain[$m]" "$CASES_FILE")
+    pattern="${pattern//@RUN@/$RUN_ID}"
     if ! echo "$output" | grep -qi "$pattern"; then
       echo "  FAIL  $case_name: output missing '$pattern'"
       echo "**FAIL**: output missing \`$pattern\`" >> "$TRANSCRIPT"
@@ -318,6 +390,7 @@ assert_step() {
   for ((m=0; m<mnc_count; m++)); do
     local pattern
     pattern=$(yq ".[$case_index].${section}[$step_index].must_not_contain[$m]" "$CASES_FILE")
+    pattern="${pattern//@RUN@/$RUN_ID}"
     if echo "$output" | grep -qi "$pattern"; then
       echo "  FAIL  $case_name: output contains '$pattern' (must not)"
       echo "**FAIL**: output contains \`$pattern\` (must not)" >> "$TRANSCRIPT"
