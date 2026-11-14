@@ -38,81 +38,11 @@ const (
 	enrollmentHTTPTimeout = 30 * time.Second
 )
 
-// diffCommandConfig holds parsed flags for the "diff" command.
-type diffCommandConfig struct {
-	// configFilePath is the path to the .ccattler DSL file to diff.
-	configFilePath string
-	// storeBackend selects the state store implementation: "memory" or "etcd".
-	storeBackend string
-	// etcdEndpoints is the comma-separated list of etcd server addresses.
-	etcdEndpoints string
-	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
-	storeKeyPrefix string
-	// valuesFilePaths holds paths to values files for template rendering (--values).
-	valuesFilePaths []string
-	// setOverrides holds key=value pairs for template overrides (--set).
-	setOverrides []string
-	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
-	setFromEnvOverrides []string
-}
-
-// parseDiffCommandArgs extracts the config file path and optional store flags
-// from the arguments following "diff".
-func parseDiffCommandArgs(args []string) diffCommandConfig {
-	defaults := resolveStoreDefaults()
-	parsedConfig := diffCommandConfig{
-		storeBackend:   defaults.storeBackend,
-		etcdEndpoints:  defaults.etcdEndpoints,
-		storeKeyPrefix: defaults.storeKeyPrefix,
-	}
-	for argIndex := 0; argIndex < len(args); argIndex++ {
-		currentArg := args[argIndex]
-		switch currentArg {
-		case "--store":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeBackend = args[argIndex]
-			}
-		case "--endpoints":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdEndpoints = args[argIndex]
-				parsedConfig.storeBackend = "etcd"
-			}
-		case "--store-prefix":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeKeyPrefix = args[argIndex]
-			}
-		case "--values", "-f":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.valuesFilePaths = append(parsedConfig.valuesFilePaths, args[argIndex])
-			}
-		case "--set":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.setOverrides = append(parsedConfig.setOverrides, args[argIndex])
-			}
-		case "--set-from-env":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
-			}
-		default:
-			if !strings.HasPrefix(currentArg, "-") {
-				parsedConfig.configFilePath = currentArg
-			}
-		}
-	}
-	return parsedConfig
-}
-
-// executeDiffCommand parses one or more .ccattler files and shows what facts
-// would change without writing anything. Supports single files and directories.
-// In etcd mode it compares against the live store. In memory mode (default)
-// everything is an "add" since the store is empty.
-func executeDiffCommand(parsedConfig diffCommandConfig) {
+// executeDiffCommand renders one or more .cca files and shows what facts
+// would change without writing anything, as the API server compares them
+// with the cluster. With --simulate it compares with an empty local store,
+// so everything is an "add".
+func executeDiffCommand(parsedConfig configurationCommandConfig) {
 	renderedFiles, resolveError := resolveAndRenderDSLFiles(
 		parsedConfig.configFilePath, parsedConfig.valuesFilePaths,
 		parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
@@ -120,56 +50,21 @@ func executeDiffCommand(parsedConfig diffCommandConfig) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", resolveError)
 		os.Exit(1)
 	}
-	dslContent := combineDSLFileContents(renderedFiles)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if parsedConfig.storeBackend == "etcd" {
-		factStore, storeCreationError := createStateStoreFromServerConfig(
-			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
-			"", "", "")
-		if storeCreationError != nil {
-			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
-			os.Exit(1)
-		}
-		defer func() { _ = factStore.Close() }()
-
-		changes, diffError := lang.Diff(ctx, factStore, dslContent, true)
-		if diffError != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
-			os.Exit(1)
-		}
-		printDiffChanges(changes)
-		return
-	}
-
-	apiURL := statusAPIBaseURL() + "/api/diff"
-	httpResponse, diffErr := buildAuthenticatedHTTPClient().Post(apiURL, "text/plain", strings.NewReader(dslContent))
-	if diffErr != nil {
+	var changes []lang.FactChange
+	var diffError error
+	if parsedConfig.simulateEnabled {
 		factStore := store.NewMemoryStore()
 		defer func() { _ = factStore.Close() }()
-
-		changes, diffError := lang.Diff(ctx, factStore, dslContent, true)
-		if diffError != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(diffError, parsedConfig.configFilePath))
-			os.Exit(1)
-		}
-		printDiffChanges(changes)
-		return
+		changes, diffError = lang.Diff(ctx, factStore, combineDSLFileContents(renderedFiles), true)
+	} else {
+		changes, diffError = diffRenderedFilesThroughAPI(ctx, renderedFiles)
 	}
-	defer func() { _ = httpResponse.Body.Close() }()
-
-	if httpResponse.StatusCode != http.StatusOK {
-		responseBody, _ := io.ReadAll(httpResponse.Body)
-		fmt.Fprintf(os.Stderr, "diff error: %s\n", string(responseBody))
-		os.Exit(1)
-	}
-
-	var changes []lang.FactChange
-	if decodeErr := json.NewDecoder(httpResponse.Body).Decode(&changes); decodeErr != nil {
-		fmt.Fprintf(os.Stderr, "decode response: %v\n", decodeErr)
-		os.Exit(1)
+	if diffError != nil {
+		exitWithFileError(diffError, parsedConfig.configFilePath)
 	}
 	printDiffChanges(changes)
 }

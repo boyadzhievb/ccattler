@@ -7,7 +7,8 @@ command listed here exists in `cmd/cca/main.go`. Run `cca --help` for full usage
 
 ```
 # core
-cca apply <file>              # deploy config
+cca apply [--simulate] <file> # send config to POST /api/apply (+ referenced files); --simulate runs in memory
+                              # an unreachable API is an error; --store/--endpoints removed (M219)
 cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
 cca server [flags]            # start control plane (--secret-root-key <file> | --root-key-provider aws-kms|gcp-kms --root-key-id <id>; --keyring-retire-grace <duration>, default 168h, minimum 1h)
@@ -52,7 +53,7 @@ cca gc instances               # garbage-collect stopped instance facts
 cca audit [flags]              # query/stream audit log (--principal, --action, --since, --follow)
 
 # dsl & templates
-cca diff [flags] <file>        # dry-run apply showing fact changes
+cca diff [--simulate] <file>   # fact changes from POST /api/diff; --simulate compares with an empty store
 cca render [flags] <template>  # render a template with values to stdout
 cca fmt [--check] <file>
 cca lint <file>

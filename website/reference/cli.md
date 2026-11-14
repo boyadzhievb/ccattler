@@ -4,7 +4,9 @@ The `cca` command-line tool manages CCattler clusters and workloads.
 
 ## Store auto-detection
 
-Commands that connect to the fact store (apply, server, agent, token, etc.) resolve the etcd endpoint automatically — no `--store` or `--endpoints` flags needed on joined nodes.
+`cca apply` and `cca diff` always go through the API server (`CCA_API`, the current context, or `/etc/ccattler/server-address`), so authorization, the policy gate and audit apply to every change. They send the files a configuration references (gate `tls cert`, config `from`); a gate's key file goes to the server separately and is stored sealed. If the API server is unreachable, they fail with its address. `--simulate` runs a local in-memory simulation instead.
+
+Commands that connect to the fact store directly (server, agent, token, etc.) resolve the etcd endpoint automatically — no `--store` or `--endpoints` flags needed on joined nodes.
 
 **Resolution order** (first match wins):
 
@@ -14,19 +16,16 @@ Commands that connect to the fact store (apply, server, agent, token, etc.) reso
 4. Falls back to local simulation (memory store)
 
 ```bash
-# On a joined node — endpoints auto-detected:
-cca apply airflow.cca
-cca secret set db-password mypass
-
-# On a developer machine — env var:
-export CCA_ENDPOINTS=http://192.168.124.10:2379
+# On a control-plane node — the API and the local admin token are found automatically:
 cca apply airflow.cca
 
-# Explicit override (still works):
-cca apply airflow.cca --endpoints http://10.0.0.1:2379
+# On a developer machine:
+export CCA_API=192.168.124.10:9770
+cca apply airflow.cca
+
+# Local simulation, no cluster:
+cca apply --simulate airflow.cca
 ```
-
-The `--store` flag is no longer required. When endpoints are available (from any source), the store backend is automatically set to `etcd`. Without endpoints, commands run in local simulation mode with an in-memory store.
 
 ## Configuration management
 

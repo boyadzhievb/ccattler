@@ -30,9 +30,9 @@ func main() {
 		fmt.Printf("cca %s\n", version)
 		return
 	case "apply":
-		parsedApplyConfig := parseApplyCommandArgs(os.Args[2:])
+		parsedApplyConfig := parseConfigurationCommandArgs("apply", os.Args[2:])
 		if parsedApplyConfig.configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca apply [--store memory|etcd] [--endpoints host:port,...] <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca apply [--simulate] [--dry-run] [--values file] [--set k=v] <file>")
 			os.Exit(1)
 		}
 		executeApplyCommand(parsedApplyConfig)
@@ -121,9 +121,9 @@ func main() {
 		}
 		executeRenderCommand(parsedRenderConfig)
 	case "diff":
-		parsedDiffConfig := parseDiffCommandArgs(os.Args[2:])
+		parsedDiffConfig := parseConfigurationCommandArgs("diff", os.Args[2:])
 		if parsedDiffConfig.configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca diff [--store memory|etcd] [--endpoints host:port,...] <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca diff [--simulate] [--values file] [--set k=v] <file>")
 			os.Exit(1)
 		}
 		executeDiffCommand(parsedDiffConfig)
@@ -272,7 +272,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "usage: cca <command>")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "single-process mode (all-in-one):")
-	fmt.Fprintln(os.Stderr, "  apply [flags] <file>         parse .ccattler file, show reconciliation (simulated)")
+	fmt.Fprintln(os.Stderr, "  apply --simulate <file>      parse .cca file, show reconciliation (simulated)")
 	fmt.Fprintln(os.Stderr, "  run [flags] <file>           start real processes")
 	fmt.Fprintln(os.Stderr, "  run-container [flags] <file> start real containers")
 	fmt.Fprintln(os.Stderr, "")
@@ -280,7 +280,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  server [flags]               run control plane (controllers + API)")
 	fmt.Fprintln(os.Stderr, "  agent [flags]                run node agent (watches store, runs workloads)")
 	fmt.Fprintln(os.Stderr, "  agent debug                  inspect local container runtime (bypasses control plane)")
-	fmt.Fprintln(os.Stderr, "  apply --store etcd <file>    write facts to shared store")
+	fmt.Fprintln(os.Stderr, "  apply [flags] <file>         send a configuration to the API server")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "node enrollment:")
 	fmt.Fprintln(os.Stderr, "  token create [flags]         generate a join token for node enrollment")

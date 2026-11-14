@@ -725,7 +725,7 @@ Write domains (controllers/topological_sort.go): route-tls {derived/route/, secr
 | `desired/route/{name}/tls/cert` (manual) | compiler | GateKeyDeliveryService, `StoreInlineGateKey` |
 | `desired/route/{name}/tls/key_secret` (manual, `key secret "n"`) | compiler | GateKeyDeliveryService (`GateKeySecretName`) |
 | `desired/route/{name}/tls/key` (pre-M176 plaintext) | none since M176; `cca apply` deletes it (`collectRemovedGateFacts`) | pre-M176 agents only |
-| `secrets/route/{name}/tls/key` (manual inline, sealed) | `PUT /api/gate-key` → `StoreInlineGateKey` (after `lang.ApplyWithBaseDir` → `writeInlineGateKeys` → `apiGateKeyWriter`) | GateKeyDeliveryService |
+| `secrets/route/{name}/tls/key` (manual inline, sealed) | `PUT /api/gate-key` → `StoreInlineGateKey` (cca apply: `lang.ReadClientReferencedFiles` → `POST /api/apply` → `sendInlineGateKeys` → `apiGateKeyWriter`) | GateKeyDeliveryService |
 | `derived/route/{name}/tls/cert`, `/tls/not-after` (auto) | RouteTLSController | gate proxy, `cca get gates` |
 | `derived/route/{name}/tls/key` (auto, pre-M176 plaintext) | none since M176; deleted by GateKeyMigrationController | pre-M176 agents only; sealed by GateKeyMigrationController |
 | `secrets/route/{name}/tls/key` (auto, sealed envelope) | RouteTLSController | GateKeyDeliveryService |

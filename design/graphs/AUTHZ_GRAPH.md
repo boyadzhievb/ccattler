@@ -255,8 +255,9 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/healthz` | any | none (public) | — | `cca health`, load balancers |
 | `/metrics` | any | none (open M182 item) | — | Prometheus |
 
-CLI paths that do not use these routes yet (M219): `cca status` (legacy `/status`, removed in 3.1),
-`cca apply` / `cca diff --store etcd` (direct etcd, 4.2), `cca token` (direct etcd, 5.2).
+CLI paths that do not use these routes yet (M219): `cca token` (direct etcd, 5.2). `cca status`
+moved to `/api/status` (3.2); `cca apply` / `cca diff` use `/api/apply` and `/api/diff` only (4.2),
+except `--simulate`, which never leaves the process.
 
 ---
 

@@ -57,7 +57,7 @@ AGENT_PID=$!
 sleep 2
 
 # Apply config
-go run ./cmd/cca apply --store etcd --endpoints localhost:2379 /tmp/integration-test.ccl
+CCA_API=localhost:9770 go run ./cmd/cca apply /tmp/integration-test.ccl
 
 # Verify
 go run ./cmd/cca get services --store etcd --endpoints localhost:2379

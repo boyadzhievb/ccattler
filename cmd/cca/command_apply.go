@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/controllers"
@@ -26,56 +27,31 @@ const (
 	applyConvergenceSettleTime = 500 * time.Millisecond
 )
 
-// applyCommandConfig holds parsed flags for the "apply" command, which can
-// optionally connect to a remote store instead of running a local simulation.
-type applyCommandConfig struct {
-	// configFilePath is the path to the .cca DSL file to apply.
+// configurationCommandConfig holds parsed flags for "apply" and "diff". Both
+// reach the cluster only through the API server; --simulate runs in memory.
+type configurationCommandConfig struct {
+	// configFilePath is the path to the .cca DSL file or directory.
 	configFilePath string
-	// storeBackend selects the state store implementation: "memory" or "etcd".
-	storeBackend string
-	// etcdEndpoints is the comma-separated list of etcd server addresses.
-	etcdEndpoints string
-	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
-	storeKeyPrefix string
 	// valuesFilePaths holds paths to values files for template rendering (--values).
 	valuesFilePaths []string
 	// setOverrides holds key=value pairs for template overrides (--set).
 	setOverrides []string
 	// setFromEnvOverrides holds environment variable names for template overrides (--set-from-env).
 	setFromEnvOverrides []string
-	// dryRunEnabled skips writing to the store when true (--dry-run).
+	// dryRunEnabled prints the rendered configuration without applying it (apply --dry-run).
 	dryRunEnabled bool
+	// simulateEnabled runs against a local in-memory store instead of the API server (--simulate).
+	simulateEnabled bool
 }
 
-// parseApplyCommandArgs extracts the config file path and optional store flags
-// from the arguments following "apply".
-func parseApplyCommandArgs(args []string) applyCommandConfig {
-	defaults := resolveStoreDefaults()
-	parsedConfig := applyCommandConfig{
-		storeBackend:   defaults.storeBackend,
-		etcdEndpoints:  defaults.etcdEndpoints,
-		storeKeyPrefix: defaults.storeKeyPrefix,
-	}
-
+// parseConfigurationCommandArgs extracts the config path and flags following
+// "apply" or "diff" (commandName). An unknown flag, including the removed
+// --store/--endpoints/--store-prefix, exits with an error.
+func parseConfigurationCommandArgs(commandName string, args []string) configurationCommandConfig {
+	var parsedConfig configurationCommandConfig
 	for argIndex := 0; argIndex < len(args); argIndex++ {
 		currentArg := args[argIndex]
 		switch currentArg {
-		case "--store":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeBackend = args[argIndex]
-			}
-		case "--endpoints":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdEndpoints = args[argIndex]
-				parsedConfig.storeBackend = "etcd"
-			}
-		case "--store-prefix":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeKeyPrefix = args[argIndex]
-			}
 		case "--values", "-f":
 			if argIndex+1 < len(args) {
 				argIndex++
@@ -92,28 +68,36 @@ func parseApplyCommandArgs(args []string) applyCommandConfig {
 				parsedConfig.setFromEnvOverrides = append(parsedConfig.setFromEnvOverrides, args[argIndex])
 			}
 		case "--dry-run":
+			if commandName != "apply" {
+				exitWithUnknownFlag(commandName, currentArg)
+			}
 			parsedConfig.dryRunEnabled = true
+		case "--simulate":
+			parsedConfig.simulateEnabled = true
 		default:
+			if strings.HasPrefix(currentArg, "-") {
+				exitWithUnknownFlag(commandName, currentArg)
+			}
 			if parsedConfig.configFilePath == "" {
 				parsedConfig.configFilePath = currentArg
 			}
 		}
 	}
-
-	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
-		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
-		os.Exit(1)
-	}
-
 	return parsedConfig
 }
 
-// executeApplyCommand parses one or more .ccattler files and writes facts to the
-// state store. Supports single files and directories (all .cca/.ccattler files).
-// In remote mode (--store etcd), it connects to the shared store, writes facts,
-// and exits — controllers running in "cca server" handle reconciliation.
-// In local mode (default), it runs a local simulation with 3 simulated nodes.
-func executeApplyCommand(parsedConfig applyCommandConfig) {
+// exitWithUnknownFlag reports an unknown flag of commandName and exits. The
+// direct-etcd flags were removed in M219: configurations go through the API.
+func exitWithUnknownFlag(commandName string, flagName string) {
+	fmt.Fprintf(os.Stderr, "error: cca %s: unknown flag %q (configurations go through the API server; use --simulate for a local simulation)\n", commandName, flagName)
+	os.Exit(1)
+}
+
+// executeApplyCommand renders one or more .cca files (a file or a directory)
+// and sends them to the API server, which authorizes and writes the facts;
+// controllers in "cca server" reconcile. With --simulate it runs a local
+// simulation with 3 simulated nodes instead.
+func executeApplyCommand(parsedConfig configurationCommandConfig) {
 	renderedFiles, resolveError := resolveAndRenderDSLFiles(
 		parsedConfig.configFilePath, parsedConfig.valuesFilePaths,
 		parsedConfig.setOverrides, parsedConfig.setFromEnvOverrides)
@@ -132,19 +116,8 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	if parsedConfig.storeBackend == "etcd" {
-		factStore, storeCreationError := createStateStoreFromServerConfig(
-			parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
-			"", "", "")
-		if storeCreationError != nil {
-			fmt.Fprintf(os.Stderr, "error connecting to etcd: %v\n", storeCreationError)
-			os.Exit(1)
-		}
-		defer func() { _ = factStore.Close() }()
-
-		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix)
-		applyRenderedFilesToStore(ctx, factStore, renderedFiles, newAPIGateKeyWriter())
-		fmt.Println("Facts written to store. Controllers will reconcile.")
+	if !parsedConfig.simulateEnabled {
+		applyRenderedFilesThroughAPI(ctx, renderedFiles)
 		return
 	}
 
@@ -158,23 +131,22 @@ func executeApplyCommand(parsedConfig applyCommandConfig) {
 		}
 	}()
 
-	applyRenderedFilesToStore(ctx, factStore, renderedFiles, localSimulationGateKeyWriter{})
+	applyRenderedFilesToSimulatedStore(ctx, factStore, renderedFiles)
 
 	// Wait for reconciliation to settle before printing status.
 	time.Sleep(applyConvergenceSettleTime)
 	fmt.Print(buildStatusTextOutput(ctx, factStore))
 }
 
-// applyRenderedFilesToStore applies each rendered DSL file to the given store,
-// sending inline gate keys to gateKeyWriter, and exits on the first error.
-func applyRenderedFilesToStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent, gateKeyWriter lang.GateKeyWriter) {
+// applyRenderedFilesToSimulatedStore applies each rendered DSL file to the
+// local in-memory store (--simulate); inline gate keys are not stored.
+func applyRenderedFilesToSimulatedStore(ctx context.Context, factStore store.StateStore, renderedFiles []renderedDSLContent) {
 	for _, rendered := range renderedFiles {
 		fmt.Printf("Applying %s...\n", rendered.filePath)
 		printDeprecationWarnings(rendered)
 		baseDir := filepath.Dir(rendered.filePath)
-		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir, gateKeyWriter); applyError != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", annotateErrorWithFileName(applyError, rendered.filePath))
-			os.Exit(1)
+		if applyError := lang.ApplyWithBaseDir(ctx, factStore, rendered.content, baseDir, localSimulationGateKeyWriter{}); applyError != nil {
+			exitWithFileError(applyError, rendered.filePath)
 		}
 	}
 }

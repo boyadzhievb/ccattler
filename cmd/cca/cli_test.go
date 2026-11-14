@@ -201,7 +201,7 @@ func TestCLIApplySimple(testContext *testing.T) {
 }
 `)
 
-	stdoutContent, stderrContent, exitCode := runCCA(testContext, "apply", dslFilePath)
+	stdoutContent, stderrContent, exitCode := runCCA(testContext, "apply", "--simulate", dslFilePath)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "web")
 	requireStdoutContains(testContext, stdoutContent, "Registered 3 simulated nodes")
@@ -251,7 +251,7 @@ port: 3000
 `)
 
 	stdoutContent, stderrContent, exitCode := runCCA(testContext,
-		"apply", "--values", valuesFilePath, templateFilePath)
+		"apply", "--simulate", "--values", valuesFilePath, templateFilePath)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "Applying")
 	requireStdoutContains(testContext, stdoutContent, "api")
@@ -279,7 +279,7 @@ func TestCLIApplyDirectory(testContext *testing.T) {
 }
 `)
 
-	stdoutContent, stderrContent, exitCode := runCCA(testContext, "apply", dslSubDirectory)
+	stdoutContent, stderrContent, exitCode := runCCA(testContext, "apply", "--simulate", dslSubDirectory)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "alpha")
 	requireStdoutContains(testContext, stdoutContent, "beta")
@@ -321,7 +321,7 @@ func TestCLIDiff(testContext *testing.T) {
 }
 `)
 
-	stdoutContent, stderrContent, exitCode := runCCA(testContext, "diff", dslFilePath)
+	stdoutContent, stderrContent, exitCode := runCCA(testContext, "diff", "--simulate", dslFilePath)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "+ desired/service/")
 	requireStdoutContains(testContext, stdoutContent, "added")
@@ -344,7 +344,7 @@ port: 8443
 `)
 
 	stdoutContent, stderrContent, exitCode := runCCA(testContext,
-		"diff", "--values", valuesFilePath, templateFilePath)
+		"diff", "--simulate", "--values", valuesFilePath, templateFilePath)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "+ desired/service/")
 	requireStdoutContains(testContext, stdoutContent, "added")
@@ -493,7 +493,7 @@ port: 3000
 `)
 
 	stdoutContent, stderrContent, exitCode := runCCA(testContext,
-		"apply", templateFilePath)
+		"apply", "--simulate", templateFilePath)
 	requireExitCode(testContext, 0, exitCode, stderrContent)
 	requireStdoutContains(testContext, stdoutContent, "frontend")
 }
