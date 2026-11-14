@@ -217,6 +217,15 @@
     content: "{{ etcd_endpoints }}\n"
     mode: "0600"
 
+# The HA server listens only on the node address, not on 127.0.0.1, so the CLI
+# on this node (cca apply, cca status, ...) needs the address to reach its own
+# server; the local admin token is valid only there (M219).
+- name: Write the local API server address for the CLI (all 3 nodes)
+  copy:
+    dest: /etc/ccattler/server-address
+    content: "{{ ansible_host }}:9770\n"
+    mode: "0644"
+
 # No restart handlers in this role: a server restarted here would run against
 # the standalone pre-cluster etcds. ha-deploy.yml restarts every server once
 # the etcd cluster is healthy, which also applies new keys and unit flags.

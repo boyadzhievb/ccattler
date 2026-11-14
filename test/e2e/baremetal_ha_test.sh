@@ -199,7 +199,8 @@ fi
 log "Check 6: workload deployment"
 scp_to_node "${CTRL_NAMES[0]}" "$SCRIPT_DIR/deploy.ccv" "/tmp/e2e-values.ccv"
 scp_to_node "${CTRL_NAMES[0]}" "$SCRIPT_DIR/vm-ha/ha-test.cca" "/tmp/ha-test.cca"
-ssh_node "${CTRL_NAMES[0]}" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/ha-test.cca" 2>/dev/null
+ssh_node "${CTRL_NAMES[0]}" "sudo /usr/local/bin/cca apply --values /tmp/e2e-values.ccv /tmp/ha-test.cca" \
+    || fail "cca apply of ha-test.cca on ${CTRL_NAMES[0]} failed (see the error above)"
 log "  Waiting for workload convergence (90s max)..."
 
 workload_converged() {
