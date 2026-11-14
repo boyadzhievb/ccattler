@@ -7,11 +7,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -25,8 +24,6 @@ const (
 	configurationApplyPath = "/api/apply"
 	// configurationDiffPath is the API route that compares a configuration with the cluster.
 	configurationDiffPath = "/api/diff"
-	// configurationErrorBodyLimit caps how much of an error response is read.
-	configurationErrorBodyLimit = 64 << 10
 )
 
 // configurationRequestBody is the JSON body of POST /api/apply and /api/diff.
@@ -40,30 +37,14 @@ type configurationApplyResponse struct {
 	FactsSet int `json:"facts_set"` // FactsSet is the number of facts the server wrote.
 }
 
-// postConfigurationToAPI sends requestBody to routePath and returns the body
-// of a 200 answer. Any other answer is an error carrying the server's message;
-// an unreachable server is an error naming its address.
+// postConfigurationToAPI sends requestBody to routePath (sendAPIJSONRequest)
+// and, when the server is unreachable, points to --simulate.
 func postConfigurationToAPI(ctx context.Context, routePath string, requestBody configurationRequestBody) ([]byte, error) {
-	encodedBody, encodeError := json.Marshal(requestBody)
-	if encodeError != nil {
-		return nil, encodeError
+	responseBody, sendError := sendAPIJSONRequest(ctx, http.MethodPost, routePath, requestBody)
+	if errors.Is(sendError, errAPIServerUnreachable) {
+		return nil, fmt.Errorf("%w (use --simulate for a local simulation)", sendError)
 	}
-	apiBaseURL := statusAPIBaseURL()
-	request, requestError := http.NewRequestWithContext(ctx, http.MethodPost, apiBaseURL+routePath, bytes.NewReader(encodedBody))
-	if requestError != nil {
-		return nil, requestError
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, sendError := buildAuthenticatedHTTPClient().Do(request) //nolint:gosec // CLI connects to user-configured API server
-	if sendError != nil {
-		return nil, fmt.Errorf("cannot reach the API server at %s: %w (use --simulate for a local simulation)", apiBaseURL, sendError)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		errorBody, _ := io.ReadAll(io.LimitReader(response.Body, configurationErrorBodyLimit))
-		return nil, fmt.Errorf("API server %s answered HTTP %d: %s", apiBaseURL, response.StatusCode, extractAPIErrorMessage(errorBody))
-	}
-	return io.ReadAll(response.Body)
+	return responseBody, sendError
 }
 
 // applyRenderedFilesThroughAPI sends each rendered file to POST /api/apply

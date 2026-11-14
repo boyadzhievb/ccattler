@@ -13,7 +13,7 @@ cca run [--watch] <file>      # start real OS processes
 cca run-container [--watch] <file>  # start real Docker containers
 cca server [flags]            # start control plane (--secret-root-key <file> | --root-key-provider aws-kms|gcp-kms --root-key-id <id>; --keyring-retire-grace <duration>, default 168h, minimum 1h)
 cca agent --node-id <id>      # start node agent (--storage-backend local|nfs --storage-dir <path>)
-cca token create/list/revoke  # bootstrap token management
+cca token create/list/revoke  # join tokens via /api/node/join-token (cluster.admin)
 cca join <server> <token>     # join node to cluster
 cca init [flags]              # initialize cluster
 

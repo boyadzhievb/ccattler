@@ -243,7 +243,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/api/node/secrets` | POST | mTLS `node:` principal; placement and grants checked (Flow 27) | node | agent `secret_delivery_client` |
 | `/api/node/gate-keys` | POST | mTLS `node:` principal reporting `gate_proxy = enabled` (Flow 28) | node | agent `gate_key_syncer` |
 | `/api/gate-key` | PUT | `secret.write` | cluster | `cca apply` inline gate key (`gate_key_writer`) |
-| `/api/node/join-token` | POST, GET, DELETE | `cluster.admin`; audited `join-token.{create,list,revoke}` with the 8-char id, never the value | cluster | `cca token create/list/revoke` (direct etcd until 5.2) |
+| `/api/node/join-token` | POST, GET, DELETE | `cluster.admin`; audited `join-token.{create,list,revoke}` with the 8-char id, never the value | cluster | `cca token create/list/revoke` |
 | `/api/node/debug/` | per endpoint | `node.read` (containers, images, stats), `workload.read` (logs), `workload.exec` (exec), `node.manage` (images/pull) | cluster | `cca node-inspect`, `cca logs`, `cca exec`, `cca images` |
 | `/api/user` | GET, POST, DELETE | `cluster.admin` | cluster | `cca user list/create/delete` |
 | `/api/user/token` | POST | `cluster.admin` | cluster | `cca user token` |
@@ -256,7 +256,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/healthz` | any | none (public) | — | `cca health`, load balancers |
 | `/metrics` | any | none (open M182 item) | — | Prometheus |
 
-CLI paths that do not use these routes yet (M219): `cca token` (direct etcd, 5.2). `cca status`
+CLI paths that do not use these routes: none (M219). `cca token` uses `/api/node/join-token` (5.2). `cca status`
 moved to `/api/status` (3.2); `cca apply` / `cca diff` use `/api/apply` and `/api/diff` only (4.2),
 except `--simulate`, which never leaves the process.
 
