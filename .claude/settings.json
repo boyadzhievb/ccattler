@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/log-command.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/log-command.sh"
           }
         ]
       }
