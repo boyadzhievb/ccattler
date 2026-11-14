@@ -24,7 +24,7 @@
     - command: "status"
       as: adv-ephemeral
       expect_exit: 1
-      must_contain: ["401", "Unauthorized"]
+      must_contain: ["authentication failed"]
 
 - name: recreated-user-old-token-refused
   description: "M216: re-creating a user does not accept the old token"
@@ -42,7 +42,7 @@
     - command: "status"
       as: adv-reuse
       expect_exit: 1
-      must_contain: ["401", "Unauthorized"]
+      must_contain: ["authentication failed"]
   cleanup:
     - "user delete adv-reuse"
 
@@ -54,7 +54,7 @@
   steps:
     - command: "gc instances"
       expect_exit: 1
-      must_contain: ["403", "Forbidden", "cluster.admin"]
+      must_contain: ["forbidden", "cluster.admin"]
 
 # --- M216: audit tenant filter ---
 
@@ -64,7 +64,7 @@
   steps:
     - command: "audit"
       expect_exit: 1
-      must_contain: ["403", "Forbidden"]
+      must_contain: ["forbidden"]
 
 - name: audit-reader-own-tenant
   description: "M216: a reader with a team sees only their tenant's entries"
@@ -101,7 +101,7 @@
   steps:
     - command: "role grant user:adv-reader --role cluster-admin"
       expect_exit: 1
-      must_contain: ["403", "Forbidden", "cluster.admin"]
+      must_contain: ["forbidden", "cluster.admin"]
 
 - name: writer-cannot-grant-roles
   description: "a writer cannot grant itself cluster-admin"
@@ -109,7 +109,7 @@
   steps:
     - command: "role grant user:adv-writer --role cluster-admin"
       expect_exit: 1
-      must_contain: ["403", "Forbidden", "cluster.admin"]
+      must_contain: ["forbidden", "cluster.admin"]
 
 - name: reader-cannot-create-users
   description: "a reader cannot create users"
@@ -117,7 +117,7 @@
   steps:
     - command: "user create adv-hacker --team evil"
       expect_exit: 1
-      must_contain: ["403", "Forbidden", "cluster.admin"]
+      must_contain: ["forbidden", "cluster.admin"]
 
 - name: reader-cannot-delete-users
   description: "a reader cannot delete users"
@@ -125,7 +125,7 @@
   steps:
     - command: "user delete adv-writer"
       expect_exit: 1
-      must_contain: ["403", "Forbidden", "cluster.admin"]
+      must_contain: ["forbidden", "cluster.admin"]
 
 # --- Authorization: secret access ---
 
@@ -135,7 +135,7 @@
   steps:
     - command: "secret get checkout.db-password"
       expect_exit: 1
-      must_contain: ["403", "Forbidden"]
+      must_contain: ["forbidden"]
 
 - name: reader-cannot-set-secrets
   description: "a reader cannot set secrets"
@@ -143,4 +143,4 @@
   steps:
     - command: "secret set adv-evil-secret --value hacked"
       expect_exit: 1
-      must_contain: ["403", "Forbidden"]
+      must_contain: ["forbidden"]

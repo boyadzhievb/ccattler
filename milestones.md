@@ -414,7 +414,7 @@ Found in M214 run 1 (2026-11-12). Priority: first after M214's setup, before M21
 | # | Source | Finding | Verified at | Resolution |
 |---|---|---|---|---|
 | CR-S1 | code-reviewer | `resolveAuditTenantFilter` returns `("", true)` for empty principal name — fail-open for an unreachable case | `api/server.go:1399` | **fixed**: empty name now returns `("", false)` |
-| SA-H1 | security-audit | TOCTOU race in user deletion: grants added between scan and transaction survive as orphans | `api/server.go:2101` collectUserDeleteOperations | **accepted**: orphaned grants are harmless — `LocalUserRecordAuthenticator` refuses tokens for deleted users; only cluster.admin can grant roles, making this an admin-vs-admin race in a millisecond window |
+| SA-H1 | security-audit | TOCTOU race in user deletion: grants added between scan and transaction survive as orphans | `api/server.go:2101` collectUserDeleteOperations | **reopened as bug → M218**: orphaned grants reattach when a user name is reused (`cca user delete alice` + `cca user create alice` → new alice inherits old cluster-admin grant). `LocalUserRecordAuthenticator` blocks old tokens but not the grant escalation path. Fix: `handleUserDelete` must also delete `auth/grant/user/{name}/*` facts |
 | SA-H2 | security-audit | Pre-M216 tokens (no `cca_user_rev` claim) rejected immediately on upgrade | `security/authn_local_user.go:55` | **accepted**: intentional breaking change (beta); users re-authenticate after upgrade; document in release notes |
 | SA-M1 | security-audit | SSE streams (watch/events/audit-follow) survive user deletion | `api/server.go:1340` | **already tracked** (open item above, line 409) |
 | SA-M3 | security-audit | Error message says "earlier version" for tokens missing the revision claim | `security/authn_local_user.go:55` | **fixed**: split into "missing revision claim" vs "minted for an earlier version" |
@@ -442,6 +442,7 @@ Found in M214 run 1 (2026-11-12). The CLI behaves as if it ran on the control pl
 - [ ] `get secrets` and `secret list` agree
 - [ ] Local-only commands (`token`, `root-key-status`, `rotate-root-key`, `generate-root-key`) say "run on a control-plane node" instead of raw etcd errors
 - [ ] Reproduce and fix or reject: `--team` filter, `readiness` needing `go.mod`, `images pull` 403 message, `*_CMD` redaction rule, `audit --denied`
+- [ ] `cca user delete` must also delete `auth/grant/user/{name}/*` facts — orphaned grants reattach when a user name is reused (SA-H1 reopened, found during M214 adversarial replay debugging)
 
 ### Phase 211 — Workload Identity & Safe Instance Creation (M211)
 

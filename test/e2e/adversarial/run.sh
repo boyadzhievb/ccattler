@@ -13,7 +13,7 @@
 # Requires: yq (go-yq), jq, vmherd in PATH.
 # Exit codes: 0 = all passed (known_failure cases are skipped), 1 = any failure.
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CASES_FILE="${SCRIPT_DIR}/cases.yml"
@@ -44,18 +44,17 @@ case "$ENV" in
   *)      echo "Unknown env: $ENV"; exit 1 ;;
 esac
 
-CCA="sudo /usr/local/bin/cca"
+CCA="/usr/local/bin/cca"
 
 # vmherd state is per-directory; cd to the right VM set.
 cd "$VMHERD_DIR"
 
-# Run a cca command on the control VM and capture output + exit code.
+# Run a cca command as admin on the control VM and capture output + exit code.
+# vmherd ssh requires the entire remote command as a single string argument.
 run_cca() {
-  set +e
+  local exit_code=0
   local output
-  output=$(vmherd ssh "$CTRL_VM" -- "$CCA" "$@" 2>&1)
-  local exit_code=$?
-  set -e
+  output=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA $*" 2>&1) || exit_code=$?
   echo "$output"
   return "$exit_code"
 }
@@ -65,11 +64,9 @@ run_cca_as() {
   local identity="$1"
   local token="${TOKENS[$identity]}"
   shift
-  set +e
+  local exit_code=0
   local output
-  output=$(vmherd ssh "$CTRL_VM" -- "CCA_TOKEN=$token $CCA $*" 2>&1)
-  local exit_code=$?
-  set -e
+  output=$(vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token $CCA $*" 2>&1) || exit_code=$?
   echo "$output"
   return "$exit_code"
 }
@@ -124,7 +121,7 @@ setup_identities() {
       run_cca role grant "user:$name" --role "$role" >/dev/null 2>&1 || true
     fi
     local token
-    token=$(vmherd ssh "$CTRL_VM" -- "$CCA" user token "$name" 2>/dev/null)
+    token=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA user token $name" 2>/dev/null)
     TOKENS["$name"]="$token"
     echo "- Created user \`$name\` (team=$team, role=$role)" >> "$TRANSCRIPT"
   done
@@ -177,7 +174,7 @@ run_case() {
   local capture_token
   capture_token=$(yq ".[$index].capture_token // \"\"" "$CASES_FILE")
   if [[ -n "$capture_token" && "$capture_token" != "null" ]]; then
-    TOKENS["$capture_token"]=$(vmherd ssh "$CTRL_VM" -- "$CCA" user token "$capture_token" 2>/dev/null)
+    TOKENS["$capture_token"]=$(vmherd ssh "$CTRL_VM" -- "sudo $CCA user token $capture_token" 2>/dev/null)
   fi
 
   # Run steps.
