@@ -122,6 +122,58 @@ stage_case_files() {
   done
 }
 
+# Start a case's stream (stream: [{command, as, survive_seconds, end_within,
+# expect_exit, must_contain}]) in the background as its user. On the VM it
+# runs under timeout, so a stream that never ends exits 124 instead of
+# hanging the run. It must still be running after survive_seconds (it
+# survived at least one 30 s re-check).
+start_case_stream() {
+  local index="$1" case_identity="$2" stream_as token survive_seconds stream_command
+  STREAM_OUTPUT_FILE=""
+  [[ "$(yq ".[$index].stream // [] | length" "$CASES_FILE")" -gt 0 ]] || return 0
+  stream_command=$(yq ".[$index].stream[0].command" "$CASES_FILE")
+  stream_as=$(yq ".[$index].stream[0].as // \"$case_identity\"" "$CASES_FILE")
+  survive_seconds=$(yq ".[$index].stream[0].survive_seconds // 5" "$CASES_FILE")
+  STREAM_END_WITHIN=$(yq ".[$index].stream[0].end_within // 90" "$CASES_FILE")
+  token="${TOKENS[$stream_as]:-}"
+  [[ -n "$token" ]] || fatal "no token for stream identity $stream_as"
+  STREAM_OUTPUT_FILE=$(mktemp)
+  local stream_limit=$((survive_seconds + STREAM_END_WITHIN))
+  ( vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token timeout $stream_limit $CCA $stream_command" \
+      > "$STREAM_OUTPUT_FILE" 2>&1; echo "$?" > "$STREAM_OUTPUT_FILE.exit" ) &
+  sleep "$survive_seconds"
+  STREAM_ENDED_EARLY=false
+  [[ -f "$STREAM_OUTPUT_FILE.exit" ]] && STREAM_ENDED_EARLY=true
+  echo "- Stream \`cca $stream_command\` as $stream_as, still running after ${survive_seconds}s: $([[ $STREAM_ENDED_EARLY == true ]] && echo no || echo yes)" >> "$TRANSCRIPT"
+}
+
+# Wait for the case's stream to end (at most end_within seconds after the
+# steps) and assert its exit code and output like a step.
+finish_case_stream() {
+  local index="$1" waited=0 stream_exit stream_output case_name
+  [[ -n "${STREAM_OUTPUT_FILE:-}" ]] || return 0
+  case_name=$(yq ".[$index].name" "$CASES_FILE")
+  while [[ ! -f "$STREAM_OUTPUT_FILE.exit" && $waited -lt $((STREAM_END_WITHIN + 10)) ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+  stream_exit=$(cat "$STREAM_OUTPUT_FILE.exit" 2>/dev/null || echo 124)
+  stream_output=$(cat "$STREAM_OUTPUT_FILE")
+  rm -f "$STREAM_OUTPUT_FILE" "$STREAM_OUTPUT_FILE.exit"
+  STREAM_OUTPUT_FILE=""
+  echo "Stream ended ${waited}s after the steps → exit $stream_exit" >> "$TRANSCRIPT"
+  echo '```' >> "$TRANSCRIPT"
+  tail -10 <<< "$stream_output" >> "$TRANSCRIPT"
+  echo '```' >> "$TRANSCRIPT"
+  if [[ "$STREAM_ENDED_EARLY" == true ]]; then
+    echo "  FAIL  $case_name: stream ended before the action (it did not survive a re-check)"
+    echo "**FAIL**: stream ended before the action" >> "$TRANSCRIPT"
+    ((FAIL++))
+    return 0
+  fi
+  assert_step "$index" 0 "$stream_exit" "$stream_output" "stream"
+}
+
 # Run a cca command as admin on the control VM and capture output + exit code.
 # vmherd ssh requires the entire remote command as a single string argument.
 run_cca() {
@@ -210,7 +262,7 @@ cleanup_identities() {
   echo "" >> "$TRANSCRIPT"
   echo "## Cleanup" >> "$TRANSCRIPT"
   echo "" >> "$TRANSCRIPT"
-  for name in adv-reader adv-writer adv-nongrant adv-ephemeral adv-reuse; do
+  for name in adv-reader adv-writer adv-nongrant adv-ephemeral adv-reuse adv-streamer adv-follower; do
     run_cca user delete "$name" >/dev/null 2>&1 || true
     echo "- Deleted user \`$name\`" >> "$TRANSCRIPT"
   done
@@ -267,6 +319,8 @@ run_case() {
     read_state_key_as "$marker_as" "${marker_key//@RUN@/$RUN_ID}"
   done
 
+  start_case_stream "$index" "$identity"
+
   # Run steps.
   local step_count
   step_count=$(yq ".[$index].steps // [] | length" "$CASES_FILE")
@@ -295,6 +349,8 @@ run_case() {
 
     assert_step "$index" "$st" "$actual_exit" "$output" "steps"
   done
+
+  finish_case_stream "$index"
 
   # Run teardown_before_assert (as admin).
   local teardown_count

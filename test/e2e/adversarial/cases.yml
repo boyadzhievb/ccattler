@@ -46,6 +46,50 @@
   cleanup:
     - "user delete adv-reuse"
 
+# --- M216: open streams end when access goes away (re-checked every 30 s) ---
+
+# Careless user: a forgotten `cca watch` window keeps running while an admin
+# deletes the account. It must survive re-checks while nothing changes, then
+# end within one interval of the deletion, say why and exit 1.
+- name: deleted-user-watch-ends
+  description: "M216: a running cca watch ends after its user is deleted"
+  identity: adv-admin
+  setup:
+    - "user create adv-streamer --team frontend"
+    - "role grant user:adv-streamer --role api-reader"
+  capture_token: adv-streamer
+  stream:
+    - command: "watch desired"
+      as: adv-streamer
+      survive_seconds: 40
+      end_within: 70
+      expect_exit: 1
+      must_contain: ["stream ended by the server"]
+  steps:
+    - command: "user delete adv-streamer"
+      as: adv-admin
+
+# Rough user: keeps an audit follow open while an admin revokes the grant.
+- name: revoked-grant-audit-follow-ends
+  description: "M216: a running cca audit --follow ends after its grant is revoked"
+  identity: adv-admin
+  setup:
+    - "user create adv-follower --team frontend"
+    - "role grant user:adv-follower --role api-reader"
+  capture_token: adv-follower
+  stream:
+    - command: "audit --follow"
+      as: adv-follower
+      survive_seconds: 40
+      end_within: 70
+      expect_exit: 1
+      must_contain: ["stream ended by the server", "access changed"]
+  steps:
+    - command: "role revoke user:adv-follower --role api-reader"
+      as: adv-admin
+  cleanup:
+    - "user delete adv-follower"
+
 # --- M216: /api/gc requires cluster.admin ---
 
 - name: gc-requires-admin
