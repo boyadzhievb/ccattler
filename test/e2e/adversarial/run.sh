@@ -201,7 +201,7 @@ verify_identities() {
   if output=$(run_cca_as adv-nongrant status); then
     fatal "adv-nongrant ran status without a grant (token ignored, running as admin?)"
   fi
-  echo "$output" | grep -qi "forbidden" || fatal "adv-nongrant refused for the wrong reason: $output"
+  grep -qi "forbidden" <<< "$output" || fatal "adv-nongrant refused for the wrong reason: $output"
   echo "- Positive controls passed (reader/writer read, nongrant refused)" >> "$TRANSCRIPT"
   echo "" >> "$TRANSCRIPT"
 }
@@ -289,7 +289,7 @@ run_case() {
 
     echo "\`cca $step_cmd\` (as $step_identity) → exit $actual_exit" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
-    echo "$output" | head -20 >> "$TRANSCRIPT"
+    head -20 <<< "$output" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
     echo "" >> "$TRANSCRIPT"
 
@@ -327,7 +327,7 @@ run_case() {
 
     echo "\`cca $aat_cmd\` (as $aat_identity, after teardown) → exit $actual_exit" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
-    echo "$output" | head -20 >> "$TRANSCRIPT"
+    head -20 <<< "$output" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
     echo "" >> "$TRANSCRIPT"
 
@@ -356,7 +356,7 @@ run_case() {
 
     echo "\`cca $a_cmd\` (as $a_identity, assert) → exit $actual_exit" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
-    echo "$output" | head -20 >> "$TRANSCRIPT"
+    head -20 <<< "$output" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
     echo "" >> "$TRANSCRIPT"
 
@@ -395,7 +395,9 @@ assert_step() {
     local pattern
     pattern=$(yq ".[$case_index].${section}[$step_index].must_contain[$m]" "$CASES_FILE")
     pattern="${pattern//@RUN@/$RUN_ID}"
-    if ! echo "$output" | grep -qi "$pattern"; then
+    # Here-string, not a pipe: with pipefail, grep -q exiting early on a large
+    # output kills echo (SIGPIPE) and the pipeline reads as "no match".
+    if ! grep -qi -- "$pattern" <<< "$output"; then
       echo "  FAIL  $case_name: output missing '$pattern'"
       echo "**FAIL**: output missing \`$pattern\`" >> "$TRANSCRIPT"
       ((FAIL++))
@@ -410,7 +412,7 @@ assert_step() {
     local pattern
     pattern=$(yq ".[$case_index].${section}[$step_index].must_not_contain[$m]" "$CASES_FILE")
     pattern="${pattern//@RUN@/$RUN_ID}"
-    if echo "$output" | grep -qi "$pattern"; then
+    if grep -qi -- "$pattern" <<< "$output"; then
       echo "  FAIL  $case_name: output contains '$pattern' (must not)"
       echo "**FAIL**: output contains \`$pattern\` (must not)" >> "$TRANSCRIPT"
       ((FAIL++))

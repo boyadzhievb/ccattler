@@ -478,6 +478,10 @@ code-reviewer (CR) and security-audit (SEC) on `git diff 2d2a1b5..f705037`. Each
 - [x] CR-suggestion revoke-by-id REJECTED for M219: losing a token's value was unrevocable before M219 too; later milestone
 - [x] SEC test note REJECTED: `CCA_TOKEN` visible in `ps` on the test VM is test-only
 
+Found by Deploy Testbed 43704810336 on c83d85e (cluster checks, gate TLS T1–T18 and stability green; replay 18/1/2):
+
+- [x] Adversarial `run.sh` pattern checks were wrong on large output (FIXED; run by hand on the deploy cluster 2026-11-15 after Deploy Testbed 43704810336: 19 passed, 0 failed, 2 skipped, `audit-reader-own-tenant` passing both steps). Under `set -o pipefail`, `echo "$output" | grep -qi pattern` reports "no match" when `grep -q` exits at the first match and `echo` is killed by SIGPIPE (output above the 64 KiB pipe buffer). `audit-reader-own-tenant` failed although the admin's `audit --limit 500` output contained the marker (the audit log grew). Worse, `must_not_contain` would silently PASS on a large output that contains the forbidden string. Fix: here-strings (`grep -qi -- "$pattern" <<< "$output"`, `head -20 <<< "$output"`) in both checks, the transcript and the positive control; also removes the old "Broken pipe" message. Reproduced and checked locally with a 200 000-line output
+
 ### Phase 220 — AWS Provider Tests Against AWS Emulator (M220)
 
 The AWS cloud provider (`cloud/aws.go`: instances, load balancers, VPC routes) was tested only against real AWS (`//go:build cloudprovider`, skipped without keys). AWS Emulator ([user guide](https://docs.aws.amazon.com/emulator/latest/userguide/getting-started-docker.html)) runs EC2, ELBv2 and STS locally; the SDK is pointed at it with standard environment variables, no code change.
