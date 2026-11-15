@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.79.0-beta <Badge type="tip" text="latest" /> {#v1-79-0-beta}
+## v1.80.0-beta <Badge type="tip" text="latest" /> {#v1-80-0-beta}
+
+**2026-11-15** — API Authorization Gaps.
+
+- **API Authorization Gaps** (M216) — Bug fix (M214 run 1): deleting a user keeps its grants and tokens valid; `/api/gc` has no capability check (a read-only user deletes facts); a route sweep test so no writing handler lacks a capability check.
+
+---
+
+## v1.79.0-beta {#v1-79-0-beta}
 
 **2026-11-15** — CLI/API Authorization Alignment.
 
