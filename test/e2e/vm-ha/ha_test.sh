@@ -89,7 +89,7 @@ api_curl() {
             break
         fi
     done
-    ssh_vm "$ctrl_name" "curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
+    ssh_vm "$ctrl_name" "sudo curl -sf --cacert /etc/ccattler/pki/ca.pem --cert /etc/ccattler/pki/node.pem --key /etc/ccattler/pki/node-key.pem https://${ctrl_ip}:9770${path}" 2>/dev/null
 }
 
 wait_for_condition() {
@@ -125,11 +125,12 @@ ETCD_HEALTHY_COUNT=0
 for index in "${!CTRL_NAMES[@]}"; do
     ctrl_name="${CTRL_NAMES[$index]}"
     ctrl_ip="${CTRL_IPS[$index]}"
-    if ssh_vm "$ctrl_name" "ETCDCTL_API=3 etcdctl --endpoints https://${ctrl_ip}:2379 $(etcd_tls_flags) endpoint health" 2>/dev/null | grep -q "is healthy"; then
+    etcd_health_output=$(ssh_vm "$ctrl_name" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${ctrl_ip}:2379 $(etcd_tls_flags) endpoint health" 2>&1 || true)
+    if grep -q "is healthy" <<< "$etcd_health_output"; then
         pass "etcd on $ctrl_name healthy"
         ETCD_HEALTHY_COUNT=$((ETCD_HEALTHY_COUNT + 1))
     else
-        fail "etcd on $ctrl_name NOT healthy"
+        fail "etcd on $ctrl_name NOT healthy: $(head -3 <<< "$etcd_health_output")"
     fi
 done
 
@@ -140,7 +141,7 @@ else
 fi
 
 # Verify member list shows 3 members
-MEMBER_COUNT=$(ssh_vm "${CTRL_NAMES[0]}" "ETCDCTL_API=3 etcdctl --endpoints https://${CTRL1_IP}:2379 $(etcd_tls_flags) member list" 2>/dev/null | wc -l | tr -d ' ')
+MEMBER_COUNT=$(ssh_vm "${CTRL_NAMES[0]}" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${CTRL1_IP}:2379 $(etcd_tls_flags) member list" 2>/dev/null | wc -l | tr -d ' ')
 if [[ "$MEMBER_COUNT" -eq 3 ]]; then
     pass "etcd cluster has 3 members"
 else
@@ -165,7 +166,7 @@ done
 # Check 4: leader election — exactly one controller leader
 # ============================================================
 log "Check 4: leader election"
-LEADER_HOLDER=$(ssh_vm "${CTRL_NAMES[0]}" "ETCDCTL_API=3 etcdctl --endpoints https://${CTRL1_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
+LEADER_HOLDER=$(ssh_vm "${CTRL_NAMES[0]}" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${CTRL1_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
 if [[ -n "$LEADER_HOLDER" ]]; then
     pass "leader elected: $LEADER_HOLDER"
 else
@@ -305,12 +306,12 @@ else
     log "  Waiting for new leader election on surviving nodes (30s)..."
     new_leader_elected() {
         local new_holder
-        new_holder=$(ssh_vm "$SURVIVOR_NAME" "ETCDCTL_API=3 etcdctl --endpoints https://${SURVIVOR_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
+        new_holder=$(ssh_vm "$SURVIVOR_NAME" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${SURVIVOR_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
         [[ -n "$new_holder" && "$new_holder" != "$LEADER_HOLDER" ]]
     }
 
     if wait_for_condition "new leader" 30 new_leader_elected; then
-        NEW_LEADER=$(ssh_vm "$SURVIVOR_NAME" "ETCDCTL_API=3 etcdctl --endpoints https://${SURVIVOR_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
+        NEW_LEADER=$(ssh_vm "$SURVIVOR_NAME" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${SURVIVOR_IP}:2379 $(etcd_tls_flags) get /ccattler/leader/controlplane/holder --print-value-only" 2>/dev/null | tr -d '\n')
         pass "new leader elected: $NEW_LEADER (was: $LEADER_HOLDER)"
     else
         fail "no new leader elected within 30s"
@@ -361,7 +362,7 @@ else
     for quorum_index in 0 1; do
         quorum_name="${CTRL_NAMES[$quorum_index]}"
         quorum_ip="${CTRL_IPS[$quorum_index]}"
-        if ssh_vm "$quorum_name" "ETCDCTL_API=3 etcdctl --endpoints https://${quorum_ip}:2379 $(etcd_tls_flags) endpoint health" 2>/dev/null | grep -q "is healthy"; then
+        if ssh_vm "$quorum_name" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${quorum_ip}:2379 $(etcd_tls_flags) endpoint health" 2>/dev/null | grep -q "is healthy"; then
             QUORUM_OK=true
             break
         fi
@@ -392,7 +393,7 @@ else
     sleep 5
 
     # Verify it rejoins
-    if ssh_vm "$ETCD_VICTIM" "ETCDCTL_API=3 etcdctl --endpoints https://${ETCD_VICTIM_IP}:2379 $(etcd_tls_flags) endpoint health" 2>/dev/null | grep -q "is healthy"; then
+    if ssh_vm "$ETCD_VICTIM" "sudo ETCDCTL_API=3 etcdctl --endpoints https://${ETCD_VICTIM_IP}:2379 $(etcd_tls_flags) endpoint health" 2>/dev/null | grep -q "is healthy"; then
         pass "etcd member $ETCD_VICTIM rejoined cluster"
     else
         fail "etcd member $ETCD_VICTIM did not rejoin"
