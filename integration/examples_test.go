@@ -39,7 +39,9 @@ func TestAllExamplesParseAndApply(t *testing.T) {
 			defer factStore.Close()
 			ctx := context.Background()
 
-			if err := lang.Apply(ctx, factStore, string(fileContents)); err != nil {
+			// Referenced files ("from") resolve against the example's directory,
+			// as cca apply does (examples/wordpress.cca loads its nginx config).
+			if err := lang.ApplyWithBaseDir(ctx, factStore, string(fileContents), examplesDirectory, nil); err != nil {
 				t.Fatalf("apply %s: %v", exampleName, err)
 			}
 
