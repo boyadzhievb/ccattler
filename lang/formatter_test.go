@@ -996,3 +996,57 @@ func TestFormatRouteTLSKeySecretRoundTrip(t *testing.T) {
 		t.Fatalf("round trip failed: %v", reparseErr)
 	}
 }
+
+// TestFormatKeepsTripleQuotedConfigFileParsable: formatting a config file given
+// as a triple-quoted string (line breaks, a double quote) must give a file that
+// still parses and compiles to the same content. `cca fmt` wrote it as a
+// one-line string with \" escapes, which the lexer rejects ("unexpected
+// character '\\'"), so the formatted config no longer parsed.
+func TestFormatKeepsTripleQuotedConfigFileParsable(t *testing.T) {
+	const wantContent = "line one\n  indented \"quoted\" line"
+	input := "service web {\n    image nginx:1.27\n    config {\n        file \"/etc/a.conf\" \"\"\"\n" + wantContent + "\n\"\"\"\n    }\n}\n"
+	parsedFile, parseError := Parse(input)
+	if parseError != nil {
+		t.Fatal(parseError)
+	}
+	formatted := Format(parsedFile)
+	reparsed, reparseError := Parse(formatted)
+	if reparseError != nil {
+		t.Fatalf("formatted output does not parse: %v\n%s", reparseError, formatted)
+	}
+	gotContent := reparsed.Services[0].Config.ConfigFiles[0].Content
+	if gotContent != wantContent {
+		t.Errorf("config file content after format = %q, want %q", gotContent, wantContent)
+	}
+}
+
+// TestFormatKeepsStringValuesExact: values the old %q quoting changed (a
+// backslash, a tab, a double quote, a leading or trailing line break) come
+// back unchanged after format and parse.
+func TestFormatKeepsStringValuesExact(t *testing.T) {
+	for _, wantValue := range []string{
+		`C:\data\app`,
+		"column\tseparated",
+		`say "hi"`,
+		"\nstarts with a line break",
+		"ends with a line break\n",
+		"plain value with spaces",
+	} {
+		input := "service web {\n    image nginx:1.27\n    config {\n        env VALUE " + dslStringLiteral(wantValue) + "\n    }\n}\n"
+		parsedFile, parseError := Parse(input)
+		if parseError != nil {
+			t.Fatalf("%q: input does not parse: %v", wantValue, parseError)
+		}
+		formatted := Format(parsedFile)
+		reparsed, reparseError := Parse(formatted)
+		if reparseError != nil {
+			t.Fatalf("%q: formatted output does not parse: %v\n%s", wantValue, reparseError, formatted)
+		}
+		if gotValue := reparsed.Services[0].Config.EnvVars[0].Value; gotValue != wantValue {
+			t.Errorf("env value after format = %q, want %q", gotValue, wantValue)
+		}
+		if Format(reparsed) != formatted {
+			t.Errorf("%q: format is not idempotent", wantValue)
+		}
+	}
+}

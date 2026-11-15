@@ -152,16 +152,27 @@ func quoteIfNeeded(value string) string {
 	for charIndex, character := range value {
 		if charIndex == 0 {
 			if !unicode.IsLetter(character) && character != '_' {
-				return fmt.Sprintf("%q", value)
+				return dslStringLiteral(value)
 			}
 		} else {
 			if !unicode.IsLetter(character) && !unicode.IsDigit(character) &&
 				character != '_' && character != '-' && character != '.' && character != ':' {
-				return fmt.Sprintf("%q", value)
+				return dslStringLiteral(value)
 			}
 		}
 	}
 	return value
+}
+
+// dslStringLiteral writes value as the lexer reads it back: the DSL has no
+// escapes, so a value without a double quote or line break goes verbatim in
+// "…"; otherwise in a triple-quoted block (the lexer drops one newline after
+// the opening and before the closing """). A parsed value never holds """.
+func dslStringLiteral(value string) string {
+	if !strings.ContainsAny(value, "\"\n") {
+		return `"` + value + `"`
+	}
+	return "\"\"\"\n" + value + "\n\"\"\""
 }
 
 // formatConnectionDecl emits a connection block.
@@ -928,7 +939,7 @@ func formatRouteTLSDecl(builder *strings.Builder, tlsDecl RouteTLSDecl) {
 		fmt.Fprintf(builder, "%skey %s\n", indent2, quoteIfNeeded(tlsDecl.KeyFile))
 	}
 	if tlsDecl.KeySecret != "" {
-		fmt.Fprintf(builder, "%skey secret %q\n", indent2, tlsDecl.KeySecret)
+		fmt.Fprintf(builder, "%skey secret %s\n", indent2, dslStringLiteral(tlsDecl.KeySecret))
 	}
 	fmt.Fprintf(builder, "%s}\n", indentUnit)
 }
