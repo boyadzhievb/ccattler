@@ -2,7 +2,7 @@
 
 ## Current Status
 
-**Latest release:** M216 — API Authorization Gaps (v1.80.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
+**Latest release:** M225 — Per-Principal Stream Cap (v1.81.0-beta). Milestones ship in priority order, not number order; open ones are in milestones.md. Gates A–I resolved.
 
 **In progress:** None. See milestones.md for upcoming work.
 

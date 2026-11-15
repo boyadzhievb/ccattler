@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.80.0-beta <Badge type="tip" text="latest" /> {#v1-80-0-beta}
+## v1.81.0-beta <Badge type="tip" text="latest" /> {#v1-81-0-beta}
+
+**2026-11-15** — Per-Principal Stream Cap.
+
+- **Per-Principal Stream Cap** (M225) — Found by the M216 stream review: watch, events and audit-follow share one cap of 1000 streams, so one `workload.read` user can lock everyone else out of streaming. 32 open streams per principal per API server (429), `cca streams` shows who holds them.
+
+---
+
+## v1.80.0-beta {#v1-80-0-beta}
 
 **2026-11-15** — API Authorization Gaps.
 
