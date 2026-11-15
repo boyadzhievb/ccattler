@@ -1,7 +1,15 @@
 # Changelog
 
 All notable releases of CCattler are documented here.
-## v1.78.0-beta <Badge type="tip" text="latest" /> {#v1-78-0-beta}
+## v1.79.0-beta <Badge type="tip" text="latest" /> {#v1-79-0-beta}
+
+**2026-11-15** — CLI/API Authorization Alignment.
+
+- **CLI/API Authorization Alignment** (M219) — CLI and API share one authorization model: `cca apply`/`diff`/`status`/`token` go only through the API (`--simulate` for local), legacy `/status` removed, `/api/node/join-token` (cluster.admin, audited), credentials never over plain HTTP to another host, `cca run` memory-only, apply checks the capability of every fact it deletes, diff hides unreadable state. Also in this release: M216 (user delete revokes access; `/api/gc` needs cluster.admin), M222 (container bridge drops a stale subnet address after redeploy), HA fixes (cca-server survives an etcd restart, agent unit keeps `Restart=`), M214 adversarial replay in CI, M220 AWS emulator tests, M221 key provider naming, otel 1.47 / x/crypto 0.59. Still open: M216 SSE streams after user delete, M220 CI job, M221 review.
+
+---
+
+## v1.78.0-beta {#v1-78-0-beta}
 
 **2026-11-12** — Job Secret Isolation Fix.
 
