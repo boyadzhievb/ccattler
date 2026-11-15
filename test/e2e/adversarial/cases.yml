@@ -64,7 +64,7 @@
       survive_seconds: 40
       end_within: 70
       expect_exit: 1
-      must_contain: ["stream ended by the server"]
+      must_contain: ["stream ended by the server", "credentials no longer valid"]
   steps:
     - command: "user delete adv-streamer"
       as: adv-admin

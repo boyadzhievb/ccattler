@@ -38,15 +38,18 @@ var streamRoutes = []string{"/api/watch?prefix=desired", "/api/events/stream", "
 // flakyAuthStore fails Get of auth/user/ keys while failing is set, to
 // simulate an etcd leader election under the user-record check.
 type flakyAuthStore struct {
-	store.StateStore              // StateStore is the real store.
-	failing          atomic.Bool  // failing makes user-record reads fail.
-	failedReads      atomic.Int64 // failedReads counts the reads refused while failing.
+	store.StateStore               // StateStore is the real store.
+	failing          atomic.Bool   // failing makes user-record reads fail.
+	failedRead       chan struct{} // failedRead receives one signal per read refused while failing (never blocks).
 }
 
 // Get fails user-record reads while failing is set.
 func (flakyStore *flakyAuthStore) Get(ctx context.Context, key string) (*store.Fact, error) {
 	if flakyStore.failing.Load() && strings.HasPrefix(key, "auth/user/") {
-		flakyStore.failedReads.Add(1)
+		select {
+		case flakyStore.failedRead <- struct{}{}:
+		default:
+		}
 		return nil, errors.New("etcdserver: leader changed")
 	}
 	return flakyStore.StateStore.Get(ctx, key)
@@ -79,7 +82,7 @@ func newStreamTestHarness(t *testing.T) *streamTestHarness {
 	t.Helper()
 	factStore := store.NewMemoryStore()
 	t.Cleanup(func() { _ = factStore.Close() })
-	flakyStore := &flakyAuthStore{StateStore: factStore}
+	flakyStore := &flakyAuthStore{StateStore: factStore, failedRead: make(chan struct{}, streamMaxConsecutiveUnavailable)}
 	workloadIssuer, issuerError := security.NewWorkloadTokenIssuer("https://cca.stream.test")
 	if issuerError != nil {
 		t.Fatal(issuerError)
@@ -191,16 +194,16 @@ func (stream *openedStream) waitClosed(within time.Duration) (string, bool) {
 	}
 }
 
-// requireClosedWithFrame fails unless the stream ends within the wait with
-// the close frame.
-func requireClosedWithFrame(t *testing.T, routePath string, stream *openedStream) {
+// requireClosedWithReason fails unless the stream ends within the wait with
+// the close frame carrying wantReason.
+func requireClosedWithReason(t *testing.T, routePath string, stream *openedStream, wantReason streamCloseReason) {
 	t.Helper()
 	sent, ended := stream.waitClosed(streamTestCloseWait)
 	if !ended {
 		t.Fatalf("%s: stream still open %s after the change", routePath, streamTestCloseWait)
 	}
-	if !strings.Contains(sent, "event: closed") {
-		t.Errorf("%s: stream ended without the close frame; sent:\n%s", routePath, sent)
+	if !strings.Contains(sent, "event: closed\ndata: {\"reason\":\""+string(wantReason)+"\"}") {
+		t.Errorf("%s: stream ended without the close frame %q; sent:\n%s", routePath, wantReason, sent)
 	}
 }
 
@@ -212,7 +215,7 @@ func TestStreamEndsAfterUserDeleted(t *testing.T) {
 			harness := newStreamTestHarness(t)
 			stream := harness.openStream(routePath, harness.createUserWithToken("1h"))
 			harness.adminRequest(http.MethodDelete, "/api/user?name=alice", "")
-			requireClosedWithFrame(t, routePath, stream)
+			requireClosedWithReason(t, routePath, stream, streamClosedCredentials)
 		})
 	}
 }
@@ -225,7 +228,7 @@ func TestStreamEndsAfterGrantRevoked(t *testing.T) {
 			harness := newStreamTestHarness(t)
 			stream := harness.openStream(routePath, harness.createUserWithToken("1h"))
 			harness.apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{})
-			requireClosedWithFrame(t, routePath, stream)
+			requireClosedWithReason(t, routePath, stream, streamClosedAccess)
 		})
 	}
 }
@@ -242,17 +245,18 @@ func TestStreamEndsAfterGrantNarrowed(t *testing.T) {
 			harness.apiAuthorizer.ReplaceGrants(map[string][]security.CapabilityGrant{
 				"user:alice": {{Capability: security.CapabilityWorkloadRead, Scope: security.Scope("team/a")}},
 			})
-			requireClosedWithFrame(t, routePath, stream)
+			requireClosedWithReason(t, routePath, stream, streamClosedAccess)
 		})
 	}
 }
 
 // TestStreamEndsAtTokenExpiry (careless developer): a watch left open ends at
-// the token's real expiry.
+// the token's real expiry. No re-check runs, so only the deadline can end it.
 func TestStreamEndsAtTokenExpiry(t *testing.T) {
 	harness := newStreamTestHarness(t)
-	stream := harness.openStream(streamRoutes[0], harness.createUserWithToken("1s"))
-	requireClosedWithFrame(t, streamRoutes[0], stream)
+	harness.apiServer.streamReauthorizationInterval = streamTestNeverRecheck
+	stream := harness.openStream(streamRoutes[0], harness.createUserWithToken("2s"))
+	requireClosedWithReason(t, streamRoutes[0], stream, streamClosedCredentials)
 }
 
 // TestStreamStaysOpenWhileAccessUnchanged is the positive control: nothing
@@ -276,19 +280,19 @@ func TestStreamSurvivesShortStoreOutage(t *testing.T) {
 	harness := newStreamTestHarness(t)
 	stream := harness.openStream(streamRoutes[0], harness.createUserWithToken("1h"))
 	harness.flakyStore.failing.Store(true)
-	outageDeadline := time.Now().Add(streamTestCloseWait)
-	for harness.flakyStore.failedReads.Load() < 2 {
-		if time.Now().After(outageDeadline) {
+	for range 2 {
+		select {
+		case <-harness.flakyStore.failedRead:
+		case <-time.After(streamTestCloseWait):
 			t.Fatal("no user-record re-check ran during the outage (is the stream re-checked at all?)")
 		}
-		time.Sleep(streamTestInterval / 4)
 	}
 	harness.flakyStore.failing.Store(false)
 	if sent, ended := stream.waitClosed(streamTestStayOpen); ended {
 		t.Fatalf("a two-check store outage closed the stream; sent:\n%s", sent)
 	}
 	harness.flakyStore.failing.Store(true)
-	requireClosedWithFrame(t, streamRoutes[0], stream)
+	requireClosedWithReason(t, streamRoutes[0], stream, streamClosedUnavailable)
 }
 
 // TestAuditFollowCountsTowardStreamCap (rough user): with every stream slot

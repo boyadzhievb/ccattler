@@ -81,8 +81,10 @@ func (authenticator *WebhookAuthenticator) Authenticate(request *http.Request) (
 		return nil, nil
 	}
 
-	if cachedResult := authenticator.lookupCache(tokenString); cachedResult != nil {
-		return cachedResult, nil
+	if !freshAuthenticationRequested(request.Context()) {
+		if cachedResult := authenticator.lookupCache(tokenString); cachedResult != nil {
+			return cachedResult, nil
+		}
 	}
 
 	result, validateError := authenticator.callWebhook(tokenString)
@@ -127,6 +129,10 @@ func (authenticator *WebhookAuthenticator) callWebhook(tokenString string) (*Aut
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 
+	// A 4xx is the IdP refusing the token; any other non-200 is an outage.
+	if httpResponse.StatusCode >= http.StatusBadRequest && httpResponse.StatusCode < http.StatusInternalServerError {
+		return nil, fmt.Errorf("HTTP %d from webhook: token refused", httpResponse.StatusCode)
+	}
 	if httpResponse.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d from webhook: %w", httpResponse.StatusCode, ErrAuthenticationUnavailable)
 	}

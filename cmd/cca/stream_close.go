@@ -21,6 +21,9 @@ const (
 	// sseMaxLineBytes is the longest SSE line the CLI reads (a fact value
 	// such as a config file can be large).
 	sseMaxLineBytes = 4 << 20
+	// sseInitialLineBufferBytes is the scanner's starting buffer; it grows up
+	// to sseMaxLineBytes.
+	sseInitialLineBufferBytes = 64 << 10
 )
 
 // streamCloseTracker follows SSE lines and remembers the close frame's reason.
@@ -32,7 +35,7 @@ type streamCloseTracker struct {
 // newSSELineScanner reads SSE lines up to sseMaxLineBytes long.
 func newSSELineScanner(streamBody io.Reader) *bufio.Scanner {
 	lineScanner := bufio.NewScanner(streamBody)
-	lineScanner.Buffer(make([]byte, 0, 64<<10), sseMaxLineBytes)
+	lineScanner.Buffer(make([]byte, 0, sseInitialLineBufferBytes), sseMaxLineBytes)
 	return lineScanner
 }
 

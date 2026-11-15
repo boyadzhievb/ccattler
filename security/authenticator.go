@@ -4,6 +4,7 @@
 package security
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -54,4 +55,22 @@ func (chain *AuthenticatorChain) Authenticate(request *http.Request) (*Authentic
 		}
 	}
 	return nil, fmt.Errorf("no authenticator accepted the request")
+}
+
+// freshAuthenticationContextKey marks a request whose credential must be
+// checked at its source again, not answered from a cache.
+type freshAuthenticationContextKey struct{}
+
+// WithFreshAuthentication returns ctx marked so authenticators with a result
+// cache (webhook) skip it: an open stream's re-check must see a revocation
+// at the next interval (M216).
+func WithFreshAuthentication(ctx context.Context) context.Context {
+	return context.WithValue(ctx, freshAuthenticationContextKey{}, true)
+}
+
+// freshAuthenticationRequested reports whether ctx was marked by
+// WithFreshAuthentication.
+func freshAuthenticationRequested(ctx context.Context) bool {
+	fresh, _ := ctx.Value(freshAuthenticationContextKey{}).(bool)
+	return fresh
 }

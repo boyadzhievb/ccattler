@@ -22,20 +22,20 @@ Verified in the code:
 
 ## Design
 
-1. **One wrapper** (`withStreamReauthorization`) around the three stream routes (audit only with `follow=true`). No-op without an authenticator chain (demo mode).
+1. **One wrapper** (`withStreamReauthorization`) around the three stream routes (audit only with `follow=true`). It guards the stream with the authentication result the middleware admitted it with (no second authentication at open); a stream without that result gets 401, one that fails its access check 403 — never an unguarded stream (M216 review CR-1). Production always has a chain (demo mode installs one).
 2. **Re-check every `streamReauthorizationInterval` (30 s, ±20 % jitter):**
-   - re-run the authenticator chain on the original request; the principal must be unchanged;
+   - re-run the authenticator chain on the original request, marked `security.WithFreshAuthentication` so the webhook skips its cache; the principal must be unchanged;
    - re-run the route's capability check with the re-authenticated principal;
    - re-resolve the watch visibility / audit tenant filter; any change closes the stream (the reconnect gets the new filter).
 3. **Hard deadline only for real expiries**, captured at open: JWT/OIDC `exp`, mTLS `NotAfter`. Webhook and local-token streams: re-check plus `streamMaximumLifetime` (1 h) as a backstop. A zero expiry means no deadline.
 4. **Transient failures do not cut streams:** store and webhook outages return `ErrAuthenticationUnavailable`; the stream closes after `streamReauthorizationMaxUnavailable` (3) consecutive ones. A definitive denial (user gone, revision mismatch, invalid token, capability or filter change) closes at once.
-5. **The client is told:** the wrapper writes a final SSE frame `event: closed` with a generic reason (`credentials expired`, `access changed`); `cca watch`, `cca events --follow` and `cca audit --follow` print it and exit non-zero. The forced close is audited (`stream.close`, deny) and the real reason logged.
+5. **The client is told:** the wrapper writes a final SSE frame `event: closed` with a generic reason (`credentials no longer valid`, `access changed`, `credentials could not be re-checked`, `stream lifetime reached`; JSON-encoded); `cca watch`, `cca events --follow` and `cca audit --follow` print it and exit non-zero. The forced close is audited (`stream.close`, deny) and the real reason logged.
 6. **Audit-follow takes a stream slot** (shared cap of 1000).
-7. **Per-write deadline** (`http.ResponseController.SetWriteDeadline`) so a client that stops reading cannot hold a handler forever.
+7. **Per-write deadline** (`http.ResponseController.SetWriteDeadline`, `Server.streamWriteTimeout`) so a client that stops reading cannot hold a handler forever: a missed deadline breaks the connection and net/http cancels the request, freeing the slot (`TestStreamEndsWhenClientStopsReading`).
 
-Documented limits (not fixed here): mTLS revocation is a TLS-layer concern (a revoked certificate is accepted until `NotAfter`); webhook revocation is seen up to cache TTL + 30 s late; a user re-created within the same second still accepts an old token (already recorded in M216).
+Documented limits (not fixed here): mTLS revocation is a TLS-layer concern (a revoked certificate is accepted until `NotAfter`); a webhook 4xx is a refusal and re-checks skip the webhook cache, so a revocation at the IdP is seen at the next re-check; a user re-created within the same second still accepts an old token (already recorded in M216).
 
-Cost: only `LocalUserRecordAuthenticator` reads etcd (one `Get` per re-check); capability and visibility checks are in memory. Worst case 1000 streams / 30 s ≈ 33 single-key reads per second.
+Cost: only `LocalUserRecordAuthenticator` reads etcd (one `Get` per re-check); capability and visibility checks are in memory. Worst case 1000 streams / 30 s ≈ 33 single-key reads per second. With a webhook IdP every re-check is one webhook call (cache skipped), the same ≈ 33 calls per second at the cap.
 
 ## Tests as real users
 
@@ -44,7 +44,7 @@ Each persona row is a test at one or both levels: **Go** (`api/` and `cmd/cca/`,
 ### Careless developer
 | Scenario | Expected | Level |
 |---|---|---|
-| Leaves `cca watch` open in a terminal for days with a user token; the token expires | stream ends at the token's `exp` with "credentials expired", exit non-zero | Go (short-lived JWT) |
+| Leaves `cca watch` open in a terminal for days with a user token; the token expires | stream ends at the token's `exp` with "credentials no longer valid", exit non-zero | Go (short-lived JWT) |
 | Script loops `while true; do cca audit --follow; done` after its user was deleted | every reconnect gets 401; no data after the deletion | replay |
 | CI job uses an old token copied into a variable, after the user was re-created | 401 at open; an already-open stream ends at the next re-check | Go + replay |
 | Opens `cca events --follow` with the node certificate on a control node (mTLS) | runs until the certificate's `NotAfter`, not longer | Go |

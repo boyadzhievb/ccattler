@@ -8,6 +8,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -27,15 +28,15 @@ const (
 	// streamReauthorizationJitterFraction spreads re-checks (±20 %) so streams
 	// opened together do not re-check together.
 	streamReauthorizationJitterFraction = 0.2
-	// streamMaximumLifetime ends streams whose credential has no real expiry
+	// defaultStreamMaximumLifetime ends streams whose credential has no real expiry
 	// (local token, webhook) as a backstop.
-	streamMaximumLifetime = time.Hour
+	defaultStreamMaximumLifetime = time.Hour
 	// streamMaxConsecutiveUnavailable is how many re-checks in a row may fail on
 	// ErrAuthenticationUnavailable (store or webhook outage) before the stream ends.
 	streamMaxConsecutiveUnavailable = 3
-	// streamWriteTimeout bounds one write, so a client that stops reading
+	// defaultStreamWriteTimeout bounds one write, so a client that stops reading
 	// cannot hold a handler forever.
-	streamWriteTimeout = 30 * time.Second
+	defaultStreamWriteTimeout = 30 * time.Second
 	// streamCloseAuditAction is the audit action of a forced stream end.
 	streamCloseAuditAction = "stream.close"
 )
@@ -45,10 +46,10 @@ const (
 type streamCloseReason string
 
 const (
-	streamClosedCredentials     streamCloseReason = "credentials no longer valid" // token expired or refused, user deleted
-	streamClosedAccess          streamCloseReason = "access changed"              // grant revoked or filter narrowed
-	streamClosedUnavailable     streamCloseReason = "credentials could not be re-checked"
-	streamClosedLifetimeReached streamCloseReason = "stream lifetime reached"
+	streamClosedCredentials     streamCloseReason = "credentials no longer valid"         // token expired or refused, user deleted
+	streamClosedAccess          streamCloseReason = "access changed"                      // grant revoked or filter narrowed
+	streamClosedUnavailable     streamCloseReason = "credentials could not be re-checked" // store or IdP outage outlasted the tolerance
+	streamClosedLifetimeReached streamCloseReason = "stream lifetime reached"             // credential without expiry hit the lifetime cap
 )
 
 // expiringAuthMethods carry a real credential expiry in ExpiresAt (JWT exp,
@@ -60,31 +61,38 @@ var expiringAuthMethods = map[string]bool{"oidc": true, "mtls": true}
 // fingerprint ends the stream so the reconnect gets the new filter.
 type streamAccessCheck func(apiServer *Server, request *http.Request, principal security.Principal) (string, error)
 
-// withStreamReauthorization wraps a stream handler: every interval it re-runs
-// the authenticator chain and accessCheck on the original request and ends
-// the stream (close frame, audit) on a refusal or change. Without a chain, or
-// when the request is refused at open, the handler runs unchanged.
+// withStreamReauthorization wraps a stream handler: it guards the stream with
+// the authentication the middleware admitted it with, re-runs the chain and
+// accessCheck every interval and ends the stream (close frame, audit) on a
+// refusal or change. A stream without that authentication or access is
+// refused, never run unguarded; only a server without a chain skips this.
 func (apiServer *Server) withStreamReauthorization(accessCheck streamAccessCheck, streamHandler http.HandlerFunc) http.HandlerFunc {
 	return func(responseWriter http.ResponseWriter, request *http.Request) {
 		if apiServer.authenticatorChain == nil || !isStreamRequest(request) {
 			streamHandler(responseWriter, request)
 			return
 		}
-		openResult, authError := apiServer.authenticatorChain.Authenticate(request)
-		if authError != nil || openResult == nil {
-			streamHandler(responseWriter, request)
+		openResult := authenticationResultFromContext(request.Context())
+		if openResult == nil {
+			writeJSONError(responseWriter, "authentication required", http.StatusUnauthorized)
 			return
 		}
 		openAccess, accessError := accessCheck(apiServer, request, principalFromAuthenticationResult(openResult))
 		if accessError != nil {
-			streamHandler(responseWriter, request) // the handler answers with its own status
+			writeJSONError(responseWriter, "access denied: "+accessError.Error(), http.StatusForbidden)
 			return
 		}
 		streamContext, cancelStream := context.WithCancel(request.Context())
 		defer cancelStream()
-		reauthorizer := &streamReauthorizer{apiServer: apiServer, request: request, accessCheck: accessCheck, openResult: openResult, openAccess: openAccess}
+		reauthorizer := &streamReauthorizer{
+			apiServer:   apiServer,
+			request:     request,
+			accessCheck: accessCheck,
+			openResult:  openResult,
+			openAccess:  openAccess,
+		}
 		go reauthorizer.watch(streamContext, cancelStream)
-		trackingWriter := &streamResponseWriter{ResponseWriter: responseWriter}
+		trackingWriter := &streamResponseWriter{ResponseWriter: responseWriter, writeTimeout: apiServer.streamWriteTimeout}
 		streamHandler(trackingWriter, request.WithContext(streamContext))
 		if closeReason := reauthorizer.reason(); closeReason != "" && trackingWriter.started {
 			trackingWriter.writeCloseFrame(closeReason)
@@ -134,10 +142,12 @@ func (reauthorizer *streamReauthorizer) watch(streamContext context.Context, can
 	}
 }
 
-// recheck re-authenticates the original request and re-runs the access
-// check. Returns the close reason and a detail for the log, or "" to go on.
+// recheck re-authenticates the original request at its source (no cached
+// webhook answer) and re-runs the access check. Returns the close reason and
+// a detail for the log, or "" to go on.
 func (reauthorizer *streamReauthorizer) recheck() (streamCloseReason, string) {
-	result, authError := reauthorizer.apiServer.authenticatorChain.Authenticate(reauthorizer.request)
+	recheckRequest := reauthorizer.request.WithContext(security.WithFreshAuthentication(reauthorizer.request.Context()))
+	result, authError := reauthorizer.apiServer.authenticatorChain.Authenticate(recheckRequest)
 	if errors.Is(authError, security.ErrAuthenticationUnavailable) {
 		reauthorizer.unavailableInARow++
 		if reauthorizer.unavailableInARow >= streamMaxConsecutiveUnavailable {
@@ -169,7 +179,7 @@ func (reauthorizer *streamReauthorizer) deadline() time.Time {
 	if expiringAuthMethods[reauthorizer.openResult.AuthMethod] && !expiresAt.IsZero() {
 		return expiresAt
 	}
-	return time.Now().Add(streamMaximumLifetime)
+	return time.Now().Add(reauthorizer.apiServer.streamMaximumLifetime)
 }
 
 // deadlineReason names why the deadline ended the stream.
@@ -215,8 +225,9 @@ func (reauthorizer *streamReauthorizer) reason() streamCloseReason {
 // streamResponseWriter records whether the stream started (200 sent) and
 // bounds every write with streamWriteTimeout.
 type streamResponseWriter struct {
-	http.ResponseWriter      // ResponseWriter is the server's writer.
-	started             bool // started is true once a 200 response began.
+	http.ResponseWriter               // ResponseWriter is the server's writer.
+	started             bool          // started is true once a 200 response began.
+	writeTimeout        time.Duration // writeTimeout bounds one write.
 }
 
 // WriteHeader records whether the stream started.
@@ -227,7 +238,7 @@ func (trackingWriter *streamResponseWriter) WriteHeader(statusCode int) {
 
 // Write sets the write deadline and records an implicit 200.
 func (trackingWriter *streamResponseWriter) Write(data []byte) (int, error) {
-	_ = http.NewResponseController(trackingWriter.ResponseWriter).SetWriteDeadline(time.Now().Add(streamWriteTimeout))
+	_ = http.NewResponseController(trackingWriter.ResponseWriter).SetWriteDeadline(time.Now().Add(trackingWriter.writeTimeout))
 	if !trackingWriter.started {
 		trackingWriter.started = true
 	}
@@ -252,7 +263,10 @@ func (trackingWriter *streamResponseWriter) Unwrap() http.ResponseWriter {
 // writeCloseFrame sends the final SSE event that tells the client why the
 // stream ended; the CLI prints it and exits non-zero.
 func (trackingWriter *streamResponseWriter) writeCloseFrame(closeReason streamCloseReason) {
-	_, _ = fmt.Fprintf(trackingWriter, "event: closed\ndata: {\"reason\":%q}\n\n", strings.ReplaceAll(string(closeReason), `"`, ""))
+	closeFrameData, _ := json.Marshal(struct {
+		Reason streamCloseReason `json:"reason"` // Reason is the generic close reason.
+	}{Reason: closeReason})
+	_, _ = fmt.Fprintf(trackingWriter, "event: closed\ndata: %s\n\n", closeFrameData)
 	trackingWriter.Flush()
 }
 

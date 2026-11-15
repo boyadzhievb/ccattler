@@ -263,22 +263,25 @@ except `--simulate`, which never leaves the process.
 ### Stream re-authorization (api/stream_reauthorization.go, M216)
 ```
 withStreamReauthorization(accessCheck, handler)        [registered for /api/watch, /api/events/stream, /api/audit]
-├── no chain, or /api/audit without follow=true → handler
-├── authenticatorChain.Authenticate(request) + accessCheck  [refused at open → handler answers 401/403 itself]
+├── no chain (never in production: demo mode installs one), or /api/audit without follow=true → handler
+├── authenticationResultFromContext(ctx)        [the middleware's result, no second Authenticate; nil → 401]
+├── accessCheck(principal)                      [error → 403 "access denied: …"; never runs the handler unguarded]
 ├── go streamReauthorizer.watch(streamContext)
-│   ├── deadline: ExpiresAt for oidc/mtls, else now + streamMaximumLifetime (1 h)
+│   ├── deadline: ExpiresAt for oidc/mtls, else now + Server.streamMaximumLifetime (1 h)
 │   └── every streamReauthorizationInterval (30 s ±20 %): recheck()
-│       ├── Authenticate(original request)   [ErrAuthenticationUnavailable: tolerated 2×, closes on the 3rd]
+│       ├── Authenticate(request + security.WithFreshAuthentication)   [webhook skips its cache;
+│       │                                         ErrAuthenticationUnavailable: tolerated 2×, closes on the 3rd]
 │       ├── principal unchanged
 │       └── accessCheck(principal) unchanged
 │           ├── watchStreamAccess    → resolveWorkloadVisibility (teams:* or teams:a,b)
 │           ├── eventStreamAccess    → AuthorizeAPI(workload.read, cluster)
 │           └── auditFollowAccess    → eventStreamAccess + resolveAuditTenantFilter
 │       on refusal/change → end(): log, audit stream.close (deny), cancel streamContext
-├── handler(streamResponseWriter{write deadline 30 s}, request.WithContext(streamContext))
-└── ended by the re-check → writeCloseFrame: "event: closed / data: {reason}"
+├── handler(streamResponseWriter{write deadline Server.streamWriteTimeout 30 s}, request.WithContext(streamContext))
+│   [a write that misses the deadline breaks the connection; net/http cancels the request, the slot is freed]
+└── ended by the re-check → writeCloseFrame: "event: closed / data: {json reason}"
 ```
-CLI: `streamCloseTracker` (cmd/cca/stream_close.go) in `cca watch`, `events --follow`, `audit --follow` prints the reason and exits 1. `ErrAuthenticationUnavailable` is returned by `LocalUserRecordAuthenticator` (store read) and the webhook (unreachable, non-200, undecodable).
+CLI: `streamCloseTracker` (cmd/cca/stream_close.go) in `cca watch`, `events --follow`, `audit --follow` prints the reason and exits 1. `ErrAuthenticationUnavailable` is returned by `LocalUserRecordAuthenticator` (store read) and the webhook (unreachable, 5xx/other non-200, undecodable); a webhook 4xx is a refusal.
 
 ---
 

@@ -121,6 +121,8 @@ type Server struct {
 	listener                      net.Listener
 	activeWatchConnectionCount    atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
 	streamReauthorizationInterval time.Duration            // streamReauthorizationInterval is how often open streams re-check access (M216).
+	streamMaximumLifetime         time.Duration            // streamMaximumLifetime ends streams whose credential has no real expiry (M216).
+	streamWriteTimeout            time.Duration            // streamWriteTimeout bounds one stream write; a failed write ends the stream (M216).
 	externalOIDCConfig            *ExternalOIDCLoginConfig // externalOIDCConfig holds external IdP parameters for browser login.
 	agentDebugClientTLS           *tls.Config              // agentDebugClientTLS is the mTLS client config for the agent debug proxy; nil allows loopback only.
 }
@@ -237,6 +239,8 @@ func NewServer(factStore store.StateStore) *Server {
 		statusCache: NewResponseCache(defaultStatusCacheTTL),
 
 		streamReauthorizationInterval: defaultStreamReauthorizationInterval,
+		streamMaximumLifetime:         defaultStreamMaximumLifetime,
+		streamWriteTimeout:            defaultStreamWriteTimeout,
 	}
 	apiServer.registerRoutes()
 	return apiServer
@@ -340,13 +344,25 @@ func authenticationMiddleware(chain *security.AuthenticatorChain, wrappedHandler
 	})
 }
 
-// contextWithAuthenticationResult stores the principal (string and typed) and
-// the authentication method of result in ctx. Used per request and by stream
-// re-checks, so both see the same principal.
+// authenticationResultContextKey is the context key of the request's full
+// authentication result (expiry, method), read by the stream wrapper.
+type authenticationResultContextKey struct{}
+
+// contextWithAuthenticationResult stores the principal (string and typed),
+// the authentication method and the full result in ctx, so a stream is
+// guarded by the same authentication that admitted the request.
 func contextWithAuthenticationResult(ctx context.Context, result *security.AuthenticationResult) context.Context {
 	enrichedContext := security.WithPrincipal(ctx, result.Principal)
 	enrichedContext = security.WithAuthMethod(enrichedContext, result.AuthMethod)
+	enrichedContext = context.WithValue(enrichedContext, authenticationResultContextKey{}, result)
 	return security.WithPrincipalStruct(enrichedContext, principalFromAuthenticationResult(result))
+}
+
+// authenticationResultFromContext returns the result the authentication
+// middleware stored, or nil when the request was not authenticated.
+func authenticationResultFromContext(ctx context.Context) *security.AuthenticationResult {
+	result, _ := ctx.Value(authenticationResultContextKey{}).(*security.AuthenticationResult)
+	return result
 }
 
 // principalFromAuthenticationResult builds the typed principal of result.

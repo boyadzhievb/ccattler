@@ -34,8 +34,8 @@ AuthenticatorChain.Authenticate(request)                       :39
 │       └── constructAuthenticationResultFromClaims            [principal = "user:" + sub]
 │
 ├── WebhookAuthenticator.Authenticate(request)                 [5th, only with --authn-webhook-url; security/authn_webhook.go:71]
-│   ├── lookupCache(tokenString)
-│   ├── callWebhook(tokenString)                               [POST {token}; !authenticated → error]
+│   ├── lookupCache(tokenString)                               [skipped when freshAuthenticationRequested(ctx): stream re-checks]
+│   ├── callWebhook(tokenString)                               [POST {token}; !authenticated or 4xx → refusal; 5xx → unavailable]
 │   └── storeCache(tokenString, result)
 │
 └── all nil → error "no authenticator accepted the request"    [:49]
