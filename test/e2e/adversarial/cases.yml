@@ -90,6 +90,27 @@
   cleanup:
     - "user delete adv-follower"
 
+# --- M225: open streams are capped per principal ---
+
+# Rough user: a script opens watches in a loop. With 32 open, the 33rd is
+# refused with the limit (timeout: a broken cap would stream, not hang the
+# run); the admin's cca streams shows who holds the slots.
+- name: stream-cap-per-principal
+  description: "M225: one user holds at most 32 open streams; cca streams shows them"
+  identity: adv-reader
+  held_streams:
+    command: "watch desired"
+    as: adv-reader
+    count: 32
+  steps:
+    - command: "watch desired"
+      timeout_seconds: 15
+      expect_exit: 1
+      must_contain: ["too many open streams for user:adv-reader (limit 32)"]
+    - command: "streams"
+      as: adv-admin
+      must_contain: ["user:adv-reader", "limit 32 per principal"]
+
 # --- M216: /api/gc requires cluster.admin ---
 
 - name: gc-requires-admin

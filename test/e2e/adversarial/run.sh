@@ -23,6 +23,13 @@ CTRL_VM=""
 PASS=0
 FAIL=0
 SKIP=0
+# HELD_STREAM_LIMIT_SECONDS ends held streams (held_streams:) on the VM even
+# if the run dies before it stops them.
+HELD_STREAM_LIMIT_SECONDS=180
+# HELD_STREAM_WAIT_SECONDS is how long to wait for the server to count them.
+HELD_STREAM_WAIT_SECONDS=30
+# STEP_TIMEOUT_SECONDS bounds the current step on the VM (timeout_seconds:); 0 = none.
+STEP_TIMEOUT_SECONDS=0
 
 usage() {
   echo "Usage: $0 --env deploy|lan"
@@ -64,8 +71,9 @@ run_cca_as() {
   shift
   [[ -n "$token" ]] || fatal "no token for $identity (would run as admin)"
   local exit_code=0
-  local output
-  output=$(vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token $CCA $*" 2>&1) || exit_code=$?
+  local output limit_prefix=""
+  [[ "$STEP_TIMEOUT_SECONDS" -gt 0 ]] && limit_prefix="timeout $STEP_TIMEOUT_SECONDS "
+  output=$(vmherd ssh "$CTRL_VM" -- "sudo CCA_TOKEN=$token ${limit_prefix}$CCA $*" 2>&1) || exit_code=$?
   echo "$output"
   return "$exit_code"
 }
@@ -172,6 +180,36 @@ finish_case_stream() {
     return 0
   fi
   assert_step "$index" 0 "$stream_exit" "$stream_output" "stream"
+}
+
+# Start a case's held streams (held_streams: {command, as, count}): count
+# background cca processes as that user, from one SSH session (sshd limits
+# parallel logins), each under timeout. Waits until cca streams counts them.
+start_case_held_streams() {
+  local index="$1" held_command held_as held_count token waited=0
+  HELD_STREAMS_PID_FILE=""
+  [[ "$(yq ".[$index].held_streams // {} | length" "$CASES_FILE")" -gt 0 ]] || return 0
+  held_command=$(yq ".[$index].held_streams.command" "$CASES_FILE")
+  held_as=$(yq ".[$index].held_streams.as" "$CASES_FILE")
+  held_count=$(yq ".[$index].held_streams.count" "$CASES_FILE")
+  token="${TOKENS[$held_as]:-}"
+  [[ -n "$token" ]] || fatal "no token for held-stream identity $held_as"
+  HELD_STREAMS_PID_FILE="/tmp/adv-held-streams-$RUN_ID"
+  vmherd ssh "$CTRL_VM" -- "sudo bash -c 'rm -f $HELD_STREAMS_PID_FILE; for i in \$(seq $held_count); do \
+CCA_TOKEN=$token setsid timeout $HELD_STREAM_LIMIT_SECONDS $CCA $held_command </dev/null >/dev/null 2>&1 & \
+echo \$! >> $HELD_STREAMS_PID_FILE; done'" || fatal "could not start held streams"
+  until run_cca streams 2>/dev/null | grep -Eq "^user:$held_as +$held_count *\$"; do
+    ((waited++ < HELD_STREAM_WAIT_SECONDS)) || fatal "server never counted $held_count streams of $held_as"
+    sleep 1
+  done
+  echo "- Holding $held_count \`cca $held_command\` streams as $held_as (counted after ${waited}s)" >> "$TRANSCRIPT"
+}
+
+# Stop the case's held streams, if any.
+stop_case_held_streams() {
+  [[ -n "${HELD_STREAMS_PID_FILE:-}" ]] || return 0
+  vmherd ssh "$CTRL_VM" -- "sudo bash -c 'xargs -r kill < $HELD_STREAMS_PID_FILE; rm -f $HELD_STREAMS_PID_FILE'" || true
+  HELD_STREAMS_PID_FILE=""
 }
 
 # Run a cca command as admin on the control VM and capture output + exit code.
@@ -320,6 +358,7 @@ run_case() {
   done
 
   start_case_stream "$index" "$identity"
+  start_case_held_streams "$index"
 
   # Run steps.
   local step_count
@@ -335,11 +374,13 @@ run_case() {
 
     local actual_exit=0
     local output=""
+    STEP_TIMEOUT_SECONDS=$(yq ".[$index].steps[$st].timeout_seconds // 0" "$CASES_FILE")
     if [[ "$step_identity" == "adv-admin" ]]; then
       output=$(run_cca $step_cmd 2>&1) || actual_exit=$?
     else
       output=$(run_cca_as "$step_identity" $step_cmd 2>&1) || actual_exit=$?
     fi
+    STEP_TIMEOUT_SECONDS=0
 
     echo "\`cca $step_cmd\` (as $step_identity) → exit $actual_exit" >> "$TRANSCRIPT"
     echo '```' >> "$TRANSCRIPT"
@@ -351,6 +392,7 @@ run_case() {
   done
 
   finish_case_stream "$index"
+  stop_case_held_streams
 
   # Run teardown_before_assert (as admin).
   local teardown_count
