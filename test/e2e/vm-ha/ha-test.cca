@@ -1,22 +1,22 @@
-service "whoami" {
-  image "{{ default "docker.io" .registry }}/whoami:v1.10"
-  instances 3
-  port 80
+service whoami {
+    image "{{ default "docker.io" .registry }}/whoami:v1.10"
+    instances 3
+    expose 80
 
-  resources {
-    cpu 100
-    memory 67108864
-  }
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
 }
 
-service "whoami-multiport" {
-  image "{{ default "docker.io" .registry }}/whoami:v1.10"
-  instances 2
-  port 80
-  port 8081
+service whoami-multiport {
+    image "{{ default "docker.io" .registry }}/whoami:v1.10"
+    instances 2
+    expose 80
+    expose 8081
 
-  resources {
-    cpu 100
-    memory 67108864
-  }
+    resources {
+        cpu 100m
+        memory 64Mi
+    }
 }

@@ -383,14 +383,15 @@ func TestObservability_ReconciliationExplainability(t *testing.T) {
 }
 
 // TestAPIVersioning_BackwardsCompatibility verifies that every .cca file from
-// examples/ and test/e2e/workloads/ still parses and compiles without error.
-// This is a regression suite ensuring the DSL grammar never breaks existing
-// configs as it evolves.
+// examples/, test/e2e/workloads/ and test/e2e/vm-ha/ still parses and compiles,
+// so neither a grammar change breaks configs nor a test config goes stale
+// unnoticed (ha-test.cca did, found by the M219 HA run).
 func TestAPIVersioning_BackwardsCompatibility(t *testing.T) {
 	t.Parallel()
 	ccaDirectories := []string{
 		filepath.Join("..", "examples"),
 		filepath.Join("..", "test", "e2e", "workloads"),
+		filepath.Join("..", "test", "e2e", "vm-ha"),
 	}
 
 	totalFileCount := 0
