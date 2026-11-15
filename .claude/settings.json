@@ -45,7 +45,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE_PATH=$(jq -r '.tool_response.filePath // .tool_input.file_path // empty'); case \"$FILE_PATH\" in *.go) LINT_OUTPUT=$(bash scripts/lint-naming.sh \"$FILE_PATH\" 2>&1) || { echo \"$LINT_OUTPUT\" | head -20 >&2; exit 2; } ;; esac; exit 0",
+            "command": "FILE_PATH=$(jq -r '.tool_response.filePath // .tool_input.file_path // empty'); case \"$FILE_PATH\" in *.go) LINT_OUTPUT=$(bash \"$CLAUDE_PROJECT_DIR\"/scripts/lint-naming.sh \"$FILE_PATH\" 2>&1) || { echo \"$LINT_OUTPUT\" | head -20 >&2; exit 2; } ;; esac; exit 0",
             "statusMessage": "Checking Go naming conventions..."
           },
           {
