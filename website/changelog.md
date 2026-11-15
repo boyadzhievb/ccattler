@@ -5,7 +5,7 @@ All notable releases of CCattler are documented here.
 
 **2026-11-15** — API Authorization Gaps.
 
-- **API Authorization Gaps** (M216) — Bug fix (M214 run 1): deleting a user keeps its grants and tokens valid; `/api/gc` has no capability check (a read-only user deletes facts); a route sweep test so no writing handler lacks a capability check.
+- **API Authorization Gaps** (M216) — Bug fix (M214 run 1): deleting a user keeps its grants and tokens valid; `/api/gc` has no capability check (a read-only user deletes facts); a route sweep test so no writing handler lacks a capability check. Open `cca watch`, `cca events --follow` and `cca audit --follow` streams are re-checked every 30 s and end (with the reason, exit 1) when the user is deleted, the grant is revoked or narrowed, or the token expires.
 
 ---
 
