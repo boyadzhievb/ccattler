@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/types"
 )
 
@@ -108,23 +109,28 @@ func TestWatchAPIDropsTLSPrivateKeyEvents(t *testing.T) {
 	}
 }
 
-func TestReserveWatchConnectionEnforcesLimit(t *testing.T) {
+// TestReserveStreamSlotEnforcesServerLimit: with every server slot taken a
+// stream is refused with 503 and the count is unchanged; one slot free admits it.
+func TestReserveStreamSlotEnforcesServerLimit(t *testing.T) {
 	apiServer := NewServer(nil)
-	apiServer.activeWatchConnectionCount.Store(maxConcurrentWatchConnections)
+	apiServer.streamSlots.setTotalOpenForTest(maxConcurrentWatchConnections)
+	principalRequest := httptest.NewRequest(http.MethodGet, "/api/watch?prefix=desired", nil)
+	principalRequest = principalRequest.WithContext(security.WithPrincipalStruct(principalRequest.Context(),
+		security.Principal{Kind: security.PrincipalKindUser, Name: "alice"}))
 
 	recorder := httptest.NewRecorder()
-	if apiServer.reserveWatchConnection(recorder) {
+	if _, reserved := apiServer.reserveStreamSlot(recorder, principalRequest); reserved {
 		t.Fatal("connection over the limit must be refused")
 	}
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got HTTP %d, want 503", recorder.Code)
 	}
-	if apiServer.activeWatchConnectionCount.Load() != maxConcurrentWatchConnections {
+	if apiServer.streamSlots.snapshot().Total != maxConcurrentWatchConnections {
 		t.Fatal("a refused connection must not change the count")
 	}
 
-	apiServer.activeWatchConnectionCount.Store(maxConcurrentWatchConnections - 1)
-	if !apiServer.reserveWatchConnection(httptest.NewRecorder()) {
+	apiServer.streamSlots.setTotalOpenForTest(maxConcurrentWatchConnections - 1)
+	if _, reserved := apiServer.reserveStreamSlot(httptest.NewRecorder(), principalRequest); !reserved {
 		t.Fatal("connection at the limit must be accepted")
 	}
 }

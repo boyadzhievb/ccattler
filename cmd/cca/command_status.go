@@ -133,6 +133,7 @@ func executeEventsFollowMode(serviceFilter string) {
 	}
 	defer func() { _ = httpResponse.Body.Close() }()
 
+	checkAPIResponseStatus(httpResponse)
 	if httpResponse.Header.Get("Content-Type") != "text/event-stream" {
 		responseBody, _ := io.ReadAll(httpResponse.Body)
 		fmt.Fprintf(os.Stderr, "unexpected response: %s\n", string(responseBody))

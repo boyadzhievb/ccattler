@@ -200,7 +200,7 @@ func TestStreamEndsWhenClientStopsReading(t *testing.T) {
 		}
 	}
 	slotDeadline := time.Now().Add(streamTestCloseWait)
-	for harness.apiServer.activeWatchConnectionCount.Load() != 0 {
+	for harness.apiServer.streamSlots.snapshot().Total != 0 {
 		if time.Now().After(slotDeadline) {
 			t.Fatalf("a client that stopped reading still holds its stream slot %s later", streamTestCloseWait)
 		}

@@ -300,7 +300,7 @@ func TestStreamSurvivesShortStoreOutage(t *testing.T) {
 func TestAuditFollowCountsTowardStreamCap(t *testing.T) {
 	harness := newStreamTestHarness(t)
 	token := harness.createUserWithToken("1h")
-	harness.apiServer.activeWatchConnectionCount.Store(maxConcurrentWatchConnections)
+	harness.apiServer.streamSlots.setTotalOpenForTest(maxConcurrentWatchConnections)
 	request, _ := http.NewRequest(http.MethodGet, harness.httpServer.URL+"/api/audit?follow=true", nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, sendError := http.DefaultClient.Do(request)

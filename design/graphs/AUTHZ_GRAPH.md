@@ -251,6 +251,7 @@ allowlist of `api/TestEveryRouteRefusesPrincipalWithoutGrants`. Built from the h
 | `/api/role/check` | POST | `cluster.admin` | cluster | `cca role check` |
 | `/api/gc` | POST | `cluster.admin` | cluster | `cca gc instances` |
 | `/api/audit` | GET (+ follow stream) | `workload.read`; tenant filter, teamless non-admin 403; follow re-checked while open, shares the stream cap | cluster | `cca audit` |
+| `/api/streams` | GET | `cluster.admin` | cluster | `cca streams` |
 | `/api/auth/whoami` | GET | none (any authenticated caller) | — | `cca login` |
 | `/api/auth/oidc-config` | GET | none (public) | — | `cca login` |
 | `/healthz` | any | none (public) | — | `cca health`, load balancers |
@@ -282,6 +283,19 @@ withStreamReauthorization(accessCheck, handler)        [registered for /api/watc
 └── ended by the re-check → writeCloseFrame: "event: closed / data: {json reason}"
 ```
 CLI: `streamCloseTracker` (cmd/cca/stream_close.go) in `cca watch`, `events --follow`, `audit --follow` prints the reason and exits 1. `ErrAuthenticationUnavailable` is returned by `LocalUserRecordAuthenticator` (store read) and the webhook (unreachable, 5xx/other non-200, undecodable); a webhook 4xx is a refusal.
+
+### Stream slots (api/stream_slots.go, M225)
+```
+handleWatch / handleEventStream / handleAuditFollow           [inside withStreamReauthorization]
+└── reserveStreamSlot(responseWriter, request)                [then defer releaseStreamSlot()]
+    ├── PrincipalStructFromContext(ctx).Name == "" → 401
+    └── streamSlotRegistry.reserve("kind:name")               [one mutex: totalOpen + openByPrincipal]
+        ├── totalOpen ≥ maxConcurrentWatchConnections (1000) → 503 "too many concurrent watch connections"
+        ├── openByPrincipal ≥ maxStreamsPerPrincipal (32)    → logCapRefusal (≤ 1/min/principal), 429
+        └── reserved → release func (sync.Once): decrement, delete the entry at 0
+handleStreams (GET /api/streams, cluster.admin) → streamSlotRegistry.snapshot() → `cca streams`
+```
+Counts are per API server (each HA replica counts its own). Shared identities (`user:local-admin`) share one allowance.
 
 ---
 

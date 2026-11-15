@@ -240,7 +240,7 @@ func executeRoleList(args []string) {
 		}
 		rows = append(rows, []string{entry.Principal, entry.Role, capabilityDisplay, scopeDisplay})
 	}
-	printRoleTable(header, rows)
+	printAlignedTable(header, rows)
 }
 
 // roleListEntry represents a single grant in the list response.
@@ -323,8 +323,9 @@ func scopeOrCluster(scopePath string) string {
 	return scopePath
 }
 
-// printRoleTable prints an aligned table for role list output.
-func printRoleTable(header []string, rows [][]string) {
+// printAlignedTable prints header and rows as space-aligned columns (role
+// list, streams).
+func printAlignedTable(header []string, rows [][]string) {
 	columnWidths := make([]int, len(header))
 	for columnIndex, columnHeader := range header {
 		columnWidths[columnIndex] = len(columnHeader)

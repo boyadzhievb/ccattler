@@ -51,6 +51,7 @@ cca secret set/get/list/delete/rotate   # secret management (M174 changes: see "
 cca secret generate-root-key [--path <file>]   # local, on a control-plane node: create the secret root key once (M177)
 cca gc instances               # garbage-collect stopped instance facts
 cca audit [flags]              # query/stream audit log (--principal, --action, --since, --follow)
+cca streams                    # open streams per principal on this API server; limit 32 each (cluster.admin, M225)
 
 # dsl & templates
 cca diff [--simulate] <file>   # fact changes from POST /api/diff; --simulate compares with an empty store

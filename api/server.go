@@ -18,7 +18,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/lang"
@@ -119,7 +118,7 @@ type Server struct {
 	rateLimiter                   *RateLimiter
 	statusCache                   *ResponseCache
 	listener                      net.Listener
-	activeWatchConnectionCount    atomic.Int64             // activeWatchConnectionCount tracks concurrent SSE connections.
+	streamSlots                   *streamSlotRegistry      // streamSlots counts open streams in total and per principal (M225).
 	streamReauthorizationInterval time.Duration            // streamReauthorizationInterval is how often open streams re-check access (M216).
 	streamMaximumLifetime         time.Duration            // streamMaximumLifetime ends streams whose credential has no real expiry (M216).
 	streamWriteTimeout            time.Duration            // streamWriteTimeout bounds one stream write; a failed write ends the stream (M216).
@@ -236,6 +235,7 @@ func NewServer(factStore store.StateStore) *Server {
 		serverMode:  ServerModeFull,
 		mux:         http.NewServeMux(),
 		rateLimiter: NewRateLimiter(),
+		streamSlots: newStreamSlotRegistry(),
 		statusCache: NewResponseCache(defaultStatusCacheTTL),
 
 		streamReauthorizationInterval: defaultStreamReauthorizationInterval,
@@ -425,6 +425,7 @@ func (apiServer *Server) registerRoutes() {
 	apiServer.mux.HandleFunc("/api/role/check", apiServer.instrumentedHandler("role-check", apiServer.handleRoleCheck))
 	apiServer.mux.HandleFunc("/api/gc", apiServer.instrumentedHandler("gc", apiServer.handleGC))
 	apiServer.mux.HandleFunc("/api/audit", apiServer.withStreamReauthorization(auditFollowAccess, apiServer.handleAudit))
+	apiServer.mux.HandleFunc("/api/streams", apiServer.handleStreams)
 	apiServer.mux.HandleFunc("/api/auth/whoami", apiServer.instrumentedHandler("whoami", apiServer.handleAuthWhoami))
 	apiServer.mux.HandleFunc("/api/auth/oidc-config", apiServer.instrumentedHandler("oidc-config", apiServer.handleAuthOIDCConfig))
 	apiServer.mux.HandleFunc("/healthz", apiServer.handleHealthz)
@@ -794,6 +795,11 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 		return
 	}
 
+	releaseStreamSlot, reserved := apiServer.reserveStreamSlot(responseWriter, request)
+	if !reserved {
+		return
+	}
+	defer releaseStreamSlot()
 	eventChannel, flusher, setupOK := apiServer.setupWatchStream(responseWriter, request)
 	if !setupOK {
 		return
@@ -810,29 +816,22 @@ func (apiServer *Server) handleWatch(responseWriter http.ResponseWriter, request
 	streamWatchEventsAsSSE(request.Context(), eventChannel, responseWriter, flusher, visibility)
 }
 
-// setupWatchStream validates the watch request, enforces connection limits, and
-// subscribes to the store watch. Returns the event channel, flusher, and true
-// on success. Writes an error response and returns false on failure.
+// setupWatchStream validates the watch request and subscribes to the store
+// watch. Returns the event channel, flusher, and true on success. Writes an
+// error response and returns false on failure. The caller holds the slot.
 func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, request *http.Request) (<-chan store.Event, http.Flusher, bool) {
-	if !apiServer.reserveWatchConnection(responseWriter) {
-		return nil, nil, false
-	}
-
 	prefix := request.URL.Query().Get("prefix")
 	if prefix == "" {
-		apiServer.activeWatchConnectionCount.Add(-1)
 		writeJSONError(responseWriter, "prefix parameter required", http.StatusBadRequest)
 		return nil, nil, false
 	}
 	if !isReadableStatePrefix(prefix) {
-		apiServer.activeWatchConnectionCount.Add(-1)
 		writeJSONError(responseWriter, "access denied: prefix is not readable through the watch API", http.StatusForbidden)
 		return nil, nil, false
 	}
 
 	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
-		apiServer.activeWatchConnectionCount.Add(-1)
 		writeJSONError(responseWriter, "streaming not supported", http.StatusInternalServerError)
 		return nil, nil, false
 	}
@@ -847,7 +846,6 @@ func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, re
 	}
 	if watchError != nil {
 		cancelWatch()
-		apiServer.activeWatchConnectionCount.Add(-1)
 		writeJSONError(responseWriter, "watch: "+watchError.Error(), http.StatusInternalServerError)
 		return nil, nil, false
 	}
@@ -855,7 +853,6 @@ func (apiServer *Server) setupWatchStream(responseWriter http.ResponseWriter, re
 	go func() {
 		<-request.Context().Done()
 		cancelWatch()
-		apiServer.activeWatchConnectionCount.Add(-1)
 	}()
 
 	return eventChannel, flusher, true
@@ -1406,10 +1403,11 @@ func (apiServer *Server) handleAuditFollow(responseWriter http.ResponseWriter, r
 	}
 
 	// Audit-follow shares the stream cap with watch and events (M216 review F6).
-	if !apiServer.reserveWatchConnection(responseWriter) {
+	releaseStreamSlot, reserved := apiServer.reserveStreamSlot(responseWriter, request)
+	if !reserved {
 		return
 	}
-	defer apiServer.activeWatchConnectionCount.Add(-1)
+	defer releaseStreamSlot()
 
 	watchContext, cancelWatch := context.WithCancel(request.Context())
 	defer cancelWatch()
@@ -1574,10 +1572,11 @@ func (apiServer *Server) handleEventStream(responseWriter http.ResponseWriter, r
 		return
 	}
 
-	if !apiServer.reserveWatchConnection(responseWriter) {
+	releaseStreamSlot, reserved := apiServer.reserveStreamSlot(responseWriter, request)
+	if !reserved {
 		return
 	}
-	defer apiServer.activeWatchConnectionCount.Add(-1)
+	defer releaseStreamSlot()
 
 	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
@@ -1860,19 +1859,6 @@ func (apiServer *Server) handleOIDCDiscovery(responseWriter http.ResponseWriter,
 	discoveryDocument := apiServer.workloadTokenIssuer.OIDCDiscoveryDocument()
 	responseWriter.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(responseWriter).Encode(discoveryDocument)
-}
-
-// reserveWatchConnection counts a new streaming connection, refusing it with
-// 503 when the limit is exceeded. Incrementing before the check keeps
-// concurrent requests from all passing a stale count. The caller releases the
-// slot with activeWatchConnectionCount.Add(-1).
-func (apiServer *Server) reserveWatchConnection(responseWriter http.ResponseWriter) bool {
-	if apiServer.activeWatchConnectionCount.Add(1) > maxConcurrentWatchConnections {
-		apiServer.activeWatchConnectionCount.Add(-1)
-		writeJSONError(responseWriter, "too many concurrent watch connections", http.StatusServiceUnavailable)
-		return false
-	}
-	return true
 }
 
 // handleOIDCJWKS serves the JSON Web Key Set at /oidc/jwks containing the
