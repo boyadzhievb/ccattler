@@ -39,14 +39,14 @@ func main() {
 	case "run":
 		parsedRunConfig := parseRunCommandArgs(os.Args[2:])
 		if parsedRunConfig.configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca run [--watch] [--store memory|etcd] [--endpoints host:port,...] <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca run [--watch] <file>   (local, in-memory)")
 			os.Exit(1)
 		}
 		executeLiveProcessCommand(parsedRunConfig)
 	case "run-container":
 		parsedRunConfig := parseRunCommandArgs(os.Args[2:])
 		if parsedRunConfig.configFilePath == "" {
-			fmt.Fprintln(os.Stderr, "usage: cca run-container [--watch] [--store memory|etcd] [--endpoints host:port,...] <file>")
+			fmt.Fprintln(os.Stderr, "usage: cca run-container [--watch] [--runtime container|containerd] <file>   (local, in-memory)")
 			os.Exit(1)
 		}
 		executeLiveContainerCommand(parsedRunConfig)

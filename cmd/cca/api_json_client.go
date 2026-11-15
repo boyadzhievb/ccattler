@@ -43,7 +43,15 @@ func sendAPIJSONRequest(ctx context.Context, method string, routePath string, re
 	if requestBody != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
+	// Checked before sending, also when no bearer token is configured: the
+	// request may carry a join token or file contents.
+	if transportError := requireSecureCredentialTransport(request.URL); transportError != nil {
+		return nil, transportError
+	}
 	response, sendError := buildAuthenticatedHTTPClient().Do(request) //nolint:gosec // CLI connects to user-configured API server
+	if errors.Is(sendError, errInsecureCredentialTransport) {
+		return nil, sendError
+	}
 	if sendError != nil {
 		return nil, fmt.Errorf("%w at %s: %w", errAPIServerUnreachable, apiBaseURL, sendError)
 	}

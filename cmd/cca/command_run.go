@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/agent"
@@ -42,71 +43,37 @@ const (
 )
 
 // runCommandConfig holds all parsed flags and arguments for the "run" and
-// "run-container" commands, including the store backend selection, etcd
-// endpoint list, and key prefix for multi-cluster isolation.
+// "run-container" commands. They always run on an in-memory store: changes
+// to a cluster go through the API server (M219, review SEC-M1).
 type runCommandConfig struct {
 	// configFilePath is the path to the .cca DSL file to apply.
 	configFilePath string
 	// watchModeEnabled enables periodic status output when true.
 	watchModeEnabled bool
-	// storeBackend selects the state store implementation: "memory" or "etcd".
-	storeBackend string
-	// etcdEndpoints is the comma-separated list of etcd server addresses.
-	etcdEndpoints string
-	// storeKeyPrefix is the key prefix for namespacing within a shared etcd cluster.
-	storeKeyPrefix string
 	// runtimeBackend selects the container runtime: "container" (nerdctl) or "containerd" (direct gRPC).
 	runtimeBackend string
 }
 
-// parseRunCommandArgs extracts the config file path, --watch flag, and store
-// backend flags from the arguments following "run" or "run-container". Uses an
-// index-based loop so paired flags (--store <value>) can consume the next argument.
+// parseRunCommandArgs extracts the config file path, --watch and --runtime
+// from the arguments following "run" or "run-container". Unknown flags,
+// including the removed --store/--endpoints/--store-prefix, exit with an error.
 func parseRunCommandArgs(args []string) runCommandConfig {
-	defaults := resolveStoreDefaults()
-	parsedConfig := runCommandConfig{
-		storeBackend:   defaults.storeBackend,
-		etcdEndpoints:  defaults.etcdEndpoints,
-		storeKeyPrefix: defaults.storeKeyPrefix,
-		runtimeBackend: "container",
-	}
+	parsedConfig := runCommandConfig{runtimeBackend: "container"}
 
 	for argIndex := 0; argIndex < len(args); argIndex++ {
 		currentArg := args[argIndex]
-		switch currentArg {
-		case "--watch", "-w":
+		switch {
+		case currentArg == "--watch" || currentArg == "-w":
 			parsedConfig.watchModeEnabled = true
-		case "--store":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeBackend = args[argIndex]
-			}
-		case "--endpoints":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.etcdEndpoints = args[argIndex]
-				parsedConfig.storeBackend = "etcd"
-			}
-		case "--store-prefix":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.storeKeyPrefix = args[argIndex]
-			}
-		case "--runtime":
-			if argIndex+1 < len(args) {
-				argIndex++
-				parsedConfig.runtimeBackend = args[argIndex]
-			}
-		default:
-			if parsedConfig.configFilePath == "" {
-				parsedConfig.configFilePath = currentArg
-			}
+		case currentArg == "--runtime" && argIndex+1 < len(args):
+			argIndex++
+			parsedConfig.runtimeBackend = args[argIndex]
+		case strings.HasPrefix(currentArg, "-"):
+			fmt.Fprintf(os.Stderr, "error: cca run: unknown flag %q (run uses a local in-memory store; change a cluster with cca apply)\n", currentArg)
+			os.Exit(1)
+		case parsedConfig.configFilePath == "":
+			parsedConfig.configFilePath = currentArg
 		}
-	}
-
-	if parsedConfig.storeBackend != "memory" && parsedConfig.storeBackend != "etcd" {
-		fmt.Fprintf(os.Stderr, "error: unknown store backend %q (must be \"memory\" or \"etcd\")\n", parsedConfig.storeBackend)
-		os.Exit(1)
 	}
 
 	knownRuntimeBackends := map[string]bool{"container": true, "containerd": true}
@@ -116,15 +83,6 @@ func parseRunCommandArgs(args []string) runCommandConfig {
 	}
 
 	return parsedConfig
-}
-
-// createStateStoreFromRunConfig builds the appropriate StateStore for the run
-// command configuration. Delegates to createStateStoreFromServerConfig with
-// empty TLS paths since run commands don't support etcd TLS.
-func createStateStoreFromRunConfig(parsedConfig runCommandConfig) (store.StateStore, error) {
-	return createStateStoreFromServerConfig(
-		parsedConfig.storeBackend, parsedConfig.etcdEndpoints, parsedConfig.storeKeyPrefix,
-		"", "", "")
 }
 
 // executeLiveProcessCommand parses a .ccattler file and starts real OS processes
@@ -138,16 +96,8 @@ func executeLiveProcessCommand(parsedRunConfig runCommandConfig) {
 		os.Exit(1)
 	}
 
-	factStore, storeCreationError := createStateStoreFromRunConfig(parsedRunConfig)
-	if storeCreationError != nil {
-		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
-		os.Exit(1)
-	}
+	factStore := store.NewMemoryStore()
 	defer func() { _ = factStore.Close() }()
-
-	if parsedRunConfig.storeBackend == "etcd" {
-		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -202,16 +152,8 @@ func executeLiveContainerCommand(parsedRunConfig runCommandConfig) {
 		os.Exit(1)
 	}
 
-	factStore, storeCreationError := createStateStoreFromRunConfig(parsedRunConfig)
-	if storeCreationError != nil {
-		fmt.Fprintf(os.Stderr, "error creating %s store: %v\n", parsedRunConfig.storeBackend, storeCreationError)
-		os.Exit(1)
-	}
+	factStore := store.NewMemoryStore()
 	defer func() { _ = factStore.Close() }()
-
-	if parsedRunConfig.storeBackend == "etcd" {
-		fmt.Printf("Connected to etcd at %s (prefix: %s)\n", parsedRunConfig.etcdEndpoints, parsedRunConfig.storeKeyPrefix)
-	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()

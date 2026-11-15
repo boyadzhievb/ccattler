@@ -74,7 +74,7 @@ func TestDiffReportsRemovedGateFacts(t *testing.T) {
 	if applyError := Apply(ctx, factStore, gateReplaceInitialConfig); applyError != nil {
 		t.Fatal(applyError)
 	}
-	changes, diffError := Diff(ctx, factStore, gateReplaceStrippedConfig, true)
+	changes, diffError := diffReadingLocalFiles(ctx, factStore, gateReplaceStrippedConfig)
 	if diffError != nil {
 		t.Fatal(diffError)
 	}

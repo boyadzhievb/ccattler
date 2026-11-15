@@ -85,7 +85,7 @@ func unusedLocalAddress(t *testing.T) string {
 // applyTestEnvironment points the CLI at the API and at an etcd endpoint that
 // does not exist, with a fresh HOME so no user context leaks in.
 func applyTestEnvironment(t *testing.T, apiAddress string) []string {
-	return []string{"CCA_API=" + apiAddress, "CCA_TOKEN=test-admin", "CCA_ENDPOINTS=" + unusedLocalAddress(t), "HOME=" + t.TempDir()}
+	return []string{"CCA_API=http://" + apiAddress, "CCA_TOKEN=test-admin", "CCA_ENDPOINTS=" + unusedLocalAddress(t), "HOME=" + t.TempDir()}
 }
 
 // webServiceConfiguration is a minimal valid configuration.
@@ -159,7 +159,7 @@ func TestApplyCommandSendsLocalFileContents(t *testing.T) {
 func TestApplyCommandFailsWithoutAPIUnlessSimulate(t *testing.T) {
 	configurationPath := writeTempFile(t, t.TempDir(), "web.cca", webServiceConfiguration)
 	unreachableAPIAddress := unusedLocalAddress(t)
-	environment := []string{"CCA_API=" + unreachableAPIAddress, "CCA_TOKEN=test-admin", "HOME=" + t.TempDir()}
+	environment := []string{"CCA_API=http://" + unreachableAPIAddress, "CCA_TOKEN=test-admin", "HOME=" + t.TempDir()}
 
 	stdoutContent, stderrContent, exitCode := runCCAWithEnv(t, environment, "apply", configurationPath)
 	if exitCode == 0 || strings.Contains(stdoutContent, "simulated") {

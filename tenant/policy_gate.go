@@ -5,6 +5,7 @@ package tenant
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -210,11 +211,28 @@ func (gate *PolicyGate) EvaluateAndCommit(ctx context.Context, principal, dslInp
 		return result, nil
 	}
 
-	if err := lang.WriteCompiledFacts(ctx, gate.factStore, result.File, result.Facts); err != nil {
+	err = lang.WriteCompiledFacts(ctx, gate.factStore, result.File, result.Facts, gate.removalAuthorizer(principal))
+	if errors.Is(err, lang.ErrRemovalNotAuthorized) {
+		gate.logAudit(principal, "apply", "dsl", "DENY", "authorization")
+		return &GateResult{Allowed: false, Stage: "authorization", Reason: err.Error(), Facts: result.Facts, Duration: result.Duration}, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
 	return result, nil
+}
+
+// removalAuthorizer checks each fact the commit would delete (a declared
+// gate's removed settings) with the same authorizer as writes; nil when the
+// gate has no authorizer, like evaluateAuthorizationGate.
+func (gate *PolicyGate) removalAuthorizer(principal string) lang.RemovalAuthorizer {
+	if gate.authorizer == nil {
+		return nil
+	}
+	return func(factKey string) error {
+		return gate.authorizer.Authorize(principal, security.PermissionWrite, factKey)
+	}
 }
 
 // getTenantState reads the tenant lifecycle state from the store.

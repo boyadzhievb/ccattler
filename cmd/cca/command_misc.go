@@ -58,7 +58,11 @@ func executeDiffCommand(parsedConfig configurationCommandConfig) {
 	if parsedConfig.simulateEnabled {
 		factStore := store.NewMemoryStore()
 		defer func() { _ = factStore.Close() }()
-		changes, diffError = lang.Diff(ctx, factStore, combineDSLFileContents(renderedFiles), true)
+		// Same file resolution as the API path: relative to each config file.
+		var referencedFiles map[string]string
+		if referencedFiles, diffError = collectReferencedFilesForDiff(renderedFiles); diffError == nil {
+			changes, diffError = lang.DiffWithProvidedFiles(ctx, factStore, combineDSLFileContents(renderedFiles), referencedFiles)
+		}
 	} else {
 		changes, diffError = diffRenderedFilesThroughAPI(ctx, renderedFiles)
 	}
@@ -74,9 +78,13 @@ func printDiffChanges(changes []lang.FactChange) {
 	modifiedCount := 0
 	deletedCount := 0
 	unchangedCount := 0
+	hiddenCount := 0
 
 	for _, change := range changes {
 		switch change.Type {
+		case lang.FactChangeHidden:
+			hiddenCount++
+			fmt.Printf("? %s = %s (current value not readable by you)\n", change.Key, change.NewValue)
 		case "add":
 			addedCount++
 			fmt.Printf("+ %s = %s\n", change.Key, change.NewValue)
@@ -95,6 +103,9 @@ func printDiffChanges(changes []lang.FactChange) {
 
 	fmt.Println()
 	fmt.Printf("%d added, %d modified, %d deleted, %d unchanged\n", addedCount, modifiedCount, deletedCount, unchangedCount)
+	if hiddenCount > 0 {
+		fmt.Printf("%d not readable by you (needs a grant for those keys)\n", hiddenCount)
+	}
 }
 
 // renderCommandConfig holds parsed flags for the "render" command.

@@ -5,6 +5,7 @@ package lang
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1138,17 +1139,18 @@ func compileTLSFacts(routeName string, tlsDecl *RouteTLSDecl, line int, sourceLi
 	return tlsFacts, nil
 }
 
-// ValidateNoLocalFileReferences checks a file compiled on the server
-// (/api/apply, /api/diff, the policy gate) so the server never reads a path
-// the client named. A gate tls key file may be declared but is never read:
-// cca apply seals the key through PUT /api/gate-key after the gate facts, so
-// its contents in the apply body are refused. A gate tls cert file or a config
-// "from" file must be in file.ProvidedFiles, the contents cca apply sent; the
-// compiler then reads only from that map.
+// ValidateNoLocalFileReferences checks a server-side compile (apply, diff,
+// policy gate): cert and config "from" files must be in file.ProvidedFiles; a
+// tls key file may be declared but its contents must not be sent (the key goes
+// to PUT /api/gate-key). The server never reads a client path.
 func ValidateNoLocalFileReferences(file *File) error {
 	for _, routeDecl := range file.Routes {
 		if routeDecl.TLS == nil {
 			continue
+		}
+		// One file holding cert and key would put the private key in the cert fact.
+		if routeDecl.TLS.KeyFile != "" && routeDecl.TLS.KeyFile == routeDecl.TLS.CertFile {
+			return fmt.Errorf("gate %q: tls cert and key are the same file %q; use separate cert and key files", routeDecl.Name, routeDecl.TLS.CertFile)
 		}
 		if routeDecl.TLS.KeyFile != "" && isProvidedFile(file, routeDecl.TLS.KeyFile) {
 			return fmt.Errorf("gate %q: tls key file contents must not be sent with the configuration; cca apply sends the key to PUT /api/gate-key", routeDecl.Name)
@@ -1186,9 +1188,8 @@ func isProvidedFile(file *File, declaredPath string) bool {
 }
 
 // ValidateNoInlineGateKeys returns an error naming the first gate (sorted)
-// with an inline TLS key. Server-side apply paths call it after compiling:
-// they cannot seal a key the CLI read from a local file, and dropping it
-// silently would leave the gate without TLS.
+// with an inline TLS key. ApplyWithBaseDir calls it when no GateKeyWriter is
+// given, so a key is refused before anything is written, never dropped.
 func ValidateNoInlineGateKeys(file *File) error {
 	inlineGateNames := make([]string, 0)
 	for gateName := range InlineGateKeys(file) {
@@ -1731,28 +1732,44 @@ func ApplyWithBaseDir(ctx context.Context, stateStore store.StateStore, input st
 			return inlineKeyError
 		}
 	}
-	if writeError := WriteCompiledFacts(ctx, stateStore, file, facts); writeError != nil {
+	// Local in-memory apply (--simulate, cca run): no principal to check.
+	if writeError := WriteCompiledFacts(ctx, stateStore, file, facts, nil); writeError != nil {
 		return writeError
 	}
 	return writeInlineGateKeys(ctx, file, gateKeyWriter)
 }
 
-// WriteCompiledFacts writes a compiled configuration's facts and deletes the
-// stored facts of each declared gate that the configuration no longer sets
-// (collectRemovedGateFacts). Every apply path uses it: cca apply locally,
-// POST /api/apply direct and through the policy gate.
-func WriteCompiledFacts(ctx context.Context, stateStore store.StateStore, file *File, facts []Fact) error {
-	for _, fact := range facts {
-		if _, putError := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); putError != nil {
-			return fmt.Errorf("writing %s: %w", fact.Key, putError)
-		}
-	}
+// ErrRemovalNotAuthorized wraps a refused prune delete, so API callers can
+// answer 403 instead of a store error.
+var ErrRemovalNotAuthorized = errors.New("not authorized to remove")
+
+// RemovalAuthorizer returns an error when the caller may not delete factKey.
+type RemovalAuthorizer func(factKey string) error
+
+// WriteCompiledFacts writes the facts and deletes stored facts of each declared
+// gate the configuration no longer sets (collectRemovedGateFacts). Every removal
+// is checked with authorizeRemoval (nil: local mode) before anything is written.
+func WriteCompiledFacts(ctx context.Context, stateStore store.StateStore, file *File, facts []Fact, authorizeRemoval RemovalAuthorizer) error {
 	removedGateFacts, scanError := collectRemovedGateFacts(ctx, stateStore, file, facts)
 	if scanError != nil {
 		return scanError
 	}
 	for _, removedFact := range removedGateFacts {
-		if deleteError := stateStore.Delete(ctx, removedFact.Key); deleteError != nil {
+		if authorizeRemoval == nil {
+			break
+		}
+		if authError := authorizeRemoval(removedFact.Key); authError != nil {
+			return fmt.Errorf("%w %q: %w", ErrRemovalNotAuthorized, removedFact.Key, authError)
+		}
+	}
+	for _, fact := range facts {
+		if _, putError := stateStore.Put(ctx, fact.Key, []byte(fact.Value)); putError != nil {
+			return fmt.Errorf("writing %s: %w", fact.Key, putError)
+		}
+	}
+	for _, removedFact := range removedGateFacts {
+		// Already gone (a concurrent delete) is the state apply wants.
+		if deleteError := stateStore.Delete(ctx, removedFact.Key); deleteError != nil && !errors.Is(deleteError, store.ErrKeyNotFound) {
 			return fmt.Errorf("deleting %s: %w", removedFact.Key, deleteError)
 		}
 	}
@@ -1770,6 +1787,13 @@ func writeInlineGateKeys(ctx context.Context, file *File, gateKeyWriter GateKeyW
 	if gateKeyWriter == nil {
 		return ValidateNoInlineGateKeys(file) // unreachable after ApplyWithBaseDir's check; kept for direct callers
 	}
+	return WriteInlineGateKeys(ctx, inlineGateKeys, gateKeyWriter)
+}
+
+// WriteInlineGateKeys sends each gate name → private key PEM to the writer,
+// sorted by gate, after the gate facts exist (Flow 28). Errors name the gate
+// and never contain the key. Used by local apply and by cca apply's API path.
+func WriteInlineGateKeys(ctx context.Context, inlineGateKeys map[string]string, gateKeyWriter GateKeyWriter) error {
 	gateNames := make([]string, 0, len(inlineGateKeys))
 	for gateName := range inlineGateKeys {
 		gateNames = append(gateNames, gateName)
@@ -1822,30 +1846,17 @@ type FactChange struct {
 	Key      string `json:"key"`
 	OldValue string `json:"old_value,omitempty"`
 	NewValue string `json:"new_value"`
-	Type     string `json:"type"` // "add", "modify", "delete", or "unchanged"
+	Type     string `json:"type"` // "add", "modify", "delete", "unchanged", or FactChangeHidden
 }
 
-// Diff parses a DSL string, compiles it to facts, and compares each fact
-// against the current store state. It returns a list of changes without
-// writing anything. Stored facts missing from the compiled output are reported
-// as "delete" only for gates declared in the file (see collectRemovedGateFacts);
-// other stale facts are not touched by apply and so are not reported.
-// allowLocalFiles is false for a server-side diff with no client files; the
-// API server calls DiffWithProvidedFiles instead.
-func Diff(ctx context.Context, stateStore store.StateStore, input string, allowLocalFiles bool) ([]FactChange, error) {
-	if !allowLocalFiles {
-		return DiffWithProvidedFiles(ctx, stateStore, input, nil)
-	}
-	file, parseError := Parse(input)
-	if parseError != nil {
-		return nil, parseError
-	}
-	return diffParsedFile(ctx, stateStore, file, input)
-}
+// FactChangeHidden is the type the API server reports for a key the caller
+// cannot read: neither whether it exists nor its stored value is revealed.
+const FactChangeHidden = "hidden"
 
-// DiffWithProvidedFiles is Diff for the API server: files the configuration
-// references are read only from providedFiles (the contents cca diff sent),
-// never from the server's disk (ValidateNoLocalFileReferences).
+// DiffWithProvidedFiles compares compiled facts with the store without writing
+// (removed settings of declared gates are "delete"). Referenced files come only
+// from providedFiles, never from disk (ValidateNoLocalFileReferences). Used by
+// /api/diff and cca diff --simulate.
 func DiffWithProvidedFiles(ctx context.Context, stateStore store.StateStore, input string, providedFiles map[string]string) ([]FactChange, error) {
 	file, parseError := Parse(input)
 	if parseError != nil {

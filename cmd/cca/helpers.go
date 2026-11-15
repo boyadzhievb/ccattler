@@ -38,11 +38,22 @@ var caCertSearchPaths = []string{
 	"/etc/ccattler/pki/ca.pem",
 }
 
+// statusAPIScheme is the scheme the CLI uses: an explicit one in the API
+// address wins; otherwise "https" when a CA cert is found, "http" otherwise.
 // statusAPIListenAddress is the host:port the CLI connects to.
-var statusAPIListenAddress = resolveStatusAPIListenAddress()
+var statusAPIScheme, statusAPIListenAddress = resolveStatusAPIEndpoint()
 
-// statusAPIScheme is "https" when a CA cert is found, "http" otherwise.
-var statusAPIScheme = resolveStatusAPIScheme()
+// resolveStatusAPIEndpoint splits an address given as "scheme://host:port"
+// (CCA_API, context, server-address) into scheme and host:port. Without a
+// scheme it is chosen by resolveStatusAPIScheme. An https:// address is never
+// downgraded.
+func resolveStatusAPIEndpoint() (string, string) {
+	configuredAddress := resolveStatusAPIListenAddress()
+	if explicitScheme, hostPort, hasScheme := strings.Cut(configuredAddress, "://"); hasScheme {
+		return explicitScheme, strings.TrimSuffix(hostPort, "/")
+	}
+	return resolveStatusAPIScheme(), configuredAddress
+}
 
 // serverAddressConfigPath is the file where "cca join" persists the control
 // plane API address so that CLI commands on agent nodes can reach it.
@@ -434,6 +445,9 @@ type localTokenRoundTripper struct {
 
 // RoundTrip adds the Authorization header and delegates to the base transport.
 func (roundTripper *localTokenRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if transportError := refuseInsecureCredentialRequest(request); transportError != nil {
+		return nil, transportError
+	}
 	request.Header.Set("Authorization", "Bearer "+roundTripper.bearerToken)
 	return roundTripper.baseTransport.RoundTrip(request)
 }

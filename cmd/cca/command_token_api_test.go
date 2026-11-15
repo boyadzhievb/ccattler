@@ -69,7 +69,7 @@ func (fakeAPI *fakeJoinTokenAPI) lastRequest() recordedAPIRequest {
 // tokenTestEnvironment points the CLI at the fake API and at an etcd that
 // does not exist, so any direct etcd access fails the command.
 func tokenTestEnvironment(t *testing.T, fakeAPI *fakeJoinTokenAPI) []string {
-	return []string{"CCA_API=" + strings.TrimPrefix(fakeAPI.server.URL, "http://"), "CCA_TOKEN=test-admin",
+	return []string{"CCA_API=" + fakeAPI.server.URL, "CCA_TOKEN=test-admin",
 		"CCA_ENDPOINTS=" + unusedLocalAddress(t), "HOME=" + t.TempDir()}
 }
 

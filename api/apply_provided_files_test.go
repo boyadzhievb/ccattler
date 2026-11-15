@@ -24,13 +24,18 @@ func configWithFromFile(fromPath string) string {
 
 // postConfigurationAsAdmin sends a JSON body to path as user:admin.
 func postConfigurationAsAdmin(apiServer *Server, path string, body map[string]any) *httptest.ResponseRecorder {
+	return postConfigurationAsUser(apiServer, "admin", path, body)
+}
+
+// postConfigurationAsUser sends a JSON configuration body as user:userName.
+func postConfigurationAsUser(apiServer *Server, userName string, path string, body map[string]any) *httptest.ResponseRecorder {
 	encodedBody, _ := json.Marshal(body)
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(encodedBody)))
 	request.Header.Set("Content-Type", "application/json")
-	adminContext := security.WithPrincipalStruct(request.Context(), security.Principal{Kind: security.PrincipalKindUser, Name: "admin"})
-	adminContext = security.WithPrincipal(adminContext, "user:admin")
+	userContext := security.WithPrincipalStruct(request.Context(), security.Principal{Kind: security.PrincipalKindUser, Name: userName})
+	userContext = security.WithPrincipal(userContext, "user:"+userName)
 	recorder := httptest.NewRecorder()
-	apiServer.Handler().ServeHTTP(recorder, request.WithContext(adminContext))
+	apiServer.Handler().ServeHTTP(recorder, request.WithContext(userContext))
 	return recorder
 }
 

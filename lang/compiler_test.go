@@ -470,10 +470,10 @@ func TestDiffAllNew(t *testing.T) {
 	factStore := store.NewMemoryStore()
 	defer factStore.Close()
 
-	changes, err := Diff(context.Background(), factStore, `service web {
+	changes, err := diffReadingLocalFiles(context.Background(), factStore, `service web {
     image nginx:1.28
     instances 3
-}`, true)
+}`)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -498,10 +498,10 @@ func TestDiffDetectsModified(t *testing.T) {
     instances 2
 }`)
 
-	changes, err := Diff(ctx, factStore, `service web {
+	changes, err := diffReadingLocalFiles(ctx, factStore, `service web {
     image nginx:1.28
     instances 3
-}`, true)
+}`)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestDiffDetectsUnchanged(t *testing.T) {
 }`
 	Apply(ctx, factStore, dslContent)
 
-	changes, err := Diff(ctx, factStore, dslContent, true)
+	changes, err := diffReadingLocalFiles(ctx, factStore, dslContent)
 	if err != nil {
 		t.Fatalf("diff: %v", err)
 	}
@@ -2024,7 +2024,7 @@ func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
 		t.Errorf("apply removed the legacy plaintext key: %v", getError)
 	}
 	// ...and Diff never returns its value.
-	changes, diffError := Diff(ctx, factStore, input, true)
+	changes, diffError := diffReadingLocalFiles(ctx, factStore, input)
 	if diffError != nil {
 		t.Fatal(diffError)
 	}
@@ -2045,7 +2045,7 @@ func TestApplySendsInlineGateKeyAfterFactsAndNeverStoresIt(t *testing.T) {
 	if partialFacts, _ := refusingStore.Scan(ctx, ""); len(partialFacts) != 0 {
 		t.Errorf("refused apply left %d facts behind", len(partialFacts))
 	}
-	if _, diffError := Diff(ctx, refusingStore, input, false); diffError == nil || !strings.Contains(diffError.Error(), "does not read local files") {
+	if _, diffError := DiffWithProvidedFiles(ctx, refusingStore, input, nil); diffError == nil || !strings.Contains(diffError.Error(), "does not read local files") {
 		t.Errorf("server-side diff must refuse local file paths, got %v", diffError)
 	}
 }
@@ -2081,4 +2081,14 @@ func TestCompileRejectsServiceReferencingSystemOwnedSecret(t *testing.T) {
 	if _, compileErr := Compile(file); compileErr == nil || !strings.Contains(compileErr.Error(), "system-owned") {
 		t.Fatalf("expected system-owned secret error, got %v", compileErr)
 	}
+}
+
+// diffReadingLocalFiles diffs input against the store, reading referenced
+// files (gate tls, config "from") from disk as local apply does.
+func diffReadingLocalFiles(ctx context.Context, stateStore store.StateStore, input string) ([]FactChange, error) {
+	file, parseError := Parse(input)
+	if parseError != nil {
+		return nil, parseError
+	}
+	return diffParsedFile(ctx, stateStore, file, input)
 }

@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/boyadzhievb/ccattler/lang"
 )
@@ -65,8 +64,10 @@ func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedD
 			exitWithFileError(applyError, rendered.filePath)
 		}
 		var applyResult configurationApplyResponse
-		_ = json.Unmarshal(responseBody, &applyResult)
-		if keyError := sendInlineGateKeys(ctx, gateKeyWriter, referenced.InlineGateKeys); keyError != nil {
+		if decodeError := json.Unmarshal(responseBody, &applyResult); decodeError != nil {
+			exitWithFileError(fmt.Errorf("unexpected answer from the API server: %w", decodeError), rendered.filePath)
+		}
+		if keyError := lang.WriteInlineGateKeys(ctx, referenced.InlineGateKeys, gateKeyWriter); keyError != nil {
 			exitWithFileError(keyError, rendered.filePath)
 		}
 		fmt.Printf("Applied %s (%d facts)\n", rendered.filePath, applyResult.FactsSet)
@@ -74,34 +75,12 @@ func applyRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedD
 	fmt.Println("Configuration accepted by the API server. Controllers will reconcile.")
 }
 
-// sendInlineGateKeys seals each inline gate key, sorted by gate name, through
-// the writer. Errors name the gate and never contain the key.
-func sendInlineGateKeys(ctx context.Context, gateKeyWriter lang.GateKeyWriter, inlineGateKeys map[string]string) error {
-	gateNames := make([]string, 0, len(inlineGateKeys))
-	for gateName := range inlineGateKeys {
-		gateNames = append(gateNames, gateName)
-	}
-	sort.Strings(gateNames)
-	for _, gateName := range gateNames {
-		if putError := gateKeyWriter.PutGateKey(ctx, gateName, inlineGateKeys[gateName]); putError != nil {
-			return fmt.Errorf("gate %q: storing tls key: %w", gateName, putError)
-		}
-	}
-	return nil
-}
-
 // diffRenderedFilesThroughAPI sends the combined configuration and the files
 // all rendered files reference to POST /api/diff and returns the changes.
 func diffRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedDSLContent) ([]lang.FactChange, error) {
-	referencedFiles := map[string]string{}
-	for _, rendered := range renderedFiles {
-		referenced, readError := lang.ReadClientReferencedFiles(rendered.content, filepath.Dir(rendered.filePath))
-		if readError != nil {
-			return nil, annotateErrorWithFileName(readError, rendered.filePath)
-		}
-		if mergeError := mergeReferencedFiles(referencedFiles, referenced.Files, rendered.filePath); mergeError != nil {
-			return nil, mergeError
-		}
+	referencedFiles, collectError := collectReferencedFilesForDiff(renderedFiles)
+	if collectError != nil {
+		return nil, collectError
 	}
 	responseBody, diffError := postConfigurationToAPI(ctx, configurationDiffPath,
 		configurationRequestBody{Config: combineDSLFileContents(renderedFiles), Files: referencedFiles})
@@ -113,6 +92,22 @@ func diffRenderedFilesThroughAPI(ctx context.Context, renderedFiles []renderedDS
 		return nil, fmt.Errorf("decode diff response: %w", decodeError)
 	}
 	return changes, nil
+}
+
+// collectReferencedFilesForDiff reads the files every rendered file references,
+// relative to that file's directory, into one map (API and --simulate diff).
+func collectReferencedFilesForDiff(renderedFiles []renderedDSLContent) (map[string]string, error) {
+	referencedFiles := map[string]string{}
+	for _, rendered := range renderedFiles {
+		referenced, readError := lang.ReadClientReferencedFiles(rendered.content, filepath.Dir(rendered.filePath))
+		if readError != nil {
+			return nil, annotateErrorWithFileName(readError, rendered.filePath)
+		}
+		if mergeError := mergeReferencedFiles(referencedFiles, referenced.Files, rendered.filePath); mergeError != nil {
+			return nil, mergeError
+		}
+	}
+	return referencedFiles, nil
 }
 
 // mergeReferencedFiles adds one file's referenced files to the combined map.

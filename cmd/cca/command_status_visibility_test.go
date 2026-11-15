@@ -62,7 +62,7 @@ func TestStatusCommandShowsOnlyVisibleTeams(t *testing.T) {
 
 	// HOME is a fresh directory so no user context or credential file leaks in.
 	cliEnvironment := func(token string) []string {
-		return []string{"CCA_API=" + strings.TrimPrefix(apiTestServer.URL, "http://"), "CCA_TOKEN=" + token, "HOME=" + t.TempDir()}
+		return []string{"CCA_API=" + apiTestServer.URL, "CCA_TOKEN=" + token, "HOME=" + t.TempDir()}
 	}
 
 	teamStdout, teamStderr, teamExit := runCCAWithEnv(t, cliEnvironment("frontend-reader"), "status")

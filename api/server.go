@@ -619,9 +619,9 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxConfigRequestBodyBytes)
 	responseWriter.Header().Set("Content-Type", "application/json")
 
-	configRequest, readError := readDSLRequestBody(request)
+	configRequest, readError, readStatus := readDSLRequestBody(request)
 	if readError != "" {
-		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.WriteHeader(readStatus)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: readError})
 		return
 	}
@@ -635,28 +635,40 @@ func (apiServer *Server) handleApply(responseWriter http.ResponseWriter, request
 }
 
 // readDSLRequestBody extracts the configuration from the request body: JSON
-// {config, files} or raw DSL text (no files). Returns the request and an empty
-// error string on success, or an error message on failure.
-func readDSLRequestBody(request *http.Request) (applyRequest, string) {
+// {config, files} or raw DSL text (no files). Returns the request, or an error
+// message with its HTTP status (413 over maxConfigRequestBodyBytes, else 400).
+func readDSLRequestBody(request *http.Request) (applyRequest, string, int) {
 	contentType := request.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/json") {
 		var body applyRequest
 		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			return applyRequest{}, "invalid JSON: " + err.Error()
+			errorMessage, statusCode := describeBodyReadError("invalid JSON", err)
+			return applyRequest{}, errorMessage, statusCode
 		}
 		if body.Config == "" {
-			return applyRequest{}, "empty config"
+			return applyRequest{}, "empty config", http.StatusBadRequest
 		}
-		return body, ""
+		return body, "", http.StatusOK
 	}
 	rawBody, err := io.ReadAll(request.Body)
 	if err != nil {
-		return applyRequest{}, "read body: " + err.Error()
+		errorMessage, statusCode := describeBodyReadError("read body", err)
+		return applyRequest{}, errorMessage, statusCode
 	}
 	if len(rawBody) == 0 {
-		return applyRequest{}, "empty config"
+		return applyRequest{}, "empty config", http.StatusBadRequest
 	}
-	return applyRequest{Config: string(rawBody)}, ""
+	return applyRequest{Config: string(rawBody)}, "", http.StatusOK
+}
+
+// describeBodyReadError turns a body read error into a message and status: a
+// body over the limit is 413 and names it, anything else is 400 with prefix.
+func describeBodyReadError(prefix string, readError error) (string, int) {
+	var tooLargeError *http.MaxBytesError
+	if errors.As(readError, &tooLargeError) {
+		return fmt.Sprintf("configuration and referenced files exceed the %d KiB request limit", tooLargeError.Limit>>10), http.StatusRequestEntityTooLarge
+	}
+	return prefix + ": " + readError.Error(), http.StatusBadRequest
 }
 
 // applyViaPolicyGate routes DSL through the full admission pipeline
@@ -700,14 +712,20 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "compile: " + err.Error()})
 		return
 	}
-	if authError := apiServer.authorizeCompiledFacts(security.PrincipalStructFromContext(requestContext), facts); authError != nil {
+	principal := security.PrincipalStructFromContext(requestContext)
+	if authError := apiServer.authorizeCompiledFacts(principal, facts); authError != nil {
 		responseWriter.WriteHeader(http.StatusForbidden)
 		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "authorization: " + authError.Error()})
 		return
 	}
-	if writeError := lang.WriteCompiledFacts(requestContext, apiServer.factStore, file, facts); writeError != nil {
-		responseWriter.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: "store: " + writeError.Error()})
+	authorizeRemoval := func(factKey string) error { return apiServer.authorizeFactKeyWrite(principal, factKey) }
+	if writeError := lang.WriteCompiledFacts(requestContext, apiServer.factStore, file, facts, authorizeRemoval); writeError != nil {
+		statusCode, errorPrefix := http.StatusInternalServerError, "store: "
+		if errors.Is(writeError, lang.ErrRemovalNotAuthorized) {
+			statusCode, errorPrefix = http.StatusForbidden, "authorization: "
+		}
+		responseWriter.WriteHeader(statusCode)
+		_ = json.NewEncoder(responseWriter).Encode(applyResponse{Error: errorPrefix + writeError.Error()})
 		return
 	}
 	_ = json.NewEncoder(responseWriter).Encode(applyResponse{OK: true, FactsSet: len(facts)})
@@ -718,12 +736,17 @@ func (apiServer *Server) applyDirect(responseWriter http.ResponseWriter, request
 // cannot write auth/ grants or bind secrets. Returns the first denial.
 func (apiServer *Server) authorizeCompiledFacts(principal security.Principal, facts []lang.Fact) error {
 	for _, fact := range facts {
-		requiredCapability := security.RequiredCapabilityForFactWrite(fact.Key)
-		if authError := apiServer.apiAuthorizer.AuthorizeAPI(principal, requiredCapability, security.ScopeCluster, nil); authError != nil {
+		if authError := apiServer.authorizeFactKeyWrite(principal, fact.Key); authError != nil {
 			return fmt.Errorf("not authorized to write %q: %w", fact.Key, authError)
 		}
 	}
 	return nil
+}
+
+// authorizeFactKeyWrite checks the capability needed to write or delete
+// factKey through apply (security.RequiredCapabilityForFactWrite).
+func (apiServer *Server) authorizeFactKeyWrite(principal security.Principal, factKey string) error {
+	return apiServer.apiAuthorizer.AuthorizeAPI(principal, security.RequiredCapabilityForFactWrite(factKey), security.ScopeCluster, nil)
 }
 
 // handleWatch serves GET /api/watch?prefix=... as a Server-Sent Events stream.
@@ -1590,9 +1613,9 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 	responseWriter.Header().Set("Content-Type", "application/json")
 	requestContext := request.Context()
 
-	configRequest, readError := readDSLRequestBody(request)
+	configRequest, readError, readStatus := readDSLRequestBody(request)
 	if readError != "" {
-		responseWriter.WriteHeader(http.StatusBadRequest)
+		responseWriter.WriteHeader(readStatus)
 		_ = json.NewEncoder(responseWriter).Encode(map[string]string{"error": readError})
 		return
 	}
@@ -1604,7 +1627,27 @@ func (apiServer *Server) handleDiff(responseWriter http.ResponseWriter, request 
 		return
 	}
 
-	_ = json.NewEncoder(responseWriter).Encode(changes)
+	principal := security.PrincipalStructFromContext(requestContext)
+	_ = json.NewEncoder(responseWriter).Encode(apiServer.hideUnreadableChanges(principal, changes))
+}
+
+// hideUnreadableChanges reports, as lang.FactChangeHidden without an old
+// value, every key /api/state would not return (isReadableFactKey) unless the
+// caller may write it, and private keys (tls/key) always; a diff never reveals
+// state the caller cannot read (review SEC-M3). Deleted hidden keys are dropped.
+func (apiServer *Server) hideUnreadableChanges(principal security.Principal, changes []lang.FactChange) []lang.FactChange {
+	visibleChanges := make([]lang.FactChange, 0, len(changes))
+	for _, change := range changes {
+		hasPrivateSuffix := isReadableStatePrefix(change.Key) && !isReadableFactKey(change.Key)
+		if hasPrivateSuffix || (!isReadableFactKey(change.Key) && apiServer.authorizeFactKeyWrite(principal, change.Key) != nil) {
+			if change.Type == "delete" {
+				continue
+			}
+			change = lang.FactChange{Key: change.Key, NewValue: change.NewValue, Type: lang.FactChangeHidden}
+		}
+		visibleChanges = append(visibleChanges, change)
+	}
+	return visibleChanges
 }
 
 // enrollmentRequestBody is the JSON body for POST /api/enroll.

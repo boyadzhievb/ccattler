@@ -605,6 +605,9 @@ func TestCLIServerDependentCommands(testContext *testing.T) {
 		testContext.Skip("skipping server-dependent tests in -short mode")
 	}
 
+	// The demo server is plain HTTP; an explicit scheme keeps the CLI from
+	// picking https on hosts that have a cluster CA file.
+	testContext.Setenv("CCA_API", "http://"+serverListenAddress)
 	cleanupFunction := startCCARunServer(testContext)
 	defer cleanupFunction()
 

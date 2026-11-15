@@ -9,13 +9,19 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/boyadzhievb/ccattler/security"
 	"github.com/boyadzhievb/ccattler/store"
+	"github.com/boyadzhievb/ccattler/types"
 )
+
+// maxJoinTokenTTL is the longest lifetime a join token may have; a token is
+// a bootstrap credential, so long-lived ones are refused (review SEC-L2).
+const maxJoinTokenTTL = 7 * 24 * time.Hour
 
 // JoinTokenPath is the API route for node join tokens.
 const JoinTokenPath = "/api/node/join-token" //nolint:gosec // URL path, not a credential
@@ -66,7 +72,7 @@ func (apiServer *Server) handleJoinToken(responseWriter http.ResponseWriter, req
 		return
 	}
 	if apiServer.enrollmentService == nil {
-		writeJSONError(responseWriter, "enrollment not available", http.StatusServiceUnavailable)
+		apiServer.failJoinTokenOperation(responseWriter, request, strings.ToLower(request.Method), "", "enrollment not available", http.StatusServiceUnavailable)
 		return
 	}
 	request.Body = http.MaxBytesReader(responseWriter, request.Body, maxSmallRequestBodyBytes)
@@ -86,19 +92,28 @@ func (apiServer *Server) handleJoinToken(responseWriter http.ResponseWriter, req
 func (apiServer *Server) createJoinToken(responseWriter http.ResponseWriter, request *http.Request) {
 	var createRequest JoinTokenCreateRequest
 	if decodeError := json.NewDecoder(request.Body).Decode(&createRequest); decodeError != nil {
-		writeJSONError(responseWriter, "invalid JSON: "+decodeError.Error(), http.StatusBadRequest)
+		apiServer.failJoinTokenOperation(responseWriter, request, "create", "", "invalid JSON: "+decodeError.Error(), http.StatusBadRequest)
 		return
 	}
 	tokenTTL, durationError := time.ParseDuration(createRequest.TTL)
-	if durationError != nil || tokenTTL <= 0 {
-		writeJSONError(responseWriter, "ttl must be a positive duration such as \"15m\"", http.StatusBadRequest)
+	if durationError != nil || tokenTTL <= 0 || tokenTTL > maxJoinTokenTTL {
+		apiServer.failJoinTokenOperation(responseWriter, request, "create", "",
+			fmt.Sprintf("ttl must be a positive duration up to %s, such as \"15m\"", maxJoinTokenTTL), http.StatusBadRequest)
 		return
+	}
+	if createRequest.NodeID != "" {
+		if nodeIDError := types.ValidateNodeID(createRequest.NodeID); nodeIDError != nil {
+			apiServer.failJoinTokenOperation(responseWriter, request, "create", "", "node_id: "+nodeIDError.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 	joinToken, createError := apiServer.enrollmentService.GenerateJoinToken(request.Context(), createRequest.NodeID, tokenTTL)
 	if createError != nil {
-		writeJSONError(responseWriter, "create join token: "+createError.Error(), http.StatusInternalServerError)
+		apiServer.failJoinTokenOperation(responseWriter, request, "create", "", "create join token: "+createError.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The value is shown once; keep it out of caches.
+	responseWriter.Header().Set("Cache-Control", "no-store")
 	apiServer.auditJoinTokenOperation(request, "create", joinTokenDisplayID(joinToken.Token))
 	_ = json.NewEncoder(responseWriter).Encode(JoinTokenCreateResponse{
 		Token: joinToken.CompositeTokenString(), NodeID: joinToken.NodeID, ExpiresAt: joinToken.ExpiresAt,
@@ -109,7 +124,7 @@ func (apiServer *Server) createJoinToken(responseWriter http.ResponseWriter, req
 func (apiServer *Server) listJoinTokens(responseWriter http.ResponseWriter, request *http.Request) {
 	activeTokens, listError := apiServer.enrollmentService.ListJoinTokens(request.Context())
 	if listError != nil {
-		writeJSONError(responseWriter, "list join tokens: "+listError.Error(), http.StatusInternalServerError)
+		apiServer.failJoinTokenOperation(responseWriter, request, "list", "", "list join tokens: "+listError.Error(), http.StatusInternalServerError)
 		return
 	}
 	listEntries := make([]JoinTokenListEntry, 0, len(activeTokens))
@@ -126,21 +141,22 @@ func (apiServer *Server) listJoinTokens(responseWriter http.ResponseWriter, requ
 func (apiServer *Server) revokeJoinToken(responseWriter http.ResponseWriter, request *http.Request) {
 	var revokeRequest JoinTokenRevokeRequest
 	if decodeError := json.NewDecoder(request.Body).Decode(&revokeRequest); decodeError != nil {
-		writeJSONError(responseWriter, "invalid JSON: "+decodeError.Error(), http.StatusBadRequest)
+		apiServer.failJoinTokenOperation(responseWriter, request, "revoke", "", "invalid JSON: "+decodeError.Error(), http.StatusBadRequest)
 		return
 	}
 	tokenValue, _, _ := strings.Cut(revokeRequest.Token, ".")
 	if tokenValue == "" {
-		writeJSONError(responseWriter, "token required", http.StatusBadRequest)
+		apiServer.failJoinTokenOperation(responseWriter, request, "revoke", "", "token required", http.StatusBadRequest)
 		return
 	}
 	revokeError := apiServer.enrollmentService.RevokeJoinToken(request.Context(), tokenValue)
 	if errors.Is(revokeError, store.ErrKeyNotFound) {
-		writeJSONError(responseWriter, "no such join token", http.StatusNotFound)
+		// Audited: repeated 404s are a guessing probe.
+		apiServer.failJoinTokenOperation(responseWriter, request, "revoke", joinTokenDisplayID(tokenValue), "no such join token", http.StatusNotFound)
 		return
 	}
 	if revokeError != nil {
-		writeJSONError(responseWriter, "revoke join token: "+revokeError.Error(), http.StatusInternalServerError)
+		apiServer.failJoinTokenOperation(responseWriter, request, "revoke", joinTokenDisplayID(tokenValue), "revoke join token: "+revokeError.Error(), http.StatusInternalServerError)
 		return
 	}
 	apiServer.auditJoinTokenOperation(request, "revoke", joinTokenDisplayID(tokenValue))
@@ -150,13 +166,27 @@ func (apiServer *Server) revokeJoinToken(responseWriter http.ResponseWriter, req
 // auditJoinTokenOperation records an allowed join token operation by the
 // request's principal; tokenID is a display prefix, never a token value.
 func (apiServer *Server) auditJoinTokenOperation(request *http.Request, operation string, tokenID string) {
+	apiServer.recordJoinTokenAudit(request, operation, tokenID, security.AuditDecisionAllow, "")
+}
+
+// failJoinTokenOperation answers an error and audits it as a denied
+// operation with the HTTP status as outcome (review SEC-L3).
+func (apiServer *Server) failJoinTokenOperation(responseWriter http.ResponseWriter, request *http.Request, operation string, tokenID string, message string, statusCode int) {
+	apiServer.recordJoinTokenAudit(request, operation, tokenID, security.AuditDecisionDeny, fmt.Sprintf("http_%d", statusCode))
+	writeJSONError(responseWriter, message, statusCode)
+}
+
+// recordJoinTokenAudit writes one join-token audit entry; outcome goes to
+// the entry's Policy field (empty for success).
+func (apiServer *Server) recordJoinTokenAudit(request *http.Request, operation string, tokenID string, decision string, outcome string) {
 	apiServer.apiAuthorizer.RecordAuditEntry(security.AuditEntry{
 		Timestamp:  time.Now(),
 		Principal:  security.PrincipalStructFromContext(request.Context()).String(),
 		Action:     joinTokenAuditAction + operation,
 		Target:     tokenID,
-		Decision:   security.AuditDecisionAllow,
+		Decision:   decision,
 		AuthMethod: security.AuthMethodFromContext(request.Context()),
+		Policy:     outcome,
 	})
 }
 

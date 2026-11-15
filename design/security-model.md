@@ -221,6 +221,36 @@ authorization layer. `cca role grant user:alice --role api-reader` is exactly
 equivalent to granting `workload.read`, `node.read`, `placement.read`,
 `scaling.read`, `secret.metadata.read` individually.
 
+### The CLI Is an API Client (M219)
+
+The CLI has no path to cluster state except the API, so every user action
+passes the capability check, the policy gate and audit:
+
+- `cca apply` / `cca diff` → `/api/apply` / `/api/diff`. The CLI reads the
+  files a configuration references and sends their contents; the server
+  compiles from that map only and never opens a client path. A gate's private
+  key goes separately to `PUT /api/gate-key` (`secret.write`, sealed), never
+  in the apply body.
+- `cca status` → `/api/status`; `cca token create|list|revoke` →
+  `/api/node/join-token` (`cluster.admin`; audited by token id, value shown
+  only once on create).
+- On a control-plane node the CLI uses the local admin token like any client;
+  there is no "local host is trusted" shortcut to etcd.
+- An unreachable API is an error; only `--simulate` runs without it, in memory.
+- Credentials never travel over plain HTTP to another host: the CLI sends a
+  bearer token, join token, gate key or file contents only over `https://`, or
+  over `http://` to `localhost`, `127.0.0.0/8` or `::1`. Anything else,
+  including an unparsable address, is refused before sending (checked on
+  every request, redirects included). There is no override. The scheme comes
+  from the address (`CCA_API=https://…`); without one, `https` when a cluster
+  CA file is present. An `https://` address is never downgraded.
+- **One exception:** the root key commands work on local files and etcd while
+  every API replica is stopped (Flow 30), and refuse to run on a host without
+  etcd endpoints and the root key.
+
+Flow 25 in `runtime-invariant-flows.md` lists the invariants; the route table
+in `design/graphs/AUTHZ_GRAPH.md` maps each route to its capability.
+
 ### Runtime Grant Management CLI (M156)
 
 Capabilities can be granted to users and groups at runtime:

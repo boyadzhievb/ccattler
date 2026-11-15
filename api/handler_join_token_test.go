@@ -150,3 +150,35 @@ func assertJoinTokenAudited(t *testing.T, auditLog *security.InMemoryAuditLog, p
 	}
 	t.Errorf("no join-token audit entry for %s in %+v", principal, auditLog.Entries())
 }
+
+// TestJoinTokenCreateValidatesAndAuditsFailures: a TTL over the maximum and an
+// invalid node ID are refused, a revoke of an unknown token is audited as a
+// deny with its HTTP status, and a created token is marked no-store.
+func TestJoinTokenCreateValidatesAndAuditsFailures(t *testing.T) {
+	apiServer, factStore, auditLog := newJoinTokenTestServer(t)
+	for _, refusedBody := range []string{`{"ttl":"200h"}`, `{"ttl":"15m","node_id":"../etc"}`} {
+		if response := serveAsUser(apiServer, "admin", http.MethodPost, JoinTokenPath, refusedBody); response.Code != http.StatusBadRequest {
+			t.Errorf("create %s: HTTP %d, want 400", refusedBody, response.Code)
+		}
+	}
+	if tokenRecords, _ := factStore.Scan(context.Background(), security.JoinTokenPrefix); len(tokenRecords) != 0 {
+		t.Errorf("refused creates stored %d tokens", len(tokenRecords))
+	}
+	createResponse := serveAsUser(apiServer, "admin", http.MethodPost, JoinTokenPath, `{"ttl":"15m"}`)
+	if cacheControl := createResponse.Header().Get("Cache-Control"); cacheControl != "no-store" {
+		t.Errorf("create response Cache-Control = %q, want no-store", cacheControl)
+	}
+	unknownToken := strings.Repeat("ab", 32)
+	if response := serveAsUser(apiServer, "admin", http.MethodDelete, JoinTokenPath, `{"token":"`+unknownToken+`"}`); response.Code != http.StatusNotFound {
+		t.Fatalf("revoke unknown: HTTP %d, want 404", response.Code)
+	}
+	deniedRevokeAudited := false
+	for _, entry := range auditLog.Entries() {
+		if entry.Action == joinTokenAuditAction+"revoke" && entry.Decision == security.AuditDecisionDeny && entry.Policy == "http_404" {
+			deniedRevokeAudited = entry.Target == unknownToken[:joinTokenDisplayPrefixLength]
+		}
+	}
+	if !deniedRevokeAudited {
+		t.Errorf("no deny audit entry with http_404 for the unknown revoke in %+v", auditLog.Entries())
+	}
+}

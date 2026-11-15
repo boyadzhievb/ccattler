@@ -893,7 +893,7 @@ The debug API can run commands in any container, so users never reach it directl
 
 ---
 
-## Flow 25: API Authentication and Authorization (M173)
+## Flow 25: API Authentication and Authorization (M173, M219)
 
 **Chain:** request → `authenticationMiddleware` → `AuthenticatorChain` (mTLS, local token, internal JWT, external OIDC, webhook) → `requireCapability` → `APIAuthorizer` (bootstrap grants + store grants + ABAC policies) ← `AuthController` runner in each API process ← `auth/` facts (`cca role grant`, DSL roles and policies, `bootstrapAdminGrants`).
 
@@ -908,9 +908,13 @@ The debug API can run commands in any container, so users never reach it directl
 - `/api/state` and `/api/watch` read only the allowlisted roots (`desired`, `effective`, `observed`, `placement`, `endpoint`, `intent`, `network`, `derived`, `event`). A prefix must equal a root or continue it with `/`. Keys ending in `/tls/key` are dropped from scans and watch streams and refused as single keys.
 - The concurrent watch limit is reserved by incrementing first, then checking.
 - Users are authorized only at the API layer, by capability (CLAUDE.md two-layer rule). The API server reads and writes the store as its own internal principal `service:api-server`, bound to the store-layer role `api-server`: read and watch on the orchestration roots plus `auth`, `leader`, `lease`, `policy`; write and delete only on the prefixes its handlers change. It has no rule for `secrets/`, `credentials/`, `enrollment/`, `bootstrap/` or `audit/`, so a handler bug cannot reach them through the generic store path. Store audit entries record `service:api-server` with the end user in `on_behalf_of`.
-- Applying DSL (`/api/apply`, policy gate and direct path) checks a capability for every compiled fact: `auth/`, `policy/network/` and cloud identity facts need `cluster.admin`; `desired/service/*/secret/` and image pull secrets need `secret.use`; other `desired/`, `effective/`, `intent/`, `derived/service/` facts need `workload.create`; anything else needs `cluster.admin`. A `workload.create` user therefore cannot write grants and escalate.
+- Applying DSL (`/api/apply`, policy gate and direct path) checks a capability for every compiled fact, and for every stored fact it would delete (a declared gate's removed settings; checked before anything is written, refused as 403): `auth/`, `policy/network/` and cloud identity facts need `cluster.admin`; `desired/service/*/secret/` and image pull secrets need `secret.use`; other `desired/`, `effective/`, `intent/`, `derived/service/` facts need `workload.create`; anything else needs `cluster.admin`. A `workload.create` user therefore cannot write grants and escalate.
 - Status, metrics and state reads return a store error as an error, never as an empty cluster.
 - Workload visibility for `/api/state`, `/api/watch` and `/api/status` comes only from `workload.read` grants (direct or via `cluster.admin`). A `cluster`-scope grant sees every team. A `team/<name>` grant sees that team only. Membership (`team` attribute, `platform` group) adds nothing, and deeper scopes (`team/<name>/...`, node or service scopes) give no team visibility. No grant at any scope is a 403. The same per-key filter applies to scans, single-key reads and watch events. A read grant gives no `secret.*` or `cluster.admin` rights, and the readable-root allowlist and `/tls/key` filter still apply.
+- **The CLI reaches cluster state only through these routes (M219).** `cca apply` and `cca diff` call `/api/apply` and `/api/diff`, sending the files the configuration references (gate `tls cert`, config `from`) in the body; the server compiles from that map only and never opens a client path. A gate's key file is sent separately to `PUT /api/gate-key` after the gate facts, never in the apply body. `cca status` reads `/api/status`; `cca token` uses `/api/node/join-token` (`cluster.admin`, audited by the 8-character id, value returned only on create). On a control-plane node the CLI authenticates with the local admin token like any other client, against its own server (HA nodes read the address from `/etc/ccattler/server-address`).
+- An unreachable API server is an error naming its address. `--simulate` is the only way to run without one, and it never leaves the process.
+- The root key commands (`generate-root-key`, `root-key-status`, `rotate-root-key`) are the one exception: they work on local files and etcd while every API replica is stopped (Flow 30). Before connecting, they require etcd endpoints and a key at the path or its `.next`, and otherwise say they run only on a control-plane node.
+- Every route registered in `api/server.go` refuses a principal without grants (401/403/405) unless it is on the reviewed allowlist, and has a row in the `AUTHZ_GRAPH.md` route table (`TestEveryRouteRefusesPrincipalWithoutGrants`, `TestDocCrossCheckAuthzRouteTable`).
 
 **What must NOT happen:**
 - A prefix such as `secret`, `s` or `enroll` returning keys from `secrets/`, `credentials/` or `enrollment/`
@@ -918,6 +922,9 @@ The debug API can run commands in any container, so users never reach it directl
 - Store grants or policies written but never applied (the pre-M173 state)
 - A user authorized at the API layer denied by the store layer because it has no store role binding (500 "has no role bindings", found in run 41637959333)
 - Team membership hiding facts from a principal with an explicit cluster-scope grant, or showing a team's facts to a member without a grant
+- A CLI command writing etcd behind the API: before M219, `cca apply`, `cca diff` and `cca token` on a control-plane host bypassed authorization, the policy gate and audit (adversarial cases `reader-cannot-apply`, `writer-cannot-create-join-token`)
+- An unreachable API silently replaced by a local simulation that prints a fake cluster (M218 finding A1)
+- A non-`/api/` route serving cluster data (the legacy `/status`, removed in M219)
 
 ---
 
